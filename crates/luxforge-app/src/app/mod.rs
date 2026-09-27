@@ -195,6 +195,20 @@ pub(crate) struct Editor {
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) preview_queue: PreviewQueue,
     pub(crate) preview_generation: u64,
+    /// One opaque surface identity per evaluated content. A pan/zoom retains it; a new draft
+    /// revision, history entry, source development or recipe gets another id.
+    pub(crate) content_key: Option<(
+        luxforge_core::analysis::AnalysisIdentity,
+        luxforge_core::ProxyIdentity,
+    )>,
+    pub(crate) content_serial: u64,
+    pub(crate) pending_content: BTreeMap<u64, u64>,
+    pub(crate) pending_intent: BTreeMap<u64, luxforge_core::PreviewIntent>,
+    pub(crate) presented_content: u64,
+    pub(crate) analysis_content: Option<u64>,
+    pub(crate) raster_content: Option<u64>,
+    pub(crate) region_raster: Option<preview::PresentedRegion>,
+    pub(crate) viewport_disabled_content: Option<u64>,
     /// The displayed frame's own raster, with the preview generation it arrived under, retained
     /// beside the picture on screen so a clipping overlay can be re-derived from it on a zoom, a
     /// pan or a toggle without a second render. It shares the render's `Arc<[u8]>`: retaining it
@@ -276,6 +290,15 @@ pub(crate) struct Editor {
     pub(crate) sync_wanted: bool,
     pub(crate) pan_in_flight: bool,
     pub(crate) pending_pan: Option<(f32, f32)>,
+    /// The latest scrollable offset is local immediately; session pan can be one round trip old.
+    pub(crate) local_pan: (f32, f32),
+    pub(crate) desired_view_dirty: bool,
+    pub(crate) view_request_generation: Option<u64>,
+    pub(crate) view_plan_in_flight: bool,
+    pub(crate) view_plan_epoch: u64,
+    pub(crate) quiet_since: Option<Instant>,
+    pub(crate) quiet_settle_requested: bool,
+    pub(crate) released_draft: Option<luxforge_core::DraftId>,
     pub(crate) picker_open: bool,
     pub(crate) status: String,
     /// What Copy in the status bar copies instead of the line itself, while the status still reads
@@ -284,6 +307,9 @@ pub(crate) struct Editor {
     /// What last happened to the open photograph, which the status bar says once the current
     /// entry's frame is on screen.
     pub(crate) happened: Option<state::status::Happened>,
+    /// What the last composite action (a preset, Reset Basic) left out because it does not apply
+    /// to the photo, said beside what happened once its frame is on screen.
+    pub(crate) skipped: Option<String>,
     /// The event sync's cursor: the newest event sequence a poll has read up to. Only a poll moves
     /// it, and never backwards; the sequence any other answer carries counts events of other
     /// clients' that no poll has read yet.
@@ -335,6 +361,8 @@ pub(crate) struct Editor {
     pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
     pub(crate) displayed_draft_revision: Option<u64>,
+    /// Revisions are ordered only within this draft; a new draft starts at zero.
+    pub(crate) displayed_draft_id: Option<luxforge_core::DraftId>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: Tracked<BTreeMap<String, bool>>,
     /// The displayed entry's layers as the recipe panel reads them.
@@ -375,6 +403,10 @@ pub(crate) struct Editor {
     /// The mask the Masks panel has open, and the component selected inside it. Per-client
     /// selection: it changes no recipe and is never sent.
     pub(crate) selected_mask: Option<luxforge_core::MaskId>,
+    /// The module pick mode on screen was entered from the Masks panel with a mask open, so the
+    /// pick stays bound to that mask ([`Editor::section_target`]) and leaving it returns to Mask.
+    /// Per-client view state, set by the mode change that entered the pick.
+    pub(crate) pick_on_mask: bool,
     pub(crate) selected_component: Option<luxforge_core::ComponentId>,
     /// The component row the pointer is over, which the overlay shows on its own while it lasts.
     /// View state of the same kind as the selection, and never sent.
@@ -455,6 +487,8 @@ impl Editor {
                 steps: Vec::new(),
                 frames: Vec::new(),
                 capture_pending: false,
+                view_idle: None,
+                allow_unready_capture: false,
                 capture_overlay: false,
                 saving: false,
                 had_errors: false,
@@ -512,6 +546,15 @@ impl Editor {
             dimensions: None,
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
+            content_key: None,
+            content_serial: 0,
+            pending_content: BTreeMap::new(),
+            pending_intent: BTreeMap::new(),
+            presented_content: 0,
+            analysis_content: None,
+            raster_content: None,
+            region_raster: None,
+            viewport_disabled_content: None,
             raster: None,
             raster_approximate_white_balance: false,
             exact_render_ms: None,
@@ -538,10 +581,19 @@ impl Editor {
             sync_wanted: false,
             pan_in_flight: false,
             pending_pan: None,
+            local_pan: (0.0, 0.0),
+            desired_view_dirty: false,
+            view_request_generation: None,
+            view_plan_in_flight: false,
+            view_plan_epoch: 0,
+            quiet_since: None,
+            quiet_settle_requested: false,
+            released_draft: None,
             picker_open: false,
             status: "Open a photo to begin".into(),
             status_copy: None,
             happened: None,
+            skipped: None,
             api_sequence: 0,
             own_requests: std::collections::VecDeque::new(),
             scale_factor: 1.0,
@@ -565,6 +617,7 @@ impl Editor {
             fake_sets: None,
             pending_reset: None,
             displayed_draft_revision: None,
+            displayed_draft_id: None,
             expanded: Tracked::default(),
             recipe: Tracked::default(),
             current_recipe: Tracked::default(),
@@ -587,6 +640,7 @@ impl Editor {
             mode_sync: None,
             masks: Tracked::default(),
             selected_mask: None,
+            pick_on_mask: false,
             selected_component: None,
             hovered_component: None,
             hidden_masks: Tracked::default(),
@@ -612,6 +666,7 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        luxforge_ui::set_surface_waker(waker::waker());
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
         editor
@@ -678,9 +733,29 @@ impl Editor {
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
+        let previous_geometry = (
+            self.window,
+            self.scale_factor,
+            self.session.workspace.state_panel,
+            self.session.workspace.tools_panel,
+            self.local_pan,
+        );
+        let previous_view_epoch = self.view_plan_epoch;
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        if (self.session.preview.view.zoom != zoom
+            || (
+                self.window,
+                self.scale_factor,
+                self.session.workspace.state_panel,
+                self.session.workspace.tools_panel,
+                self.local_pan,
+            ) != previous_geometry)
+            && self.view_plan_epoch == previous_view_epoch
+        {
+            self.note_view_motion();
+        }
         // Whatever route opened, closed, hid or showed the Performance section is answered in one
         // place: starting to sample reads at once, and stopping drops the read in flight.
         let task = Task::batch([task, self.performance_transition()]);
@@ -700,6 +775,7 @@ impl Editor {
             self.zoom_editing = false;
         }
         let refit = self.refit_proxy();
+        let view_request = self.reconcile_view();
         // The panel's selection follows the stack and the mode before anything is derived from it,
         // so a section is never bound to a mask the recipe no longer holds.
         if self.follow_mask_selection() {
@@ -731,7 +807,14 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, refit, woken, loads.unwrap_or_else(Task::none)])
+        Task::batch([
+            task,
+            zoomed,
+            refit,
+            view_request,
+            woken,
+            loads.unwrap_or_else(Task::none),
+        ])
     }
 
     /// Bring the screen up to date with the state this message left behind: every section whose
@@ -821,9 +904,9 @@ impl Editor {
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
             dimensions: self.dimensions,
-            photo: self.presenter.photo().is_some(),
+            photo: self.presenter.photo().is_some() || self.presenter.region().is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.preview_queue.is_busy(),
+            rendering: self.preview_queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
@@ -910,7 +993,12 @@ impl Editor {
             None => view::workspace(
                 &self.workspace,
                 view::Surfaces {
-                    photo: self.presenter.photo(),
+                    photo: self.presenter.photo_for(self.presented_content),
+                    photo_content: self.presenter.full_content(),
+                    current_content: self.presented_content,
+                    region: self.presenter.region(),
+                    region_clipping: self.presenter.region_clipping(),
+                    region_coverage: self.presenter.region_coverage(),
                     stage: self.presenter.stage(),
                     clipping: self.overlay_surface(),
                     coverage: self.mask_overlay_surface(),
@@ -944,33 +1032,39 @@ impl Editor {
             palette_open: self.palette_open,
             export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
-            modes: self
-                .modules
-                .iter()
-                .filter(|module| module.is_available())
-                .filter(|module| {
-                    module.id != "luxforge.raw"
-                        || self.state.as_ref().is_some_and(|state| {
-                            matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                        })
-                })
-                .filter_map(|module| {
-                    let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
-                    Some((letter, module.id.clone()))
-                })
-                .collect(),
+            leave_to: (!self.mask_mode_active() && self.section_target().is_some())
+                .then(|| luxforge_core::MASK_MODE.to_owned()),
+            modes: crate::state::tools::mode_shortcuts(
+                &self.modules,
+                self.state.as_ref(),
+                self.section_target(),
+            ),
         }
+    }
+
+    /// `prepare` can start a GPU retirement after this update recomputes subscriptions. Keep the
+    /// blocked wake stream installed for the whole time a photograph is open, so that later wake
+    /// can trigger the redraw that admits a deferred texture without another user event.
+    pub(crate) fn preview_wake_needed(&self) -> bool {
+        self.state.is_some()
+            || self.preview_queue.is_busy()
+            || self.overlay_queue.is_busy()
+            || luxforge_ui::surface_retirement_pending()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![iced::event::listen_with(keymap::raw_event)];
-        // One channel serves both workers: each posts a signal when it has a result, and this
-        // carries it in as the `Poll` the 16 ms timer used to produce. Nothing wakes when nothing
-        // has finished, and the subscription itself exists only while one of them is busy, so an
-        // idle desktop runs no timer and holds no stream. A signal posted while it is being built
-        // or after it is gone is buffered by the channel, which outlives it.
-        if self.preview_queue.is_busy() || self.overlay_queue.is_busy() {
+        // A blocked channel stream costs no idle work. It remains installed while a photograph is
+        // open because the surface may defer an upload in `prepare`, after this update's
+        // subscription set was computed. Its retirement wake must have a listener then.
+        if self.preview_wake_needed() {
             subscriptions.push(waker::subscription());
+        }
+        if self.quiet_since.is_some() && !self.quiet_settle_requested {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(25))
+                    .map(|_| Message::Preview(PreviewMessage::QuietTick)),
+            );
         }
         // The gesture needs no timer of its own: a slider move sends `draft.set` the moment
         // nothing is in flight, and records only the newest value while one is. The event sync
@@ -990,11 +1084,18 @@ impl Editor {
             );
         }
         if let Some(evidence) = &self.evidence {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(250))
-                    .map(|_| Message::Evidence(EvidenceMessage::Tick)),
-            );
-            if evidence.capture_pending {
+            if let Some(idle) = &evidence.view_idle {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(idle.ms))
+                        .map(|_| Message::Evidence(EvidenceMessage::ViewIdleDeadline)),
+                );
+            } else {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(250))
+                        .map(|_| Message::Evidence(EvidenceMessage::Tick)),
+                );
+            }
+            if evidence.capture_pending && evidence.view_idle.is_none() {
                 subscriptions.push(
                     iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)),
                 );

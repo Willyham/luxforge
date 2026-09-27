@@ -29,7 +29,7 @@ use crate::*;
 use luxforge_core::{ModuleRegistry, ParameterKind};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, MaskStep, PaintStep, Reference,
-    SliderEnd, SliderStep, WorkspaceStep,
+    SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
     collections::BTreeSet,
@@ -70,7 +70,7 @@ struct FieldTarget {
     max: f64,
     step: f64,
     /// Where the gesture's values start from: zero when the range holds it, as every field-patch
-    /// slider's does, otherwise the declared default (RAW's Custom temperature, 2000..12000 K).
+    /// slider's does, otherwise the declared default (a RAW photo's Temperature, 2000..12000 K).
     origin: f64,
 }
 
@@ -410,8 +410,12 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                 event["detail"]["draft_revision"].as_u64() == input.draft_revision,
                 "A displayed frame names another draft revision than the job it answers",
             )?;
-            input.displayed_ms = elapsed(event)?;
-            input.upload_ms = event["detail"]["upload_ms"].as_f64().unwrap_or(f64::NAN);
+            // One generation can now display an interactive region, exact refinement and a full
+            // frame. Input-to-first-visible-response stops at its first adoption.
+            if !input.displayed_ms.is_finite() {
+                input.displayed_ms = elapsed(event)?;
+                input.upload_ms = event["detail"]["upload_ms"].as_f64().unwrap_or(f64::NAN);
+            }
         }
     }
     Ok(inputs)
@@ -552,6 +556,8 @@ pub enum Mode {
     /// `mask-range` scenario's figure is taken on four masked colour layers, three of whose masks
     /// bind the whole stage, and is therefore not a baseline for the gesture itself.
     Paint,
+    /// An open drafted adjustment, pans, quiet refinement and release at percentage zoom.
+    Viewport,
 }
 
 impl Mode {
@@ -561,6 +567,7 @@ impl Mode {
             Self::Commit => "commit",
             Self::Burst => "burst",
             Self::Paint => "paint",
+            Self::Viewport => "viewport",
         }
     }
 }
@@ -575,7 +582,7 @@ const BURST_RATE_PER_SEC: f64 = 120.0;
 const BURST_PEAK_EV: f64 = 2.0;
 /// The triangle's peak for any field, as a fraction of the smaller half of its declared range
 /// around its origin: exactly [`BURST_PEAK_EV`] on an exposure's -5..5 EV, 40 on a -100..100 field
-/// and 1802 K either side of Custom temperature's 6504 K.
+/// and 1802 K either side of a RAW Temperature's 6504 K.
 const BURST_PEAK_FRACTION: f64 = 0.4;
 
 /// One value per tick, in milliseconds, at [`BURST_RATE_PER_SEC`].
@@ -621,7 +628,7 @@ impl FieldTarget {
     /// origin, peaking at [`BURST_PEAK_FRACTION`] of the smaller half of its declared range, each
     /// on the field's own step grid, as a slider on that step would produce. On an exposure field
     /// (origin 0, -5..5 EV, step 0.01) that is [`burst_values`] itself, value for value; on
-    /// Custom temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
+    /// RAW Temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
     /// field ±40.
     fn burst_values(&self) -> Vec<f64> {
         let amplitude = BURST_PEAK_FRACTION * (self.max - self.origin).min(self.origin - self.min);
@@ -644,12 +651,34 @@ impl FieldTarget {
 
 /// The one scripted step a burst run sends: every value paced by its own timer, released at the
 /// end exactly as a real drag's release ends it.
-fn burst_gesture_step(field: &FieldTarget, values: &[f64], interval_ms: u64) -> script::Step {
-    script::Step::Slider(
-        SliderStep::new(&field.action, &field.parameter, values)
-            .release()
-            .paced(interval_ms),
-    )
+fn burst_gesture_step(
+    field: &FieldTarget,
+    values: &[f64],
+    interval_ms: u64,
+    moving_pan: bool,
+) -> script::Step {
+    let slider = SliderStep::new(&field.action, &field.parameter, values)
+        .release()
+        .paced(interval_ms);
+    // The same paced tick moves the actual scrollable alongside the slider. A separate Pan script
+    // step would run only after the burst released, so it could not qualify moving viewport work.
+    let slider = if moving_pan {
+        let path = (0..values.len())
+            .map(|index| {
+                let phase = index as f32 / (values.len().saturating_sub(1).max(1)) as f32;
+                let sweep = if phase <= 0.5 {
+                    phase * 2.0
+                } else {
+                    (1.0 - phase) * 2.0
+                };
+                [0.1 + 0.8 * sweep, 0.9 - 0.8 * sweep]
+            })
+            .collect();
+        slider.pan_path(path)
+    } else {
+        slider
+    };
+    script::Step::Slider(slider)
 }
 
 pub struct Options<'a> {
@@ -675,6 +704,17 @@ pub struct Options<'a> {
     /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
     /// person's hand, with the unmasked run beside it as its baseline.
     pub mask: bool,
+    /// Percentage view chosen before the measured gesture; absent means Fit.
+    pub zoom: Option<f32>,
+    /// Move the scrollable on each paced burst tick; kept explicit so the fixed-view burst script
+    /// can also run against the pre-viewport binary for a like-for-like baseline.
+    pub moving_pan: bool,
+}
+
+fn zoom_step(options: &Options) -> Option<script::Step> {
+    options
+        .zoom
+        .map(|zoom| script::Step::View(ViewStep::Percent(zoom)))
 }
 
 /// The steps that draw a mask and bind the generated sections to it before the gesture.
@@ -773,6 +813,7 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
         steps.push(basic_precondition());
     }
     steps.extend(paint_precondition());
+    steps.extend(zoom_step(options));
     steps.push(script::Step::Mask(MaskStep::Stroke {
         points: path,
         release: true,
@@ -804,6 +845,7 @@ fn gesture_script(
     if options.control == Control::Curve {
         steps.extend(curve_view_steps());
     }
+    steps.extend(zoom_step(options));
     if drag {
         steps.extend(gesture_steps(values, options.control, field));
         steps.push(burst_step(values, options.control, field));
@@ -828,13 +870,355 @@ fn burst_script(
     if options.basic {
         steps.push(basic_precondition());
     }
-    steps.push(burst_gesture_step(field, values, interval_ms));
+    steps.extend(zoom_step(options));
+    steps.push(burst_gesture_step(
+        field,
+        values,
+        interval_ms,
+        options.moving_pan,
+    ));
     steps
 }
 
 /// The hold run's script: the full Basic layer it commits.
 fn hold_script() -> Value {
     script::write(&[basic_precondition()])
+}
+
+/// One open draft crosses two pans and a quiet interval. A second value resumes motion before
+/// release; after the exact report settles, a final pan tests the retained full texture slot.
+fn viewport_script(options: &Options, field: &FieldTarget) -> (Vec<script::Step>, [usize; 7]) {
+    let mut steps = Vec::new();
+    steps.extend(crop_precondition(options));
+    if options.mask {
+        steps.extend(mask_precondition());
+    }
+    if options.basic {
+        steps.push(basic_precondition());
+    }
+    steps.extend(zoom_step(options));
+    let values = field.gesture_values(2);
+    let mut indices = [0; 7];
+    steps.push(script::Step::Slider(SliderStep::new(
+        &field.action,
+        &field.parameter,
+        [values[0]],
+    )));
+    indices[0] = steps.len();
+    steps.push(script::Step::pan(0.15, 0.15));
+    indices[1] = steps.len();
+    steps.push(script::Step::wait(1500));
+    indices[2] = steps.len();
+    steps.push(script::Step::Slider(SliderStep::new(
+        &field.action,
+        &field.parameter,
+        [values[1]],
+    )));
+    indices[3] = steps.len();
+    steps.push(script::Step::pan(0.75, 0.75));
+    steps.push(script::Step::wait(1500));
+    indices[4] = steps.len();
+    steps.push(script::Step::Slider(
+        SliderStep::new(&field.action, &field.parameter, [values[1]]).release(),
+    ));
+    steps.push(script::Step::wait(2500));
+    indices[5] = steps.len();
+    steps.push(script::Step::pan(0.3, 0.3));
+    steps.push(script::Step::wait(500));
+    indices[6] = steps.len();
+    (steps, indices)
+}
+
+fn frame_at<'a>(frames: &'a [Value], index: usize, label: &str) -> Result<&'a Value> {
+    frames
+        .get(index)
+        .ok_or_else(|| format!("No {label} frame at index {index}").into())
+}
+
+fn gpu_count(frame: &Value, name: &str) -> Result<u64> {
+    frame["state"]["surface"]["gpu"][name]
+        .as_u64()
+        .ok_or_else(|| format!("Captured frame has no surface.gpu.{name}").into())
+}
+
+/// A focused native viewport journey. Event timestamps measure desktop adoption; capture-side
+/// `surface.gpu` counters report actual draw encoding and writes, never display scanout.
+fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(!out.exists(), "Editor latency output must be new")?;
+    ensure(
+        matches!(options.zoom, Some(100.0 | 200.0)),
+        "--mode viewport requires --zoom 100 or --zoom 200",
+    )?;
+    ensure(
+        options.control == Control::Slider,
+        "Viewport mode measures a slider",
+    )?;
+    ensure(!options.idle, "Viewport mode has its own held-draft pause")?;
+    let field = resolve_field(options.control, options.action, options.parameter)?;
+    let source = options.source.canonicalize()?;
+    let source_hash = hash(&source)?;
+    fs::create_dir_all(out)?;
+    let (steps, positions) = viewport_script(options, &field);
+    ensure(
+        steps.len() <= script::MAX_SCRIPT_STEPS,
+        "Viewport script exceeds the evidence step bound",
+    )?;
+    let script_file = out.join("viewport-script.json");
+    write_json(&script_file, &script::write(&steps))?;
+    let evidence = out.join("app");
+    let usage = evidence_run(
+        root,
+        bin,
+        out,
+        "viewport",
+        &[
+            "--evidence-dir".into(),
+            evidence.clone().into_os_string(),
+            "--evidence-script".into(),
+            script_file.into_os_string(),
+            "--open".into(),
+            source.clone().into_os_string(),
+        ],
+        Duration::from_secs(90),
+    )?;
+    let app = read_json(&evidence.join("result.json"))?;
+    ensure(
+        app["status"] == "captured" && app["had_input_errors"] == false,
+        format!(
+            "Viewport evidence did not complete cleanly: {}",
+            app["script"]
+        ),
+    )?;
+    let frames = app["frames"]
+        .as_array()
+        .ok_or("Viewport evidence has no frames")?;
+    ensure(
+        frames.len() == steps.len() + 1,
+        "Viewport evidence missed a captured frame",
+    )?;
+    // Cumulative draw diagnostics expose blank frames between captures as well as at captures.
+    // Missing fields mean an older binary cannot qualify the viewport journey.
+    let mut stale_draws = 0;
+    for (index, frame) in frames.iter().enumerate() {
+        let blanks = gpu_count(frame, "blank_photo_draws")?;
+        stale_draws = gpu_count(frame, "stale_photo_draws")?;
+        ensure(
+            blanks == 0,
+            format!("Viewport frame {index} followed {blanks} blank photo draws"),
+        )?;
+    }
+    let events = scenario::events(&evidence.join("events.jsonl"))?;
+    let [
+        draft,
+        first_pan,
+        first_pause,
+        resumed,
+        second_pause,
+        settled,
+        final_pan,
+    ] = positions;
+    let [
+        draft,
+        first_pan,
+        first_pause,
+        resumed,
+        second_pause,
+        settled,
+        final_pan,
+    ] = [
+        frame_at(frames, draft, "draft")?,
+        frame_at(frames, first_pan, "first pan")?,
+        frame_at(frames, first_pause, "first pause")?,
+        frame_at(frames, resumed, "resumed")?,
+        frame_at(frames, second_pause, "second pause")?,
+        frame_at(frames, settled, "settled")?,
+        frame_at(frames, final_pan, "final pan")?,
+    ];
+    let regions: Vec<&Value> = events
+        .iter()
+        .filter(|event| {
+            event["event"] == "preview_displayed" && event["detail"]["path"] == "region"
+        })
+        .collect();
+    if regions.is_empty() {
+        write_json(
+            &out.join("latency.json"),
+            &json!({
+                "status":"unavailable",
+                "mode":"viewport",
+                "reason":"The binary emitted no region preview_displayed events; viewport evidence is unsupported, not a pass",
+                "binary_sha256":hash(bin)?,
+                "source":source,
+                "source_sha256":source_hash,
+                "zoom_percent":options.zoom,
+                "launch_mode":launch::MODE,
+            }),
+        )?;
+        ensure(hash(&source)? == source_hash, "The source changed")?;
+        println!("UNAVAILABLE editor latency (viewport): {}", out.display());
+        return Ok(());
+    }
+    let region_summary: Vec<Value> = regions
+        .iter()
+        .map(|event| {
+            json!({
+                "elapsed_ms":event["elapsed_ms"],
+                "generation":event["detail"]["generation"],
+                "draft_revision":event["detail"]["draft_revision"],
+                "entry_id":event["detail"]["entry_id"],
+                "snapshot_id":event["detail"]["snapshot_id"],
+                "source_fingerprint":event["detail"]["source_fingerprint"],
+                "region":event["detail"]["region"],
+                "region_stage":event["detail"]["region_stage"],
+                "quality":event["detail"]["quality"],
+                "viewport_declined":event["detail"]["viewport_declined"],
+            })
+        })
+        .collect();
+    for event in &regions {
+        let detail = &event["detail"];
+        let rect: [u32; 4] = serde_json::from_value(detail["region"].clone())
+            .map_err(|_| "A region event has no full-stage rectangle")?;
+        let stage: [u32; 2] = serde_json::from_value(detail["dimensions"].clone())
+            .map_err(|_| "A region event has no full-stage dimensions")?;
+        ensure(
+            rect[0] < rect[2]
+                && rect[1] < rect[3]
+                && rect[2] <= stage[0]
+                && rect[3] <= stage[1]
+                && detail["generation"].as_u64().is_some()
+                && detail["entry_id"].as_str().is_some()
+                && detail["source_fingerprint"].as_str().is_some(),
+            format!("A region event lacks valid content, generation or stage geometry: {detail}"),
+        )?;
+    }
+    let first_draft_revision = draft["state"]["displayed_draft_revision"]
+        .as_u64()
+        .ok_or("The first drafted viewport did not display its draft revision")?;
+    let resumed_revision = resumed["state"]["displayed_draft_revision"]
+        .as_u64()
+        .ok_or("Resumed motion did not display its draft revision")?;
+    ensure(
+        resumed_revision > first_draft_revision,
+        "Resumed motion did not advance the displayed draft revision",
+    )?;
+    ensure(
+        regions
+            .iter()
+            .any(|event| event["detail"]["draft_revision"].as_u64() == Some(first_draft_revision)),
+        "No region was displayed for the initial draft",
+    )?;
+    ensure(
+        regions
+            .iter()
+            .any(|event| event["detail"]["draft_revision"].as_u64() == Some(resumed_revision)),
+        "No region was displayed for resumed motion",
+    )?;
+    ensure(
+        draft["state"]["histogram"]["stale"] == true,
+        "The first viewport-only draft incorrectly made the full-image histogram current",
+    )?;
+    for (revision, label) in [
+        (first_draft_revision, "first draft"),
+        (resumed_revision, "resumed draft"),
+    ] {
+        ensure(
+            regions.iter().any(|event| {
+                event["detail"]["draft_revision"].as_u64() == Some(revision)
+                    && event["detail"]["quality"] == "interactive"
+            }),
+            format!("{label} produced no interactive viewport frame"),
+        )?;
+        ensure(
+            regions.iter().any(|event| {
+                event["detail"]["draft_revision"].as_u64() == Some(revision)
+                    && event["detail"]["quality"] == "exact"
+            }),
+            format!("{label} never refined to an exact viewport frame while held"),
+        )?;
+    }
+    ensure(
+        settled["state"]["histogram"]["stale"] == false
+            && settled["state"]["histogram"]["identity"]["draft_revision"].is_null(),
+        "Release did not settle an exact full-image histogram",
+    )?;
+    let histogram = &settled["state"]["histogram"];
+    let dimensions = &settled["state"]["preview_dimensions"];
+    ensure(
+        histogram["identity"]["width"] == dimensions[0]
+            && histogram["identity"]["height"] == dimensions[1],
+        "The settled histogram does not describe the full rendered stage",
+    )?;
+    if !histogram["overlay"].is_null() {
+        ensure(
+            histogram["overlay"]["approximate"] == false,
+            "The settled clipping overlay remained approximate",
+        )?;
+    }
+    let before_pan_writes = gpu_count(settled, "photo_writes")?;
+    let after_pan_writes = gpu_count(final_pan, "photo_writes")?;
+    ensure(
+        after_pan_writes == before_pan_writes,
+        "A settled pan uploaded photograph pixels instead of reusing the full slot",
+    )?;
+    ensure(
+        gpu_count(settled, "full_resident_bytes")? > 0,
+        "The settled full texture is not resident",
+    )?;
+    ensure(
+        final_pan["state"]["surface"]["gpu"]["drawn_full_version"]
+            == settled["state"]["surface"]["gpu"]["drawn_full_version"],
+        "The settled pan did not draw the same full texture version",
+    )?;
+    ensure(
+        final_pan["state"]["surface"]["gpu"]["drawn_content"]
+            == settled["state"]["surface"]["gpu"]["drawn_content"],
+        "The settled pan drew a different content identity",
+    )?;
+    let first_input_ms = events
+        .iter()
+        .find(|e| e["event"] == "slider_draft_set")
+        .map(elapsed)
+        .transpose()?
+        .ok_or("The viewport run sent no draft input")?;
+    let first_region_ms = regions
+        .iter()
+        .find(|e| e["detail"]["draft_revision"].as_u64() == Some(first_draft_revision))
+        .map(|e| elapsed(e))
+        .transpose()?
+        .ok_or("The first draft has no region event")?;
+    let result = json!({
+        "status":"passed", "mode":"viewport", "zoom_percent":options.zoom,
+        "source":source, "source_sha256":source_hash, "binary_sha256":hash(bin)?,
+        "lockfile_sha256":hash(&root.join("Cargo.lock"))?, "platform":host(root)?,
+        "profile":"release", "launch_mode":launch::MODE,
+        "backend":settled["state"]["backend"],
+        "control_action":field.action, "control_parameter":field.parameter,
+        "crop_angle_deg":options.crop, "full_basic_layer":options.basic, "mask":options.mask,
+        "input_to_first_region_adoption_ms":first_region_ms-first_input_ms,
+        "regions":region_summary,
+        "frames":{
+            "draft":draft["state"], "first_pan":first_pan["state"],
+            "first_pause":first_pause["state"], "resumed":resumed["state"],
+            "second_pause":second_pause["state"], "settled":settled["state"],
+            "settled_pan":final_pan["state"],
+        },
+        "gpu":{
+            "blank_photo_draws":gpu_count(final_pan,"blank_photo_draws")?,
+            "stale_photo_draws":stale_draws,
+            "photo_writes_before_settled_pan":before_pan_writes,
+            "photo_writes_after_settled_pan":after_pan_writes,
+            "upload_bytes_before_settled_pan":gpu_count(settled,"upload_bytes")?,
+            "upload_bytes_after_settled_pan":gpu_count(final_pan,"upload_bytes")?,
+            "peak_sampled_rss_mib":usage.peak_rss_mib,
+            "note":"photo_writes and upload_bytes are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
+        },
+        "scope":"A held drafted slider at percentage zoom, two pans, quiet refinement, resumed motion, release, exact full-image report and a settled pan. preview_displayed is frame adoption, not confirmed GPU upload or display scanout. Captured surface.gpu counters describe actual draw encoding and texture writes.",
+    });
+    write_json(&out.join("latency.json"), &result)?;
+    ensure(hash(&source)? == source_hash, "The source changed")?;
+    println!("PASS editor latency (viewport): {}", out.display());
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -1222,6 +1606,19 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         cfg!(target_os = "macos"),
         "Editor latency measurement currently reads native macOS ps only",
     )?;
+    if let Some(zoom) = options.zoom {
+        ensure(
+            zoom.is_finite() && (10.0..=1600.0).contains(&zoom),
+            "--zoom is a percentage from 10 to 1600",
+        )?;
+    }
+    ensure(
+        !options.moving_pan || (options.mode == Mode::Burst && options.zoom.is_some()),
+        "--moving-pan requires --mode burst and --zoom PERCENT",
+    )?;
+    if options.mode == Mode::Viewport {
+        return run_viewport(root, out, bin, &options);
+    }
     if options.mode == Mode::Burst {
         return run_burst(root, out, bin, &options);
     }
@@ -1309,6 +1706,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     let last = frames.last().ok_or("No frame was captured")?;
+
     if options.control == Control::Curve {
         let setup_index = usize::from(options.crop.is_some()) + curve_view_steps().len();
         let setup = frames
@@ -1492,7 +1890,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "effect_scope":match (options.control, field.action.as_str(), field.parameter.as_str()) {
             (Control::Curve, ..) => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
-            (Control::Slider, "set-raw-temperature" | "set-raw-tint", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
+            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":if options.control == Control::Curve {
@@ -1555,6 +1953,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     });
     // Beside the rest rather than inside it: the report is already as deep as json! expands.
     result["approximate_white_balance_frames"] = approximate;
+    result["zoom_percent"] = json!(options.zoom);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
@@ -1573,6 +1972,8 @@ struct BurstAnalysis {
     /// independent of what the core's own gesture round trip did with it. A coalesced value the
     /// core never turned into a `draft.set` still counts here, as scripted.
     sent_values: usize,
+    /// Pan commands sent on the same paced ticks as slider values.
+    pan_moves: usize,
     /// `preview_displayed` events from the first `slider_step_value` onward, drafted and committed
     /// alike: the count `presented_fps` divides by the same window's seconds. A frame presented
     /// before the gesture started (the initial open) is not one of these.
@@ -1594,8 +1995,8 @@ struct BurstAnalysis {
     preview_jobs: usize,
     commits: usize,
     adopted: usize,
-    /// `preview_exact_cancelled` events. The current binary emits none; a later phase's cancellable
-    /// exact phase is what this will start counting.
+    /// `preview_exact_cancelled` events from full-resolution phases a newer request superseded.
+    /// Zero is a valid result when this workload leaves no exact phase in flight.
     cancelled_exact: usize,
     /// Generations whose preview job never reached a `preview_displayed`.
     superseded: Vec<u64>,
@@ -1708,6 +2109,7 @@ fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis>
 
     Ok(BurstAnalysis {
         sent_values: value_events.len(),
+        pan_moves: counted("slider_step_pan"),
         presented_frames,
         presented_fps,
         staleness_ms,
@@ -1787,12 +2189,56 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         format!("The burst step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    let mut burst_stale_draws = None;
+    if options.moving_pan {
+        for (index, frame) in frames.iter().enumerate() {
+            let blanks = gpu_count(frame, "blank_photo_draws")?;
+            burst_stale_draws = Some(gpu_count(frame, "stale_photo_draws")?);
+            ensure(
+                blanks == 0,
+                format!("Moving-pan burst frame {index} followed {blanks} blank photo draws"),
+            )?;
+        }
+    }
     let last = frames.last().ok_or("No frame was captured")?;
+    let before_burst = frames
+        .get(frames.len().saturating_sub(2))
+        .ok_or("No frame was captured before the burst")?;
+    let gpu_delta = |field: &str| {
+        before_burst["state"]["surface"]["gpu"][field]
+            .as_u64()
+            .zip(last["state"]["surface"]["gpu"][field].as_u64())
+            .map(|(before, after)| after.saturating_sub(before))
+    };
 
     let analysis = analyze_burst(&events, &field)?;
+    if options.moving_pan {
+        ensure(
+            analysis.pan_moves == values.len(),
+            "A zoomed burst did not pan on every paced slider tick",
+        )?;
+    }
     let approximate = approximate_frames(&events);
+    let region_events: Vec<Value> = events
+        .iter()
+        .filter(|event| {
+            event["event"] == "preview_displayed" && event["detail"]["path"] == "region"
+        })
+        .map(|event| {
+            json!({
+                "elapsed_ms":event["elapsed_ms"],
+                "generation":event["detail"]["generation"],
+                "draft_revision":event["detail"]["draft_revision"],
+                "entry_id":event["detail"]["entry_id"],
+                "source_fingerprint":event["detail"]["source_fingerprint"],
+                "region":event["detail"]["region"],
+                "quality":event["detail"]["quality"],
+                "viewport_declined":event["detail"]["viewport_declined"],
+            })
+        })
+        .collect();
 
-    let result = json!({
+    let mut result = json!({
         "status":"passed",
         "launch_mode":launch::MODE,
         "platform":host(root)?,
@@ -1839,7 +2285,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "frame_gap_ms":distribution(analysis.frame_gap_ms),
             "max_gap_ms":analysis.max_gap_ms,
             "cancelled_exact":analysis.cancelled_exact,
-            "cancelled_exact_note":(analysis.cancelled_exact == 0).then_some("the current binary emits no preview_exact_cancelled events; a later phase adds the cancellable exact render this would count"),
+            "cancelled_exact_note":(analysis.cancelled_exact == 0).then_some("No exact phase was cancelled in this run; cancellation depends on timing and workload"),
             "proxy":analysis.proxy,
         },
         "resources":{
@@ -1857,6 +2303,21 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "Source SHA-256 is unchanged"
         ],
     });
+    result["zoom_percent"] = json!(options.zoom);
+    result["moving_pan"] = json!(options.moving_pan);
+    result["burst"]["pan_moves"] = json!(analysis.pan_moves);
+    result["burst"]["draw_encoded_frames"] = json!(gpu_delta("drawn_frames"));
+    if options.moving_pan {
+        result["burst"]["blank_photo_draws"] = json!(gpu_count(last, "blank_photo_draws")?);
+        result["burst"]["stale_photo_draws"] = json!(burst_stale_draws);
+    }
+    result["burst"]["photo_texture_writes"] = json!(gpu_delta("photo_writes"));
+    result["burst"]["photo_upload_bytes"] = json!(gpu_delta("upload_bytes"));
+    result["burst"]["regions"] = json!(region_events);
+    result["burst"]["surface_gpu"] = last["state"]["surface"]["gpu"].clone();
+    result["burst"]["adoption_note"] = json!(
+        "presented_frames/presented_fps count preview_displayed adoption events. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
+    );
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
@@ -2013,6 +2474,8 @@ mod tests {
                         idle: false,
                         basic,
                         mask,
+                        zoom: None,
+                        moving_pan: false,
                     };
                     let tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                     for (control, name, field) in [
@@ -2059,6 +2522,25 @@ mod tests {
     /// placeholder for the curve control, which ignores its `field` argument entirely.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
+    }
+
+    #[test]
+    fn input_latency_uses_first_region_of_a_refined_generation() {
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,"detail":{"fields":{"exposure":0.5}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":13.0,"detail":{
+                "value":0.5,"generation":7,"draft_revision":2
+            }}),
+            json!({"event":"preview_displayed","elapsed_ms":28.0,"detail":{
+                "generation":7,"draft_revision":2,"path":"region","quality":"interactive"
+            }}),
+            json!({"event":"preview_displayed","elapsed_ms":60.0,"detail":{
+                "generation":7,"draft_revision":2,"path":"region","quality":"exact"
+            }}),
+        ];
+        let paired = inputs(&events, Control::Slider, &unused_field()).unwrap();
+        assert_eq!(paired.len(), 1);
+        assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 18.0);
     }
 
     #[test]
@@ -2178,7 +2660,7 @@ mod tests {
         assert_eq!(analysis.adopted, 1);
         assert_eq!(
             analysis.cancelled_exact, 0,
-            "the current binary emits no preview_exact_cancelled events"
+            "the synthetic run contains no exact cancellation event"
         );
         assert_eq!(
             analysis.superseded,
@@ -2280,18 +2762,16 @@ mod tests {
         assert_eq!(burst_interval_ms(), 8);
     }
 
-    /// Every field's burst is the same triangle, scaled about its own origin: exposure's is the
-    /// historical ±2 EV one value for value, and Custom temperature's and tint's stay inside their
-    /// declared ranges on their own steps, peaking at 40% of the smaller half of the range.
+    /// Every field's burst is the same triangle, scaled about its own origin: exposure's — Basic's,
+    /// on a JPEG and a RAW photo alike — is the historical ±2 EV one value for value, and the RAW
+    /// temperature's and tint's stay inside their declared ranges on their own steps, peaking at
+    /// 40% of the smaller half of the range.
     #[test]
     fn a_fields_burst_is_the_triangle_scaled_to_its_own_range() {
         assert_eq!(FieldTarget::basic_exposure().burst_values(), burst_values());
-        let raw_exposure =
-            resolve_field(Control::Slider, Some("set-raw-exposure"), Some("ev")).unwrap();
-        assert_eq!(raw_exposure.burst_values(), burst_values());
         for (action, parameter, peak) in [
-            ("set-raw-temperature", "kelvin", 1800.0),
-            ("set-raw-tint", "tint", 40.0),
+            ("set-raw", "temperature", 1800.0),
+            ("set-raw", "tint", 40.0),
         ] {
             let field = resolve_field(Control::Slider, Some(action), Some(parameter)).unwrap();
             let values = field.burst_values();
@@ -2410,17 +2890,10 @@ mod tests {
         assert!(resolve_field(Control::Slider, Some("set-mixer"), Some("hue")).is_err());
         assert!(resolve_field(Control::Slider, Some("reset-mixer"), Some("red-hue")).is_err());
 
-        // A RAW slider's action declares that one parameter alone, so its slider drafts too.
-        let exposure =
-            resolve_field(Control::Slider, Some("set-raw-exposure"), Some("ev")).unwrap();
-        assert_eq!(
-            (exposure.min, exposure.max, exposure.origin),
-            (-5.0, 5.0, 0.0)
-        );
-        // Custom temperature's range holds no zero, so its gesture starts at the declared 6504 K
-        // and every value stays inside 2000..12000 on its 10 K step.
-        let kelvin =
-            resolve_field(Control::Slider, Some("set-raw-temperature"), Some("kelvin")).unwrap();
+        // The RAW white balance is a field patch too. Its temperature's range holds no zero, so
+        // its gesture starts at the declared 6504 K and every value stays inside 2000..12000 on
+        // its 10 K step.
+        let kelvin = resolve_field(Control::Slider, Some("set-raw"), Some("temperature")).unwrap();
         assert_eq!(
             (kelvin.min, kelvin.max, kelvin.step),
             (2000.0, 12000.0, 10.0)
@@ -2444,7 +2917,7 @@ mod tests {
     /// the reason rather than timed.
     #[test]
     fn an_unpreviewed_draft_is_an_input_without_a_frame() {
-        let field = resolve_field(Control::Slider, Some("set-raw-tint"), Some("tint")).unwrap();
+        let field = resolve_field(Control::Slider, Some("set-raw"), Some("tint")).unwrap();
         let events = vec![
             json!({"event":"slider_draft_set","elapsed_ms":1.0,"detail":{"fields":{"tint":3.0}}}),
             json!({"event":"slider_draft_unpreviewed","elapsed_ms":2.0,"detail":{"value":3.0,"draft_revision":1,"error":"preparation-required: source-job-1"}}),

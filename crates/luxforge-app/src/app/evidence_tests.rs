@@ -6,6 +6,57 @@ use super::{
 };
 use luxforge_core::{CropStage, Zoom};
 
+/// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame.
+#[test]
+fn empty_editor_capture_needs_no_photo_texture() {
+    let (mut editor, catalog) = boot();
+    editor.state = None;
+    editor.session.workspace.clip_highlights = true;
+    assert!(editor.capture_photo_ready());
+    assert!(editor.capture_clipping_ready());
+    finish(editor, catalog);
+}
+
+#[test]
+fn clipping_readiness_applies_only_to_the_ordinary_photo() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+    editor.session.workspace.clip_highlights = true;
+    assert!(
+        !editor.capture_clipping_ready(),
+        "the ordinary overlay is pending"
+    );
+    crate::app::testing::hold_crop(
+        &mut editor,
+        Some(crate::crop_draft::CropDraft::neutral(
+            CropStage {
+                width: 4000,
+                height: 3000,
+                angle: 0.0,
+            },
+            0,
+        )),
+        None,
+    );
+    assert!(
+        editor.capture_clipping_ready(),
+        "the crop stage has its own surface"
+    );
+    editor.gesture = None;
+    editor.developer = true;
+    editor.gallery = Some(0);
+    assert!(
+        editor.capture_clipping_ready(),
+        "the gallery has its own surface"
+    );
+    editor.gallery = None;
+    editor.render_error = Some((ErrorKind::Render, "failed".into()));
+    assert!(
+        editor.capture_clipping_ready(),
+        "an error is captured explicitly"
+    );
+    finish(editor, catalog);
+}
+
 #[test]
 fn failed_discovery_is_reported_and_never_blocks_evidence() {
     let (mut editor, catalog) = boot();
@@ -176,6 +227,65 @@ fn evidence_retries_a_readback_superseded_by_new_pixels() {
             .iter()
             .any(|event| event["event"] == "frame_captured"),
         "no capture event was published"
+    );
+    finish(editor, catalog);
+}
+
+/// An overlay may change while a screenshot is in flight without changing the photograph. Its
+/// recorded state must not be published beside pixels from a newer clipping frame.
+#[test]
+fn evidence_retries_a_readback_superseded_only_by_clipping() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+    editor.presenter.show_photo(&luxforge_core::Raster {
+        width: 1,
+        height: 1,
+        rgba: vec![0, 0, 0, 255].into(),
+        source_fingerprint: "f".into(),
+        snapshot_id: luxforge_core::SnapshotId::new(),
+    });
+    let photo_version = editor.presenter.photo_version();
+    editor.session.workspace.clip_highlights = true;
+    let generation = editor.presented_generation;
+    editor.overlay_request = Some(overlay::OverlayRequest {
+        generation,
+        cells_w: 1,
+        cells_h: 1,
+        shadows: false,
+        highlights: true,
+        approximate: false,
+        region: None,
+    });
+    assert!(
+        editor
+            .presenter
+            .show_clipping(generation, vec![255; 4], (1, 1))
+    );
+    let first_clipping = editor.overlay_surface().unwrap().version();
+    assert!(
+        editor
+            .presenter
+            .show_clipping(generation, vec![0; 4], (1, 1))
+    );
+    assert_eq!(editor.presenter.photo_version(), photo_version);
+    assert_ne!(editor.overlay_surface().unwrap().version(), first_clipping);
+
+    let evidence = editor.evidence.as_mut().expect("evidence run");
+    evidence.sync.state = Some((json!({"old":"clipping"}), 1, photo_version));
+    evidence.sync.clipping_version = Some(first_clipping);
+    evidence.capture_pending = false;
+    evidence.saving = true;
+    let shot = iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
+    let _ = editor.dispatch(Message::Evidence(EvidenceMessage::Captured(shot)));
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(
+        evidence.capture_pending && !evidence.saving,
+        "a new draw is requested"
+    );
+    assert!(evidence.sync.state.is_none());
+    assert!(evidence.sync.clipping_version.is_none());
+    assert!(
+        evidence.frames.is_empty(),
+        "no mismatched frame was published"
     );
     finish(editor, catalog);
 }

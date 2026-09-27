@@ -909,6 +909,41 @@ fn capture_reads_the_declared_defaults_then_the_stored_values_of_the_named_entry
     std::fs::remove_file(path).expect("the catalog is removed");
 }
 
+/// The create form names Basic's White balance group the same way on every photo, and capture
+/// resolves it for the photo's kind: on a JPEG it is Basic's relative pair, since no variant
+/// applies there. The RAW development's own action does not apply to a JPEG and is refused by
+/// name. (On a RAW photo the same request captures `set-raw`, which the RAW fixture test proves.)
+#[test]
+fn capture_resolves_the_white_balance_group_for_the_photos_kind() {
+    let (mut service, asset, path) = opened("capture-white-balance", None);
+    service
+        .apply_action(
+            &asset,
+            mutation(0, "wb"),
+            "set-basic",
+            json!({"temperature": 12, "tint": -4, "exposure": 0.25}),
+        )
+        .expect("a Basic edit");
+    let entry = current(&service, &asset);
+    assert_eq!(
+        capture(
+            &service,
+            &asset,
+            &entry,
+            json!({"set-basic": ["temperature", "tint"]})
+        )
+        .expect("the White balance group"),
+        json!({"set-basic": {"temperature": 12.0, "tint": -4.0}})
+    );
+    assert_error(
+        capture(&service, &asset, &entry, json!({"set-raw": true})),
+        ErrorKind::Validation,
+        "RAW does not apply to a JPEG photo",
+    );
+    drop(service);
+    std::fs::remove_file(path).expect("the catalog is removed");
+}
+
 #[test]
 fn capture_refuses_unknown_non_patch_and_unavailable_actions_and_bad_field_lists() {
     let (service, asset, path) = opened("capture-refusals", Some(without_presence(true)));
@@ -1119,6 +1154,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             maskable: false,
             artifacts: false,
             single: false,
+            sources: Vec::new(),
         }],
         actions: vec![ActionDescriptor {
             id: "set-sketch".into(),

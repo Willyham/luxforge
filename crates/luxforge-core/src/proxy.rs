@@ -15,7 +15,7 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Error, LinearImage, PreviewSource, Raster, SourceImage,
+    Cancel, Error, LinearImage, PreviewSource, Raster, SourceImage,
     colour::srgb::{decode_pixel, quantize_channel},
     render::{frame_mut, zeroed_frame},
 };
@@ -30,8 +30,10 @@ const PARALLEL_PROXY_PIXELS: u64 = 1_000_000;
 /// [`Raster::expected_len`] applies to a rendered frame.
 const FRAME_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Physical pixels of the photo area the display can show. Clamped, never refused: a caller reports
-/// the window it has, and the core decides what it is willing to build.
+/// Physical pixels of the photo area the display can show. Fit proxies clamp these bounds before
+/// planning. A viewport's virtual half-resolution stage instead records its full half dimensions
+/// here for cache identity and admits only the requested output/source windows, so a 60 MP image
+/// does not silently scale below half because its uncut virtual stage exceeds the Fit area cap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyBounds {
@@ -94,6 +96,8 @@ pub struct ProxyApproximation {
     /// ([masking](../../docs/design/masking.md#point-queries-and-proxies), proposal P5). Without
     /// that rule a hard edge would alias differently on every frame of a drag.
     pub mask: bool,
+    /// A moving viewport uses a stage with about half the full output's pixels on each side.
+    pub reduced_detail: bool,
 }
 
 impl ProxyApproximation {
@@ -101,26 +105,27 @@ impl ProxyApproximation {
     /// the exact recipe at proxy size, byte for byte with the exact recipe over the exact
     /// downscale of the source.
     pub fn is_approximate(self) -> bool {
-        self.spatial || self.mask
+        self.spatial || self.mask || self.reduced_detail
     }
 
     /// Why, in one sentence, or `None` when the frame is not approximate. Both reasons are named
     /// when both are present.
-    pub fn reason(self) -> Option<&'static str> {
+    pub fn reason(self) -> Option<String> {
         const SPATIAL: &str =
             "a spatial-stage layer's neighbourhoods scale with the stage it is rendered at";
         const MASK: &str = "a mask draws a feature narrower than two proxy pixels, so its field is \
              evaluated with a 2x2 supersample per pixel";
-        match (self.spatial, self.mask) {
-            (false, false) => None,
-            (true, false) => Some(SPATIAL),
-            (false, true) => Some(MASK),
-            (true, true) => Some(
-                "a spatial-stage layer's neighbourhoods scale with the stage it is rendered at, \
-                 and a mask draws a feature narrower than two proxy pixels, so its field is \
-                 evaluated with a 2x2 supersample per pixel",
-            ),
+        let mut reasons = Vec::new();
+        if self.spatial {
+            reasons.push(SPATIAL);
         }
+        if self.mask {
+            reasons.push(MASK);
+        }
+        if self.reduced_detail {
+            reasons.push("the viewport uses reduced detail during interaction");
+        }
+        (!reasons.is_empty()).then(|| reasons.join("; "))
     }
 }
 
@@ -258,6 +263,14 @@ impl ProxyCache {
             .map(|(_, source)| source)
     }
 
+    /// Release an old source before a new pan/scale builds its replacement. A matching entry stays
+    /// resident for reuse; an unrelated entry never sits beside the newly built source at peak.
+    pub fn evict_unless(&mut self, key: &ProxyKey) {
+        if self.entry.as_ref().is_some_and(|(held, _)| held != key) {
+            self.entry = None;
+        }
+    }
+
     /// Hold this source under this key, replacing whatever was held before.
     pub fn insert(&mut self, key: ProxyKey, source: PreviewSource) {
         self.entry = Some((key, source));
@@ -309,12 +322,23 @@ impl PreviewSource {
     /// This is frame work: it runs on the caller's thread and puts its two passes on the shared
     /// Rayon pool above the one-megapixel threshold. Never call it on the catalog owner thread.
     pub fn proxy(&self, plan: ProxyPlan) -> Result<PreviewSource, Error> {
+        self.proxy_cancellable(plan, &Cancel::never())
+    }
+
+    /// The same bounded proxy build, with a checkpoint in every horizontal and vertical row.
+    /// Interactive viewport jobs pass their `abandoned` token here, including cache misses.
+    pub fn proxy_cancellable(
+        &self,
+        plan: ProxyPlan,
+        cancel: &Cancel,
+    ) -> Result<PreviewSource, Error> {
+        cancel.check()?;
         let (source_width, source_height) = self.dimensions();
         check_plan(plan, source_width, source_height)?;
         match self {
-            Self::Jpeg(image) => Ok(PreviewSource::Jpeg(downscale_jpeg(image, plan)?)),
+            Self::Jpeg(image) => Ok(PreviewSource::Jpeg(downscale_jpeg(image, plan, cancel)?)),
             Self::Raw { image, settings } => Ok(PreviewSource::Raw {
-                image: downscale_linear(image, plan)?,
+                image: downscale_linear(image, plan, cancel)?,
                 settings: *settings,
             }),
         }
@@ -465,6 +489,7 @@ impl BoxDownscale {
         source_width: u32,
         source_height: u32,
         plan: ProxyPlan,
+        cancel: &Cancel,
         row: impl Fn(u32) -> Read + Sync,
     ) -> Result<Self, Error> {
         let window = window_of(plan);
@@ -485,7 +510,8 @@ impl BoxDownscale {
         let parallel = u64::from(read_columns) * u64::from(source_rows) >= PARALLEL_PROXY_PIXELS;
         let stride = window.width as usize * 3;
         let mut rows = vec![0f32; intermediate_len];
-        let pass = |(y, out): (usize, &mut [f32])| {
+        let pass = |(y, out): (usize, &mut [f32])| -> Result<(), Error> {
+            cancel.check()?;
             let read = row(first_row + y as u32);
             for column in 0..window.width as usize {
                 let index = window.x as usize + column;
@@ -501,11 +527,16 @@ impl BoxDownscale {
                     out[column * 3 + channel] = *value as f32;
                 }
             }
+            Ok(())
         };
         if parallel {
-            rows.par_chunks_exact_mut(stride).enumerate().for_each(pass);
+            rows.par_chunks_exact_mut(stride)
+                .enumerate()
+                .try_for_each(pass)?;
         } else {
-            rows.chunks_exact_mut(stride).enumerate().for_each(pass);
+            rows.chunks_exact_mut(stride)
+                .enumerate()
+                .try_for_each(pass)?;
         }
         Ok(Self {
             vertical,
@@ -542,7 +573,11 @@ impl BoxDownscale {
 /// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
 /// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is
 /// written in place and returned as the proxy's pixels, with no copy.
-fn downscale_jpeg(source: &SourceImage, plan: ProxyPlan) -> Result<SourceImage, Error> {
+fn downscale_jpeg(
+    source: &SourceImage,
+    plan: ProxyPlan,
+    cancel: &Cancel,
+) -> Result<SourceImage, Error> {
     let (width, height) = plan.source_dimensions();
     let source_len = Raster::expected_len(source.width, source.height)?;
     if source.rgba.len() != source_len {
@@ -552,7 +587,7 @@ fn downscale_jpeg(source: &SourceImage, plan: ProxyPlan) -> Result<SourceImage, 
     }
     let output_len = Raster::expected_len(width, height)?;
     let source_stride = source.width as usize * 4;
-    let downscale = BoxDownscale::new(source.width, source.height, plan, |y| {
+    let downscale = BoxDownscale::new(source.width, source.height, plan, cancel, |y| {
         let start = y as usize * source_stride;
         let bytes = &source.rgba[start..start + source_stride];
         move |x| {
@@ -563,7 +598,8 @@ fn downscale_jpeg(source: &SourceImage, plan: ProxyPlan) -> Result<SourceImage, 
     let mut frame = zeroed_frame(output_len);
     {
         let output = frame_mut(&mut frame);
-        let pass = |(y, row): (usize, &mut [u8])| {
+        let pass = |(y, row): (usize, &mut [u8])| -> Result<(), Error> {
+            cancel.check()?;
             downscale.row(y, |x, sum| {
                 let pixel = &mut row[x * 4..x * 4 + 4];
                 for (channel, value) in sum.iter().enumerate() {
@@ -571,18 +607,19 @@ fn downscale_jpeg(source: &SourceImage, plan: ProxyPlan) -> Result<SourceImage, 
                 }
                 pixel[3] = 255;
             });
+            Ok(())
         };
         let output_stride = width as usize * 4;
         if downscale.parallel {
             output
                 .par_chunks_exact_mut(output_stride)
                 .enumerate()
-                .for_each(pass);
+                .try_for_each(pass)?;
         } else {
             output
                 .chunks_exact_mut(output_stride)
                 .enumerate()
-                .for_each(pass);
+                .try_for_each(pass)?;
         }
     }
 
@@ -607,14 +644,18 @@ type PlanarRow<'a> = (usize, ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]));
 /// crop and orientation of the input view are resolved by the averaging itself, so the proxy is
 /// upright content with nothing left to map. Values stay unbounded linear f32, so no clipping or
 /// transfer function is introduced anywhere on this path.
-fn downscale_linear(image: &LinearImage, plan: ProxyPlan) -> Result<LinearImage, Error> {
+fn downscale_linear(
+    image: &LinearImage,
+    plan: ProxyPlan,
+    cancel: &Cancel,
+) -> Result<LinearImage, Error> {
     let (width, height) = plan.source_dimensions();
     let reader = image.reader();
     let (source_width, source_height) = reader.dimensions();
     let plane_values = float_values(width, height, "proxy linear source")?;
     let plane_len = plane_values / 3;
     // Inside the view by construction: the coverage never leaves the source.
-    let downscale = BoxDownscale::new(source_width, source_height, plan, |y| {
+    let downscale = BoxDownscale::new(source_width, source_height, plan, cancel, |y| {
         let reader = &reader;
         move |x| reader.pixel(x, y).unwrap_or([0.0; 3])
     })?;
@@ -622,12 +663,14 @@ fn downscale_linear(image: &LinearImage, plan: ProxyPlan) -> Result<LinearImage,
     {
         let (red, rest) = planes.split_at_mut(plane_len);
         let (green, blue) = rest.split_at_mut(plane_len);
-        let pass = |(y, ((red, green), blue)): PlanarRow<'_>| {
+        let pass = |(y, ((red, green), blue)): PlanarRow<'_>| -> Result<(), Error> {
+            cancel.check()?;
             downscale.row(y, |x, sum| {
                 red[x] = sum[0] as f32;
                 green[x] = sum[1] as f32;
                 blue[x] = sum[2] as f32;
             });
+            Ok(())
         };
         let row = width as usize;
         if downscale.parallel {
@@ -635,13 +678,13 @@ fn downscale_linear(image: &LinearImage, plan: ProxyPlan) -> Result<LinearImage,
                 .zip(green.par_chunks_exact_mut(row))
                 .zip(blue.par_chunks_exact_mut(row))
                 .enumerate()
-                .for_each(pass);
+                .try_for_each(pass)?;
         } else {
             red.chunks_exact_mut(row)
                 .zip(green.chunks_exact_mut(row))
                 .zip(blue.chunks_exact_mut(row))
                 .enumerate()
-                .for_each(pass);
+                .try_for_each(pass)?;
         }
     }
 
@@ -1097,7 +1140,6 @@ mod tests {
         let approximate = PreviewSource::Raw {
             image: raw_of(&downscaled).clone(),
             settings: LinearSettings {
-                exposure_ev: 0.0,
                 white_balance: Some(crate::WhiteBalanceApproximation::from_matrix(matrix).unwrap()),
             },
         };

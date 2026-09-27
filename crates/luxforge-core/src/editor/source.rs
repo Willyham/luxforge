@@ -120,8 +120,12 @@ pub(crate) struct FilePreparation {
 }
 
 impl FilePreparation {
-    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
-        validate_source_recipe(asset, recipe)?;
+    fn for_recipe(
+        registry: &crate::ModuleRegistry,
+        asset: &AssetRecord,
+        recipe: &crate::Recipe,
+    ) -> Result<Self, Error> {
+        validate_source_recipe(registry, asset, recipe)?;
         let raw = match &asset.source {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
@@ -192,7 +196,7 @@ impl EditorService {
         let mut file = File::open(&canonical).map_err(file_access)?;
         let handle_before = file.metadata().map_err(file_access)?;
         let path_before = canonical.metadata().map_err(file_access)?;
-        let signature = source_signature(&canonical, &handle_before);
+        let signature = source_signature_for_handle(&canonical, &file, &handle_before);
         if signature != source_signature(&canonical, &path_before) {
             return Err(Error::conflict("source changed before preparation"));
         }
@@ -229,7 +233,7 @@ impl EditorService {
         };
         let handle_after = file.metadata().map_err(file_access)?;
         let path_after = canonical.metadata().map_err(file_access)?;
-        if signature != source_signature(&canonical, &handle_after)
+        if signature != source_signature_for_handle(&canonical, &file, &handle_after)
             || signature != source_signature(&canonical, &path_after)
         {
             return Err(Error::conflict("source changed during preparation"));
@@ -262,7 +266,7 @@ impl EditorService {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
-        FilePreparation::for_recipe(&state.asset, &entry.snapshot.recipe)
+        FilePreparation::for_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
@@ -297,7 +301,7 @@ impl EditorService {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
         let cached = self.cached_state(asset_id)?.is_some();
         let needs_development = match development_gains(&state.asset, &entry.snapshot.recipe)? {
             Some(gains) => cached && self.raw_development(asset_id, gains)?.is_some(),
@@ -342,7 +346,7 @@ impl EditorService {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
         self.preparation_needs(Evaluated::exactly(
             &state.asset,
             &entry.id,
@@ -641,30 +645,85 @@ impl EditorService {
     }
 }
 
+/// Admit `recipe` as a stack of `asset`'s source kind.
+///
+/// Every layer's effect must list the asset's kind among its declared `sources`
+/// ([`crate::EffectDescriptor::applies_to`]); a layer of an effect no provider declares is left to
+/// the registry's own refusal, which reports it as an unavailable edit. A RAW stack also keeps the
+/// RAW source's own invariants, which are not a matter of declaration: exactly one development
+/// layer at index zero, whose calibration equals the original's. `O(layers)`, no allocation.
 pub(super) fn validate_source_recipe(
+    registry: &crate::ModuleRegistry,
     asset: &AssetRecord,
     recipe: &crate::Recipe,
 ) -> Result<(), Error> {
-    match asset.source {
-        SourceKind::Jpeg => {
-            if recipe
-                .layers
-                .iter()
-                .any(|layer| layer.effect_id == crate::RAW_EFFECT)
-            {
-                return Err(Error::incompatible(
-                    "JPEG recipe contains a RAW source layer",
-                ));
-            }
+    let kind = asset.source.tag();
+    for layer in &recipe.layers {
+        if let Some((module, effect)) = registry.effect(&layer.effect_id)
+            && !effect.applies_to(kind)
+        {
+            return Err(Error::incompatible(crate::modules::not_applicable(
+                &module.descriptor().title,
+                kind,
+            )));
         }
-        SourceKind::Raw { ref metadata } => {
-            let payload = raw_payload(recipe)?;
-            if payload.as_shot_gains != metadata.as_shot_gains
-                || payload.cam_xyz != metadata.cam_xyz
+    }
+    reject_superseded_fields(registry, kind, recipe)?;
+    if let SourceKind::Raw { ref metadata } = asset.source {
+        let payload = raw_payload(recipe)?;
+        if payload.as_shot_gains != metadata.as_shot_gains || payload.cam_xyz != metadata.cam_xyz {
+            return Err(Error::incompatible(
+                "RAW source layer calibration differs from original",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a global layer holding a field another module's control variant supersedes on a photo of
+/// `kind` ([`crate::ModuleRegistry::superseded`]): on a RAW photo the global white balance lives
+/// only in the source development, so a global Basic layer with a temperature or tint is data no
+/// commit could have written. A field holds a value when the module's own `values` for the layer
+/// differ from the parameter's declared default; a masked layer is a mask's target, where nothing
+/// is superseded. `O(controls + layers × fields)`; nothing is parsed when no variant names `kind`.
+fn reject_superseded_fields(
+    registry: &crate::ModuleRegistry,
+    kind: crate::SourceTag,
+    recipe: &crate::Recipe,
+) -> Result<(), Error> {
+    let superseded: Vec<_> = registry
+        .superseded()
+        .into_iter()
+        .filter(|field| field.source == kind)
+        .collect();
+    if superseded.is_empty() {
+        return Ok(());
+    }
+    for layer in recipe.layers.iter().filter(|layer| layer.mask.is_none()) {
+        let Some((module, _)) = registry.effect(&layer.effect_id) else {
+            continue;
+        };
+        let descriptor = module.descriptor();
+        let mut values = None;
+        for field in &superseded {
+            let Some(parameter) = descriptor
+                .action(field.action)
+                .and_then(|action| action.parameter(field.parameter))
+            else {
+                continue;
+            };
+            let values = match &values {
+                Some(values) => values,
+                None => values.insert(module.values(
+                    &layer.effect_id,
+                    layer.effect_format,
+                    &layer.payload,
+                )?),
+            };
+            if let Some(value) = values.get(field.parameter)
+                && Some(value) != parameter.default.as_ref()
             {
-                return Err(Error::incompatible(
-                    "RAW source layer calibration differs from original",
-                ));
+                return Err(Error::incompatible(registry.superseded_refusal(field)));
             }
         }
     }
@@ -724,10 +783,7 @@ fn resolve_raw_settings(
     developed_present: bool,
     mode: RawSettingsMode,
 ) -> Result<crate::LinearSettings, Error> {
-    let gains = match payload.wb_mode {
-        crate::WhiteBalanceMode::AsShot => as_shot_gains,
-        crate::WhiteBalanceMode::Custom => payload.gains,
-    };
+    let gains = development_gains_of(payload, as_shot_gains);
     let required = |detail: String| Error::preparation_required(detail);
     if !developed_present {
         return Err(required("RAW white balance development required".into()));
@@ -754,10 +810,16 @@ fn resolve_raw_settings(
             }
         }
     };
-    Ok(crate::LinearSettings {
-        exposure_ev: payload.exposure_ev,
-        white_balance,
-    })
+    Ok(crate::LinearSettings { white_balance })
+}
+
+/// The sensor gains one RAW development develops at: the camera's as-shot gains under As shot and
+/// the payload's own otherwise. The one place the host resolves the white-balance mode.
+fn development_gains_of(payload: &crate::RawPayload, as_shot_gains: [f32; 3]) -> [f32; 3] {
+    match payload.wb_mode {
+        crate::WhiteBalanceMode::AsShot => as_shot_gains,
+        crate::WhiteBalanceMode::Custom => payload.gains,
+    }
 }
 
 /// One stack an evaluation reads, which is what a `preparation-required` refusal of that
@@ -805,10 +867,7 @@ fn development_gains(
 /// The sensor gains a RAW stack develops at, read from its source layer.
 fn raw_gains(metadata: &RawInterpretation, recipe: &crate::Recipe) -> Result<[f32; 3], Error> {
     let payload = raw_payload(recipe)?;
-    Ok(match payload.wb_mode {
-        crate::WhiteBalanceMode::AsShot => metadata.as_shot_gains,
-        crate::WhiteBalanceMode::Custom => payload.gains,
-    })
+    Ok(development_gains_of(&payload, metadata.as_shot_gains))
 }
 
 fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
@@ -817,12 +876,12 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
             "RAW recipe is missing its required source layer",
         ));
     };
-    if layer.effect_id != crate::RAW_EFFECT
+    if !crate::modules::is_raw_development(layer)
         || recipe
             .layers
             .iter()
             .skip(1)
-            .any(|layer| layer.effect_id == crate::RAW_EFFECT)
+            .any(crate::modules::is_raw_development)
     {
         return Err(Error::incompatible(
             "RAW recipe needs exactly one source layer at index zero",
@@ -831,6 +890,7 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
     crate::RawPayload::from_layer(layer)
 }
 
+#[cfg(not(windows))]
 pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
     SourceSignature {
         byte_len: metadata.len(),
@@ -840,6 +900,59 @@ pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignat
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
+    let file = File::open(path).ok();
+    windows_source_signature(path, metadata, file.as_ref())
+}
+
+#[cfg(windows)]
+fn windows_source_signature(
+    path: &Path,
+    metadata: &Metadata,
+    file: Option<&File>,
+) -> SourceSignature {
+    use std::os::windows::fs::MetadataExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // If the filesystem cannot provide change time, no two reads may compare equal: a cached
+    // decoded source must not survive a same-length, same-timestamp overwrite.
+    static MISSING_CHANGE_TIME: AtomicU64 = AtomicU64::new(0);
+    let change_time = file
+        .and_then(|file| luxforge_process::file_change_time(file).ok())
+        .map_or_else(
+            || -1 - i128::from(MISSING_CHANGE_TIME.fetch_add(1, Ordering::Relaxed)),
+            i128::from,
+        );
+    SourceSignature {
+        byte_len: metadata.len(),
+        modified: metadata.modified().ok(),
+        file_identity: file
+            .and_then(windows_file_identity)
+            .unwrap_or_else(|| format!("path:{}", path.to_string_lossy().to_lowercase())),
+        change_marker: Some((i128::from(metadata.last_write_time()), change_time)),
+    }
+}
+
+/// Use the already-open file's identity when checking the bytes read from that handle. A path
+/// may be replaced between reads, so looking up its identity again would miss that replacement.
+#[cfg(windows)]
+pub(crate) fn source_signature_for_handle(
+    path: &Path,
+    file: &File,
+    metadata: &Metadata,
+) -> SourceSignature {
+    windows_source_signature(path, metadata, Some(file))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn source_signature_for_handle(
+    path: &Path,
+    _: &File,
+    metadata: &Metadata,
+) -> SourceSignature {
+    source_signature(path, metadata)
+}
+
 #[cfg(unix)]
 fn metadata_change_marker(metadata: &Metadata) -> Option<(i128, i128)> {
     use std::os::unix::fs::MetadataExt;
@@ -847,12 +960,6 @@ fn metadata_change_marker(metadata: &Metadata) -> Option<(i128, i128)> {
         i128::from(metadata.ctime()),
         i128::from(metadata.ctime_nsec()),
     ))
-}
-
-#[cfg(windows)]
-fn metadata_change_marker(metadata: &Metadata) -> Option<(i128, i128)> {
-    use std::os::windows::fs::MetadataExt;
-    Some((i128::from(metadata.last_write_time()), 0))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -867,12 +974,13 @@ fn file_identity(metadata: &Metadata, _: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn file_identity(metadata: &Metadata, canonical: &Path) -> String {
-    use std::os::windows::fs::MetadataExt;
-    match (metadata.volume_serial_number(), metadata.file_index()) {
-        (Some(volume), Some(index)) => format!("windows:{volume}:{index}"),
-        _ => format!("path:{}", canonical.to_string_lossy().to_lowercase()),
-    }
+fn windows_file_identity(file: &File) -> Option<String> {
+    let info = winapi_util::file::information(file).ok()?;
+    Some(format!(
+        "windows:{}:{}",
+        info.volume_serial_number(),
+        info.file_index()
+    ))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1063,21 +1171,92 @@ mod tests {
         let snapshot = Snapshot::original(asset.id.clone())
             .with_layer_inserted(0, payload.layer(layer_id.clone()))
             .unwrap();
-        validate_source_recipe(&asset, &snapshot.recipe).unwrap();
+        let registry = crate::ModuleRegistry::builtin();
+        validate_source_recipe(&registry, &asset, &snapshot.recipe).unwrap();
+        // The same stack on a JPEG is refused by the effect's declared sources, worded from its
+        // module's descriptor rather than from its identity.
+        let jpeg = AssetRecord {
+            source: SourceKind::Jpeg,
+            ..asset.clone()
+        };
+        let (module, _) = registry
+            .effect(&snapshot.recipe.layers[0].effect_id)
+            .expect("the development's provider");
+        let refused = validate_source_recipe(&registry, &jpeg, &snapshot.recipe).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            refused.detail,
+            format!(
+                "{} does not apply to a JPEG photo",
+                module.descriptor().title
+            )
+        );
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {
+                // As shot is canonical, so the development's gains are the as-shot ones.
                 corrupted.as_shot_gains[0] += 0.1;
+                corrupted.gains = corrupted.as_shot_gains;
             } else {
                 corrupted.cam_xyz[0][0] += 0.1;
             }
             let mut recipe = snapshot.recipe.clone();
             recipe.layers[0] = corrupted.layer(layer_id.clone());
             assert_eq!(
-                validate_source_recipe(&asset, &recipe).unwrap_err().kind,
+                validate_source_recipe(&registry, &asset, &recipe)
+                    .unwrap_err()
+                    .kind,
                 ErrorKind::Incompatible,
                 "{calibration}"
             );
+        }
+
+        // On a RAW photo the global white balance is the development's alone: a global Basic
+        // layer holding a temperature or tint is refused, by the rule the variants derive, while
+        // a global exposure and a masked white balance are admitted. The same layers on a JPEG
+        // are Basic's own.
+        let basic = |payload: Value, mask: Option<crate::MaskId>| crate::Layer {
+            id: LayerId::new(),
+            effect_id: crate::BASIC_EFFECT.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload,
+            mask,
+            artifacts: Vec::new(),
+        };
+        let with = |layer: crate::Layer| {
+            let mut recipe = snapshot.recipe.clone();
+            recipe.layers.push(layer);
+            recipe
+        };
+        for (payload, detail) in [
+            (
+                json!({"temperature": 12.0}),
+                "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+            ),
+            (
+                json!({"tint": -3.0, "exposure": 0.5}),
+                "on a RAW photo, Tint is the source development's: set-raw tint",
+            ),
+        ] {
+            let refused =
+                validate_source_recipe(&registry, &asset, &with(basic(payload.clone(), None)))
+                    .unwrap_err();
+            assert_eq!(refused.kind, ErrorKind::Incompatible, "{payload}");
+            assert_eq!(refused.detail, detail, "{payload}");
+            let mut on_jpeg = with(basic(payload.clone(), None));
+            on_jpeg.layers.remove(0);
+            validate_source_recipe(&registry, &jpeg, &on_jpeg).expect("Basic's own on a JPEG");
+        }
+        for admitted in [
+            with(basic(json!({"exposure": 1.25, "contrast": 10.0}), None)),
+            // A field spelled at its default holds nothing.
+            with(basic(json!({"temperature": 0.0, "exposure": 1.0}), None)),
+            with(basic(
+                json!({"temperature": 25.0, "tint": 5.0}),
+                Some(crate::MaskId::new()),
+            )),
+        ] {
+            validate_source_recipe(&registry, &asset, &admitted).expect("admitted");
         }
     }
 
@@ -1088,9 +1267,8 @@ mod tests {
         [0.04, -0.52, 1.48, 0.0],
     ];
 
-    fn custom(gains: [f32; 3], exposure_ev: f64) -> crate::RawPayload {
+    fn custom(gains: [f32; 3]) -> crate::RawPayload {
         crate::RawPayload {
-            exposure_ev,
             wb_mode: crate::WhiteBalanceMode::Custom,
             gains,
             as_shot_gains: [2.0, 1.0, 1.5],
@@ -1110,7 +1288,7 @@ mod tests {
         let camera = RGB_CAM.map(|row| [row[0], row[1], row[2]].map(f64::from));
         for mode in [Strict, DraftPreview] {
             let held = resolve_raw_settings(
-                &custom(developed, 0.4),
+                &custom(developed),
                 developed,
                 RGB_CAM,
                 developed,
@@ -1121,7 +1299,6 @@ mod tests {
             assert_eq!(
                 held,
                 crate::LinearSettings {
-                    exposure_ev: 0.4,
                     white_balance: None,
                 },
                 "{mode:?}: planes that hold the white balance need no approximation"
@@ -1129,7 +1306,7 @@ mod tests {
             // As shot resolves to the camera's gains, which these planes hold.
             let as_shot = crate::RawPayload {
                 wb_mode: crate::WhiteBalanceMode::AsShot,
-                ..custom(target, 0.0)
+                ..custom(target)
             };
             assert_eq!(
                 resolve_raw_settings(&as_shot, developed, RGB_CAM, developed, true, mode)
@@ -1138,7 +1315,7 @@ mod tests {
                 None
             );
             let missing = resolve_raw_settings(
-                &custom(developed, 0.0),
+                &custom(developed),
                 developed,
                 RGB_CAM,
                 developed,
@@ -1149,19 +1326,13 @@ mod tests {
             assert_eq!(missing.kind, ErrorKind::PreparationRequired, "{mode:?}");
         }
 
-        let strict = resolve_raw_settings(
-            &custom(target, 0.4),
-            developed,
-            RGB_CAM,
-            developed,
-            true,
-            Strict,
-        )
-        .unwrap_err();
+        let strict =
+            resolve_raw_settings(&custom(target), developed, RGB_CAM, developed, true, Strict)
+                .unwrap_err();
         assert_eq!(strict.kind, ErrorKind::PreparationRequired);
 
         let drafted = resolve_raw_settings(
-            &custom(target, 0.4),
+            &custom(target),
             developed,
             RGB_CAM,
             developed,
@@ -1169,7 +1340,6 @@ mod tests {
             DraftPreview,
         )
         .unwrap();
-        assert_eq!(drafted.exposure_ev, 0.4);
         assert_eq!(
             drafted.white_balance,
             Some(crate::WhiteBalanceApproximation::between(camera, developed, target).unwrap()),
@@ -1184,7 +1354,7 @@ mod tests {
             0.0,
         ];
         let error = resolve_raw_settings(
-            &custom(target, 0.0),
+            &custom(target),
             developed,
             singular,
             developed,
@@ -1215,8 +1385,8 @@ mod tests {
         let committed = service.preview_job(&asset, None, None, None, None).unwrap();
         assert!(!committed.source.approximate_white_balance());
 
-        let mut draft = Draft::new("set-raw-temperature", asset.clone(), state.revision);
-        draft.merge(Map::from_iter([("kelvin".to_owned(), json!(3200.0))]));
+        let mut draft = Draft::new("set-raw", asset.clone(), state.revision);
+        draft.merge(Map::from_iter([("temperature".to_owned(), json!(3200.0))]));
         let drafted = service
             .preview_job(&asset, None, None, Some(&draft), None)
             .expect("a drafted white balance previews");
@@ -1275,9 +1445,9 @@ mod tests {
                 .analysis_plan(&asset, AnalysisSelection::Draft(&draft))
                 .unwrap_err()
         ));
-        // A drafted exposure over planes that hold the white balance is exact.
-        let mut exposure = Draft::new("set-raw-exposure", asset.clone(), state.revision);
-        exposure.merge(Map::from_iter([("ev".to_owned(), json!(0.5))]));
+        // A drafted exposure is Basic's, over planes that hold the white balance: exact.
+        let mut exposure = Draft::new("set-basic", asset.clone(), state.revision);
+        exposure.merge(Map::from_iter([("exposure".to_owned(), json!(0.5))]));
         assert!(
             !service
                 .preview_job(&asset, None, None, Some(&exposure), None)
@@ -1291,8 +1461,8 @@ mod tests {
             .apply_action(
                 &asset,
                 mutation(state.revision, "temperature"),
-                "set-raw-temperature",
-                json!({"kelvin": 3200.0}),
+                "set-raw",
+                json!({"temperature": 3200.0}),
             )
             .unwrap();
         let current = service.state(&asset).unwrap().current_entry.id;
@@ -1356,12 +1526,13 @@ mod tests {
         assert!(matches!(original.source, PreviewSource::Raw { .. }));
         let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
         assert_eq!(as_shot.as_shot_gains, as_shot.gains);
+        // Exposure is Basic's: it leaves the source development as it was.
         let exposure = service
             .apply_action(
                 &initial.asset.id,
                 mutation(0, "raw-exposure"),
-                "set-raw-exposure",
-                json!({"ev":1.5}),
+                "set-basic",
+                json!({"exposure":1.5}),
             )
             .unwrap();
         let exposed = service.state(&initial.asset.id).unwrap();
@@ -1370,10 +1541,8 @@ mod tests {
             source_layer
         );
         assert_eq!(
-            raw_payload(&exposed.current_entry.snapshot.recipe)
-                .unwrap()
-                .exposure_ev,
-            1.5
+            raw_payload(&exposed.current_entry.snapshot.recipe).unwrap(),
+            as_shot
         );
         let gain = (f64::from(as_shot.gains[0]) * 1.1).min(16.0);
         let changed = service

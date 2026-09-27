@@ -45,13 +45,45 @@ pub(crate) use evaluate::PointPlan;
 pub use masks::{MASK_FIELD, mask_target_parameter};
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
-pub(crate) use source::{FilePreparation, source_signature};
+pub(crate) use source::{FilePreparation, source_signature, source_signature_for_handle};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SourceKind {
     Jpeg,
     Raw { metadata: RawInterpretation },
+}
+
+impl SourceKind {
+    /// The kind's tag, exactly as this value serializes it in `kind`.
+    pub fn tag(&self) -> SourceTag {
+        match self {
+            Self::Jpeg => SourceTag::Jpeg,
+            Self::Raw { .. } => SourceTag::Raw,
+        }
+    }
+}
+
+/// A source kind without its interpretation: the `kind` tag `asset.state` reports for a photo's
+/// source, and what an effect's declared `sources` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceTag {
+    Jpeg,
+    Raw,
+}
+
+impl SourceTag {
+    /// Every source kind, in the order the tags are documented.
+    pub const ALL: [Self; 2] = [Self::Jpeg, Self::Raw];
+
+    /// The kind as a sentence names it: `a JPEG photo`, `a RAW photo`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Raw => "RAW",
+        }
+    }
 }
 
 /// What reads cost the catalog, counted per thread, for the tests that prove a cached read decodes
@@ -167,6 +199,22 @@ pub struct ActionResult {
     /// The layers a `mask.delete` removed. A destructive command says what it removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed_layers: Vec<crate::mask::commands::RemovedLayer>,
+    /// The settings a composite action — a preset — left out because they do not apply to the
+    /// photo: a step whose module does not apply to its kind, and a field superseded on its global
+    /// target. A skip is not a refusal; a composite that applies nothing is a no-op that still
+    /// reports what it skipped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedSetting>,
+}
+
+/// One setting a composite action did not apply to a photo, and why: the step's action, the field
+/// when only that field was left out, and the refusal the host would have given it alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedSetting {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter: Option<String>,
+    pub reason: String,
 }
 
 impl ActionResult {
@@ -178,6 +226,7 @@ impl ActionResult {
             mask: None,
             component: None,
             removed_layers: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 }
@@ -470,6 +519,8 @@ impl EditorService {
     /// Open a catalog served by a specific set of providers. Registration is cheap and happens
     /// before any catalog or image work.
     pub fn open_with(path: &Path, registry: Arc<ModuleRegistry>) -> Result<Self, Error> {
+        // Control variants name other modules, so they are checked once the set is complete.
+        registry.check_complete()?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| {
                 Error::catalog(format!("cannot create catalog directory: {}", e.kind()))

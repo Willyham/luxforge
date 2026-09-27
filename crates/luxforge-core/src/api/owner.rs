@@ -2236,11 +2236,11 @@ mod tests {
             &owner,
             client,
             "temperature",
-            "edit.set-raw-temperature",
+            "edit.set-raw",
             json!({
                 "asset_id": asset,
                 "mutation": {"expected_revision": 0, "request_id": "temperature", "actor": "test"},
-                "kelvin": 3500.0,
+                "temperature": 3500.0,
             }),
         );
         let prepared = ok(

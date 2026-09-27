@@ -175,6 +175,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             maskable: false,
             artifacts: false,
             single: false,
+            sources: Vec::new(),
         }],
         actions: vec![
             ActionDescriptor {
@@ -213,7 +214,9 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 preset: Map::new(),
                 style: Default::default(),
                 icon: None,
+                variants: Vec::new(),
             }],
+            variants: Vec::new(),
         }],
         reset: Some(luxforge_core::ResetAction {
             action: "crop-reset".into(),

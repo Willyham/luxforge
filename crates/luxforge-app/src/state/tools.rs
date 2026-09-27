@@ -18,8 +18,9 @@ use crate::{
 };
 use luxforge_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CropStage, CurveBackground, EffectStage, EntryId, MAX_ANGLE, MIN_ANGLE, MaskId,
-    ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration, ResetAction,
+    CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, MAX_ANGLE,
+    MIN_ANGLE, MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind,
+    RailDecoration, ResetAction, SourceTag,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -244,6 +245,10 @@ pub(crate) struct SliderControl {
     pub(crate) invalid: Option<String>,
     /// The parameter's declared default, already formatted: what a reset sets the field to.
     pub(crate) default: String,
+    /// The action a reset of this field runs instead of that default, when its control declares
+    /// one. Such a field's neutral is not a value its text can show (a RAW white balance at As
+    /// shot shows the camera's equivalent temperature), so its group reads its layer instead.
+    pub(crate) reset: Option<ResetRef>,
 }
 
 #[allow(dead_code)]
@@ -510,16 +515,17 @@ impl ToolsModel {
         // Mask mode replaces the module sections with the Masks panel and the adjustments that can
         // apply through a mask: a module with no maskable effect has nothing to offer a mask, so
         // offering its controls there would be offering an edit the mask cannot carry.
-        let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode);
+        // A pick taken on a mask keeps the mask workspace: the target stays bound to that mask.
+        let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode)
+            || inputs.target.is_some();
         for module in inputs.modules {
             if masking && !module.effects.iter().any(|effect| effect.maskable) {
                 continue;
             }
-            if module.id == "luxforge.raw"
-                && !inputs.state.is_some_and(|state| {
-                    matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                })
-            {
+            if !applies(module, inputs.state) {
+                continue;
+            }
+            if !draws_section(module) {
                 continue;
             }
             if module.developer && !inputs.developer {
@@ -634,6 +640,15 @@ fn section(
     }
 }
 
+/// Whether a module has anything of its own to draw: controls, a capability block, or the host's
+/// crop-frame editor its canvas declares. A module with none — the RAW development, whose controls
+/// are Basic's variants — has no section.
+pub(crate) fn draws_section(module: &ModuleDescriptor) -> bool {
+    !module.controls.is_empty()
+        || capabilities::declares(module)
+        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+}
+
 /// The controls of the one group a stacked module's controls consist of, when that is their whole
 /// shape. The panel draws them flush under the module's band with no sub-group header, and so
 /// with no disclosure, no collapse state and no Original or Custom caption: the band already
@@ -722,7 +737,17 @@ fn disabled_reason(unavailable: Option<&str>, inputs: &Inputs<'_>) -> Option<Str
 /// patch returned to its neutral values, a whole-image crop, the identity orientation and a RAW
 /// development at As shot and 0 EV are stored but carry no dot. The rows are the current entry's,
 /// never a historical preview's.
+///
+/// A section reads every module its resolved controls edit ([`providers`]): on a RAW photo's global
+/// target that is Basic and the RAW development, so a custom white balance lights Basic's dot.
 fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
+    providers(module, inputs)
+        .into_iter()
+        .any(|provider| edits(provider, inputs))
+}
+
+/// The current recipe holds a non-neutral layer of one of `module`'s effects for the bound target.
+fn edits(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
     let (Some(_), Some(recipe)) = (inputs.state, inputs.current_recipe) else {
         return false;
     };
@@ -746,6 +771,15 @@ fn digest(
     module.id.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
+    // Which controls apply depends on the photo's kind and the target, and a control a variant
+    // provides reads its providing module's fields, layers and canvas, so those are this section's
+    // inputs too.
+    source_kind(inputs.state).hash(&mut hasher);
+    let providers = providers(module, inputs);
+    for provider in &providers[1..] {
+        provider.id.hash(&mut hasher);
+        format!("{:?}", provider.availability).hash(&mut hasher);
+    }
     match layout {
         SectionLayout::Stacked => 0u8.hash(&mut hasher),
         SectionLayout::Tabs { selected } => (1u8, selected).hash(&mut hasher),
@@ -756,7 +790,10 @@ fn digest(
         inputs.display_entry.hash(&mut hasher);
         inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
     }
-    for action in &module.actions {
+    for action in providers
+        .iter()
+        .flat_map(|provider| provider.actions.iter())
+    {
         action.id.hash(&mut hasher);
         for parameter in &action.parameters {
             inputs
@@ -838,9 +875,9 @@ fn digest(
     if let Some(state) = inputs.state {
         for layer in &state.current_entry.snapshot.recipe.layers {
             if layer.mask.as_ref() == inputs.target
-                && module
-                    .effects
+                && providers
                     .iter()
+                    .flat_map(|provider| provider.effects.iter())
                     .any(|effect| effect.id == layer.effect_id)
             {
                 layer.id.as_str().hash(&mut hasher);
@@ -882,8 +919,11 @@ fn digest(
             .hash(&mut hasher);
     }
     // This module's picker reads selected while its own canvas mode is active, so entering and
-    // leaving that mode re-derives this section and nothing else.
-    owns_mode(module, inputs).hash(&mut hasher);
+    // leaving that mode re-derives this section and nothing else; a picker a variant provides
+    // reads its providing module's mode.
+    for provider in &providers {
+        owns_mode(provider, inputs).hash(&mut hasher);
+    }
     if owns_mode(module, inputs)
         || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
     {
@@ -927,8 +967,45 @@ fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
 
 /// One declared control as the panel models it. `owner` says whose declarations resolve its
 /// parameter: the declaring module's, or the host's own `mask.*` family for a host control.
+///
+/// A module's control is first resolved for the open photo and the bound target through the core's
+/// one rule ([`resolved`]): where a variant applies, the control drawn is the variant's, over its
+/// module's own actions, values and canvas, in the declared control's place and under its label.
 pub(crate) fn control_model(
     owner: ControlOwner<'_>,
+    control: &Control,
+    inputs: &Inputs<'_>,
+    enabled: bool,
+    path: &[usize],
+) -> ControlModel {
+    let ControlOwner::Module(module) = owner else {
+        return resolved_model(owner, None, control, inputs, enabled, path);
+    };
+    let kind = source_kind(inputs.state);
+    match resolved(inputs.modules, module, control, kind, inputs.target) {
+        Some((provider, variant)) if provider.id != module.id => resolved_model(
+            ControlOwner::Module(provider),
+            Some(module),
+            variant,
+            inputs,
+            enabled && provider.is_available(),
+            path,
+        ),
+        Some(_) => resolved_model(owner, None, control, inputs, enabled, path),
+        None => ControlModel::Unsupported(format!(
+            "a {} control of {} whose providing module is not registered",
+            control_kind(control),
+            module.title
+        )),
+    }
+}
+
+/// One control as it applies, modelled against `owner`'s declarations. `declarer` is the module
+/// that declared the control when `owner` provides it as a variant: a picker variant's letter is
+/// the declaring module's when the providing canvas has none of its own.
+fn resolved_model(
+    owner: ControlOwner<'_>,
+    declarer: Option<&ModuleDescriptor>,
     control: &Control,
     inputs: &Inputs<'_>,
     enabled: bool,
@@ -941,6 +1018,16 @@ pub(crate) fn control_model(
             reset,
             collapsed,
         } => {
+            // A group's reset resolves through the same rule as its controls: on a RAW photo's
+            // global target, White balance's reset is the RAW development's As shot.
+            let reset = luxforge_core::resolve_group_reset(
+                owner.id(),
+                control,
+                source_kind(inputs.state),
+                inputs.target,
+            )
+            .map(|resolved| resolved.reset)
+            .or(reset);
             let controls: Vec<ControlModel> = controls
                 .iter()
                 .enumerate()
@@ -972,10 +1059,11 @@ pub(crate) fn control_model(
             label,
             style,
             rail,
-            ..
+            reset,
         } => {
             let mut model = value_model(owner, inputs, action, parameter, label);
             if let ControlModel::Slider(slider) = &mut model {
+                slider.reset = ResetRef::of(reset);
                 slider.style = match style {
                     NumberStyle::Slider => NumberControlStyle::Slider,
                     NumberStyle::Field => NumberControlStyle::Field,
@@ -1061,9 +1149,18 @@ pub(crate) fn control_model(
         }
         // The picker reads its mode's name and letter from the same canvas declaration the keymap
         // binds, so the panel and the keyboard always agree about what the mode is called.
+        // A picker provided as a variant enters its providing module's canvas and answers to the
+        // declaring module's letter, which the keyboard binds to the same mode ([`mode_shortcuts`]).
         Rendered::Picker { label } => {
             let Some(module) = owner.descriptor() else {
                 return ControlModel::Unsupported("a picker needs a declaring module".into());
+            };
+            let letter = |module: &ModuleDescriptor| {
+                module
+                    .canvas
+                    .as_ref()
+                    .and_then(CanvasInteraction::shortcut)
+                    .map(str::to_owned)
             };
             ControlModel::Picker(PickerControl {
                 module_id: module.id.clone(),
@@ -1074,16 +1171,14 @@ pub(crate) fn control_model(
                     .map(CanvasInteraction::title)
                     .unwrap_or(label)
                     .to_owned(),
-                shortcut: module
-                    .canvas
-                    .as_ref()
-                    .and_then(CanvasInteraction::shortcut)
-                    .map(str::to_owned),
+                shortcut: letter(module).or_else(|| declarer.and_then(letter)),
                 selected: owns_mode(module, inputs),
-                target: if owns_mode(module, inputs) {
-                    luxforge_core::POINTER_MODE.to_owned()
-                } else {
-                    module.id.clone()
+                // Leaving the pick returns to where it was entered from: a pick on a mask is
+                // taken from the Masks panel and goes back to it.
+                target: match (owns_mode(module, inputs), inputs.target) {
+                    (true, Some(_)) => luxforge_core::MASK_MODE.to_owned(),
+                    (true, None) => luxforge_core::POINTER_MODE.to_owned(),
+                    (false, _) => module.id.clone(),
                 },
                 enabled,
             })
@@ -1154,6 +1249,27 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
             field(action, parameter, inputs, &mut values, &mut custom)
         };
         let all_patch_fields = match control {
+            // A field whose reset is an action of its own is at its neutral exactly when the
+            // layer it mirrors is: its text cannot say so. While it is dragged, the draft has
+            // already left that layer's committed state, as a dragged field-patch slider's text
+            // has left its default.
+            ControlModel::Slider(slider) if slider.reset.is_some() => {
+                let owner = inputs
+                    .modules
+                    .iter()
+                    .find(|module| module.action(&slider.action).is_some_and(|a| a.patch));
+                match owner {
+                    Some(owner) => {
+                        values += 1;
+                        custom |= edits(owner, inputs)
+                            || inputs.dragging.is_some_and(|(action, parameter)| {
+                                *action == slider.action && *parameter == slider.parameter
+                            });
+                        true
+                    }
+                    None => false,
+                }
+            }
             ControlModel::Slider(slider) => patch_field(&slider.action, &slider.parameter),
             ControlModel::Toggle(toggle) => patch_field(&toggle.action, &toggle.parameter),
             ControlModel::Enum(choice) => patch_field(&choice.action, &choice.parameter),
@@ -1367,6 +1483,7 @@ fn slider(
             .is_some_and(|(a, p)| a == action && p == parameter),
         invalid,
         default: crate::state::fields::seed_text(declared),
+        reset: None,
     }
 }
 
@@ -1785,6 +1902,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             controls,
             reset,
             collapsed,
+            ..
         } => Rendered::Group {
             label,
             controls,
@@ -1798,6 +1916,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             style,
             rail,
             reset,
+            ..
         } => Rendered::Number {
             action,
             parameter,
@@ -1856,6 +1975,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             preset,
             style,
             icon,
+            ..
         } => Rendered::Action {
             action,
             label,
@@ -1863,7 +1983,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             style: *style,
             icon: icon.as_deref(),
         },
-        Control::Picker { label } => Rendered::Picker { label },
+        Control::Picker { label, .. } => Rendered::Picker { label },
         Control::Task { task, label } => Rendered::Task { task, label },
         Control::Presets { action } => Rendered::Presets { action },
         // A kind added to the descriptor later is reported, never dropped.
@@ -1969,10 +2089,12 @@ pub(crate) fn declared_field_reset<'a>(
     action: &str,
     parameter: &str,
 ) -> Option<&'a ResetAction> {
+    // A variant's field reset counts: on a RAW photo Temperature's double-click is the RAW
+    // development's As shot, which its variant declares.
     modules
         .iter()
         .find_map(|module| {
-            walk(&module.controls).find_map(|control| match classify(control) {
+            with_variants(&module.controls).find_map(|control| match classify(control) {
                 Rendered::Number {
                     action: declared,
                     parameter: named,
@@ -2009,7 +2131,7 @@ pub(crate) fn labelled_control<'a>(
     action: &str,
     parameter: &str,
 ) -> Option<&'a str> {
-    walk(controls).find_map(|control| match classify(control) {
+    with_variants(controls).find_map(|control| match classify(control) {
         Rendered::Number {
             action: declared,
             parameter: named,
@@ -2062,6 +2184,161 @@ pub(crate) fn published_method(action: &str) -> String {
     } else {
         format!("edit.{action}")
     }
+}
+
+/// Whether `module` applies to the photo `state` holds, by the core's one rule
+/// ([`ModuleDescriptor::applies_to`]) for that photo's source kind: what the tools panel's
+/// sections, the palette, the mode strip, the mode shortcuts and the canvas pick gate all read, so
+/// none of them names a module. With no photo open, a module applies when it applies to every
+/// kind, so nothing kind-specific is offered before a photo says which kind it is. `O(effects)`,
+/// no allocation.
+pub(crate) fn applies(module: &ModuleDescriptor, state: Option<&EditorState>) -> bool {
+    match state {
+        Some(state) => module.applies_to(state.asset.source.tag()),
+        None => SourceTag::ALL
+            .into_iter()
+            .all(|kind| module.applies_to(kind)),
+    }
+}
+
+/// The source kind of the photo `state` holds, which a control's variants resolve against; `None`
+/// with no photo open, so every control is its declaring module's own.
+pub(crate) fn source_kind(state: Option<&EditorState>) -> Option<SourceTag> {
+    state.map(|state| state.asset.source.tag())
+}
+
+/// `control`, declared by `owner`, as it applies to the open photo and the bound target, through
+/// the core's one rule ([`luxforge_core::resolve_control`]): the module that provides it, the
+/// declaring one or a variant's, and the control itself. `None` when a variant names a module that
+/// is not registered, which registration refuses, so it is reported rather than guessed around.
+pub(crate) fn resolved<'a>(
+    modules: &'a [ModuleDescriptor],
+    owner: &'a ModuleDescriptor,
+    control: &'a Control,
+    kind: Option<SourceTag>,
+    target: Option<&MaskId>,
+) -> Option<(&'a ModuleDescriptor, &'a Control)> {
+    let resolved = luxforge_core::resolve_control(&owner.id, control, kind, target);
+    if !resolved.variant {
+        return Some((owner, control));
+    }
+    Some((module_of(modules, resolved.module)?, resolved.control))
+}
+
+/// Every control a tree declares, each followed by the variants it carries: the whole vocabulary a
+/// question such as "which label does this field carry" or "what resets it" is answered from,
+/// whichever photo it is asked for. A variant is a leaf of its base's shape, never a group.
+pub(crate) fn with_variants(controls: &[Control]) -> impl Iterator<Item = &Control> {
+    walk(controls).flat_map(|control| {
+        std::iter::once(control).chain(
+            control
+                .variants()
+                .iter()
+                .filter_map(|variant| variant.control.as_deref()),
+        )
+    })
+}
+
+/// The modules a section's controls edit on the open photo and the bound target: the section's own
+/// module first, then each module a variant of its controls or group resets resolves to. The
+/// section's edited dot, its digest and its captions read every one of them, so a RAW photo's
+/// custom white balance lights Basic's dot. `O(controls)`, no allocation beyond the short list.
+pub(crate) fn providers<'a>(
+    module: &'a ModuleDescriptor,
+    inputs: &Inputs<'a>,
+) -> Vec<&'a ModuleDescriptor> {
+    let kind = source_kind(inputs.state);
+    let mut providers = vec![module];
+    for control in walk(&module.controls) {
+        let variant = luxforge_core::resolve_control(&module.id, control, kind, inputs.target);
+        let reset = luxforge_core::resolve_group_reset(&module.id, control, kind, inputs.target);
+        for id in [
+            variant.variant.then_some(variant.module),
+            reset
+                .filter(|reset| reset.variant)
+                .map(|reset| reset.module),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !providers.iter().any(|provider| provider.id == id)
+                && let Some(provider) = module_of(inputs.modules, id)
+            {
+                providers.push(provider);
+            }
+        }
+    }
+    providers
+}
+
+/// The canvas mode `module`'s picker control enters on the open photo and target: the module its
+/// picker resolves to, which is `module` itself unless a variant provides the picker. `None` when
+/// the module declares no picker.
+fn picker_mode<'a>(
+    modules: &'a [ModuleDescriptor],
+    module: &'a ModuleDescriptor,
+    kind: Option<SourceTag>,
+    target: Option<&MaskId>,
+) -> Option<&'a str> {
+    let picker =
+        walk(&module.controls).find(|control| matches!(control, Control::Picker { .. }))?;
+    resolved(modules, module, picker, kind, target).map(|(provider, _)| provider.id.as_str())
+}
+
+/// The pick modes the resolved picker controls of the modules that apply to the open photo name, on
+/// the bound target: exactly the pick modes a person can reach from the panel and the keyboard. On
+/// a RAW photo's global target Basic's picker names the RAW development's sensor pick, so Basic's
+/// own sample-apply is not among them; on a mask, and on a JPEG, it is.
+pub(crate) fn pick_modes<'a>(
+    modules: &'a [ModuleDescriptor],
+    state: Option<&EditorState>,
+    target: Option<&MaskId>,
+) -> Vec<&'a str> {
+    let kind = source_kind(state);
+    modules
+        .iter()
+        .filter(|module| module.is_available() && applies(module, state))
+        .filter_map(|module| picker_mode(modules, module, kind, target))
+        .collect()
+}
+
+/// Whether a click on the photograph may pick in `mode`: a host mode belongs to no module and
+/// answers every photo, and a module's pick mode answers only while a resolved picker names it
+/// ([`pick_modes`]), so a pick mode entered through the API that the panel would not offer on this
+/// photo and target takes no click. The pick gate reads this; it names no module.
+pub(crate) fn pick_reachable(
+    modules: &[ModuleDescriptor],
+    state: Option<&EditorState>,
+    target: Option<&MaskId>,
+    mode: &str,
+) -> bool {
+    match module_of(modules, mode) {
+        None => true,
+        Some(module) => {
+            applies(module, state) && pick_modes(modules, state, target).contains(&mode)
+        }
+    }
+}
+
+/// The mode shortcut letters the keyboard answers: one per available module that declares a canvas
+/// shortcut and applies to the photo `state` holds, with the mode it enters. A module whose picker
+/// resolves to another module's pick on this photo and target enters that one, so Basic's `W` is
+/// the RAW development's sensor pick on a RAW photo's global target and Basic's own elsewhere.
+pub(crate) fn mode_shortcuts(
+    modules: &[ModuleDescriptor],
+    state: Option<&EditorState>,
+    target: Option<&MaskId>,
+) -> Vec<(char, String)> {
+    let kind = source_kind(state);
+    modules
+        .iter()
+        .filter(|module| module.is_available() && applies(module, state))
+        .filter_map(|module| {
+            let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
+            let mode = picker_mode(modules, module, kind, target).unwrap_or(&module.id);
+            Some((letter, mode.to_owned()))
+        })
+        .collect()
 }
 
 /// The module that declares this id, when it is registered.
@@ -2269,17 +2546,25 @@ pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> 
 /// ("`Mode · <title>`"). Unfiltered and in registry order; `state::palette` combines these with the
 /// host commands and applies the query once, over the whole list. A developer module (the pixel
 /// proof) is listed only when the run asked for it, exactly as its section is.
+///
+/// Controls resolve for the open photo and the bound target exactly as the panel draws them, so an
+/// entry runs what its button would: on a RAW photo's global target Basic's As shot is the RAW
+/// development's. A pick mode is listed only when a resolved picker names it ([`pick_modes`]).
 pub(crate) fn palette_entries(
     modules: &[ModuleDescriptor],
     developer: bool,
+    state: Option<&EditorState>,
+    target: Option<&MaskId>,
 ) -> Vec<(String, String, PaletteAction)> {
+    let kind = source_kind(state);
+    let picks = pick_modes(modules, state, target);
     let mut entries = Vec::new();
     for module in modules
         .iter()
         .filter(|module| module.is_available())
         .filter(|module| !module.developer || developer)
     {
-        collect_actions(module, &module.controls, &mut entries);
+        collect_actions(modules, module, kind, target, &mut entries);
         if let Some(reset) = &module.reset {
             entries.push((
                 format!("{} · Reset", module.title),
@@ -2291,22 +2576,35 @@ pub(crate) fn palette_entries(
             ));
         }
         if let Some(canvas) = &module.canvas {
-            entries.push((
-                format!("Mode · {}", canvas.title()),
-                "workspace.set".to_owned(),
-                PaletteAction::Mode(module.id.clone()),
-            ));
+            let reachable = match canvas {
+                CanvasInteraction::CropFrame { .. } => true,
+                CanvasInteraction::PointPick { .. } | CanvasInteraction::SampleApply { .. } => {
+                    picks.contains(&module.id.as_str())
+                }
+            };
+            if reachable {
+                entries.push((
+                    format!("Mode · {}", canvas.title()),
+                    "workspace.set".to_owned(),
+                    PaletteAction::Mode(module.id.clone()),
+                ));
+            }
         }
     }
     entries
 }
 
 fn collect_actions(
+    modules: &[ModuleDescriptor],
     module: &ModuleDescriptor,
-    controls: &[Control],
+    kind: Option<SourceTag>,
+    target: Option<&MaskId>,
     entries: &mut Vec<(String, String, PaletteAction)>,
 ) {
-    for control in walk(controls) {
+    for declared in walk(&module.controls) {
+        let Some((_, control)) = resolved(modules, module, declared, kind, target) else {
+            continue;
+        };
         if let Rendered::Action {
             action,
             label,
@@ -2384,12 +2682,8 @@ mod tests {
             .into_iter()
             .cloned()
             .collect();
-        // RAW declares one action per field: each one is a complete request on its own.
-        for (action, parameter) in [
-            ("set-raw-exposure", "ev"),
-            ("set-raw-temperature", "kelvin"),
-            ("set-raw-tint", "tint"),
-        ] {
+        // An action of one parameter is a complete request on its own: RAW's explicit gains.
+        for (action, parameter) in [("set-raw-red-gain", "gain"), ("set-raw-blue-gain", "gain")] {
             assert!(
                 drafts_alone(&modules, action, parameter),
                 "{action}.{parameter} declares no second parameter"
@@ -2397,6 +2691,9 @@ mod tests {
             assert!(!is_patch(&modules, action), "{action} is not a field patch");
             assert!(drafts(&modules, action, parameter));
         }
+        // RAW's white balance is a patch, which drafts for that reason.
+        assert!(is_patch(&modules, "set-raw"));
+        assert!(drafts(&modules, "set-raw", "temperature"));
         // Basic's fields are a patch: the module merges whichever ones it is sent.
         assert!(is_patch(&modules, "set-basic"));
         assert!(drafts(&modules, "set-basic", "temperature"));
@@ -2413,7 +2710,7 @@ mod tests {
             );
         }
         // A parameter no action declares, and an action no module declares, draft nothing.
-        assert!(!drafts(&modules, "set-raw-exposure", "kelvin"));
+        assert!(!drafts(&modules, "set-raw-red-gain", "kelvin"));
         assert!(!drafts(&modules, "no-such-action", "ev"));
     }
 

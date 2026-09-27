@@ -628,7 +628,7 @@ impl Editor {
         // A stage still rendering is stopped and held below the delivery floor, so it can never be
         // taken up as the photograph once nothing marks it as the draft's.
         if self.draft_generation.take().is_some() {
-            self.preview_generation = self.preview_queue.cancel();
+            self.preview_generation = self.cancel_preview_queue();
         }
         self.crop_guide = false;
         if self.editing_angle() {
@@ -1411,6 +1411,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             ..luxforge_core::ModuleDescriptor::default()
         };

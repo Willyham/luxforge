@@ -237,8 +237,9 @@ impl FieldPatch {
     }
 
     /// The label a history entry for a patch of exactly these fields carries, by the declared
-    /// rules: the group a patch of exactly that group's fields at their defaults resets, one moved
-    /// field by its value, and otherwise the module title and the field count.
+    /// rules: the group a patch of exactly that group's fields at their defaults resets, the group a
+    /// patch of exactly its fields sets, one moved field by its value, and otherwise the module
+    /// title and the field count.
     pub fn expected_label(&self, patch: &Map<String, Value>) -> Result<Label, String> {
         if let Some(group) = self.groups.iter().find(|group| {
             group.preset.len() == patch.len()
@@ -248,6 +249,15 @@ impl FieldPatch {
                     .all(|(name, value)| patch.get(name).and_then(Value::as_f64) == value.as_f64())
         }) {
             return Ok(Label::Exactly(format!("Reset {}", group.label)));
+        }
+        // A patch of exactly one group's fields, more than one, reads as that group.
+        if patch.len() > 1
+            && let Some(group) = self.groups.iter().find(|group| {
+                group.preset.len() == patch.len()
+                    && patch.keys().all(|name| group.preset.contains_key(name))
+            })
+        {
+            return Ok(Label::Exactly(group.label.clone()));
         }
         match patch.iter().collect::<Vec<_>>().as_slice() {
             [(name, value)] => {

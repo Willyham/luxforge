@@ -1,8 +1,9 @@
 //! Tests of where a committed layer joins a stack and which layer a target owns.
 use super::{tests::*, *};
+use crate::modules::raw::RAW_EFFECT;
 use crate::{
     BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, MaskId, ORIENTATION_EFFECT, Orientation,
-    PIXEL_EFFECT, RAW_EFFECT,
+    PIXEL_EFFECT,
     modules::{CropPayload, EffectStage, ModuleDescriptor},
 };
 use serde_json::json;
@@ -66,7 +67,7 @@ fn a_modules_own_layer_is_found_for_its_target_only() {
     ] {
         assert!(registry.effect_single(effect), "{effect}");
     }
-    for effect in [crate::PIXEL_EFFECT, ORIENTATION_EFFECT, crate::RAW_EFFECT] {
+    for effect in [crate::PIXEL_EFFECT, ORIENTATION_EFFECT, RAW_EFFECT] {
         assert!(!registry.effect_single(effect), "{effect}");
     }
 }

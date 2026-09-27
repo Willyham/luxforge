@@ -14,7 +14,9 @@ use crate::{
     *,
 };
 use luxforge_core::BASIC_EFFECT;
-use luxforge_evidence::{self as script, PreviewStep, SliderDraftStep, SliderStep, WorkspaceStep};
+use luxforge_evidence::{
+    self as script, PaletteStep, PreviewStep, SliderDraftStep, SliderStep, WorkspaceStep,
+};
 
 const BASIC_MODULE: &str = "luxforge.basic";
 const SET_BASIC: &str = "set-basic";
@@ -503,6 +505,15 @@ const COLOUR_GROUP: &str = "Colour";
 /// The White balance group's label, which the module also uses for the history entry a patch
 /// returning exactly that group to neutral earns.
 const WHITE_BALANCE_GROUP: &str = "White balance";
+/// The White balance group's four controls, in order, as the panel draws them on every kind.
+const WHITE_BALANCE_CONTROLS: [(&str, &str); 4] = [
+    ("number", "Temperature"),
+    ("number", "Tint"),
+    ("picker", "Neutral picker"),
+    ("action", "As shot"),
+];
+/// The button that returns the White balance group to the file's own rendering on a JPEG.
+const AS_SHOT: &str = "As shot";
 
 /// The neutral grey patch the picker samples: `fixtures/s0/greyscale.jpg` is uniform 91/91/91 over
 /// the whole 5x5 patch here, so the picker's answer is the exact identity, 0 and 0.
@@ -658,7 +669,45 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
             script::Step::pick(CLIPPED_PICK[0], CLIPPED_PICK[1]),
         )
         .commits(0),
+        // Warm again, then As shot: on a JPEG the file's own rendering, Temperature and Tint 0,
+        // run from the palette entry that sends exactly what its button sends.
+        Step::new(
+            "warm-again",
+            SliderStep::new(SET_BASIC, TEMPERATURE, [20.0, 40.0]).release(),
+        )
+        .no_draft()
+        .commits(1)
+        .field(SET_BASIC, TEMPERATURE, "40"),
+        Step::new("as-shot", PaletteStep::Run(AS_SHOT.into()))
+            .commits(1)
+            .label(format!("Reset {WHITE_BALANCE_GROUP}"))
+            .payload(BASIC_EFFECT, json!({}))
+            .same_layer(BASIC_EFFECT, "temperature")
+            .field(SET_BASIC, TEMPERATURE, "0")
+            .field(SET_BASIC, TINT, "0"),
     ])
+}
+
+/// The White balance group's controls as a frame records the Basic section: the controls after
+/// the group's own entry, up to the next group.
+fn white_balance_controls(frame: &Frame) -> Result<Vec<(String, String)>> {
+    let controls = frame["state"]["section_controls"][BASIC_MODULE]
+        .as_array()
+        .ok_or("The frame records no Basic section controls")?;
+    let start = controls
+        .iter()
+        .position(|control| control["kind"] == "group" && control["label"] == WHITE_BALANCE_GROUP)
+        .ok_or("The Basic section draws no White balance group")?;
+    Ok(controls[start + 1..]
+        .iter()
+        .take_while(|control| control["kind"] != "group")
+        .map(|control| {
+            (
+                control["kind"].as_str().unwrap_or_default().to_owned(),
+                control["label"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect())
 }
 
 pub fn verify_panel(_: &mut Run, launches: &[Checked]) -> Result {
@@ -711,10 +760,30 @@ pub fn verify_panel(_: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
     }
+    // White balance holds its four controls, in order: Temperature, Tint, the Neutral picker and
+    // As shot, which on a JPEG sends Basic's own 0 and 0.
+    let white_balance = white_balance_controls(opened)?;
+    ensure(
+        white_balance
+            .iter()
+            .map(|(kind, label)| (kind.as_str(), label.as_str()))
+            .eq(WHITE_BALANCE_CONTROLS),
+        format!("The White balance group draws {white_balance:?}"),
+    )?;
+    let as_shot = opened["state"]["section_controls"][BASIC_MODULE]
+        .as_array()
+        .and_then(|controls| controls.iter().find(|control| control["label"] == AS_SHOT))
+        .cloned()
+        .unwrap_or_default();
+    ensure(
+        as_shot["action"] == SET_BASIC,
+        format!("As shot on a JPEG is not Basic's own: {as_shot}"),
+    )?;
     record(
         opened,
         "the Basic section with White balance, Tone and Colour, every field at its default",
         json!({
+            "white_balance": white_balance,
             "placement": placement(opened)?,
             "fields": listed,
             "red_minus_blue": balance(rgb("opened")?),
@@ -848,6 +917,28 @@ pub fn verify_panel(_: &mut Run, launches: &[Checked]) -> Result {
         clipped,
         "a pick on a clipped patch: refused with its reason, nothing committed",
         json!({"status": clipped.status()?, "revision": clipped.revision()?}),
+    );
+
+    // As shot after a warm drag: the neutral fixture is neutral again, in one entry labelled as
+    // the group's reset, whatever route sent it.
+    let as_shot = launch.at("as-shot")?;
+    compare(
+        "+40 temperature against the neutral open, red minus blue",
+        balance(rgb("warm-again")?),
+        balance(rgb("opened")?),
+        Tolerance::Above(WARMER),
+    )?;
+    compare(
+        "As shot against the opened photograph, red minus blue",
+        balance(rgb("as-shot")?),
+        balance(rgb("opened")?),
+        Tolerance::Within(NEUTRAL),
+    )?;
+    record(
+        as_shot,
+        "As shot from the palette after a warm drag: Temperature and Tint 0, one entry labelled \
+         Reset White balance, the photograph neutral again",
+        json!({"label": as_shot.label()?, "payload": basic_payload(as_shot), "red_minus_blue": balance(rgb("as-shot")?)}),
     );
 
     // The opened frame is also the default screen the Module panels density is accepted on: Basic

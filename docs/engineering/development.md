@@ -28,8 +28,8 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram, field-patch conformance, Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
-| Verify golden fixtures; generate 24 MP, 60 MP, the mixer scenario's own hue-wheel, the presence scenario's own gradient/edge/texture/flat workload and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|viewport] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
+| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
@@ -38,7 +38,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, the Transforms icon row, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
-| Rendered Basic panel: all three groups, historical values, a group reset, the neutral picker, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
+| Rendered Basic panel on a JPEG: all three groups, the White balance group's four controls (Temperature, Tint, Neutral picker, As shot) with As shot sending Basic's own 0 and 0, historical values, a group reset, the neutral picker, As shot after a warm drag, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
@@ -46,10 +46,13 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
+| Rendered 100% viewport with two masks and a rotated crop: draft, pan, refinement, release, settled reuse, history and overlay identity; GPU draw counters must record no blank or stale photo | `cargo xtask smoke --scenario viewport-region --output NEW_DIR` |
+| Rendered explicit exact fallback for an estimate after a spatial layer, with two masks, pan, draft and release; GPU draw counters must record no blank or stale photo | `cargo xtask smoke --scenario viewport-fallback --output NEW_DIR` |
+| Rendered ordinary 100% to Fit refit after 1 s of quiet: disable evidence ticks and frame capture before changing view, check requested GPU draw identity and blank count at the deadline before capture resumes, then capture the resulting frame | `cargo xtask smoke --scenario viewport-idle-fit --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Luxforge preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
 | Rendered export over the EXIF orientation 6 fixture, brightened and cropped to 16:9: the title bar's Export menu open, the displayed entry exported with metadata stripped and again keeping it into the run's evidence directory (only the save dialog is bypassed), each file decoded independently for its dimensions against the captured output stage, its byte length, ICC profile, APP1 segments and EXIF orientation, and a Keep metadata export to the stripped file's name refused with the status bar's reason and the file unchanged | `cargo xtask smoke --scenario export --output NEW_DIR` |
 | Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
-| Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a tenth of the drag's own change from the approximate one on average (and within a code of it at Fit), each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Custom tint field throughout; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Exposure back to 0 EV, Custom temperature and tint back to As shot (`use-as-shot-wb`, the entry labelled As shot white balance, both fields showing the core's as-shot equivalent, checked back through the forward map); and the RAW band's dot, absent on the untouched photograph, present after the committed custom temperature and absent again once the resets leave As shot at 0 EV; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
+| Rendered Basic section over a supplied RAW file, in place of a RAW section, which no frame lists: the White balance group's four controls in the JPEG's order, each the RAW development's (Temperature in K and Tint over `set-raw`, the Neutral picker entering the sensor pick, As shot sending `set-raw {white-balance: as-shot}`); a Temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit and carries its own report; at Fit its moving approximate frame is within 10% of the drag's own change and within one code on average, while at 100% the 10% gate compares the held approximate draft after full-detail refinement under the shared 120 ms quiet policy and before release; moving 100% separately verifies viewport identity, approximate label, visible response and refinement, and records softness without a numeric threshold, each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Tint field throughout; then a double-click on Temperature, Tint and Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Temperature and Tint back to As shot (`set-raw {white-balance: as-shot}`, the entry labelled Reset White balance, both fields showing the core's as-shot equivalent, checked back through the forward map), Exposure back to 0 EV; Basic's dot, absent on the untouched photograph, present after the committed custom temperature and absent again at As shot and 0 EV; `W` entering the RAW development's sensor pick with Basic's Neutral picker selected, and Escape leaving it; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Rendered module capabilities: settings, a profile and a masked key, the download consent denied then allowed, install, activation, the photo-data consent, a task with progress, Apply, a refused task, the opened permissions list and a revoked grant, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, activation, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
@@ -119,7 +122,7 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 31 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance` and the four `mask-*` ones, through a bounded pool |
+| `rendered` | quick plus all 34 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the four `mask-*` ones, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, `raw-editor`, the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
@@ -273,8 +276,8 @@ therefore carries `proxy`, `proxy_dimensions` (the proxy source's own size, null
 render) and `render_ms`: the preview worker's own time for the phase that produced those pixels —
 the proxy build when that frame built it plus the render, or the exact render plus the reduction —
 excluding the queue wait, source preparation and the hand-over, and for a `"zoom"` frame the time
-recorded with that retained raster. It is the figure the status bar states as "Rendered in N ms",
-with "(proxy)" for a proxy. Its `dimensions` stay the exact output stage's, which is what picks, the
+recorded with that retained raster. It is the figure the status bar states as
+`Approximate render · N ms` or `Exact render · N ms` according to the presented frame. Its `dimensions` stay the exact output stage's, which is what picks, the
 percent-zoom box and the overlay cell grid map through.
 
 The photograph is drawn by a **photo surface** at every zoom: a shader primitive that owns its
@@ -295,8 +298,14 @@ its texture, and how many times the view has been built. A redraw of an unchange
 nothing, however often the view is rebuilt. It therefore carries no `upload_ms`, and neither does
 `render_ready`: there is no upload step to time. The clipping overlay, the mask coverage and the
 crop draft's input stage are drawn by the same surface from frames of their own, handed over in
-the update that has them: `clipping_overlay` and `mask_overlay` are emitted in that update and
-settle a waiting step there, and the draft opens in the update that takes up its input stage. `preview_exact_adopted` records the exact phase of such a job
+the update that has them: `clipping_overlay` and `mask_overlay` are emitted in that update. For
+ordinary photos with clipping enabled, capture waits for a GPU draw containing both the requested
+photo identity and that request's assigned clipping frame version (`drawn_clipping_version`); if
+the clipping version changes while a screenshot is in flight, capture retries. Empty, crop, gallery
+and render-error captures do not wait for this pair. If clipping derivation or presentation fails,
+the active script step is marked failed and the refusal frame is captured. Mask coverage still
+settles a waiting step in its update, and the crop draft opens in the update that takes up its input
+stage. `preview_exact_adopted` records the exact phase of such a job
 being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer request superseded, under its own generation and with `draft` when it was a crop draft's input stage, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `preview_failed` records every failed preview of the displayed state,
@@ -513,8 +522,8 @@ Each step is an object with exactly one key.
   recorded as its own `slider_step_value` event (`{"value", "index"}`), even one the core's own
   gesture round trip coalesces away, so the harness can time an input that never reached the owner.
   Without `interval_ms` every value is sent at once, as before.
-- `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw-temperature",
-  "parameter": "kelvin", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
+- `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw",
+  "parameter": "temperature", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
   which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
   release, one timer tick sends the reset the rail's wrapper publishes for the second press,
   whatever the commit is doing by then. The frame is captured once nothing the two presses started
@@ -537,6 +546,9 @@ Each step is an object with exactly one key.
   same scrollable a Space drag scrolls, and is captured once the offset the scrollable reports has
   reached the session through `view.set`, so `state.surface.view` carries the pan the frame was drawn
   at. At Fit there is no scrollable and the step fails.
+- `key` (`{"key": "w"}`, one letter or digit, or `"Escape"`) presses one key with no text field
+  focused, through the desktop's own key table: a key that enters a canvas mode is captured once the
+  session follows, any other bound key on the next frame, and a key the table does not bind fails.
 - `wait` (`{"ms": N}`, 1 to 10000) asks nothing of the editor for at least that long and then
   captures. The evidence run's own 250 ms tick keeps rebuilding the view meanwhile, so the frame
   shows what repeated rebuilds with nothing new to show did.
@@ -593,16 +605,16 @@ also writes `app/crop-checks.json` with the measured values and their tolerances
 
 `basic-panel` opens `fixtures/s0/greyscale.jpg` at 1440 × 900 and drives a Temperature drag, a typed
 Vibrance, a preview of the Temperature entry and its return, the Colour group's reset, the neutral
-picker's mode, a pick on a neutral grey patch and a pick on a clipped one. Its opened frame is also
+picker's mode, a pick on a neutral grey patch, a pick on a clipped one, a warm drag and As shot from the palette. Its opened frame is also
 the default screen the Module panels density is accepted on, with Basic expanded and every other
 section collapsed by its own descriptor. That fixture is used
 because the picker needs both a genuinely neutral patch and a clipped one, and it has each: uniform
 grey quadrants and a white cross at code 255. The runner checks, per frame, the revision, the history
 label, the stored Basic payload, the one Basic layer's identity across every edit and what each of
-the ten generated fields showed; that the previewed frame reports "Previewing entry 1" and shows that
+the ten generated fields showed; that the White balance group draws Temperature, Tint, the Neutral picker and As shot, in that order, with As shot sending `set-basic`; that the previewed frame reports "Previewing entry 1" and shows that
 entry's own values rather than the current ones; that the picker frame reports the Basic module as
 the workspace mode; that the neutral pick committed temperature and tint of 0 once and kept the mode;
-and that the clipped pick's status leads with `clipped:` and committed nothing. Alongside the state
+that the clipped pick's status leads with `clipped:` and committed nothing; and that As shot after the warm drag commits one entry labelled Reset White balance and returns the photograph to neutral. Alongside the state
 it reads the photograph's mean red-minus-blue balance over a centred window — the measure a white
 balance moves on a neutral fixture, where luminance barely changes — and its placement and 3:2 aspect
 from the bright pixels of the photo surface, since a greyscale fixture has no quadrant colours to
@@ -817,6 +829,23 @@ its `preview_displayed` time, paired by generation exactly as drag mode pairs th
 `cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
 superseded, which carry no frame) and `proxy` (the last
 presented frame's `proxy`/`proxy_dimensions`).
+With `--zoom PERCENT --moving-pan`, the same paced tick also moves the photo scrollable on a path
+across and back over the image. Without `--moving-pan`, a zoomed burst holds a fixed viewport and
+its script can run against the pre-viewport binary for a like-for-like baseline. The moving-pan
+report counts `slider_step_pan` events and records the region events' content,
+revision, quality, generation and geometry alongside the captured surface GPU counters. A burst
+still measures adoption rather than scanout; multiple adoptions can occur before one draw.
+
+`--zoom PERCENT` sets the view before the measured gesture. `--mode viewport` requires `--zoom
+100` or `--zoom 200`; it opens a slider draft, pans, leaves the draft quiet for 1.5 seconds,
+moves the slider again, pans and pauses again, then releases and pans after the full report
+settles. The captured states and `preview_displayed` events must name interactive and exact
+regions for each draft revision. The first viewport-only frame keeps the histogram updating;
+release must produce a current full-image histogram. The final settled pan must draw the same
+full texture without another photograph write. `latency.json` records region geometry, quality,
+generation and draft revision, plus the photo surface's actual draw/write/residency counters.
+`preview_displayed` remains an adoption timestamp, not GPU upload or display scanout. An older
+binary with no region events is reported as `unavailable`, never as a passing viewport run.
 
 `--mode paint` measures a **paint** gesture instead of a slider, because a stroke is not a field patch
 and the slider modes cannot drive one. It builds the bare recipe the figure is about — one brush mask

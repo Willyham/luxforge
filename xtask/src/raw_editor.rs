@@ -44,11 +44,11 @@ const FINAL_FRAME: usize = 13;
 fn script(source: &Source) -> Value {
     let [x, y] = source.neutral_point;
     script::write(&[
-        script::Step::call("edit.set-raw-exposure", json!({"ev":1.0})),
+        script::Step::call("edit.set-basic", json!({"exposure":1.0})),
         script::Step::call("edit.set-raw-red-gain", json!({"gain":3.0})),
         script::Step::call("edit.set-raw-blue-gain", json!({"gain":0.9})),
-        script::Step::call("edit.set-raw-temperature", json!({"kelvin":5500.0})),
-        script::Step::call("edit.set-raw-tint", json!({"tint":10.0})),
+        script::Step::call("edit.set-raw", json!({"temperature":5500.0})),
+        script::Step::call("edit.set-raw", json!({"tint":10.0})),
         script::Step::call("edit.pick-raw-neutral", json!({"x":x,"y":y})),
         script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
         script::Step::call("edit.crop-fit", json!({"aspect":"4:3","angle":0.0})),
@@ -309,6 +309,12 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
         .find(|layer| layer["effect"] == "luxforge.raw")
         .ok_or("Displayed RAW layer missing")?;
     let payload: luxforge_core::RawPayload = serde_json::from_value(raw["payload"].clone())?;
+    // Exposure is Basic's on every kind: the global Basic layer's, or its 0 EV default.
+    let exposure = layers
+        .iter()
+        .find(|layer| layer["effect"] == luxforge_core::BASIC_EFFECT && layer["mask"].is_null())
+        .and_then(|layer| layer["payload"]["exposure"].as_f64())
+        .unwrap_or(0.0);
     let controls = &state["controls"];
     // The core's own answer for the displayed development: a custom temperature and tint, or
     // under As shot the temperature and tint whose gains are the camera's as-shot gains, which
@@ -327,10 +333,11 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
             ),
         )?;
     }
+    // Basic's section shows the RAW variants of Temperature and Tint on a RAW photo.
     for (action, parameter, expected) in [
-        ("set-raw-exposure", "ev", payload.exposure_ev),
-        ("set-raw-temperature", "kelvin", kelvin),
-        ("set-raw-tint", "tint", tint),
+        ("set-basic", "exposure", exposure),
+        ("set-raw", "temperature", kelvin),
+        ("set-raw", "tint", tint),
     ] {
         let key = format!("{action}.{parameter}");
         let shown: f64 = controls[&key]

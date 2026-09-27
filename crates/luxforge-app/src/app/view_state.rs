@@ -109,6 +109,11 @@ impl Editor {
                     self.status = reason;
                     return Task::none();
                 }
+                // A module pick entered while the sections are bound to a mask stays bound to it,
+                // exactly as the resolved picker the person pressed was: Basic's, on that mask.
+                self.pick_on_mask = tools::module_of(&self.modules, &mode).is_some()
+                    && tools::canvas_pick(&self.modules, &mode).is_some()
+                    && self.section_target().is_some();
                 let opens_draft = tools::crop_frame(&self.modules)
                     .is_some_and(|frame| frame.module.id == mode)
                     && self.crop().is_none()
@@ -179,6 +184,10 @@ impl Editor {
     /// Pan is session state like zoom, but scroll events arrive faster than round trips complete:
     /// keep one request in flight and only the newest pending position.
     pub(super) fn pan(&mut self, x: f32, y: f32) -> Task<Message> {
+        if (x, y) != self.local_pan {
+            self.local_pan = (x, y);
+            self.note_view_motion();
+        }
         if self.pan_in_flight {
             self.pending_pan = Some((x, y));
             return Task::none();

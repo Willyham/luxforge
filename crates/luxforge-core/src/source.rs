@@ -43,6 +43,45 @@ pub struct SourceImage {
     pub capture: Arc<CaptureMetadata>,
 }
 
+impl SourceImage {
+    /// A bounded, upright rectangle of the decoded byte source. The original allocation remains
+    /// shared and untouched; only the requested rows are copied into a frame-limited buffer.
+    pub(crate) fn window(
+        &self,
+        region: crate::Region,
+        cancel: &crate::Cancel,
+    ) -> Result<Self, Error> {
+        if region.is_empty() || region.x1() > self.width || region.y1() > self.height {
+            return Err(Error::validation(
+                "byte source window lies outside the image",
+            ));
+        }
+        if self.rgba.len() != Raster::expected_len(self.width, self.height)? {
+            return Err(Error::validation(
+                "source pixel buffer has the wrong length",
+            ));
+        }
+        let len = Raster::expected_len(region.width, region.height)?;
+        let mut rgba = crate::render::zeroed_frame(len);
+        let stride = self.width as usize * 4;
+        let row_len = region.width as usize * 4;
+        for (row, y) in (region.y0..region.y1()).enumerate() {
+            cancel.check()?;
+            let offset = y as usize * stride + region.x0 as usize * 4;
+            crate::render::frame_mut(&mut rgba)[row * row_len..(row + 1) * row_len]
+                .copy_from_slice(&self.rgba[offset..offset + row_len]);
+        }
+        Ok(Self {
+            width: region.width,
+            height: region.height,
+            rgba,
+            fingerprint: self.fingerprint.clone(),
+            orientation: self.orientation,
+            capture: self.capture.clone(),
+        })
+    }
+}
+
 /// Hash and decode one bounded snapshot read from an already opened handle. The magic bytes pick
 /// the limit: a JPEG original is bounded by [`MAX_JPEG_BYTES`], anything else by RAW's own bound.
 pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
@@ -966,7 +1005,6 @@ mod tests {
             let approximate = PreviewSource::Raw {
                 image: developed.clone(),
                 settings: LinearSettings {
-                    exposure_ev: 0.0,
                     white_balance: Some(balance),
                 },
             };
@@ -1077,9 +1115,9 @@ mod jpeg_tests {
     fn oversized_jpeg_is_rejected_from_file_length_before_buffer_allocation() {
         use std::io::{Seek, SeekFrom, Write};
         let path = std::env::temp_dir().join(format!(
-            "luxforge-oversized-jpeg-{}-{}.jpg",
+            "luxforge-oversized-jpeg-{}-{:?}.jpg",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current().id()
         ));
         let mut file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_JPEG_BYTES as u64 + 1).unwrap();

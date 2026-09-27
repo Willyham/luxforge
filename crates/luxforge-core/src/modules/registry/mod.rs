@@ -16,9 +16,13 @@ mod placement;
 mod placement_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+mod variants;
+#[cfg(test)]
+mod variants_tests;
 
 pub use lookups::{ActionRef, QueryRef};
 pub use placement::insertion_index_among;
+pub use variants::Superseded;
 
 use super::{
     BasicModule, CanvasInteraction, CapabilityModule, CropModule, MixerModule, ModuleDescriptor,
@@ -119,6 +123,14 @@ impl ToolModule for Unavailable {
     ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
         self.inner.values(effect_id, format, payload)
     }
+    fn settings(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
+        self.inner.settings(effect_id, format, payload)
+    }
     fn query(
         &self,
         query_id: &str,
@@ -187,6 +199,9 @@ impl ModuleRegistry {
                 .register(module)
                 .expect("built-in module descriptors are valid");
         }
+        registry
+            .check_complete()
+            .expect("built-in control variants are valid");
         registry
     }
 

@@ -190,10 +190,14 @@ pub(crate) fn refresh_for(
             .expect("a test analysis identity"),
             analyse: false,
             proxy: None,
+            viewport: None,
+            intent: luxforge_core::PreviewIntent::Immediate,
+            viewport_declined: None,
             mask_overlay: None,
         },
         session: ClientSession::default(),
         request: None,
+        skipped: Vec::new(),
     }
 }
 
@@ -272,6 +276,8 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         steps: Vec::new(),
         frames: Vec::new(),
         capture_pending: false,
+        view_idle: None,
+        allow_unready_capture: false,
         capture_overlay: false,
         saving: false,
         had_errors: false,
@@ -602,9 +608,12 @@ pub(crate) fn accepted_set(
 /// The first patch action any registered module declares, and its first field: the tests below
 /// drive that control, so no module or parameter is named here either.
 pub(crate) fn patch_control(editor: &Editor) -> (String, String) {
+    // The first patch a JPEG shows: the RAW development's `set-raw` is registered earlier but
+    // applies only to a RAW photo, and draws no controls of its own.
     let action = editor
         .modules
         .iter()
+        .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
         .flat_map(|module| module.actions.iter())
         .find(|action| action.patch)
         .expect("a built-in declares a field patch");

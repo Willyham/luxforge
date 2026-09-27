@@ -74,7 +74,7 @@
     {
       "id": "TASK-002",
       "description": "Declare each effect's source-kind applicability on EffectDescriptor and resolve \"does this apply to this photo\" through one function used by action refusal, admission, module.list and the desktop.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. Declared source kinds remove the desktop's name checks in the same change.",
@@ -395,17 +395,16 @@
     },
     {
       "id": "TASK-006",
-      "description": "Implement the shared Exposure and White balance control set for JPEG and RAW photos per the source-controls design, once the owner has answered its open questions.",
-      "status": "blocked",
+      "description": "Implement the shared Exposure and White balance control set for JPEG and RAW photos per the source-controls design, on the owner's decisions of 2026-09-27.",
+      "status": "completed",
       "dependencies": [
-        "TASK-002",
-        "TASK-004"
+        "TASK-002"
       ],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "Blocked on the owner's answers to the design's open questions: where Exposure lives on RAW, masked white balance on RAW, the JPEG and RAW scales and ranges, Lightroom RAW temperature and tint import, presets across source kinds, and whether Reset Basic also returns RAW white balance to As shot. Declared source kinds land independently of those questions, ahead of this work.",
-        "The host still reads the RAW module's payload directly: editor/source.rs's raw_settings, resolve_raw_settings, development_gains and raw_payload all parse RawPayload, and resolve_raw_settings and development_gains each resolve its white-balance mode to gains with the same As-shot/Custom match, written a third time inside the module itself. The payload's capture calibration (as_shot_gains, cam_xyz) is stored in every entry and re-compared against the asset's own at admission. Let the RAW module compile its own payload into a host source-development value instead, and take calibration from the stage context the way sensor_neutral already does.",
-        "Without a field patch that accepts every declared parameter kind, a patched set-raw would be a third hand-written patch semantics alongside the field patch and the developer controls proof. StageContext also carries no source kind today, so the RAW module's plan inspects the stack's first layer directly instead of being told the kind; give it one as part of this work.",
+        "The owner took every recommended default of the design on 2026-09-27 (docs/decisions.md, \"Source-kind controls\"): Exposure is Basic's on every kind, masked white balance on RAW is relative, the JPEG and RAW scales and ranges stay, Lightroom Temperature and Tint import converts through the chromaticity they name, presets store each kind's white balance separately and skip what does not apply, and Reset Basic on RAW also returns the development to As shot.",
+        "The host still reads the RAW module's payload directly: editor/source.rs's raw_settings, resolve_raw_settings, development_gains and raw_payload all parse RawPayload, and resolve_raw_settings and development_gains each resolve its white-balance mode to gains with the same As-shot/Custom match, written a third time inside the module itself. Removing exposure from the payload touches these; moving the payload's compilation into the module is not required by this task's acceptance.",
+        "TASK-004 is not a prerequisite. set-raw is a `patch: true` action planned by the RAW module itself, because its payload is a development (gains, as-shot gains, calibration) rather than a map of fields, and its merge is the white-balance-in-force rule rather than a field overwrite; `white-balance` uses the existing enum parameter kind. StageContext carries no source kind today, so the RAW module's plan inspects the stack's first layer directly instead of being told the kind; give it one as part of this work.",
         "A query also carries no mask target, so a masked Neutral picker would resolve against the stage before the global Basic layer applies, which is wrong whenever a global white balance exists; the desktop avoids this today only by leaving mask mode before entering Basic's pick mode. Resolve this rather than leaving it latent.",
         "RAW action identities and payload fields are hard-coded in the harness (xtask/src/raw_editor.rs's script steps and control checks, xtask/src/raw_panel_smoke.rs's constants and field lookups); these move to the merged action and its fields with this change."
       ],

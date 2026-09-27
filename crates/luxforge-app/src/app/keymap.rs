@@ -36,6 +36,9 @@ pub(crate) struct KeyContext {
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
     /// Escape with its own cancel first; a mode without one has nothing to discard.
     pub(crate) mode_active: bool,
+    /// Where Escape leaves a pick mode for: Mask for a pick taken on a mask, which returns to the
+    /// Masks panel it was entered from, and the pointer otherwise (`None`).
+    pub(crate) leave_to: Option<String>,
     /// The declared canvas-mode shortcut letters and the module each one selects.
     pub(crate) modes: Vec<(char, String)>,
 }
@@ -214,7 +217,8 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         && !context.mask_drafting
         && matches!(key, Key::Named(Named::Escape))
     {
-        return Some(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
+        let leave = context.leave_to.as_deref().unwrap_or(POINTER_MODE);
+        return Some(Message::View(ViewMessage::SetMode(leave.into())));
     }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
     // holding a letter down must not re-run its command once per repeat.
@@ -334,6 +338,7 @@ mod tests {
             palette_open: false,
             export_menu_open: false,
             mode_active: false,
+            leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
         }
     }

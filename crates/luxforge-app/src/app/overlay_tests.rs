@@ -8,6 +8,58 @@ use super::{
 };
 use luxforge_core::Zoom;
 
+#[test]
+fn failed_clipping_derivation_marks_the_evidence_step_and_releases_capture() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":20}}]"#);
+    let _ = editor.next_step();
+    editor.await_step(evidence::Settle::Overlay);
+    editor.session.workspace.clip_highlights = true;
+    let request = overlay::OverlayRequest {
+        generation: editor.presented_generation,
+        cells_w: 1,
+        cells_h: 1,
+        shadows: false,
+        highlights: true,
+        approximate: false,
+        region: None,
+    };
+    editor.overlay_request = Some(request.clone());
+    editor.overlay_ready(overlay::OverlayResult {
+        request,
+        width: 1,
+        height: 1,
+        result: Err(luxforge_core::Error::render("derived mask failed")),
+    });
+    let evidence = editor.evidence.as_ref().expect("evidence");
+    assert_eq!(evidence.current.as_ref().unwrap()["status"], "failed");
+    assert!(evidence.capture_pending && evidence.awaiting.is_none());
+    assert!(
+        editor.capture_clipping_ready(),
+        "the refusal can be captured"
+    );
+    finish(editor, catalog);
+}
+
+/// A percent zoom is in physical pixels. A 2× display must not halve either grid, and a whole
+/// stage must not inherit the viewport's narrower dimensions at settle.
+#[test]
+fn viewport_and_whole_mask_grids_use_physical_density_at_their_own_stage_sizes() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    editor.window = (1440.0, 900.0);
+    editor.scale_factor = 2.0;
+    editor.dimensions = Some((6000, 4000));
+    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+    let visible = editor
+        .desired_view_for((6000, 4000))
+        .expect("a visible region");
+    let region_cells = editor.overlay_cells().expect("region cells");
+    let whole_cells = editor.whole_overlay_cells().expect("whole-stage cells");
+    assert_eq!(region_cells, (visible.width, visible.height));
+    assert_eq!(whole_cells, (4096, 2731));
+    assert!(whole_cells.0 > region_cells.0 && whole_cells.1 > region_cells.1);
+    finish(editor, catalog);
+}
+
 /// The overlay is keyed on the image it describes, not on the newest preview asked for: a
 /// frame still rendering re-derives nothing, and the drafted frame that reaches the screen
 /// re-derives the mask from its own raster, so the overlay never describes the frame the

@@ -111,6 +111,9 @@ impl EditorService {
             // whole stack does not describe, and the desktop shows it only as a drafting aid. It
             // therefore never has a proxy phase, whatever bounds the caller offered.
             proxy: proxy.filter(|_| layer_count.is_none()),
+            viewport: None,
+            intent: crate::PreviewIntent::Immediate,
+            viewport_declined: None,
             // A coverage grid is asked for by the client that will draw it, through
             // `PreviewJob::with_mask_overlay`, which validates it against this stack.
             mask_overlay: None,
@@ -190,7 +193,7 @@ impl EditorService {
     ) -> Result<PreviewSource, Error> {
         match prepared {
             PreparedSource::Jpeg(image) => {
-                validate_source_recipe(asset, recipe)?;
+                validate_source_recipe(&self.registry, asset, recipe)?;
                 Ok(PreviewSource::Jpeg(image))
             }
             PreparedSource::Raw(raw) => {
@@ -539,7 +542,7 @@ impl EditorService {
     /// answers without the original.
     fn bound_entry(&self, state: &EditorState, entry_id: &EntryId) -> Result<HistoryEntry, Error> {
         let mut entry = self.entry(&state.asset.id, entry_id)?;
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
         let bound = self.bind_artifacts(&mut entry.snapshot.recipe);
         let stack = Evaluated::exactly(&state.asset, &entry.id, &entry.snapshot.recipe);
         self.needing(stack, bound)?;

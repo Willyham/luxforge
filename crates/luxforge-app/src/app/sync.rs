@@ -251,7 +251,7 @@ impl Editor {
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
         // the image for this newer open request.
-        self.preview_generation = self.preview_queue.cancel();
+        self.preview_generation = self.cancel_preview_queue();
         self.busy = true;
         self.status = "Importing photograph…".into();
         let file = path
@@ -381,10 +381,16 @@ impl Editor {
             .entries
             .iter()
             .any(|row| row.id == refresh.state.current_entry.id);
-        if let Some(happened) =
-            state::status::Happened::between(self.state.as_ref(), &refresh.state, known)
-        {
+        let happened = state::status::Happened::between(self.state.as_ref(), &refresh.state, known);
+        // A composite that skipped settings says so beside what it did, and one that applied
+        // nothing at all says that, since no entry moved to say anything else.
+        self.skipped = (!refresh.skipped.is_empty()).then(|| {
+            state::status::skipped(refresh.skipped.len(), refresh.state.asset.source.tag())
+        });
+        if let Some(happened) = happened {
             self.happened = Some(happened);
+        } else if self.skipped.is_some() {
+            self.happened = Some(state::status::Happened::NothingApplied);
         }
         if let Some(request) = refresh.request {
             self.read_back(request);

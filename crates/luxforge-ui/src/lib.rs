@@ -8,17 +8,21 @@
 //! editing logic, and takes plain data structs, enums and message values or closures instead.
 //! Second, it is a compile-unit boundary: a styling or layout change here rebuilds this crate and
 //! `luxforge-app`, never `luxforge-core`, so widget churn never lengthens the core's own build.
-//! Third, the split is free at runtime: this crate links into the same desktop binary as
-//! everything else and holds only pure functions and constants, so it starts no process, no
-//! thread and no timer of its own — it adds no startup work beyond what any other Rust module
-//! would.
+//! Third, the split keeps UI-independent ownership in the core while linking into the same
+//! desktop binary. The photo surface starts one idle-blocked GPU retirement worker per pipeline;
+//! it holds no authoritative editing state and wakes the desktop when resources retire or a photo
+//! draw enters or leaves a temporary stale state.
 
 pub mod geometry;
 pub mod photo_surface;
 pub mod theme;
 mod widgets;
 
-pub use photo_surface::{Frame, Placement, Turn, photo_surface, stage_surface};
+pub use photo_surface::{
+    Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics, Turn,
+    photo_surface, region_texture_admissible, set_surface_waker, stage_surface,
+    surface_diagnostics, surface_retirement_pending, texture_upload_bytes, viewport_surface,
+};
 pub use widgets::*;
 
 mod gallery;

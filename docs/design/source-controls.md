@@ -1,6 +1,6 @@
 # Source-kind controls: one Exposure and one White balance
 
-Status: **proposal; implementation follows the owner's review of the open questions.** Step 1 of the shape below, declared source kinds, is authorized ahead of those questions ([decisions](../decisions.md#post-consolidation-review)); both are planned in the [module contract plan](../../tasks/module-contract.json). The owner's decision is in [decisions](../decisions.md#architecture-review): a JPEG and a RAW photo show one Exposure control and one White balance set, each control behaves as its source requires, and a module's applicability to a source kind is declared rather than named by the desktop. The [proposals](#proposals-with-recorded-defaults) at the end are the owner's to decide.
+Status: **accepted; implemented in the core and the desktop.** The owner decided on 2026-09-27 to take every recommended default ([decisions](#decisions), recorded in [product decisions](../decisions.md#source-kind-controls)). The core implements the whole shape below ([source kinds](modules-and-api.md#source-kinds), [control variants](modules-and-api.md#control-variants)), and the desktop draws Basic's section through the one resolver, with the `basic-panel` and `raw-panel` rendered evidence on the M4 Mac. An Exposure drag on RAW is measured before and after the move in [performance](../specs/performance.md#exposure-drag-on-raw-source-development-against-basic). The underlying decision is in [decisions](../decisions.md#architecture-review): a JPEG and a RAW photo show one Exposure control and one White balance set, each control behaves as its source requires, and a module's applicability to a source kind is declared rather than named by the desktop.
 
 ## Outcome and scope
 
@@ -8,14 +8,15 @@ Every photo shows the same Basic section: White balance (Temperature, Tint, Neut
 
 In scope: descriptors, the RAW module's actions and payload, the refusals that keep one path, presets, history labels, the desktop's applicability checks and the evidence. Out of scope, with no placeholders: Auto and named white-balance modes, a control for RAW's explicit gains (they stay API-only), and any change to the frozen equations of [Basic white balance](basic-white-balance.md) or the [RAW locus](initial-raw.md#minimal-controls-and-shared-basic-integration).
 
-## Today
+## Current state
 
 | | JPEG | RAW |
 | --- | --- | --- |
-| Exposure | Basic `set-basic.exposure`, colour stage, maskable | RAW `set-raw-exposure.ev`, multiplied into each source pixel through `LinearSettings`, **and** Basic's, so exposure can act twice |
-| White balance | Basic `set-basic.temperature`, `tint`: relative ±100, a Bradford von Kries correction of the rendered image, 2e−4 CIE 1960 uv per tint unit | RAW `set-raw-temperature.kelvin` (2000–12000 K), `set-raw-tint.tint` (±100, 1e−4 uv per unit), `use-as-shot-wb`, `reset-raw` and the sensor pick, **and** Basic's relative pair |
-| Neutral picker | Basic's `neutral-sample` query through `sample-apply`, shortcut `W` | RAW's `pick-raw-neutral` through `point-pick`, shortcut `N`, and Basic's `W` |
-| Applicability | | Named, not declared: `module.list` filters `luxforge.raw` by identity, and so do the desktop's section list, palette, mode shortcuts and pick gate; the JPEG recipe check names the RAW effect |
+| Exposure | Basic `set-basic.exposure`, colour stage, maskable | The same, on the developed planes; the development carries none |
+| White balance | Basic `set-basic.temperature`, `tint`: relative ±100, a Bradford von Kries correction of the rendered image, 2e−4 CIE 1960 uv per tint unit; As shot is `set-basic {temperature: 0, tint: 0}` | Global target: `set-raw {temperature?, tint?, white-balance?}` (2000–12000 K, ±100 at 1e−4 uv per unit), As shot `set-raw {white-balance: as-shot}`, reached through Basic's RAW variants; Basic's pair is refused there. A mask: Basic's relative pair |
+| Neutral picker | Basic's `neutral-sample` query through `sample-apply`, shortcut `W`, with the optional `mask` target | Global target: RAW's `pick-raw-neutral` through `point-pick`, reached by Basic's picker variant; the RAW canvas has no shortcut of its own. A mask: Basic's |
+| Applicability | Every other effect declares no `sources`, so it exists on every kind | Declared: the RAW effect's `sources` is `["raw"]`, and action refusal, admission, `module.list {asset_id}` and the desktop's sections, palette, mode strip, mode shortcuts and pick gate all read it through `ModuleDescriptor::applies_to`; no check names the module |
+| Desktop | Basic's section as declared | Basic's section drawn through the resolver: on the global target White balance's controls, picker, As shot and reset are the RAW development's, on a mask Basic's own; no RAW section; `W` and the pick gate follow the resolved picker; the dot reads every layer the resolved controls edit |
 
 The two white balances are different operations and neither can stand in for the other. RAW's sets sensor gains before the nonlinear demosaic, which developed planes cannot undo; JPEG's corrects rendered pixels, which name no illuminant. Their scales stay distinct and nothing converts between them.
 
@@ -24,7 +25,7 @@ The two white balances are different operations and neither can stand in for the
 Recommended, in four parts:
 
 1. **Applicability is declared on effects.** `EffectDescriptor` gains `sources`, the source kinds a layer of the effect may exist on, named by the `kind` tags `asset.state` already reports (`jpeg`, `raw`); the default is every kind. The RAW effect declares `["raw"]`. A module applies to a photo when any of its effects does, or when it declares none. The host refuses an action of a module that does not apply (`validation: RAW does not apply to a JPEG photo`), admission refuses a layer on a kind its effect does not list, `module.list {asset_id}` filters by it, and the desktop's sections, palette, mode strip and pick gate read it. Every name check goes; the RAW-only invariants (one source layer at index zero, calibration equal to the original's) stay with the host's RAW source.
-2. **Exposure is Basic's on every kind.** The source development stops carrying exposure: `RawPayload.exposure_ev`, `set-raw-exposure` and `LinearSettings.exposure_ev` go. On RAW, Basic's exposure multiplies the developed scene-linear planes, which the RAW path keeps unclipped to the terminal boundary ([pixel contract](initial-raw.md#pixel-and-color-contract)), before tone. It is the same operation at a later position, with only pixel-stage layers in between. [Proposal 1](#proposals-with-recorded-defaults) records the decision's wording as the alternative.
+2. **Exposure is Basic's on every kind.** The source development stops carrying exposure: `RawPayload.exposure_ev`, `set-raw-exposure` and `LinearSettings.exposure_ev` go. On RAW, Basic's exposure multiplies the developed scene-linear planes, which the RAW path keeps unclipped to the terminal boundary ([pixel contract](initial-raw.md#pixel-and-color-contract)), before tone. It is the same operation at a later position, with only pixel-stage layers in between. [Decision 1](#decisions) took this over the decision's original wording.
 3. **White balance is one control set declared by Basic, with a RAW variant.** Basic's White balance group declares Temperature, Tint, Neutral picker and As shot once. Each of them, and the group's reset, carries a `variants` entry for `raw` naming the control the RAW module provides in that place: `set-raw.temperature` (K), `set-raw.tint`, the sensor pick and `set-raw {white-balance: as-shot}`. A variant applies on the global target of a photo of its kind; a mask target always uses the base control. The RAW module declares no controls, so it draws no section.
 4. **One path per field, by a declared rule.** A Basic field whose control has a variant for kind K is refused on the global target of a K photo, naming the variant: `validation: on a RAW photo, Temperature is the source development's: set-raw temperature (K)`. Admission refuses a global Basic layer holding such a field on a K photo. So on RAW the global white balance lives only in the source layer, a masked white balance only in masked Basic layers, and exposure only in Basic layers.
 
@@ -97,7 +98,7 @@ The RAW module's actions:
 
 History labels use the same words for the same control on both kinds: `Temperature 5500 K` or `Temperature +20`, `Tint +12`, `Exposure +0.50 EV`, and `Reset White balance` for As shot and the group reset. RAW's `label` follows the field-patch rules. A patch of exactly one group's non-default fields reads as the group, so either kind's pick is recorded as `White balance` rather than `Basic (2 fields)` or `Pick neutral patch`. `recipe.describe` reads the RAW row as `As shot` or `Temperature 5500 K · Tint +12`.
 
-Resets and the edited dot: on RAW, the Basic module reset also returns the development to As shot ([proposal 7](#proposals-with-recorded-defaults)). It is a `Compose` of `set-basic` at its defaults and each variant group reset, recorded as one entry labelled `Reset Basic`. The section's dot reads the neutrality of every layer its resolved controls edit, so on RAW a custom white balance lights it too. `StageContext` carries the photo's source kind, so plans and the refusal read it instead of inspecting layer zero.
+Resets and the edited dot: on RAW, the Basic module reset also returns the development to As shot ([decision 7](#decisions)). It is a `Compose` of `set-basic` at its defaults and each variant group reset, recorded as one entry labelled `Reset Basic`. The section's dot reads the neutrality of every layer its resolved controls edit, so on RAW a custom white balance lights it too. `StageContext` carries the photo's source kind, so plans and the refusal read it instead of inspecting layer zero.
 
 ## Presets
 
@@ -114,10 +115,21 @@ Lightroom import, the rows of the [mapping](presets.md#mapping) that change:
 | --- | --- | --- |
 | `Exposure2012` | `set-basic.exposure` | Value transfer, now applying to RAW as well |
 | `IncrementalTemperature`, `IncrementalTint` | `set-basic.temperature`, `tint` | Value transfer; skipped on RAW at apply |
-| `Temperature`, `Tint` | `set-raw.temperature`, `tint` | [Proposal 5](#proposals-with-recorded-defaults): converted together through the illuminant chromaticity they name, and refused together when either result is outside 2000–12000 K or ±100. Refused, as today, until the owner adopts it |
+| `Temperature`, `Tint` | `set-raw.temperature`, `tint` | [Decision 5](#decisions): converted together through the illuminant chromaticity they name, and refused together when either result is outside 2000–12000 K or ±100 |
 | `WhiteBalance` | `As Shot`: `set-raw.white-balance: as-shot`, and `set-basic` Temperature and Tint 0 when the preset holds no incremental value. `Custom`: neutral when the values it names are mapped, otherwise refused with them | `Auto` and named modes stay refused |
 
 The conversion is camera-independent. Lightroom's pair defines a white through the DNG SDK's `dng_temperature`: a correlated colour temperature on the Planckian locus and a perpendicular offset, reportedly −3000 tint units per unit of CIE 1960 uv. The constants must be confirmed from the SDK source and recorded in the [Lightroom preset research](../research/lightroom/presets.md) before implementation. Luxforge then solves its own locus for the same uv with the inverse it already has. This converts values; it does not match renderings, because Luxforge turns that white into gains through LibRaw's camera matrix, not Adobe's profile.
+
+## Implementation choices
+
+These settle what the shape leaves to the implementation:
+
+- **`set-raw` is planned by the RAW module**, not by the field-patch module. Its payload is a development (gains, as-shot gains, calibration), not a map of fields, and its merge is the white-balance-in-force rule rather than a field overwrite. The action is `patch: true`, so the host's patch rules (drafts, presets, `Compose`) apply to it. `white-balance` is an `enum` parameter with the options `as-shot` and `custom`.
+- **The RAW effect gets its own format constant**, `2`. Every other effect stays at the shared format `1`.
+- **Superseded fields are derived from the variants.** The host never lists them by name. If a control of action A and parameter P has a variant for kind K, then P of A is superseded on the global target of a K photo. Both the refusal and admission read that one derivation, and so does `schema.list`'s `superseded`.
+- **Registration checks pick modes against the complete registry.** A module whose pick canvas has no picker control of its own is valid when another module's control variant reaches that canvas. The RAW module declares a pick canvas and no controls.
+- **Queries carry the mask target.** `query.neutral-sample` takes the same optional `mask` field as the actions of a maskable module. Basic's picker on a mask then reads the stage before that mask's own Basic layer, and the global Basic layer's white balance is already applied there.
+- **The history label rule for groups:** a patch that sets exactly one group's fields reads as that group (`White balance`), and at their defaults as `Reset <group>`. On RAW, `pick-raw-neutral` is labelled `White balance`, and `set-raw {white-balance: as-shot}` is labelled `Reset White balance`.
 
 ## Existing data
 
@@ -134,7 +146,7 @@ Exact tests, in `luxforge-core` and `luxforge-app`:
 - **Descriptors.** Basic's variants validate. A variant naming an unknown action, a module that does not apply to its kind, a control of another shape, or a second variant for one kind is refused. Every other descriptor is unchanged, compared before and after.
 - **Applicability.** Every RAW action is refused on a JPEG by the declared rule. `set-basic` Temperature or Tint on a RAW global target is refused naming `set-raw`, and is accepted on a RAW mask. Exposure is accepted everywhere. Admission refuses a RAW recipe whose global Basic layer holds a superseded field, and a JPEG recipe holding a RAW layer, without naming either module.
 - **`set-raw`.** The current RAW plan tests are ported: the other field kept in force from As shot, from a pick and from a custom pair, and the 6504 K and 0 fallback. Also tested: As shot equal to the Original's payload, the refused `white-balance` combinations, no-ops, labels, `values` and `settings`.
-- **Exposure move, measured before it lands** with today's code, on the three supplied RAW files: a development at `ev` against one at 0 EV plus Basic `exposure: ev`, at proxy and full size, for EV −2.37, −0.5, +0.01, +1 and +3.3. Record the largest code difference and the share of pixels more than one code apart in [performance](../specs/performance.md). Integer EV should be byte-identical, since both sides multiply by an exact power of two. This measurement is the evidence for proposal 1.
+- **Exposure move, measured before it lands** with today's code, on the three supplied RAW files: a development at `ev` against one at 0 EV plus Basic `exposure: ev`, at proxy and full size, for EV −2.37, −0.5, +0.01, +1 and +3.3. Record the largest code difference and the share of pixels more than one code apart in [performance](../specs/performance.md). Integer EV should be byte-identical, since both sides multiply by an exact power of two. This measurement is the evidence for decision 1.
 - **Drafts.** The approximate white-balance tests move to `set-raw`, and an Exposure drag on RAW renders exactly with no redevelopment.
 - **Presets.** The importer rows above, skip reporting, and capture under As shot, custom and a pick. The JSON CLI parity test gains a RAW source.
 - **Parity.** A desktop state test derives the Basic section for a JPEG, a RAW global target and a RAW mask target. It checks that labels and order are identical, that units and ranges differ only where a variant declares them, and that each control's request equals the core's resolution. A test fails if desktop code outside tests names `luxforge.raw`.
@@ -147,11 +159,11 @@ Rendered evidence:
 
 Documentation changes with the implementation: [initial RAW](initial-raw.md), [modules and API](modules-and-api.md), [presets](presets.md), [instant previews](instant-preview.md) for the action names, [feature status](../features.md), the [user guide](../user-guide.md) and the scenario rows in [development](../engineering/development.md).
 
-## Proposals with recorded defaults
+## Decisions
 
-Recommendations for the owner, recorded as proposals until decided. Implementation waits for the owner's review.
+The owner took every recommended default on 2026-09-27. The alternatives stay listed for context.
 
-| Question | Recommended default | Alternatives |
+| Question | Decided | Alternatives not taken |
 | --- | --- | --- |
 | 1. Where does Exposure live on RAW? | Basic's colour stage on every kind; the source development carries none | The decision's wording: source-development exposure, with `set-basic.exposure` routed to it on RAW, or kind-specific preset fields |
 | 2. Masked white balance on RAW | Relative (Basic's ±100), as Lightroom's local Temp and Tint are | Kelvin through a matrix approximation against the global development, which would move whenever the global white balance moves |

@@ -1,6 +1,5 @@
-//! What the operating system accounts to this process: CPU time over all threads, memory in the
-//! measure the platform's own monitor shows, and, where the platform reports them, GPU time and GPU
-//! allocations.
+//! Small, safe wrappers around platform FFI: process CPU and memory counters, GPU counters where
+//! reported, and the Windows file change time used to verify source signatures.
 //!
 //! The platform code is FFI, so it lives in this leaf crate, the second one allowed `unsafe` after
 //! `luxforge-raw`. Every `unsafe` block sits beside a `SAFETY:` comment and nothing unsafe crosses
@@ -21,6 +20,8 @@ mod procfs;
 mod unsupported;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::file_change_time;
 
 #[cfg(target_os = "linux")]
 use linux as platform;

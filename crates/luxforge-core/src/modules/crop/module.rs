@@ -117,6 +117,7 @@ impl CropModule {
                     maskable: false,
                     artifacts: false,
                     single: true,
+                    sources: Vec::new(),
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -639,6 +640,8 @@ mod tests {
                 layers,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,
+                kind: crate::SourceTag::Jpeg,
+                masks: &[],
                 questions: &CropInput(layers.len()),
             },
         )

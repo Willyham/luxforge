@@ -46,7 +46,7 @@ impl EditorService {
         target: &MaskTarget,
         parameters: &Map<String, Value>,
     ) -> Result<MaskOutcome, Error> {
-        validate_source_recipe(asset, recipe)?;
+        validate_source_recipe(&self.registry, asset, recipe)?;
         let seed = self.mask_colour_seed(asset, command, recipe, target, parameters)?;
         let outcome =
             crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)?;
@@ -183,7 +183,7 @@ impl EditorService {
         let entry = self.entry(asset_id, entry_id)?;
         let asset = &state.asset;
         let recipe = &entry.snapshot.recipe;
-        validate_source_recipe(asset, recipe)?;
+        validate_source_recipe(&self.registry, asset, recipe)?;
         let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
         let sampled = self
             .bound(recipe)
@@ -288,6 +288,32 @@ pub(super) fn take_mask_target(
     Ok(Some(MaskId::parse(text)?))
 }
 
+/// Take the optional `mask` target out of a module query's request, exactly as
+/// [`take_mask_target`] does for an action: a query of a module whose effect is maskable carries
+/// it, and sending it to any other query is a `validation` error naming the query.
+pub(super) fn take_query_mask_target(
+    registry: &ModuleRegistry,
+    query_id: &str,
+    parameters: &mut Value,
+) -> Result<Option<MaskId>, Error> {
+    let Some(field) = parameters
+        .as_object_mut()
+        .and_then(|object| object.remove(MASK_FIELD))
+    else {
+        return Ok(None);
+    };
+    if !registry.query_accepts_mask(query_id) {
+        return Err(Error::validation(format!(
+            "query {query_id} does not accept a mask target"
+        )));
+    }
+    crate::check_value(&mask_target_parameter(), &field)?;
+    let text = field
+        .as_str()
+        .expect("an identity the check accepted is a string");
+    Ok(Some(MaskId::parse(text)?))
+}
+
 /// The mask a request named, resolved against the stack it will edit. A target the recipe does not
 /// hold is refused before anything is planned, so an edit never creates a layer bound to a mask that
 /// does not exist.
@@ -320,9 +346,10 @@ pub(super) fn resolve_mask_target<'a>(
 /// geometry tail is never hidden, so `stage`, `stage_before` and `insertion_index` answer exactly
 /// what they answer for the whole stack. What a sampler reads does change — it no longer includes the
 /// other targets' colour — and that is why the filtered view is used only for planning an action of a
-/// maskable module, a composite's steps included, and for that module's own queries, where the layers
-/// before the module's own layer are what is sampled and a masked layer of the same effect is never
-/// among them.
+/// maskable module, a composite's steps included, and for that module's own queries about the global
+/// target, where the layers before the module's own layer are what is sampled and a masked layer of
+/// the same effect is never among them. A query about a mask reads the whole stack instead, so the
+/// stage before that mask's own layer holds the global layer's colour, as it renders.
 ///
 /// A recipe with no masks is handed back as it is, so the ordinary path allocates nothing.
 pub(super) fn recipe_for_target<'a>(
