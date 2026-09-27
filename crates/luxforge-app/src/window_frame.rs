@@ -22,6 +22,16 @@ pub(crate) const TITLE_BAR_LEADING: f32 = if INTEGRATED_TITLE_BAR {
     theme::TITLE_BAR_INSET
 };
 
+/// The title bar's leading padding for the window as it is: fullscreen hides the traffic lights,
+/// so the bar starts at its ordinary inset there.
+pub(crate) fn title_bar_leading(fullscreen: bool) -> f32 {
+    if fullscreen {
+        theme::TITLE_BAR_INSET
+    } else {
+        TITLE_BAR_LEADING
+    }
+}
+
 /// The window's settings: its logical size, whether it is ever shown, and its frame.
 ///
 /// A full-size content view makes the window's content the whole window, so `size` is the whole
@@ -65,5 +75,7 @@ mod tests {
         } else {
             assert_eq!(TITLE_BAR_LEADING, theme::TITLE_BAR_INSET);
         }
+        assert_eq!(title_bar_leading(false), TITLE_BAR_LEADING);
+        assert_eq!(title_bar_leading(true), theme::TITLE_BAR_INSET);
     }
 }

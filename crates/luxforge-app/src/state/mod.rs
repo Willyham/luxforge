@@ -223,6 +223,7 @@ pub(crate) struct Inputs<'a> {
     /// The window's logical size, which with the panels and the display scale decides what Fit
     /// comes to as a percentage.
     pub(crate) window: (f32, f32),
+    pub(crate) fullscreen: bool,
     pub(crate) version_name: &'a str,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
@@ -910,6 +911,7 @@ mod tests {
                 zoom: "100",
                 zoom_editing: false,
                 window: (1440.0, 900.0),
+                fullscreen: false,
                 version_name: "",
                 version_form_open: false,
                 dimensions: Some((480, 320)),

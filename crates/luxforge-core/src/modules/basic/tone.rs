@@ -103,7 +103,7 @@ impl Tone {
         // (provably never active over the agreed +-100 range, but evaluated unconditionally so a
         // future range change cannot silently divide by zero or invert the mapping).
         let wp = 1.0 - (whites / 100.0) * K_W;
-        let bp = (blacks / 100.0) * K_B;
+        let bp = -(blacks / 100.0) * K_B;
         let wp = if wp - bp < EPSILON_GAP {
             bp + EPSILON_GAP
         } else {

@@ -277,6 +277,8 @@ pub(crate) struct Editor {
     pub(crate) pending_sample: Option<(u32, u32)>,
     /// The window's logical size, from the launch size and every resize event since.
     pub(crate) window: (f32, f32),
+    /// The window fills the screen, so the title bar holds no traffic lights to leave room for.
+    pub(crate) fullscreen: bool,
     /// Where the main thread's time goes, for the evidence events; never read by the view.
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     /// Why the last preview failed, cleared by the next presented frame. The canvas turns this
@@ -575,6 +577,7 @@ impl Editor {
             sample_in_flight: false,
             pending_sample: None,
             window,
+            fullscreen: false,
             render_error: None,
             busy: false,
             syncing: false,
@@ -902,6 +905,7 @@ impl Editor {
             zoom: &self.zoom,
             zoom_editing: self.zoom_editing,
             window: self.window,
+            fullscreen: self.fullscreen,
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
             dimensions: self.dimensions,
@@ -1022,6 +1026,13 @@ impl Editor {
         }
     }
 
+    /// Where leaving a canvas mode goes other than the pointer: back to the Masks panel for a mode
+    /// entered while the sections are bound to a mask.
+    pub(crate) fn leave_to(&self) -> Option<String> {
+        (!self.mask_mode_active() && self.section_target().is_some())
+            .then(|| luxforge_core::MASK_MODE.to_owned())
+    }
+
     /// What the keyboard table depends on right now.
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
@@ -1033,8 +1044,7 @@ impl Editor {
             palette_open: self.palette_open,
             export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
-            leave_to: (!self.mask_mode_active() && self.section_target().is_some())
-                .then(|| luxforge_core::MASK_MODE.to_owned()),
+            leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(
                 &self.modules,
                 self.state.as_ref(),

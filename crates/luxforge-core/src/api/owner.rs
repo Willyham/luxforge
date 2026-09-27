@@ -1525,6 +1525,17 @@ impl Owner {
     /// in that client's own session: naming another client's draft, or one that has ended, is a
     /// validation error rather than a preview of someone else's gesture.
     fn preview(&mut self, request: PreviewRequest) -> Result<PreviewJob, Error> {
+        // A whole preview of the entry the session selected is rendered as the session frames it,
+        // so every frame of a framed selection — its first, a zoom, a refresh after another
+        // client's commit — shows the same framing without each request repeating it.
+        let framing = match (&request.entry_id, &request.draft, request.layer_count) {
+            (Some(entry_id), None, None) => self
+                .sessions
+                .get(&request.client)
+                .and_then(|session| session.preview.framing_of(entry_id))
+                .cloned(),
+            _ => None,
+        };
         let draft = match &request.draft {
             None => None,
             Some(draft_id) => Some(
@@ -1539,15 +1550,22 @@ impl Owner {
                 "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
             ));
         }
-        let job = self
-            .service
-            .preview_job(
+        let job = match (&request.entry_id, &framing) {
+            (Some(entry_id), Some(geometry)) => self.service.framed_preview_job(
+                &request.asset_id,
+                entry_id,
+                geometry,
+                request.proxy,
+            ),
+            _ => self.service.preview_job(
                 &request.asset_id,
                 request.entry_id.as_ref(),
                 request.layer_count,
                 draft,
                 request.proxy,
-            )
+            ),
+        };
+        let job = job
             .map(|mut job| {
                 job.analyse = request.analyse;
                 job
@@ -3693,6 +3711,74 @@ mod tests {
             "the verified source cache served every request; no duplicate decode"
         );
         assert!(!after.analyse, "a plain preview asks for no reduction");
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A session framed by `preview.select {keep_geometry}` frames every whole preview of its
+    /// selection, so the desktop's first frame, a zoom and a refresh all show the same crop; a
+    /// truncated job, and a job of another client, are never framed.
+    #[test]
+    fn a_framed_selection_frames_the_preview_jobs_of_that_selection() {
+        let catalog = temp("framed-selection.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let desktop = owner.register();
+        let agent = owner.register();
+        let imported = import_asset(&owner, desktop, &fixture());
+        let asset = imported["asset"]["id"].clone();
+        let original = imported["current_entry"]["id"].clone();
+        let asset_id = crate::AssetId::parse(asset.as_str().unwrap()).unwrap();
+        let original_id: EntryId = serde_json::from_value(original.clone()).unwrap();
+        ok(
+            &owner,
+            desktop,
+            "crop",
+            "edit.crop",
+            json!({"asset_id": asset, "mutation": {"expected_revision": 0, "request_id": "crop", "actor": "test"}, "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
+        );
+        ok(
+            &owner,
+            desktop,
+            "compare",
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original, "keep_geometry": true}),
+        );
+        let size = |request: PreviewRequest| {
+            let job = owner.preview_job(request).expect("a preview job");
+            assert_eq!(job.evaluation.entry().id, original_id);
+            (job.identity.width, job.identity.height)
+        };
+        let entry =
+            |client| PreviewRequest::new(client, asset_id.clone()).entry(Some(original_id.clone()));
+        assert_eq!(size(entry(desktop)), (240, 160), "framed by the crop");
+        assert_eq!(
+            size(entry(desktop).analyse()),
+            (240, 160),
+            "an analysing job is framed alike"
+        );
+        assert_eq!(
+            size(entry(agent)),
+            (480, 320),
+            "another client's session frames nothing"
+        );
+        let prefix = owner
+            .preview_job(entry(desktop).layers(0))
+            .expect("a truncated job");
+        assert_eq!(
+            prefix.evaluation.recipe().layers.len(),
+            0,
+            "a truncated job renders the entry's own prefix"
+        );
+        ok(
+            &owner,
+            desktop,
+            "whole",
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original}),
+        );
+        assert_eq!(size(entry(desktop)), (480, 320), "the whole Original");
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

@@ -26,8 +26,8 @@ use iced::{
     widget::{Space, container, mouse_area, row, stack, text, text_input},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, icon_button, inline_menu, popover, segment,
-    segment_track, text_button, theme,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, inline_menu, popover, segment, segment_track,
+    text_button, theme, title_bar_icon_button,
 };
 
 /// The typed zoom field's focus target, so opening it puts the caret in it.
@@ -53,7 +53,7 @@ pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
         top: 0.0,
         right: theme::TITLE_BAR_INSET,
         bottom: 0.0,
-        left: window_frame::TITLE_BAR_LEADING,
+        left: window_frame::title_bar_leading(model.title.fullscreen),
     });
     let centre = container(view_controls(model)).center(Length::Fill);
     let bar = stack![edges, centre];
@@ -91,7 +91,7 @@ fn identity(model: &TitleBarModel) -> Element<'_, Message> {
         );
     }
     content
-        .push(icon_button(
+        .push(title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::Folder,
                 tooltip: crate::state::title::OPEN_TOOLTIP.into(),
@@ -112,7 +112,7 @@ fn export(model: &TitleBarModel) -> Element<'_, Message> {
     } else {
         ViewMessage::OpenMenu(MenuTarget::Export)
     };
-    let button = icon_button(
+    let button = title_bar_icon_button(
         &IconButtonModel {
             icon: Icon::Export,
             tooltip: EXPORT_TOOLTIP.into(),
@@ -179,7 +179,7 @@ fn view_controls(model: &Workspace) -> Element<'_, Message> {
     row![
         zoom,
         compare(title.compare_held, can_view),
-        icon_button(
+        title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::Clipping,
                 tooltip: "Clipping overlays (J)".into(),
@@ -200,10 +200,10 @@ fn view_controls(model: &Workspace) -> Element<'_, Message> {
 /// the pointer leaving as a release so a drag off the button cannot leave the original preview
 /// stuck on screen.
 fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
-    let face = icon_button(
+    let face = title_bar_icon_button(
         &IconButtonModel {
             icon: Icon::Compare,
-            tooltip: "Compare with original (hold \\)".into(),
+            tooltip: "Compare with original (hold \\; Shift+\\ uncropped)".into(),
             enabled: can_view,
             selected: held,
         },
@@ -232,7 +232,7 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         theme::TOOLBAR_RULE_MARGIN - theme::TITLE_ACTION_SPACING,
     ]);
     let mut actions = row![
-        icon_button(
+        title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::Undo,
                 tooltip: "Undo".into(),
@@ -243,7 +243,7 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 .can_undo
                 .then_some(Message::History(HistoryMessage::Undo)),
         ),
-        icon_button(
+        title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::Redo,
                 tooltip: "Redo".into(),
@@ -255,7 +255,7 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 .then_some(Message::History(HistoryMessage::Redo)),
         ),
         rule,
-        icon_button(
+        title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::StatePanel,
                 tooltip: "Toggle the state panel".into(),
@@ -264,7 +264,7 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
             },
             Some(Message::View(ViewMessage::TogglePanel(Panel::State))),
         ),
-        icon_button(
+        title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::ToolsPanel,
                 tooltip: "Toggle the tools panel".into(),
