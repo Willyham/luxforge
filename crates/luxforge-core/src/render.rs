@@ -37,10 +37,12 @@ use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};
 use spatial::fill_planes;
 pub use window::RegionFallback;
 
-const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
+/// [`luxforge_raw::PARALLEL_PIXELS`] under this driver's own name.
+const PARALLEL_RENDER_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;
 /// A sub-megapixel pass with several colour units has enough independent row chunks to pay for
 /// using the existing Rayon pool. Below this size, dispatch costs can outweigh the colour work.
-const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = 256 * 1024;
+/// [`luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS`] under this driver's own name.
+const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS;
 /// The detail every cancelled pass carries. The kind is the meaning; nothing about the work itself
 /// went wrong, so there is nothing image-specific to say.
 pub(crate) const CANCELLED: &str = "superseded by a newer request";
@@ -459,7 +461,7 @@ impl Raster {
             .checked_mul(u64::from(height))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| Error::resource_limit("image dimensions overflow"))?;
-        if pixels > 512 * 1024 * 1024 {
+        if pixels > luxforge_raw::MAX_FRAME_BYTES {
             return Err(Error::resource_limit("evaluated image exceeds 512 MiB"));
         }
         usize::try_from(pixels)
@@ -2004,7 +2006,7 @@ pub(crate) mod testing {
             settings,
             x,
             y,
-            super::spatial::PRODUCTION_TILE,
+            super::spatial::SPATIAL_TILE,
         )
     }
 
@@ -2036,7 +2038,7 @@ pub(crate) mod testing {
         Evaluation::new(
             Byte(source),
             Cow::Owned(compiled),
-            super::spatial::PRODUCTION_TILE,
+            super::spatial::SPATIAL_TILE,
             SpatialMode::Point,
             &Cancel::never(),
             context,

@@ -23,10 +23,11 @@ use std::{
 /// `luxforge_raw::MAX_SOURCE_BYTES`.
 pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
 
-/// The largest JPEG original decoded: 16384 px per side and 64 megapixels, so its RGBA frame stays
-/// inside the 512 MiB evaluated-frame limit.
+/// The largest JPEG original decoded: [`luxforge_raw::MAX_SIDE`] px per side (the same side limit
+/// every other source obeys) and 64 megapixels, so its RGBA frame stays inside the 512 MiB
+/// evaluated-frame limit.
 const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
-    max_side: 16384,
+    max_side: luxforge_raw::MAX_SIDE,
     max_pixels: 64_000_000,
 };
 
@@ -225,7 +226,8 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
 
 use rayon::prelude::*;
 
-const PARALLEL_CAMERA_PIXELS: usize = 1_000_000;
+/// [`luxforge_raw::PARALLEL_PIXELS`] under this converter's own name.
+const PARALLEL_CAMERA_PIXELS: usize = luxforge_raw::PARALLEL_PIXELS as usize;
 const CAMERA_CHUNK_PIXELS: usize = 65_536;
 
 /// Convert the existing planar allocation in disjoint slices. A camera pixel is read into three

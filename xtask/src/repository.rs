@@ -490,6 +490,25 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "the desktop reads the crop, its stage and the orientation ahead of it from \
                  recipe.describe rows, never from a payload",
     },
+    // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
+    // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
+    // luxforge-raw, not the reverse, so that module is the one home both crates can import from.
+    // The assignment is matched rather than the bare number, so an unrelated literal (a float
+    // tolerance, a loop bound, a sample count) is not mistaken for a duplicate declaration; a
+    // coincidental match outside these two crates (luxforge-ui's own texture budget, for one) is a
+    // different concept and out of this rule's scope.
+    SourceRule {
+        name: "render-limits-home",
+        tokens: &["= 1_000_000;", "= 512 * 1024 * 1024;"],
+        scope: &["crates/luxforge-core/src", "crates/luxforge-raw/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-raw/src/limits.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the one-megapixel parallel threshold and the 512 MiB frame limit may be declared \
+                 only in crates/luxforge-raw/src/limits.rs; import it from there instead",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -2155,6 +2174,57 @@ mod tests {
             fs::remove_file(&file).unwrap();
         }
         assert_eq!(read(tmp.path(), &["desktop-crop-rows"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn only_the_limits_module_declares_the_shared_thresholds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The module itself, a pass-through elsewhere in either crate, a test file, and an
+        // unrelated crate whose own constant happens to share one of the values may.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-raw/src/limits.rs",
+                    "pub const PARALLEL_PIXELS: u64 = 1_000_000;\n\
+                     pub const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/render.rs",
+                    "const PARALLEL_RENDER_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;\n",
+                ),
+                (
+                    "crates/luxforge-raw/src/dng.rs",
+                    "const PARALLEL_CORRECTION_PIXELS: u64 = crate::limits::PARALLEL_PIXELS;\n",
+                ),
+                (
+                    "crates/luxforge-core/tests/parallel.rs",
+                    "const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;\n",
+                ),
+                (
+                    "crates/luxforge-ui/src/photo_surface.rs",
+                    "const FULL_BUDGET: u64 = 512 * 1024 * 1024;\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["render-limits-home"]).unwrap(), (2, 0));
+        // A second literal declaration in either covered crate, outside the module, is refused.
+        refuses_each(
+            root,
+            "render-limits-home",
+            &[
+                (
+                    "crates/luxforge-core/src/proxy.rs",
+                    "const FRAME_LIMIT_BYTES: u64 = 512 * 1024 * 1024;\n",
+                ),
+                (
+                    "crates/luxforge-raw/src/dng.rs",
+                    "const PARALLEL_CORRECTION_PIXELS: u64 = 1_000_000;\n",
+                ),
+            ],
+            "may be declared",
+        );
     }
 
     fn minimal_plan(id: &str) -> Value {

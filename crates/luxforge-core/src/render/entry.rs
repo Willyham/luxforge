@@ -14,7 +14,7 @@ use super::{
     StageSize, StageTransform, check_source, grid_centres,
     linear::{self, Linear, LinearImage, LinearSettings},
     rasterize,
-    spatial::PRODUCTION_TILE,
+    spatial::SPATIAL_TILE,
     transform_of,
     window::{RegionFallback, WindowPlan},
 };
@@ -93,7 +93,7 @@ pub struct RenderOptions {
     /// Read once per row or chunk by every rasterizing pass and once per batch of spatial tiles. A
     /// token already cancelled when a frame is asked for costs no frame.
     pub cancel: Cancel,
-    /// The spatial tile size: [`PRODUCTION_TILE`] everywhere but in the tests that prove a frame
+    /// The spatial tile size: [`SPATIAL_TILE`] everywhere but in the tests that prove a frame
     /// and a sample do not depend on it.
     pub(crate) tile: u32,
 }
@@ -103,7 +103,7 @@ impl Default for RenderOptions {
         Self {
             phase: RenderPhase::Exact,
             cancel: Cancel::never(),
-            tile: PRODUCTION_TILE,
+            tile: SPATIAL_TILE,
         }
     }
 }
@@ -827,7 +827,7 @@ pub(crate) fn layer_input<'a>(
     if compiled.evaluates_spatial() {
         return Err(Error::resource_limit(format!(
             "a spatial layer before the masked one means reading the pixel it receives \
-                 evaluates a {PRODUCTION_TILE} px tile per grid cell"
+                 evaluates a {SPATIAL_TILE} px tile per grid cell"
         )));
     }
     match source {
@@ -854,7 +854,7 @@ fn point<'a, D: PixelDomain>(
     Evaluation::new(
         domain,
         Cow::Owned(compiled),
-        PRODUCTION_TILE,
+        SPATIAL_TILE,
         SpatialMode::Point,
         &Cancel::never(),
         context,

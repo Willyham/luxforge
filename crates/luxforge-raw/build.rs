@@ -1,4 +1,7 @@
+// Only the RAW-only admission bounds are used here; the cross-crate rendering bounds beside them
+// are for luxforge-core's callers.
 #[path = "src/limits.rs"]
+#[allow(dead_code)]
 mod limits;
 // The catalog is validated against the one opcode allowlist; the list tags it also names are for
 // the library's container parser.

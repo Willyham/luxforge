@@ -201,7 +201,7 @@ pub(crate) struct Evaluation<'a, D: PixelDomain> {
     #[cfg(test)]
     pub(super) built: Vec<(Weak<D::SpatialFrame>, usize)>,
     /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated, in
-    /// tiles of [`super::spatial::PRODUCTION_TILE`] everywhere but in the tests that prove the
+    /// tiles of [`super::spatial::SPATIAL_TILE`] everywhere but in the tests that prove the
     /// result does not depend on it.
     pub(super) tiles: Option<PointTiles<'a>>,
     tile: u32,

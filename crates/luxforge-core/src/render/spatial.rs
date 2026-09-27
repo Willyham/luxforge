@@ -11,12 +11,15 @@ pub(crate) use super::Cancel;
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
 #[cfg(test)]
 use crate::ErrorKind;
+/// The production tile size, re-exported under this module's path so a sibling driver does not
+/// have to name [`crate::modules`] for it.
+pub(crate) use crate::modules::SPATIAL_TILE;
 use crate::{
     Error,
     mask_field::{MaskField, MaskSampling},
     modules::{
         ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-        PlanesMut, Reduction, Region, SPATIAL_TILE, SpatialOperation, Stage,
+        PlanesMut, Reduction, Region, SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
@@ -1147,9 +1150,6 @@ pub(crate) fn plane_pixel(region: Region, values: &[f32], x: u32, y: u32) -> [f3
         ((u64::from(y - region.y0)) * u64::from(region.width) + u64::from(x - region.x0)) as usize;
     [values[index], values[len + index], values[2 * len + index]]
 }
-
-/// The production tile size, so a caller does not have to name the constant.
-pub(crate) const PRODUCTION_TILE: u32 = SPATIAL_TILE;
 
 #[cfg(test)]
 mod tests {

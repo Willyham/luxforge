@@ -17,7 +17,7 @@ use std::sync::{
 
 // Use the process's shared pool only for photo-sized active areas. A row owns
 // its output; stages and channels still join in order and reuse one warp plane.
-const PARALLEL_CORRECTION_PIXELS: u64 = 1_000_000;
+const PARALLEL_CORRECTION_PIXELS: u64 = crate::limits::PARALLEL_PIXELS;
 
 fn correction_rows(
     pixels: &mut [f32],
