@@ -459,6 +459,22 @@ mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette cha
 every touch order, the mixer after Basic in both touch orders with the same bytes, and the vignette
 last and recentred on the stage each crop update produces.
 
+### The built-in descriptor snapshot
+
+What the built-in registry publishes is written down once, in
+`fixtures/modules/builtin-descriptors.json`: `module.list` with its `host` array, and every method
+`schema.list` generates from the modules' and the host's descriptors, with its parameters, source
+kinds and superseded fields. `crates/luxforge-core/tests/modules/descriptors.rs` serves
+`ModuleRegistry::builtin()` through an owner, lists both as a JSON client and compares the result
+with the file byte for byte, so which modules, effects, actions, queries, controls and variants the
+build declares is this file's and no other test keeps a list of them; a change meant to keep the
+descriptors identical proves it by passing. After an intended descriptor change, regenerate it and
+review the diff:
+
+```sh
+cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot
+```
+
 ### The masking acceptance chapter
 
 `editor-acceptance` also ends with a masking chapter, in `xtask/src/mask_acceptance.rs`, driven the
