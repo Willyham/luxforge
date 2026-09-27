@@ -7,10 +7,13 @@
 //! - [`worker`]: one job on that worker — its proxy phase, then its exact phase, from one
 //!   compilation of its stack at each stage.
 //! - [`result`]: what each phase delivers, typed by the phase.
+//! - [`coverage`]: one mask's coverage over a whole evaluated stage on a small grid, keyed by what
+//!   it depends on, for the Masks panel's thumbnails.
 
 use crate::EntryId;
 use serde::{Deserialize, Serialize};
 
+mod coverage;
 mod job;
 mod queue;
 mod result;
@@ -18,6 +21,7 @@ mod result;
 mod tests;
 mod worker;
 
+pub use coverage::MaskCoverage;
 pub use job::{MaskOverlayRequest, PreviewIntent, PreviewJob, PreviewSource};
 pub use queue::{PreviewQueue, Queued};
 pub use result::{
