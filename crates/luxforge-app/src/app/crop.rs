@@ -1843,7 +1843,6 @@ mod tests {
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
         assert!(editor.gesture.is_none() && editor.editing_angle());
         assert!(editor.status.contains("Angle must be"), "{}", editor.status);
-        let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
         let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
         let _ = editor.update(Message::Crop(CropMessage::ResetAngle));
         let _ = editor.update(Message::Crop(CropMessage::Guide(false)));

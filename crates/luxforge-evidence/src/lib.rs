@@ -423,9 +423,11 @@ pub enum SliderEnd {
     Open,
 }
 
-/// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
-/// a pointer drag and the gated subscription produce them; the gesture then ends the way `end`
-/// says, or stays open when it says nothing.
+/// One slider gesture, scripted in the parameter's own values. The desktop sends each value as the
+/// rail fraction the slider widget publishes for it, one `Fraction` message with a tick between
+/// them, exactly as a pointer drag and the gated subscription produce them, and refuses the step
+/// when a value has no fraction (outside the rail or off its fine grid); the gesture then ends the
+/// way `end` says, or stays open when it says nothing.
 ///
 /// Without `interval_ms` every value is sent at once, as a fast drag would coalesce between ticks.
 /// With it, one value is sent per tick of its own gated timer instead, which is how a wild,
@@ -523,11 +525,11 @@ impl SliderStep {
 }
 
 /// One double-click on a generated slider's rail, as the rail's wrapper and iced's slider turn it
-/// into messages: the first press moves the value to `value`, which opens the control's gesture,
-/// and its release commits it; `gap_ms` after that release, at most [`MAX_DOUBLE_CLICK_GAP_MS`],
-/// the second press is the wrapper's reset of the field. The step never waits between the two
-/// presses for anything but the gap, so the reset meets whatever the first press's commit is still
-/// doing, exactly as a person's does.
+/// into messages: the first press moves the rail to `value`'s fraction, which opens the control's
+/// gesture, and its release commits it; `gap_ms` after that release, at most
+/// [`MAX_DOUBLE_CLICK_GAP_MS`], the second press is the wrapper's reset of the field. The step
+/// never waits between the two presses for anything but the gap, so the reset meets whatever the
+/// first press's commit is still doing, exactly as a person's does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DoubleClickStep {

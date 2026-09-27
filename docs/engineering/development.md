@@ -64,7 +64,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 
 ### Repository rules
 
-`cargo xtask check-repository` validates the task plans and local links, then applies two rule tables in `xtask/src/repository.rs`. Each row is one rule; a refusal names the file and line, the rule, the token or dependency it found, and the table whose row to change.
+`cargo xtask check-repository` validates the task plans and local links, then applies three rule tables in `xtask/src/repository.rs`. Each row is one rule; a refusal names the file and line, the rule, the token, dependency or message it found, and the table whose row to change.
 
 `SOURCE_RULES` says which files may hold which tokens. A row names its tokens, its scope (directories and file types, since `crates/luxforge-raw/vendor` holds LibRaw's C++ sources), the paths allowed to hold them (a file, a directory, or a module path such as `modules/raw` for `raw.rs` and `raw/`), its match mode, whether it covers test code, whether its allowed paths may hold each token on one line only (an expression written once in its home), and the reason it prints. One matcher serves every row. `Whole` checks an end of the token only where the token has an identifier character there, so `app::` finds `crate::app::State` but not `snapp::`, and `RAW_EFFECT` misses `RAW_EFFECTS`. `Prefix` lets the token run on into a longer identifier, so `mozjpeg` finds `mozjpeg_sys`. A row that covers tests reads every line, comments included. A row that does not skips files that are tests by name (a `tests` directory, `tests.rs`, `*_tests.rs`), modules declared under `#[cfg(test)]` with everything under their directory, `#[cfg(test)]` items, and comment lines. No source rule reads `xtask/src/repository.rs`, which names every token in its rows and tests.
 
@@ -98,7 +98,13 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `jpeg-codec-users`, `jpeg-codec-leaf` | A dependency on `luxforge-jpeg` from any crate but `luxforge-core`; any workspace crate or path in `luxforge-jpeg`'s manifest |
 | `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
 
-The check also refuses a stale row: one that reads no file, allows a path that does not exist, or shares another row's name.
+`SENDER_RULES` says which messages product code must send. A row names a message enum and the file that declares it, the file whose `match` handles it, the directories read for senders and the scripted drivers whose constructions do not count. Every variant needs a sender: a production line (tests skipped as for a source rule) outside the drivers that holds `Enum::Variant` under the `Whole` matcher. In the handler, a line that begins with a variant is its match arm, not a sender; elsewhere rustfmt may begin a line with a construction, and it counts.
+
+| Rule | Refuses |
+| --- | --- |
+| `widget-sent-controls` | A `ControlMessage` variant that only the evidence driver (`app/evidence.rs`) or a test constructs: evidence and tests drive a control through the message its widget sends, such as a slider's `Fraction` and `Released` |
+
+The check also refuses a stale row: one that reads no file, names a path that does not exist, or shares another row's name.
 
 A task that finishes a concept adds the rule that keeps it single as a row of one of these tables, with a test that shows an allowed and a refused path; it never writes a bespoke check. A deliberate new home for something a rule confines is a change to that row's allowed paths, made in review.
 
@@ -579,10 +585,13 @@ Each step is an object with exactly one key.
   preview under it (and a reapply for its `draft.reapply` too), `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
 - `slider` drives one gesture on a generated control: `{"action": "set-basic", "parameter":
-  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value, exactly as a drag
-  produces them. Each move sends its `draft.set` and the one preview job for it as soon as nothing
-  is in flight; there is no tick to wait for. `"release": true` ends it
-  with the control's release, which commits once; `"cancel": true` ends it with Escape; neither
+  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value as the slider widget
+  publishes it: the rail fraction that sends that value through the parameter's declared rail
+  (its soft range and fine step), the same `Fraction` message a drag produces. A value no fraction
+  sends, outside the rail or off its fine grid, fails the step with each such value named. Each
+  move sends its `draft.set` and the one preview job for it as soon as nothing is in flight; there
+  is no tick to wait for. `"release": true` ends it with the widget's release, which commits once;
+  `"cancel": true` ends it with Escape; neither
   leaves the gesture open and captures the frame once the draft has drained, so the pixels belong to
   the newest value it sent. A second `slider` step naming the same control continues the same
   gesture. An `"interval_ms": 8` field paces the values instead of sending them all at once: one
@@ -592,8 +601,8 @@ Each step is an object with exactly one key.
   gesture round trip coalesces away, so the harness can time an input that never reached the owner.
   Without `interval_ms` every value is sent at once, as before.
 - `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw",
-  "parameter": "temperature", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
-  which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
+  "parameter": "temperature", "value": 5000, "gap_ms": 120}`. The first press is the rail's move to
+  `value`'s fraction, which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
   release, one timer tick sends the reset the rail's wrapper publishes for the second press,
   whatever the commit is doing by then. The frame is captured once nothing the two presses started
   is in flight. `double_click_first`, `double_click_second` and the reset's own

@@ -47,18 +47,9 @@ impl Editor {
         None
     }
 
-    /// A slider of a drafting control moved. The first move of a gesture opens the draft; later
-    /// moves offer the newest value.
-    pub(crate) fn slider_moved(
-        &mut self,
-        action: String,
-        parameter: String,
-        value: f64,
-    ) -> Task<Message> {
-        self.control_moved(action, parameter, Value::from(value))
-    }
-
-    /// Draft one declared field of any JSON kind. A control never carries a second parameter.
+    /// A drafting control moved: the widget's value, already mapped from its rail fraction or
+    /// picker or curve event. The first move of a gesture opens the draft; later moves offer the
+    /// newest value. A control never carries a second parameter.
     pub(crate) fn control_moved(
         &mut self,
         action: String,

@@ -7,7 +7,7 @@ use crate::{
         draft::{CoreDraft, GestureId, Round},
         evidence::{Evidence, parse_script},
         gesture::{Gesture, Kind},
-        message::{DraftMessage, Message, SyncMessage},
+        message::{ControlMessage, DraftMessage, Message, SyncMessage},
         tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
     state::histogram::Analysis,
@@ -414,6 +414,33 @@ pub(crate) fn pick_events(records: &[Value]) -> Vec<&Value> {
 
 pub(crate) fn evidence(editor: &Editor) -> &Evidence {
     editor.evidence.as_ref().expect("an evidence run")
+}
+
+/// Move a slider to `value` exactly as the widget does: the rail fraction that sends that value,
+/// through `ControlMessage::Fraction`, converted by the one path evidence scripts use
+/// ([`crate::app::evidence::rail_fractions`]). A value the rail cannot send fails the test.
+pub(crate) fn slide(
+    editor: &mut Editor,
+    action: &str,
+    parameter: &str,
+    value: f64,
+) -> iced::Task<Message> {
+    let fraction =
+        crate::app::evidence::rail_fractions(&editor.modules, action, parameter, &[value])
+            .unwrap_or_else(|reason| panic!("{reason}"))[0];
+    editor.update(Message::Control(ControlMessage::Fraction {
+        action: action.into(),
+        parameter: parameter.into(),
+        fraction,
+    }))
+}
+
+/// Let go of a slider, as the widget does when the pointer is released.
+pub(crate) fn let_go(editor: &mut Editor, action: &str, parameter: &str) -> iced::Task<Message> {
+    editor.update(Message::Control(ControlMessage::Released {
+        action: action.into(),
+        parameter: parameter.into(),
+    }))
 }
 
 /// Put an open slider gesture of this control in the editor's one slot directly, its `draft.begin`

@@ -1,7 +1,7 @@
 //! History selection, compare and navigation: a selection of the current entry returns to current,
 //! compare restores the selection it replaced, and an open draft refuses Undo, Redo and Restore.
 use super::{
-    message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
+    message::{CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::Upload,
     testing::{
         begun, boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for,
@@ -214,11 +214,7 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
 fn history_navigation_is_refused_while_a_slider_draft_is_open() {
     let (mut editor, catalog, asset, original) = navigable();
     let (action, parameter) = patch_control(&editor);
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 25.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 25.0);
     begun(&mut editor, &asset, &action, 1);
     assert!(editor.slider_gesture().is_some());
     history_refused(

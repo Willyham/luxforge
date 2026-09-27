@@ -9,8 +9,8 @@ use super::{
     Editor,
     draft::Round,
     message::{
-        ActionMessage, ControlMessage, DraftMessage, HistoryMessage, MaskMessage, MaskPointer,
-        MenuTarget, Message, PaintTarget, PreviewMessage, RowEdit, SyncMessage, ViewMessage,
+        ActionMessage, DraftMessage, HistoryMessage, MaskMessage, MaskPointer, MenuTarget, Message,
+        PaintTarget, PreviewMessage, RowEdit, SyncMessage, ViewMessage,
     },
     tasks::{self, call},
     testing,
@@ -784,13 +784,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
 
     // The first move opens the draft. Its target is the open mask, so the previewed stack is the
     // masked layer the release will commit rather than the global one.
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.3,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     let target = masking.editor.draft_target("set-basic");
     assert_eq!(target.mask.as_ref(), Some(&mask));
     assert!(
@@ -818,12 +812,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
     );
 
     // Committing it writes exactly one masked layer.
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderReleased {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-        }));
+    let _ = testing::let_go(&mut masking.editor, "set-basic", "exposure");
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Commit));
     assert!(
         masking.editor.gesture.is_none(),
@@ -1049,13 +1038,7 @@ fn a_mask_controls_request_matches_json_and_a_drag_rederives_one_section() {
             .collect()
     };
     let before = versions(&masking.editor);
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.2,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.2);
     let after = versions(&masking.editor);
     assert_eq!(before.len(), after.len());
     let moved: Vec<&str> = before
@@ -2775,13 +2758,7 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
     let presented = masking.editor.presented_generation;
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.3,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
     assert!(
         masking.editor.preview_queue.is_busy(),
@@ -2804,13 +2781,7 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
 #[test]
 fn race_f_a_discard_never_adopts_a_session_that_still_holds_the_draft() {
     let mut masking = Masking::opened();
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.3,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
     masking.draft(DraftMessage::Cancel);
     let draft_id = testing::core_draft(&masking.editor)
