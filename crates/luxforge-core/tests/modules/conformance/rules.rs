@@ -55,6 +55,8 @@ impl Rules<'_> {
                 layers,
                 registry: self.registry,
                 target: None,
+                kind: luxforge_core::SourceTag::Jpeg,
+                masks: &[],
                 questions: &questions,
             },
         )

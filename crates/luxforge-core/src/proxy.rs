@@ -1097,7 +1097,6 @@ mod tests {
         let approximate = PreviewSource::Raw {
             image: raw_of(&downscaled).clone(),
             settings: LinearSettings {
-                exposure_ev: 0.0,
                 white_balance: Some(crate::WhiteBalanceApproximation::from_matrix(matrix).unwrap()),
             },
         };

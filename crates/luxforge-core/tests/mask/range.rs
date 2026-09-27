@@ -737,7 +737,6 @@ fn a_range_selection_reads_the_operations_input_on_the_raw_linear_path() {
     let registry = ModuleRegistry::builtin();
     let source = linear_source();
     let settings = LinearSettings {
-        exposure_ev: 0.0,
         white_balance: None,
     };
     let count = (WIDTH * HEIGHT) as usize;

@@ -109,7 +109,7 @@ mod tests {
 
     fn label(control: &Control) -> &str {
         match control {
-            Control::Group { label, .. } | Control::Picker { label } => label,
+            Control::Group { label, .. } | Control::Picker { label, .. } => label,
             _ => unreachable!("only groups and pickers are built here"),
         }
     }

@@ -420,26 +420,17 @@ impl ViewReader<'_> {
     }
 }
 
-/// Per-evaluation linear settings. Zero EV is the neutral default; the setting is applied to the
-/// source before recipe content edits and never to an intermediate display raster.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Per-evaluation linear settings, applied to the source before recipe content edits and never to
+/// an intermediate display raster. The default is the developed planes exactly. Exposure is not
+/// one of them: it is Basic's colour-stage unit on every kind, so a RAW development carries none.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LinearSettings {
-    pub exposure_ev: f64,
-    /// An approximate white-balance change, applied to each source pixel before the exposure
-    /// multiply: `exposure · (W · p)`. Only the preview of an open draft carries one, when the
-    /// drafted temperature or tint asks for sensor gains the developed planes were not developed
-    /// at. Every committed render, export, point sample and analysis is `None`, which is bit for
-    /// bit the evaluation without this field. See [`WhiteBalanceApproximation`].
+    /// An approximate white-balance change, applied to each source pixel: `W · p`. Only the
+    /// preview of an open draft carries one, when the drafted temperature or tint asks for sensor
+    /// gains the developed planes were not developed at. Every committed render, export, point
+    /// sample and analysis is `None`, which is bit for bit the developed planes. See
+    /// [`WhiteBalanceApproximation`].
     pub white_balance: Option<WhiteBalanceApproximation>,
-}
-
-impl Default for LinearSettings {
-    fn default() -> Self {
-        Self {
-            exposure_ev: 0.0,
-            white_balance: None,
-        }
-    }
 }
 
 /// A RAW white-balance change approximated on planes developed at another white balance.
@@ -523,22 +514,6 @@ impl WhiteBalanceApproximation {
     }
 }
 
-impl LinearSettings {
-    pub(super) fn multiplier(self) -> Result<f64, Error> {
-        if !self.exposure_ev.is_finite() || !(-5.0..=5.0).contains(&self.exposure_ev) {
-            return Err(Error::validation(
-                "linear exposure must be finite and between -5 and +5 EV",
-            ));
-        }
-        let multiplier = self.exposure_ev.exp2();
-        if multiplier.is_finite() {
-            Ok(multiplier)
-        } else {
-            Err(Error::render("linear exposure multiplier overflow"))
-        }
-    }
-}
-
 #[inline]
 fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
     value.map(srgb::decode_u8)
@@ -587,46 +562,41 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
     Ok(())
 }
 
-/// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with the exposure
-/// and any approximate white balance applied to each source pixel in `f64`. A segment with colour
+/// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with any approximate
+/// white balance applied to each source pixel in `f64`. A segment with colour
 /// is `f32` from its entry to its end and one without stays `f64`; nothing is quantized before the
 /// terminal boundary, so a replacement is decoded rather than quantized at, a resample blends in
 /// `f64`, and a spatial operation's `f32` output is read back exactly. There is no alpha.
 #[derive(Clone, Copy)]
 pub(crate) struct Linear<'a> {
     source: &'a LinearImage,
-    exposure_multiplier: f64,
-    /// Applied to each source pixel before the exposure multiply, when the settings carry one.
+    /// Applied to each source pixel, when the settings carry one.
     white_balance: Option<WhiteBalanceApproximation>,
 }
 
 impl<'a> Linear<'a> {
-    /// `source` under `settings`, refused when the exposure is out of range.
+    /// `source` under `settings`.
     pub(crate) fn new(source: &'a LinearImage, settings: LinearSettings) -> Result<Self, Error> {
         Ok(Self {
             source,
-            exposure_multiplier: settings.multiplier()?,
             white_balance: settings.white_balance,
         })
     }
 
-    /// The one point where the settings touch a source pixel: `exposure · p`, or
-    /// `exposure · (W · p)` under an approximate white balance. Shared by the point evaluation and
-    /// the rendered rows, so both keep the exact f64 WB-then-exposure order and the same
-    /// finite-result failure.
+    /// The one point where the settings touch a source pixel: the pixel itself, or `W · p` under
+    /// an approximate white balance. Shared by the point evaluation and the rendered rows, so both
+    /// keep the same f64 arithmetic and the same finite-result failure.
     #[inline(always)]
     fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
         let output = match &self.white_balance {
-            // The arithmetic an exact evaluation has always done, untouched.
-            None => pixel.map(|value| value * self.exposure_multiplier),
-            Some(balance) => balance
-                .apply(pixel)
-                .map(|value| value * self.exposure_multiplier),
+            // The developed planes exactly, as every exact evaluation reads them.
+            None => pixel,
+            Some(balance) => balance.apply(pixel),
         };
         if output.iter().all(|value| value.is_finite()) {
             Ok(output)
         } else {
-            Err(Error::render("linear exposure produced a non-finite value"))
+            Err(Error::render("linear source produced a non-finite value"))
         }
     }
 }
@@ -645,17 +615,15 @@ impl PixelDomain for Linear<'_> {
 
     /// Fingerprint alone does not identify developed pixels: public callers may omit it, two
     /// developments of a file differ, and crop/orientation views share their source's identity.
-    /// Direct settings can also change exposure without changing the recipe prefix. And the
-    /// estimate store is keyed by the recipe prefix, which an approximate white balance does not
+    /// The estimate store is keyed by the recipe prefix, which an approximate white balance does not
     /// change: the drafted recipe names the target gains whichever planes it is evaluated over. So
     /// an approximate evaluation keys its estimates apart, and a committed render of the same
     /// recipe never takes one estimated from approximate pixels.
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
         let input_prefix = format!(
-            "{prefix_hash}+linear:{}:{:?}:{:016x}",
+            "{prefix_hash}+linear:{}:{:?}",
             self.source.development(),
             self.source.view(),
-            self.exposure_multiplier.to_bits()
         );
         Cow::Owned(match self.white_balance {
             Some(balance) => format!(
@@ -1350,12 +1318,9 @@ mod tests {
                         );
                     }
                 }
-                for exposure_ev in [-5.0, -0.7, 0.0, 0.7, 5.0] {
+                {
                     for white_balance in [None, Some(balance)] {
-                        let settings = LinearSettings {
-                            exposure_ev,
-                            white_balance,
-                        };
+                        let settings = LinearSettings { white_balance };
                         let snapshot = SnapshotId::new();
                         let actual =
                             render_linear(&registry, &view, snapshot.clone(), &recipe, settings)
@@ -1386,7 +1351,6 @@ mod tests {
         let registry = ModuleRegistry::builtin();
         let recipe = Recipe::default();
         let settings = LinearSettings {
-            exposure_ev: 0.37,
             white_balance: None,
         };
         for orientation in [1, 2, 5, 7] {
@@ -1434,7 +1398,6 @@ mod tests {
             colour_recipe(vec![basic, mixer]),
         ];
         let settings = LinearSettings {
-            exposure_ev: -0.37,
             white_balance: Some(
                 WhiteBalanceApproximation::from_matrix([
                     [1.21, -0.11, -0.02],
@@ -1474,7 +1437,6 @@ mod tests {
             }),
         )]);
         let settings = LinearSettings {
-            exposure_ev: 0.37,
             white_balance: None,
         };
         let snapshot = SnapshotId::new();
@@ -1580,11 +1542,6 @@ mod tests {
         for settings in [
             LinearSettings::default(),
             LinearSettings {
-                exposure_ev: 0.7,
-                white_balance: None,
-            },
-            LinearSettings {
-                exposure_ev: -0.3,
                 white_balance: Some(balance),
             },
         ] {
@@ -1724,7 +1681,6 @@ mod tests {
             ),
         ];
         let settings = LinearSettings {
-            exposure_ev: 0.7,
             white_balance: None,
         };
         println!(
@@ -2322,7 +2278,6 @@ mod tests {
         .unwrap();
         let registry = ModuleRegistry::builtin();
         let settings = LinearSettings {
-            exposure_ev: 0.7,
             white_balance: None,
         };
         let recipe = colour_recipe(vec![colour_layer(
@@ -2512,23 +2467,6 @@ mod tests {
             (actual.kind, actual.detail),
             (expected.kind, expected.detail)
         );
-        for exposure_ev in [f64::NAN, f64::INFINITY, -5.1, 5.1] {
-            assert_eq!(
-                render_linear(
-                    &registry,
-                    &source,
-                    SnapshotId::new(),
-                    &Recipe::default(),
-                    LinearSettings {
-                        exposure_ev,
-                        white_balance: None
-                    }
-                )
-                .unwrap_err()
-                .kind,
-                ErrorKind::Validation
-            );
-        }
         let cancel = Cancel::new();
         cancel.cancel();
         assert_eq!(
@@ -2548,7 +2486,6 @@ mod tests {
         // Finite WB coefficients can still overflow while evaluating a pixel. The row path must
         // keep the generic source-adjustment error, not let a later terminal check replace it.
         let overflow = LinearSettings {
-            exposure_ev: 5.0,
             white_balance: Some(
                 WhiteBalanceApproximation::from_matrix([[f64::MAX; 3]; 3]).unwrap(),
             ),
@@ -2756,39 +2693,26 @@ mod tests {
         );
     }
 
+    /// Basic's exposure on the developed planes is an `f64` read of the unclipped source, clipped
+    /// only at the terminal boundary: a value pushed past 1 by the gain encodes as white and a
+    /// negative one as black, exactly as the reference computes it.
     #[test]
-    fn exposure_is_f64_before_content_and_terminal_clipping() {
-        let source = image(1, 1, &[[0.18, -0.1, 0.5]]);
+    fn basic_exposure_reads_unclipped_planes_before_terminal_clipping() {
+        let source = image(1, 1, &[[0.18, -0.1, 0.6]]);
         let raster = render_linear(
             &ModuleRegistry::builtin(),
             &source,
             SnapshotId::new(),
-            &Recipe::default(),
-            LinearSettings {
-                exposure_ev: 1.0,
-                white_balance: None,
-            },
+            &colour_recipe(vec![colour_layer(
+                crate::BASIC_EFFECT,
+                serde_json::json!({"exposure": 1.0}),
+            )]),
+            LinearSettings::default(),
         )
         .unwrap();
         assert_eq!(
             raster.pixel(0, 0),
-            Some([reference_srgb(0.36), 0, reference_srgb(1.0), 255])
-        );
-        assert!(
-            LinearSettings {
-                exposure_ev: 5.01,
-                white_balance: None,
-            }
-            .multiplier()
-            .is_err()
-        );
-        assert!(
-            LinearSettings {
-                exposure_ev: f64::NAN,
-                white_balance: None,
-            }
-            .multiplier()
-            .is_err()
+            Some([reference_srgb(0.36), 0, 255, 255])
         );
     }
 
@@ -3112,18 +3036,14 @@ mod tests {
         matrix.map(|row| row[0] * vector[0] + row[1] * vector[1] + row[2] * vector[2])
     }
 
-    /// With no approximation the evaluation is the one every committed render has always done:
-    /// each byte is the independent `sRGB(2^EV · p)` of its source pixel. An identity matrix, whose
-    /// products are exact, renders the same bytes, so the approximation adds nothing but its matrix.
+    /// With no approximation the evaluation is the one every committed render does: each byte is
+    /// the independent `sRGB(p)` of its developed source pixel. An identity matrix, whose products
+    /// are exact, renders the same bytes, so the approximation adds nothing but its matrix.
     #[test]
-    fn no_approximation_is_bit_for_bit_the_exposure_evaluation() {
+    fn no_approximation_is_bit_for_bit_the_developed_planes() {
         let registry = ModuleRegistry::builtin();
         let source = varied(9, 7);
-        let exposure_ev = 0.7;
-        let plain = LinearSettings {
-            exposure_ev,
-            white_balance: None,
-        };
+        let plain = LinearSettings::default();
         let raster = render_linear(
             &registry,
             &source,
@@ -3132,11 +3052,10 @@ mod tests {
             plain,
         )
         .unwrap();
-        let multiplier = exposure_ev.exp2();
         for y in 0..7 {
             for x in 0..9 {
                 let pixel = source.pixel(x, y).unwrap().map(f64::from);
-                let expected = pixel.map(|value| reference_srgb(value * multiplier));
+                let expected = pixel.map(reference_srgb);
                 assert_eq!(
                     raster.pixel(x, y),
                     Some([expected[0], expected[1], expected[2], 255]),
@@ -3145,7 +3064,6 @@ mod tests {
             }
         }
         let identity = LinearSettings {
-            exposure_ev,
             white_balance: Some(
                 WhiteBalanceApproximation::from_matrix([
                     [1.0, 0.0, 0.0],
@@ -3166,14 +3084,13 @@ mod tests {
         assert_eq!(through_identity.rgba, raster.rgba);
     }
 
-    /// The approximation multiplies each source pixel by `W` before the exposure: the byte is the
-    /// independent `sRGB(2^EV · (W · p))`, so a colour layer after it sees the approximated scene
-    /// value exactly as it sees an exact one.
+    /// The approximation multiplies each source pixel by `W`: the byte is the independent
+    /// `sRGB(W · p)`, so a colour layer after it — Basic's exposure among them — sees the
+    /// approximated scene value exactly as it sees an exact one.
     #[test]
-    fn the_approximation_applies_its_matrix_before_the_exposure() {
+    fn the_approximation_applies_its_matrix_to_each_source_pixel() {
         let matrix = [[1.3, 0.1, -0.05], [0.02, 0.97, 0.01], [-0.1, 0.05, 0.62]];
         let settings = LinearSettings {
-            exposure_ev: 1.0,
             white_balance: Some(WhiteBalanceApproximation::from_matrix(matrix).unwrap()),
         };
         let source = varied(6, 5);
@@ -3189,7 +3106,7 @@ mod tests {
         for y in 0..5 {
             for x in 0..6 {
                 let pixel = source.pixel(x, y).unwrap().map(f64::from);
-                let expected = apply(matrix, pixel).map(|value| reference_srgb(2.0 * value));
+                let expected = apply(matrix, pixel).map(reference_srgb);
                 assert_eq!(
                     raster.pixel(x, y),
                     Some([expected[0], expected[1], expected[2], 255]),
@@ -3281,14 +3198,6 @@ mod tests {
         assert!(source.with_view([1, 1, 2, 2], 1).is_err());
         assert!(source.with_view([u32::MAX, 0, 2, 1], 1).is_err());
         assert!(source.with_view([0, 0, 2, 2], 9).is_err());
-        assert!(
-            LinearSettings {
-                exposure_ev: 5.1,
-                white_balance: None,
-            }
-            .multiplier()
-            .is_err()
-        );
         assert!(Linear::blend(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
     }
 
@@ -3573,7 +3482,6 @@ mod tests {
             ..Recipe::default()
         };
         let settings = LinearSettings {
-            exposure_ev: 0.2,
             white_balance: None,
         };
         // Compiled once, as `HostStage::compiled_prefix` compiles a prefix once and clones it for

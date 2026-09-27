@@ -1414,8 +1414,10 @@ mod tests {
     #[test]
     fn a_sub_group_reads_original_until_one_of_its_fields_leaves_its_default() {
         let modules = descriptors();
+        // The first patch a JPEG shows; the RAW development's applies only to a RAW photo.
         let patch = modules
             .iter()
+            .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch")
@@ -1573,8 +1575,11 @@ mod tests {
             })
             .expect("the White balance group");
         assert!(
-            matches!(group.controls.last(), Some(ControlModel::Picker(_))),
-            "the picker is the last control of the group whose fields it sets"
+            group
+                .controls
+                .iter()
+                .any(|control| matches!(control, ControlModel::Picker(_))),
+            "the picker is a control of the group whose fields it sets"
         );
         assert_eq!(
             group.state,
@@ -1801,10 +1806,6 @@ mod tests {
         let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
         assert!(!active(&original), "an untouched RAW is not an edit");
 
-        let exposed = RawPayload {
-            exposure_ev: 0.35,
-            ..original.clone()
-        };
         let custom = RawPayload {
             wb_mode: WhiteBalanceMode::Custom,
             temperature_kelvin: Some(5000.0),
@@ -1817,26 +1818,9 @@ mod tests {
             gains: [1.9, 1.0, 1.4],
             ..original.clone()
         };
-        for (edit, payload) in [
-            ("exposure", &exposed),
-            ("custom white balance", &custom),
-            ("neutral pick", &picked),
-        ] {
+        for (edit, payload) in [("custom white balance", &custom), ("neutral pick", &picked)] {
             assert!(active(payload), "{edit} is an edit");
         }
-
-        // Back to As shot: the payload keeps the custom values it held, which As shot ignores.
-        let back = RawPayload {
-            wb_mode: WhiteBalanceMode::AsShot,
-            ..custom.clone()
-        };
-        assert_ne!(back, original);
-        assert!(!active(&back), "As shot at 0 EV is not an edit");
-        let back_exposed = RawPayload {
-            exposure_ev: -0.5,
-            ..back
-        };
-        assert!(active(&back_exposed), "As shot at -0.5 EV is an edit");
     }
 
     /// A field-patch layer returned to its neutral values stays in the stack but is not an edit, so
@@ -2510,7 +2494,6 @@ mod tests {
                 .count()
         };
         for id in [
-            "luxforge.raw",
             "luxforge.transform",
             "luxforge.pixel",
             "luxforge.presence",
@@ -2534,27 +2517,6 @@ mod tests {
                 "{id} keeps the band's own reset"
             );
         }
-        let raw = section(&workspace, "luxforge.raw");
-        let labels: Vec<&str> = raw
-            .controls
-            .iter()
-            .map(|control| match control {
-                ControlModel::Slider(slider) => slider.label.as_str(),
-                ControlModel::Picker(picker) => picker.label.as_str(),
-                ControlModel::Action(action) => action.label.as_str(),
-                other => panic!("unexpected RAW control {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            labels,
-            [
-                "Exposure",
-                "Custom temperature",
-                "Custom tint",
-                "Neutral WB",
-                "As shot"
-            ]
-        );
         assert_eq!(groups(section(&workspace, "luxforge.basic")), 3);
         let mixer = section(&workspace, "luxforge.mixer");
         assert_eq!(groups(mixer), 3, "a tabbed module keeps its groups as tabs");
@@ -2562,13 +2524,13 @@ mod tests {
 
         // The only group has nothing to collapse: a recorded collapse, however it got there,
         // leaves every control drawn.
-        let before = raw.controls.clone();
+        let before = section(&workspace, "luxforge.vignette").controls.clone();
         scene
             .control_ui
             .group_expanded
-            .insert(tools::group_key("luxforge.raw", &[0]), false);
+            .insert(tools::group_key("luxforge.vignette", &[0]), false);
         let collapsed = scene.derive();
-        assert_eq!(section(&collapsed, "luxforge.raw").controls, before);
+        assert_eq!(section(&collapsed, "luxforge.vignette").controls, before);
         // A group of a multi-group module still collapses.
         scene
             .control_ui

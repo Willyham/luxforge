@@ -214,7 +214,9 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 preset: Map::new(),
                 style: Default::default(),
                 icon: None,
+                variants: Vec::new(),
             }],
+            variants: Vec::new(),
         }],
         reset: Some(luxforge_core::ResetAction {
             action: "crop-reset".into(),

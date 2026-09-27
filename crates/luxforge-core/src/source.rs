@@ -1052,7 +1052,6 @@ mod tests {
             let approximate = PreviewSource::Raw {
                 image: developed.clone(),
                 settings: LinearSettings {
-                    exposure_ev: 0.0,
                     white_balance: Some(balance),
                 },
             };

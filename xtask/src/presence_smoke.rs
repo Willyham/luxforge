@@ -158,7 +158,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 13: all three at once, through the raw API a generated slider cannot reach (each
         // submits its own one field only): the same "everything is programmable" parity every
         // other scenario's own API step proves. Texture and Clarity are already +100 and Dehaze
-        // flips back, so the merged payload is a genuine change, not a no-op.
+        // flips back, so the merged payload is a genuine change, not a no-op. A patch of the
+        // whole group reads as the group.
         Step::new(
             "api",
             script::Step::call(
@@ -167,7 +168,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             ),
         )
         .commits(1)
-        .label("Presence (3 fields)")
+        .label("Presence")
         .payload(
             PRESENCE_EFFECT,
             json!({ TEXTURE: 100.0, CLARITY: 100.0, DEHAZE: 100.0 }),

@@ -199,6 +199,22 @@ pub struct ActionResult {
     /// The layers a `mask.delete` removed. A destructive command says what it removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed_layers: Vec<crate::mask::commands::RemovedLayer>,
+    /// The settings a composite action — a preset — left out because they do not apply to the
+    /// photo: a step whose module does not apply to its kind, and a field superseded on its global
+    /// target. A skip is not a refusal; a composite that applies nothing is a no-op that still
+    /// reports what it skipped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedSetting>,
+}
+
+/// One setting a composite action did not apply to a photo, and why: the step's action, the field
+/// when only that field was left out, and the refusal the host would have given it alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedSetting {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter: Option<String>,
+    pub reason: String,
 }
 
 impl ActionResult {
@@ -210,6 +226,7 @@ impl ActionResult {
             mask: None,
             component: None,
             removed_layers: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 }
@@ -502,6 +519,8 @@ impl EditorService {
     /// Open a catalog served by a specific set of providers. Registration is cheap and happens
     /// before any catalog or image work.
     pub fn open_with(path: &Path, registry: Arc<ModuleRegistry>) -> Result<Self, Error> {
+        // Control variants name other modules, so they are checked once the set is complete.
+        registry.check_complete()?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| {
                 Error::catalog(format!("cannot create catalog directory: {}", e.kind()))

@@ -284,13 +284,19 @@ mod tests {
         );
         // A module's own controls are collected before its reset and its canvas mode, exactly the
         // registry order the tools panel renders in.
+        let crop = modules
+            .iter()
+            .find(|module| module.id == "luxforge.crop")
+            .expect("the crop module");
         let crop_reset = entries
             .iter()
-            .position(|(label, ..)| label.ends_with("· Reset"))
+            .position(|(label, ..)| *label == format!("{} · Reset", crop.title))
             .expect("a reset entry");
         let crop_mode = entries
             .iter()
-            .position(|(label, ..)| label.starts_with("Mode · "))
+            .position(|(label, ..)| {
+                *label == format!("Mode · {}", crop.canvas.as_ref().unwrap().title())
+            })
             .expect("a mode entry");
         assert!(crop_reset < crop_mode, "reset is listed before the mode");
     }

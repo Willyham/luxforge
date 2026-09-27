@@ -850,6 +850,39 @@ fn method_schema(
     schema
 }
 
+/// The source kinds a module's generated methods apply to, listed only when the module does not
+/// apply to every kind — as an effect's `sources` is — so a method of a module that applies
+/// everywhere is listed exactly as before kinds were declared.
+fn method_sources(descriptor: &crate::ModuleDescriptor) -> Option<Value> {
+    let kinds: Vec<crate::SourceTag> = crate::SourceTag::ALL
+        .into_iter()
+        .filter(|kind| descriptor.applies_to(*kind))
+        .collect();
+    (kinds.len() != crate::SourceTag::ALL.len()).then(|| json!(kinds))
+}
+
+/// Mark each declared parameter of `action` that a control variant supersedes with `superseded:
+/// [{source, by}]`: on the global target of a photo of `source` the field is refused and `by` —
+/// `set-raw.temperature` — is its one path, so a client learns the refusal without trying it.
+fn mark_superseded(schema: &mut Value, action: &str, superseded: &[crate::Superseded<'_>]) {
+    let Some(parameters) = schema.get_mut("parameters").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for parameter in parameters {
+        let Some(name) = parameter.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let by: Vec<Value> = superseded
+            .iter()
+            .filter(|field| field.action == action && field.parameter == name)
+            .map(|field| json!({"source": field.source, "by": field.by()}))
+            .collect();
+        if !by.is_empty() {
+            parameter["superseded"] = Value::Array(by);
+        }
+    }
+}
+
 pub fn schemas(registry: &ModuleRegistry) -> Value {
     // The host's own methods, from the parameters each one declares.
     let mut methods: Map<String, Value> = METHODS
@@ -880,6 +913,8 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         .collect();
     let descriptors = registry.descriptors();
     let host = registry.host_descriptors();
+    // The fields a control variant supersedes, derived once from the variants.
+    let superseded = registry.superseded();
     // The modules' descriptors and the host's own — the `mask.*` family — through one loop, so a
     // client discovers a mask command and a module action from one listing in one shape. Each
     // method's name is the one its action or query is called through ([`crate::ActionRef::method`]).
@@ -890,6 +925,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         // declared parameters, and declared on its own as `target`, an identity parameter checked
         // like any other: sending it to any other action is a validation error naming that action.
         let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
+        let sources = method_sources(descriptor);
         for action in &descriptor.actions {
             let Some(resolved) = registry.resolve_action(&action.id) else {
                 continue;
@@ -910,6 +946,10 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             if maskable {
                 schema["target"] = json!(target);
             }
+            if let Some(sources) = &sources {
+                schema["sources"] = sources.clone();
+            }
+            mark_superseded(&mut schema, &action.id, &superseded);
             methods.insert(resolved.method(), schema);
         }
         // A query reads the stack of `entry_id`, the session's selection by default.
@@ -922,7 +962,18 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 "entry_id".to_owned(),
                 json!("entry to ask about; default the session's selection"),
             );
-            let schema = method_schema(
+            // A maskable module's query asks about the target its actions would edit.
+            let target = crate::editor::mask_target_parameter();
+            if maskable && matches!(resolved, crate::QueryRef::Module(..)) {
+                optional.insert(
+                    target.name.clone(),
+                    json!(
+                        "the mask whose stack to ask about, as this module's actions take it; \
+                         omit it to ask about the layer that applies everywhere"
+                    ),
+                );
+            }
+            let mut schema = method_schema(
                 &Method::Query(query.id.clone()),
                 vec![json!("asset_id")],
                 optional,
@@ -930,6 +981,12 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 Some(&query.parameters),
                 None,
             );
+            if maskable && matches!(resolved, crate::QueryRef::Module(..)) {
+                schema["target"] = json!(target);
+            }
+            if let Some(sources) = &sources {
+                schema["sources"] = sources.clone();
+            }
             methods.insert(resolved.method(), schema);
         }
         // A task carries the `request` envelope, and `asset_id` and `profile_id` are its envelope
@@ -2051,14 +2108,10 @@ mod tests {
             [
                 "edit.apply-preset",
                 "edit.set-pixel",
-                "edit.set-raw-exposure",
-                "edit.set-raw-temperature",
-                "edit.set-raw-tint",
+                "edit.set-raw",
                 "edit.set-raw-red-gain",
                 "edit.set-raw-blue-gain",
                 "edit.pick-raw-neutral",
-                "edit.use-as-shot-wb",
-                "edit.reset-raw",
                 "edit.set-basic",
                 "edit.reset-basic",
                 "edit.set-presence",
@@ -2198,9 +2251,59 @@ mod tests {
                 .expect("the query's optional fields")
                 .keys()
                 .collect::<Vec<_>>(),
-            ["entry_id"],
-            "a query answers about the session's selection unless an entry is named"
+            ["entry_id", "mask"],
+            "a query answers about the session's selection unless an entry is named, and about \
+             the global target unless a mask is named"
         );
+        assert_eq!(
+            listed["query.neutral-sample"]["target"]["kind"],
+            json!("identity"),
+            "a maskable module's query declares the target its actions take"
+        );
+        // A method lists the source kinds its module applies to only when that is not every kind.
+        for method in [
+            "edit.set-raw",
+            "edit.set-raw-red-gain",
+            "edit.set-raw-blue-gain",
+            "edit.pick-raw-neutral",
+        ] {
+            assert_eq!(listed[method]["sources"], json!(["raw"]), "{method}");
+        }
+        for method in [
+            "edit.set-basic",
+            "edit.apply-preset",
+            "query.neutral-sample",
+        ] {
+            assert!(listed[method].get("sources").is_none(), "{method}");
+        }
+        // Each superseded parameter names the source kind and the field that is its one path there.
+        let parameter = |method: &str, name: &str| {
+            listed[method]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|parameter| parameter["name"] == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("{method} {name}"))
+        };
+        assert_eq!(
+            parameter("edit.set-basic", "temperature")["superseded"],
+            json!([{"source": "raw", "by": "set-raw.temperature"}])
+        );
+        assert_eq!(
+            parameter("edit.set-basic", "tint")["superseded"],
+            json!([{"source": "raw", "by": "set-raw.tint"}])
+        );
+        for (method, name) in [
+            ("edit.set-basic", "exposure"),
+            ("edit.set-raw", "temperature"),
+            ("edit.set-presence", "clarity"),
+        ] {
+            assert!(
+                parameter(method, name).get("superseded").is_none(),
+                "{method} {name}"
+            );
+        }
         assert_eq!(
             schema["modules"].as_array().unwrap().len(),
             service.registry().descriptors().len()
@@ -2318,13 +2421,20 @@ mod tests {
         );
         assert_eq!(
             picker(&module("luxforge.basic")),
-            json!({"kind": "picker", "label": "Neutral picker"}),
-            "the neutral picker is a control of the White balance group"
+            json!({"kind": "picker", "label": "Neutral picker",
+                   "variants": [{"source": "raw", "module": "luxforge.raw",
+                                 "control": {"kind": "picker", "label": "Neutral picker"}}]}),
+            "the neutral picker is a control of the White balance group, and on a RAW photo it \
+             enters the RAW module's sensor pick"
         );
+        let raw = module("luxforge.raw");
         assert_eq!(
-            picker(&module("luxforge.raw")),
-            json!({"kind": "picker", "label": "Neutral WB"})
+            raw["controls"],
+            json!([]),
+            "the RAW module draws no section"
         );
+        assert_eq!(raw["canvas"]["title"], json!("Neutral picker"));
+        assert_eq!(raw["canvas"]["shortcut"], json!(null));
         assert_eq!(pixel["actions"][0]["summary"], json!("Pixel {x}, {y}"));
         let transform = module("luxforge.transform");
         assert_eq!(transform["hint"], json!("Rotate, mirror and flip"));
