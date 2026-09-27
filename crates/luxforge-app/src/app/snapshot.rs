@@ -178,11 +178,44 @@ impl Editor {
     }
 
     /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers
-    /// and whether its pixels are on the GPU for the displayed generation.
+    /// and whether its draw call was encoded with the displayed photograph.
     pub(super) fn overlay_summary(&self) -> Value {
         match &self.overlay_request {
             Some(request) => {
-                json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,"highlights":request.highlights,"generation":request.generation,"approximate":request.approximate,"drawn":self.overlay_surface().is_some()})
+                let surface = self.overlay_surface();
+                let assigned = surface.is_some();
+                let version = surface.map(luxforge_ui::Frame::version);
+                let gpu = luxforge_ui::surface_diagnostics();
+                let clipping_drawn = surface
+                    .is_some_and(|overlay| gpu.drawn_clipping_version == Some(overlay.version()));
+                let drawn = clipping_drawn
+                    && match request.region {
+                        Some(rect) => self.region_raster.as_ref().is_some_and(|region| {
+                            region.rect == rect
+                                && self.presenter.region().is_some_and(|surface_region| {
+                                    gpu.drawn_regions.iter().flatten().any(|drawn| {
+                                        drawn.version == surface_region.frame.version()
+                                            && drawn.content_id == region.content
+                                            && drawn.generation == region.generation
+                                            && drawn.quality == region.quality
+                                    })
+                                })
+                        }),
+                        None => {
+                            // Fit uses the surface's ordinary (non-viewport) path, which has
+                            // no content ID. Its exact photo Frame version and clipping Frame
+                            // version still prove both draw calls were encoded together.
+                            gpu.drawn_content
+                                .is_none_or(|content| content == self.presented_content)
+                                && gpu.drawn_full_version
+                                    == self.presenter.photo().map(luxforge_ui::Frame::version)
+                        }
+                    };
+                json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,
+                    "highlights":request.highlights,"generation":request.generation,
+                    "approximate":request.approximate,"region":request.region.map(|region|
+                        [region.x0,region.y0,region.x1(),region.y1()]),
+                    "source_assigned":assigned,"version":version,"drawn":drawn})
             }
             None => Value::Null,
         }
@@ -194,6 +227,7 @@ impl Editor {
     /// with the same version and the same write count prove nothing was written between them,
     /// however often the view was rebuilt meanwhile.
     pub(super) fn surface_summary(&self) -> Value {
+        let gpu = luxforge_ui::surface_diagnostics();
         json!({
             "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
             "generation": self.presented_generation,
@@ -203,6 +237,47 @@ impl Editor {
             }),
             "version": self.presenter.photo().map(luxforge_ui::Frame::version),
             "texture_writes": luxforge_ui::photo_surface::texture_writes(),
+            "detail_updating":self.visible_detail_updating(),
+            "desired_view_dirty":self.desired_view_dirty,
+            "view_plan_in_flight":self.view_plan_in_flight,
+            "view_request_generation":self.view_request_generation,
+            "quiet_timer_armed":self.quiet_since.is_some() && !self.quiet_settle_requested,
+            "quiet_elapsed_ms":self.quiet_since.map(|at| at.elapsed().as_secs_f64()*1000.0),
+            "gpu": {
+                "photo_writes":gpu.photo_writes,
+                "upload_bytes":gpu.upload_bytes,
+                "full_resident_bytes":gpu.full_resident_bytes,
+                "region_resident_bytes":gpu.region_resident_bytes,
+                "retiring_bytes":gpu.retiring_bytes,
+                "deferred_uploads":gpu.deferred_uploads,
+                "rejected_full_uploads":gpu.rejected_full_uploads,
+                "rejected_region_uploads":gpu.rejected_region_uploads,
+                "gpu_retirement_failures":gpu.gpu_retirement_failures,
+                "drawn_frames":gpu.drawn_frames,
+                "blank_photo_draws":gpu.blank_photo_draws,
+                "stale_photo_draws":gpu.stale_photo_draws,
+                "drawn_stale_photo":gpu.drawn_stale_photo,
+                "drawn_photo_blank":gpu.drawn_photo_blank,
+                "drawn_fallback_content":gpu.drawn_fallback_content,
+                "drawn_content":gpu.drawn_content,
+                "drawn_full_version":gpu.drawn_full_version,
+                "drawn_region_version":gpu.drawn_region_version,
+                "drawn_region_generation":gpu.drawn_region_generation,
+                "drawn_region_quality":gpu.drawn_region_quality.map(|quality| match quality {
+                    luxforge_ui::RegionQuality::Interactive => "interactive",
+                    luxforge_ui::RegionQuality::Exact => "exact",
+                }),
+                "drawn_regions":gpu.drawn_regions.map(|region| region.map(|region| json!({
+                    "version":region.version,
+                    "content":region.content_id,
+                    "generation":region.generation,
+                    "quality":match region.quality {
+                        luxforge_ui::RegionQuality::Interactive => "interactive",
+                        luxforge_ui::RegionQuality::Exact => "exact",
+                    },
+                }))),
+                "drawn_clipping_version":gpu.drawn_clipping_version,
+            },
             "views": self.loop_timing.get().views,
         })
     }

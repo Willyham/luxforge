@@ -1217,6 +1217,37 @@ pub(crate) fn current_preview_task(
     )
 }
 
+/// Plan one view-only frame without reading or changing the session. The app re-reads its local
+/// pan before admission, so a coalesced scroll remains the newest rectangle.
+pub(crate) fn view_preview_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    draft: Option<DraftId>,
+    epoch: u64,
+    intent: luxforge_core::PreviewIntent,
+) -> Task<Message> {
+    owner_task(
+        move || {
+            let mut request = PreviewRequest::new(client, asset_id)
+                .entry(entry_id)
+                .analyse();
+            if let Some(draft) = draft {
+                request = request.draft(draft);
+            }
+            ready_preview_job(&owner, request)
+        },
+        move |result| {
+            Message::Preview(PreviewMessage::ViewLoaded {
+                epoch,
+                intent,
+                result: result.map(Box::new),
+            })
+        },
+    )
+}
+
 /// The plain calls [`current_preview_task`] runs.
 fn current_preview(
     owner: &OwnerHandle,

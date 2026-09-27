@@ -60,6 +60,10 @@ pub(crate) struct Evidence {
     pub(crate) steps: Vec<Value>,
     pub(crate) frames: Vec<Value>,
     pub(crate) capture_pending: bool,
+    /// A native view-change probe whose own tick and capture streams are suspended until due.
+    pub(crate) view_idle: Option<ViewIdleObservation>,
+    /// Permit a diagnostic capture of a blank/stale result after a failed view-idle check.
+    pub(crate) allow_unready_capture: bool,
     /// This capture was armed by the mask overlay, so it must show one.
     ///
     /// The grid belongs to the frame it describes, and the canvas draws it only over that frame — so
@@ -92,6 +96,14 @@ pub(crate) struct Evidence {
     pub(crate) sync: CaptureSync,
 }
 
+pub(crate) struct ViewIdleObservation {
+    pub(crate) until: Instant,
+    pub(crate) ms: u64,
+    pub(crate) blank_before: u64,
+    pub(crate) stale_before: u64,
+    pub(crate) drawn_before: u64,
+}
+
 /// What keeps a capture's pixels and its recorded state the same moment. A screenshot reads back
 /// the frame the window renderer drew last rather than drawing a fresh one, so a message handled
 /// after that frame was built — a preview result arriving in the same batch as the capture tick —
@@ -107,6 +119,10 @@ pub(crate) struct CaptureSync {
     /// The state, requested generation and presented photo version recorded with the screenshot
     /// being taken. A newer photo makes an in-flight readback stale.
     pub(crate) state: Option<(Value, u64, u64)>,
+    /// The clipping frame encoded with the photo when readback was requested. A newer overlay
+    /// arriving during the asynchronous screenshot invalidates that request just as a newer photo
+    /// does.
+    pub(crate) clipping_version: Option<u64>,
 }
 
 impl Default for CaptureSync {
@@ -115,6 +131,7 @@ impl Default for CaptureSync {
             updates: 0,
             drawn: Arc::new(AtomicU64::new(u64::MAX)),
             state: None,
+            clipping_version: None,
         }
     }
 }
@@ -124,6 +141,20 @@ impl CaptureSync {
     pub(crate) fn current(&self) -> bool {
         self.drawn.load(Ordering::Relaxed) == self.updates
     }
+}
+
+/// A clipping capture is ready only when the current overlay's own frame was encoded with the
+/// photograph. A failed derivation is captured as a failed step, with its refusal visible.
+fn clipping_capture_ready(
+    enabled: bool,
+    failed: bool,
+    current_version: Option<u64>,
+    drawn_version: Option<u64>,
+    identity_drawn: bool,
+) -> bool {
+    !enabled
+        || failed
+        || current_version.is_some_and(|version| drawn_version == Some(version) && identity_drawn)
 }
 
 /// A widget that draws nothing and, each time it is drawn, stores how many updates the view it
@@ -197,6 +228,7 @@ pub(crate) struct PacedSlider {
     pub(crate) parameter: String,
     /// Values still to send, in order; the front is sent by the next tick.
     pub(crate) remaining: VecDeque<f64>,
+    pub(crate) remaining_pan: VecDeque<[f32; 2]>,
     /// How many of the step's values have already been sent, which is the index the next one
     /// records.
     pub(crate) sent: usize,
@@ -236,7 +268,7 @@ pub(crate) use luxforge_evidence::{
     DoubleClickStep, DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, MaskRow, MaskStep,
     PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep,
     Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step,
-    TabStep, ViewStep, WorkspaceStep,
+    TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -293,7 +325,158 @@ pub(crate) enum Settle {
     Export,
 }
 
+/// The photograph the capture must actually read back. A render can be adopted before its texture
+/// is admitted: bounded GPU retirement may defer the write for one or more draws. In that case a
+/// captured frame still shows the previous texture even though the presenter holds the new raster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpectedPhotoDraw {
+    Full {
+        version: u64,
+        content: Option<u64>,
+    },
+    Region {
+        version: u64,
+        content: u64,
+        generation: u64,
+        quality: luxforge_ui::RegionQuality,
+    },
+}
+
+fn photo_drawn(
+    expected: ExpectedPhotoDraw,
+    gpu: luxforge_ui::photo_surface::SurfaceDiagnostics,
+) -> bool {
+    match expected {
+        ExpectedPhotoDraw::Full { version, content } => {
+            gpu.drawn_full_version == Some(version)
+                && content.is_none_or(|content| gpu.drawn_content == Some(content))
+        }
+        ExpectedPhotoDraw::Region {
+            version,
+            content,
+            generation,
+            quality,
+        } => gpu.drawn_regions.iter().flatten().any(|drawn| {
+            drawn.version == version
+                && drawn.content_id == content
+                && drawn.generation == generation
+                && drawn.quality == quality
+        }),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn capture_accepts_a_drawn_region_beneath_older_exact_detail() {
+    let mut gpu = luxforge_ui::photo_surface::SurfaceDiagnostics {
+        drawn_regions: [
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 4,
+                content_id: 2,
+                generation: 7,
+                quality: luxforge_ui::RegionQuality::Exact,
+            }),
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 5,
+                content_id: 2,
+                generation: 8,
+                quality: luxforge_ui::RegionQuality::Interactive,
+            }),
+        ],
+        ..Default::default()
+    };
+    let expected = ExpectedPhotoDraw::Region {
+        version: 5,
+        content: 2,
+        generation: 8,
+        quality: luxforge_ui::RegionQuality::Interactive,
+    };
+    assert!(photo_drawn(expected, gpu));
+    gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Exact;
+    assert!(
+        !photo_drawn(expected, gpu),
+        "quality identifies the drawn region"
+    );
+    gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Interactive;
+    gpu.drawn_regions[1].as_mut().unwrap().version = 6;
+    assert!(
+        !photo_drawn(expected, gpu),
+        "version identifies the drawn region"
+    );
+    gpu.drawn_regions[1].as_mut().unwrap().version = 5;
+    gpu.drawn_regions[1] = None;
+    assert!(!photo_drawn(expected, gpu));
+}
+
 impl Editor {
+    /// A scripted screenshot waits for the intended photograph's actual GPU draw. The capture
+    /// sync marker proves the widget tree is current; this checks the texture when its write was
+    /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
+    /// and do not inherit a stale diagnostic from the ordinary photograph.
+    pub(super) fn capture_photo_ready(&self) -> bool {
+        if self.state.is_none()
+            || self.crop().is_some()
+            || self.gallery_page().is_some()
+            || self.render_error.is_some()
+        {
+            return true;
+        }
+        let full = self.presenter.photo_for(self.presented_content);
+        let full_current = self.presenter.full_content() == Some(self.presented_content);
+        let expected = if matches!(
+            self.session.preview.view.zoom,
+            luxforge_core::Zoom::Percent { .. }
+        ) && !full_current
+        {
+            self.presenter.region().and_then(|region| {
+                (region.content_id == self.presented_content).then_some(ExpectedPhotoDraw::Region {
+                    version: region.frame.version(),
+                    content: region.content_id,
+                    generation: region.generation,
+                    quality: region.quality,
+                })
+            })
+        } else {
+            None
+        }
+        .or_else(|| {
+            full.map(|photo| ExpectedPhotoDraw::Full {
+                version: photo.version(),
+                content: (matches!(
+                    self.session.preview.view.zoom,
+                    luxforge_core::Zoom::Percent { .. }
+                ) && full_current)
+                    .then_some(self.presented_content),
+            })
+        });
+        expected.is_some_and(|expected| photo_drawn(expected, luxforge_ui::surface_diagnostics()))
+    }
+
+    /// Evidence with clipping enabled must show the requested mask over the current photograph,
+    /// including after a mask-overlay toggle causes a new photo and a new clipping derivation.
+    pub(super) fn capture_clipping_ready(&self) -> bool {
+        if self.state.is_none()
+            || self.crop().is_some()
+            || self.gallery_page().is_some()
+            || self.render_error.is_some()
+        {
+            return true;
+        }
+        let enabled = self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
+        let failed = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.current.as_ref())
+            .is_some_and(|step| step["status"] == "failed");
+        let current = self.overlay_surface().map(luxforge_ui::Frame::version);
+        clipping_capture_ready(
+            enabled,
+            failed,
+            current,
+            luxforge_ui::surface_diagnostics().drawn_clipping_version,
+            self.overlay_summary()["drawn"] == true,
+        )
+    }
     /// One of evidence mode's own messages.
     pub(super) fn evidence_update(&mut self, message: EvidenceMessage) -> Task<Message> {
         match message {
@@ -306,6 +489,13 @@ impl Editor {
                 );
             }
             EvidenceMessage::Tick => {
+                if self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.view_idle.is_some())
+                {
+                    return Task::none();
+                }
                 let expired = self.evidence.as_ref().is_some_and(|evidence| {
                     let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
                         SCRIPT_EVIDENCE_DEADLINE
@@ -320,12 +510,22 @@ impl Editor {
                 }
                 self.wait_elapsed();
             }
+            EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
             EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
             EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
             EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
             EvidenceMessage::Capture => {
+                if self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.view_idle.is_some())
+                {
+                    return Task::none();
+                }
                 let rows_shown = self.recipe_rows_shown();
                 let proxy_ready = self.capture_proxy_ready();
+                let photo_ready = self.capture_photo_ready();
+                let clipping_ready = self.capture_clipping_ready();
                 let closing = self.gesture_closing();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
@@ -346,7 +546,9 @@ impl Editor {
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
                     || !rows_shown
-                    || !proxy_ready
+                    || (!proxy_ready && !evidence.allow_unready_capture)
+                    || (!photo_ready && !evidence.allow_unready_capture)
+                    || (!clipping_ready && !evidence.allow_unready_capture)
                     || closing
                 {
                     return Task::none();
@@ -364,9 +566,11 @@ impl Editor {
                 evidence.capture_pending = false;
                 evidence.saving = true;
                 let recorded = (self.snapshot(), self.activity.requested);
+                let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {
                     evidence.sync.state =
                         Some((recorded.0, recorded.1, self.presenter.photo_version()));
+                    evidence.sync.clipping_version = clipping_version;
                 }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
@@ -377,15 +581,24 @@ impl Editor {
                 // it is in flight; its request-time snapshot then describes the old proxy even
                 // though the capture response arrives after the new one was displayed. Retry on
                 // the next drawn frame without publishing or saving that stale screenshot.
-                let stale = !self.capture_proxy_ready()
+                let stale = !self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.allow_unready_capture)
+                    && !self.capture_proxy_ready()
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence.sync.state.as_ref().is_some_and(|(_, _, version)| {
                             *version != self.presenter.photo_version()
                         })
+                    })
+                    || self.evidence.as_ref().is_some_and(|evidence| {
+                        evidence.sync.clipping_version
+                            != self.overlay_surface().map(luxforge_ui::Frame::version)
                     });
                 if stale {
                     if let Some(evidence) = &mut self.evidence {
                         evidence.sync.state = None;
+                        evidence.sync.clipping_version = None;
                         evidence.saving = false;
                         evidence.capture_pending = true;
                     }
@@ -393,6 +606,7 @@ impl Editor {
                 }
                 if let Some(evidence) = &mut self.evidence {
                     evidence.capture_overlay = false;
+                    evidence.sync.clipping_version = None;
                 }
                 self.event(
                     "frame_captured",
@@ -501,6 +715,7 @@ impl Editor {
             let evidence = self.evidence.as_mut().expect("evidence mode");
             evidence.step += 1;
             evidence.awaiting = None;
+            evidence.allow_unready_capture = false;
             let record = json!({"step":evidence.step,"status":"sent","request":record(&step)});
             evidence.current = Some(record.clone());
             record
@@ -524,6 +739,7 @@ impl Editor {
             Step::Pick(pick) => self.pick_step(pick),
             Step::SliderDraft(decision) => self.slider_draft_step(decision),
             Step::View(view) => self.view_step(view),
+            Step::ViewIdle(step) => self.view_idle_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
             Step::Palette(palette) => self.palette_step(palette),
@@ -1384,6 +1600,7 @@ impl Editor {
                     action: step.action,
                     parameter: step.parameter,
                     remaining: step.values.into(),
+                    remaining_pan: step.pan_path.into(),
                     sent: 0,
                     interval_ms,
                     end: step.end,
@@ -1514,6 +1731,7 @@ impl Editor {
         let Some(value) = paced.remaining.pop_front() else {
             return Task::none();
         };
+        let pan = paced.remaining_pan.pop_front();
         let index = paced.sent;
         paced.sent += 1;
         let action = paced.action.clone();
@@ -1529,6 +1747,13 @@ impl Editor {
             parameter: parameter.clone(),
             value,
         }))];
+        if let Some([x, y]) = pan {
+            self.event("slider_step_pan", json!({"index":index,"x":x,"y":y}));
+            tasks.push(iced::widget::operation::snap_to(
+                crate::app::crop::SURFACE_ID,
+                iced::widget::scrollable::RelativeOffset { x, y },
+            ));
+        }
         if done {
             if self.slider_gesture().is_none() && end != SliderEnd::Cancel {
                 return self.fail_step(format!(
@@ -2123,6 +2348,82 @@ impl Editor {
                 self.zoom = number_text(f64::from(value));
                 self.update(Message::View(ViewMessage::ApplyZoom))
             }
+        }
+    }
+
+    /// Change the view through its ordinary message with evidence's periodic redraws suspended
+    /// first. The deadline records the surface state before asking for a screenshot: otherwise a
+    /// capture's own frame can conceal a missed GPU retirement wake.
+    fn view_idle_step(&mut self, step: ViewIdleStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if self.busy {
+            return self.fail_step("a request is already in flight");
+        }
+        let gpu = luxforge_ui::surface_diagnostics();
+        if let Some(evidence) = &mut self.evidence {
+            evidence.capture_pending = false;
+            evidence.awaiting = None;
+            evidence.view_idle = Some(ViewIdleObservation {
+                until: Instant::now() + Duration::from_millis(step.ms),
+                ms: step.ms,
+                blank_before: gpu.blank_photo_draws,
+                stale_before: gpu.stale_photo_draws,
+                drawn_before: gpu.drawn_frames,
+            });
+        }
+        match step.view {
+            ViewStep::Fit => self.update(Message::View(ViewMessage::Fit)),
+            ViewStep::Percent(value) => {
+                self.zoom = number_text(f64::from(value));
+                self.update(Message::View(ViewMessage::ApplyZoom))
+            }
+        }
+    }
+
+    /// This gated timer is removed after its first due message. Reading diagnostics precedes the
+    /// capture request and any redraw caused by this evidence message.
+    fn view_idle_deadline(&mut self) -> Task<Message> {
+        let Some(observation) = self.evidence.as_ref().and_then(|e| e.view_idle.as_ref()) else {
+            return Task::none();
+        };
+        if Instant::now() < observation.until {
+            return Task::none();
+        }
+        let gpu = luxforge_ui::surface_diagnostics();
+        let blank_delta = gpu
+            .blank_photo_draws
+            .saturating_sub(observation.blank_before);
+        let stale_delta = gpu
+            .stale_photo_draws
+            .saturating_sub(observation.stale_before);
+        let drawn_delta = gpu.drawn_frames.saturating_sub(observation.drawn_before);
+        let expected_version = self.presenter.photo().map(luxforge_ui::Frame::version);
+        let ready = self.capture_photo_ready();
+        let passed = ready && blank_delta == 0 && drawn_delta > 0;
+        let detail = json!({
+            "ready":ready,
+            "passed":passed,
+            "blank_photo_draws_delta":blank_delta,
+            "stale_photo_draws_delta":stale_delta,
+            "drawn_frames_delta":drawn_delta,
+            "expected_full_version":expected_version,
+            "drawn_full_version":gpu.drawn_full_version,
+            "drawn_stale_photo":gpu.drawn_stale_photo,
+            "drawn_fallback_content":gpu.drawn_fallback_content,
+        });
+        self.event("view_idle_check", detail.clone());
+        self.note_step(json!({"view_idle_check":detail}));
+        if let Some(evidence) = &mut self.evidence {
+            evidence.view_idle = None;
+            evidence.allow_unready_capture = !passed;
+        }
+        if !passed {
+            self.fail_step("view idle did not draw the requested photograph without a blank frame")
+        } else {
+            self.capture_next_frame();
+            Task::none()
         }
     }
 
@@ -2803,6 +3104,120 @@ mod tests {
     use crate::app::testing::{evidence, finish, scripted};
     use luxforge_core::CropStage;
 
+    #[test]
+    fn clipping_capture_requires_the_current_overlay_in_the_gpu_draw() {
+        assert!(clipping_capture_ready(false, false, None, None, false));
+        assert!(
+            !clipping_capture_ready(true, false, None, None, false),
+            "pending derivation"
+        );
+        assert!(
+            !clipping_capture_ready(true, false, Some(9), Some(8), false),
+            "stale GPU frame"
+        );
+        assert!(
+            !clipping_capture_ready(true, false, Some(9), Some(9), false),
+            "wrong photo identity"
+        );
+        assert!(clipping_capture_ready(true, false, Some(9), Some(9), true));
+        assert!(
+            clipping_capture_ready(true, true, None, None, false),
+            "an explicit failure is capturable"
+        );
+    }
+
+    #[test]
+    fn view_idle_suspends_evidence_redraws_until_it_records_the_pre_capture_surface() {
+        let (mut editor, catalog, _, _) =
+            crate::app::testing::scripted(r#"[{"view_idle":{"view":{"zoom":"fit"},"ms":1000}}]"#);
+        let _ = editor.next_step();
+        assert!(editor.evidence.as_ref().unwrap().view_idle.is_some());
+        let _ = editor.evidence_update(EvidenceMessage::Tick);
+        let _ = editor.evidence_update(EvidenceMessage::Capture);
+        assert!(!editor.evidence.as_ref().unwrap().capture_pending);
+        editor
+            .evidence
+            .as_mut()
+            .unwrap()
+            .view_idle
+            .as_mut()
+            .unwrap()
+            .until = Instant::now() - Duration::from_millis(1);
+        let _ = editor.evidence_update(EvidenceMessage::ViewIdleDeadline);
+        assert!(editor.evidence.as_ref().unwrap().view_idle.is_none());
+        assert!(editor.evidence.as_ref().unwrap().capture_pending);
+        assert!(editor.evidence.as_ref().unwrap().current.as_ref().unwrap()["view_idle_check"]["passed"].is_boolean());
+        crate::app::testing::finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_capture_waits_for_the_adopted_photo_texture_and_checks_region_identity() {
+        let mut gpu = luxforge_ui::photo_surface::SurfaceDiagnostics {
+            drawn_full_version: Some(1),
+            photo_writes: 1,
+            deferred_uploads: 1,
+            ..Default::default()
+        };
+        let expected = ExpectedPhotoDraw::Full {
+            version: 2,
+            content: None,
+        };
+        assert!(
+            !photo_drawn(expected, gpu),
+            "a new CPU raster does not settle while the previous proxy remains drawn"
+        );
+        gpu.drawn_full_version = Some(2);
+        gpu.photo_writes = 2;
+        assert!(
+            photo_drawn(expected, gpu),
+            "a retirement wake can upload that same raster without another adoption"
+        );
+
+        let region = ExpectedPhotoDraw::Region {
+            version: 4,
+            content: 9,
+            generation: 7,
+            quality: luxforge_ui::RegionQuality::Interactive,
+        };
+        gpu.drawn_regions = [
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 3,
+                content_id: 8,
+                generation: 6,
+                quality: luxforge_ui::RegionQuality::Exact,
+            }),
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 4,
+                content_id: 8,
+                generation: 7,
+                quality: luxforge_ui::RegionQuality::Interactive,
+            }),
+        ];
+        assert!(
+            !photo_drawn(region, gpu),
+            "the region belongs to another content"
+        );
+        gpu.drawn_regions[1].as_mut().unwrap().content_id = 9;
+        assert!(photo_drawn(region, gpu));
+        gpu.drawn_regions[1].as_mut().unwrap().generation = 8;
+        assert!(
+            !photo_drawn(region, gpu),
+            "a newer region is not this capture"
+        );
+        gpu.drawn_regions[1].as_mut().unwrap().generation = 7;
+        gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Exact;
+        assert!(
+            !photo_drawn(region, gpu),
+            "an exact region is not the interactive capture"
+        );
+        gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Interactive;
+        gpu.drawn_regions[1].as_mut().unwrap().version = 5;
+        assert!(
+            !photo_drawn(region, gpu),
+            "a different frame version is not the capture"
+        );
+    }
+
     /// The desktop reads a script through the shared script types before its window opens: a broken
     /// step fails the whole script, naming the step, and the one check the types cannot make, a
     /// gallery page the component board has, is the desktop's own.
@@ -2886,6 +3301,8 @@ mod tests {
             steps: Vec::new(),
             frames: Vec::new(),
             capture_pending: false,
+            view_idle: None,
+            allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
             had_errors: false,

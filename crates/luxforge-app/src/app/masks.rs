@@ -758,6 +758,7 @@ impl Editor {
             return None;
         }
         let (cells_w, cells_h) = self.overlay_cells()?;
+        let (whole_cells_w, whole_cells_h) = self.whole_overlay_cells()?;
         Some(luxforge_core::MaskOverlayRequest {
             mask,
             // The **pointer** is what asks for one component's own contribution, and nothing else:
@@ -768,6 +769,8 @@ impl Editor {
             component: self.hovered_component.clone(),
             cells_w,
             cells_h,
+            whole_cells_w,
+            whole_cells_h,
         })
     }
 
@@ -1233,9 +1236,18 @@ impl Editor {
             "mask_overlay",
             json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
-        let shown = self
-            .presenter
-            .show_coverage(generation, rgba, (width, height));
+        let shown = match self
+            .region_raster
+            .as_ref()
+            .filter(|region| region.generation == generation)
+        {
+            Some(region) => self
+                .presenter
+                .show_region_coverage(rgba, (width, height), region),
+            None => self
+                .presenter
+                .show_coverage(generation, rgba, (width, height)),
+        };
         if !shown {
             self.status = "Mask overlay unavailable: the grid could not be shown".into();
             self.event(
@@ -1278,6 +1290,19 @@ impl Editor {
     /// The mask overlay to draw over the photograph: the one on the presenter, when it belongs to
     /// the frame that is on screen.
     pub(crate) fn mask_overlay_surface(&self) -> Option<&luxforge_ui::Frame> {
+        if let Some(region) = self.region_raster.as_ref()
+            && region.generation == self.presented_generation
+        {
+            return self
+                .presenter
+                .region_coverage()
+                .filter(|overlay| {
+                    overlay.content_id == region.content
+                        && overlay.generation == region.generation
+                        && overlay.quality == region.quality
+                })
+                .map(|overlay| &overlay.frame);
+        }
         self.presenter.coverage(self.presented_generation)
     }
 }

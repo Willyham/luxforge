@@ -2,12 +2,12 @@
 //! phase, from one compilation of the job's stack at each stage it renders at.
 
 use super::{
-    ExactOutcome, MaskOverlayOutcome, MaskOverlayRequest, PhaseOutcome, PreviewJob, PreviewResult,
-    ProxyOutcome, job::one_component, queue::PreviewTask,
+    ExactOutcome, MaskOverlayOutcome, MaskOverlayRequest, PhaseOutcome, PreviewIntent, PreviewJob,
+    PreviewResult, ProxyOutcome, RegionOutcome, job::one_component, queue::PreviewTask,
 };
 use crate::{
-    Cancel, Error, ErrorKind, ModuleRegistry, ProxyCache, ProxyKey, Recipe, Render, RenderContext,
-    RenderOptions,
+    Cancel, Error, ErrorKind, ModuleRegistry, ProxyCache, ProxyKey, Recipe, Region,
+    RegionRenderOutcome, Render, RenderContext, RenderOptions,
     activity::{ActivitySpec, Outcome},
     analysis::{MaskOverlay, MaskPixels},
     latest::Running,
@@ -35,6 +35,9 @@ enum ProxyStep {
 /// its output reads. None of them reads a pixel. It runs on the preview worker, as does building
 /// the proxy itself.
 fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep {
+    if job.intent == PreviewIntent::Settle {
+        return ProxyStep::Skipped;
+    }
     let Some(bounds) = job.proxy else {
         return ProxyStep::Skipped;
     };
@@ -76,6 +79,9 @@ pub(super) fn run(
     task: PreviewTask,
     running: &Running<'_, PreviewTask, PreviewResult>,
 ) -> Option<PreviewResult> {
+    if task.job.viewport.is_some() && task.job.layer_count.is_none() {
+        return run_viewport(cache, task, running);
+    }
     let PreviewTask {
         job,
         board,
@@ -84,6 +90,11 @@ pub(super) fn run(
     let queue_wait_ms = requested_at.map(|requested| requested.elapsed().as_secs_f64() * 1000.0);
     let generation = running.generation();
     let (proxy_cancel, exact_cancel) = (running.abandoned(), running.superseded());
+    let full_cancel = if job.intent == PreviewIntent::Interactive {
+        proxy_cancel
+    } else {
+        exact_cancel
+    };
     // One activity spans both phases. A job abandoned mid-way, its results stale before its exact
     // phase could be handed over, drops the guard, which records it as cancelled.
     let activity = board.map(|board| {
@@ -129,7 +140,7 @@ pub(super) fn run(
         &job.registry,
         job.source.input(),
         recipe,
-        RenderOptions::exact(exact_cancel),
+        RenderOptions::exact(full_cancel),
         &job.context,
     );
     let mut compile_ms = Some(milliseconds_since(compile_started));
@@ -151,9 +162,13 @@ pub(super) fn run(
             }
             // The cache holds pixels; the settings a RAW development layer asks for come from this
             // job's recipe, so a drafted exposure renders against the cached planes.
+            cache.evict_unless(&key);
             let built = match cache.get(&key) {
                 Some(cached) => Ok((cached.with_settings_of(&job.source), false)),
-                None => job.source.proxy(key.plan).map(|source| (source, true)),
+                None => job
+                    .source
+                    .proxy_cancellable(key.plan, proxy_cancel)
+                    .map(|source| (source, true)),
             };
             match built {
                 Err(error) => Some(error.detail),
@@ -197,6 +212,7 @@ pub(super) fn run(
                                         exact,
                                         recipe,
                                         request,
+                                        None,
                                         proxy_cancel,
                                         &job.context,
                                     )
@@ -208,6 +224,8 @@ pub(super) fn run(
                                 entry_id: entry_id.clone(),
                                 identity: job.identity.clone(),
                                 draft_revision,
+                                intent: job.intent,
+                                viewport_declined: job.viewport_declined.clone(),
                                 // A proxy raster is never reduced: every number the histogram and
                                 // the clipping counters report is the exact phase's (performance
                                 // rule 11). The mask's coverage grid is not such a number: it is
@@ -234,6 +252,12 @@ pub(super) fn run(
                             if !running.send(proxy) {
                                 return None;
                             }
+                            if job.intent == PreviewIntent::Interactive {
+                                if let Some(activity) = activity {
+                                    activity.finish(Outcome::Completed);
+                                }
+                                return None;
+                            }
                             None
                         }
                     }
@@ -258,7 +282,7 @@ pub(super) fn run(
     // as the reduction, so the phase answers cancelled rather than a frame nothing will adopt.
     let (result, report) = match rendered {
         Ok(raster) if analyse => {
-            match crate::analysis::reduce_raster_cancellable(&raster, exact_cancel) {
+            match crate::analysis::reduce_raster_cancellable(&raster, full_cancel) {
                 Ok(report) => (Ok(raster), Some(report)),
                 Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
                 Err(_) => (Ok(raster), None),
@@ -276,7 +300,8 @@ pub(super) fn run(
             exact,
             recipe,
             request,
-            exact_cancel,
+            None,
+            full_cancel,
             &job.context,
         ),
         _ => MaskOverlayOutcome::default(),
@@ -291,6 +316,8 @@ pub(super) fn run(
         entry_id,
         identity: job.identity,
         draft_revision,
+        intent: job.intent,
+        viewport_declined: job.viewport_declined,
         outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
             result,
             report,
@@ -299,6 +326,277 @@ pub(super) fn run(
         })),
         approximate_white_balance,
         render_ms,
+        queue_wait_ms,
+    })
+}
+
+/// A percentage view uses its visible rectangle as the first unit of work. Moving inputs stop
+/// after that frame; a quiet or committed settlement produces exact visible pixels first and
+/// then the whole frame needed by the histogram and future settled pans. The two evaluations are
+/// separate so a newer input supersedes only settlement, never the interactive frame.
+fn run_viewport(
+    cache: &mut ProxyCache,
+    task: PreviewTask,
+    running: &Running<'_, PreviewTask, PreviewResult>,
+) -> Option<PreviewResult> {
+    let PreviewTask {
+        mut job,
+        board,
+        requested_at,
+    } = task;
+    let requested = job.viewport.expect("viewport branch has a region");
+    let generation = running.generation();
+    let queue_wait_ms = requested_at.map(|at| at.elapsed().as_secs_f64() * 1000.0);
+    let cancel = if job.intent == PreviewIntent::Interactive {
+        running.abandoned()
+    } else {
+        running.superseded()
+    };
+    let activity = board.as_ref().map(|board| {
+        board.begin(ActivitySpec {
+            kind: "preview.render",
+            label: "Rendering preview",
+            detail: None,
+            asset_id: Some(job.entry.asset_id.clone()),
+            job_id: None,
+        })
+    });
+    if let Some(activity) = &activity {
+        activity.phase(if job.intent == PreviewIntent::Interactive {
+            "interactive-region"
+        } else {
+            "refine-region"
+        });
+    }
+    let started = Instant::now();
+    let compiled = render(
+        &job.registry,
+        job.source.input(),
+        &job.recipe,
+        RenderOptions::exact(cancel),
+        &job.context,
+    );
+    let region = match compiled.as_ref() {
+        Err(error) => Err(error.clone()),
+        Ok(exact) if job.intent == PreviewIntent::Interactive => {
+            match exact.plan_proxy_region(&job.registry, &job.recipe, requested) {
+                Ok(plan) => {
+                    let key = ProxyKey {
+                        identity: job.source.identity(),
+                        plan: plan.proxy,
+                    };
+                    // A cold pan can replace the one cached proxy window; free its retained
+                    // pixels before building the next one so two source windows never accumulate.
+                    cache.evict_unless(&key);
+                    let source = match cache.get(&key) {
+                        Some(held) => Ok((held.with_settings_of(&job.source), false)),
+                        None => job
+                            .source
+                            .proxy_cancellable(plan.proxy, cancel)
+                            .map(|built| (built, true)),
+                    };
+                    match source {
+                        Ok((source, fresh)) => {
+                            let rendered = exact.render_proxy_region(
+                                &job.registry,
+                                source.input(),
+                                &job.recipe,
+                                plan,
+                                job.entry.snapshot.id.clone(),
+                                &job.context,
+                            );
+                            if fresh {
+                                cache.insert(key, source);
+                            }
+                            rendered
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(reason) => Ok(RegionRenderOutcome::Declined(reason)),
+            }
+        }
+        Ok(exact) => exact.region(job.entry.snapshot.id.clone(), requested),
+    };
+    // A half-detail window may be ineligible. A full-detail visible window is still preferable
+    // to asking for off-screen pixels during motion. If that is ineligible too, the existing
+    // bounded whole-output proxy/exact path is the named fallback.
+    let mut viewport_declined = None;
+    let region = if job.intent == PreviewIntent::Interactive
+        && matches!(region, Ok(RegionRenderOutcome::Declined(_)))
+    {
+        if let Ok(RegionRenderOutcome::Declined(reason)) = &region {
+            viewport_declined = Some(reason.reason().to_owned());
+        }
+        compiled
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|exact| exact.region(job.entry.snapshot.id.clone(), requested))
+    } else {
+        region
+    };
+    match region {
+        Ok(RegionRenderOutcome::Rendered(frame)) => {
+            let overlay = match (compiled.as_ref(), job.mask_overlay.as_ref()) {
+                (Ok(exact), Some(request)) => mask_overlay_for(
+                    &job.registry,
+                    exact,
+                    &job.recipe,
+                    request,
+                    Some(frame.full_rect),
+                    cancel,
+                    &job.context,
+                ),
+                _ => MaskOverlayOutcome::default(),
+            };
+            let result = PreviewResult {
+                generation,
+                entry_id: job.entry.id.clone(),
+                identity: job.identity.clone(),
+                draft_revision: job.draft_revision,
+                intent: job.intent,
+                viewport_declined,
+                outcome: PhaseOutcome::Region(RegionOutcome {
+                    frame,
+                    mask_overlay: overlay,
+                }),
+                approximate_white_balance: job.source.approximate_white_balance(),
+                render_ms: milliseconds_since(started),
+                queue_wait_ms,
+            };
+            if !running.send(result) {
+                return None;
+            }
+            if job.intent == PreviewIntent::Interactive {
+                if let Some(activity) = activity {
+                    activity.finish(Outcome::Completed);
+                }
+                return None;
+            }
+        }
+        Ok(RegionRenderOutcome::Declined(reason)) => {
+            job.viewport_declined = Some(reason.reason().into());
+            job.viewport = None;
+            if job.intent == PreviewIntent::Interactive {
+                job.proxy = Some(crate::ProxyBounds {
+                    width: requested.width,
+                    height: requested.height,
+                });
+            }
+            let result = run(
+                cache,
+                PreviewTask {
+                    job,
+                    board: None,
+                    requested_at,
+                },
+                running,
+            );
+            if let Some(activity) = activity {
+                activity.finish(Outcome::Completed);
+            }
+            return result;
+        }
+        Err(error) => {
+            if error.kind == ErrorKind::Cancelled {
+                if let Some(activity) = activity {
+                    activity.finish(Outcome::Cancelled);
+                }
+                return Some(PreviewResult {
+                    generation,
+                    entry_id: job.entry.id,
+                    identity: job.identity,
+                    draft_revision: job.draft_revision,
+                    intent: job.intent,
+                    viewport_declined,
+                    outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
+                        result: Err(error),
+                        report: None,
+                        mask_overlay: MaskOverlayOutcome::default(),
+                        proxy_declined: None,
+                    })),
+                    approximate_white_balance: job.source.approximate_white_balance(),
+                    render_ms: milliseconds_since(started),
+                    queue_wait_ms,
+                });
+            }
+            // A failed shortcut must not silently strand the request. The existing whole-frame
+            // path reports its own error or presents a valid fallback frame.
+            job.viewport_declined = Some(error.detail);
+            job.viewport = None;
+            if job.intent == PreviewIntent::Interactive {
+                job.proxy = Some(crate::ProxyBounds {
+                    width: requested.width,
+                    height: requested.height,
+                });
+            }
+            let result = run(
+                cache,
+                PreviewTask {
+                    job,
+                    board: None,
+                    requested_at,
+                },
+                running,
+            );
+            if let Some(activity) = activity {
+                activity.finish(Outcome::Completed);
+            }
+            return result;
+        }
+    }
+
+    if let Some(activity) = &activity {
+        activity.phase("exact");
+    }
+    let exact_started = Instant::now();
+    let approximate_white_balance = job.source.approximate_white_balance();
+    let rendered = compiled
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|exact| exact.frame(job.entry.snapshot.id.clone()));
+    let (result, report) = match rendered {
+        Ok(raster) if job.analyse && !approximate_white_balance => {
+            match crate::analysis::reduce_raster_cancellable(&raster, cancel) {
+                Ok(report) => (Ok(raster), Some(report)),
+                Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
+                Err(_) => (Ok(raster), None),
+            }
+        }
+        other => (other, None),
+    };
+    // The exact whole-frame publication replaces the region slot. Give it a whole-stage
+    // coverage grid too, so a settled pan retains the mask without asking for another render.
+    let mask_overlay = match (&result, compiled.as_ref(), job.mask_overlay.as_ref()) {
+        (Ok(_), Ok(exact), Some(request)) => mask_overlay_for(
+            &job.registry,
+            exact,
+            &job.recipe,
+            request,
+            None,
+            cancel,
+            &job.context,
+        ),
+        _ => MaskOverlayOutcome::default(),
+    };
+    if let Some(activity) = activity {
+        activity.finish(Outcome::of(&result));
+    }
+    Some(PreviewResult {
+        generation,
+        entry_id: job.entry.id,
+        identity: job.identity,
+        draft_revision: job.draft_revision,
+        intent: job.intent,
+        viewport_declined: None,
+        outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
+            result,
+            report,
+            mask_overlay,
+            proxy_declined: None,
+        })),
+        approximate_white_balance,
+        render_ms: milliseconds_since(exact_started),
         queue_wait_ms,
     })
 }
@@ -325,6 +623,7 @@ pub(super) fn mask_overlay_for(
     frame: &Render<'_>,
     recipe: &Recipe,
     request: &MaskOverlayRequest,
+    region: Option<Region>,
     cancel: &Cancel,
     context: &RenderContext,
 ) -> MaskOverlayOutcome {
@@ -414,13 +713,19 @@ pub(super) fn mask_overlay_for(
             }
         }
     };
-    let coverage = match crate::analysis::coverage_grid(
-        &compiled,
-        &transform,
-        request.cells_w,
-        request.cells_h,
-        pixels,
-        cancel,
+    let (cells_w, cells_h) = if region.is_some() {
+        (request.cells_w, request.cells_h)
+    } else {
+        (request.whole_cells_w, request.whole_cells_h)
+    };
+    let region = region.unwrap_or(Region {
+        x0: 0,
+        y0: 0,
+        width: transform.output.width,
+        height: transform.output.height,
+    });
+    let coverage = match crate::analysis::coverage_grid_region(
+        &compiled, &transform, region, cells_w, cells_h, pixels, cancel,
     ) {
         Ok(Some(coverage)) => coverage,
         Ok(None) => return MaskOverlayOutcome::default(),
@@ -430,8 +735,8 @@ pub(super) fn mask_overlay_for(
         grid: Some(MaskOverlay {
             mask: request.mask.clone(),
             component: request.component.clone(),
-            cells_w: request.cells_w,
-            cells_h: request.cells_h,
+            cells_w,
+            cells_h,
             coverage,
         }),
         absent: None,

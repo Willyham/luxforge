@@ -269,6 +269,36 @@ impl LinearImage {
         })
     }
 
+    /// A rectangle in this image's *oriented output* coordinates, composed into its existing
+    /// base-plane view. The new image shares the same planar allocation and development identity.
+    pub(crate) fn window(&self, region: crate::Region) -> Result<Self, Error> {
+        if region.is_empty() || region.x1() > self.width() || region.y1() > self.height() {
+            return Err(Error::validation(
+                "linear source window lies outside the image",
+            ));
+        }
+        let corners = [
+            (region.x0, region.y0),
+            (region.x1() - 1, region.y0),
+            (region.x0, region.y1() - 1),
+            (region.x1() - 1, region.y1() - 1),
+        ];
+        let mut x0 = u32::MAX;
+        let mut y0 = u32::MAX;
+        let mut x1 = 0;
+        let mut y1 = 0;
+        for (x, y) in corners {
+            let (px, py) = self.view.map(x, y).ok_or_else(|| {
+                Error::internal("a validated linear view could not map its window")
+            })?;
+            x0 = x0.min(px);
+            y0 = y0.min(py);
+            x1 = x1.max(px);
+            y1 = y1.max(py);
+        }
+        self.with_view([x0, y0, x1 - x0 + 1, y1 - y0 + 1], self.view.orientation)
+    }
+
     pub fn width(&self) -> u32 {
         self.view.output_dimensions().0
     }
@@ -854,6 +884,8 @@ pub(super) fn rasterize(
             index,
             segment,
             reader,
+            #[cfg(test)]
+            context,
         },
         segment,
         super::frame_mut(&mut frame),
@@ -876,7 +908,7 @@ const TAP_BLOCK_COLUMNS: u32 = 64;
 /// The most pixels of the segment before a resample one block holds. A block of up to 16 rows by
 /// 64 columns reads about 1,400 of them at a small angle and about 3,500 at the 45 degree limit;
 /// a mapping that would need more than this reads its taps one at a time instead.
-const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
+pub(super) const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
 
 /// The last segment's rows on the linear path. A segment with colour holds its rows as `f32`
 /// between its entry and the terminal boundary, exactly the value [`Linear::colour`] converts a
@@ -888,6 +920,8 @@ struct LinearRows<'e, 'x, 's> {
     segment: &'e Segment,
     /// The source's rows, when the segment reads the source through the identity.
     reader: Option<ViewReader<'e>>,
+    #[cfg(test)]
+    context: &'e RenderContext,
 }
 
 /// What one worker reuses for every chunk of linear rows it takes.
@@ -958,7 +992,8 @@ impl LinearRows<'_, '_, '_> {
             (x0 + columns - 1, y0 + rows - 1),
         ] {
             let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-            let (u, v) = resample.input_from(self.segment.entry_origin, input_x, input_y);
+            let (full_x, full_y) = self.segment.resample_output_at(input_x, input_y);
+            let (u, v) = resample.input_from(self.segment.entry_origin, full_x, full_y);
             for (axis, value) in [u, v].into_iter().enumerate() {
                 let index = (value - 0.5).floor();
                 if !index.is_finite() {
@@ -1018,11 +1053,15 @@ impl LinearRows<'_, '_, '_> {
             if let Some(region) = held {
                 self.evaluation
                     .region_in(self.index - 1, region, block, row)?;
+                #[cfg(test)]
+                self.context
+                    .note_resample_bytes(block.capacity() * std::mem::size_of::<[f64; 3]>());
             }
             for y in y0..y0 + rows {
                 for x in x0..x0 + columns {
                     let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-                    let (u, v) = resample.input_from(self.segment.entry_origin, input_x, input_y);
+                    let (full_x, full_y) = self.segment.resample_output_at(input_x, input_y);
+                    let (u, v) = resample.input_from(self.segment.entry_origin, full_x, full_y);
                     let pixel =
                         Linear::blend(u, v, stage.width, stage.height, |x, y| match held {
                             Some(region) if region.contains(x, y) => {
