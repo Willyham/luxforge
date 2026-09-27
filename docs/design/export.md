@@ -23,7 +23,7 @@ A stack the host cannot evaluate — an unavailable provider, a refused payload,
 
 ## Keep metadata
 
-The original's EXIF is read once, when the source is prepared, from the bytes the source worker has already read: the JPEG's APP1 segment, the TIFF structure of a NEF or DNG, or the EXIF segment of the JPEG a RAF embeds. The reader is bounded (at most 64 KiB of EXIF for a JPEG, 256 entries per IFD, no IFD visited twice) and never fails a preparation: an unreadable block is simply no metadata. Each retained field must have its expected type and count, or it is dropped.
+The original's EXIF is read once, when the source is prepared, from the bytes the source worker has already read: the JPEG's APP1 segment, the TIFF structure of a NEF or DNG, or the EXIF segment of the JPEG a RAF embeds. The reader is bounded (at most 64 KiB of EXIF for a JPEG, 256 entries per IFD, no IFD visited twice) and never fails a preparation: an unreadable block is simply no metadata. Each retained field must have its expected type and count, or it is dropped; a text field longer than 1 KiB, or blank, is dropped too. `Software` is written as `Luxforge`.
 
 | Group | Fields |
 | --- | --- |

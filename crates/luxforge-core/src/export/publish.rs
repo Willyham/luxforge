@@ -164,11 +164,14 @@ impl Staged {
             }
         }
 
-        fs::remove_file(&self.temp_path).map_err(|error| file_error(&self.temp_path, error))?;
-        if let Some(directory) = self.final_path.parent() {
-            sync_dir(directory).map_err(|error| file_error(directory, error))?;
-        }
+        // The final name now holds the whole, synced file, so the export has happened: reporting a
+        // failure from here on would leave a finished file behind a refusal. Removing the temporary
+        // name and syncing the directory entry are best effort.
         self.published = true;
+        let _ = fs::remove_file(&self.temp_path);
+        if let Some(directory) = self.final_path.parent() {
+            let _ = sync_dir(directory);
+        }
         Ok(bytes)
     }
 }
