@@ -11,9 +11,7 @@ use crate::{
         descriptor::{CapabilityKind, ResourceDescriptor},
         grants::{DownloadScope, GrantScope},
         jobs::{Admission, JobControl, JobKind, JobRecord, JobStatus, NewJob, Work},
-        resources::{
-            self as transfer, Fetch, InstallJob, InstallSource, ResourceRow, ResourceState,
-        },
+        resources::{self as transfer, InstallJob, InstallSource, ResourceRow, ResourceState},
         transport::{EndpointClass, parse_endpoint},
     },
 };
@@ -34,7 +32,7 @@ host_params! {
         module_id: String,
         resource_id: String,
         mutation: MutationRequest,
-        source: Option<InstallSource> = "{kind: download} (default), which needs the download-artifact grant, or {kind: file, path} to copy a local file, which needs none because only the pinned bytes are accepted",
+        source: Option<InstallSource> = "{kind: download}, the default and only source: the declared URL, under the download-artifact grant",
     }
 }
 
@@ -125,10 +123,9 @@ impl CapabilityHost {
         }))
     }
 
-    /// `module.resource.install`: from the pinned URL under a `download-artifact` grant, or from a
-    /// local file whose bytes must match the pinned hash. Consent, the quota and the lane bound
-    /// are checked before anything is queued; a second request joins the queued or running
-    /// install, and an installed resource answers at once.
+    /// `module.resource.install`: from the pinned URL under a `download-artifact` grant. Consent,
+    /// the quota and the lane bound are checked before anything is queued; a second request joins
+    /// the queued or running install, and an installed resource answers at once.
     pub(crate) fn install(
         &mut self,
         registry: &Arc<ModuleRegistry>,
@@ -160,49 +157,32 @@ impl CapabilityHost {
         {
             return Ok(answer(ResourceState::Installing, Some(&job)));
         }
-        let (fetch, grants) = match request.source.unwrap_or_default() {
-            InstallSource::Download => {
-                let capability = descriptor
-                    .capabilities
-                    .iter()
-                    .find(|capability| {
-                        matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if *id == resource.id)
-                    })
-                    .ok_or_else(|| {
-                        Error::validation(format!(
-                            "module {} declares no download-artifact capability for resource {}",
-                            descriptor.id, resource.id
-                        ))
-                    })?;
-                let scope = GrantScope::Download(download_scope(resource)?);
-                let (grant, denied) =
-                    self.grants()?
-                        .consent(&descriptor.id, &capability.id, &scope)?;
-                let Some(grant) = grant else {
-                    let install_dir = store.version_dir(&descriptor.id, resource);
-                    return Err(consent_required(
-                        descriptor,
-                        capability,
-                        &scope,
-                        download_disclosure(descriptor, capability, resource, &install_dir),
-                        denied,
-                    ));
-                };
-                (
-                    Fetch::Download(self.transport.clone()),
-                    vec![grant.grant_id],
-                )
-            }
-            InstallSource::File { path } => {
-                let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
-                if !is_file {
-                    return Err(Error::validation(format!(
-                        "{} is not a readable file",
-                        path.display()
-                    )));
-                }
-                (Fetch::File(path), Vec::new())
-            }
+        let InstallSource::Download {} = request.source.unwrap_or(InstallSource::Download {});
+        let capability = descriptor
+            .capabilities
+            .iter()
+            .find(|capability| {
+                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if *id == resource.id)
+            })
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "module {} declares no download-artifact capability for resource {}",
+                    descriptor.id, resource.id
+                ))
+            })?;
+        let scope = GrantScope::Download(download_scope(resource)?);
+        let (grant, denied) = self
+            .grants()?
+            .consent(&descriptor.id, &capability.id, &scope)?;
+        let Some(grant) = grant else {
+            let install_dir = store.version_dir(&descriptor.id, resource);
+            return Err(consent_required(
+                descriptor,
+                capability,
+                &scope,
+                download_disclosure(descriptor, capability, resource, &install_dir),
+                denied,
+            ));
         };
         transfer::check_quota(store, resource, self.config.resource_quota_bytes)?;
         let job_id = JobId::new();
@@ -212,7 +192,7 @@ impl CapabilityHost {
             job_id: job_id.clone(),
             module_id: descriptor.id.clone(),
             resource: resource.clone(),
-            fetch,
+            transport: self.transport.clone(),
             registry: registry.clone(),
             quota: self.config.resource_quota_bytes,
             actor: request.mutation.actor.clone(),
@@ -225,7 +205,7 @@ impl CapabilityHost {
                 module_id: descriptor.id.clone(),
                 resource_id: Some(resource.id.clone()),
                 origin: Some(origin.clone()),
-                grants,
+                grants: vec![grant.grant_id],
                 admission: Admission::Bounded,
             },
             control,
