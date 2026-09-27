@@ -451,9 +451,12 @@ impl Editor {
     /// Why the open gesture cannot be committed now, in the words the status bar uses: the one
     /// refusal behind a pointer release, Enter, a script's commit and every Apply button, which
     /// reads it through the view model ([`crate::state::Inputs::apply_refusal`]), so a button never
-    /// reads enabled while the request would be refused. Every kind answers the same rules — a
-    /// brush that has painted nothing, a conflicted draft, a historical preview on screen, another
-    /// request in flight — and the crop adds only its own: a frame that commits no valid output.
+    /// reads enabled while the request would be refused. Every kind is refused for a brush that has
+    /// painted nothing and for a conflicted draft, which the core's `draft.commit` refuses anyway.
+    /// Only the crop's Apply, a deliberate press rather than a pointer coming up, also waits out a
+    /// historical preview on screen and another request in flight, and refuses a frame that
+    /// commits no valid output. A slider or mask gesture released while another request is in
+    /// flight commits, so its pointer never comes up on a draft left open.
     pub(crate) fn release_refusal(&self) -> Option<String> {
         let gesture = self.core_gesture()?;
         if gesture.kind.armed() {
@@ -465,13 +468,11 @@ impl Editor {
                 gesture.kind.noun()
             ));
         }
-        if !self.session.preview.can_edit() {
-            return Some("Return to the current state to apply".into());
-        }
-        if self.busy {
-            return Some("Waiting for the last request".into());
-        }
         match &gesture.kind {
+            Kind::Crop(_) if !self.session.preview.can_edit() => {
+                Some("Return to the current state to apply".into())
+            }
+            Kind::Crop(_) if self.busy => Some("Waiting for the last request".into()),
             Kind::Crop(crop) => crop.frame.output().err().map(|error| error.to_string()),
             Kind::Slider(_) | Kind::Mask(_) => None,
         }

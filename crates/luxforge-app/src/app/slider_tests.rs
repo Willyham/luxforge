@@ -654,6 +654,44 @@ fn the_double_click_reset_of_a_single_parameter_action_sends_its_declared_defaul
     finish(editor, catalog);
 }
 
+/// A slider released while an unrelated request is in flight still commits: the pointer is up, so
+/// the draft is never left open behind a refusal. Only the crop's deliberate Apply waits out
+/// another request.
+#[test]
+fn a_slider_released_while_another_request_is_in_flight_commits() {
+    let (mut editor, catalog, log, asset, action, parameter) = drafting();
+    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
+        action: action.clone(),
+        parameter: parameter.clone(),
+        value: 1.0,
+    }));
+    begun(&mut editor, &asset, &action, 4);
+    editor.busy = true;
+    assert_eq!(
+        editor.release_refusal(),
+        None,
+        "nothing refuses the release"
+    );
+    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
+        action: action.clone(),
+        parameter: parameter.clone(),
+    }));
+    assert_eq!(
+        testing::core_draft(&editor).and_then(|draft| draft.in_flight()),
+        Some(crate::app::draft::Round::Commit),
+        "the release committed"
+    );
+    assert!(editor.dragging.is_none(), "release ends the drag");
+    let records = logged(&mut editor, &log);
+    assert_eq!(draft_events(&records, "slider_draft_commit").len(), 1);
+    testing::answer_commit(&mut editor, Ok(None));
+    assert!(
+        editor.slider_gesture().is_none(),
+        "the draft does not stay open"
+    );
+    finish(editor, catalog);
+}
+
 /// Release commits exactly once, through `draft.commit` with the draft's own base revision.
 /// A no-op outcome ends the gesture with no entry and no history refresh.
 #[test]
