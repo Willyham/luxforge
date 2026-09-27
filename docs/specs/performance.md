@@ -2015,6 +2015,29 @@ any of the three files. The one asymmetry recorded is the DJI Air 2S DNG at −2
 proxy pair is byte-identical (max Δcode 0) but the full-size pair differs by one code; both remain
 within the one-code bound.
 
+### Exposure drag on RAW: source development against Basic
+
+Host: the owner's M4 MacBook Pro (Apple M4 Pro, Metal), native, release, background evidence
+launch, warm file cache, 27 September 2026. Before: `ee5743e9`, dragging the RAW development's own
+Exposure (`--action set-raw-exposure --parameter ev`). After: the one Basic Exposure on the same
+photo (`editor-latency`'s default slider), on the integration build that removed the RAW exposure.
+Scope: the supplied Nikon Z6 NEF at Fit, `editor-latency --mode drag --samples 30`, one launch per
+run. The runs went before, after, after, before, back to back. Every run started with the host's
+one-minute load between 7.1 and 10.1, above the [timing threshold](../engineering/development.md),
+so these are relative figures on a shared host, not budget evidence.
+
+| Run | Slider | Input to presented frame p50 / p95 (30 inputs) | Release to committed frame (2) | Release to settled histogram (2) | Sampled peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Before 1 | RAW development | 13.1 / 24.9 ms | 10.4, 40.2 ms | 52.1, 85.0 ms | 1418 MiB |
+| After 1 | Basic | 8.5 / 10.6 ms | 16.2, 18.7 ms | 43.7, 50.0 ms | 1478 MiB |
+| After 2 | Basic | 9.4 / 10.7 ms | 17.2, 23.7 ms | 49.8, 58.9 ms | 1414 MiB |
+| Before 2 | RAW development | 11.8 / 17.6 ms | 10.5, 18.7 ms | 50.4, 56.2 ms | 1438 MiB |
+
+Dragging Exposure on RAW presents faster in Basic's colour run than in the source read, in both
+orders: p50 about 3 ms and p95 7 to 14 ms lower. With two commits a run, the release figures are
+not a distribution. The committed frame read about 6 ms later after the move in both pairs, which
+is noted rather than claimed.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
