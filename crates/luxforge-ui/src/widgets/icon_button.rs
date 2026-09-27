@@ -44,11 +44,28 @@ pub enum Icon {
     Export,
     Compare,
     Copy,
+    // The Masks panel: the component kinds, the rows' controls and the overlay modes.
+    Linear,
+    Radial,
+    Brush,
+    Luminance,
+    Colour,
+    Intersect,
+    Eye,
+    EyeOff,
+    Grip,
+    Invert,
+    More,
+    Trash,
+    OverlayOff,
+    OverlayTint,
+    OverlayMask,
+    OverlayImage,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 34] = [
+    pub const NAMED: [(&'static str, Icon); 50] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -84,6 +101,24 @@ impl Icon {
         ("export", Self::Export),
         ("compare", Self::Compare),
         ("copy", Self::Copy),
+        // The Masks panel. The kind icons are named after the kinds they draw, so the app looks a
+        // kind's icon up by its kind name.
+        ("linear", Self::Linear),
+        ("radial", Self::Radial),
+        ("brush", Self::Brush),
+        ("luminance", Self::Luminance),
+        ("colour", Self::Colour),
+        ("intersect", Self::Intersect),
+        ("eye", Self::Eye),
+        ("eye-off", Self::EyeOff),
+        ("grip", Self::Grip),
+        ("invert", Self::Invert),
+        ("more", Self::More),
+        ("trash", Self::Trash),
+        ("overlay-off", Self::OverlayOff),
+        ("overlay-tint", Self::OverlayTint),
+        ("overlay-mask", Self::OverlayMask),
+        ("overlay-image", Self::OverlayImage),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -178,7 +213,7 @@ pub fn header_icon_button<'a, M: Clone + 'a>(
     )
 }
 
-fn sized_icon_button<'a, M: Clone + 'a>(
+pub(crate) fn sized_icon_button<'a, M: Clone + 'a>(
     model: &IconButtonModel,
     on_press: Option<M>,
     size: f32,
@@ -199,10 +234,19 @@ fn sized_icon_button<'a, M: Clone + 'a>(
         .height(Length::Fixed(size))
         .style(style)
         .on_press_maybe(if model.enabled { on_press } else { None });
+    with_tooltip(control, model.tooltip.clone(), position)
+}
+
+/// `content` with a caption-sized tooltip on the Bar surface, as every icon button draws one.
+pub(crate) fn with_tooltip<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    label: String,
+    position: tooltip::Position,
+) -> Element<'a, M> {
     tooltip(
-        control,
+        content,
         container(
-            iced::widget::text(model.tooltip.clone())
+            iced::widget::text(label)
                 .size(theme::SIZE_CAPTION)
                 .color(theme::TEXT_PRIMARY),
         )
@@ -588,7 +632,236 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             );
             frame.stroke(&square(5.6, 5.6), stroke);
         }
+        // The Masks panel's icons, each drawn from the mask-panels board's glyph.
+        // A linear gradient: its line corner to corner, with its two feather ticks at half ink.
+        Icon::Linear => {
+            line(frame, (3.0, 13.0), (13.0, 3.0));
+            let faint = canvas::Stroke::default()
+                .with_color(Color {
+                    a: color.a * 0.5,
+                    ..color
+                })
+                .with_width(theme::ICON_STROKE_WIDTH);
+            frame.stroke(&canvas::Path::line(p(6.0, 14.0), p(8.0, 12.0)), faint);
+            frame.stroke(&canvas::Path::line(p(12.0, 8.0), p(14.0, 6.0)), faint);
+        }
+        // A radial gradient: the ellipse, and its dashed inner feather ellipse.
+        Icon::Radial => {
+            let ellipse = |rx: f32, ry: f32| {
+                let mut path = canvas::path::Builder::new();
+                path.ellipse(canvas::path::arc::Elliptical {
+                    center: p(8.0, 8.0),
+                    radii: iced::Vector::new(rx * s, ry * s),
+                    rotation: iced::Radians(0.0),
+                    start_angle: iced::Radians(0.0),
+                    end_angle: iced::Radians(std::f32::consts::TAU),
+                });
+                path.build()
+            };
+            frame.stroke(&ellipse(6.0, 4.0), stroke);
+            let dashes = [1.5 * s, 1.5 * s];
+            frame.stroke(
+                &ellipse(3.0, 2.0),
+                canvas::Stroke {
+                    line_dash: canvas::LineDash {
+                        segments: &dashes,
+                        offset: 0,
+                    },
+                    ..stroke
+                },
+            );
+        }
+        // A brush: the ferrule as a square on its corner, and the curved bristles out of its foot.
+        Icon::Brush => {
+            poly(
+                frame,
+                &[(9.5, 2.5), (13.5, 6.5), (7.5, 12.5), (3.5, 8.5), (9.5, 2.5)],
+            );
+            let mut tip = canvas::path::Builder::new();
+            tip.move_to(p(3.5, 8.5));
+            tip.bezier_curve_to(p(2.0, 10.0), p(2.5, 12.0), p(1.5, 13.5));
+            tip.bezier_curve_to(p(3.5, 13.2), p(5.3, 13.5), p(6.7, 11.9));
+            frame.stroke(&tip.build(), stroke);
+        }
+        // A sun: a ring and eight rays, for the luminance range.
+        Icon::Luminance => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 3.5 * s), stroke);
+            for (a, b) in [
+                ((8.0, 1.5), (8.0, 3.5)),
+                ((8.0, 12.5), (8.0, 14.5)),
+                ((1.5, 8.0), (3.5, 8.0)),
+                ((12.5, 8.0), (14.5, 8.0)),
+                ((3.4, 3.4), (4.8, 4.8)),
+                ((11.2, 11.2), (12.6, 12.6)),
+                ((3.4, 12.6), (4.8, 11.2)),
+                ((11.2, 4.8), (12.6, 3.4)),
+            ] {
+                line(frame, a, b);
+            }
+        }
+        // A drop, for the colour range.
+        Icon::Colour => {
+            let mut drop = canvas::path::Builder::new();
+            drop.move_to(p(8.0, 1.8));
+            drop.bezier_curve_to(p(8.0, 1.8), p(12.5, 6.8), p(12.5, 10.0));
+            drop.arc(canvas::path::Arc {
+                center: p(8.0, 10.0),
+                radius: 4.5 * s,
+                start_angle: iced::Radians(0.0),
+                end_angle: iced::Radians(std::f32::consts::PI),
+            });
+            drop.bezier_curve_to(p(3.5, 6.8), p(8.0, 1.8), p(8.0, 1.8));
+            frame.stroke(&drop.build(), stroke);
+        }
+        // The intersect mode's `∩`: two stems joined by a half circle, the plus and minus's width.
+        Icon::Intersect => {
+            let mut arch = canvas::path::Builder::new();
+            arch.move_to(p(3.5, 13.0));
+            arch.line_to(p(3.5, 8.0));
+            arch.arc(canvas::path::Arc {
+                center: p(8.0, 8.0),
+                radius: 4.5 * s,
+                start_angle: iced::Radians(std::f32::consts::PI),
+                end_angle: iced::Radians(std::f32::consts::TAU),
+            });
+            arch.line_to(p(12.5, 13.0));
+            frame.stroke(&arch.build(), stroke);
+        }
+        // An open eye: the almond and its pupil.
+        Icon::Eye => {
+            let mut almond = canvas::path::Builder::new();
+            almond.move_to(p(1.5, 8.0));
+            almond.bezier_curve_to(p(1.5, 8.0), p(4.0, 3.5), p(8.0, 3.5));
+            almond.bezier_curve_to(p(12.0, 3.5), p(14.5, 8.0), p(14.5, 8.0));
+            almond.bezier_curve_to(p(14.5, 8.0), p(12.0, 12.5), p(8.0, 12.5));
+            almond.bezier_curve_to(p(4.0, 12.5), p(1.5, 8.0), p(1.5, 8.0));
+            almond.close();
+            frame.stroke(&almond.build(), stroke);
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 2.0 * s), stroke);
+        }
+        // A closed eye: the almond broken where the stroke crosses it, and no pupil.
+        Icon::EyeOff => {
+            line(frame, (3.0, 3.0), (13.0, 13.0));
+            let mut upper = canvas::path::Builder::new();
+            upper.move_to(p(6.3, 4.1));
+            upper.quadratic_curve_to(p(7.1, 3.6), p(8.0, 3.5));
+            upper.bezier_curve_to(p(12.0, 3.5), p(14.5, 8.0), p(14.5, 8.0));
+            upper.quadratic_curve_to(p(13.6, 9.5), p(12.3, 10.6));
+            frame.stroke(&upper.build(), stroke);
+            let mut lower = canvas::path::Builder::new();
+            lower.move_to(p(4.0, 5.6));
+            lower.quadratic_curve_to(p(2.5, 6.7), p(1.5, 8.0));
+            lower.bezier_curve_to(p(1.5, 8.0), p(4.0, 12.5), p(8.0, 12.5));
+            lower.bezier_curve_to(p(8.9, 12.5), p(9.7, 12.3), p(10.4, 12.0));
+            frame.stroke(&lower.build(), stroke);
+        }
+        // A drag handle: two columns of three dots.
+        Icon::Grip => {
+            for (x, y) in [
+                (6.0, 4.0),
+                (10.0, 4.0),
+                (6.0, 8.0),
+                (10.0, 8.0),
+                (6.0, 12.0),
+                (10.0, 12.0),
+            ] {
+                frame.fill(&canvas::Path::circle(p(x, y), 1.0 * s), color);
+            }
+        }
+        // Invert: a ring whose right half is filled, a little smaller than Compare's.
+        Icon::Invert => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 5.5 * s), stroke);
+            let mut half = canvas::path::Builder::new();
+            half.move_to(p(8.0, 2.5));
+            half.arc(canvas::path::Arc {
+                center: p(8.0, 8.0),
+                radius: 5.5 * s,
+                start_angle: iced::Radians(-std::f32::consts::FRAC_PI_2),
+                end_angle: iced::Radians(std::f32::consts::FRAC_PI_2),
+            });
+            half.close();
+            frame.fill(&half.build(), color);
+        }
+        // A menu: three dots in a row.
+        Icon::More => {
+            for x in [3.5, 8.0, 12.5] {
+                frame.fill(&canvas::Path::circle(p(x, 8.0), 1.2 * s), color);
+            }
+        }
+        // A bin: its lid, the lid's handle and the tapered body.
+        Icon::Trash => {
+            line(frame, (3.0, 4.0), (13.0, 4.0));
+            poly(frame, &[(6.0, 4.0), (6.0, 2.5), (10.0, 2.5), (10.0, 4.0)]);
+            poly(frame, &[(5.0, 4.0), (5.6, 13.0), (10.4, 13.0), (11.0, 4.0)]);
+        }
+        // The overlay modes, full-bleed so the overlay control can draw them as the board's 12 pt
+        // squares. Off is an empty ring.
+        Icon::OverlayOff => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 7.0 * s), stroke);
+        }
+        // Tint over the photograph: a rounded square filled with the tint, which is `color`.
+        Icon::OverlayTint => {
+            frame.fill(&overlay_square(s), color);
+        }
+        // The selection on black: a white dot on a black square, `color` outlining the square.
+        Icon::OverlayMask => {
+            let square = overlay_square(s);
+            frame.fill(&square, Color::BLACK);
+            frame.stroke(
+                &square,
+                canvas::Stroke::default()
+                    .with_color(Color {
+                        a: color.a,
+                        ..theme::MASK_GLYPH_OUTLINE
+                    })
+                    .with_width(theme::BORDER_WIDTH),
+            );
+            frame.fill(
+                &canvas::Path::circle(p(8.0, 8.0), 3.3 * s),
+                Color {
+                    a: color.a,
+                    ..Color::WHITE
+                },
+            );
+        }
+        // The photograph through the selection: a square halved on its diagonal, the photograph's
+        // stand-in colour above and black below.
+        Icon::OverlayImage => {
+            frame.fill(&overlay_square(s), Color::BLACK);
+            // The upper-left half of the rounded square. The diagonal passes through the centres
+            // of the two corners it cuts, so it leaves each of them at its arc's midpoint.
+            let r = OVERLAY_SQUARE_RADIUS;
+            let mut half: Vec<(f32, f32)> = arc_points(15.0 - r, 1.0 + r, r, -45.0, -90.0);
+            half.extend(arc_points(1.0 + r, 1.0 + r, r, -90.0, -180.0));
+            half.extend(arc_points(1.0 + r, 15.0 - r, r, 180.0, 135.0));
+            let mut upper = canvas::path::Builder::new();
+            upper.move_to(p(half[0].0, half[0].1));
+            for &(x, y) in &half[1..] {
+                upper.line_to(p(x, y));
+            }
+            upper.close();
+            frame.fill(
+                &upper.build(),
+                Color {
+                    a: color.a,
+                    ..theme::MASK_GLYPH_PHOTO
+                },
+            );
+        }
     }
+}
+
+/// The overlay glyphs' corner radius on the 16-unit grid: the board's 3 pt on a 12 pt square.
+const OVERLAY_SQUARE_RADIUS: f32 = 3.5;
+
+/// The overlay glyphs' square: 14 of the icon's 16 units, inset one unit so its outline is not
+/// clipped.
+fn overlay_square(s: f32) -> canvas::Path {
+    canvas::Path::rounded_rectangle(
+        Point::new(s, s),
+        iced::Size::new(14.0 * s, 14.0 * s),
+        (OVERLAY_SQUARE_RADIUS * s).into(),
+    )
 }
 
 #[cfg(test)]

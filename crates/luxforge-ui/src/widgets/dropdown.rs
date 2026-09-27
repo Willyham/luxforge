@@ -1,0 +1,195 @@
+//! A button that opens a menu under it, and the menu, as the mask-panels board draws New mask and
+//! Add component (`.tb` with a plus and a chevron) and the kind menu (`.menu`).
+//!
+//! The menu is a [`theme::MENU_WIDTH`] list of [`theme::MENU_ITEM_HEIGHT`] items — an icon, a
+//! label and a right-aligned key or tag (`L`, `model`) — with separators between groups and
+//! disabled items in tertiary ink. [`dropdown`] drops it under its button through
+//! [`crate::popover`]; [`menu_list`] is the list alone, for a menu the caller anchors itself, such
+//! as a row's.
+
+use super::icon_button::{Icon, icon};
+use super::popover::popover;
+use crate::theme;
+use iced::widget::text::{LineHeight, Wrapping};
+use iced::widget::{Column, Space, button, container, row, text};
+use iced::{Alignment, Element, Length};
+
+/// Plain data for a dropdown button.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropdownButtonModel {
+    pub label: String,
+    /// [`theme::COMPACT_BUTTON_HEIGHT`] rather than [`theme::DROPDOWN_HEIGHT`], as Add component
+    /// is under the components.
+    pub compact: bool,
+    pub enabled: bool,
+}
+
+/// One entry of a menu.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenuEntry<M> {
+    Item(MenuItem<M>),
+    /// A rule between two groups of items.
+    Separator,
+}
+
+/// One menu item. With no message it is drawn disabled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuItem<M> {
+    pub icon: Option<Icon>,
+    pub label: String,
+    /// A key that does the same (`L`) or a short tag (`model`, `install…`), right-aligned.
+    pub trailing: Option<String>,
+    pub on_press: Option<M>,
+}
+
+/// Renders the button: a plus, the label and a chevron on the Control surface.
+pub fn dropdown_button<'a, M: Clone + 'a>(
+    model: &DropdownButtonModel,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let ink = if model.enabled {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_TERTIARY
+    };
+    let (height, padding) = if model.compact {
+        (
+            theme::COMPACT_BUTTON_HEIGHT,
+            theme::COMPACT_DROPDOWN_PADDING,
+        )
+    } else {
+        (theme::DROPDOWN_HEIGHT, theme::DROPDOWN_PADDING)
+    };
+    let content = row![
+        icon(Icon::Plus, theme::DROPDOWN_ICON_SIZE, ink),
+        text(model.label.clone())
+            .size(theme::SIZE_CONTROL)
+            .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+            .wrapping(Wrapping::None)
+            .color(ink),
+        icon(Icon::ChevronDown, theme::DROPDOWN_CHEVRON_SIZE, ink),
+    ]
+    .spacing(theme::BUTTON_ICON_SPACING)
+    .align_y(Alignment::Center)
+    .height(Length::Fill);
+    button(content)
+        .padding([0.0, padding])
+        .height(Length::Fixed(height))
+        .style(theme::button_control)
+        .on_press_maybe(on_press.filter(|_| model.enabled))
+        .into()
+}
+
+/// Renders a menu's list on its own lifted surface.
+pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M> {
+    let list = Column::with_children(entries.into_iter().map(|entry| {
+        match entry {
+            MenuEntry::Item(item) => menu_item(item),
+            MenuEntry::Separator => container(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fixed(theme::BORDER_WIDTH))
+                    .style(theme::menu_separator),
+            )
+            .padding(theme::MENU_SEPARATOR_MARGIN)
+            .width(Length::Fill)
+            .into(),
+        }
+    }));
+    container(list)
+        .padding(theme::MENU_PADDING)
+        .width(Length::Fixed(theme::MENU_WIDTH))
+        .style(theme::menu_surface)
+        .into()
+}
+
+/// The button with its menu dropped under it while `entries` is `Some`. A press on the button
+/// publishes `on_toggle` (the caller opens or closes the menu); a press elsewhere publishes
+/// `on_dismiss`.
+pub fn dropdown<'a, M: Clone + 'a>(
+    model: &DropdownButtonModel,
+    on_toggle: M,
+    entries: Option<Vec<MenuEntry<M>>>,
+    on_dismiss: M,
+) -> Element<'a, M> {
+    popover(
+        dropdown_button(model, Some(on_toggle)),
+        entries.map(menu_list),
+        on_dismiss,
+    )
+}
+
+fn menu_item<'a, M: Clone + 'a>(item: MenuItem<M>) -> Element<'a, M> {
+    let enabled = item.on_press.is_some();
+    let ink = if enabled {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_TERTIARY
+    };
+    let glyph: Element<'a, M> = match item.icon {
+        Some(glyph) => icon(glyph, theme::HEADER_ICON_SIZE, ink),
+        None => Space::new()
+            .width(Length::Fixed(theme::HEADER_ICON_SIZE))
+            .into(),
+    };
+    let mut content = row![
+        glyph,
+        text(item.label)
+            .size(theme::SIZE_CONTROL)
+            .wrapping(Wrapping::None)
+            .color(ink),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(theme::MENU_ITEM_SPACING)
+    .align_y(Alignment::Center)
+    .height(Length::Fill);
+    if let Some(trailing) = item.trailing {
+        content = content.push(
+            text(trailing)
+                .size(theme::SIZE_SMALL_CAPTION)
+                .wrapping(Wrapping::None)
+                .color(theme::TEXT_TERTIARY),
+        );
+    }
+    button(content)
+        .padding([0.0, theme::MENU_ITEM_PADDING])
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::MENU_ITEM_HEIGHT))
+        .style(theme::menu_item)
+        .on_press_maybe(item.on_press)
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_state_builds() {
+        for (compact, enabled) in [(false, true), (true, true), (false, false)] {
+            let model = DropdownButtonModel {
+                label: "New mask".into(),
+                compact,
+                enabled,
+            };
+            let entries = vec![
+                MenuEntry::Item(MenuItem {
+                    icon: Some(Icon::Linear),
+                    label: "Linear gradient".into(),
+                    trailing: Some("L".into()),
+                    on_press: Some(1),
+                }),
+                MenuEntry::Separator,
+                MenuEntry::Item(MenuItem {
+                    icon: None,
+                    label: "Background".into(),
+                    trailing: Some("install\u{2026}".into()),
+                    on_press: None,
+                }),
+            ];
+            let _: Element<'_, u8> = dropdown(&model, 0, Some(entries.clone()), 9);
+            let _: Element<'_, u8> = dropdown(&model, 0, None, 9);
+            let _: Element<'_, u8> = menu_list(entries);
+        }
+    }
+}
