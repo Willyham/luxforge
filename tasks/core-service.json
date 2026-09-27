@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Answer a retried draft.commit from its stored answer, by declaring in each method's table entry who answers its retries rather than inferring it from envelope and route.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A retried mutation must be safe to resend, and today one method breaks that rule.",
@@ -67,7 +67,7 @@
     {
       "id": "TASK-002",
       "description": "Contain panics on the source worker and in the catalog owner's message loop, so a failure answers internal instead of leaving waiters blocked or ending the owner for every client.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A single unhandled panic can currently take down the whole editor for every connected client, or leave one client waiting forever.",
@@ -127,7 +127,7 @@
     {
       "id": "TASK-003",
       "description": "Make every event name the asset and revision it changed, have the desktop refresh only for the photo it has open, and report a gap when a client's cursor is ahead of the log.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Today any other client's change to any asset makes the desktop treat its own open photo as changed, and a JSON client has no way to be told anything changed at all.",
@@ -201,7 +201,7 @@
     {
       "id": "TASK-004",
       "description": "Give source, analysis and capability jobs one job table and one read and cancel API, keeping their three schedulers and cancel semantics.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
