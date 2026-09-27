@@ -1,0 +1,26 @@
+[package]
+name = "luxforge-jpeg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The one crate that names the JPEG codec. It depends on no workspace crate; `luxforge-core` alone
+# depends on it, which `cargo xtask check-repository` enforces.
+[dependencies]
+mozjpeg.workspace = true
+mozjpeg-sys.workspace = true
+
+[dev-dependencies]
+# An independent JPEG decoder for the tests, as the other crates' tests use it.
+image = { workspace = true, features = ["jpeg"] }
+serde_json.workspace = true
+sha2.workspace = true
+
+# The decoder reads libjpeg's warning code through its error manager's raw pointer: one `unsafe`
+# block, in `decode.rs`, allowed there by name. The crate denies `unsafe` everywhere else, and the
+# rest of the workspace keeps its forbid(unsafe_code) policy.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

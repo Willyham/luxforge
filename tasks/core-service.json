@@ -938,20 +938,20 @@
       "dependencies": [],
       "extra_context": [
         "Completed 2026-09-27 by a different route than the pinned-release wait: the owner moved JPEG import onto libjpeg-turbo (the `mozjpeg` crate export already used), so zune-jpeg no longer decodes originals and the guard had nothing left to guard.",
-        "`header` in `crates/luxforge-core/src/source.rs` is back to its bounded frame walk; `image` keeps PNG only and zune-jpeg is gone from the shipped dependency graph."
+        "The bounded frame walk is `header` in `crates/luxforge-jpeg/src/container.rs`, the JPEG codec crate's; `image` keeps PNG only and zune-jpeg is gone from the shipped dependency graph."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Header walk",
-          "target": "crates/luxforge-core/src/source.rs",
-          "relevance": "`header` without the scan walk, and the scan-layout test.",
+          "target": "crates/luxforge-jpeg/src/container.rs",
+          "relevance": "`header`, the bounded frame walk without a scan walk.",
           "locator": "header"
         },
         {
           "kind": "file",
-          "label": "JPEG adapter",
-          "target": "crates/luxforge-core/src/jpeg.rs",
+          "label": "JPEG codec",
+          "target": "crates/luxforge-jpeg/src/decode.rs",
           "relevance": "The libjpeg-turbo decoder originals now go through."
         },
         {
@@ -983,47 +983,39 @@
     {
       "id": "TASK-016",
       "description": "Write the export's ICC profile through mozjpeg's own write_icc_profile once a release numbers its chunks from 1, deleting Luxforge's hand-written chunk.",
-      "status": "blocked",
+      "status": "cancelled",
       "dependencies": [],
       "extra_context": [
-        "Owner-decided follow-up, 2026-09-27, not a wave of this plan: `mozjpeg` 0.10.13's `write_icc_profile` numbers its APP2 chunks from 0, which ICC.1 Annex B.4 does not allow, so a decoder that follows it, Luxforge's own among them, refuses or ignores the profile; the export writes the one chunk itself with `write_marker` through the JPEG adapter.",
-        "A fix (count from 1, with a test of the sequence numbers and the reassembled profile) is prepared for ImageOptim/mozjpeg-rust; blocked until a released `mozjpeg` carries it."
+        "Cancelled 2026-09-27: the owner moved the JPEG codec into its own crate, `luxforge-jpeg`, which writes an ICC profile's APP2 chunks itself, numbered from 1 per ICC.1 Annex B.4 and split across as many markers as the profile takes, so nothing waits on a `mozjpeg` release and the export only passes the profile's bytes.",
+        "The upstream fix (draft PR ImageOptim/mozjpeg-rust#56, counting chunks from 1) stays useful to other users of `mozjpeg`; Luxforge no longer needs it."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Export encoder",
-          "target": "crates/luxforge-core/src/export/encode.rs",
-          "relevance": "The hand-written ICC chunk and its byte test, which this task replaces with the crate's call made inside `crates/luxforge-core/src/jpeg.rs`."
-        },
-        {
-          "kind": "file",
-          "label": "Notices",
-          "target": "crates/luxforge-core/THIRD_PARTY.md",
-          "relevance": "Records the workaround; the sentence goes with it."
+          "label": "ICC chunks",
+          "target": "crates/luxforge-jpeg/src/icc.rs",
+          "relevance": "The chunk writer and reader that replace both the hand-written chunk and the upstream call."
         },
         {
           "kind": "url",
           "label": "mozjpeg-rust",
           "target": "https://github.com/ImageOptim/mozjpeg-rust",
-          "relevance": "Where the fix is proposed and released."
+          "relevance": "Where the upstream fix is proposed."
         }
       ],
       "acceptance_criteria": [
-        "`mozjpeg` is pinned to a release whose `write_icc_profile` numbers chunks from 1.",
-        "The JPEG adapter writes the export's profile with `write_icc_profile`; the hand-written chunk and the THIRD_PARTY.md sentence about it are gone.",
-        "The encoder's ICC tests still find sequence number 1 and the profile round-trips byte-exact through Luxforge's own decoder."
+        "The export's profile is written by `luxforge-jpeg` as chunks numbered from 1, and round-trips byte-exact through Luxforge's own decoder and an independent one."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Bump the pin, switch the call and rerun the encoder tests."
+          "Run the codec crate's ICC tests."
         ],
         "commands": [
-          "cargo test -p luxforge-core --lib export::encode"
+          "cargo test -p luxforge-jpeg icc"
         ],
         "expected_results": [
-          "The ICC profile round-trips through Luxforge's own decoder from the crate's own writer."
+          "One chunk for the sRGB profile and three for a profile past two segments, each numbered from 1, reading back byte for byte."
         ]
       }
     }

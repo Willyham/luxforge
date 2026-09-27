@@ -36,15 +36,16 @@ fn native_raw_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
-/// Copies the export JPEG encoder's native provenance beside the RAW notices. Its licence file is
-/// the `mozjpeg-sys` package's own, which the package loop in [`inventory`] already collects.
+/// Copies the JPEG codec's native provenance (`luxforge-jpeg`'s, for import and export alike)
+/// beside the RAW notices. Its licence file is the `mozjpeg-sys` package's own, which the package
+/// loop in [`inventory`] already collects.
 fn native_jpeg_notices(root: &Path, out: &Path) -> Result {
-    let input = root.join("crates/luxforge-core/THIRD_PARTY.md");
+    let input = root.join("crates/luxforge-jpeg/THIRD_PARTY.md");
     ensure(
         input.is_file(),
         format!("Missing bundled JPEG notice: {}", input.display()),
     )?;
-    let destination = out.join("native/luxforge-core/THIRD_PARTY.md");
+    let destination = out.join("native/luxforge-jpeg/THIRD_PARTY.md");
     fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
     fs::copy(input, destination)?;
     Ok(())
@@ -152,7 +153,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "revision":"93e9c78d0e9afb018a224e1105f06e48aec77766",
                     "selected_license":"IJG AND BSD-3-Clause AND Zlib",
                     "notices":"licenses/mozjpeg-sys-2.2.3",
-                    "provenance":"native/luxforge-core/THIRD_PARTY.md",
+                    "provenance":"native/luxforge-jpeg/THIRD_PARTY.md",
                     "build":"Crate-bundled source built with cc; with_simd (NEON on aarch64, portable C on x86_64 without NASM) and unwinding only"
                 }
             ],
@@ -276,7 +277,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         native_jpeg_notices(root, tmp.path()).unwrap();
         let provenance =
-            fs::read_to_string(tmp.path().join("native/luxforge-core/THIRD_PARTY.md")).unwrap();
+            fs::read_to_string(tmp.path().join("native/luxforge-jpeg/THIRD_PARTY.md")).unwrap();
         assert!(provenance.contains("based in part on the work of the Independent JPEG Group"));
     }
     #[test]

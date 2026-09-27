@@ -1,5 +1,5 @@
-//! Baseline quality-90 JPEG with an embedded sRGB ICC profile, written through the crate's one
-//! JPEG codec (`crate::jpeg`, libjpeg-turbo).
+//! Baseline quality-90 JPEG with an embedded sRGB ICC profile, written through the one JPEG codec
+//! (`luxforge-jpeg`, libjpeg-turbo).
 //!
 //! Contract (`docs/design/export.md#behavior`, step 3):
 //! - `encode_jpeg(out, frame, exif, progress, cancel)` encodes the RGBA8 sRGB `frame` (alpha is
@@ -12,13 +12,13 @@
 //!   sampling), one interleaved scan and the standard Huffman tables: libjpeg's own fastest
 //!   settings, accepted in `docs/design/export.md#decisions`.
 //! - libjpeg's failures come back from the codec as errors, never an abort: a writer failure as
-//!   `file-access` with its reason, anything else as `render`.
-//! - `srgb_profile()` is the one embedded profile, which `crate::profile::check` accepts.
+//!   `file-access` with its reason, anything else as `render`; an EXIF payload too large for one
+//!   APP1 segment is refused before anything is written.
+//! - `srgb_profile()` is the one embedded profile, which `crate::profile::check` accepts; the codec
+//!   writes it as ICC chunks numbered from 1.
 
-use crate::{
-    Error, Raster,
-    jpeg::{self, MAX_SEGMENT_PAYLOAD, Settings},
-};
+use crate::{Error, Raster};
+use luxforge_jpeg::Settings;
 use std::{io::Write, sync::OnceLock};
 
 const EXIF_HEADER: &[u8] = b"Exif\0\0";
@@ -31,27 +31,16 @@ pub fn encode_jpeg<W: Write>(
     cancel: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
     let app1 = exif.map(|exif| [EXIF_HEADER, exif].concat());
-    if app1
-        .as_ref()
-        .is_some_and(|app1| app1.len() > MAX_SEGMENT_PAYLOAD)
-    {
-        return Err(Error::internal(
-            "jpeg encode: the EXIF payload does not fit one APP1 segment",
-        ));
-    }
-    let mut segments = Vec::with_capacity(2);
-    if let Some(app1) = &app1 {
-        segments.push((1, app1.as_slice()));
-    }
-    segments.push((2, icc_segment()));
+    let segments: Vec<(u8, &[u8])> = app1.iter().map(|app1| (1, app1.as_slice())).collect();
     let settings = Settings {
         quality: super::QUALITY,
         chroma: (1, 1),
         segments: &segments,
+        icc: Some(srgb_profile()),
     };
     let rows = frame.height as usize;
     let mut last_reported = 0.0;
-    jpeg::encode(
+    luxforge_jpeg::encode(
         out,
         frame.width,
         frame.height,
@@ -73,24 +62,6 @@ pub fn encode_jpeg<W: Write>(
     )
 }
 
-/// The APP2 payload carrying [`srgb_profile`] as the ICC specification's one and only chunk:
-/// `ICC_PROFILE\0`, sequence number 1, count 1, then the profile. It is written by hand because
-/// the codec crate's own ICC writer numbers chunks from 0, which decoders that follow the
-/// specification, Luxforge's own among them, refuse or ignore.
-fn icc_segment() -> &'static [u8] {
-    static SEGMENT: OnceLock<Vec<u8>> = OnceLock::new();
-    SEGMENT
-        .get_or_init(|| {
-            let segment = [b"ICC_PROFILE\0".as_slice(), &[1, 1], srgb_profile()].concat();
-            assert!(
-                segment.len() <= MAX_SEGMENT_PAYLOAD,
-                "the sRGB profile fits one segment"
-            );
-            segment
-        })
-        .as_slice()
-}
-
 /// The one embedded sRGB ICC profile, built once from `moxcms`'s own sRGB definition (which
 /// carries its `ProfileDescription` tag) and encoded through its writer.
 pub fn srgb_profile() -> &'static [u8] {
@@ -109,6 +80,7 @@ mod tests {
     use super::*;
     use crate::{ErrorKind, SnapshotId};
     use image::{ImageDecoder, codecs::jpeg::JpegDecoder};
+    use luxforge_jpeg::MAX_SEGMENT_PAYLOAD;
     use std::{cell::Cell, io, io::Cursor};
 
     /// A synthetic frame with gradients and hard edges, sized so neither dimension is a multiple

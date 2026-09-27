@@ -1,12 +1,12 @@
-//! Decoding an original into pixels: the JPEG path (bounded header validation, upright decode,
+//! Decoding an original into pixels: the JPEG path (its limits, the profile check, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
 //! JPEG or an immutable RAW mosaic with one WB development.
 use crate::{
     Error, ErrorKind, LinearImage, Raster,
     colour::mat3::matvec_f32,
     export::{CaptureMetadata, metadata::jpeg_orientation},
-    jpeg,
 };
+use luxforge_jpeg::JpegError;
 use luxforge_raw::{RawError, RawMetadata, RawSource};
 use sha2::{Digest, Sha256};
 use std::{
@@ -25,7 +25,7 @@ pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
 
 /// The largest JPEG original decoded: 16384 px per side and 64 megapixels, so its RGBA frame stays
 /// inside the 512 MiB evaluated-frame limit.
-const JPEG_LIMITS: jpeg::Limits = jpeg::Limits {
+const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
     max_side: 16384,
     max_pixels: 64_000_000,
 };
@@ -41,44 +41,6 @@ pub struct SourceImage {
     /// The original's kept EXIF fields, read from the same bytes as the pixels; empty for a source
     /// that was not read from a file.
     pub capture: Arc<CaptureMetadata>,
-}
-
-// Walk JPEG header segments without decoding or allocating from declared dimensions.
-fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
-    if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
-        return Err(Error::decode("missing JPEG SOI/EOI"));
-    }
-    let mut i = 2;
-    while i + 4 <= bytes.len() {
-        if bytes[i] != 0xff {
-            return Err(Error::decode("JPEG marker"));
-        }
-        while i < bytes.len() && bytes[i] == 0xff {
-            i += 1;
-        }
-        let marker = *bytes.get(i).ok_or_else(|| Error::decode("marker"))?;
-        i += 1;
-        if marker == 0xda || marker == 0xd9 {
-            break;
-        }
-        let size = bytes
-            .get(i..i + 2)
-            .ok_or_else(|| Error::decode("segment length"))?;
-        let size = u16::from_be_bytes([size[0], size[1]]) as usize;
-        if size < 2 || i + size > bytes.len() {
-            return Err(Error::decode("segment bounds"));
-        }
-        if [0xc0, 0xc1, 0xc2].contains(&marker) {
-            if size < 8 || bytes[i + 2] != 8 {
-                return Err(Error::unsupported_color("JPEG precision"));
-            }
-            let h = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
-            let w = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
-            return Ok((w, h, bytes[i + 7]));
-        }
-        i += size;
-    }
-    Err(Error::unsupported_input("JPEG frame type"))
 }
 
 /// Hash and decode one bounded snapshot read from an already opened handle. The magic bytes pick
@@ -148,21 +110,9 @@ struct Upright {
 /// written into one frame: rows go straight into it when the EXIF orientation is 1, and otherwise
 /// through a strip of [`UPRIGHT_STRIP_ROWS`] rows placed where the orientation puts them.
 fn decode_upright(bytes: &[u8]) -> Result<Upright, Error> {
-    // The header walk bounds the declared frame before libjpeg reads anything; the decoder checks
-    // libjpeg's own reading of it against the same limits.
-    let (w, h, components) = header(bytes)?;
-    let jpeg::Limits {
-        max_side,
-        max_pixels,
-    } = JPEG_LIMITS;
-    if w == 0 || h == 0 || w > max_side || h > max_side || u64::from(w) * u64::from(h) > max_pixels
-    {
-        return Err(Error::resource_limit("dimensions"));
-    }
-    if ![1, 3].contains(&components) {
-        return Err(Error::unsupported_color("only RGB/greyscale"));
-    }
-    let mut decoder = jpeg::Decoder::new(bytes, JPEG_LIMITS)?;
+    // The codec walks the container and bounds the declared frame by these limits before libjpeg
+    // reads anything, then checks libjpeg's own reading of it against them.
+    let mut decoder = luxforge_jpeg::Decoder::new(bytes, JPEG_LIMITS)?;
     if let Some(profile) = decoder.icc_profile() {
         crate::profile::check(profile, decoder.components())?;
     }
@@ -371,6 +321,25 @@ pub(crate) fn raw_error(error: RawError) -> Error {
         RawError::NeutralPatch(_) => ErrorKind::Validation,
     };
     Error::new(kind, error.to_string())
+}
+
+/// What each JPEG codec failure means to the core: the one place its errors become core errors.
+impl From<JpegError> for Error {
+    fn from(error: JpegError) -> Self {
+        let kind = match error {
+            JpegError::Malformed(_) | JpegError::Corrupt(_) | JpegError::Undecodable => {
+                ErrorKind::Decode
+            }
+            JpegError::Precision | JpegError::ColourSpace => ErrorKind::UnsupportedColor,
+            JpegError::FrameType => ErrorKind::UnsupportedInput,
+            JpegError::Dimensions => ErrorKind::ResourceLimit,
+            JpegError::Icc(_) => ErrorKind::UnsupportedProfile,
+            JpegError::Encode(_) => ErrorKind::Render,
+            JpegError::Write(_) => ErrorKind::FileAccess,
+            JpegError::Internal(_) => ErrorKind::Internal,
+        };
+        Error::new(kind, error.to_string())
+    }
 }
 
 impl RawPrepared {
@@ -1087,8 +1056,9 @@ mod tests {
     }
 }
 
-/// The JPEG decode's input contract: SOI/EOI and marker bounds, declared sizes, orientation and
-/// the encoded-byte limit, plus proof that a decode returns the very frame it wrote pixels into.
+/// The JPEG decode's input contract as the core applies it: its refusals, declared sizes,
+/// orientation and the encoded-byte limit, plus proof that a decode returns the very frame it
+/// wrote pixels into. The container walk and the codec's own contract are `luxforge-jpeg`'s tests.
 #[cfg(test)]
 mod jpeg_tests {
     use super::*;
@@ -1276,23 +1246,6 @@ mod jpeg_tests {
     }
 
     #[test]
-    fn malformed_headers_never_panic_or_allocate_from_dimensions() {
-        let valid = std::fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg"),
-        )
-        .unwrap();
-        for end in 0..valid.len().min(1024) {
-            assert!(header(&valid[..end]).is_err());
-        }
-        for size in [0u16, 1, 2, 7, u16::MAX] {
-            let mut bytes = vec![0xff, 0xd8, 0xff, 0xc0];
-            bytes.extend(size.to_be_bytes());
-            bytes.extend([8, 0xff, 0xff, 0xff, 0xff, 3, 0xff, 0xd9]);
-            let _ = header(&bytes);
-        }
-    }
-
-    #[test]
     fn readonly_unicode_source_is_supported_and_preserved() {
         let dir = std::env::temp_dir().join(format!("luxforge read only ü {}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1431,7 +1384,11 @@ mod jpeg_tests {
     /// as it was: its outcome, and on success its upright dimensions, orientation and RGBA.
     fn previous_import(bytes: &[u8]) -> Result<(u32, u32, u8, Vec<u8>), ErrorKind> {
         use image::{ImageDecoder, ImageReader};
-        let (w, h, components) = header(bytes).map_err(|error| error.kind)?;
+        let luxforge_jpeg::Header {
+            width: w,
+            height: h,
+            components,
+        } = luxforge_jpeg::header(bytes).map_err(|error| Error::from(error).kind)?;
         if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 64_000_000 {
             return Err(ErrorKind::ResourceLimit);
         }
@@ -1471,7 +1428,7 @@ mod jpeg_tests {
             .filter(|name| name.ends_with(".jpg"))
             .collect();
         names.sort();
-        assert_eq!(names.len(), 22);
+        assert_eq!(names.len(), 23);
         for name in names {
             let bytes = std::fs::read(dir.join(&name)).unwrap();
             let now = open_source_bytes(bytes.clone());
@@ -1512,7 +1469,7 @@ mod jpeg_tests {
     /// to RGBA into the frame, after the same header walk.
     fn previous_decode(bytes: &[u8]) -> Arc<[u8]> {
         use image::{ImageDecoder, ImageReader, Limits};
-        header(bytes).unwrap();
+        luxforge_jpeg::header(bytes).unwrap();
         let mut reader =
             ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
         let mut limits = Limits::default();

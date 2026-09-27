@@ -22,38 +22,14 @@ pub(super) fn is_tiff(bytes: &[u8]) -> bool {
     bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*")
 }
 
-/// The TIFF payload of a JPEG's first `Exif` APP1 segment, walking the header's segments from SOI
-/// to SOS. A segment's length is 16 bits, so the payload is under 64 KiB.
+/// The TIFF payload of a JPEG's first `Exif` APP1 segment before its first scan, as the codec's
+/// container walk finds the segments; none where that walk stops early. A segment's length is 16
+/// bits, so the payload is under 64 KiB.
 pub(super) fn jpeg_exif(bytes: &[u8]) -> Option<&[u8]> {
-    if !bytes.starts_with(&[0xff, 0xd8]) {
-        return None;
-    }
-    let mut i = 2;
-    loop {
-        if *bytes.get(i)? != 0xff {
-            return None;
-        }
-        while bytes.get(i) == Some(&0xff) {
-            i += 1;
-        }
-        let marker = *bytes.get(i)?;
-        i += 1;
-        match marker {
-            // Start of scan or end of image: no EXIF precedes the image data.
-            0xda | 0xd9 => return None,
-            // Markers without a length.
-            0x01 | 0xd0..=0xd7 => continue,
-            _ => {}
-        }
-        let length = usize::from(u16::from_be_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]));
-        let segment = bytes.get(i.checked_add(2)?..i.checked_add(length)?)?;
-        if marker == 0xe1
-            && let Some(payload) = segment.strip_prefix(b"Exif\0\0")
-        {
-            return Some(payload);
-        }
-        i += length;
-    }
+    luxforge_jpeg::segments(bytes)
+        .map_while(Result::ok)
+        .filter(|segment| segment.marker == 0xe1)
+        .find_map(|segment| segment.payload.strip_prefix(b"Exif\0\0"))
 }
 
 /// IFD0's Orientation in one TIFF structure: the first entry tagged 0x0112 that is one SHORT, when

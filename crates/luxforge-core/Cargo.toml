@@ -7,11 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+luxforge-jpeg = { path = "../luxforge-jpeg" }
 luxforge-process = { path = "../luxforge-process" }
 luxforge-raw = { path = "../luxforge-raw" }
 moxcms.workspace = true
-mozjpeg.workspace = true
-mozjpeg-sys.workspace = true
 rayon.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
