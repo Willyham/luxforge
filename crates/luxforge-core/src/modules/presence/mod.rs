@@ -57,10 +57,7 @@ const NEUTRAL: f64 = 0.0;
 /// One Presence field: -100..100, step 1, no display decimals, no unit, a zero hint, on a plain
 /// rail, because none of the three has a colour a gradient could show.
 fn presence_field(name: &'static str, label: &str, notes: &str) -> Field {
-    Field {
-        zero: Some(NEUTRAL),
-        ..Field::slider(name, label, notes)
-    }
+    Field::slider(name, label, notes).zero(NEUTRAL)
 }
 
 /// The Presence module's table and compilation.
@@ -128,6 +125,7 @@ impl FieldPatch for Presence {
             canvas: None,
             collapsed: true,
             layout: crate::ModuleLayout::Stacked,
+            developer: false,
         }
     }
 
@@ -141,11 +139,14 @@ impl FieldPatch for Presence {
         // A neutral payload compiles to no units. The host drops an empty spatial operation
         // entirely, so the layer opens no stage boundary, the identity byte path is kept and the
         // render shares the source buffer.
-        if values.all_default() {
+        if values.is_default() {
             return Ok(Processing::Spatial(SpatialOperation::neutral()));
         }
-        let (texture, clarity, dehaze) =
-            (values.get(TEXTURE), values.get(CLARITY), values.get(DEHAZE));
+        let (texture, clarity, dehaze) = (
+            values.number(TEXTURE),
+            values.number(CLARITY),
+            values.number(DEHAZE),
+        );
         let long_side = stage.width.max(stage.height);
         let mut units: Vec<Arc<dyn SpatialUnit>> = Vec::with_capacity(FIELDS.len());
         if dehaze != NEUTRAL {

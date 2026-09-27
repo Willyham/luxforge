@@ -1,8 +1,16 @@
-//! Developer proof for the complete first-slice control vocabulary. Its stored layer describes
-//! control values but compiles to an identity colour operation, so it cannot change photo pixels.
+//! Developer proof for the complete first-slice control vocabulary, as a field-patch module: a
+//! field of every kind a field patch holds, drawn by a control of every kind and style, with the
+//! action buttons and the two-channel curve its group lists beside them, and the curve's sample
+//! query. It shares every field-patch rule with Basic and the other modules; its stored layer
+//! describes control values but compiles to an identity colour operation, so it cannot change
+//! photo pixels.
 use super::{
-    ActionInput, ActionPlan, ColorOperation, LayerUpdate, ModuleDescriptor, NewLayer, Processing,
-    Stage, StageContext, ToolModule, check_parameters,
+    ActionDescriptor, ActionStyle, ChoiceStyle, ColorOperation, ColorStyle, Control,
+    CurveBackground, CurveChannel, EffectDescriptor, EffectStage, ModuleLayout, NumberStyle,
+    ParameterDescriptor, Processing, RailDecoration, Stage, StageContext,
+    field_patch::{
+        ActionText, Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values,
+    },
 };
 use crate::{EFFECT_FORMAT, Error};
 use serde_json::{Map, Value, json};
@@ -12,214 +20,192 @@ pub const SET_CONTROLS: &str = "set-controls";
 pub const RESET_CONTROLS: &str = "reset-controls";
 pub const SAMPLE_CONTROLS_CURVE: &str = "sample-controls-curve";
 const SAMPLE_SEGMENTS: usize = 256;
+const NOTES: &str = "Developer control parity fixture; values never alter pixels";
+/// The two curve fields, which are the curve control's channels and the sample query's parameters.
+const CURVES: [(&str, &str, bool); 2] = [("master", "Master", true), ("red", "Red", false)];
 
-#[derive(Debug)]
-pub struct ControlsModule {
-    descriptor: ModuleDescriptor,
+/// The controls proof's table, identity compilation and curve sampling.
+#[derive(Debug, Default)]
+pub struct Controls;
+
+/// The developer controls proof: `Controls` as a field-patch module.
+pub type ControlsModule = FieldPatchModule<Controls>;
+
+/// A curve parameter of 2 to 8 points in 0.01 steps, monotone when `monotone`.
+fn curve(name: &str, monotone: bool) -> ParameterDescriptor {
+    let curve = ParameterDescriptor::curve(name, 2, 8)
+        .step(0.01)
+        .notes(NOTES);
+    if monotone { curve.monotone() } else { curve }
 }
 
-impl Default for ControlsModule {
-    fn default() -> Self {
-        Self::new()
-    }
+/// A field of `parameter` with the proof's notes.
+fn field(parameter: ParameterDescriptor, label: &str) -> Field {
+    Field::new(parameter.notes(NOTES), label)
 }
 
-impl ControlsModule {
-    pub fn new() -> Self {
-        let mut parameters = vec![
-            json!({"name":"amount","kind":"number","min":-10.0,"max":10.0,"soft_min":-5.0,"soft_max":5.0,"step":0.1,"fine_step":0.01,"zero":0.0,"precision":2,"default":0.0}),
-            json!({"name":"coordinate","kind":"number","min":0.0,"max":100.0,"step":1.0,"precision":0,"default":50.0}),
-            json!({"name":"count","kind":"integer","min":0,"max":20,"step":1.0,"default":0}),
-            json!({"name":"enabled","kind":"boolean","default":false}),
-            json!({"name":"mode","kind":"enum","options":["one","two","three"],"default":"one"}),
-            json!({"name":"mode-chips","kind":"enum","options":["one","two","three","four","five"],"default":"one"}),
-            json!({"name":"mode-menu","kind":"enum","options":["one","two","three","four","five"],"default":"one"}),
-            json!({"name":"rgb","kind":"color","default":[64,128,192]}),
-            json!({"name":"rgb-fields","kind":"color","default":[0,0,0]}),
-            json!({"name":"master","kind":"curve","points_min":2,"points_max":8,"monotone":true,"step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
-            json!({"name":"red","kind":"curve","points_min":2,"points_max":8,"monotone":false,"step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
+fn preset(name: &str, value: Value) -> Map<String, Value> {
+    Map::from_iter([(name.to_owned(), value)])
+}
+
+impl FieldPatch for Controls {
+    fn spec() -> Spec {
+        let modes = ["one", "two", "three"];
+        let more = ["one", "two", "three", "four", "five"];
+        let identity = json!([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]);
+        let mut fields = vec![
+            field(
+                ParameterDescriptor::number("amount", -10.0, 10.0)
+                    .soft_min(-5.0)
+                    .soft_max(5.0)
+                    .step(0.1)
+                    .fine_step(0.01)
+                    .zero(0.0)
+                    .precision(2)
+                    .default(0.0),
+                "Amount",
+            )
+            .rail(RailDecoration::Temperature),
+            field(
+                ParameterDescriptor::number("coordinate", 0.0, 100.0)
+                    .step(1.0)
+                    .precision(0)
+                    .default(50.0),
+                "Coordinate",
+            )
+            .control(FieldControl::Number(NumberStyle::Field)),
+            field(
+                ParameterDescriptor::integer("count", 0, 20)
+                    .step(1.0)
+                    .default(0),
+                "Count",
+            )
+            .control(FieldControl::Number(NumberStyle::Stepper)),
+            field(
+                ParameterDescriptor::boolean("enabled").default(false),
+                "Enabled",
+            ),
+            field(
+                ParameterDescriptor::enumeration("mode", modes).default("one"),
+                "Mode",
+            )
+            .control(FieldControl::Choice(ChoiceStyle::Segmented)),
+            field(
+                ParameterDescriptor::enumeration("mode-chips", more).default("one"),
+                "Mode chips",
+            )
+            .control(FieldControl::Choice(ChoiceStyle::Chips)),
+            field(
+                ParameterDescriptor::enumeration("mode-menu", more).default("one"),
+                "Mode menu",
+            )
+            .control(FieldControl::Choice(ChoiceStyle::Menu)),
+            field(
+                ParameterDescriptor::color("rgb").default(json!([64, 128, 192])),
+                "Colour",
+            )
+            .control(FieldControl::Color(ColorStyle::Picker)),
+            field(
+                ParameterDescriptor::color("rgb-fields").default(json!([0, 0, 0])),
+                "RGB fields",
+            ),
         ];
-        for parameter in &mut parameters {
-            parameter["required"] = json!(false);
-            parameter["notes"] =
-                json!("Developer control parity fixture; values never alter pixels");
+        fields.extend(CURVES.map(|(name, label, monotone)| {
+            field(curve(name, monotone).default(identity.clone()), label)
+        }));
+        let names: Vec<&'static str> = [
+            "amount",
+            "coordinate",
+            "count",
+            "enabled",
+            "mode",
+            "mode-chips",
+            "mode-menu",
+            "rgb",
+            "rgb-fields",
+        ]
+        .into_iter()
+        .chain(CURVES.map(|(name, _, _)| name))
+        .collect();
+        Spec {
+            id: "luxforge.controls",
+            title: "Controls",
+            hint: "Developer control vocabulary",
+            noun: "controls",
+            effect: EffectDescriptor {
+                id: CONTROLS_EFFECT.into(),
+                format: EFFECT_FORMAT,
+                stage: EffectStage::Color,
+                order: 0,
+                maskable: false,
+                artifacts: false,
+                single: true,
+                sources: Vec::new(),
+            },
+            set: ActionText {
+                id: SET_CONTROLS,
+                title: "Set controls",
+                notes: "One field patch for every generated control",
+            },
+            reset: ActionText {
+                id: RESET_CONTROLS,
+                title: "Reset controls",
+                notes: "Clear all proof control values",
+            },
+            fields,
+            groups: vec![Group {
+                label: "Control vocabulary",
+                fields: names,
+                collapsed: false,
+                // The curve control draws the two curve fields as its channels; the three action
+                // buttons, one per style, each send a one-field patch.
+                extra: vec![
+                    Control::curve(
+                        SET_CONTROLS,
+                        CURVES
+                            .map(|(name, label, _)| CurveChannel {
+                                parameter: name.into(),
+                                label: label.into(),
+                            })
+                            .into(),
+                        "Curve",
+                        SAMPLE_CONTROLS_CURVE,
+                    )
+                    .background(CurveBackground::Histogram),
+                    Control::action(SET_CONTROLS, "Enable").preset(preset("enabled", json!(true))),
+                    Control::action(SET_CONTROLS, "Mode two")
+                        .preset(preset("mode", json!("two")))
+                        .action_style(ActionStyle::Primary),
+                    Control::action(SET_CONTROLS, "Reset amount")
+                        .preset(preset("amount", json!(0.0)))
+                        .action_style(ActionStyle::Icon)
+                        .icon("reset"),
+                ],
+                reset_variants: Vec::new(),
+            }],
+            queries: vec![ActionDescriptor {
+                id: SAMPLE_CONTROLS_CURVE.into(),
+                title: "Sample controls curve".into(),
+                notes: "257 linearly interpolated fractions from the one submitted channel".into(),
+                summary: None,
+                patch: false,
+                parameters: CURVES
+                    .map(|(name, _, monotone)| curve(name, monotone))
+                    .into(),
+            }],
+            canvas: None,
+            collapsed: false,
+            layout: ModuleLayout::Stacked,
+            developer: true,
         }
-        let query_parameters: Vec<Value> = parameters[9..]
-            .iter()
-            .cloned()
-            .map(|mut parameter| {
-                parameter
-                    .as_object_mut()
-                    .expect("parameter object")
-                    .remove("default");
-                parameter
-            })
-            .collect();
-        let descriptor = ModuleDescriptor::parse(&json!({
-            "id":"luxforge.controls", "title":"Controls", "hint":"Developer control vocabulary",
-            "effects":[{"id":CONTROLS_EFFECT,"format":EFFECT_FORMAT,"stage":"color","single":true}],
-            "actions":[
-                {"id":SET_CONTROLS,"title":"Set controls","notes":"One field patch for every generated control","patch":true,"parameters":parameters},
-                {"id":RESET_CONTROLS,"title":"Reset controls","notes":"Clear all proof control values","parameters":[]}
-            ],
-            "queries":[{"id":SAMPLE_CONTROLS_CURVE,"title":"Sample controls curve","notes":"257 linearly interpolated fractions from the one submitted channel","parameters":query_parameters}],
-            "controls":[{"kind":"group","label":"Control vocabulary","reset":{"action":RESET_CONTROLS},"controls":[
-                {"kind":"number","action":SET_CONTROLS,"parameter":"amount","label":"Amount","rail":"temperature"},
-                {"kind":"number","action":SET_CONTROLS,"parameter":"coordinate","label":"Coordinate","style":"field"},
-                {"kind":"number","action":SET_CONTROLS,"parameter":"count","label":"Count","style":"stepper"},
-                {"kind":"toggle","action":SET_CONTROLS,"parameter":"enabled","label":"Enabled"},
-                {"kind":"choice","action":SET_CONTROLS,"parameter":"mode","label":"Mode","style":"segmented"},
-                {"kind":"choice","action":SET_CONTROLS,"parameter":"mode-chips","label":"Mode chips","style":"chips"},
-                {"kind":"choice","action":SET_CONTROLS,"parameter":"mode-menu","label":"Mode menu","style":"menu"},
-                {"kind":"color","action":SET_CONTROLS,"parameter":"rgb","label":"Colour","style":"picker"},
-                {"kind":"color","action":SET_CONTROLS,"parameter":"rgb-fields","label":"RGB fields","style":"fields"},
-                {"kind":"curve","action":SET_CONTROLS,"channels":[{"parameter":"master","label":"Master"},{"parameter":"red","label":"Red"}],"label":"Curve","sample_query":SAMPLE_CONTROLS_CURVE,"background":"histogram"},
-                {"kind":"action","action":SET_CONTROLS,"label":"Enable","style":"default","preset":{"enabled":true}},
-                {"kind":"action","action":SET_CONTROLS,"label":"Mode two","style":"primary","preset":{"mode":"two"}},
-                {"kind":"action","action":SET_CONTROLS,"label":"Reset amount","style":"icon","icon":"reset","preset":{"amount":0.0}}
-            ]}],
-            "reset":{"action":RESET_CONTROLS},
-            "developer":true,"availability":{"kind":"available"}
-        })).expect("static controls descriptor is valid");
-        Self { descriptor }
     }
 
-    fn action(&self) -> &super::ActionDescriptor {
-        self.descriptor.action(SET_CONTROLS).expect("static action")
+    fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+        Ok(Processing::Color(ColorOperation::neutral()))
     }
 
-    /// The stored payload contains only fields away from their defaults.
-    fn payload(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        if effect_id != CONTROLS_EFFECT {
-            return Err(Error::incompatible(format!(
-                "unavailable effect {effect_id}"
-            )));
-        }
-        if format != EFFECT_FORMAT {
-            return Err(Error::incompatible(format!(
-                "unsupported effect format {format}"
-            )));
-        }
-        let fields = check_parameters(self.action(), value)?;
-        if let Some((name, _)) = fields.iter().find(|(name, value)| {
-            self.action()
-                .parameter(name)
-                .and_then(|parameter| parameter.default.as_ref())
-                == Some(*value)
-        }) {
-            return Err(Error::validation(format!(
-                "controls payload stores default field {name}"
-            )));
-        }
-        Ok(fields)
-    }
-}
-
-impl ToolModule for ControlsModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        if action_id != SET_CONTROLS && action_id != RESET_CONTROLS {
-            return Err(Error::validation(format!("unknown action {action_id}")));
-        }
-        let declared = self.descriptor.action(action_id).expect("static action");
-        let checked = check_parameters(declared, &Value::Object(parameters.clone()))?;
-        if action_id == SET_CONTROLS && checked.len() != 1 {
-            return Err(Error::validation("set-controls requires exactly one field"));
-        }
-        Ok(ActionInput {
-            action_id: action_id.into(),
-            parameters: checked,
-        })
-    }
-
-    fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        if input.action_id != SET_CONTROLS && input.action_id != RESET_CONTROLS {
-            return Err(Error::validation(format!(
-                "unknown action {}",
-                input.action_id
-            )));
-        }
-        let declared = self
-            .descriptor
-            .action(&input.action_id)
-            .expect("static action");
-        let patch = check_parameters(declared, &Value::Object(input.parameters.clone()))?;
-        if input.action_id == SET_CONTROLS && patch.len() != 1 {
-            return Err(Error::validation("set-controls requires exactly one field"));
-        }
-        let old = context.own_layer(CONTROLS_EFFECT)?.map(|(_, layer)| layer);
-        let mut merged = match old {
-            Some(layer) => self.payload(&layer.effect_id, layer.effect_format, &layer.payload)?,
-            None => Map::new(),
-        };
-        if input.action_id == RESET_CONTROLS {
-            merged.clear();
-        } else {
-            for (name, value) in patch {
-                let default = self
-                    .action()
-                    .parameter(&name)
-                    .and_then(|parameter| parameter.default.as_ref());
-                if default == Some(&value) {
-                    merged.remove(&name);
-                } else {
-                    merged.insert(name, value);
-                }
-            }
-        }
-        if old.is_some_and(|layer| layer.payload.as_object() == Some(&merged))
-            || (old.is_none() && merged.is_empty())
-        {
-            return Ok(ActionPlan::NoOp);
-        }
-        let payload = Value::Object(merged);
-        Ok(match old {
-            Some(layer) => ActionPlan::Update(LayerUpdate::new(layer.id.clone(), payload)),
-            None => ActionPlan::Commit(NewLayer::new(CONTROLS_EFFECT, payload)),
-        })
-    }
-
-    fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
-        self.payload(effect_id, format, value).map(|_| ())
-    }
-
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
-        let fields = self.payload(effect_id, format, value)?;
-        Ok(format!("Controls ({} changed fields)", fields.len()))
-    }
-
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let fields = self.payload(effect_id, format, value)?;
-        Ok(self
-            .action()
-            .parameters
-            .iter()
-            .filter_map(|parameter| {
-                fields
-                    .get(&parameter.name)
-                    .or(parameter.default.as_ref())
-                    .map(|value| (parameter.name.clone(), value.clone()))
-            })
-            .collect())
-    }
-
+    /// 257 samples of the one channel sent, linearly interpolated between its points and held flat
+    /// outside them. The host has checked the channel against its curve declaration.
     fn query(
         &self,
         query_id: &str,
@@ -229,31 +215,35 @@ impl ToolModule for ControlsModule {
         if query_id != SAMPLE_CONTROLS_CURVE {
             return Err(Error::validation(format!("unknown query {query_id}")));
         }
-        let declared = self.descriptor.query(query_id).expect("static query");
-        let checked = check_parameters(declared, &Value::Object(parameters.clone()))?;
-        let Some((_, value)) = checked.iter().next().filter(|_| checked.len() == 1) else {
+        let Some(points) = parameters
+            .values()
+            .next()
+            .filter(|_| parameters.len() == 1)
+            .and_then(Value::as_array)
+        else {
             return Err(Error::validation(
                 "sample-controls-curve requires exactly one channel parameter",
             ));
         };
-        let points = value.as_array().expect("generic curve validation");
         let vertices: Vec<[f64; 2]> = points
             .iter()
-            .map(|point| {
-                let pair = point.as_array().expect("generic curve validation");
-                [
-                    pair[0].as_f64().expect("fraction"),
-                    pair[1].as_f64().expect("fraction"),
-                ]
+            .filter_map(|point| {
+                let pair = point.as_array()?;
+                Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?])
             })
             .collect();
+        let (Some(first), Some(last)) = (vertices.first(), vertices.last()) else {
+            return Err(Error::validation(
+                "sample-controls-curve requires a checked curve channel",
+            ));
+        };
         let sampled: Vec<Value> = (0..=SAMPLE_SEGMENTS)
             .map(|index| {
                 let x = index as f64 / SAMPLE_SEGMENTS as f64;
-                let y = if x <= vertices[0][0] {
-                    vertices[0][1]
-                } else if x >= vertices[vertices.len() - 1][0] {
-                    vertices[vertices.len() - 1][1]
+                let y = if x <= first[0] {
+                    first[1]
+                } else if x >= last[0] {
+                    last[1]
                 } else {
                     let pair = vertices
                         .windows(2)
@@ -266,16 +256,5 @@ impl ToolModule for ControlsModule {
             })
             .collect();
         Ok(json!({"points": sampled}))
-    }
-
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-        _: Stage,
-    ) -> Result<Processing, Error> {
-        self.payload(effect_id, format, value)?;
-        Ok(Processing::Color(ColorOperation::neutral()))
     }
 }

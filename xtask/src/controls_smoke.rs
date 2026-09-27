@@ -14,15 +14,16 @@ const EFFECT: &str = "luxforge.controls.identity";
 /// The developer pixel proof, whose section the script shows last: X and Y as px fields.
 const PIXEL_MODULE: &str = "luxforge.pixel";
 
-/// The label a commit of the proof's own action earns, and the one its module reset earns.
-const SET: &str = "Set controls";
-const RESET: &str = "Reset controls";
+/// The label the module reset earns. A commit of the proof's own patch earns its field's label,
+/// as every field-patch module's does: the field's name and its value.
+const RESET: &str = "Reset Controls";
 
 /// Every frame, in order: the open, then one per interaction. Opening, scrolling and drafting
 /// create no history; one release or one discrete event makes exactly one entry.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let step = |name: &str, script: script::Step| Step::new(name, script);
-    let set = |name: &str, script: script::Step| step(name, script).commits(1).label(SET);
+    let commit = |name: &str, script: script::Step| step(name, script).commits(1);
+    let set = |name: &str, label: &str, script: script::Step| commit(name, script).label(label);
     let view = |name: &str, script: script::Step| step(name, script).commits(0);
     Plan::new(vec![
         Step::opened("opened").no_layer(EFFECT),
@@ -63,6 +64,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         ),
         set(
             "slider-release",
+            "Amount +2.50",
             script::Step::Controls(ControlsStep::Slider {
                 action: ACTION.into(),
                 parameter: "amount".into(),
@@ -94,7 +96,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             }),
         )
         .no_draft(),
-        set(
+        commit(
             "picker-release",
             script::Step::Picker(PickerStep {
                 action: ACTION.into(),
@@ -108,6 +110,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // Master point add is discrete; moving the point drafts and commits once.
         set(
             "curve-add",
+            "Master 4 points",
             script::Step::Curve(CurveStep {
                 action: ACTION.into(),
                 parameter: "master".into(),
@@ -129,6 +132,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         ),
         set(
             "curve-release",
+            "Master 4 points",
             script::Step::Curve(CurveStep {
                 action: ACTION.into(),
                 parameter: "master".into(),
@@ -150,6 +154,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         ),
         set(
             "red-move",
+            "Red 3 points",
             script::Step::Curve(CurveStep {
                 action: ACTION.into(),
                 parameter: "red".into(),
@@ -162,6 +167,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         ),
         set(
             "red-remove",
+            "Red 2 points",
             script::Step::Curve(CurveStep {
                 action: ACTION.into(),
                 parameter: "red".into(),
@@ -172,6 +178,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // Discrete controls commit exactly once each.
         set(
             "toggle",
+            "Enabled on",
             script::Step::Controls(ControlsStep::Discrete {
                 action: ACTION.into(),
                 parameter: "enabled".into(),
@@ -180,6 +187,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         ),
         set(
             "choice",
+            "Mode Two",
             script::Step::Controls(ControlsStep::Discrete {
                 action: ACTION.into(),
                 parameter: "mode".into(),
@@ -320,9 +328,17 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         payload(at("picker-cancel")?).is_some_and(|p| p.get("rgb").is_none()),
         "Cancelled picker changed committed RGB",
     )?;
+    let released = at("picker-release")?;
+    let rgb = payload(released)
+        .and_then(|p| p["rgb"].as_array())
+        .ok_or("Released picker did not commit RGB")?;
+    let shown: Vec<String> = rgb.iter().map(Value::to_string).collect();
     ensure(
-        payload(at("picker-release")?).is_some_and(|p| p["rgb"].as_array().is_some()),
-        "Released picker did not commit RGB",
+        released.label()? == format!("Colour {}", shown.join(",")),
+        format!(
+            "The released picker's entry is labelled {:?}, not by its committed colour",
+            released.label()?
+        ),
     )?;
     ensure(
         payload(at("curve-add")?)

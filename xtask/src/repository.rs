@@ -1095,6 +1095,60 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
+/// The spellings of a patch action's declaration, in Rust and in a JSON descriptor.
+const PATCH_DECLARATION: [&str; 3] = ["patch: true", "\"patch\":true", "\"patch\": true"];
+/// The modules that may declare one: the field-patch module every field patch is built by, and
+/// the RAW module, whose `set-raw` keeps its own white-balance merge.
+const PATCH_OWNERS: [&str; 2] = [
+    "crates/luxforge-core/src/modules/field_patch.rs",
+    "crates/luxforge-core/src/modules/raw.rs",
+];
+
+/// Rule (scope `crates/**/*.rs`; allowed `modules/field_patch.rs`, `modules/raw.rs`; whole-token
+/// match of [`PATCH_DECLARATION`]; tests exempt; one field-patch semantics, so a module that
+/// wants a patch declares a `field_patch::Spec` instead of hand-writing merge and canonical form).
+/// Fail on the first product line elsewhere that declares a patch action; answer how many product
+/// files were read.
+fn one_field_patch(root: &Path) -> Result<usize> {
+    let owners: Vec<PathBuf> = PATCH_OWNERS.iter().map(|path| root.join(path)).collect();
+    let sources: Vec<PathBuf> = files(&root.join("crates"))?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect();
+    let texts = sources
+        .iter()
+        .map(fs::read_to_string)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
+    let mut test_only = BTreeSet::new();
+    for (path, (_, modules)) in sources.iter().zip(&scanned) {
+        for name in modules {
+            test_only.extend(module_files(path, name));
+        }
+    }
+    let mut checked = 0;
+    for (path, (lines, _)) in sources.iter().zip(&scanned) {
+        if owners.contains(path) || test_file(path) || test_only.contains(path) {
+            continue;
+        }
+        for (number, line) in lines {
+            for token in PATCH_DECLARATION {
+                ensure(
+                    !holds_whole_token(line, token),
+                    format!(
+                        "{}:{number}: only {} declare a patch action; declare a field-patch Spec \
+                         instead of a second patch implementation",
+                        path.display(),
+                        PATCH_OWNERS.join(" and ")
+                    ),
+                )?;
+            }
+        }
+        checked += 1;
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1161,6 +1215,10 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
+    );
+    println!(
+        "PASS patch actions declared only by the field-patch and RAW modules ({} product files)",
+        one_field_patch(root)?
     );
     Ok(())
 }
@@ -1940,6 +1998,45 @@ mod tests {
             }
         }
         assert_eq!(read(tmp.path(), &["component-kind"]).unwrap(), (2, 0));
+    }
+
+    #[test]
+    fn only_the_field_patch_and_raw_modules_declare_a_patch_action() {
+        let tmp = tempfile::tempdir().unwrap();
+        let modules = tmp.path().join("crates/luxforge-core/src/modules");
+        fs::create_dir_all(&modules).unwrap();
+        fs::create_dir_all(tmp.path().join("crates/luxforge-core/tests")).unwrap();
+        // The two owners, test files and test items may declare one, and a comment or a longer
+        // identifier is not a declaration.
+        for (file, text) in [
+            (modules.join("field_patch.rs"), "patch: true,\n"),
+            (modules.join("raw.rs"), "patch: true,\n"),
+            (
+                tmp.path().join("crates/luxforge-core/tests/modules.rs"),
+                "json!({\"patch\":true})\n",
+            ),
+            (
+                modules.join("controls.rs"),
+                "#[cfg(test)]\nmod tests {\n    let a = ActionDescriptor { patch: true };\n}\n\
+                 /// A `patch: true` action.\nlet dispatch: truest = 1;\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(one_field_patch(tmp.path()).unwrap(), 1);
+        // Anywhere else in product code any spelling is refused.
+        for text in [
+            "ActionDescriptor { id, patch: true, parameters }\n",
+            "json!({\"id\":\"set-x\",\"patch\":true})\n",
+            "json!({\"patch\": true})\n",
+        ] {
+            fs::write(modules.join("controls.rs"), text).unwrap();
+            let error = one_field_patch(tmp.path()).unwrap_err().to_string();
+            assert!(
+                error.contains("controls.rs:1") && error.contains("declare a patch action"),
+                "{error}"
+            );
+        }
     }
 
     fn minimal_plan(id: &str) -> Value {

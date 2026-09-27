@@ -170,12 +170,10 @@ fn mixer_field(name: &'static str) -> Field {
         ),
         _ => unreachable!("parse_field returns only hue, saturation or luminance"),
     };
-    Field {
-        history: format!("{label} {property}"),
-        zero: Some(NEUTRAL),
-        rail: Some(rail),
-        ..Field::slider(name, label, notes)
-    }
+    Field::slider(name, label.as_str(), notes)
+        .history(format!("{label} {property}"))
+        .zero(NEUTRAL)
+        .rail(rail)
 }
 
 /// The colour mixer's table and compilation.
@@ -242,21 +240,25 @@ impl FieldPatch for Mixer {
             // The three groups are parallel views of the same eight ranges, so the desktop draws
             // them as one segmented row instead of stacked sections.
             layout: crate::ModuleLayout::Tabs,
+            developer: false,
         }
     }
 
     fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
         // A neutral payload compiles to no units, which the host drops entirely: the identity
         // byte path and the shared source buffer are kept.
-        if values.all_default() {
+        if values.is_default() {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
-        let values = values.as_slice();
-        let hue: [f64; unit::RANGE_COUNT] = values[0..8].try_into().expect("eight hue fields");
-        let saturation: [f64; unit::RANGE_COUNT] =
-            values[8..16].try_into().expect("eight saturation fields");
-        let luminance: [f64; unit::RANGE_COUNT] =
-            values[16..24].try_into().expect("eight luminance fields");
+        // FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
+        let property = |offset: usize| -> [f64; unit::RANGE_COUNT] {
+            std::array::from_fn(|range| values.number(FIELDS[offset + range]))
+        };
+        let (hue, saturation, luminance) = (
+            property(0),
+            property(unit::RANGE_COUNT),
+            property(2 * unit::RANGE_COUNT),
+        );
         let mixer: Arc<dyn PointwiseColor> = Arc::new(unit::Mixer::new(hue, saturation, luminance));
         Ok(Processing::Color(ColorOperation::new(vec![mixer])))
     }

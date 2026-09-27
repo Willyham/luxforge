@@ -243,7 +243,7 @@ pub fn payloads(
             .map_err(|error| format!("{what} reported no values: {error}"))?;
         for field in &module.fields {
             ensure(
-                values.get(&field.name).and_then(Value::as_f64) == Some(field.default),
+                field.same(values.get(&field.name), &field.default),
                 format!(
                     "{what} reports {} as {:?}",
                     field.name,
@@ -298,10 +298,10 @@ pub fn payloads(
             let expected = if other.name == field.name {
                 field.high()
             } else {
-                other.default
+                other.default.clone()
             };
             ensure(
-                values.get(&other.name).and_then(Value::as_f64) == Some(expected),
+                other.same(values.get(&other.name), &expected),
                 format!(
                     "{payload} reports {} as {:?}",
                     other.name,
@@ -312,7 +312,9 @@ pub fn payloads(
         let units = compiled_units(registry, module, &payload, stage)?;
         let rendered = raster(registry, sources, &stack(vec![layer]))?;
         let shared = Arc::ptr_eq(&rendered.rgba, &sources.byte.rgba);
-        if is_neutral {
+        if !module.renders {
+            renders_nothing(&payload, units, shared)?;
+        } else if is_neutral {
             ensure(
                 units == 0 && shared,
                 format!(
@@ -347,20 +349,35 @@ pub fn payloads(
             format!("{payload} moves every field but is reported neutral"),
         )?;
         let units = compiled_units(registry, module, &payload, stage)?;
-        ensure(units > 0, format!("{payload} compiled to nothing"))?;
         let rendered = raster(registry, sources, &stack(vec![layer]))?;
-        ensure(
-            !Arc::ptr_eq(&rendered.rgba, &sources.byte.rgba),
-            format!("{payload} shared the source allocation"),
-        )?;
+        let shared = Arc::ptr_eq(&rendered.rgba, &sources.byte.rgba);
+        if module.renders {
+            ensure(units > 0, format!("{payload} compiled to nothing"))?;
+            ensure(!shared, format!("{payload} shared the source allocation"))?;
+        } else {
+            renders_nothing(&payload, units, shared)?;
+        }
         whole.push(json!({"payload": payload, "units": units}));
         rasters.push(rendered);
     }
     ensure(
-        rasters[0].rgba != rasters[1].rgba,
+        !module.renders || rasters[0].rgba != rasters[1].rgba,
         "the two whole payloads render the same bytes, so history could not tell them apart",
     )?;
     Ok(json!({"neutral": neutral, "single_field": single, "whole": whole}))
+}
+
+/// A developer proof's layer describes values and changes no pixel: whatever it holds, it compiles
+/// to nothing and its render shares the source allocation.
+fn renders_nothing(payload: &Value, units: usize, shared: bool) -> Checked {
+    ensure(
+        units == 0 && shared,
+        format!(
+            "{payload} of a developer proof compiled to {units} unit(s) and {} the source \
+             allocation",
+            if shared { "shared" } else { "did not share" }
+        ),
+    )
 }
 
 /// A stored payload the provider cannot read is refused by name and never rewritten: a format the
@@ -398,12 +415,12 @@ pub fn stored_refusals(
     let mut unknown = module.full_high();
     unknown["conformance-unknown"] = json!(1.0);
     let mut out_of_range = serde_json::Map::new();
-    out_of_range.insert(first.name.clone(), json!(first.outside()));
+    out_of_range.insert(first.name.clone(), first.outside());
     let mut refused = Vec::new();
     for (what, payload, names) in [
         ("an unknown field", unknown, Some("conformance-unknown")),
         (
-            "a value outside its range",
+            "a value its declaration refuses",
             Value::Object(out_of_range),
             Some(first.name.as_str()),
         ),

@@ -6,7 +6,7 @@
 //! its equations and its own neutrality rule.
 use super::{
     Checked, ensure,
-    shape::{FieldPatch, Label},
+    shape::{Field, FieldPatch, Label},
 };
 use luxforge_core::{
     ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Stage, StageContext,
@@ -139,52 +139,35 @@ pub fn rules(registry: &ModuleRegistry, module: &FieldPatch, stage: Stage) -> Ch
     Ok(json!({"payloads": payloads, "plans": plans, "labels": labels, "described": described}))
 }
 
-/// Every field reads at both ends of its declared range and in an integer spelling; a value just
-/// outside it, a string, a payload that is not an object, another effect and an undeclared format
-/// are refused by name.
+/// Every field reads at the edges of its declaration — both ends of a range and a whole maximum
+/// as a JSON integer, both booleans, every option, black and white, a moved curve — while a value
+/// its declaration refuses (outside the range, of the wrong type, an undeclared option, a channel
+/// past 255, too many curve points), a payload that is not an object, another effect and an
+/// undeclared format are refused by name.
 fn stored_payloads(rules: &Rules<'_>) -> Checked<Value> {
     let effect = &rules.module.effect;
     let mut accepted = Vec::new();
     for field in &rules.module.fields {
-        let span = field.max - field.min;
-        let mut spellings = vec![
-            json!({field.name.clone(): field.min}),
-            json!({field.name.clone(): field.max}),
-        ];
-        if field.max.fract() == 0.0 {
-            spellings.push(json!({field.name.clone(): field.max as i64}));
-        }
-        for payload in spellings {
+        for value in field.accepted() {
+            let payload = json!({field.name.clone(): value});
             rules
                 .validate(effect.format, &payload)
                 .map_err(|error| format!("{payload} was refused: {error}"))?;
             accepted.push(payload);
         }
-        let range = format!("within {}..={}", field.min, field.max);
-        for value in [field.min - span * 1e-4, field.max + span * 1e-4] {
+        for (value, reason) in field.refused() {
             let payload = json!({field.name.clone(): value});
             let error = rules
                 .validate(effect.format, &payload)
                 .err()
-                .ok_or_else(|| format!("{payload}, outside the declared range, was accepted"))?;
+                .ok_or_else(|| format!("{payload}, which its declaration refuses, was accepted"))?;
             ensure(
                 error.kind == ErrorKind::Validation
                     && error.detail.contains(&field.name)
-                    && error.detail.contains(&range),
-                format!("{payload} was refused with {error}, not by its field and {range}"),
+                    && error.detail.contains(&reason),
+                format!("{payload} was refused with {error}, not by its field and {reason:?}"),
             )?;
         }
-        let payload = json!({field.name.clone(): "1"});
-        let error = rules
-            .validate(effect.format, &payload)
-            .err()
-            .ok_or_else(|| format!("{payload} was accepted"))?;
-        ensure(
-            error.kind == ErrorKind::Validation
-                && error.detail.contains(&field.name)
-                && error.detail.contains("must be a finite number"),
-            format!("{payload} was refused with {error}"),
-        )?;
     }
     for payload in [json!([1.0]), json!(1.0)] {
         let error = rules
@@ -282,7 +265,7 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     rules.no_op(set, json!({}), &[], "an empty first set")?;
     rules.no_op(
         set,
-        json!({lead.name.clone(): lead.default}),
+        json!({lead.name.clone(): lead.default.clone()}),
         &[],
         "a first set at the default",
     )?;
@@ -318,12 +301,12 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
         format!("a set of another field over {high} stored {merged}, not {expected}"),
     )?;
     rules.no_op(set, high.clone(), stack, "the stored value set again")?;
-    if lead.high().fract() == 0.0 {
+    if let Some(respelled) = lead.respelled(&lead.high()) {
         rules.no_op(
             set,
-            json!({lead.name.clone(): lead.high() as i64}),
+            json!({lead.name.clone(): respelled}),
             stack,
-            "the stored value in an integer spelling",
+            "the stored value in another spelling",
         )?;
     }
     rules.no_op(set, json!({}), stack, "an empty patch over a stored layer")?;
@@ -331,7 +314,7 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     let both = rules.layer(expected);
     let cleared = rules.updated(
         set,
-        json!({lead.name.clone(): lead.default}),
+        json!({lead.name.clone(): lead.default.clone()}),
         std::slice::from_ref(&both),
         &both,
         "a field set back to its default",
@@ -342,12 +325,12 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
         format!("a field set back to its default stored {cleared}, not {kept}"),
     )?;
 
-    for stored in [json!({}), json!({lead.name.clone(): lead.default})] {
+    for stored in [json!({}), json!({lead.name.clone(): lead.default.clone()})] {
         let layer = rules.layer(stored.clone());
         let stack = std::slice::from_ref(&layer);
         rules.no_op(
             set,
-            json!({lead.name.clone(): lead.default}),
+            json!({lead.name.clone(): lead.default.clone()}),
             stack,
             &format!("the default set on {stored}"),
         )?;
@@ -374,7 +357,67 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
             format!("{action} against two layers was refused with {error}, not {expected}"),
         )?;
     }
-    Ok(json!({"lead": lead.name, "other": other.name, "merged": merged, "cleared": cleared}))
+    let fields = every_field(rules)?;
+    Ok(json!({
+        "lead": lead.name,
+        "other": other.name,
+        "merged": merged,
+        "cleared": cleared,
+        "fields": fields,
+    }))
+}
+
+/// Each field on its own, whatever its kind: a first set of a moved value commits exactly that
+/// field unless the module's rule calls it neutral, setting it again in any spelling is a no-op,
+/// a second moved value updates the layer in place, and setting the default in any spelling stores
+/// `{}` again.
+fn every_field(rules: &Rules<'_>) -> Checked<Value> {
+    let (module, set) = (rules.module, rules.module.set.as_str());
+    let mut shown = Vec::new();
+    for field in &module.fields {
+        let named = |value: Value| json!({field.name.clone(): value});
+        let high = named(field.high());
+        let neutral = rules.registry.layer_neutral(&rules.layer(high.clone()));
+        match rules.planned(set, high.clone(), &[])? {
+            ActionPlan::NoOp if neutral => {}
+            ActionPlan::Commit(new) if !neutral && new.payload == high => {}
+            plan => {
+                return Err(format!(
+                    "a first set of {high}, {} by the module's rule, planned {plan:?}",
+                    if neutral { "neutral" } else { "not neutral" }
+                ));
+            }
+        }
+        let stored = rules.layer(high.clone());
+        let stack = std::slice::from_ref(&stored);
+        rules.no_op(set, high.clone(), stack, &format!("{high} set again"))?;
+        if let Some(respelled) = field.respelled(&field.high()) {
+            rules.no_op(
+                set,
+                named(respelled),
+                stack,
+                &format!("{high} set again in another spelling"),
+            )?;
+        }
+        if !field.same(Some(&field.low()), &field.high()) {
+            let low = named(field.low());
+            let moved = rules.updated(set, low.clone(), stack, &stored, &format!("{low}"))?;
+            ensure(moved == low, format!("{low} over {high} stored {moved}"))?;
+        }
+        let defaults =
+            std::iter::once(field.default.clone()).chain(field.respelled(&field.default));
+        for default in defaults {
+            let default = named(default);
+            let cleared =
+                rules.updated(set, default.clone(), stack, &stored, &format!("{default}"))?;
+            ensure(
+                cleared == json!({}),
+                format!("{default} over {high} stored {cleared}, not {{}}"),
+            )?;
+        }
+        shown.push(json!({"field": field.name, "high": field.high(), "neutral": neutral}));
+    }
+    Ok(json!(shown))
 }
 
 /// Labels by the declared rules: one field by its value (at its default too), each group's reset
@@ -384,7 +427,7 @@ fn labels(rules: &Rules<'_>) -> Checked<Value> {
     let module = rules.module;
     let mut patches: Vec<Map<String, Value>> = Vec::new();
     for field in &module.fields {
-        for value in [field.high(), field.low(), field.default] {
+        for value in [field.high(), field.low(), field.default.clone()] {
             patches.push(object(json!({field.name.clone(): value})));
         }
     }
@@ -444,10 +487,10 @@ fn described(rules: &Rules<'_>) -> Checked<Value> {
         } else if field.name == other.name {
             other.high()
         } else {
-            field.default
+            field.default.clone()
         };
         ensure(
-            values.get(&field.name).and_then(Value::as_f64) == Some(expected),
+            field.same(values.get(&field.name), &expected),
             format!(
                 "{payload} reports {} as {:?}",
                 field.name,
@@ -470,9 +513,58 @@ fn described(rules: &Rules<'_>) -> Checked<Value> {
     ensure(
         parts.len() == 2
             && moved.iter().zip(&parts).all(|((field, value), part)| {
-                Label::Ending(format!(" {}", field.shown(*value))).matches(part)
+                Label::Ending(format!(" {}", field.shown(value))).matches(part)
             }),
         format!("{payload} is described as {described:?}"),
     )?;
     Ok(json!({"payload": payload, "described": described}))
+}
+
+/// The rules every `patch: true` action of every registered module keeps, field patch or not
+/// (`set-raw` merges itself under its own rule): the generic check of an empty patch fills in
+/// nothing, each declared default alone is exactly that one field, and a value a field's
+/// declaration refuses is refused naming the field.
+pub fn patch_actions(registry: &ModuleRegistry) -> Checked<Value> {
+    let mut checked = Vec::new();
+    for descriptor in registry.descriptors() {
+        for action in descriptor.actions.iter().filter(|action| action.patch) {
+            let what = format!("{} {}", descriptor.id, action.id);
+            let empty = check_parameters(action, &json!({})).map_err(|error| {
+                format!("{what}: an empty patch failed the generic check: {error}")
+            })?;
+            ensure(
+                empty.is_empty(),
+                format!("{what}: the generic check filled {empty:?} into an empty patch"),
+            )?;
+            for parameter in &action.parameters {
+                let Some(default) = &parameter.default else {
+                    continue;
+                };
+                let sent = json!({parameter.name.clone(): default});
+                let one = check_parameters(action, &sent)
+                    .map_err(|error| format!("{what}: {sent} was refused: {error}"))?;
+                ensure(
+                    Value::Object(one.clone()) == sent,
+                    format!("{what}: the generic check turned {sent} into {one:?}"),
+                )?;
+                let Some(field) = Field::of(parameter, default.clone()) else {
+                    continue;
+                };
+                for (value, reason) in field.refused() {
+                    let sent = json!({parameter.name.clone(): value});
+                    let error = check_parameters(action, &sent)
+                        .err()
+                        .ok_or_else(|| format!("{what}: {sent} was accepted"))?;
+                    ensure(
+                        error.kind == ErrorKind::Validation
+                            && error.detail.contains(&parameter.name)
+                            && error.detail.contains(&reason),
+                        format!("{what}: {sent} was refused with {error}, not {reason:?}"),
+                    )?;
+                }
+            }
+            checked.push(json!(what));
+        }
+    }
+    Ok(json!(checked))
 }

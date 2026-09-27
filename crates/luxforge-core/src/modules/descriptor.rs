@@ -2479,7 +2479,7 @@ pub fn action_label(action: &ActionDescriptor, parameters: &Map<String, Value>) 
     }
 }
 
-fn summary_value(value: &Value) -> String {
+pub(crate) fn summary_value(value: &Value) -> String {
     match value {
         // `{}` on an f64 already drops trailing zeros: 3.5, 0, -12.
         Value::Number(number) if number.is_f64() => match number.as_f64() {

@@ -35,7 +35,13 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         proof["reset"],
         json!({"action":"reset-controls","preset":{}})
     );
-    assert_eq!(proof["controls"][0]["reset"], proof["reset"]);
+    // Its one group resets as every field-patch group does: a patch of the group's fields to
+    // their declared defaults, here every field of the vocabulary.
+    let group_reset = &proof["controls"][0]["reset"];
+    assert_eq!(group_reset["action"], "set-controls");
+    assert_eq!(group_reset["preset"].as_object().unwrap().len(), 11);
+    assert_eq!(group_reset["preset"]["mode"], "one");
+    assert_eq!(group_reset["preset"]["rgb"], json!([64, 128, 192]));
 
     let schema = call(&owner, client, "schema.list", json!({})).unwrap();
     let set = &schema["methods"]["edit.set-controls"];
@@ -88,25 +94,35 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
             "{name} has its authoritative value"
         );
     }
-    // A patch cannot silently apply two fields or an empty request.
-    for (suffix, extra) in [
-        ("two", json!({"amount":1.0,"count":2})),
-        ("empty", json!({})),
+    // The field-patch rules every module shares: a patch of two fields merges both, and the same
+    // values in another spelling or an empty patch change nothing.
+    for (suffix, extra, outcome) in [
+        ("two", json!({"amount":1.0,"count":2}), "applied"),
+        ("integer-spelling", json!({"amount":1}), "no-op"),
+        ("empty", json!({}), "no-op"),
     ] {
         let mut request = json!({"asset_id":asset,"mutation":{
-            "expected_revision":fields.len(),"request_id":suffix,"actor":"independent-json-client"
+            "expected_revision":fields.len() + 1,"request_id":suffix,"actor":"independent-json-client"
         }});
+        if outcome == "applied" {
+            request["mutation"]["expected_revision"] = json!(fields.len());
+        }
         request
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        assert_eq!(
-            refused(&owner, client, "edit.set-controls", request)
-                .unwrap()
-                .0,
-            "validation"
-        );
+        let result = call(&owner, client, "edit.set-controls", request).unwrap();
+        assert_eq!(result["outcome"], outcome, "{suffix}");
     }
+    let described = call(&owner, client, "recipe.describe", json!({"asset_id":asset})).unwrap();
+    let layer = described["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["effect"] == CONTROLS_EFFECT)
+        .expect("proof layer");
+    assert_eq!(layer["values"]["amount"], json!(1.0));
+    assert_eq!(layer["values"]["count"], json!(2));
     let sampled = call(
         &owner,
         client,
@@ -139,11 +155,11 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         client,
         "edit.reset-controls",
         json!({
-            "asset_id":asset,"mutation":{"expected_revision":fields.len(),"request_id":"reset","actor":"independent-json-client"}
+            "asset_id":asset,"mutation":{"expected_revision":fields.len() + 1,"request_id":"reset","actor":"independent-json-client"}
         }),
     ).unwrap();
     assert_eq!(reset["outcome"], "applied");
-    assert_eq!(reset["revision"], fields.len() + 1);
+    assert_eq!(reset["revision"], fields.len() + 2);
     let reset_recipe = call(&owner, client, "recipe.describe", json!({"asset_id":asset})).unwrap();
     let reset_layer = reset_recipe["layers"]
         .as_array()

@@ -1,26 +1,31 @@
 //! The declarative field-patch module: a module that owns one layer of one effect, edited by a
-//! `set-<name>` field patch and a `reset-<name>` action, whose payload is a JSON object of numeric
+//! `set-<name>` field patch and a `reset-<name>` action, whose payload is a JSON object of declared
 //! fields in which a missing key means that field's default.
 //!
-//! Basic, the colour mixer, Presence and the vignette are each a [`Spec`] — the field table, its
-//! groups and the module's identity — and a [`FieldPatch::compile`]. Everything they share lives
-//! here once: the descriptor built from the table, parsing, planning a commit, update or no-op,
-//! payload validation, the canonical stored form, values, history labels, the recipe row and
-//! neutrality.
+//! Basic, the colour mixer, Presence, the vignette and the developer controls proof are each a
+//! [`Spec`] — the field table, its groups and the module's identity — and a
+//! [`FieldPatch::compile`]. A field is any parameter of the field vocabulary: a number, an
+//! integer, a boolean, an enum, a colour or a curve. Everything the modules share lives here once:
+//! the descriptor built from the table, parsing, planning a commit, update or no-op, payload
+//! validation, the canonical stored form, values, history labels, the recipe row and neutrality.
 //!
-//! Every comparison is between canonical values, never between JSON maps, so `{}` and a payload
-//! that spells a default out (`{"exposure": 0}`, `{"midpoint": 50}`) are the same state and are
-//! never mistaken for a change. The canonical stored form holds only the fields that differ from
-//! their default, so the all-default payload is exactly `{}`.
+//! Every comparison is between canonical values, never between JSON spellings, so `{}` and a
+//! payload that spells a default out (`{"exposure": 0}`, `{"midpoint": 50}`) are the same state and
+//! are never mistaken for a change. A canonical value is the value as its kind reads it: a number
+//! as the finite f64 it holds, whether it was written `1` or `1.0`, and a curve's coordinates the
+//! same way; an integer, a colour, a boolean and an enum option are already one spelling each. The
+//! canonical stored form holds only the fields that differ from their default, so the all-default
+//! payload is exactly `{}`.
 //!
-//! The host checks a request's fields against the declared ranges before `parse`, on every path,
-//! so planning merges the fields it is given without checking them again. A stored payload is
-//! checked in full by [`ToolModule::validate_payload`] and wherever it is read.
+//! The host checks a request's fields against their declarations before `parse`, on every path. A
+//! stored payload is checked in full, by the one generic parameter check ([`check_value`]), by
+//! [`ToolModule::validate_payload`] and wherever it is read.
 
 use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    ControlVariant, EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer,
-    ParameterDescriptor, Processing, RailDecoration, ResetAction, Stage, StageContext, ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, ChoiceStyle,
+    ColorStyle, Control, ControlVariant, EffectDescriptor, LayerUpdate, ModuleDescriptor,
+    ModuleLayout, NewLayer, NumberStyle, ParameterDescriptor, ParameterKind, Processing,
+    RailDecoration, ResetAction, Stage, StageContext, ToolModule, check_value, summary_value,
 };
 use crate::{Error, SourceTag};
 use serde_json::{Map, Number, Value};
@@ -31,93 +36,323 @@ pub(crate) fn number(value: f64) -> Value {
     Number::from_f64(value).map_or(Value::Null, Value::Number)
 }
 
-/// One numeric field: its payload key and parameter, the slider that sets it and the words a
-/// history label uses for it.
+/// How a field is drawn on its group's section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldControl {
+    /// A number control in this style, for a number or integer field.
+    Number(NumberStyle),
+    /// A toggle, for a boolean field.
+    Toggle,
+    /// A choice in this style, for an enum field.
+    Choice(ChoiceStyle),
+    /// A colour control in this style, for a colour field.
+    Color(ColorStyle),
+    /// No control of its own: a curve field is one channel of a curve control its group lists
+    /// among [`Group::extra`].
+    Channel,
+}
+
+impl FieldControl {
+    /// The control a field of `kind` draws unless its spec chooses a style.
+    fn of(kind: &ParameterKind) -> Self {
+        match kind {
+            ParameterKind::Boolean => Self::Toggle,
+            ParameterKind::Enum { .. } => Self::Choice(ChoiceStyle::Automatic),
+            ParameterKind::Color => Self::Color(ColorStyle::Fields),
+            ParameterKind::Curve { .. } => Self::Channel,
+            _ => Self::Number(NumberStyle::Slider),
+        }
+    }
+
+    /// Whether this control can draw a field of `kind`.
+    fn draws(self, kind: &ParameterKind) -> bool {
+        matches!(
+            (self, kind),
+            (
+                Self::Number(_),
+                ParameterKind::Number { .. } | ParameterKind::Integer { .. }
+            ) | (Self::Toggle, ParameterKind::Boolean)
+                | (Self::Choice(_), ParameterKind::Enum { .. })
+                | (Self::Color(_), ParameterKind::Color)
+                | (Self::Channel, ParameterKind::Curve { .. })
+        )
+    }
+
+    /// The control kind as a refusal names it.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Number(_) => "number",
+            Self::Toggle => "toggle",
+            Self::Choice(_) => "choice",
+            Self::Color(_) => "color",
+            Self::Channel => "curve channel",
+        }
+    }
+}
+
+/// One field: its declared parameter — the payload key, its kind, its default and its display
+/// hints — the control that sets it and the words a history label uses for it.
 pub struct Field {
-    /// The payload key and the `set-<name>` parameter.
-    pub name: &'static str,
-    /// The slider's label.
+    /// The `set-<name>` parameter: its name is the payload key and its default is what a missing
+    /// key means and what a reset writes.
+    pub parameter: ParameterDescriptor,
+    /// The control's label.
     pub label: String,
     /// What a history label and the recipe row call the field: `Exposure`, `Red hue`, `Vignette
-    /// amount`. A field whose range is signed shows its value with a sign (`+20`, `-35`); one
-    /// whose range starts at 0 does not (`60`).
+    /// amount`. A numeric field whose range is signed shows its value with a sign (`+20`, `-35`);
+    /// one whose range starts at 0 does not (`60`).
     pub history: String,
-    pub min: f64,
-    pub max: f64,
-    /// What a missing key means, and the value a reset writes.
-    pub default: f64,
-    pub step: f64,
-    /// Display decimals, for the slider and for the history label.
-    pub precision: u8,
-    pub unit: Option<&'static str>,
-    /// The parameter's declared `zero` hint.
-    pub zero: Option<f64>,
+    /// How the field is drawn: its own control, or a channel of its group's curve control.
+    pub control: FieldControl,
+    /// The rail a number control draws; only a number control carries one.
     pub rail: Option<RailDecoration>,
-    pub notes: String,
-    /// The controls other modules provide in this field's slider's place on a photo of one source
-    /// kind ([`ControlVariant`]). On the global target of such a photo the field is superseded: the
-    /// host refuses it and the variant is its one path, and the module's reset leaves it to the
-    /// group reset's variant.
+    /// The controls other modules provide in this field's control's place on a photo of one source
+    /// kind ([`ControlVariant`]); only a number control carries them. On the global target of such
+    /// a photo the field is superseded: the host refuses it and the variant is its one path, and
+    /// the module's reset leaves it to the group reset's variant.
     pub variants: Vec<ControlVariant>,
 }
 
 impl Field {
-    /// A field in the -100..100 slider range with step 1 and no decimals, the range most fields
-    /// share, defaulting to 0 with no unit, rail or zero hint.
-    pub fn slider(name: &'static str, label: impl Into<String>, notes: impl Into<String>) -> Self {
+    /// A field of `parameter`, drawn by the control its kind implies — a slider, a toggle, an
+    /// automatic choice, colour fields or a curve channel — with `label` as its control's label and
+    /// its history word, no rail and no variants.
+    pub fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
         let label = label.into();
         Self {
-            name,
+            control: FieldControl::of(&parameter.kind),
+            parameter,
             history: label.clone(),
             label,
-            min: -100.0,
-            max: 100.0,
-            default: 0.0,
-            step: 1.0,
-            precision: 0,
-            unit: None,
-            zero: None,
             rail: None,
-            notes: notes.into(),
             variants: Vec::new(),
         }
     }
 
-    fn parameter(&self) -> ParameterDescriptor {
-        ParameterDescriptor {
-            unit: self.unit.map(Into::into),
-            zero: self.zero,
-            ..ParameterDescriptor::number(self.name, self.min, self.max)
-                .default(self.default)
-                .step(self.step)
-                .precision(self.precision)
-                .notes(self.notes.clone())
+    /// A number field in the -100..100 slider range with step 1 and no decimals, the range most
+    /// fields share, defaulting to 0 with no unit, rail or zero hint.
+    pub fn slider(name: &'static str, label: impl Into<String>, notes: impl Into<String>) -> Self {
+        Self::new(
+            ParameterDescriptor::number(name, -100.0, 100.0)
+                .default(0.0)
+                .step(1.0)
+                .precision(0)
+                .notes(notes),
+            label,
+        )
+    }
+
+    /// A number field's closed range; a no-op on any other kind.
+    pub fn range(mut self, min: f64, max: f64) -> Self {
+        if let ParameterKind::Number { .. } = self.parameter.kind {
+            self.parameter.kind = ParameterKind::Number { min, max };
+        }
+        self
+    }
+
+    pub fn default(mut self, value: impl Into<Value>) -> Self {
+        self.parameter = self.parameter.default(value);
+        self
+    }
+
+    pub fn step(mut self, step: f64) -> Self {
+        self.parameter = self.parameter.step(step);
+        self
+    }
+
+    pub fn precision(mut self, precision: u8) -> Self {
+        self.parameter = self.parameter.precision(precision);
+        self
+    }
+
+    pub fn unit(mut self, unit: &str) -> Self {
+        self.parameter = self.parameter.unit(unit);
+        self
+    }
+
+    pub fn zero(mut self, zero: f64) -> Self {
+        self.parameter = self.parameter.zero(zero);
+        self
+    }
+
+    pub fn history(mut self, history: impl Into<String>) -> Self {
+        self.history = history.into();
+        self
+    }
+
+    pub fn control(mut self, control: FieldControl) -> Self {
+        self.control = control;
+        self
+    }
+
+    pub fn rail(mut self, rail: RailDecoration) -> Self {
+        self.rail = Some(rail);
+        self
+    }
+
+    pub fn variant(mut self, variant: ControlVariant) -> Self {
+        self.variants.push(variant);
+        self
+    }
+
+    /// The payload key and the `set-<name>` parameter.
+    pub fn name(&self) -> &str {
+        &self.parameter.name
+    }
+
+    /// The declared default, which [`Field::check`] makes sure every field has.
+    fn default_value(&self) -> &Value {
+        const MISSING: &Value = &Value::Null;
+        self.parameter.default.as_ref().unwrap_or(MISSING)
+    }
+
+    /// A field the table can hold: a kind of the field vocabulary, a valid declared default, and a
+    /// control that draws its kind and carries what it declares.
+    fn check(&self) -> Result<(), String> {
+        let name = self.name();
+        let kind = &self.parameter.kind;
+        if !matches!(
+            kind,
+            ParameterKind::Number { .. }
+                | ParameterKind::Integer { .. }
+                | ParameterKind::Boolean
+                | ParameterKind::Enum { .. }
+                | ParameterKind::Color
+                | ParameterKind::Curve { .. }
+        ) {
+            return Err(format!(
+                "field {name}: a field patch cannot hold its {} parameter",
+                kind.name()
+            ));
+        }
+        let default = self
+            .parameter
+            .default
+            .as_ref()
+            .ok_or_else(|| format!("field {name} declares no default"))?;
+        check_value(&self.parameter, default)
+            .map_err(|error| format!("field {name}'s default is invalid: {}", error.detail))?;
+        if !self.control.draws(kind) {
+            return Err(format!(
+                "field {name}: a {} control cannot draw its {} parameter",
+                self.control.name(),
+                kind.name()
+            ));
+        }
+        let number = matches!(self.control, FieldControl::Number(_));
+        if !self.variants.is_empty() && !number {
+            return Err(format!(
+                "field {name}: its {} control cannot carry variants",
+                self.control.name()
+            ));
+        }
+        if self.rail.is_some() && !number {
+            return Err(format!(
+                "field {name}: its {} control cannot carry a rail",
+                self.control.name()
+            ));
+        }
+        Ok(())
+    }
+
+    /// The field's own control on the `action` patch, or `None` for a curve channel.
+    fn own_control(&self, action: &str) -> Option<Control> {
+        let (name, label) = (self.name(), self.label.clone());
+        Some(match self.control {
+            FieldControl::Number(style) => {
+                let control = Control::number(action, name, label).number_style(style);
+                let control = match self.rail.clone() {
+                    Some(rail) => control.rail(rail),
+                    None => control,
+                };
+                self.variants
+                    .iter()
+                    .cloned()
+                    .fold(control, Control::variant)
+            }
+            FieldControl::Toggle => Control::toggle(action, name, label),
+            FieldControl::Choice(style) => Control::choice(action, name, label).choice_style(style),
+            FieldControl::Color(style) => {
+                Control::color_field(action, name, label).color_style(style)
+            }
+            FieldControl::Channel => return None,
+        })
+    }
+
+    /// `value`, which the generic check accepts for this field, in its canonical spelling: a
+    /// number, and each coordinate of a curve, as the f64 it reads as. Every other kind has one
+    /// spelling already.
+    fn canonical(&self, value: &Value) -> Value {
+        match &self.parameter.kind {
+            ParameterKind::Number { .. } => value.as_f64().map_or_else(|| value.clone(), number),
+            ParameterKind::Curve { .. } => match value.as_array() {
+                Some(points) => Value::Array(
+                    points
+                        .iter()
+                        .map(|point| match point.as_array() {
+                            Some(pair) => Value::Array(
+                                pair.iter()
+                                    .map(|coordinate| {
+                                        coordinate
+                                            .as_f64()
+                                            .map_or_else(|| coordinate.clone(), number)
+                                    })
+                                    .collect(),
+                            ),
+                            None => point.clone(),
+                        })
+                        .collect(),
+                ),
+                None => value.clone(),
+            },
+            _ => value.clone(),
         }
     }
 
-    /// The field and its value as a history label and the recipe row name them: the history name,
-    /// the value with its declared decimals (signed for a signed range) and the declared unit.
-    fn label(&self, value: f64) -> String {
-        let precision = usize::from(self.precision);
-        let shown = if self.min < 0.0 {
-            format!("{value:+.precision$}")
-        } else {
-            format!("{value:.precision$}")
+    /// The field and its value as a history label and the recipe row name them: the history word,
+    /// then a number with its declared decimals (signed for a signed range) and its declared unit,
+    /// a boolean as `on` or `off`, a curve by its point count, and an option or a colour as a
+    /// summary shows it (`Two`, `20,40,60`).
+    fn label(&self, value: &Value) -> String {
+        let signed = match &self.parameter.kind {
+            ParameterKind::Number { min, .. } => Some(*min < 0.0),
+            ParameterKind::Integer { min, .. } => Some(*min < 0),
+            _ => None,
         };
-        match self.unit {
+        let shown = match (signed, value.as_f64()) {
+            (Some(signed), Some(value)) => {
+                let precision = usize::from(self.parameter.precision.unwrap_or(0));
+                if signed {
+                    format!("{value:+.precision$}")
+                } else {
+                    format!("{value:.precision$}")
+                }
+            }
+            _ => match (&self.parameter.kind, value) {
+                (ParameterKind::Boolean, Value::Bool(on)) => {
+                    (if *on { "on" } else { "off" }).into()
+                }
+                (ParameterKind::Curve { .. }, Value::Array(points)) => {
+                    format!("{} points", points.len())
+                }
+                _ => summary_value(value),
+            },
+        };
+        match &self.parameter.unit {
             Some(unit) => format!("{} {shown} {unit}", self.history),
             None => format!("{} {shown}", self.history),
         }
     }
 }
 
-/// A group of sliders on the module's section. Its reset sets exactly its fields to their
+/// A group of controls on the module's section. Its reset sets exactly its fields to their
 /// defaults, and a patch that does so is labelled `Reset <label>` however it was sent.
 pub struct Group {
     pub label: &'static str,
     pub fields: Vec<&'static str>,
     pub collapsed: bool,
-    /// Controls drawn after the group's sliders, such as Basic's neutral picker.
+    /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
+    /// curve control whose channels are the group's curve fields.
     pub extra: Vec<Control>,
     /// The resets other modules provide in the group reset's place on a photo of one source kind
     /// ([`ControlVariant::reset`]).
@@ -137,7 +372,7 @@ pub struct Spec {
     pub id: &'static str,
     pub title: &'static str,
     pub hint: &'static str,
-    /// The word payload errors use: `basic field exposure must be a finite number`.
+    /// The word payload errors use: `unknown basic field exposure`.
     pub noun: &'static str,
     pub effect: EffectDescriptor,
     /// The field patch, `set-<name>`.
@@ -151,57 +386,58 @@ pub struct Spec {
     pub canvas: Option<CanvasInteraction>,
     pub collapsed: bool,
     pub layout: ModuleLayout,
+    /// Whether the module is a developer proof, listed and registered only in developer mode.
+    pub developer: bool,
 }
 
 impl Spec {
     fn field(&self, name: &str) -> Option<&Field> {
-        self.fields.iter().find(|field| field.name == name)
+        self.fields.iter().find(|field| field.name() == name)
     }
 
-    fn defaults(&self) -> Vec<f64> {
-        self.fields.iter().map(|field| field.default).collect()
+    fn defaults(&self) -> Vec<Value> {
+        self.fields
+            .iter()
+            .map(|field| field.default_value().clone())
+            .collect()
     }
 
+    /// The spec with every declared default in its canonical spelling, and the descriptor built
+    /// from it, or the refusal of the first field [`Field::check`] refuses.
+    fn build(mut self) -> Result<(Self, ModuleDescriptor), Error> {
+        for field in &mut self.fields {
+            field.check().map_err(|reason| {
+                Error::validation(format!("field-patch module {}: {reason}", self.id))
+            })?;
+            field.parameter.default = Some(field.canonical(field.default_value()));
+        }
+        let descriptor = self.descriptor();
+        Ok((self, descriptor))
+    }
+
+    /// The descriptor of a checked spec: each group draws its fields' own controls then its extra
+    /// controls, its reset is the patch of its fields to their defaults, and every variant a field
+    /// or group declares is folded onto its control.
     fn descriptor(&self) -> ModuleDescriptor {
-        let slider = |field: &Field| {
-            let control = Control::number(self.set.id, field.name, field.label.clone());
-            let control = match field.rail.clone() {
-                Some(rail) => control.rail(rail),
-                None => control,
-            };
-            field
-                .variants
-                .iter()
-                .cloned()
-                .fold(control, Control::variant)
-        };
         let controls = self
             .groups
             .iter()
             .map(|group| {
-                Control::group(
+                let fields = || group.fields.iter().filter_map(|name| self.field(name));
+                let control = Control::group(
                     group.label,
-                    group
-                        .fields
-                        .iter()
-                        .filter_map(|name| self.field(name))
-                        .map(slider)
+                    fields()
+                        .filter_map(|field| field.own_control(self.set.id))
                         .chain(group.extra.iter().cloned())
                         .collect(),
                 )
                 .field_reset(ResetAction {
                     action: self.set.id.into(),
-                    preset: group
-                        .fields
-                        .iter()
-                        .filter_map(|name| self.field(name))
-                        .map(|field| (field.name.to_owned(), number(field.default)))
+                    preset: fields()
+                        .map(|field| (field.name().to_owned(), field.default_value().clone()))
                         .collect(),
                 })
-                .collapsed(group.collapsed)
-            })
-            .zip(&self.groups)
-            .map(|(control, group)| {
+                .collapsed(group.collapsed);
                 group
                     .reset_variants
                     .iter()
@@ -221,7 +457,11 @@ impl Spec {
                     notes: self.set.notes.into(),
                     summary: None,
                     patch: true,
-                    parameters: self.fields.iter().map(Field::parameter).collect(),
+                    parameters: self
+                        .fields
+                        .iter()
+                        .map(|field| field.parameter.clone())
+                        .collect(),
                 },
                 ActionDescriptor {
                     id: self.reset.id.into(),
@@ -239,7 +479,7 @@ impl Spec {
                 preset: Map::new(),
             }),
             canvas: self.canvas.clone(),
-            developer: false,
+            developer: self.developer,
             collapsed: self.collapsed,
             layout: self.layout,
             availability: Availability::Available,
@@ -252,31 +492,35 @@ impl Spec {
 /// key read as its field's default.
 pub struct Values<'a> {
     fields: &'a [Field],
-    values: Vec<f64>,
+    values: Vec<Value>,
 }
 
 impl Values<'_> {
-    /// One field's value, by name. Every name a module asks for is one of its own fields.
-    pub fn get(&self, name: &str) -> f64 {
+    /// One field's canonical value, by name. Every name a module asks for is one of its own
+    /// fields.
+    fn value(&self, name: &str) -> &Value {
         let index = self
             .fields
             .iter()
-            .position(|field| field.name == name)
+            .position(|field| field.name() == name)
             .expect("a module reads only its own declared fields");
-        self.values[index]
+        &self.values[index]
     }
 
-    /// Every value, in the field table's order.
-    pub fn as_slice(&self) -> &[f64] {
-        &self.values
+    /// One number field's value, by name: the finite f64 the stored payload holds, or the field's
+    /// default.
+    pub fn number(&self, name: &str) -> f64 {
+        self.value(name)
+            .as_f64()
+            .expect("a module reads a number only from its own number fields")
     }
 
-    /// Whether every field holds its default.
-    pub fn all_default(&self) -> bool {
+    /// Whether every field holds its default, by value.
+    pub fn is_default(&self) -> bool {
         self.fields
             .iter()
             .zip(&self.values)
-            .all(|(field, value)| *value == field.default)
+            .all(|(field, value)| value == field.default_value())
     }
 }
 
@@ -295,10 +539,11 @@ pub trait FieldPatch: Send + Sync + 'static {
     /// default is every field at its default; the vignette's is an amount of 0, whatever its shape
     /// fields hold.
     fn is_neutral(&self, values: &Values<'_>) -> bool {
-        values.all_default()
+        values.is_default()
     }
 
-    /// Answer one of the queries the spec declares. Only Basic declares one.
+    /// Answer one of the queries the spec declares, with parameters the host has already checked
+    /// against the query's declaration.
     fn query(
         &self,
         query_id: &str,
@@ -319,9 +564,13 @@ pub struct FieldPatchModule<M> {
 }
 
 impl<M: FieldPatch + Default> FieldPatchModule<M> {
+    /// The module built from its spec. A spec is a static table, so one [`Field::check`] refuses —
+    /// a field outside the vocabulary, without a valid default, or declaring a rail or variants
+    /// its control cannot carry — is a defect the module's construction reports at once.
     pub fn new() -> Self {
-        let spec = M::spec();
-        let descriptor = spec.descriptor();
+        let (spec, descriptor) = M::spec()
+            .build()
+            .unwrap_or_else(|error| panic!("{}", error.detail));
         Self {
             module: M::default(),
             spec,
@@ -345,7 +594,7 @@ impl<M> std::fmt::Debug for FieldPatchModule<M> {
 }
 
 impl<M: FieldPatch> FieldPatchModule<M> {
-    fn values(&self, values: Vec<f64>) -> Values<'_> {
+    fn values(&self, values: Vec<Value>) -> Values<'_> {
         Values {
             fields: &self.spec.fields,
             values,
@@ -354,7 +603,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
 
     /// The canonical values of a stored payload, with the effect identity and format checked
     /// first: an unsupported format is `incompatible` and is never rewritten, and every key is a
-    /// declared field holding a finite number inside its declared range.
+    /// declared field whose value the generic parameter check accepts.
     fn read(&self, effect_id: &str, format: u32, payload: &Value) -> Result<Values<'_>, Error> {
         let spec = &self.spec;
         let noun = spec.noun;
@@ -375,27 +624,14 @@ impl<M: FieldPatch> FieldPatchModule<M> {
             let field = spec
                 .field(name)
                 .ok_or_else(|| Error::validation(format!("unknown {noun} field {name}")))?;
-            let number = value
-                .as_f64()
-                .filter(|number| number.is_finite())
-                .ok_or_else(|| {
-                    Error::validation(format!("{noun} field {name} must be a finite number"))
-                })?;
-            let (min, max) = (field.min, field.max);
-            if number < min || number > max {
-                return Err(Error::validation(format!(
-                    "{noun} field {name} must be a number within {min}..={max}"
-                )));
-            }
+            check_value(&field.parameter, value)?;
         }
         Ok(self.values(
             spec.fields
                 .iter()
-                .map(|field| {
-                    object
-                        .get(field.name)
-                        .and_then(Value::as_f64)
-                        .unwrap_or(field.default)
+                .map(|field| match object.get(field.name()) {
+                    Some(value) => field.canonical(value),
+                    None => field.default_value().clone(),
                 })
                 .collect(),
         ))
@@ -403,14 +639,14 @@ impl<M: FieldPatch> FieldPatchModule<M> {
 
     /// The canonical stored form of a set of values: only the fields that differ from their
     /// default, so the all-default payload is exactly `{}`.
-    fn payload(&self, values: &[f64]) -> Value {
+    fn payload(&self, values: &[Value]) -> Value {
         Value::Object(
             self.spec
                 .fields
                 .iter()
                 .zip(values)
-                .filter(|(field, value)| **value != field.default)
-                .map(|(field, value)| (field.name.to_owned(), number(*value)))
+                .filter(|(field, value)| *value != field.default_value())
+                .map(|(field, value)| (field.name().to_owned(), value.clone()))
                 .collect(),
         )
     }
@@ -418,7 +654,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
     /// The group a patch returns entirely to its defaults, when it is one: a patch holding exactly
     /// one group's fields, each at its default, is that group's reset however it was sent — from
     /// the group's header, a keyboard reset or an API call.
-    fn reset_group(&self, sent: &[(&String, f64)]) -> Option<&'static str> {
+    fn reset_group(&self, sent: &[(&String, Value)]) -> Option<&'static str> {
         self.spec
             .groups
             .iter()
@@ -429,7 +665,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
                             && self
                                 .spec
                                 .field(name)
-                                .is_some_and(|field| *value == field.default)
+                                .is_some_and(|field| value == field.default_value())
                     })
             })
             .map(|group| group.label)
@@ -437,7 +673,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
 
     /// The group a patch sets entirely, when it is one: a patch holding exactly one group's fields
     /// reads as that group, such as a neutral pick's temperature and tint as `White balance`.
-    fn whole_group(&self, sent: &[(&String, f64)]) -> Option<&'static str> {
+    fn whole_group(&self, sent: &[(&String, Value)]) -> Option<&'static str> {
         self.spec
             .groups
             .iter()
@@ -476,7 +712,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
             .fields
             .iter()
             .filter(|field| !superseded(field))
-            .map(|field| (field.name.to_owned(), number(field.default)))
+            .map(|field| (field.name().to_owned(), field.default_value().clone()))
             .collect();
         let own = (!defaults.is_empty()).then(|| ActionInput {
             action_id: spec.set.id.to_owned(),
@@ -498,7 +734,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
     ) -> Result<ActionInput, Error> {
         let parameters = if action_id == self.spec.set.id {
             // A patch stores exactly the fields the caller sent, which the generic check has
-            // already validated against the declared ranges: the history entry, the label and
+            // already validated against their declarations: the history entry, the label and
             // request deduplication all describe the patch, not the merged payload.
             parameters.clone()
         } else if action_id == self.spec.reset.id {
@@ -529,13 +765,9 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         let merged = if input.action_id == spec.set.id {
             let mut merged = current.clone();
             for (slot, field) in merged.iter_mut().zip(&spec.fields) {
-                if let Some(value) = input.parameters.get(field.name) {
-                    *slot = value.as_f64().ok_or_else(|| {
-                        Error::validation(format!(
-                            "{} field {} must be a number",
-                            spec.noun, field.name
-                        ))
-                    })?;
+                if let Some(value) = input.parameters.get(field.name()) {
+                    check_value(&field.parameter, value)?;
+                    *slot = field.canonical(value);
                 }
             }
             merged
@@ -569,7 +801,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
                 }
                 Ok(ActionPlan::Commit(NewLayer::new(
                     spec.effect.id.clone(),
-                    self.payload(merged.as_slice()),
+                    self.payload(&merged.values),
                 )))
             }
         }
@@ -595,23 +827,23 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         payload: &Value,
     ) -> Result<String, Error> {
         let values = self.read(effect_id, format, payload)?;
-        if values.all_default() {
+        if values.is_default() {
             return Ok("Neutral".into());
         }
         Ok(self
             .spec
             .fields
             .iter()
-            .zip(values.as_slice())
-            .filter(|(field, value)| **value != field.default)
-            .map(|(field, value)| field.label(*value))
+            .zip(&values.values)
+            .filter(|(field, value)| *value != field.default_value())
+            .map(|(field, value)| field.label(value))
             .collect::<Vec<_>>()
             .join(", "))
     }
 
     /// The history label a request the action's title cannot describe deserves: the one field a
-    /// slider moved, the group a reset cleared, a count of the fields a larger patch set, or the
-    /// module's own reset.
+    /// control moved, the group a reset cleared, the group a patch of exactly its fields set, a
+    /// count of the fields a larger patch set, or the module's own reset.
     fn label(&self, input: &ActionInput) -> Option<String> {
         let spec = &self.spec;
         if input.action_id == spec.reset.id {
@@ -620,12 +852,14 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         if input.action_id != spec.set.id {
             return None;
         }
-        let sent: Vec<(&String, f64)> = input
+        let sent: Vec<(&String, Value)> = input
             .parameters
             .iter()
             .map(|(name, value)| {
-                let default = spec.field(name).map_or(0.0, |field| field.default);
-                (name, value.as_f64().unwrap_or(default))
+                let value = spec
+                    .field(name)
+                    .map_or_else(|| value.clone(), |field| field.canonical(value));
+                (name, value)
             })
             .collect();
         if let Some(group) = self.reset_group(&sent) {
@@ -636,7 +870,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         }
         match sent.as_slice() {
             [(name, value)] => Some(match spec.field(name) {
-                Some(field) => field.label(*value),
+                Some(field) => field.label(value),
                 None => format!("{} {name}", spec.title),
             }),
             // An empty patch changes nothing and commits no entry; the host falls back to the
@@ -646,8 +880,8 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         }
     }
 
-    /// Every field's value, defaults filled, named exactly as the patch's parameters are, so a
-    /// client seeds its sliders from the displayed entry.
+    /// Every field's canonical value, defaults filled, named exactly as the patch's parameters
+    /// are, so a client seeds its controls from the displayed entry.
     fn values(
         &self,
         effect_id: &str,
@@ -659,8 +893,8 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
             .spec
             .fields
             .iter()
-            .zip(values.as_slice())
-            .map(|(field, value)| (field.name.to_owned(), number(*value)))
+            .zip(values.values)
+            .map(|(field, value)| (field.name().to_owned(), value))
             .collect())
     }
 
@@ -688,5 +922,399 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
     ) -> Result<Processing, Error> {
         let values = self.read(effect_id, format, payload)?;
         self.module.compile(&values, stage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::{ColorOperation, CurveChannel, EffectStage, FixedStage};
+    use crate::{EFFECT_FORMAT, Layer, ModuleRegistry};
+    use serde_json::json;
+
+    const EFFECT: &str = "luxforge.test-patch.adjust";
+    const SET: &str = "set-test-patch";
+    const RESET: &str = "reset-test-patch";
+    const STAGE: Stage = Stage {
+        width: 4,
+        height: 4,
+    };
+
+    /// A field of every kind: a number whose control has a RAW variant, a number declared with an
+    /// integer default, and a boolean, an enum, a colour and a curve in one group whose curve
+    /// control draws the curve field.
+    #[derive(Debug, Default)]
+    struct Test;
+
+    impl FieldPatch for Test {
+        fn spec() -> Spec {
+            Spec {
+                id: "luxforge.test-patch",
+                title: "Test patch",
+                hint: "Every field kind",
+                noun: "test",
+                effect: EffectDescriptor {
+                    id: EFFECT.into(),
+                    format: EFFECT_FORMAT,
+                    stage: EffectStage::Color,
+                    order: 0,
+                    maskable: true,
+                    artifacts: false,
+                    single: true,
+                    sources: Vec::new(),
+                },
+                set: ActionText {
+                    id: SET,
+                    title: "Set test patch",
+                    notes: "",
+                },
+                reset: ActionText {
+                    id: RESET,
+                    title: "Reset test patch",
+                    notes: "",
+                },
+                fields: vec![
+                    Field::slider("level", "Level", "").variant(ControlVariant::control(
+                        SourceTag::Raw,
+                        "luxforge.other",
+                        Control::number("set-other", "level", "Level"),
+                    )),
+                    Field::new(
+                        ParameterDescriptor::number("midpoint", 0.0, 100.0).default(50),
+                        "Midpoint",
+                    ),
+                    Field::new(ParameterDescriptor::boolean("on").default(false), "Enabled"),
+                    Field::new(
+                        ParameterDescriptor::enumeration("mode", ["one", "two"]).default("one"),
+                        "Mode",
+                    ),
+                    Field::new(
+                        ParameterDescriptor::color("tint").default(json!([0, 0, 0])),
+                        "Tint",
+                    ),
+                    Field::new(
+                        ParameterDescriptor::curve("curve", 2, 4).default(json!([[0, 0], [1, 1]])),
+                        "Curve",
+                    ),
+                ],
+                groups: vec![
+                    Group {
+                        label: "Level",
+                        fields: vec!["level", "midpoint"],
+                        collapsed: false,
+                        extra: Vec::new(),
+                        reset_variants: vec![ControlVariant::reset(
+                            SourceTag::Raw,
+                            "luxforge.other",
+                            ResetAction {
+                                action: "reset-other".into(),
+                                preset: Map::new(),
+                            },
+                        )],
+                    },
+                    Group {
+                        label: "Look",
+                        fields: vec!["on", "mode", "tint", "curve"],
+                        collapsed: false,
+                        extra: vec![Control::curve(
+                            SET,
+                            vec![CurveChannel {
+                                parameter: "curve".into(),
+                                label: "Curve".into(),
+                            }],
+                            "Curve",
+                            "sample-curve",
+                        )],
+                        reset_variants: Vec::new(),
+                    },
+                ],
+                queries: Vec::new(),
+                canvas: None,
+                collapsed: false,
+                layout: ModuleLayout::Stacked,
+                developer: false,
+            }
+        }
+
+        fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+            Ok(Processing::Color(ColorOperation::neutral()))
+        }
+    }
+
+    fn module() -> FieldPatchModule<Test> {
+        FieldPatchModule::new()
+    }
+
+    fn set(parameters: Value) -> ActionInput {
+        ActionInput {
+            action_id: SET.into(),
+            parameters: parameters.as_object().cloned().unwrap(),
+        }
+    }
+
+    fn plan(input: &ActionInput, layers: &[Layer], kind: SourceTag) -> ActionPlan {
+        let registry = ModuleRegistry::new();
+        let stage = FixedStage::new(STAGE).of_kind(kind);
+        module()
+            .plan(input, &stage.context(layers, &registry))
+            .unwrap()
+    }
+
+    fn layer(payload: Value) -> Layer {
+        Layer::new(EFFECT, payload)
+    }
+
+    #[test]
+    fn the_descriptor_draws_each_kind_by_its_own_control_and_folds_variants_onto_the_number() {
+        let module = module();
+        let descriptor = module.descriptor();
+        let [level, look] = descriptor.controls.as_slice() else {
+            panic!("two groups: {:?}", descriptor.controls);
+        };
+        let Control::Group {
+            controls,
+            reset: Some(reset),
+            variants,
+            ..
+        } = level
+        else {
+            panic!("a resettable group");
+        };
+        assert_eq!(variants.len(), 1, "the group's reset variant");
+        assert_eq!(controls[0].variants().len(), 1, "the number's variant");
+        assert_eq!(reset.action, SET);
+        // The integer default 50 of a number field is declared, and reset to, as the number 50.
+        assert_eq!(
+            Value::Object(reset.preset.clone()),
+            json!({"level": 0.0, "midpoint": 50.0})
+        );
+        assert!(reset.preset["midpoint"].is_f64());
+        let Control::Group {
+            controls,
+            reset: Some(reset),
+            ..
+        } = look
+        else {
+            panic!("a resettable group");
+        };
+        let kinds: Vec<&str> = controls.iter().map(Control::kind_name).collect();
+        assert_eq!(kinds, ["toggle", "choice", "color", "curve"]);
+        assert_eq!(
+            Value::Object(reset.preset.clone()),
+            json!({"on": false, "mode": "one", "tint": [0, 0, 0], "curve": [[0.0, 0.0], [1.0, 1.0]]})
+        );
+    }
+
+    /// Every stored key is checked by the one generic parameter check, and every comparison is by
+    /// canonical value: an integer spelling of a number or of a curve's coordinates is the same
+    /// state, and a field set back to its default leaves the stored form.
+    #[test]
+    fn a_field_of_every_kind_reads_merges_and_drops_its_default_by_value() {
+        let module = module();
+        for (payload, refusal) in [
+            (
+                json!({"mode": "three"}),
+                "parameter mode must be one of one, two",
+            ),
+            (
+                json!({"tint": [256, 0, 0]}),
+                "parameter tint must be three sRGB channels 0..=255",
+            ),
+            (json!({"on": 1}), "parameter on must be a boolean"),
+            (
+                json!({"curve": [[0.5, 0.5]]}),
+                "parameter curve has an invalid curve point count",
+            ),
+            (
+                json!({"level": 101}),
+                "parameter level must be a number within -100..=100",
+            ),
+            (json!({"other": 1}), "unknown test field other"),
+        ] {
+            let error = module
+                .validate_payload(EFFECT, EFFECT_FORMAT, &payload)
+                .unwrap_err();
+            assert_eq!(error.detail, refusal, "{payload}");
+        }
+
+        let jpeg = SourceTag::Jpeg;
+        for neutral in [
+            json!({"curve": [[0, 0], [1, 1]]}),
+            json!({"midpoint": 50.0, "on": false, "tint": [0, 0, 0]}),
+        ] {
+            assert_eq!(
+                plan(&set(neutral.clone()), &[], jpeg),
+                ActionPlan::NoOp,
+                "{neutral}"
+            );
+        }
+        let ActionPlan::Commit(new) = plan(&set(json!({"on": true, "mode": "two"})), &[], jpeg)
+        else {
+            panic!("a first set of two fields commits");
+        };
+        assert_eq!(new.payload, json!({"on": true, "mode": "two"}));
+
+        let stored = layer(json!({"on": true, "mode": "two", "level": 1.0}));
+        let stack = std::slice::from_ref(&stored);
+        for same in [
+            json!({"level": 1}),
+            json!({"mode": "two", "curve": [[0.0, 0.0], [1, 1]]}),
+            json!({}),
+        ] {
+            assert_eq!(
+                plan(&set(same.clone()), stack, jpeg),
+                ActionPlan::NoOp,
+                "{same}"
+            );
+        }
+        let ActionPlan::Update(update) = plan(
+            &set(json!({"on": false, "curve": [[0, 0], [0.5, 1], [1, 1]]})),
+            stack,
+            jpeg,
+        ) else {
+            panic!("an update in place");
+        };
+        assert_eq!(
+            update.payload,
+            json!({"level": 1.0, "mode": "two", "curve": [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]]})
+        );
+        assert_eq!(
+            Value::Object(ToolModule::values(&module, EFFECT, EFFECT_FORMAT, &json!({})).unwrap()),
+            json!({"level": 0.0, "midpoint": 50.0, "on": false, "mode": "one", "tint": [0, 0, 0], "curve": [[0.0, 0.0], [1.0, 1.0]]})
+        );
+    }
+
+    #[test]
+    fn labels_and_descriptions_name_a_field_of_every_kind() {
+        let module = module();
+        for (parameters, expected) in [
+            (json!({"level": 20}), "Level +20"),
+            (json!({"midpoint": 60}), "Midpoint 60"),
+            (json!({"on": true}), "Enabled on"),
+            (json!({"on": false}), "Enabled off"),
+            (json!({"mode": "two"}), "Mode Two"),
+            (json!({"tint": [1, 2, 3]}), "Tint 1,2,3"),
+            (
+                json!({"curve": [[0, 0], [0.5, 0.7], [1, 1]]}),
+                "Curve 3 points",
+            ),
+            // A patch of exactly a group's fields at their defaults is that group's reset,
+            // however each default is spelled, and one of exactly its fields is that group.
+            (
+                json!({"on": false, "mode": "one", "tint": [0, 0, 0], "curve": [[0, 0], [1, 1]]}),
+                "Reset Look",
+            ),
+            (
+                json!({"on": true, "mode": "two", "tint": [9, 9, 9], "curve": [[0, 1], [1, 0]]}),
+                "Look",
+            ),
+            (json!({"level": 0, "midpoint": 50}), "Reset Level"),
+            (json!({"on": true, "mode": "two"}), "Test patch (2 fields)"),
+        ] {
+            assert_eq!(
+                module.label(&set(parameters.clone())).as_deref(),
+                Some(expected),
+                "{parameters}"
+            );
+        }
+        let described = module
+            .describe_layer(
+                EFFECT,
+                EFFECT_FORMAT,
+                &json!({"curve": [[0, 1], [1, 0]], "on": true, "mode": "two", "midpoint": 50}),
+            )
+            .unwrap();
+        assert_eq!(described, "Enabled on, Mode Two, Curve 2 points");
+        assert_eq!(
+            module
+                .describe_layer(EFFECT, EFFECT_FORMAT, &json!({"midpoint": 50, "on": false}))
+                .unwrap(),
+            "Neutral"
+        );
+    }
+
+    /// On a photo whose controls have variants, the module reset writes the default of every field
+    /// that is not superseded, whatever its kind, and then the group reset's variant.
+    #[test]
+    fn the_variant_reset_writes_every_unsuperseded_default_of_any_kind() {
+        let reset = ActionInput {
+            action_id: RESET.into(),
+            parameters: Map::new(),
+        };
+        let stored = layer(json!({"on": true}));
+        let stack = std::slice::from_ref(&stored);
+        let ActionPlan::Compose(steps) = plan(&reset, stack, SourceTag::Raw) else {
+            panic!("a composite on a RAW photo");
+        };
+        assert_eq!(
+            steps,
+            [
+                set(
+                    json!({"midpoint": 50.0, "on": false, "mode": "one", "tint": [0, 0, 0], "curve": [[0.0, 0.0], [1.0, 1.0]]})
+                ),
+                ActionInput {
+                    action_id: "reset-other".into(),
+                    parameters: Map::new(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan(&reset, stack, SourceTag::Jpeg),
+            ActionPlan::Update(_)
+        ));
+    }
+
+    /// A spec is refused when it is built, naming the field, when a field is outside the
+    /// vocabulary, lacks a valid default, or declares what its control cannot draw or carry.
+    #[test]
+    fn a_spec_is_refused_where_a_field_declares_what_its_control_cannot_carry() {
+        type Change = fn(&mut Vec<Field>);
+        let refused = |change: Change| {
+            let mut spec = Test::spec();
+            change(&mut spec.fields);
+            spec.build().err().expect("the spec is refused").detail
+        };
+        let cases: [(Change, &str); 7] = [
+            (
+                |fields| {
+                    fields[2].variants.push(ControlVariant::control(
+                        SourceTag::Raw,
+                        "luxforge.other",
+                        Control::toggle("set-other", "on", "On"),
+                    ))
+                },
+                "field on: its toggle control cannot carry variants",
+            ),
+            (
+                |fields| fields[4].rail = Some(RailDecoration::Hue),
+                "field tint: its color control cannot carry a rail",
+            ),
+            (
+                |fields| fields[5].control = FieldControl::Number(NumberStyle::Slider),
+                "field curve: a number control cannot draw its curve parameter",
+            ),
+            (
+                |fields| fields[3].control = FieldControl::Toggle,
+                "field mode: a toggle control cannot draw its enum parameter",
+            ),
+            (
+                |fields| fields.push(Field::new(ParameterDescriptor::string("name", 8), "Name")),
+                "field name: a field patch cannot hold its string parameter",
+            ),
+            (
+                |fields| fields[1].parameter.default = None,
+                "field midpoint declares no default",
+            ),
+            (
+                |fields| fields[3].parameter.default = Some(json!("three")),
+                "field mode's default is invalid: parameter mode must be one of one, two",
+            ),
+        ];
+        for (change, expected) in cases {
+            assert_eq!(
+                refused(change),
+                format!("field-patch module luxforge.test-patch: {expected}")
+            );
+        }
     }
 }

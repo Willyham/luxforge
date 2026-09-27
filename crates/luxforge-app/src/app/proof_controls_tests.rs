@@ -594,7 +594,9 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
         proof.post_preset(&preset);
     }
     // The proof's controls are one declared group, which the panel draws without a header: its
-    // reset is reached from the band, whose reset is the same declared action.
+    // reset is reached from the band, whose reset is the module's. The group declares the reset
+    // every field-patch group does, the patch of its fields to their defaults, which here is every
+    // field and so the same state the module reset reaches.
     let section = &proof.editor.workspace.tools.developer[0];
     assert!(
         !section
@@ -613,8 +615,22 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
     let reset = section.reset.clone().expect("the band's reset");
     assert_eq!(reset.action, "reset-controls");
     assert_eq!(
-        reset.action, declared.action,
-        "the band resets what the group declares"
+        Some(&reset.action),
+        proof.descriptor().reset.as_ref().map(|reset| &reset.action),
+        "the band resets what the module declares"
+    );
+    assert_eq!(declared.action, ACTION);
+    let defaults: Map<String, Value> = proof
+        .descriptor()
+        .action(ACTION)
+        .unwrap()
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.name.clone(), parameter.default.clone().unwrap()))
+        .collect();
+    assert_eq!(
+        declared.preset, defaults,
+        "the group resets every field to its default"
     );
     let _ = proof
         .editor

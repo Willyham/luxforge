@@ -48,7 +48,7 @@ pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
     check_settings,
 };
-pub(crate) use descriptor::{not_applicable, title_case};
+pub(crate) use descriptor::{not_applicable, summary_value, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
 pub use pixel::{PIXEL_EFFECT, PixelModule};
 pub use presence::{PRESENCE_EFFECT, PresenceModule};

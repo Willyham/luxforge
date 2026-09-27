@@ -62,12 +62,13 @@ fn vignette_field(
     zero: Option<f64>,
     notes: &str,
 ) -> Field {
-    Field {
-        history: format!("{GROUP_LABEL} {}", label.to_ascii_lowercase()),
-        min,
-        default,
-        zero,
-        ..Field::slider(name, label, notes)
+    let field = Field::slider(name, label, notes)
+        .history(format!("{GROUP_LABEL} {}", label.to_ascii_lowercase()))
+        .range(min, 100.0)
+        .default(default);
+    match zero {
+        Some(zero) => field.zero(zero),
+        None => field,
     }
 }
 
@@ -162,6 +163,7 @@ impl FieldPatch for Vignette {
             canvas: None,
             collapsed: true,
             layout: crate::ModuleLayout::Stacked,
+            developer: false,
         }
     }
 
@@ -169,7 +171,7 @@ impl FieldPatch for Vignette {
     /// fields hold: the frozen mask geometry never runs when the amount equation is itself the
     /// identity.
     fn is_neutral(&self, values: &Values<'_>) -> bool {
-        values.get(AMOUNT) == 0.0
+        values.number(AMOUNT) == 0.0
     }
 
     fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
@@ -179,10 +181,10 @@ impl FieldPatch for Vignette {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
         let unit: Arc<dyn PointwiseColor> = Arc::new(unit::Vignette::new(
-            values.get(AMOUNT),
-            values.get(MIDPOINT),
-            values.get(ROUNDNESS),
-            values.get(FEATHER),
+            values.number(AMOUNT),
+            values.number(MIDPOINT),
+            values.number(ROUNDNESS),
+            values.number(FEATHER),
             stage,
         ));
         Ok(Processing::Color(ColorOperation::new(vec![unit])))
