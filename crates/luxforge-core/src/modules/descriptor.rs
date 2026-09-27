@@ -830,6 +830,27 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "is_default")]
         background: CurveBackground,
     },
+    /// A band on one axis: two thumbs for its `low` and `high` edges and, when declared, a shoulder
+    /// grip outside each for its `low_feather` and `high_feather` widths. All are `number`
+    /// parameters of `action`; `low` and `high` declare the same range, which is the axis the rail
+    /// spans, and each feather is a width on that axis. Every thumb or grip edits its own parameter
+    /// exactly as a slider edits its one: it drafts while dragged and commits once on release, so
+    /// the band is four ordinary fields and never a request of its own. A client draws the four
+    /// parameters' own number fields under it, because a typed value is exact.
+    Range {
+        action: String,
+        low: String,
+        high: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        low_feather: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        high_feather: Option<String>,
+        label: String,
+        /// The rail under the band, as a number control's `rail` decorates its rail: a luminance
+        /// band's is black to white.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<RailDecoration>,
+    },
     Action {
         action: String,
         label: String,
@@ -895,10 +916,49 @@ impl Control {
         self
     }
 
-    /// Only meaningful on [`Self::Number`]; a no-op on any other variant.
+    /// Only meaningful on [`Self::Number`] and [`Self::Range`]; a no-op on any other variant.
     pub fn rail(mut self, rail: RailDecoration) -> Self {
-        if let Self::Number { rail: slot, .. } = &mut self {
-            *slot = Some(rail);
+        match &mut self {
+            Self::Number { rail: slot, .. } | Self::Range { rail: slot, .. } => *slot = Some(rail),
+            _ => {}
+        }
+        self
+    }
+
+    /// A `range` control over the band edges `low` and `high` of `action`, without shoulders.
+    /// Chain [`Self::feathers`] for the shoulder grips and [`Self::rail`] for the rail.
+    pub fn range(
+        action: impl Into<String>,
+        low: impl Into<String>,
+        high: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self::Range {
+            action: action.into(),
+            low: low.into(),
+            high: high.into(),
+            low_feather: None,
+            high_feather: None,
+            label: label.into(),
+            rail: None,
+        }
+    }
+
+    /// Only meaningful on [`Self::Range`]: its two shoulder parameters. A no-op on any other
+    /// variant.
+    pub fn feathers(
+        mut self,
+        low_feather: impl Into<String>,
+        high_feather: impl Into<String>,
+    ) -> Self {
+        if let Self::Range {
+            low_feather: low,
+            high_feather: high,
+            ..
+        } = &mut self
+        {
+            *low = Some(low_feather.into());
+            *high = Some(high_feather.into());
         }
         self
     }
@@ -1090,6 +1150,7 @@ impl Control {
             Self::Choice { .. } => "choice",
             Self::Color { .. } => "color",
             Self::Curve { .. } => "curve",
+            Self::Range { .. } => "range",
             Self::Action { .. } => "action",
             Self::Picker { .. } => "picker",
             Self::Task { .. } => "task",
@@ -1917,6 +1978,56 @@ impl ModuleDescriptor {
                     )));
                 }
             }
+            Control::Range {
+                action,
+                low,
+                high,
+                low_feather,
+                high_feather,
+                label,
+                rail,
+            } => {
+                if label.trim().is_empty() {
+                    return Err(Error::validation(format!(
+                        "range control of action {action} has no label"
+                    )));
+                }
+                let declared = self.declared_action(action)?;
+                let names: Vec<&String> = [Some(low), Some(high)]
+                    .into_iter()
+                    .chain([low_feather.as_ref(), high_feather.as_ref()])
+                    .flatten()
+                    .collect();
+                for (at, name) in names.iter().enumerate() {
+                    let parameter = self.declared_parameter(declared, name)?;
+                    if !matches!(parameter.kind, ParameterKind::Number { .. }) {
+                        return Err(Error::validation(format!(
+                            "range control for {name} of action {action} is not a number"
+                        )));
+                    }
+                    if names[..at].contains(name) {
+                        return Err(Error::validation(format!(
+                            "range control of action {action} binds {name} twice"
+                        )));
+                    }
+                }
+                // The two edges are two positions on the one axis the rail spans, so they declare
+                // the same range; a shoulder is a width on that axis and declares its own.
+                let edge = |name: &str| declared.parameter(name).map(|p| &p.kind);
+                if edge(low) != edge(high) {
+                    return Err(Error::validation(format!(
+                        "range control of action {action} binds {low} and {high}, which declare \
+                         different ranges"
+                    )));
+                }
+                if let Some(RailDecoration::Gradient { stops }) = rail
+                    && !(2..=8).contains(&stops.len())
+                {
+                    return Err(Error::validation(format!(
+                        "range control of action {action} needs 2..=8 gradient stops"
+                    )));
+                }
+            }
             Control::Action {
                 action,
                 preset,
@@ -2049,7 +2160,10 @@ fn check_raw_control_hints(control: &Value) -> Result<(), Error> {
         }
     }
     if control.get("rail").is_some()
-        && control.get("kind").and_then(Value::as_str) != Some("number")
+        && !matches!(
+            control.get("kind").and_then(Value::as_str),
+            Some("number" | "range")
+        )
     {
         let kind = control
             .get("kind")
@@ -5307,6 +5421,135 @@ mod tests {
             let error = d.validate().expect_err(case);
             assert!(error.detail.contains(fragment), "{case}: {error}");
         }
+    }
+
+    /// A module whose one action declares a band: two edges on one axis, two shoulder widths, an
+    /// integer and a second action, so each refusal below has something of the wrong shape to bind.
+    fn range_descriptor(control: Control) -> ModuleDescriptor {
+        let level = |name: &str| number(name, 0.0, 100.0);
+        let mut descriptor = descriptor();
+        descriptor.actions = vec![
+            ActionDescriptor {
+                id: "set-band".into(),
+                title: "Set band".into(),
+                notes: "test".into(),
+                summary: None,
+                patch: true,
+                parameters: vec![
+                    level("low"),
+                    number("low-feather", 0.0, 50.0),
+                    level("high"),
+                    number("high-feather", 0.0, 50.0),
+                    number("wide", 0.0, 200.0),
+                    integer("count"),
+                ],
+            },
+            action(),
+        ];
+        descriptor.controls = vec![control];
+        descriptor.reset = None;
+        descriptor
+    }
+
+    #[test]
+    fn a_range_control_binds_number_parameters_of_one_action() {
+        let full = Control::range("set-band", "low", "high", "Range")
+            .feathers("low-feather", "high-feather")
+            .rail(RailDecoration::Gradient {
+                stops: vec![[0, 0, 0], [255, 255, 255]],
+            });
+        let descriptor = range_descriptor(full.clone());
+        descriptor.validate().expect("four number parameters");
+        // The shape a client reads, and nothing it did not declare.
+        let serialized = serde_json::to_value(&full).unwrap();
+        assert_eq!(
+            serialized,
+            json!({"kind":"range","action":"set-band","low":"low","high":"high",
+                   "low_feather":"low-feather","high_feather":"high-feather","label":"Range",
+                   "rail":{"gradient":{"stops":[[0,0,0],[255,255,255]]}}})
+        );
+        assert_eq!(
+            ModuleDescriptor::parse(&serde_json::to_value(&descriptor).unwrap()).unwrap(),
+            descriptor
+        );
+        // The shoulders are optional: a band of two edges is a range too, and serializes without
+        // them.
+        let edges = Control::range("set-band", "low", "high", "Range");
+        range_descriptor(edges.clone())
+            .validate()
+            .expect("two edges and no shoulders");
+        assert_eq!(
+            serde_json::to_value(&edges).unwrap(),
+            json!({"kind":"range","action":"set-band","low":"low","high":"high","label":"Range"})
+        );
+        assert_eq!(edges.kind_name(), "range");
+
+        for (case, control, detail) in [
+            (
+                "wrong action",
+                Control::range("set-thing", "low", "high", "Range"),
+                "action set-thing has no parameter low",
+            ),
+            (
+                "undeclared action",
+                Control::range("set-missing", "low", "high", "Range"),
+                "module test.module references undeclared action set-missing",
+            ),
+            (
+                "missing parameter",
+                Control::range("set-band", "low", "high", "Range").feathers("low-feather", "gone"),
+                "action set-band has no parameter gone",
+            ),
+            (
+                "non-number parameter",
+                Control::range("set-band", "low", "count", "Range"),
+                "range control for count of action set-band is not a number",
+            ),
+            (
+                "one parameter twice",
+                Control::range("set-band", "low", "high", "Range")
+                    .feathers("low-feather", "low-feather"),
+                "range control of action set-band binds low-feather twice",
+            ),
+            (
+                "two axes",
+                Control::range("set-band", "low", "wide", "Range"),
+                "range control of action set-band binds low and wide, which declare different \
+                 ranges",
+            ),
+            (
+                "no label",
+                Control::range("set-band", "low", "high", " "),
+                "range control of action set-band has no label",
+            ),
+            (
+                "one stop",
+                Control::range("set-band", "low", "high", "Range").rail(RailDecoration::Gradient {
+                    stops: vec![[0, 0, 0]],
+                }),
+                "range control of action set-band needs 2..=8 gradient stops",
+            ),
+        ] {
+            let error = range_descriptor(control).validate().expect_err(case);
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert_eq!(error.detail, detail, "{case}");
+        }
+
+        // A rail is a hint a range may carry, as a number may, and the raw guard lets it through.
+        let parsed = ModuleDescriptor::parse(
+            &serde_json::to_value(range_descriptor(
+                Control::range("set-band", "low", "high", "Range").rail(RailDecoration::Hue),
+            ))
+            .unwrap(),
+        )
+        .expect("a range with a rail parses");
+        assert!(matches!(
+            &parsed.controls[0],
+            Control::Range {
+                rail: Some(RailDecoration::Hue),
+                ..
+            }
+        ));
     }
 
     #[test]

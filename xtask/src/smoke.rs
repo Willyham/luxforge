@@ -584,7 +584,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "gallery",
-        about: "All 101 widget gallery states across twelve pages",
+        about: "All 104 widget gallery states across thirteen pages",
         launches: &[LaunchSpec {
             plan: gallery::plan,
             developer: true,

@@ -10,7 +10,7 @@ use luxforge_ui::{MenuChoiceModel, caption, gallery_named_states, menu_choice, t
 
 /// Small pages keep every example visible in a native 1440×1000 background capture. The two
 /// large canvases get their own pages, while related compact states stay together.
-const PAGES: [(&str, usize, usize); 12] = [
+const PAGES: [(&str, usize, usize); 13] = [
     ("Sliders and sections", 0, 9),
     ("Actions, history and performance", 9, 27),
     ("Notices, canvas chrome and menus", 27, 36),
@@ -23,6 +23,7 @@ const PAGES: [(&str, usize, usize); 12] = [
     ("Module panels", 78, 86),
     ("Mask rows and controls", 86, 93),
     ("Mask menus, fields and swatches", 93, 101),
+    ("Range", 101, 104),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,7 +154,7 @@ mod tests {
             let _ = gallery(index);
         }
         assert_eq!(next, gallery_named_states().len());
-        assert_eq!(page_count(), 12);
+        assert_eq!(page_count(), 13);
         assert!(page_info(page_count()).is_none());
     }
 }

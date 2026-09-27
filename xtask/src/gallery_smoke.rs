@@ -6,8 +6,8 @@ use crate::{
 use luxforge_evidence::{self as script};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
-pub const PAGES: usize = 12;
-pub const STATES: usize = 101;
+pub const PAGES: usize = 13;
+pub const STATES: usize = 104;
 
 /// The step that shows gallery page `page`.
 fn page_step(page: usize) -> String {

@@ -720,6 +720,7 @@ fn control_action(control: &luxforge_core::Control) -> Option<&str> {
         | Rendered::Choice { action, .. }
         | Rendered::Color { action, .. }
         | Rendered::Curve { action, .. }
+        | Rendered::Range { action, .. }
         | Rendered::Action { action, .. }
         | Rendered::Presets { action } => Some(action),
         // A group, a picker and a module worker task submit no mask command, so none is offered here.

@@ -55,6 +55,23 @@ impl Fields {
         fields
     }
 
+    /// A digest of the host's own fields alone: the `mask.*` commands' texts, which the Masks panel
+    /// draws. A host method carries a dot and a module action never does, so a module slider's
+    /// tick leaves it unchanged and the panel is not built again for it. `O(fields)`, no
+    /// allocation.
+    pub(crate) fn host_digest(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (key, text) in self
+            .0
+            .iter()
+            .filter(|((action, _), _)| action.contains('.'))
+        {
+            (key, text).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     pub(crate) fn get(&self, action: &str, parameter: &str) -> Option<&str> {
         self.0
             .iter()
@@ -127,6 +144,24 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
                 for channel in channels {
                     if let Some(declared) = owner.parameter(action, &channel.parameter) {
                         fields.set(action, &channel.parameter, seed_text(declared));
+                    }
+                }
+            }
+            // A band's edges and shoulders are its own number fields, seeded as any field is.
+            Rendered::Range {
+                action,
+                low,
+                high,
+                low_feather,
+                high_feather,
+                ..
+            } => {
+                for parameter in [Some(low), Some(high), low_feather, high_feather]
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(declared) = owner.parameter(action, parameter) {
+                        fields.set(action, parameter, seed_text(declared));
                     }
                 }
             }
