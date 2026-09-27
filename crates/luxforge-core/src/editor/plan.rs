@@ -1,12 +1,14 @@
 use super::{
     ActionResult, AssetRecord, EditorService, EditorState, MutationResult,
+    entries::Head,
     history::{Change, CommittedAction, Touched, request_input},
     masks::{recipe_for_target, resolve_mask_target, take_mask_target, take_query_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
-    AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, LinearImage, LinearSettings, MaskId,
-    ModuleRegistry, Mutation, Recipe, SkippedSetting, ToolModule, Transform,
+    AssetId, Draft, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId, LinearImage,
+    LinearSettings, MaskId, ModuleRegistry, Mutation, Recipe, SkippedSetting, ToolModule,
+    Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
@@ -18,6 +20,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// One action request resolved, checked and parsed once: what a commit stores and hashes, and what
 /// a commit and a draft plan through [`EditorService::plan_request`].
@@ -403,17 +406,29 @@ impl EditorService {
         asset_id: &AssetId,
         draft: &Draft,
     ) -> Result<(Recipe, EditorState), Error> {
+        let (recipe, head, current) = self.planned_draft(asset_id, draft)?;
+        Ok((recipe, EditorState::of(head, &current)))
+    }
+
+    /// [`Self::draft_recipe`] with the head and the current entry it was planned over, shared from
+    /// the entry cache rather than copied, which is what an evaluation of the draft holds.
+    pub(super) fn planned_draft(
+        &self,
+        asset_id: &AssetId,
+        draft: &Draft,
+    ) -> Result<(Recipe, Head, Arc<HistoryEntry>), Error> {
         if &draft.asset_id != asset_id {
             return Err(Error::validation("draft belongs to another asset"));
         }
-        let state = self.state(asset_id)?;
-        let current = &state.current_entry.snapshot.recipe;
+        let head = self.head(asset_id)?;
+        let entry = self.shared_entry(asset_id, &head.current)?;
+        let current = &entry.snapshot.recipe;
         // Planning evaluates the current stack, so a refusal names what that stack needs.
-        let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, current);
+        let stack = Evaluated::exactly(&head.asset, &entry.id, current);
         let registry = self.registry.clone();
         let prepared = Prepared::new(&registry, &draft.action, Value::Object(draft.request()))?;
         let planned = self
-            .plan_request(&state.asset, current, &prepared)
+            .plan_request(&head.asset, current, &prepared)
             .map(|request| request.planned);
         let recipe = match self.needing(stack, planned)? {
             Some(planned) => planned.recipe,
@@ -425,7 +440,7 @@ impl EditorService {
         if matches!(prepared.action, ActionRef::Host(_)) {
             recipe.validate_mask_table()?;
         }
-        Ok((recipe, state))
+        Ok((recipe, head, entry))
     }
 
     /// The stack one plan produces from `recipe`, bound, or `None` when it changes nothing.
@@ -2559,11 +2574,12 @@ mod tests {
 
     /// The frame a preview job renders, on this thread.
     fn preview_frame(service: &EditorService, job: &crate::PreviewJob) -> Raster {
-        job.source
+        job.evaluation
+            .source()
             .render(
                 &service.registry,
-                job.entry.snapshot.id.clone(),
-                &job.recipe,
+                job.evaluation.entry().snapshot.id.clone(),
+                job.evaluation.recipe(),
             )
             .unwrap()
     }
@@ -2608,7 +2624,7 @@ mod tests {
             )
             .unwrap();
         let committed = service.state(&asset).unwrap().current_entry.snapshot.recipe;
-        same_stack(&drafted.recipe, &committed);
+        same_stack(drafted.evaluation.recipe(), &committed);
         let committed_frame = service.render_current(&asset).unwrap();
         assert_eq!(
             (drafted_frame.width, drafted_frame.height),
@@ -2780,7 +2796,7 @@ mod tests {
             .preview_job(&asset, None, None, Some(&draft), None)
             .unwrap();
         assert!(
-            !drafted.source.approximate_white_balance(),
+            !drafted.evaluation.source().approximate_white_balance(),
             "the planes hold the white balance"
         );
         let drafted_frame = preview_frame(&service, &drafted);
@@ -2793,7 +2809,7 @@ mod tests {
             )
             .unwrap();
         let committed = current(&service).snapshot.recipe;
-        same_stack(&drafted.recipe, &committed);
+        same_stack(drafted.evaluation.recipe(), &committed);
         assert_eq!(
             committed.layers[0], original,
             "the development is unchanged"
@@ -2801,7 +2817,7 @@ mod tests {
         let job = service
             .preview_job(&asset, None, None, None, None)
             .expect("the committed exposure needs no redevelopment");
-        assert!(!job.source.approximate_white_balance());
+        assert!(!job.evaluation.source().approximate_white_balance());
         let committed_frame = service.render_current(&asset).unwrap();
         assert!(drafted_frame.rgba == committed_frame.rgba, "the same bytes");
 
@@ -2951,7 +2967,8 @@ mod tests {
             service
                 .preview_job(&asset, None, None, Some(&temperature), None)
                 .unwrap()
-                .source
+                .evaluation
+                .source()
                 .approximate_white_balance()
         );
         service

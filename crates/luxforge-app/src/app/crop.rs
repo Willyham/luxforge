@@ -271,7 +271,7 @@ impl Editor {
                 // The stack or the selection changed since the stage was asked for, so the input
                 // stage the owner planned is not the one the frame is on, and nothing else will
                 // arrive for it.
-                Ok(job) if !self.crop_stage_current(&job.entry.id) => {
+                Ok(job) if !self.crop_stage_current(&job.evaluation.entry().id) => {
                     self.draft_preview_superseded(None);
                 }
                 Ok(job) => {

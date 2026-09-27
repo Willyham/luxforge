@@ -509,6 +509,25 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "the one-megapixel parallel threshold and the 512 MiB frame limit may be declared \
                  only in crates/luxforge-raw/src/limits.rs; import it from there instead",
     },
+    // One evaluation rule: the drafted preview's mode, the one evaluation that may approximate a
+    // RAW white balance the developed planes do not hold, is decided by the one evaluation builder
+    // (`EditorService::evaluation`) and applied by the RAW settings resolver that defines it.
+    SourceRule {
+        name: "draft-preview-rule",
+        tokens: &["RawSettingsMode::DraftPreview"],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/editor/evaluate.rs",
+            "crates/luxforge-core/src/editor/source.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "only the evaluation builder (editor/evaluate.rs) decides the drafted preview's \
+                 mode, and only the RAW settings resolver (editor/source.rs) applies it; build the \
+                 evaluation through EditorService::evaluation",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -2309,6 +2328,65 @@ mod tests {
             ],
             "may be declared",
         );
+    }
+
+    #[test]
+    fn the_drafted_preview_mode_is_named_only_by_the_evaluation_builder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let editor = tmp.path().join("crates/luxforge-core/src/editor");
+        fs::create_dir_all(&editor).unwrap();
+        const RULE: &[&str] = &["draft-preview-rule"];
+        // The builder, the resolver, test files and test items may name it, and a comment or a
+        // longer identifier is not a name.
+        for (file, text) in [
+            (
+                editor.join("evaluate.rs"),
+                "let rule = RawSettingsMode::DraftPreview;\n",
+            ),
+            (
+                editor.join("source.rs"),
+                "RawSettingsMode::DraftPreview => {}\n",
+            ),
+            (
+                editor.join("plan_tests.rs"),
+                "RawSettingsMode::DraftPreview\n",
+            ),
+            (
+                editor.join("plan.rs"),
+                "#[cfg(test)]\nfn t() {\n    let m = RawSettingsMode::DraftPreview;\n}\n\
+                 /// Never `RawSettingsMode::DraftPreview` here.\n\
+                 let m = RawSettingsMode::DraftPreviews;\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        let clean = read(tmp.path(), RULE).unwrap();
+        // Anywhere else in the core's product code it is refused, after a test item too.
+        for (file, text) in [
+            (
+                editor.join("plan.rs"),
+                "#[cfg(test)]\nfn t() {\n}\nlet m = RawSettingsMode::DraftPreview;\n",
+            ),
+            (
+                editor.join("describe.rs"),
+                "mode: RawSettingsMode::DraftPreview,\n",
+            ),
+        ] {
+            let before = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), RULE, &file.display().to_string());
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                error.contains(&format!("{name}:"))
+                    && error.contains("source rule `draft-preview-rule`"),
+                "{error}"
+            );
+            match before {
+                Some(before) => fs::write(&file, before).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(read(tmp.path(), RULE).unwrap(), clean);
     }
 
     fn minimal_plan(id: &str) -> Value {

@@ -62,6 +62,8 @@ pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_
 pub(crate) use raw::white_balance_variants;
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 #[cfg(test)]
+pub(crate) use registry::stack_compiles;
+#[cfg(test)]
 pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
     STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,

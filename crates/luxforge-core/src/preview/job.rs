@@ -1,14 +1,14 @@
-//! What one preview job renders: the source it reads, the stack, and what it asks for beside the
-//! frame.
+//! What one preview job renders — the evaluation it was planned with — and how it presents it and
+//! what it asks for beside the frame.
 
 use crate::{
-    Component, ComponentId, ComponentMode, Error, HistoryEntry, LinearImage, LinearSettings, Mask,
-    MaskId, ModuleRegistry, ProxyBounds, Recipe, Region, RenderContext, RenderSource, SourceImage,
+    Component, ComponentId, ComponentMode, Error, Evaluation, LinearImage, LinearSettings, Mask,
+    MaskId, ProxyBounds, Region, RenderSource, SourceImage,
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS},
 };
 #[cfg(doc)]
 use crate::{ExactOutcome, analysis::Report, mask::CompiledMask};
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub enum PreviewSource {
@@ -131,29 +131,20 @@ pub enum PreviewIntent {
 
 #[derive(Clone, Debug)]
 pub struct PreviewJob {
-    pub source: PreviewSource,
-    /// The entry this preview shows. Its identity and snapshot correlate the frame with history;
-    /// what is rendered is [`PreviewJob::recipe`], which differs from the entry's own stack while a
-    /// draft is open.
-    pub entry: HistoryEntry,
-    /// The providers the worker evaluates this stack with; shared, never rebuilt per job.
-    pub registry: Arc<ModuleRegistry>,
-    /// The budgets and the estimate store this job's renders share with every other evaluation
-    /// its planner runs; shared, never rebuilt per job.
-    pub context: RenderContext,
-    /// The stack to render: the entry's own recipe, or an open draft's effective recipe, bound
-    /// with the verified bytes of every artifact it lists, so the worker compiles it whatever the
-    /// owner's cache evicts meanwhile.
-    pub recipe: Recipe,
+    /// What this job evaluates, planned once on the catalog owner: the entry it shows, the stack it
+    /// renders — the entry's own recipe or an open draft's effective recipe, bound with the verified
+    /// bytes of every artifact it lists — the source, the shared registry and render context, and
+    /// the stack's one compilation, which the worker renders the exact phase from instead of
+    /// compiling it again. Everything after it on this job is how the frame is presented, which the
+    /// desktop may change after planning.
+    pub evaluation: Evaluation,
     /// `Some(n)` renders only the first `n` layers of that recipe, which is how the desktop shows
     /// the input stage of the layer it is drafting. `None` renders the whole stack.
     pub layer_count: Option<usize>,
-    /// The draft revision this recipe was planned from, for correlating a frame with the settings
-    /// that produced it. `None` when no draft was involved.
-    pub draft_revision: Option<u64>,
-    /// Which evaluated image this frame is, computed exactly as an analysis job's identity is. It
-    /// describes the whole planned stack, so a truncated job's identity is the stack it was planned
-    /// from, not the prefix it renders — which is why a truncated job is never analysed.
+    /// Which evaluated image this frame is: the evaluation's identity, exactly as an analysis
+    /// job's is. It describes the whole planned stack, so a truncated job's identity is the stack
+    /// it was planned from, not the prefix it renders — which is why a truncated job is never
+    /// analysed.
     pub identity: AnalysisIdentity,
     /// Reduce the rendered raster into a [`Report`] and return it with the frame, so the displayed
     /// target needs no second render. Refused together with [`PreviewJob::layer_count`].
@@ -186,6 +177,25 @@ pub struct PreviewJob {
 }
 
 impl PreviewJob {
+    /// A job that renders `evaluation` whole, exactly and at once: no layer prefix, no report, no
+    /// proxy phase, no viewport and no coverage grid, which the caller sets afterwards. Its identity
+    /// is the evaluation's ([`Evaluation::identity`]), which hashes the stack: `O(recipe)`.
+    pub fn new(evaluation: Evaluation) -> Result<Self, Error> {
+        Ok(Self {
+            identity: evaluation.identity()?,
+            evaluation,
+            layer_count: None,
+            analyse: false,
+            proxy: None,
+            viewport: None,
+            intent: PreviewIntent::Immediate,
+            viewport_declined: None,
+            // A coverage grid is asked for by the client that will draw it, through
+            // `PreviewJob::with_mask_overlay`, which validates it against this stack.
+            mask_overlay: None,
+        })
+    }
+
     /// Ask this job's exact phase for one mask's coverage grid, validated against the stack this
     /// job renders.
     ///
@@ -196,7 +206,8 @@ impl PreviewJob {
     /// ([performance rule 5](../../docs/engineering/performance-rules.md#rules)).
     pub fn with_mask_overlay(mut self, request: MaskOverlayRequest) -> Result<Self, Error> {
         let mask = self
-            .recipe
+            .evaluation
+            .recipe()
             .masks
             .iter()
             .find(|mask| mask.id == request.mask)

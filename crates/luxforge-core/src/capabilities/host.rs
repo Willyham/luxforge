@@ -824,7 +824,7 @@ fn profile_origin(
 
 fn asset_exists(service: &EditorService, asset_id: &AssetId) -> Result<(), Error> {
     service
-        .state(asset_id)
+        .current_entry_id(asset_id)
         .map(|_| ())
         .map_err(|_| Error::validation(format!("asset {asset_id} is not in this catalog")))
 }

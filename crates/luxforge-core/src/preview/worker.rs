@@ -48,17 +48,18 @@ fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep 
             "a truncated preview renders a layer prefix, which has no proxy phase".into(),
         );
     }
-    if let Err(error) = job.registry.proxy_eligible(&job.recipe) {
+    let evaluation = &job.evaluation;
+    if let Err(error) = evaluation.registry().proxy_eligible(evaluation.recipe()) {
         return ProxyStep::Declined(error.detail);
     }
     match exact.as_ref().map(|exact| exact.proxy_plan(bounds)) {
         Ok(Some(plan)) => ProxyStep::Planned(ProxyKey {
-            identity: job.source.identity(),
+            identity: evaluation.source().identity(),
             // A cropped stack's proxy holds only the window of the proxy stage its output reads,
             // so its size follows the display bounds and not the crop's tightness.
             plan: exact
                 .as_ref()
-                .map(|exact| exact.proxy_window(&job.registry, &job.recipe, plan))
+                .map(|exact| exact.proxy_window(evaluation.registry(), evaluation.recipe(), plan))
                 .unwrap_or(plan),
         }),
         Ok(None) => ProxyStep::Declined(
@@ -97,37 +98,41 @@ pub(super) fn run(
     };
     // One activity spans both phases. A job abandoned mid-way, its results stale before its exact
     // phase could be handed over, drops the guard, which records it as cancelled.
+    let evaluation = &job.evaluation;
     let activity = board.map(|board| {
         board.begin(ActivitySpec {
             kind: "preview.render",
             label: "Rendering preview",
             detail: None,
-            asset_id: Some(job.entry.asset_id.clone()),
+            asset_id: Some(evaluation.entry().asset_id.clone()),
             job_id: None,
         })
     });
-    let entry_id = job.entry.id.clone();
-    let draft_revision = job.draft_revision;
-    let snapshot_id = job.entry.snapshot.id.clone();
+    let entry_id = evaluation.entry().id.clone();
+    let draft_revision = evaluation.draft_revision();
+    let snapshot_id = evaluation.entry().snapshot.id.clone();
     // Both phases of a job share its source, so both are approximate or neither is. An approximate
     // frame is never reduced, which is the rule on `PreviewJob::analyse`.
-    let approximate_white_balance = job.source.approximate_white_balance();
+    let approximate_white_balance = evaluation.source().approximate_white_balance();
     let analyse = job.analyse && !approximate_white_balance;
     // A truncated job copies the layer prefix only; the whole stack is rendered in place.
+    let whole = evaluation.recipe();
     let prefix = job.layer_count.map(|count| Recipe {
-        format: job.recipe.format,
-        layers: job.recipe.layers.iter().take(count).cloned().collect(),
+        format: whole.format,
+        layers: whole.layers.iter().take(count).cloned().collect(),
         // The mask table belongs to the recipe, not to the prefix: a truncated stack keeps it so a
         // masked layer inside the prefix still finds the mask it names.
-        masks: job.recipe.masks.clone(),
-        strokes: job.recipe.strokes.clone(),
-        artifacts: job.recipe.artifacts.clone(),
+        masks: whole.masks.clone(),
+        strokes: whole.strokes.clone(),
+        artifacts: whole.artifacts.clone(),
     });
-    let recipe = prefix.as_ref().unwrap_or(&job.recipe);
+    let recipe = prefix.as_ref().unwrap_or(whole);
 
-    // The job's one compilation at the exact stage. The proxy plan reads its output stage, the
-    // exact phase renders it and the coverage grid composes its geometry tail, so none of them
-    // compiles the stack again. It is charged to the first phase that hands over a frame.
+    // The job's one compilation at the exact stage: the one its evaluation made on the catalog
+    // owner, which the whole stack renders from, or the layer prefix's own for a truncated job.
+    // The proxy plan reads its output stage, the exact phase renders it and the coverage grid
+    // composes its geometry tail, so none of them compiles the stack again. It is charged to the
+    // first phase that hands over a frame.
     //
     // The coverage grid reads no pixel of the exact frame — the geometry tail of this compilation,
     // and for a mask that reads pixels, point queries into the input of its first bound layer — so
@@ -136,13 +141,16 @@ pub(super) fn run(
     // Either way it is this one function over this one compilation, so the grid is the same bytes
     // whichever phase carries it.
     let compile_started = Instant::now();
-    let exact = render(
-        &job.registry,
-        job.source.input(),
-        recipe,
-        RenderOptions::exact(full_cancel),
-        &job.context,
-    );
+    let exact = match &prefix {
+        Some(prefix) => render(
+            evaluation.registry(),
+            evaluation.source().input(),
+            prefix,
+            RenderOptions::exact(full_cancel),
+            evaluation.context(),
+        ),
+        None => evaluation.exact(full_cancel),
+    };
     let mut compile_ms = Some(milliseconds_since(compile_started));
 
     // Nothing in the proxy phase is fatal. A plan, a build or a render that fails — including a
@@ -164,9 +172,9 @@ pub(super) fn run(
             // job's recipe, so a drafted exposure renders against the cached planes.
             cache.evict_unless(&key);
             let built = match cache.get(&key) {
-                Some(cached) => Ok((cached.with_settings_of(&job.source), false)),
-                None => job
-                    .source
+                Some(cached) => Ok((cached.with_settings_of(evaluation.source()), false)),
+                None => evaluation
+                    .source()
                     .proxy_cancellable(key.plan, proxy_cancel)
                     .map(|source| (source, true)),
             };
@@ -185,12 +193,12 @@ pub(super) fn run(
                         .map_err(Clone::clone)
                         .and_then(|exact| {
                             exact.render_proxy(
-                                &job.registry,
+                                evaluation.registry(),
                                 source.input(),
-                                &job.recipe,
+                                evaluation.recipe(),
                                 key.plan,
                                 proxy_cancel,
-                                &job.context,
+                                evaluation.context(),
                             )
                         })
                         .and_then(|proxy| {
@@ -208,13 +216,13 @@ pub(super) fn run(
                                 (Ok(exact), Some(request)) => {
                                     overlay_delivered = true;
                                     mask_overlay_for(
-                                        &job.registry,
+                                        evaluation.registry(),
                                         exact,
                                         recipe,
                                         request,
                                         None,
                                         proxy_cancel,
-                                        &job.context,
+                                        evaluation.context(),
                                     )
                                 }
                                 _ => MaskOverlayOutcome::default(),
@@ -296,17 +304,18 @@ pub(super) fn run(
     // bound layer instead, one point query per cell.
     let mask_overlay = match (&result, &exact, &job.mask_overlay) {
         (Ok(_), Ok(exact), Some(request)) if !overlay_delivered => mask_overlay_for(
-            &job.registry,
+            evaluation.registry(),
             exact,
             recipe,
             request,
             None,
             full_cancel,
-            &job.context,
+            evaluation.context(),
         ),
         _ => MaskOverlayOutcome::default(),
     };
     let render_ms = compile_ms.unwrap_or(0.0) + milliseconds_since(started);
+    drop(exact);
     // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
@@ -357,7 +366,7 @@ fn run_viewport(
             kind: "preview.render",
             label: "Rendering preview",
             detail: None,
-            asset_id: Some(job.entry.asset_id.clone()),
+            asset_id: Some(job.evaluation.entry().asset_id.clone()),
             job_id: None,
         })
     });
@@ -369,41 +378,40 @@ fn run_viewport(
         });
     }
     let started = Instant::now();
-    let compiled = render(
-        &job.registry,
-        job.source.input(),
-        &job.recipe,
-        RenderOptions::exact(cancel),
-        &job.context,
-    );
+    // The job's one compilation, made by its evaluation on the catalog owner. A region that
+    // declines falls back to the whole-frame path, which renders the same compilation, so neither
+    // compiles the stack.
+    let evaluation = job.evaluation.clone();
+    let snapshot_id = evaluation.entry().snapshot.id.clone();
+    let compiled = evaluation.exact(cancel);
     let region = match compiled.as_ref() {
         Err(error) => Err(error.clone()),
         Ok(exact) if job.intent == PreviewIntent::Interactive => {
-            match exact.plan_proxy_region(&job.registry, &job.recipe, requested) {
+            match exact.plan_proxy_region(evaluation.registry(), evaluation.recipe(), requested) {
                 Ok(plan) => {
                     let key = ProxyKey {
-                        identity: job.source.identity(),
+                        identity: evaluation.source().identity(),
                         plan: plan.proxy,
                     };
                     // A cold pan can replace the one cached proxy window; free its retained
                     // pixels before building the next one so two source windows never accumulate.
                     cache.evict_unless(&key);
                     let source = match cache.get(&key) {
-                        Some(held) => Ok((held.with_settings_of(&job.source), false)),
-                        None => job
-                            .source
+                        Some(held) => Ok((held.with_settings_of(evaluation.source()), false)),
+                        None => evaluation
+                            .source()
                             .proxy_cancellable(plan.proxy, cancel)
                             .map(|built| (built, true)),
                     };
                     match source {
                         Ok((source, fresh)) => {
                             let rendered = exact.render_proxy_region(
-                                &job.registry,
+                                evaluation.registry(),
                                 source.input(),
-                                &job.recipe,
+                                evaluation.recipe(),
                                 plan,
-                                job.entry.snapshot.id.clone(),
-                                &job.context,
+                                snapshot_id.clone(),
+                                evaluation.context(),
                             );
                             if fresh {
                                 cache.insert(key, source);
@@ -416,7 +424,7 @@ fn run_viewport(
                 Err(reason) => Ok(RegionRenderOutcome::Declined(reason)),
             }
         }
-        Ok(exact) => exact.region(job.entry.snapshot.id.clone(), requested),
+        Ok(exact) => exact.region(snapshot_id.clone(), requested),
     };
     // A half-detail window may be ineligible. A full-detail visible window is still preferable
     // to asking for off-screen pixels during motion. If that is ineligible too, the existing
@@ -431,7 +439,7 @@ fn run_viewport(
         compiled
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|exact| exact.region(job.entry.snapshot.id.clone(), requested))
+            .and_then(|exact| exact.region(snapshot_id.clone(), requested))
     } else {
         region
     };
@@ -439,28 +447,28 @@ fn run_viewport(
         Ok(RegionRenderOutcome::Rendered(frame)) => {
             let overlay = match (compiled.as_ref(), job.mask_overlay.as_ref()) {
                 (Ok(exact), Some(request)) => mask_overlay_for(
-                    &job.registry,
+                    evaluation.registry(),
                     exact,
-                    &job.recipe,
+                    evaluation.recipe(),
                     request,
                     Some(frame.full_rect),
                     cancel,
-                    &job.context,
+                    evaluation.context(),
                 ),
                 _ => MaskOverlayOutcome::default(),
             };
             let result = PreviewResult {
                 generation,
-                entry_id: job.entry.id.clone(),
+                entry_id: evaluation.entry().id.clone(),
                 identity: job.identity.clone(),
-                draft_revision: job.draft_revision,
+                draft_revision: evaluation.draft_revision(),
                 intent: job.intent,
                 viewport_declined,
                 outcome: PhaseOutcome::Region(RegionOutcome {
                     frame,
                     mask_overlay: overlay,
                 }),
-                approximate_white_balance: job.source.approximate_white_balance(),
+                approximate_white_balance: evaluation.source().approximate_white_balance(),
                 render_ms: milliseconds_since(started),
                 queue_wait_ms,
             };
@@ -504,9 +512,9 @@ fn run_viewport(
                 }
                 return Some(PreviewResult {
                     generation,
-                    entry_id: job.entry.id,
+                    entry_id: evaluation.entry().id.clone(),
                     identity: job.identity,
-                    draft_revision: job.draft_revision,
+                    draft_revision: evaluation.draft_revision(),
                     intent: job.intent,
                     viewport_declined,
                     outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
@@ -515,7 +523,7 @@ fn run_viewport(
                         mask_overlay: MaskOverlayOutcome::default(),
                         proxy_declined: None,
                     })),
-                    approximate_white_balance: job.source.approximate_white_balance(),
+                    approximate_white_balance: evaluation.source().approximate_white_balance(),
                     render_ms: milliseconds_since(started),
                     queue_wait_ms,
                 });
@@ -550,11 +558,11 @@ fn run_viewport(
         activity.phase("exact");
     }
     let exact_started = Instant::now();
-    let approximate_white_balance = job.source.approximate_white_balance();
+    let approximate_white_balance = evaluation.source().approximate_white_balance();
     let rendered = compiled
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(|exact| exact.frame(job.entry.snapshot.id.clone()));
+        .and_then(|exact| exact.frame(snapshot_id.clone()));
     let (result, report) = match rendered {
         Ok(raster) if job.analyse && !approximate_white_balance => {
             match crate::analysis::reduce_raster_cancellable(&raster, cancel) {
@@ -569,13 +577,13 @@ fn run_viewport(
     // coverage grid too, so a settled pan retains the mask without asking for another render.
     let mask_overlay = match (&result, compiled.as_ref(), job.mask_overlay.as_ref()) {
         (Ok(_), Ok(exact), Some(request)) => mask_overlay_for(
-            &job.registry,
+            evaluation.registry(),
             exact,
-            &job.recipe,
+            evaluation.recipe(),
             request,
             None,
             cancel,
-            &job.context,
+            evaluation.context(),
         ),
         _ => MaskOverlayOutcome::default(),
     };
@@ -584,9 +592,9 @@ fn run_viewport(
     }
     Some(PreviewResult {
         generation,
-        entry_id: job.entry.id,
+        entry_id: evaluation.entry().id.clone(),
         identity: job.identity,
-        draft_revision: job.draft_revision,
+        draft_revision: evaluation.draft_revision(),
         intent: job.intent,
         viewport_declined: None,
         outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {

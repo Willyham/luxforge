@@ -2002,7 +2002,10 @@ mod tests {
         let refreshed = &opened.refresh;
         assert!(refreshed.history.is_none() && refreshed.versions.is_none());
         assert!(refreshed.lineage.is_none() && refreshed.original.is_none());
-        assert_eq!(refreshed.job.entry.id, refreshed.state.current_entry.id);
+        assert_eq!(
+            refreshed.job.evaluation.entry().id,
+            refreshed.state.current_entry.id
+        );
         assert_eq!(refreshed.recipe.entry_id, refreshed.state.current_entry.id);
 
         let navigated = [

@@ -4,7 +4,9 @@
 //! [`RenderContext`] whose budgets and estimate store it reads. What it returns, a [`Render`],
 //! answers everything a caller asks of an evaluated stack from that one compilation: the whole
 //! frame, one pixel, a grid of pixels, the output stage and its geometry. Every export, preview
-//! phase, analysis, sample and draft evaluation enters here, whichever interpretation the source has.
+//! phase, analysis, sample and draft evaluation enters here, whichever interpretation the source has:
+//! the service's [`crate::Evaluation`] compiles its stack once on the catalog owner and renders that
+//! compilation through [`Render::shared`], which refuses what [`render`] refuses of the source.
 //! The source's interpretation picks the pixel domain ([`super::Byte`] or [`linear::Linear`]); the
 //! one pipeline ([`super::pipeline`]) evaluates either, and each domain's driver
 //! ([`super::rasterize`] or [`linear::rasterize`]) writes its frame.
@@ -139,7 +141,9 @@ impl RenderOptions {
 /// that one compilation.
 pub struct Render<'a> {
     source: RenderSource<'a>,
-    compiled: Compiled,
+    /// Owned when this render compiled it, borrowed when it renders a compilation an
+    /// [`crate::Evaluation`] already holds.
+    compiled: Cow<'a, Compiled>,
     options: RenderOptions,
     context: &'a RenderContext,
 }
@@ -238,7 +242,8 @@ impl RegionSource {
 /// buffer of the wrong length, RAW settings out of range, a stack the host cannot compile, or a
 /// linear stack with more than one resample — before any pixel is read, and allocates nothing but
 /// the compiled operation lists. The catalog owner may therefore call it to learn a stack's output
-/// stage, and a preview job compiles its stack once here before either of its phases.
+/// stage. A truncated preview job compiles its layer prefix here; a whole stack is compiled once by
+/// its [`crate::Evaluation`], before either phase of its job.
 pub fn render<'a>(
     registry: &ModuleRegistry,
     source: impl Into<RenderSource<'a>>,
@@ -267,6 +272,30 @@ impl<'a> Render<'a> {
         options: RenderOptions,
         context: &'a RenderContext,
     ) -> Result<Self, Error> {
+        Self::of(source, Cow::Owned(compiled), options, context)
+    }
+
+    /// A render of a stack an [`crate::Evaluation`] compiled once against `source`'s dimensions at
+    /// the exact phase, borrowed rather than compiled again. It refuses what [`render`] refuses of
+    /// the source, a byte buffer of the wrong length, before anything else.
+    pub(crate) fn shared(
+        source: RenderSource<'a>,
+        compiled: &'a Compiled,
+        options: RenderOptions,
+        context: &'a RenderContext,
+    ) -> Result<Self, Error> {
+        if let RenderSource::Byte(image) = source {
+            check_source(image)?;
+        }
+        Self::of(source, Cow::Borrowed(compiled), options, context)
+    }
+
+    fn of(
+        source: RenderSource<'a>,
+        compiled: Cow<'a, Compiled>,
+        options: RenderOptions,
+        context: &'a RenderContext,
+    ) -> Result<Self, Error> {
         if let RenderSource::Linear { .. } = source {
             linear::check_resamples(&compiled)?;
         }
@@ -282,12 +311,6 @@ impl<'a> Render<'a> {
     /// query costing `O(layers)`. `O(segments)` and reads no pixel.
     pub(crate) fn evaluates_spatial(&self) -> bool {
         self.compiled.evaluates_spatial()
-    }
-
-    /// The compilation, for a caller that plans a render on one thread and evaluates it on another
-    /// through [`Self::compiled`], against the same source and at the same phase.
-    pub(crate) fn into_compiled(self) -> Compiled {
-        self.compiled
     }
 
     /// The output stage's dimensions.
@@ -357,7 +380,7 @@ impl<'a> Render<'a> {
                 settings,
             },
         };
-        let compiled = windows.apply(self.compiled.clone(), source_size, |index| {
+        let compiled = windows.apply(Compiled::clone(&self.compiled), source_size, |index| {
             self.spatial_globals(index)
         })?;
         let raster =
@@ -696,7 +719,7 @@ impl<'a> Render<'a> {
         match self.source {
             RenderSource::Byte(image) => Evaluation::new(
                 Byte(image),
-                Cow::Borrowed(&self.compiled),
+                Cow::Borrowed(&*self.compiled),
                 self.options.tile,
                 SpatialMode::Point,
                 cancel,
@@ -705,7 +728,7 @@ impl<'a> Render<'a> {
             .globals_of(index),
             RenderSource::Linear { image, settings } => Evaluation::new(
                 Linear::new(image, settings)?,
-                Cow::Borrowed(&self.compiled),
+                Cow::Borrowed(&*self.compiled),
                 self.options.tile,
                 SpatialMode::Point,
                 cancel,
@@ -728,7 +751,7 @@ impl<'a> Render<'a> {
     ) -> Result<Evaluation<'_, D>, Error> {
         Evaluation::new(
             domain,
-            Cow::Borrowed(&self.compiled),
+            Cow::Borrowed(&*self.compiled),
             self.options.tile,
             mode,
             &self.options.cancel,

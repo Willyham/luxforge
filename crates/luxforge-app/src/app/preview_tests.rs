@@ -1034,8 +1034,11 @@ fn a_zoom_back_to_fit_with_no_retained_proxy_requests_one_preview() {
 fn preview_job_for(_editor: &Editor) -> PreviewJob {
     let asset = AssetId::new();
     let entry = entry(&asset, 1, None);
-    PreviewJob {
-        source: PreviewSource::Jpeg(SourceImage {
+    let recipe = entry.snapshot.recipe.clone();
+    PreviewJob::new(luxforge_core::Evaluation::new(
+        Arc::new(ModuleRegistry::builtin()),
+        luxforge_core::RenderContext::new(),
+        PreviewSource::Jpeg(SourceImage {
             width: 1,
             height: 1,
             rgba: vec![0, 0, 0, 255].into(),
@@ -1043,28 +1046,11 @@ fn preview_job_for(_editor: &Editor) -> PreviewJob {
             orientation: 1,
             capture: Default::default(),
         }),
-        registry: Arc::new(ModuleRegistry::builtin()),
-        context: luxforge_core::RenderContext::new(),
-        recipe: entry.snapshot.recipe.clone(),
-        layer_count: None,
-        draft_revision: None,
-        identity: luxforge_core::analysis::AnalysisIdentity::of(
-            &entry.asset_id,
-            "test",
-            &entry,
-            &entry.snapshot.recipe,
-            None,
-            Some((1, 1)),
-        )
-        .expect("a test analysis identity"),
-        analyse: false,
-        proxy: None,
-        viewport: None,
-        intent: luxforge_core::PreviewIntent::Immediate,
-        viewport_declined: None,
-        mask_overlay: None,
         entry,
-    }
+        recipe,
+        None,
+    ))
+    .expect("a test preview job")
 }
 
 #[test]

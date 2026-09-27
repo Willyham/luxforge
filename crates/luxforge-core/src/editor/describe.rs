@@ -1,12 +1,25 @@
 use super::{
     AssetRecord, EditorService, EditorState, LayerDescription, RecipeDescription,
     catalog::{ASSET_COLUMNS, asset_row, stored_revision},
+    entries::Head,
 };
 use crate::{
     AssetId, EntryId, Error, HistoryEntry, ModuleRegistry, ORIENTATION_EFFECT, Orientation,
     StageSize, modules::stored_orientation,
 };
 use serde_json::Map;
+
+impl EditorState {
+    /// The state a cached head and its current entry describe: a copy of both.
+    pub(super) fn of(head: Head, current: &HistoryEntry) -> Self {
+        Self {
+            asset: head.asset,
+            revision: head.revision,
+            current_entry: current.clone(),
+            redo: head.redo,
+        }
+    }
+}
 
 impl EditorService {
     /// The asset, its revision, its current entry with its strokes resolved, and what redo would
@@ -15,12 +28,14 @@ impl EditorService {
     pub fn state(&self, asset_id: &AssetId) -> Result<EditorState, Error> {
         let head = self.head(asset_id)?;
         let entry = self.shared_entry(asset_id, &head.current)?;
-        Ok(EditorState {
-            asset: head.asset,
-            revision: head.revision,
-            current_entry: HistoryEntry::clone(&entry),
-            redo: head.redo,
-        })
+        Ok(EditorState::of(head, &entry))
+    }
+
+    /// The id of the asset's current entry, and nothing else: what a caller that only names or
+    /// compares the current entry reads, instead of [`Self::state`], which copies the whole entry.
+    /// It copies the cached head and never touches an entry, cached or not.
+    pub fn current_entry_id(&self, asset_id: &AssetId) -> Result<EntryId, Error> {
+        Ok(self.head(asset_id)?.current)
     }
 
     /// The asset's current revision, which is all a draft's conflict check compares. It decodes

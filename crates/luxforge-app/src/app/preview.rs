@@ -229,11 +229,11 @@ impl Editor {
                     Ok(job) => {
                         let mut job = *job;
                         if self.state.as_ref().map(|state| &state.asset.id)
-                            != Some(&job.entry.asset_id)
-                            || self.displayed_entry().as_ref() != Some(&job.entry.id)
+                            != Some(&job.evaluation.entry().asset_id)
+                            || self.displayed_entry().as_ref() != Some(&job.evaluation.entry().id)
                             || job.identity.draft.as_ref().map(|stamp| &stamp.draft_id)
                                 != self.session.draft.as_ref().map(|draft| &draft.draft_id)
-                            || job.draft_revision
+                            || job.evaluation.draft_revision()
                                 != self
                                     .session
                                     .draft
@@ -285,8 +285,8 @@ impl Editor {
                         // with its recipe rows, below.
                         self.editing = None;
                         self.dragging = None;
-                        let entry = payload.job.entry.id.clone();
-                        self.requested_render_entry = Some(payload.job.entry.clone());
+                        let entry = payload.job.evaluation.entry().id.clone();
+                        self.requested_render_entry = Some(payload.job.evaluation.entry().clone());
                         self.show_entry(entry.clone());
                         self.preview_generation = self.request_preview(payload.job);
                         self.status = "Rendering selected history state…".into();
@@ -1420,7 +1420,7 @@ impl Editor {
                 _ => None,
             };
             if job.intent == PreviewIntent::Immediate {
-                job.intent = if job.draft_revision.is_some() {
+                job.intent = if job.evaluation.draft_revision().is_some() {
                     PreviewIntent::Interactive
                 } else if job.viewport.is_some() {
                     PreviewIntent::Settle
@@ -1434,7 +1434,7 @@ impl Editor {
         } else {
             self.proxy_bounds()
         };
-        let content_key = (job.identity.clone(), job.source.identity());
+        let content_key = (job.identity.clone(), job.evaluation.source().identity());
         let content = if self.content_key.as_ref() == Some(&content_key) {
             self.content_serial
         } else {

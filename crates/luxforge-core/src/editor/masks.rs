@@ -828,8 +828,11 @@ mod tests {
             service
                 .preview_job(&asset, None, None, None, None)
                 .and_then(|job| {
-                    job.source
-                        .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+                    job.evaluation.source().render(
+                        job.evaluation.registry(),
+                        job.evaluation.entry().snapshot.id.clone(),
+                        job.evaluation.recipe(),
+                    )
                 })
                 .unwrap_err(),
             // Planning compiles the stored stack before it asks a module for a plan.

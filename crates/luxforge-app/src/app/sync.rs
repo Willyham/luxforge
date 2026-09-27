@@ -99,7 +99,8 @@ impl Editor {
                         if self.activity.pending {
                             self.activity.source_dimensions =
                                 Some((refresh.state.asset.width, refresh.state.asset.height));
-                            self.activity.orientation = Some(refresh.job.source.orientation());
+                            self.activity.orientation =
+                                Some(refresh.job.evaluation.source().orientation());
                         }
                         // A `mask.*` command that **created** a mask names none in its envelope, and
                         // the mask it made has to be the one the panel opens: the adjustments below
@@ -319,7 +320,7 @@ impl Editor {
                 && self
                     .state
                     .as_ref()
-                    .is_some_and(|held| held.current_entry.id != payload.job.entry.id))
+                    .is_some_and(|held| held.current_entry.id != payload.job.evaluation.entry().id))
     }
 
     /// Start the event sync's one poll when one is wanted and nothing stands in its way: none in
@@ -441,8 +442,8 @@ impl Editor {
             self.capabilities_asset_changed(&refresh.state.asset.id);
         }
         self.state = Some(refresh.state);
-        self.show_entry(refresh.job.entry.id.clone());
-        self.requested_render_entry = Some(refresh.job.entry.clone());
+        self.show_entry(refresh.job.evaluation.entry().id.clone());
+        self.requested_render_entry = Some(refresh.job.evaluation.entry().clone());
         self.preview_generation = self.request_preview(refresh.job);
         self.status = "Rendering selected history state…".into();
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
