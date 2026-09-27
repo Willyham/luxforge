@@ -58,7 +58,7 @@ The source path is integrated into the existing M4/Develop editor. JPEG Basic, e
 | App `app/` / `state/` | Source readiness, current/historical control values, stale-result rejection and displayed frame identity |
 | `xtask raw-corpus`, `raw-editor` | Source integrity and correlated real-editor evidence |
 
-The workspace forbids unsafe Rust outside the private `luxforge-raw` native adapter. That crate exposes a safe ownership API and contains the locally documented FFI and callback lifetimes. Core, app and other crates retain the workspace forbid policy. No public provider ABI or generalized graph is needed.
+The workspace forbids unsafe Rust outside the few crates the [architecture](architecture.md#workspace) names, among them the private `luxforge-raw` native adapter. That crate exposes a safe ownership API and contains the locally documented FFI and callback lifetimes. Core, app and other crates retain the workspace forbid policy. No public provider ABI or generalized graph is needed.
 
 ## Decoder and development selection
 
