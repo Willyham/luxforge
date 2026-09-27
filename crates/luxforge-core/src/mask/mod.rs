@@ -199,6 +199,10 @@ struct ComponentKind {
     /// every value-based kind shares, so that sentence is written once and a kind registered later
     /// carries it without this table being edited.
     limits: &'static [&'static str],
+    /// The name of the glyph a client draws this kind with, from the widget library's icon names,
+    /// as a module descriptor names its own icon. It lives in the table so a panel, a menu and a
+    /// draft bar show one glyph per kind without matching on kind tokens of their own.
+    icon: &'static str,
 }
 
 /// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
@@ -233,6 +237,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         samples: None,
         value_based: false,
         limits: &[],
+        icon: "linear",
     },
     ComponentKind {
         kind: radial::KIND,
@@ -242,6 +247,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         samples: None,
         value_based: false,
         limits: &[],
+        icon: "radial",
     },
     ComponentKind {
         kind: brush::KIND,
@@ -251,6 +257,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         samples: None,
         value_based: false,
         limits: &[],
+        icon: "brush",
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
@@ -260,6 +267,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         samples: None,
         value_based: true,
         limits: range::LUMINANCE_LIMITS,
+        icon: "luminance",
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
@@ -272,6 +280,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         }),
         value_based: true,
         limits: range::COLOUR_LIMITS,
+        icon: "colour",
     },
 ];
 
@@ -288,6 +297,14 @@ pub fn knows_component_kind(kind: &str) -> bool {
 /// says and what the committed component is called cannot disagree.
 pub fn kind_title(kind: &str) -> String {
     crate::modules::title_case(kind)
+}
+
+/// The glyph a client draws `kind` with, or `None` for a kind this build does not know.
+pub fn kind_icon(kind: &str) -> Option<&'static str> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .map(|entry| entry.icon)
 }
 
 /// Every component kind this build knows, in table order: every kind it can parse, evaluate, bound
