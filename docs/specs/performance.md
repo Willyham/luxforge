@@ -1880,12 +1880,9 @@ sRGB. Compared: the largest per-channel code difference and the share of R, G an
 samples (alpha is opaque on both sides and carries no exposure) more than one code apart, at
 either size.
 
-Reproduce, once per file:
-
-```
-LUXFORGE_RAW_FIXTURE=<path to the NEF/RAF/DNG> \
-  cargo test --release -p luxforge-core --test exposure_move_measure -- --ignored --nocapture
-```
+The measurement was the ignored `exposure_move_measure` test at commit `ee5743e9`, run once per
+file with `LUXFORGE_RAW_FIXTURE` naming it. It was removed with the RAW development's exposure,
+since side A no longer exists; check out `ee5743e9` to reproduce it.
 
 | File | EV | Proxy stage | Proxy max Δcode | Full stage | Full max Δcode | Share beyond 1 code |
 | --- | ---: | --- | ---: | --- | ---: | ---: |

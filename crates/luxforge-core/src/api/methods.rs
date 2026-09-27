@@ -158,7 +158,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "schema.list",
         NoParams,
         schema_list,
-        "protocol identity and every method with its parameters"
+        "protocol identity and every method with its parameters; a generated method lists the source kinds its module applies to as sources when that is not every kind, and a parameter another module's control variant supersedes on a kind's global target lists superseded: [{source, by}], the field that is its one path there"
     ),
     owner!(
         "catalog.import",
@@ -245,7 +245,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.list",
         ModuleList,
         module_list,
-        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind"
+        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
     ),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and

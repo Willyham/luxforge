@@ -431,12 +431,30 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
         .into_iter()
         .chain(registry.host_descriptors())
         .collect();
+    // The one deliberate change among them: `apply-preset`'s notes gained the skip rule. With the
+    // notes it had before, the presets descriptor is otherwise byte for byte what it was.
+    const PRESET_NOTES_BEFORE: &str = "applies a settings set as one history entry labelled \
+        `Preset: <name>`. Each key of settings names a field-patch action and its value the fields \
+        to send it; the host runs the actions in key order, each against the stack the ones before \
+        it produced, exactly as it would run that action alone, and commits the result once. \
+        Fields the set does not name keep their values, and a set that changes nothing is a \
+        reported no-op. An unknown, non-patch or unavailable action, or a field its action \
+        refuses, refuses the whole preset and writes nothing.";
     for (id, digest) in before {
-        let descriptor = listed
+        let mut descriptor = (*listed
             .iter()
             .find(|descriptor| descriptor.id == id)
-            .unwrap_or_else(|| panic!("{id} is listed"));
-        let json = serde_json::to_string(descriptor).unwrap();
+            .unwrap_or_else(|| panic!("{id} is listed")))
+        .clone();
+        if id == "luxforge.presets" {
+            assert!(
+                descriptor.actions[0]
+                    .notes
+                    .contains("are skipped and listed under skipped")
+            );
+            descriptor.actions[0].notes = PRESET_NOTES_BEFORE.into();
+        }
+        let json = serde_json::to_string(&descriptor).unwrap();
         assert!(!json.contains("\"variants\""), "{id}");
         assert_eq!(
             format!("{:x}", Sha256::digest(json.as_bytes())),

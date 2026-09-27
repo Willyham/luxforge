@@ -14,7 +14,7 @@ In scope:
 - **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Luxforge's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
 - **A desktop Presets section.** The grouped library, apply on click, a create form, a file import and a delete command.
 
-Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, RAW Kelvin and tint conversion, a Copy/Paste Settings command, applying to several photos, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs.
+Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, Lightroom `Auto` and named white balances, a Copy/Paste Settings command, applying to several photos, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs.
 
 ## Settings sets
 
@@ -28,11 +28,13 @@ A settings set is a JSON object whose keys are field-patch action identities and
 }
 ```
 
-**Presettable actions.** Any action a registered module declares with `patch: true` can be named. Today that is `set-basic`, `set-presence`, `set-mixer` and `set-vignette`, plus `set-controls` in developer mode. A field patch updates one module's single layer, which is exactly a portable setting. Everything else is excluded: RAW source development (`set-raw-*`, `pick-raw-neutral`, `use-as-shot-wb`) is per-capture interpretation with no field patch, transforms and crop are per-photo geometry, and the pixel proof is a test tool. Lightroom Classic excludes crop from develop presets for the same reason ([preset formats](../research/lightroom/presets.md#what-a-preset-can-contain)).
+**Presettable actions.** Any action a registered module declares with `patch: true` can be named. Today that is `set-basic`, `set-raw`, `set-presence`, `set-mixer` and `set-vignette`, plus `set-controls` in developer mode. A field patch updates one module's single layer, which is exactly a portable setting. `set-raw` is the RAW development's white balance: `{white-balance: as-shot}` applies each photo's own camera white balance, and `{temperature, tint}` a custom one. Everything else is excluded: RAW's explicit gains and sensor pick are per-capture, transforms and crop are per-photo geometry, and the pixel proof is a test tool.
+
+**Each kind's white balance.** A JPEG's white balance is Basic's relative `temperature` and `tint`; a RAW photo's is the development's `set-raw`, and on its global target Basic's pair is superseded ([source-kind controls](source-controls.md)). A set may carry both, as a Lightroom preset may, and nothing converts between Kelvin and the relative scale in either direction. Exposure is `set-basic.exposure` on every kind. Lightroom Classic excludes crop from develop presets for the same reason ([preset formats](../research/lightroom/presets.md#what-a-preset-can-contain)).
 
 **Bounds.** At most 16 actions and 64 fields per action. Each value is checked against the named action's own parameter descriptors when the set is stored and again when it is applied.
 
-**Apply semantics.** The fields a set names overwrite the current values, and every field it does not name keeps its value. A named field at its neutral value resets that field. This follows Lightroom's rule that a preset changes only the settings it contains. Steps run in the set's key order, which is alphabetical because a JSON object carries no order. Basic, Presence, the mixer and the vignette each update their own module's one layer at a stage and order none of the others shares, so for them the order of the steps cannot change the result. Two effects of one stage and order would land in step order.
+**Apply semantics.** The fields a set names overwrite the current values, and every field it does not name keeps its value. A named field at its neutral value resets that field. This follows Lightroom's rule that a preset changes only the settings it contains. What does not apply to the photo is **skipped**, not refused: a step whose module does not apply to the photo's kind (`set-raw` on a JPEG), and a field superseded on the photo's global target (`set-basic.temperature` on a RAW photo). The result lists them under `skipped: [{action, parameter?, reason}]`, each with the refusal it would have had alone, and a preset with nothing applicable is a no-op that still reports them. Any other refused step refuses the whole preset. Steps run in the set's key order, which is alphabetical because a JSON object carries no order. Basic, Presence, the mixer and the vignette each update their own module's one layer at a stage and order none of the others shares, so for them the order of the steps cannot change the result. Two effects of one stage and order would land in step order.
 
 ## Composite actions
 
@@ -44,7 +46,7 @@ Compose(Vec<ActionInput>)   apply these field-patch actions, in order, as this o
 
 A module returns `Compose` when its action applies other modules' settings. The host runs every step against the stack the steps before it produced:
 
-1. The step's action must be registered, declared with `patch: true` and provided by an available module. Otherwise the result is `validation: unknown action X`, `validation: X is not a field-patch action` or `incompatible: unavailable module M`.
+1. The step's action must be registered, declared with `patch: true` and provided by an available module. Otherwise the result is `validation: unknown action X`, `validation: X is not a field-patch action` or `incompatible: unavailable module M`. A step whose module does not apply to the photo's kind is skipped, and so is each field superseded on the global target; a step left with no field is skipped whole. Both are reported in the result's `skipped`.
 2. The host runs the step's fields through the action's generic check, which for a patch validates only the fields sent, and then through its module's `parse`.
 3. The step's module plans against the intermediate stack, using the same `StageContext` construction a single action uses. A step carries no mask target, so like the action sent without one it addresses the global layer: it plans against the intermediate stack as the global target sees it, with the masked layers of maskable effects hidden. A step whose plan is itself `Compose` is refused with `validation: composite actions do not nest`.
 4. The plan is applied to the whole intermediate stack exactly as a single action's plan is: `Commit` inserts at `insertion_index_for`, `Update` replaces in place, `Edits` applies each edit in order and `NoOp` changes nothing. A masked layer is never read or changed, so on a masked photo a preset updates the global layer, or creates one when there is none.
@@ -129,7 +131,7 @@ Every method is a host method listed by `schema.list`. The four mutating methods
 
 `preset.create`, `preset.update` and `preset.import` validate every action and field of the set against the registry, without a stack. An empty set is refused. Applying a preset is `edit.apply-preset`; the library has no second apply path.
 
-**Capture.** `fields` maps presettable actions to either an array of their parameter names or `true` for all of them. For each action the host finds the global layers of its module's effects in the entry's stack, the layers a preset step of that action plans against; a masked layer is never read. With no layer, each field takes its parameter's declared default. With one layer, each field takes its value from the module's `values` for that layer, and a missing value takes the default. With two or more layers the result is `validation: ambiguous`. Capture reads payloads only: it opens no source, renders nothing and works on JPEG and RAW assets alike. The desktop captures and then creates.
+**Capture.** `fields` maps presettable actions to either an array of their parameter names or `true` for all of them. The request names controls as the photo's section shows them, and capture resolves them for the photo's kind as the section does: a field superseded on the photo's global target is captured as its variant's action instead, whole. So the create form's `Basic · White balance` group, `{"set-basic": ["temperature", "tint"]}`, captures Basic's relative pair on a JPEG and `set-raw` on a RAW photo, and no client names the RAW module; an action whose module does not apply to the photo is refused. For each action the host finds the global layers of its module's effects in the entry's stack, the layers a preset step of that action plans against; a masked layer is never read. With no layer, each field takes its parameter's declared default. With one layer, `true` takes the module's `settings` for that layer — its `values`, except that the RAW development captures `{white-balance: as-shot}` under As shot, so the preset applies each photo's own camera white balance, and `{temperature, tint}` otherwise — and named fields take their value from the module's `values`; a missing value takes the default. With two or more layers the result is `validation: ambiguous`. Capture reads payloads only: it opens no source, renders nothing and works on JPEG and RAW assets alike. The desktop captures and then creates.
 
 ## Import
 
@@ -187,15 +189,15 @@ A mapped value is a **value transfer**: the same number on a control with the sa
 
 | Lightroom setting | Luxforge target | Rule |
 | --- | --- | --- |
-| `Exposure2012` | `set-basic.exposure` | Value transfer, −5..+5 EV |
+| `Exposure2012` | `set-basic.exposure` | Value transfer, −5..+5 EV, on a JPEG and a RAW photo alike |
 | `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012` | `set-basic.contrast`, `highlights`, `shadows`, `whites`, `blacks` | Value transfer, −100..+100 |
 | `Vibrance`, `Saturation` | `set-basic.vibrance`, `saturation` | Value transfer, −100..+100 |
-| `IncrementalTemperature`, `IncrementalTint` | `set-basic.temperature`, `tint` | Value transfer, −100..+100: both are relative white balance for rendered images |
+| `IncrementalTemperature`, `IncrementalTint` | `set-basic.temperature`, `tint` | Value transfer, −100..+100: both are relative white balance for rendered images, skipped on a RAW photo at apply |
 | `Texture`, `Clarity2012`, `Dehaze` | `set-presence.texture`, `clarity`, `dehaze` | Value transfer, −100..+100 |
 | `HueAdjustment<Range>`, `SaturationAdjustment<Range>`, `LuminanceAdjustment<Range>` for Red, Orange, Yellow, Green, Aqua, Blue, Purple and Magenta | `set-mixer.<range>-hue`, `-saturation`, `-luminance` | Value transfer, −100..+100 |
 | `PostCropVignetteAmount`, `PostCropVignetteMidpoint`, `PostCropVignetteRoundness`, `PostCropVignetteFeather` | `set-vignette.amount`, `midpoint`, `roundness`, `feather` | Value transfer |
-| `Temperature`, `Tint` | none | **Refused.** These are RAW-only Kelvin and tint values, on a scale that is not Luxforge's RAW tint unit, and the owner kept Luxforge's validated RAW range. Carrying them needs a calibrated conversion |
-| `WhiteBalance` | none | Neutral when the preset carries `IncrementalTemperature` or `IncrementalTint` and no `Temperature` or `Tint`, because the incremental values then carry the white balance. Otherwise **refused**: `As Shot`, `Auto` and the named modes set RAW white balance, which no field patch can do |
+| `Temperature`, `Tint` | `set-raw.temperature`, `tint` | Converted together through the illuminant chromaticity the pair names ([`lightroom_to_luxforge`](../research/lightroom/presets.md)): Lightroom's white on the DNG SDK's locus, solved on Luxforge's own locus. **Refused** together when that white needs a temperature outside 2000–12000 K or a tint outside ±100, and alone when the preset holds only one of the pair. A value conversion, not a rendering match: Luxforge turns the white into gains through LibRaw's camera matrix. Neutral under `WhiteBalance: As Shot`, where the pair is the camera's own white. Refused in a legacy preset |
+| `WhiteBalance` | `As Shot`: `set-raw.white-balance: as-shot`, and `set-basic.temperature` and `tint` 0 when the preset holds no incremental value | `As Shot` applies each photo's own white balance: the camera's on RAW, the file's own rendering on a JPEG. `Custom` is neutral when the values it names are mapped and **refused** otherwise. `Auto` and the named modes are **refused**: Luxforge has no Auto or named white balance. Refused in a legacy preset |
 | `CameraProfile` and a nested `Look` | none | Neutral when they name Lightroom's default profile (`Adobe Standard` or `Adobe Color`), because Luxforge keeps its own neutral rendering. Any other profile is unsupported, because Luxforge has no profiles |
 | Earlier process-version fields: `Exposure`, `Contrast`, `Brightness`, `Shadows`, `FillLight`, `HighlightRecovery`, `Clarity`, `ToneCurve`, `ToneCurveName` and the `Auto*` switches of those versions | none | Neutral in a Process 2012 or later preset, because Lightroom does not render them there. In an earlier-process preset they are **refused**, because their meaning and domains differ from the 2012 fields |
 | `MaskGroupBasedCorrections`, `GradientBasedCorrections`, `CircularGradientBasedCorrections`, `PaintBasedCorrections` | none | **Unsupported**: Lightroom masks and local corrections are not imported. Luxforge has its own [masks](masking.md), targeted at delivered modules rather than carried over from a preset. Neutral when the setting is empty |
@@ -218,14 +220,14 @@ A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A valu
   "mapped": [{"setting": "Exposure2012", "value": "+0.35", "action": "set-basic", "field": "exposure", "applied": 0.35}],
   "neutral": [{"setting": "GrainAmount", "value": "0"}],
   "unsupported": [{"setting": "Sharpness", "value": "40", "reason": "Luxforge has no sharpening"}],
-  "refused": [{"setting": "Temperature", "value": "5500", "reason": "RAW Kelvin white balance has no calibrated conversion"}]
+  "refused": [{"setting": "Clarity2012", "value": "-100.5", "reason": "outside Luxforge's range -100..100"}]
 }
 ```
 
 - `mapped`: the value transfers and is in the preset's settings.
 - `neutral`: the setting is unsupported but at its neutral value, so nothing is lost.
 - `unsupported`: the effect is not reproduced because Luxforge has no such tool.
-- `refused`: Luxforge has a related control, but this value cannot be carried. It is out of range, belongs to another process version or has no calibrated conversion.
+- `refused`: Luxforge has a related control, but this value cannot be carried. It is out of range, belongs to another process version or names a white balance Luxforge does not have.
 
 A qualifying rule applies only when the preset holds the amount it depends on. A hue whose saturation the preset does not hold is reported on its own value, because the photo's saturation, not the preset's, would decide whether it has an effect.
 
@@ -257,9 +259,9 @@ The library is listed at startup, after each of the desktop's own preset calls, 
 The owner asked for this work to proceed without blocking. These are proposals the owner can revise:
 
 1. Presets are catalog data (see [versions and lineage](versions-and-lineage.md#storage-catalog-format-10)), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
-2. Only field-patch actions are presettable, so RAW source settings, transforms and crop are excluded.
+2. Only field-patch actions are presettable, so RAW's explicit gains and sensor pick, transforms and crop are excluded. The RAW white balance (`set-raw`) is presettable, and a preset carries each kind's white balance separately (owner decision 6, [source-kind controls](source-controls.md#decisions)).
 3. `apply-preset` carries the settings, not a library reference.
-4. Imports are value transfers for the controls Luxforge has. Lightroom's RAW Kelvin and tint are refused until a calibrated conversion exists. Nothing is clamped.
+4. Imports are value transfers for the controls Luxforge has, and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.
 5. The Presets section is the first tools-panel section, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
 6. The create form leaves white balance unchecked by default, because white balance is usually per photo.
 
@@ -269,7 +271,6 @@ The owner asked for this work to proceed without blocking. These are proposals t
 | --- | --- |
 | Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
 | Hover preview | A draft of `apply-preset` rendered at proxy size, within the slider latency budget |
-| RAW white balance import | A calibrated conversion from Lightroom's Kelvin and tint to Luxforge's RAW controls, and a presettable RAW action |
 | Copy/Paste Settings | Capture into a transient set and apply it with `apply-preset`; no core change |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

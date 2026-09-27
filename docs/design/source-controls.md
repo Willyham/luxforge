@@ -1,6 +1,6 @@
 # Source-kind controls: one Exposure and one White balance
 
-Status: **accepted; being implemented.** The owner decided on 2026-09-27 to take every recommended default ([decisions](#decisions), recorded in [product decisions](../decisions.md#source-kind-controls)). Step 1 of the shape below, declared source kinds, was authorized ahead of them ([decisions](../decisions.md#post-consolidation-review)) and is implemented ([source kinds](modules-and-api.md#source-kinds)); the rest is planned in the [module contract plan](../../tasks/module-contract.json). The underlying decision is in [decisions](../decisions.md#architecture-review): a JPEG and a RAW photo show one Exposure control and one White balance set, each control behaves as its source requires, and a module's applicability to a source kind is declared rather than named by the desktop.
+Status: **accepted; implemented in the core, desktop in progress.** The owner decided on 2026-09-27 to take every recommended default ([decisions](#decisions), recorded in [product decisions](../decisions.md#source-kind-controls)). The core implements the whole shape below ([source kinds](modules-and-api.md#source-kinds), [control variants](modules-and-api.md#control-variants)); the desktop's rendering of the resolved controls and the rendered evidence are in progress in the [module contract plan](../../tasks/module-contract.json). The underlying decision is in [decisions](../decisions.md#architecture-review): a JPEG and a RAW photo show one Exposure control and one White balance set, each control behaves as its source requires, and a module's applicability to a source kind is declared rather than named by the desktop.
 
 ## Outcome and scope
 
@@ -8,14 +8,15 @@ Every photo shows the same Basic section: White balance (Temperature, Tint, Neut
 
 In scope: descriptors, the RAW module's actions and payload, the refusals that keep one path, presets, history labels, the desktop's applicability checks and the evidence. Out of scope, with no placeholders: Auto and named white-balance modes, a control for RAW's explicit gains (they stay API-only), and any change to the frozen equations of [Basic white balance](basic-white-balance.md) or the [RAW locus](initial-raw.md#minimal-controls-and-shared-basic-integration).
 
-## Today
+## Current state
 
 | | JPEG | RAW |
 | --- | --- | --- |
-| Exposure | Basic `set-basic.exposure`, colour stage, maskable | RAW `set-raw-exposure.ev`, multiplied into each source pixel through `LinearSettings`, **and** Basic's, so exposure can act twice |
-| White balance | Basic `set-basic.temperature`, `tint`: relative ±100, a Bradford von Kries correction of the rendered image, 2e−4 CIE 1960 uv per tint unit | RAW `set-raw-temperature.kelvin` (2000–12000 K), `set-raw-tint.tint` (±100, 1e−4 uv per unit), `use-as-shot-wb`, `reset-raw` and the sensor pick, **and** Basic's relative pair |
-| Neutral picker | Basic's `neutral-sample` query through `sample-apply`, shortcut `W` | RAW's `pick-raw-neutral` through `point-pick`, shortcut `N`, and Basic's `W` |
+| Exposure | Basic `set-basic.exposure`, colour stage, maskable | The same, on the developed planes; the development carries none |
+| White balance | Basic `set-basic.temperature`, `tint`: relative ±100, a Bradford von Kries correction of the rendered image, 2e−4 CIE 1960 uv per tint unit; As shot is `set-basic {temperature: 0, tint: 0}` | Global target: `set-raw {temperature?, tint?, white-balance?}` (2000–12000 K, ±100 at 1e−4 uv per unit), As shot `set-raw {white-balance: as-shot}`, reached through Basic's RAW variants; Basic's pair is refused there. A mask: Basic's relative pair |
+| Neutral picker | Basic's `neutral-sample` query through `sample-apply`, shortcut `W`, with the optional `mask` target | Global target: RAW's `pick-raw-neutral` through `point-pick`, reached by Basic's picker variant; the RAW canvas has no shortcut of its own. A mask: Basic's |
 | Applicability | Every other effect declares no `sources`, so it exists on every kind | Declared: the RAW effect's `sources` is `["raw"]`, and action refusal, admission, `module.list {asset_id}` and the desktop's sections, palette, mode strip, mode shortcuts and pick gate all read it through `ModuleDescriptor::applies_to`; no check names the module |
+| Desktop | Basic's section as declared | In progress: the desktop still has to draw Basic's section through the resolver, since the RAW module now draws none |
 
 The two white balances are different operations and neither can stand in for the other. RAW's sets sensor gains before the nonlinear demosaic, which developed planes cannot undo; JPEG's corrects rendered pixels, which name no illuminant. Their scales stay distinct and nothing converts between them.
 
