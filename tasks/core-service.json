@@ -127,7 +127,7 @@
     {
       "id": "TASK-003",
       "description": "Make every event name the asset and revision it changed, have the desktop refresh only for the photo it has open, and report a gap when a client's cursor is ahead of the log.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Today any other client's change to any asset makes the desktop treat its own open photo as changed, and a JSON client has no way to be told anything changed at all.",
@@ -177,7 +177,7 @@
       ],
       "acceptance_criteria": [
         "In a two-asset owner test, another client's commit to asset B causes no refresh and no preview job for the desktop's open asset A.",
-        "A cursor whose `after` is at or beyond the log's current sequence gets `gap: true` on its next `events.since`.",
+        "A cursor whose `after` is beyond the log's current sequence gets `gap: true` on its next `events.since`; a cursor at it is caught up.",
         "`ApiEvent`/`events.since` carries the asset id and revision an event changed, when the change is known (a `mutate`, an import completion, a version); the desktop skips an event whose revision it already holds.",
         "The user guide's description of `events.since` and the live session states the new fields."
       ],
@@ -185,7 +185,7 @@
         "approach": "mixed",
         "steps": [
           "Owner test: a second client's change to another asset causes no refresh or preview job for the first.",
-          "Owner test: a cursor at or beyond the log's sequence reports a gap.",
+          "Owner test: a cursor beyond the log's sequence reports a gap, and one at it does not.",
           "Desktop test: an event naming a revision the desktop already holds is skipped."
         ],
         "commands": [
@@ -278,7 +278,7 @@
     {
       "id": "TASK-005",
       "description": "Validate every mutation envelope once in the dispatcher, let service handlers say whether they changed anything, and replace the forwarding handlers and duplicated checks with table rows.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001",
         "TASK-003"
