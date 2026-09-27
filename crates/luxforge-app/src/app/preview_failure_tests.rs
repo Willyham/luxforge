@@ -312,6 +312,7 @@ fn small() -> SourceImage {
         rgba: [10, 20, 30, 255].repeat(64 * 48).into(),
         fingerprint: "f".into(),
         orientation: 1,
+        capture: Default::default(),
     }
 }
 
@@ -323,6 +324,7 @@ fn over_the_frame_limit() -> SourceImage {
         rgba: vec![0, 0, 0, 255].into(),
         fingerprint: "f".into(),
         orientation: 1,
+        capture: Default::default(),
     }
 }
 

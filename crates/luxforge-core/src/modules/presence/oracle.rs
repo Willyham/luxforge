@@ -428,6 +428,7 @@ fn textured_source(width: u32, height: u32) -> SourceImage {
         rgba: rgba.into(),
         fingerprint: "sha256:presence-textured".into(),
         orientation: 1,
+        capture: Default::default(),
     }
 }
 

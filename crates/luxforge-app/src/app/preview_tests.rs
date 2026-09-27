@@ -707,6 +707,7 @@ fn preview_job_for(_editor: &Editor) -> PreviewJob {
             rgba: vec![0, 0, 0, 255].into(),
             fingerprint: "test".into(),
             orientation: 1,
+            capture: Default::default(),
         }),
         registry: Arc::new(ModuleRegistry::builtin()),
         context: luxforge_core::RenderContext::new(),

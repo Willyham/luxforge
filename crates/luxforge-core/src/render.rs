@@ -2188,6 +2188,7 @@ mod tests {
             rgba: rgba.into(),
             fingerprint: "sha256:test".into(),
             orientation: 1,
+            capture: Default::default(),
         }
     }
     fn red(raster: &Raster) -> Vec<u8> {
@@ -2558,6 +2559,7 @@ mod tests {
             rgba: rgba.into(),
             fingerprint: "sha256:gradient".into(),
             orientation: 1,
+            capture: Default::default(),
         }
     }
 
@@ -4030,6 +4032,7 @@ mod tests {
             rgba: raster.rgba.clone(),
             fingerprint: "sha256:rendered-again".into(),
             orientation: 1,
+            capture: Default::default(),
         };
         render(
             &colour_registry(),
@@ -4228,6 +4231,7 @@ mod tests {
             rgba: rgba.into(),
             fingerprint: "sha256:greys".into(),
             orientation: 1,
+            capture: Default::default(),
         }
     }
 
@@ -5515,6 +5519,7 @@ mod tests {
             rgba: rgba.into(),
             fingerprint: "sha256:cancellation".into(),
             orientation: 1,
+            capture: Default::default(),
         }
     }
 
