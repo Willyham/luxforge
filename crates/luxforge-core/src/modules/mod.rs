@@ -27,9 +27,7 @@ pub use capabilities_proof::{
     palette_bytes,
 };
 pub use capability::CapabilityModule;
-pub use controls::{
-    CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
-};
+pub use controls::{CONTROLS_EFFECT, ControlsModule, SAMPLE_CONTROLS_CURVE, SET_CONTROLS};
 pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,

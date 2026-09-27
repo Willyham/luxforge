@@ -25,19 +25,16 @@ mod texture;
 mod oracle;
 
 use super::{
-    EffectDescriptor, EffectStage, Processing, SpatialOperation, SpatialUnit, Stage,
-    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    EffectStage, Processing, SpatialOperation, SpatialUnit, Stage,
+    field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error};
+use crate::Error;
 use std::sync::Arc;
 
 /// The one spatial-stage effect of the Presence module: Texture, Clarity and Dehaze of a stack live
 /// in one layer of this effect, evaluated after the pointwise colour run and before the geometry
 /// tail as one tiled neighbourhood pass.
 pub const PRESENCE_EFFECT: &str = "luxforge.presence.adjust";
-
-pub(super) const SET_PRESENCE: &str = "set-presence";
-pub(super) const RESET_PRESENCE: &str = "reset-presence";
 
 const TEXTURE: &str = "texture";
 const CLARITY: &str = "clarity";
@@ -69,79 +66,48 @@ pub type PresenceModule = FieldPatchModule<Presence>;
 
 impl FieldPatch for Presence {
     fn spec() -> Spec {
-        Spec {
-            id: "luxforge.presence",
-            title: "Presence",
-            hint: "Texture, clarity and dehaze",
-            noun: "presence",
-            effect: EffectDescriptor {
-                id: PRESENCE_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Spatial,
-                order: 0,
-                maskable: true,
-                artifacts: false,
-                single: true,
-                sources: Vec::new(),
-            },
-            set: ActionText {
-                id: SET_PRESENCE,
-                title: "Set Presence",
-                notes: "merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
-            },
-            reset: ActionText {
-                id: RESET_PRESENCE,
-                title: "Reset Presence",
-                notes: "returns the stack's one Presence layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
-            },
-            fields: vec![
-                presence_field(
-                    TEXTURE,
-                    "Texture",
-                    "scales a medium-frequency luminance band isolated between two edge-preserving \
-                     smoothers; negative values attenuate it",
-                ),
-                presence_field(
-                    CLARITY,
-                    "Clarity",
-                    "scales the residual of luminance against a broad edge-preserving base computed \
-                     on a reduced grid; negative values soften it",
-                ),
-                presence_field(
-                    DEHAZE,
-                    "Dehaze",
-                    "removes the estimated atmospheric veil by inverting I = t*J + (1 - t)*A; \
-                     negative values add a veil through the same model",
-                ),
-            ],
-            groups: vec![Group {
-                label: GROUP,
-                fields: FIELDS.to_vec(),
-                collapsed: false,
-                extra: Vec::new(),
-                reset_variants: Vec::new(),
-            }],
-            queries: Vec::new(),
-            canvas: None,
-            collapsed: true,
-            layout: crate::ModuleLayout::Stacked,
-            developer: false,
-        }
+        Spec::new(
+            "luxforge.presence",
+            "Presence",
+            "Texture, clarity and dehaze",
+            PRESENCE_EFFECT,
+            EffectStage::Spatial,
+        )
+        .maskable()
+        .set_notes("merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")
+        .fields([
+            presence_field(
+                TEXTURE,
+                "Texture",
+                "scales a medium-frequency luminance band isolated between two edge-preserving \
+                 smoothers; negative values attenuate it",
+            ),
+            presence_field(
+                CLARITY,
+                "Clarity",
+                "scales the residual of luminance against a broad edge-preserving base computed \
+                 on a reduced grid; negative values soften it",
+            ),
+            presence_field(
+                DEHAZE,
+                "Dehaze",
+                "removes the estimated atmospheric veil by inverting I = t*J + (1 - t)*A; \
+                 negative values add a veil through the same model",
+            ),
+        ])
+        .group(Group::new(GROUP, FIELDS))
+        .collapsed()
     }
 
     /// The payload as one spatial operation: dehaze, then texture, then clarity, the frozen order,
-    /// with an amount-0 unit omitted because it is the exact identity.
+    /// with an amount-0 unit omitted because it is the exact identity. Only a layer with a moved
+    /// field reaches here; the shared field patch compiles a neutral one to no units, so the layer
+    /// opens no stage boundary and the render shares the source buffer.
     ///
     /// The stage decides every radius and therefore every halo, so each unit is built with the long
     /// side of the stage this layer is compiled against, which is the stage the host evaluates the
     /// operation at.
     fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
-        // A neutral payload compiles to no units. The host drops an empty spatial operation
-        // entirely, so the layer opens no stage boundary, the identity byte path is kept and the
-        // render shares the source buffer.
-        if values.is_default() {
-            return Ok(Processing::Spatial(SpatialOperation::neutral()));
-        }
         let (texture, clarity, dehaze) = (
             values.number(TEXTURE),
             values.number(CLARITY),
@@ -172,108 +138,16 @@ pub(crate) fn presence_halo(long_side: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{ActionInput, Control, ParameterKind, ResetAction, ToolModule};
+    use crate::modules::{ActionInput, ToolModule};
 
+    use serde_json::Value;
     use serde_json::json;
-    use serde_json::{Map, Value};
 
+    const SET_PRESENCE: &str = "set-presence";
     const STAGE: Stage = Stage {
         width: 24,
         height: 24,
     };
-
-    #[test]
-    fn the_descriptor_declares_one_spatial_effect_two_actions_and_one_group() {
-        let module = PresenceModule::new();
-        let descriptor = module.descriptor();
-        descriptor.validate().expect("a valid descriptor");
-        assert_eq!(descriptor.id, "luxforge.presence");
-        assert_eq!(descriptor.title, "Presence");
-        assert_eq!(
-            descriptor.hint.as_deref(),
-            Some("Texture, clarity and dehaze")
-        );
-        assert!(descriptor.collapsed);
-        assert!(!descriptor.developer);
-        assert_eq!(descriptor.effects.len(), 1);
-        assert_eq!(descriptor.effects[0].id, PRESENCE_EFFECT);
-        assert_eq!(descriptor.effects[0].format, 1);
-        assert_eq!(descriptor.effects[0].stage, EffectStage::Spatial);
-        assert_eq!(descriptor.effects[0].order, 0);
-        assert_eq!(
-            descriptor.reset,
-            Some(ResetAction {
-                action: RESET_PRESENCE.into(),
-                preset: Map::new(),
-            })
-        );
-        assert!(descriptor.canvas.is_none());
-        assert!(descriptor.queries.is_empty());
-
-        let set = descriptor.action(SET_PRESENCE).expect("set-presence");
-        assert!(set.patch);
-        assert!(set.summary.is_none());
-        assert_eq!(
-            set.parameters
-                .iter()
-                .map(|parameter| parameter.name.as_str())
-                .collect::<Vec<_>>(),
-            FIELDS,
-            "the three fields are declared parameters of the one patch action, in FIELDS order"
-        );
-        for parameter in &set.parameters {
-            assert_eq!(
-                parameter.kind,
-                ParameterKind::Number {
-                    min: -100.0,
-                    max: 100.0
-                },
-                "{}",
-                parameter.name
-            );
-            assert!(!parameter.required, "{}", parameter.name);
-            assert_eq!(parameter.default, Some(json!(0.0)), "{}", parameter.name);
-            assert_eq!(parameter.unit, None, "{}", parameter.name);
-            assert_eq!(parameter.step, Some(1.0), "{}", parameter.name);
-            assert_eq!(parameter.precision, Some(0), "{}", parameter.name);
-            assert_eq!(parameter.zero, Some(0.0), "{}", parameter.name);
-            assert!(!parameter.notes.is_empty(), "{}", parameter.name);
-        }
-
-        let reset = descriptor.action(RESET_PRESENCE).expect("reset-presence");
-        assert!(reset.parameters.is_empty());
-        assert!(!reset.patch);
-
-        assert_eq!(descriptor.controls.len(), 1);
-        let Control::Group {
-            label,
-            reset,
-            controls,
-            collapsed,
-            ..
-        } = &descriptor.controls[0]
-        else {
-            panic!("the one top-level control is a group");
-        };
-        assert_eq!(label, GROUP);
-        assert!(!collapsed, "the one group starts expanded");
-        let reset = reset.as_ref().expect("a group reset");
-        assert_eq!(reset.action, SET_PRESENCE);
-        assert_eq!(reset.preset.len(), 3);
-        assert!(reset.preset.values().all(|value| *value == json!(0.0)));
-        let labels: Vec<(&str, bool)> = controls
-            .iter()
-            .map(|control| match control {
-                Control::Number { label, rail, .. } => (label.as_str(), rail.is_some()),
-                _ => panic!("every group control is a slider"),
-            })
-            .collect();
-        assert_eq!(
-            labels,
-            [("Texture", false), ("Clarity", false), ("Dehaze", false)],
-            "three sliders on plain rails"
-        );
-    }
 
     /// The words a history label and the recipe row use for each field, with its declared decimals,
     /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count

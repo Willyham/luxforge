@@ -6,18 +6,15 @@
 //! photo pixels.
 use super::{
     ActionDescriptor, ActionStyle, ChoiceStyle, ColorOperation, ColorStyle, Control,
-    CurveBackground, CurveChannel, EffectDescriptor, EffectStage, ModuleLayout, NumberStyle,
-    ParameterDescriptor, Processing, RailDecoration, Stage, StageContext,
-    field_patch::{
-        ActionText, Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values,
-    },
+    CurveBackground, CurveChannel, EffectStage, NumberStyle, ParameterDescriptor, Processing,
+    RailDecoration, Stage, StageContext,
+    field_patch::{Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error};
+use crate::Error;
 use serde_json::{Map, Value, json};
 
 pub const CONTROLS_EFFECT: &str = "luxforge.controls.identity";
 pub const SET_CONTROLS: &str = "set-controls";
-pub const RESET_CONTROLS: &str = "reset-controls";
 pub const SAMPLE_CONTROLS_CURVE: &str = "sample-controls-curve";
 const SAMPLE_SEGMENTS: usize = 256;
 const NOTES: &str = "Developer control parity fixture; values never alter pixels";
@@ -127,39 +124,21 @@ impl FieldPatch for Controls {
         .into_iter()
         .chain(CURVES.map(|(name, _, _)| name))
         .collect();
-        Spec {
-            id: "luxforge.controls",
-            title: "Controls",
-            hint: "Developer control vocabulary",
-            noun: "controls",
-            effect: EffectDescriptor {
-                id: CONTROLS_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Color,
-                order: 0,
-                maskable: false,
-                artifacts: false,
-                single: true,
-                sources: Vec::new(),
-            },
-            set: ActionText {
-                id: SET_CONTROLS,
-                title: "Set controls",
-                notes: "One field patch for every generated control",
-            },
-            reset: ActionText {
-                id: RESET_CONTROLS,
-                title: "Reset controls",
-                notes: "Clear all proof control values",
-            },
-            fields,
-            groups: vec![Group {
-                label: "Control vocabulary",
-                fields: names,
-                collapsed: false,
-                // The curve control draws the two curve fields as its channels; the three action
-                // buttons, one per style, each send a one-field patch.
-                extra: vec![
+        Spec::new(
+            "luxforge.controls",
+            "Controls",
+            "Developer control vocabulary",
+            CONTROLS_EFFECT,
+            EffectStage::Color,
+        )
+        .set_notes("One field patch for every generated control")
+        .reset_notes("Clear all proof control values")
+        .fields(fields)
+        // The curve control draws the two curve fields as its channels; the three action buttons,
+        // one per style, each send a one-field patch.
+        .group(
+            Group::new("Control vocabulary", names)
+                .extra(
                     Control::curve(
                         SET_CONTROLS,
                         CURVES
@@ -172,32 +151,33 @@ impl FieldPatch for Controls {
                         SAMPLE_CONTROLS_CURVE,
                     )
                     .background(CurveBackground::Histogram),
+                )
+                .extra(
                     Control::action(SET_CONTROLS, "Enable").preset(preset("enabled", json!(true))),
+                )
+                .extra(
                     Control::action(SET_CONTROLS, "Mode two")
                         .preset(preset("mode", json!("two")))
                         .action_style(ActionStyle::Primary),
+                )
+                .extra(
                     Control::action(SET_CONTROLS, "Reset amount")
                         .preset(preset("amount", json!(0.0)))
                         .action_style(ActionStyle::Icon)
                         .icon("reset"),
-                ],
-                reset_variants: Vec::new(),
-            }],
-            queries: vec![ActionDescriptor {
-                id: SAMPLE_CONTROLS_CURVE.into(),
-                title: "Sample controls curve".into(),
-                notes: "257 linearly interpolated fractions from the one submitted channel".into(),
-                summary: None,
-                patch: false,
-                parameters: CURVES
-                    .map(|(name, _, monotone)| curve(name, monotone))
-                    .into(),
-            }],
-            canvas: None,
-            collapsed: false,
-            layout: ModuleLayout::Stacked,
-            developer: true,
-        }
+                ),
+        )
+        .query(ActionDescriptor {
+            id: SAMPLE_CONTROLS_CURVE.into(),
+            title: "Sample controls curve".into(),
+            notes: "257 linearly interpolated fractions from the one submitted channel".into(),
+            summary: None,
+            patch: false,
+            parameters: CURVES
+                .map(|(name, _, monotone)| curve(name, monotone))
+                .into(),
+        })
+        .developer()
     }
 
     fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
