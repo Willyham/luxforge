@@ -21,6 +21,7 @@ Authorized on 2026-09-26 and designed in [after the consolidation](../docs/desig
 
 | Plan | Purpose |
 | --- | --- |
+| [Export](export.json) | JPEG export of a saved entry from the desktop and the API ([design](../docs/design/export.md)) |
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
