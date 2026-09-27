@@ -522,8 +522,8 @@ Each step is an object with exactly one key.
   recorded as its own `slider_step_value` event (`{"value", "index"}`), even one the core's own
   gesture round trip coalesces away, so the harness can time an input that never reached the owner.
   Without `interval_ms` every value is sent at once, as before.
-- `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw-temperature",
-  "parameter": "kelvin", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
+- `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw",
+  "parameter": "temperature", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
   which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
   release, one timer tick sends the reset the rail's wrapper publishes for the second press,
   whatever the commit is doing by then. The frame is captured once nothing the two presses started
