@@ -485,7 +485,6 @@ mod tests {
             .plan(
                 &input,
                 &StageContext {
-                    stage: STAGE,
                     layers,
                     registry: &ModuleRegistry::builtin(),
                     target: None,

@@ -204,14 +204,12 @@ pub trait StageQuestions {
 }
 
 /// What a module may ask about the current stack while planning an action or answering a query:
-/// the output stage, the ordered layers, the stage any position receives, where a commit of an
+/// the ordered layers, the output stage, the stage any position receives, where a commit of an
 /// effect would land, its own layer, one pixel of any prefix and, for a RAW original, a sensor
 /// patch. Every sample evaluates one pixel without rasterizing, so planning never allocates a
-/// frame, and the host answers the questions that read pixels only when they are asked.
+/// frame, and the host answers each question that compiles or reads pixels only when it is asked:
+/// a plan that asks for no stage compiles nothing.
 pub struct StageContext<'a> {
-    /// The output stage of the whole stack, which the host compiles from the source's dimensions
-    /// before the module is asked anything.
-    pub stage: Stage,
     /// The current recipe's layers in evaluation order, so a module can find its own layer to
     /// update. Planning never mutates them.
     pub layers: &'a [Layer],
@@ -251,6 +249,13 @@ impl<'a> StageContext<'a> {
     pub fn insertion_index_for(&self, effect_id: &str) -> usize {
         self.registry
             .insertion_index_for_target(self.layers, effect_id, self.target, self.masks)
+    }
+
+    /// The output stage of the whole stack: [`StageContext::stage_before`] of `layers.len()`. The
+    /// host compiles the stack to answer it, `O(layers)`, only when a module asks, so a plan that
+    /// never needs the stage, such as a Basic patch, costs no compile.
+    pub fn stage(&self) -> Result<Stage, Error> {
+        self.stage_before(self.layers.len())
     }
 
     /// The stage the layer at index `index` receives ([`StageQuestions::stage_before`]);
@@ -316,7 +321,6 @@ impl FixedStage {
         registry: &'a ModuleRegistry,
     ) -> StageContext<'a> {
         StageContext {
-            stage: self.stage,
             layers,
             registry,
             target: None,

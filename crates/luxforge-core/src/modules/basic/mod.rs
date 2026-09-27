@@ -708,7 +708,6 @@ mod tests {
             NEUTRAL_SAMPLE,
             &checked,
             &StageContext {
-                stage: probe.stage(),
                 layers,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,

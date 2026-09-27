@@ -857,7 +857,7 @@ mod tests {
                     )
                 })
                 .unwrap_err(),
-            // Planning compiles the stored stack before it asks a module for a plan.
+            // Planning checks the stored stack's structure before it asks a module for a plan.
             service
                 .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
                 .unwrap_err(),

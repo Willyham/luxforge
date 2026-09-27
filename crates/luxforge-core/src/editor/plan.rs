@@ -271,7 +271,7 @@ impl EditorService {
     ) -> Result<T, Error> {
         check_askable(&self.registry, module, asset.source.tag(), mask, input)?;
         validate_source_recipe(&self.registry, asset, recipe)?;
-        // Planning compiles the stack, so its artifacts are bound first.
+        // A stage question compiles the stack, so its artifacts are bound first.
         let bound = self.bound(recipe)?;
         // A target the stack does not hold is refused here, before a module plans anything.
         resolve_mask_target(&bound, mask)?;
@@ -295,12 +295,17 @@ impl EditorService {
 
     /// Build the questions a module may ask about one stack of `asset` and hand them to `answer`.
     ///
-    /// The output stage is compiled from the asset's dimensions before anything is asked, which is
-    /// `O(layers)` and also refuses a stack that cannot compile. Everything else is answered only
-    /// when asked ([`HostStage`]): a prefix stage compiles that prefix, and the first question that
-    /// reads a pixel or the sensor resolves the verified source, and for a RAW stack its linear
-    /// settings, strictly, once for the whole context. A plan that reads no pixel therefore never
-    /// needs the original prepared or a RAW developed. Nothing is rasterized either way.
+    /// The stack's structure is checked first ([`Recipe::validate`], `O(layers · masks)`, no
+    /// provider asked), so a stack naming a mask it does not carry is refused in those words before
+    /// a module is asked anything. Nothing is compiled up front: every question is answered only
+    /// when asked ([`HostStage`]). The output stage and a prefix stage compile that prefix, and the
+    /// first question that reads a pixel or the sensor resolves the verified source, and for a RAW
+    /// stack its linear settings, strictly, once for the whole context. A plan that asks for no
+    /// stage therefore compiles nothing: a drafted preview compiles the stack the plan produced when
+    /// it is evaluated ([`Self::evaluation`]), its one owner compile, and a commit when it is
+    /// admitted ([`Self::admit`]), and either refuses a stack that cannot compile. A plan that
+    /// reads no pixel never needs the original prepared or a RAW developed. Nothing is rasterized
+    /// either way.
     pub(super) fn with_stage_context<T>(
         &self,
         asset: &AssetRecord,
@@ -308,10 +313,7 @@ impl EditorService {
         target: Option<&MaskId>,
         answer: impl FnOnce(&StageContext<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let stage = self
-            .registry
-            .compile(asset.width, asset.height, recipe)?
-            .stage();
+        recipe.validate()?;
         let questions = HostStage {
             service: self,
             asset,
@@ -321,7 +323,6 @@ impl EditorService {
             sample_prefixes: RefCell::new(HashMap::new()),
         };
         answer(&StageContext {
-            stage,
             layers: &recipe.layers,
             registry: &self.registry,
             target,
@@ -2652,6 +2653,43 @@ mod tests {
             let y = (point_index / 5) as u32;
             assert_eq!(*cached, fresh.sample(x, y).unwrap().rgba, "({x}, {y})");
         }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stage context compiles nothing up front: a plan that asks for no stage costs the owner no
+    /// compile, and the output stage is compiled only when a module asks for it, to the stage the
+    /// whole stack's compile answers.
+    #[test]
+    fn a_stage_context_compiles_the_output_stage_only_when_asked() {
+        let catalog = temp("lazy-stage.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_transform(&asset, mutation(0, "turn"), Transform::RotateRight)
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let (asset, recipe) = (&state.asset, &state.current_entry.snapshot.recipe);
+        let whole = service
+            .registry
+            .compile(asset.width, asset.height, recipe)
+            .unwrap()
+            .stage();
+        assert_eq!((whole.width, whole.height), (asset.height, asset.width));
+        crate::modules::stack_compiles::take();
+        service
+            .with_stage_context(asset, recipe, None, |_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            crate::modules::stack_compiles::take(),
+            0,
+            "a context asked nothing compiles nothing"
+        );
+        let stage = service
+            .with_stage_context(asset, recipe, None, |context| context.stage())
+            .unwrap();
+        assert_eq!(crate::modules::stack_compiles::take(), 1);
+        assert_eq!(stage, whole);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

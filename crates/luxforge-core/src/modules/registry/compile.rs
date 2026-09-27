@@ -252,8 +252,6 @@ impl ModuleRegistry {
         // the store has lost, still refuses every path that would draw it by name, and nothing is
         // rewritten or resolved to an empty stroke. A mask no layer draws changes no pixel, so
         // rendering its stack draws exactly what the stack says.
-        #[cfg(test)]
-        stack_compiles::count();
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
         self.compile_layers_sampled(
@@ -304,6 +302,8 @@ impl ModuleRegistry {
         artifacts: &ArtifactTable,
         sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
+        #[cfg(test)]
+        stack_compiles::count();
         let mut layer_ids = HashSet::with_capacity(layers.len());
         // The effects whose module owns exactly one layer of a stack, seen so far, **per target**:
         // the global layer and each mask are distinct targets, so one effect may hold a layer in
@@ -582,10 +582,10 @@ impl ModuleRegistry {
     }
 }
 
-/// How many whole stacks [`ModuleRegistry::compile_sampled`] compiled on the calling thread, for the
-/// tests that count the compiles one request costs the catalog owner. Each `#[test]` function runs
-/// on its own thread and a worker on its own, so this counts one test's owner-side compiles and
-/// nothing a worker compiles.
+/// How many layer stacks [`ModuleRegistry`] compiled on the calling thread, a whole stack or the
+/// prefix a stage question or a sample compiles, for the tests that count the compiles one request
+/// costs the catalog owner. Each `#[test]` function runs on its own thread and a worker on its own,
+/// so this counts one test's owner-side compiles and nothing a worker compiles.
 #[cfg(test)]
 pub(crate) mod stack_compiles {
     use std::cell::Cell;
@@ -598,7 +598,7 @@ pub(crate) mod stack_compiles {
         COMPILED.with(|count| count.set(count.get() + 1));
     }
 
-    /// The whole-stack compiles this thread made since it last asked.
+    /// The compiles this thread made since it last asked.
     pub(crate) fn take() -> u64 {
         COMPILED.with(|count| count.replace(0))
     }
