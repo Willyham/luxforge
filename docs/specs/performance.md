@@ -856,83 +856,118 @@ before this work, with the histogram and the surface primitive both drawn on eac
 
 ### Native viewport-region qualification
 
-Release binary `285ec965…`, Apple M4 Pro, Metal, hidden background launches on the generated 24 MP
-(6000 × 4000) and 60 MP (10000 × 6000) JPEGs. The host was shared and uncontrolled. The runs below
-were serialized with no local build running beside them; load readings come from each run's
-`host-load.json`. “Presented” is a correlated `preview_displayed` adoption, not display scanout.
-Photo-surface write counters measure writes during draw encoding. They do not measure backend-owned
-staging, which remains outside the application's texture budget and unmeasured.
+The current release executable is SHA-256
+`888c0313049c7c590311b6dfba4fd60edd40b0c39e780c1147ae24561b5ba998`. Native
+qualification uses the Apple M4 Pro, Metal and hidden background launches on generated 24 MP
+(6000 × 4000) and 60 MP (10000 × 6000) JPEGs. A presented frame is a correlated
+`preview_displayed` adoption, not display scanout. Photo-surface write counters measure uploads
+issued during draw encoding; backend-owned staging remains unmeasured. The final timing commands
+ran serially after functional work. Their host's one-minute load is recorded at each command's
+start and end; a result starting above 8.0 is a loaded-host diagnostic, not a clean baseline.
+Case JSON and command loads are retained locally under `artifacts/review-fixes/`, including
+`final-timing-runs.json`; the native scenario results are under `rendered-qualified/` there.
 
-At 100%, the final 60 MP case used full Basic, one linear mask and a 7° crop.
-Interactive region worker time was 24.66–29.82 ms and exact-region worker time was 28.78–30.92 ms.
-The first visible region was adopted 26.02 ms after input. The scripted journey covered two pans,
-quiet exact refinement, resumed movement, release, a full-image exact report and a settled pan. Its
-photo-write count and bytes were unchanged across that final pan (16 writes; 776,636,932 bytes),
-showing reuse of resident full-slot pixels in this run. Peak sampled RSS was 1419.8 MiB. The first
-100% Dehaze region took 840.39 ms while its exact whole-stage estimate was cold; later interactive
-regions took 16.08–17.68 ms and exact regions 43.27–47.54 ms. That first miss is the visible cold
-global-work cost, even though the shared exact-estimate cache serves subsequent regions. The Dehaze
-journey's settled pan also added no photo writes (14 before and after; 1,023,925,032 bytes), with
-peak sampled RSS 1882.8 MiB. These are single journeys, not latency distributions. One-minute load
-averages ranged from 6.67 to 7.91 across the two runs.
+The permanent `viewport-region`, `viewport-fallback` and `viewport-idle-fit` scenarios exercise
+state, event, pixel and GPU invariants over a generated 24 MP JPEG. All three passed on this
+executable in the native rendered tier, which passed 33 smoke scenarios. Each recorded zero blank
+photo draws and zero stale photo draws. Peak photo residency was 182,255,616 bytes in the region
+journey and 150,994,944 bytes in each fallback and idle-Fit journey. The idle-Fit capture became
+ready without another input and reported expected full version 5 drawn as version 5, with two
+drawn frames from the view change to its idle deadline, before capture was allowed. Zero blank
+draws means each attempted photo draw showed some photograph pixels; it does not prove that every
+canvas pixel was covered. The focused Metal surface tests drive actual `write`, `write_region`,
+`prepare`, `draw` and readback: all three Appendix A blank-photo regressions pass, bucketed
+single- and multi-tile readbacks match, stale overlays are suppressed,
+and a deferred photo becomes current after retirement without another user input. The final focused
+surface run passed 31 tests; its two ignored retirement timing diagnostics were run separately
+after functional work. The current full-photo bound permits a current and retiring allocation up to
+512 MiB each, plus two region sets up to 32 MiB each; the full-slot increase is an unaccepted owner budget
+proposal. Crop-stage GPU textures and backend staging sit outside that photo accounting.
 
-A dedicated 60 MP 100% full-Basic, one-mask, 7° crop journey on production SHA `6d5f99b5` adopted its first region 26.012 ms after input; interactive worker time was 25.809–30.372 ms and exact-region time 29.181–34.201 ms. Its settled pan retained 17 photo-surface writes and 778,404,412 bytes across the pan, with peak sampled RSS of 1420.4 MiB. This is a single confirmation journey, not a latency distribution. The final 24 MP two-mask cropped journey passed 106 correlated checks for overlay identity, history/cancel fences, retirement and source identity.
+The final 24/60 MP Fit exposure drags each had 30 inputs in one release launch. Input to presented
+adoption was 8.34 / 8.95 ms p50 / p95 at 24 MP and 8.57 / 8.80 ms at 60 MP. The runs started at
+one-minute load 7.72 and 7.34, respectively. These are exposure-only journeys, not matched
+before/after comparisons with the full-Basic Fit pairs below.
 
-At 200%, a 60 MP full-Basic, masked 7° crop moving-pan burst delivered 360 inputs, 157 region
-adoptions and 156 photo writes. Draft staleness was 25.14 / 33.14 ms p50 / p95 (149 samples; 41.59
-ms maximum); gaps between adopted frames were 17.13 / 25.44 ms (148 samples; 41.47 ms maximum).
-The one-minute load average moved from 6.99 to 6.67. The captured 24 MP and 60 MP full-Basic 100%
-bursts delivered 361 and 360 adoptions for 360 inputs, after one final-only adoption in each
-matched before run. Their after-run p50 / p95 staleness was 8.47 / 16.41 ms (359 samples) and 8.49
-/ 16.42 ms (358 samples); p50 / p95 adoption gaps were 8.38 / 9.62 ms (358) and 8.39 / 9.45 ms
-(357). These burst runs were slightly above the 8.0 one-minute load threshold (8.31–9.56), so they
-are loaded-host evidence, not clean-load gate results.
+Final 100% and 200% bursts scripted 360 inputs over three seconds. The values below count
+`preview_displayed` adoptions, which can outnumber actual screen scans. Every burst recorded zero
+blank and zero stale photo draws, but all three started above the 8.0 load threshold:
 
-The matched 24 MP `editor-performance` run measured a 10° crop stack with 200 transform actions at
-31.94 / 39.17 ms p50 / p95 before and 28.93 / 34.49 ms after (30 samples per build). The full-Basic
-colour diagnostic was 71.45 / 80.76 ms before and 70.17 / 79.73 ms after (30 each); that comparison
-does not isolate the viewport path. The wider 24/60 MP editor-performance matrix is recorded in the
-diagnostic tables above.
+| Burst | Adoptions | Draft staleness p50 / p95 ms | Adoption gap p50 / p95 ms | Load at start → end |
+| --- | ---: | ---: | ---: | ---: |
+| 24 MP, 100%, full Basic | 331 (330 regions + one whole) | 8.64 / 25.69 (329 samples) | 8.43 / 17.33 (328) | 10.51 → 9.75 |
+| 60 MP, 100%, full Basic | 359 (358 regions + one whole) | 8.49 / 16.77 (357) | 8.31 / 9.65 (356) | 9.75 → 10.25 |
+| 60 MP, 200%, masked 7° crop and moving pan | 158 (157 regions + one whole) | 25.66 / 34.47 (153) | 17.19 / 25.60 (152) | 10.25 → 9.75 |
 
-Fit also retains the existing display-bounded proxy path. In single release launches with 30
-scripted Basic exposure inputs, the 24 MP run measured 8.59 / 8.86 ms p50 / p95 input-to-adoption
-and the 60 MP run 8.56 / 8.75 ms. The 60 MP Fit run's load crossed the threshold (6.90 to 8.43),
-so treat it as provisional; these are per-input samples in one launch, not independent launch
-distributions. A 60 MP masked paint launch recorded 8.16 / 11.17 ms p50 / p95 over 29 presented
-positions at a steady 8.43 load, likewise slightly above the threshold. An earlier paired 24 MP
-paint run improved from 18.42 / 32.78 to 8.56 / 18.14 ms p50 / p95, with 27 / 29 positions
-presented; its load was 25.72 to 24.86 and the result is provisional, not a quiet-host claim.
+The final held viewport journeys each adopted seven region frames and then a whole-image exact
+report. They are individual journeys, not latency distributions. Each had zero blank photo draws;
+the four or five stale draws are the explicitly marked coherent fallback while a replacement is
+pending. No settled pan added a photo write. Each started above load 8.0:
 
-The crop-only core diagnostic addresses a previous whole-virtual-stage resample intermediate that
-was materialized before extracting the visible rectangle. After the fix, the actual byte-entry
-allocation counter records the requested 451 × 418 intermediate, while byte and RAW region pixels
-still match their full-render rectangles. Three native 60 MP viewport samples of full Basic plus a
-7° crop rendered in 14.22–15.96 ms (the same pre-fix diagnostic was 35–47 ms); crop-only was
-5.63–6.12 ms (previously 32–35 ms). Source-window construction remained 2.38–2.54 ms. This is a
-three-view diagnostic, not a 30-sample distribution. Core window tests passed 13 with one ignored,
-including byte/RAW parity and the materialized allocation bound.
+| Journey | First region after input | Stale draws | Peak sampled process RSS | Photo writes across settled pan |
+| --- | ---: | ---: | ---: | ---: |
+| 60 MP full Basic, mask, 7° crop at 100% | 26.00 ms | 5 | 1394.7 MiB | 16 → 16 |
+| 60 MP Dehaze at 100%, cold estimate | 863.91 ms | 4 | 1681.2 MiB | 14 → 14 |
+| Nikon Z6 RAW exposure at 100% | 17.70 ms | 4 | 1077.8 MiB | 13 → 13 |
+| Fujifilm X100VI RAW exposure at 200% | 8.93 ms | 4 | 1616.9 MiB | 13 → 13 |
+| DJI Air 2S RAW exposure at 100% | 8.73 ms | 4 | 1044.8 MiB | 13 → 13 |
 
-The native RAW white-balance panel checks passed for the Nikon Z6, Fujifilm X100VI and DJI Air 2S. After the shared quiet interval, the held full-detail draft remained labelled approximate and met the unchanged unfiltered threshold of one tenth of the pre-drag-to-release change: 0.81%, 1.39% and 5.06%, respectively. Fit stayed below the one-code mean-difference limit (0.018, 0.048 and 0.345 codes). Motion softness residuals were 2.42%, 3.69% and 17.33%; they are separate from WB accuracy and do not define a general photo-error bound.
+The cold Dehaze first region includes its exact whole-stage estimate and is still the visible
+outlier. Sampled process RSS includes other editor and capture work and is not the photo-texture
+charge or a separate GPU allocation measure. A final `measure --samples 1` run recorded one
+cold-launch peak RSS
+of 379.9 MiB at 24 MP, 636.1 MiB at 60 MP and 912.2 MiB after sixteen 60 MP loads. These are
+single launches, not memory distributions. Its 60 MP idle window used 1.421% of one core over
+30.26 seconds with the Performance section open, missing the provisional <1% target. That is one
+window, not a p95 or an idle distribution.
 
-Native functional capture also passed 106 correlated checks for one generated 24 MP JPEG journey
-with two separately mask-bound layers and a rotated crop, including interactive and exact regions, clipping and
-mask overlays, cancel/release/history fences, current non-stale full histogram, settled-pan reuse
-and retirement draining. A separate 44-check journey verified the explicit exact fallback for a
-masked Presence spatial layer followed by Dehaze. These cases validate behavior; they do not qualify
-every camera, recipe or zoom. The renderer-level estimate cost, shared-cache semantics and region
-bounds are covered by core diagnostics and tests; focused UI tests cover source selection across zoom
-changes and overlay identity where region qualities overlap. The clean full-tier run at production SHA `6d5f99b5` passed repository checks, workspace tests,
-all 30 rendered scenarios, three RAW panels and four timing commands. The dedicated 60 MP viewport
-journey passed on that binary. The 24 MP multi-mask journey and 45-check exact-fallback scenario
-passed on app-only release binary `dc88b1c1` built from the same source. The default-open Performance
-section idle target missed at 1.42% of one core over 30.21 seconds. Native backend-staging measurement
-remains outstanding. No general numerical photo-error limit or speedup claim is made from these runs.
+The two ignored Metal retirement diagnostics ran after functional work. On the pre-fix test
+executable, an empty render-thread submit waited 57.075 ms during a 63.103 ms GPU workload,
+against a 25.542 µs
+control submit; the diagnostic failed as expected. On the final source, the same probe passed:
+5.125 µs with one retirement in flight during a 63.389 ms workload. Fifteen smaller retired
+workloads produced submit waits of roughly 0.905–3.560 ms before and 2.167–25.667 µs after.
+Each trial asserted a real retiring texture. These are timing diagnostics on a shared host, not a
+CI timing threshold.
+
+The final 24 MP `editor-performance` pair used 30 samples per build. The 10° crop stack's 200
+transforms were 29.65 / 32.96 ms p50 / p95 before and 29.54 / 33.79 ms after; the full-Basic
+colour stack was 68.72 / 73.25 → 70.39 / 77.63 ms. On the final 60 MP build, those workloads
+were 69.49 / 75.26 and 166.91 / 176.39 ms. The 24 MP legs started at loads 2.15 and 5.46;
+the 60 MP leg started at 6.93 and ended at 10.51. The changes do not establish a core speedup.
+
+The older matched Fit comparisons are retained to show the with-and-without-deferral measurement
+required for TASK-010. They were one release launch per condition with 30 scripted inputs on a shared
+host and predate the current surface changes. Values are input-to-adoption p50 / p95 milliseconds:
+
+| Journey | Before deferral | After deferral |
+| --- | ---: | ---: |
+| 24 MP Fit drag | 10.49 / 14.38 | 8.59 / 8.86 |
+| 60 MP Fit drag | 15.34 / 17.86 | 8.56 / 8.75 |
+| 60 MP Fit masked paint | 10.17 / 17.04 | 8.16 / 11.17 |
+
+The same pairs recorded **slower** release-to-settled-histogram times: 24 MP 32.48 / 35.42 →
+33.23 / 62.72 ms and 60 MP 48.40 / 51.83 → 62.03 / 73.00 ms (p50 / p95; only two releases per
+condition, loaded host). These are diagnostics, not a stable release distribution. The older 24 MP
+`editor-performance` after run also started at one-minute load 8.43, above the 8.0 threshold; its
+10° crop stack measured 31.94 / 39.17 → 28.93 / 34.49 ms p50 / p95 over 30 samples per build,
+under that loaded-host caveat. Earlier native crop-window evidence recorded a 451 × 418 requested
+intermediate; the committed 1000 × 800 fixture proves bounded materialization, and the prior core
+window run counted 14 passed and one ignored test. These older figures do not qualify this build.
+
+The RAW white-balance gate remains an owner question. On this final executable, the original
+moving-frame criterion passes for the Nikon Z6 and Fujifilm X100VI but fails for the DJI Air 2S:
+the release residuals are 2.42%, 3.69% and 17.33%, respectively, against the unchanged 10%
+limit. A proposed one-second held-frame comparison produces 0.81%, 1.39% and 5.06%, respectively,
+with the draft still labelled approximate. The held-frame criterion has not been accepted by the
+owner. Neither comparison defines a general numerical photo-error bound.
 
 ### Provisional targets: measured
 
-These are earlier provisional target results from Fit and editor-wide workloads. They document
-those checks only; the viewport half-detail path, shared quiet timer and exact-estimate costs are
-qualified separately above. A miss is a finding for the owner's review, not a blocker.
+These provisional targets mostly retain earlier Fit and editor-wide workload evidence; the final
+single-window idle result is updated below. They document those checks only; the viewport
+half-detail path, shared quiet timer and exact-estimate costs are qualified separately above. A
+miss is a finding for the owner's review, not a blocker.
 
 | Provisional target | Measured | Verdict |
 | --- | --- | --- |
@@ -944,8 +979,8 @@ qualified separately above. A miss is a finding for the owner's review, not a bl
 | Settled exact histogram p95 below 200 ms after the final input, 24 MP | 70.3 ms p95 (60.1 p50, 30 samples) exposure only; 158.6 ms with a full Basic layer (2 commits) | **Pass** |
 | Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
 | 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |
-| 60 MP peak ≤ 1 GiB process RSS | 975.0 MiB median peak on a 60 MP open; 1316.4 MiB after sixteen consecutive 60 MP loads | **Pass** on one image, **miss** on the sixteen-load workload (unchanged from before this work: 1316.0 MiB) |
-| Idle CPU < 1% of one core over 30 s | 1.42% over 30.21 s in the clean full-tier run with the default-open Performance section; previous sampled values were 1.32% (60 MP open) and 1.38% (24 MP full Basic) | **Miss** |
+| 60 MP peak ≤ 1 GiB process RSS | Final single launches sampled 636.1 MiB on one 60 MP open and 912.2 MiB after sixteen loads; the earlier five-launch run measured 975.0 MiB median on one open and 1316.4 MiB after sixteen loads | **Pass in the final single trials; prior repeated-load distribution missed**. One current launch does not retire the prior multi-run finding |
+| Idle CPU < 1% of one core over 30 s | Final single 60 MP idle window: 1.421% over 30.26 s with the default-open Performance section | **Miss** (one window, not a distribution) |
 | Geometry input to presented preview p95 < 50 ms once the source preview is ready | not measured for geometry in this round | Open |
 | A masked drag costs a person no more than an unmasked one | 24 MP drained drag p50 16.77 / 17.13 ms masked against 16.93 unmasked, 60 MP 17.06 / 17.87 against 17.00 / 17.48, all with a full Basic layer, in both orders at load 2.3–8.1; masked Clarity at 24 MP 17.18 / 17.10 against 17.00 / 17.10 unmasked | **Pass**: every masked run is within 0.4 ms of its unmasked pair at the median, which is inside the spread between two runs of the same condition |
 

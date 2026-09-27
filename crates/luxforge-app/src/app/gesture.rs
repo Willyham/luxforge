@@ -364,6 +364,8 @@ impl Editor {
             return None;
         };
         self.session.draft = None;
+        self.displayed_draft_id = None;
+        self.displayed_draft_revision = None;
         self.event(
             "mask_draft_disarmed",
             json!({"draft_id": gesture.draft.draft_id.as_ref().map(DraftId::as_str)}),
@@ -471,11 +473,19 @@ impl Editor {
         self.released_draft = self
             .core_gesture()
             .and_then(|gesture| gesture.draft.draft_id.clone());
+        if self.released_draft.is_some() {
+            self.displayed_draft_id = None;
+            self.displayed_draft_revision = None;
+        }
         self.drive(Event::Release)
     }
 
     /// Escape, Discard or a script: end the open core gesture and commit nothing.
     pub(crate) fn discard(&mut self) -> Task<Message> {
+        if self.core_gesture().is_some() {
+            self.displayed_draft_id = None;
+            self.displayed_draft_revision = None;
+        }
         self.drive(Event::Cancel)
     }
 
@@ -566,6 +576,8 @@ impl Editor {
             return;
         };
         self.session.draft = None;
+        self.displayed_draft_id = None;
+        self.displayed_draft_revision = None;
         // Nothing the gesture asked for reaches the screen after this: its drafted frames are
         // stopped and held below the delivery floor, so the next frame presented is the committed
         // one the cancel asks for. The drafted pixels already on screen stay until it lands. An
@@ -669,6 +681,8 @@ impl Editor {
     fn end_gesture(&mut self) {
         if let Some(Gesture::Core(gesture)) = self.gesture.take() {
             self.session.draft = None;
+            self.displayed_draft_id = None;
+            self.displayed_draft_revision = None;
             self.dragging = None;
             if gesture.crop().is_some() {
                 self.crop_ended();
@@ -973,6 +987,8 @@ impl Editor {
             return Task::none();
         };
         self.session.draft = None;
+        self.displayed_draft_id = None;
+        self.displayed_draft_revision = None;
         self.dragging = None;
         match (open.kind, outcome) {
             (Kind::Slider(_), Some(refresh)) => {

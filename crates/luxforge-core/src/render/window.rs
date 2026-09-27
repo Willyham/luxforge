@@ -61,6 +61,7 @@ pub enum RegionFallback {
     PointReplacement,
     EstimateAfterSpatial,
     SegmentMismatch,
+    ProxyCompileFailed,
     UnplannableGeometry,
     ProxyIneligible,
     ProxyUnavailable,
@@ -76,6 +77,7 @@ impl RegionFallback {
                 "a global estimate behind an earlier spatial layer cannot yet be windowed"
             }
             Self::SegmentMismatch => "the scaled recipe has different stage boundaries",
+            Self::ProxyCompileFailed => "the recipe cannot be compiled at half detail",
             Self::UnplannableGeometry => "the viewport cannot be mapped safely through the stack",
             Self::ProxyIneligible => "the recipe is not eligible for a scaled proxy",
             Self::ProxyUnavailable => "a half-scale proxy is not available for this stage",
@@ -180,8 +182,8 @@ fn tap_region(resample: super::Resample, read: Region, input: Stage) -> Option<R
 impl WindowPlan {
     /// The windows of `compiled`, a stack compiled against a whole proxy source of `source`
     /// dimensions, or `None` when the stack reads the whole source anyway or cannot be cut: a
-    /// positional unit or a point replacement in a segment whose output would be cut, or a spatial
-    /// operation with a global estimate behind another spatial operation. `O(segments)`, and reads
+    /// point replacement in a segment whose output would be cut, or a spatial operation with a
+    /// global estimate behind another spatial operation. `O(segments)`, and reads
     /// no pixel.
     pub(crate) fn of(compiled: &Compiled, source: (u32, u32)) -> Option<Self> {
         let requested = whole(output_stage(compiled.segments.last()?));
@@ -549,9 +551,9 @@ mod tests {
         bytes
     }
 
-    /// Render the proxy window with the same exact whole-stage estimates as production, for an
-    /// independent overlap comparison in the tests below.
-    fn diagnostic_proxy_frame(
+    /// Render the uncut half stage with an estimate computed in an independent exact context.
+    /// This reference does not use either production region's source window or cut compilation.
+    fn whole_half_frame_with_exact_estimate(
         render: &Render<'_>,
         registry: &ModuleRegistry,
         proxy: &PreviewSource,
@@ -559,7 +561,7 @@ mod tests {
         plan: crate::ProxyRegionPlan,
         context: &crate::RenderContext,
     ) -> crate::Raster {
-        let compiled = registry
+        let mut compiled = registry
             .compile_sampled(
                 plan.proxy.width,
                 plan.proxy.height,
@@ -567,17 +569,11 @@ mod tests {
                 crate::mask_field::MaskSampling::ThinFeature,
             )
             .unwrap();
-        let windows = WindowPlan::of_rect(
-            &compiled,
-            (plan.proxy.width, plan.proxy.height),
-            plan.output,
-        )
-        .unwrap();
-        let compiled = windows
-            .apply(compiled, (plan.proxy.width, plan.proxy.height), |index| {
-                render.spatial_globals(index)
-            })
-            .unwrap();
+        for (index, segment) in compiled.segments.iter_mut().enumerate() {
+            if let Some(Entry::Spatial { globals, .. }) = &mut segment.entry {
+                *globals = Some(Arc::new(render.spatial_globals(index).unwrap()));
+            }
+        }
         Render::compiled(
             proxy.input(),
             compiled,
@@ -644,16 +640,27 @@ mod tests {
             ("raw-oriented-view", oriented_raw),
         ] {
             for (case, stack) in stacks.iter().enumerate() {
-                let context = crate::RenderContext::new();
-                let render = render(
+                let region_context = crate::RenderContext::new();
+                let region_render = render(
                     &registry,
                     source.input(),
                     stack,
                     RenderOptions::default(),
-                    &context,
+                    &region_context,
                 )
                 .expect("one compilation");
-                let (width, height) = render.stage();
+                let (width, height) = region_render.stage();
+                let whole_context = crate::RenderContext::new();
+                let whole = render(
+                    &registry,
+                    source.input(),
+                    stack,
+                    RenderOptions::default(),
+                    &whole_context,
+                )
+                .expect("independent whole compilation")
+                .frame(SnapshotId::new())
+                .expect("whole reference");
                 let mut regions = Vec::new();
                 for requested in [
                     Region {
@@ -675,7 +682,7 @@ mod tests {
                         height: 30,
                     },
                 ] {
-                    let crate::RegionRenderOutcome::Rendered(region) = render
+                    let crate::RegionRenderOutcome::Rendered(region) = region_render
                         .region(SnapshotId::new(), requested)
                         .expect("region evaluation")
                     else {
@@ -685,7 +692,6 @@ mod tests {
                     assert_eq!(region.rect, region.full_rect);
                     regions.push(region);
                 }
-                let whole = render.frame(SnapshotId::new()).expect("whole reference");
                 for region in regions {
                     assert_eq!(
                         region.raster.rgba.as_ref(),
@@ -701,64 +707,81 @@ mod tests {
     #[test]
     fn a_half_detail_region_is_the_same_scaled_recipe_at_the_same_pixels() {
         let registry = ModuleRegistry::builtin();
+        let mask = gradient("half-detail cut mask");
         let stack = recipe(
             vec![
                 Layer::orientation(Orientation {
                     mirror: true,
                     turns: 1,
                 }),
-                layer(BASIC_EFFECT, json!({"exposure": 0.3}), None),
+                layer(BASIC_EFFECT, json!({"exposure": 0.3}), Some(&mask)),
+                layer(PRESENCE_EFFECT, json!({"clarity": 24}), Some(&mask)),
                 crop(4.0, 0.1, 0.1, 0.8, 0.8),
                 layer(VIGNETTE_EFFECT, json!({"amount": -65}), None),
             ],
-            Vec::new(),
+            vec![mask],
         );
-        for (domain, source) in [("byte", jpeg(192, 144)), ("raw", raw(192, 144))] {
+        for (domain, source) in [("byte", jpeg(321, 241)), ("raw", raw(321, 241))] {
             let full = exact(&registry, &source, &stack);
             let (width, height) = full.stage();
-            let requested = Region {
-                x0: width / 4,
-                y0: height / 5,
-                width: width / 2,
-                height: height / 2,
-            };
-            let plan = full
-                .plan_proxy_region(&registry, &stack, requested)
-                .expect("half plan");
-            let proxy_source = source.proxy(plan.proxy).expect("bounded proxy");
-            let crate::RegionRenderOutcome::Rendered(region) = full
-                .render_proxy_region(
+            for requested in [
+                Region {
+                    x0: 0,
+                    y0: 0,
+                    width: 55,
+                    height: 43,
+                },
+                Region {
+                    x0: 37,
+                    y0: 25,
+                    width: width / 3,
+                    height: height / 3,
+                },
+                Region {
+                    x0: width - 47,
+                    y0: height - 39,
+                    width: 47,
+                    height: 39,
+                },
+            ] {
+                let plan = full
+                    .plan_proxy_region(&registry, &stack, requested)
+                    .expect("half plan");
+                let proxy_source = source.proxy(plan.proxy).expect("bounded proxy");
+                let crate::RegionRenderOutcome::Rendered(region) = full
+                    .render_proxy_region(
+                        &registry,
+                        proxy_source.input(),
+                        &stack,
+                        plan,
+                        SnapshotId::new(),
+                        context(),
+                    )
+                    .expect("half region")
+                else {
+                    panic!("{domain}: half region declined")
+                };
+                let whole_proxy_source = source
+                    .proxy(plan.proxy.whole())
+                    .expect("whole reference source");
+                let reference = render(
                     &registry,
-                    proxy_source.input(),
+                    whole_proxy_source.input(),
                     &stack,
-                    plan,
-                    SnapshotId::new(),
+                    RenderOptions::proxy(&Cancel::never()),
                     context(),
                 )
-                .expect("half region")
-            else {
-                panic!("{domain}: half region declined")
-            };
-            let whole_proxy_source = source
-                .proxy(plan.proxy.whole())
-                .expect("whole reference source");
-            let reference = render(
-                &registry,
-                whole_proxy_source.input(),
-                &stack,
-                RenderOptions::proxy(&Cancel::never()),
-                context(),
-            )
-            .unwrap()
-            .frame(SnapshotId::new())
-            .unwrap();
-            assert_eq!(
-                region.raster.rgba.as_ref(),
-                cropped_bytes(&reference, region.rect),
-                "{domain}"
-            );
-            assert!(region.approximation.reduced_detail);
-            assert_eq!(region.full_rect, requested);
+                .unwrap()
+                .frame(SnapshotId::new())
+                .unwrap();
+                assert_eq!(
+                    region.raster.rgba.as_ref(),
+                    cropped_bytes(&reference, region.rect),
+                    "{domain} at {requested:?}"
+                );
+                assert!(region.approximation.reduced_detail);
+                assert_eq!(region.full_rect, requested);
+            }
         }
     }
 
@@ -889,15 +912,20 @@ mod tests {
                     else {
                         panic!("{domain}: serial cropped region declined")
                     };
-                    assert_eq!(
-                        region_context.resample_peak_bytes(),
-                        if domain == "byte" {
-                            rect.pixels() * 4
-                        } else {
-                            0
-                        },
-                        "{domain}: actual resample entry allocation must track only the viewport"
-                    );
+                    let peak = region_context.resample_peak_bytes();
+                    if domain == "byte" {
+                        assert_eq!(peak, rect.pixels() * 4);
+                    } else {
+                        assert!(peak > 0, "RAW resample tap block must be counted");
+                        assert!(
+                            peak <= super::super::linear::TAP_BLOCK_PIXELS * 48,
+                            "RAW resample tap block must stay bounded: {peak}"
+                        );
+                        assert!(
+                            peak < virtual_pixels * 24,
+                            "RAW region must not allocate the whole virtual crop: {peak}"
+                        );
+                    }
                     assert_eq!(
                         part.raster.rgba.as_ref(),
                         cropped_bytes(&whole, rect),
@@ -1101,21 +1129,31 @@ mod tests {
             "the output crosses a tile seam"
         );
         for (domain, source) in [("byte", jpeg(1800, 128)), ("raw", raw(1800, 128))] {
-            let context = crate::RenderContext::new();
-            let render = render(
+            let region_context = crate::RenderContext::new();
+            let region_render = render(
                 &registry,
                 source.input(),
                 &stack,
                 RenderOptions::default(),
-                &context,
+                &region_context,
             )
             .unwrap();
+            let whole_context = crate::RenderContext::new();
+            let whole = render(
+                &registry,
+                source.input(),
+                &stack,
+                RenderOptions::default(),
+                &whole_context,
+            )
+            .unwrap()
+            .frame(SnapshotId::new())
+            .unwrap();
             let crate::RegionRenderOutcome::Rendered(region) =
-                render.region(SnapshotId::new(), requested).unwrap()
+                region_render.region(SnapshotId::new(), requested).unwrap()
             else {
                 panic!("{domain}: region declined")
             };
-            let whole = render.frame(SnapshotId::new()).unwrap();
             assert_eq!(
                 region.raster.rgba.as_ref(),
                 cropped_bytes(&whole, requested),
@@ -1252,10 +1290,27 @@ mod tests {
                     panic!("{domain}: region declined")
                 };
                 assert!(frame.approximation.reduced_detail);
-                let whole_estimate_proxy =
-                    diagnostic_proxy_frame(&exact, &registry, &proxy, &stack, plan, &context);
+                let reference_context = crate::RenderContext::new();
+                let reference_exact = render(
+                    &registry,
+                    source.input(),
+                    &stack,
+                    RenderOptions::default(),
+                    &reference_context,
+                )
+                .unwrap();
+                let whole_proxy = source.proxy(plan.proxy.whole()).unwrap();
+                let whole_estimate_proxy = whole_half_frame_with_exact_estimate(
+                    &reference_exact,
+                    &registry,
+                    &whole_proxy,
+                    &stack,
+                    plan,
+                    &reference_context,
+                );
                 assert_eq!(
-                    frame.raster.rgba, whole_estimate_proxy.rgba,
+                    frame.raster.rgba.as_ref(),
+                    cropped_bytes(&whole_estimate_proxy, frame.rect),
                     "{domain}: production half viewport must use exact globals"
                 );
                 regions.push(frame);
@@ -1420,6 +1475,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_cold_windowed_fit_proxy_uses_its_own_cancel_token_for_dehaze() {
+        let registry = ModuleRegistry::builtin();
+        let source = jpeg(600, 400);
+        let stack = recipe(
+            vec![
+                layer(PRESENCE_EFFECT, json!({"dehaze": 28}), None),
+                crop(0.0, 0.3, 0.3, 0.4, 0.4),
+            ],
+            Vec::new(),
+        );
+        let context = crate::RenderContext::new();
+        let exact_cancel = Cancel::new();
+        let exact = render(
+            &registry,
+            source.input(),
+            &stack,
+            RenderOptions::exact(&exact_cancel),
+            &context,
+        )
+        .unwrap();
+        let plan = exact.proxy_window(
+            &registry,
+            &stack,
+            exact
+                .proxy_plan(ProxyBounds {
+                    width: 120,
+                    height: 80,
+                })
+                .unwrap(),
+        );
+        assert!(
+            plan.window.is_some(),
+            "the proxy must need a cold exact estimate"
+        );
+        let proxy = source.proxy(plan).unwrap();
+        exact_cancel.cancel();
+        let proxy_cancel = Cancel::new();
+        let frame = exact
+            .render_proxy(
+                &registry,
+                proxy.input(),
+                &stack,
+                plan,
+                &proxy_cancel,
+                &context,
+            )
+            .unwrap()
+            .frame(SnapshotId::new())
+            .unwrap();
+        assert!(frame.width > 0 && frame.height > 0);
     }
 
     #[test]

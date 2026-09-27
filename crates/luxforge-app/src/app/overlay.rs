@@ -302,7 +302,9 @@ impl Editor {
             .filter(|region| region.generation == generation);
         let displayed = if let Some(region) = region {
             let scale = match self.session.preview.view.zoom {
-                luxforge_core::Zoom::Percent { value } => value / 100.0 / self.scale_factor,
+                // Percent zoom is specified in physical pixels. The scrollable uses logical
+                // coordinates, but a cell grid describes the pixels actually displayed.
+                luxforge_core::Zoom::Percent { value } => value / 100.0,
                 luxforge_core::Zoom::Fit => 1.0,
             };
             Some((
@@ -335,9 +337,7 @@ impl Editor {
         })
     }
 
-    /// The display cell grid an overlay is reduced into: the same bounded grid the clipping overlay
-    /// already defines, so the mask overlay allocates no plane of its own and costs no second
-    /// render — the preview worker fills it beside the frame it is already producing.
+    /// The visible region's grid. The worker uses this for motion and refinement at 100% and above.
     pub(crate) fn overlay_cells(&self) -> Option<(u32, u32)> {
         // The displayed raster's size, or the source's own before the first frame has landed: the
         // grid is bounded by what the display can show, and the aspect ratio is what decides how
@@ -353,11 +353,22 @@ impl Editor {
             && let Some(region) = self.desired_view_for(source)
         {
             let displayed = (
-                region.width as f32 * value / 100.0 / self.scale_factor,
-                region.height as f32 * value / 100.0 / self.scale_factor,
+                region.width as f32 * value / 100.0,
+                region.height as f32 * value / 100.0,
             );
             return state::histogram::overlay_cells((region.width, region.height), displayed);
         }
+        self.whole_overlay_cells()
+    }
+
+    /// A settled whole-frame mask grid has the full stage's aspect ratio and physical display
+    /// density. Reusing the viewport's counts for that grid makes a large photograph coarse.
+    pub(crate) fn whole_overlay_cells(&self) -> Option<(u32, u32)> {
+        let source = self.dimensions.or_else(|| {
+            self.state
+                .as_ref()
+                .map(|state| (state.asset.width, state.asset.height))
+        })?;
         let workspace = &self.session.workspace;
         let surface = state::histogram::photo_surface(
             self.window,

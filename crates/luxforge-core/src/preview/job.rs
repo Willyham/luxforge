@@ -90,6 +90,9 @@ pub struct MaskOverlayRequest {
     pub component: Option<ComponentId>,
     pub cells_w: u32,
     pub cells_h: u32,
+    /// Grid dimensions for a later settled whole-stage frame. Region frames use `cells_w/h`.
+    pub whole_cells_w: u32,
+    pub whole_cells_h: u32,
 }
 
 /// The mask a component's own row describes: that one component alone.
@@ -211,15 +214,22 @@ impl PreviewJob {
                 mask.name
             )));
         }
-        if request.cells_w == 0 || request.cells_h == 0 {
+        if request.cells_w == 0
+            || request.cells_h == 0
+            || request.whole_cells_w == 0
+            || request.whole_cells_h == 0
+        {
             return Err(Error::validation(
                 "a mask overlay needs a non-empty cell grid",
             ));
         }
-        if request.cells_w > MAX_OVERLAY_CELLS || request.cells_h > MAX_OVERLAY_CELLS {
+        if request.cells_w > MAX_OVERLAY_CELLS
+            || request.cells_h > MAX_OVERLAY_CELLS
+            || request.whole_cells_w > MAX_OVERLAY_CELLS
+            || request.whole_cells_h > MAX_OVERLAY_CELLS
+        {
             return Err(Error::resource_limit(format!(
-                "a mask overlay of {}x{} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows",
-                request.cells_w, request.cells_h
+                "a mask overlay grid exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows"
             )));
         }
         self.mask_overlay = Some(request);

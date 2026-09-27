@@ -33,8 +33,8 @@ struct Shared {
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
     compiles: AtomicU64,
-    /// Actual largest byte frame materialized by a resample in this context. Tests use a fresh
-    /// context to guard against a cut viewport silently computing a whole virtual crop stage.
+    /// Largest byte entry frame or RAW f64 tap-block allocation in this context.
+    /// Tests use a fresh context to guard against silently computing a whole virtual crop stage.
     #[cfg(test)]
     resample_peak_bytes: AtomicU64,
 }

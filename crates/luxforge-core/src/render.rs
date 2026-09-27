@@ -839,9 +839,6 @@ pub(crate) struct Segment {
     pub(crate) height: u32,
     pub(crate) has_pixels: bool,
     pub(crate) has_color: bool,
-    /// Whether a colour operation of this segment reads the coordinates it is handed, which only a
-    /// finish-stage layer's units do: such a segment's output is never cut by a proxy window.
-    pub(crate) positional: bool,
     /// Where the frame this segment's resample entry reads lies in the stage the resample was
     /// compiled against: `(0, 0)`, except behind a windowed proxy's cut ([`window`]).
     pub(crate) entry_origin: (u32, u32),
@@ -863,7 +860,6 @@ impl Segment {
             height,
             has_pixels: false,
             has_color: false,
-            positional: false,
             entry_origin: (0, 0),
             entry_window: None,
             output_origin: (0, 0),

@@ -153,7 +153,9 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 
 ## RAW white-balance drafts
 
-- The RAW white-balance quality check keeps the Fit one-code mean-difference threshold and compares 100% only after the held draft has received full-detail refinement under the shared quiet policy. The moving half-scale image is checked separately for viewport identity and approximate-WB labelling. The unchanged unfiltered 100% mean-difference threshold is one tenth of the pre-drag-to-release change; native Z6, X100VI and Air 2S checks pass at 0.81%, 1.39% and 5.06%, respectively. Moving softness residuals are reported separately (2.42%, 3.69% and 17.33%) and are not WB error measurements. These checks do not establish a general photo-error bound. See [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
+- The `raw-panel` scenario checks a drafted RAW white balance relative to the drag (owner, 2026-09-26): at Fit and at 100% the released exact frame is within a tenth of the drag's own change from the approximate frame, and at Fit within one code of it on average. The Air 2S's full-size error at a strong gain change is above a code, which the design's accuracy table already records; see [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
+
+The proposed qualification for the half-detail 100% view compares white-balance error only after a held draft receives full-detail refinement under the shared quiet policy; motion checks its viewport identity and approximate label separately. The measured motion residuals (Z6 2.42%, X100VI 3.69%, Air 2S 17.33%) combine half-resolution softness with white-balance approximation and do not isolate white-balance error. The owner-approved moving-frame criterion still counts both; the Air 2S motion result misses it. This proposal has not replaced that criterion and does not establish a general photo-error bound.
 
 ## Post-consolidation review
 
@@ -189,6 +191,8 @@ Decided on 2026-09-27. The owner accepted the viewport behavior and authorized i
 - Exact settled pixels, full-image analysis, sampling and export remain the reference. The viewport implementation uses the documented half-scale proxy during motion and exact visible-region refinement under the shared quiet policy; unsupported stacks use their named fallback.
 - The implementation authorization is not a latency or memory qualification result. Additional quality levels, guide approximation and GPU preview arithmetic, plus their numerical error limits, remain open in [product decisions](../tasks/product-decisions.json).
 
+The surface currently allows one current and one retiring full-photo allocation of at most 512 MiB each, plus two region sets of at most 32 MiB each, for up to 1088 MiB of photo textures including retirement. Accepting that as a product memory budget is a proposal, not an owner decision. Crop textures, overlays and backend upload staging are outside that photo total; backend staging is unmeasured. The separate budget decision remains open in [product decisions](../tasks/product-decisions.json).
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -201,6 +205,8 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above.
+- Should the accepted moving-frame `raw-panel` quality criterion be retained, or supplemented or replaced by a held full-detail comparison after quiet refinement? The latter is only a proposal, and the Air 2S misses the accepted moving-frame 100% threshold.
+- Should the current 1088 MiB photo-texture implementation bound be accepted as a product budget, and what separate limits or measurements are required for crop textures, overlays and backend staging?
 - Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.

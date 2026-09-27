@@ -74,6 +74,10 @@ pub(crate) struct PresentedRegion {
     pub(crate) raster: Arc<luxforge_core::Raster>,
     pub(crate) rect: Region,
     pub(crate) full_stage: luxforge_core::StageSize,
+    /// The raster's footprint in its own stage. Half-detail scaled rectangles can extend beyond
+    /// `rect` after floor/ceil rounding, and raster-derived clipping follows this footprint.
+    pub(crate) raster_rect: Region,
+    pub(crate) raster_stage: luxforge_core::StageSize,
     pub(crate) quality: luxforge_ui::RegionQuality,
     pub(crate) approximate: bool,
 }
@@ -145,8 +149,30 @@ pub(super) fn intersects_region(a: Region, b: Region) -> bool {
     a.x0 < b.x1() && b.x0 < a.x1() && a.y0 < b.y1() && b.y0 < a.y1()
 }
 
+pub(super) fn surface_photo_needs_update(
+    gpu: &luxforge_ui::SurfaceDiagnostics,
+    has_picture: bool,
+    render_failed: bool,
+) -> bool {
+    has_picture && !render_failed && (gpu.drawn_stale_photo || gpu.drawn_photo_blank)
+}
+
 impl Editor {
+    /// A deferred surface write may draw retained pixels after the presenter has adopted a new
+    /// frame. The surface posts a one-shot wake when that condition begins or ends; this reads its
+    /// last draw without polling or scheduling another render.
+    pub(crate) fn surface_photo_updating(&self) -> bool {
+        surface_photo_needs_update(
+            &luxforge_ui::surface_diagnostics(),
+            self.presenter.photo().is_some() || self.presenter.region().is_some(),
+            self.render_error.is_some(),
+        )
+    }
+
     pub(crate) fn visible_detail_updating(&self) -> bool {
+        if self.surface_photo_updating() {
+            return true;
+        }
         let Some(stage) = self.dimensions else {
             return false;
         };
@@ -881,7 +907,9 @@ impl Editor {
             self.desired_view_dirty = true;
             return (Task::none(), false);
         }
-        if draft_revision.is_some()
+        if result.identity.draft.as_ref().map(|stamp| &stamp.draft_id)
+            == self.displayed_draft_id.as_ref()
+            && draft_revision.is_some()
             && self.displayed_draft_revision.is_some()
             && draft_revision < self.displayed_draft_revision
         {
@@ -922,6 +950,8 @@ impl Editor {
             raster: retained,
             rect: frame.full_rect,
             full_stage: frame.full_stage,
+            raster_rect: frame.rect,
+            raster_stage: frame.stage,
             quality,
             approximate: quality == luxforge_ui::RegionQuality::Interactive
                 || approximate_white_balance,
@@ -931,6 +961,11 @@ impl Editor {
         self.presented_content = content;
         self.presented_entry = Some(entry_id.clone());
         self.displayed_draft_revision = draft_revision;
+        self.displayed_draft_id = result
+            .identity
+            .draft
+            .as_ref()
+            .map(|stamp| stamp.draft_id.clone());
         // `presented_proxy` means a whole-output display proxy for Fit/50% hand-over. A
         // half-detail viewport is a different slot and must not enter that zoom rule.
         self.presented_proxy = false;
@@ -1126,7 +1161,13 @@ impl Editor {
             json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
         );
         let shows_target = self.presented_entry.as_ref() == Some(entry)
-            && self.displayed_draft_revision == draft_revision;
+            && self.displayed_draft_revision == draft_revision
+            && self.displayed_draft_id
+                == self
+                    .session
+                    .draft
+                    .as_ref()
+                    .map(|draft| draft.draft_id.clone());
         if !shows_target && (self.presenter.photo().is_some() || self.presenter.region().is_some())
         {
             self.withdraw_photo(generation, entry, error);
@@ -1185,6 +1226,7 @@ impl Editor {
         self.presented_approximate_white_balance = false;
         self.rendered_entry = None;
         self.displayed_draft_revision = None;
+        self.displayed_draft_id = None;
         self.readout = None;
         self.pending_sample = None;
         self.activity.render = None;
@@ -1648,6 +1690,13 @@ impl Editor {
         }
         self.presented_entry = Some(upload.entry_id.clone());
         self.displayed_draft_revision = upload.draft_revision;
+        if upload.reason.is_none() {
+            self.displayed_draft_id = self
+                .session
+                .draft
+                .as_ref()
+                .map(|draft| draft.draft_id.clone());
+        }
         self.adopt_analysis(upload.generation);
         if self
             .requested_render_entry

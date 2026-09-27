@@ -35,6 +35,7 @@ mod scenario;
 mod smoke;
 mod stats;
 mod verify;
+mod viewport_smoke;
 mod vignette_smoke;
 mod workspace_smoke;
 mod zoom_smoke;

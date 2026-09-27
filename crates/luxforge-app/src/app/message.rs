@@ -804,6 +804,8 @@ pub(crate) enum PerformanceMessage {
 pub(crate) enum EvidenceMessage {
     /// The evidence deadline check.
     Tick,
+    /// The one gated deadline of a `view_idle` step, before any evidence capture can redraw.
+    ViewIdleDeadline,
     /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
     /// step has values left to send, which is also when the subscription that produces it exists.
     PacedSliderTick,

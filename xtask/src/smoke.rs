@@ -11,7 +11,8 @@ use crate::{
     performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
     raw_panel_smoke as raw_panel,
     scenario::{Checked, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
+    viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
+    zoom_smoke as zoom, *,
 };
 use std::{borrow::Borrow, process::ExitStatus, time::Duration};
 
@@ -249,6 +250,45 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: None,
         own: Some(zoom::run),
+    },
+    Scenario {
+        name: viewport::REGION,
+        about: "Masked, cropped 100% viewport draft, overlays, settle, history and GPU draws",
+        launches: &[LaunchSpec {
+            plan: viewport::region_plan,
+            ..APP
+        }],
+        verify: viewport::verify_region,
+        source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: viewport::FALLBACK,
+        about: "Estimate-after-spatial viewport refusal and exact fallback over two masks",
+        launches: &[LaunchSpec {
+            plan: viewport::fallback_plan,
+            ..APP
+        }],
+        verify: viewport::verify_fallback,
+        source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: viewport::IDLE,
+        about: "100% to Fit without an evidence tick or frame capture during the idle interval",
+        launches: &[LaunchSpec {
+            plan: viewport::idle_plan,
+            ..APP
+        }],
+        verify: viewport::verify_idle,
+        source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
     },
     Scenario {
         name: "crop",

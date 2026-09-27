@@ -256,6 +256,8 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
         component: None,
         cells_w,
         cells_h,
+        whole_cells_w: cells_w,
+        whole_cells_h: cells_h,
     }));
     let registry = job.registry.clone();
     let recipe = job.recipe.clone();
@@ -322,6 +324,8 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
         component: None,
         cells_w,
         cells_h,
+        whole_cells_w: cells_w,
+        whole_cells_h: cells_h,
     })));
     assert!(
         again.generation > 0,
@@ -359,6 +363,8 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
         component: None,
         cells_w,
         cells_h,
+        whole_cells_w: cells_w,
+        whole_cells_h: cells_h,
     }));
     let registry = job.registry.clone();
     let recipe = job.recipe.clone();
@@ -421,6 +427,8 @@ fn one_components_grid_is_that_components_own_contribution() {
             component,
             cells_w,
             cells_h,
+            whole_cells_w: cells_w,
+            whole_cells_h: cells_h,
         }));
         let registry = job.registry.clone();
         let recipe = job.recipe.clone();
@@ -475,6 +483,8 @@ fn one_components_grid_is_that_components_own_contribution() {
             component: Some(stranger.clone()),
             cells_w,
             cells_h,
+            whole_cells_w: cells_w,
+            whole_cells_h: cells_h,
         }))
         .expect_err("a component of no mask");
     assert_eq!(error.kind, luxforge_core::ErrorKind::Validation);
@@ -499,6 +509,8 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
         component: None,
         cells_w: 12,
         cells_h: 9,
+        whole_cells_w: 12,
+        whole_cells_h: 9,
     };
 
     // A job that never asked carries no grid, exactly as it carries no report.
@@ -585,6 +597,8 @@ fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
         component: None,
         cells_w: 12,
         cells_h: 9,
+        whole_cells_w: 12,
+        whole_cells_h: 9,
     };
 
     // The gradient alone has a grid, bound or not, because its coverage is position alone: the
@@ -686,6 +700,8 @@ fn a_value_based_grid_is_read_on_the_pixel_mask_sample_input_answers() {
         component: None,
         cells_w,
         cells_h,
+        whole_cells_w: cells_w,
+        whole_cells_h: cells_h,
     }));
     let registry = job.registry.clone();
     let recipe = job.recipe.clone();
@@ -791,6 +807,8 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
         component: None,
         cells_w,
         cells_h,
+        whole_cells_w: cells_w,
+        whole_cells_h: cells_h,
     }));
     let source = match &job.source {
         luxforge_core::PreviewSource::Jpeg(image) => image.clone(),
@@ -916,6 +934,8 @@ fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
         component: None,
         cells_w,
         cells_h,
+        whole_cells_w: cells_w,
+        whole_cells_h: cells_h,
     }));
     let registry = job.registry.clone();
     let recipe = job.recipe.clone();
@@ -1011,6 +1031,8 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
                 component: None,
                 cells_w,
                 cells_h,
+                whole_cells_w: cells_w,
+                whole_cells_h: cells_h,
             }))
             .expect_err("a grid past the cell cap");
         assert_eq!(error.kind, luxforge_core::ErrorKind::ResourceLimit);

@@ -407,12 +407,6 @@ impl ModuleRegistry {
                                 None => operation,
                             };
                         segment.has_color = true;
-                        // A finish unit reads the output coordinates it is handed, which a proxy
-                        // window must never move ([`crate::render`]'s window).
-                        segment.positional |= matches!(
-                            self.effect_stage(&layer.effect_id),
-                            Some(EffectStage::Finish)
-                        );
                         segment.operations.push(Processing::Color(operation));
                     }
                 }

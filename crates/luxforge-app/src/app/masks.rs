@@ -758,6 +758,7 @@ impl Editor {
             return None;
         }
         let (cells_w, cells_h) = self.overlay_cells()?;
+        let (whole_cells_w, whole_cells_h) = self.whole_overlay_cells()?;
         Some(luxforge_core::MaskOverlayRequest {
             mask,
             // The **pointer** is what asks for one component's own contribution, and nothing else:
@@ -768,6 +769,8 @@ impl Editor {
             component: self.hovered_component.clone(),
             cells_w,
             cells_h,
+            whole_cells_w,
+            whole_cells_h,
         })
     }
 

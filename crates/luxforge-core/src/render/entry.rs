@@ -412,7 +412,7 @@ impl<'a> Render<'a> {
                 recipe,
                 RenderPhase::Proxy.sampling(),
             )
-            .map_err(|_| RegionFallback::SegmentMismatch)?;
+            .map_err(|_| RegionFallback::ProxyCompileFailed)?;
         if !same_segments(&compiled, &self.compiled) {
             return Err(RegionFallback::SegmentMismatch);
         }
@@ -678,7 +678,9 @@ impl<'a> Render<'a> {
                 Error::internal("a proxy window no longer matches the stack it was planned for")
             })?;
         let compiled = windows.apply(compiled, (plan.width, plan.height), |index| {
-            self.spatial_globals(index)
+            // A cold estimate belongs to the proxy phase: superseding the exact phase must not
+            // cancel a proxy that can still be presented during an interactive sequence.
+            self.spatial_globals_with_cancel(index, cancel)
         })?;
         Render::compiled(source, compiled, options, context)
     }
@@ -688,13 +690,35 @@ impl<'a> Render<'a> {
     /// operation's whole input stage, which the store then keeps for the frame. A point
     /// evaluation, so no frame is materialized for it.
     pub(crate) fn spatial_globals(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
+        self.spatial_globals_with_cancel(index, &self.options.cancel)
+    }
+
+    /// Resolve a proxy's exact-stage estimate under the proxy token, independently of the
+    /// exact frame's cancellation token, while reusing this render's one compilation.
+    fn spatial_globals_with_cancel(
+        &self,
+        index: usize,
+        cancel: &Cancel,
+    ) -> Result<Vec<Option<Global>>, Error> {
         match self.source {
-            RenderSource::Byte(image) => self
-                .evaluation(Byte(image), SpatialMode::Point)?
-                .globals_of(index),
-            RenderSource::Linear { image, settings } => self
-                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
-                .globals_of(index),
+            RenderSource::Byte(image) => Evaluation::new(
+                Byte(image),
+                Cow::Borrowed(&self.compiled),
+                self.options.tile,
+                SpatialMode::Point,
+                cancel,
+                self.context,
+            )?
+            .globals_of(index),
+            RenderSource::Linear { image, settings } => Evaluation::new(
+                Linear::new(image, settings)?,
+                Cow::Borrowed(&self.compiled),
+                self.options.tile,
+                SpatialMode::Point,
+                cancel,
+                self.context,
+            )?
+            .globals_of(index),
         }
     }
 

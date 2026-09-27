@@ -108,6 +108,9 @@ pub enum Step {
     /// The decision an open slider draft's Changed elsewhere notice offers.
     SliderDraft(SliderDraftStep),
     View(ViewStep),
+    /// Change zoom, then inspect the already drawn photo after an idle interval with evidence
+    /// ticks and frame-capture subscriptions suspended for that interval.
+    ViewIdle(ViewIdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     Palette(PaletteStep),
@@ -220,6 +223,7 @@ impl Step {
                 optional_text(step.group.as_deref(), "reset group")
             }
             Self::View(step) => step.validate(),
+            Self::ViewIdle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
@@ -890,6 +894,28 @@ impl ViewStep {
     fn validate(&self) -> Result<(), String> {
         // The range is checked as the step is read; a step built in code is checked here.
         ViewStep::try_from(ViewWire::from(*self)).map(|_| ())
+    }
+}
+
+/// A native idle check after an ordinary view change. The duration starts before the view
+/// message is sent, so evidence cannot mask a missed retirement wake with its own redraw.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewIdleStep {
+    pub view: ViewStep,
+    pub ms: u64,
+}
+
+impl ViewIdleStep {
+    fn validate(&self) -> Result<(), String> {
+        self.view.validate()?;
+        if (1..=MAX_WAIT_MS).contains(&self.ms) {
+            Ok(())
+        } else {
+            Err(format!(
+                "view_idle ms takes an integer from 1 to {MAX_WAIT_MS}"
+            ))
+        }
     }
 }
 

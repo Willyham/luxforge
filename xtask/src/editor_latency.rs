@@ -996,6 +996,17 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
         frames.len() == steps.len() + 1,
         "Viewport evidence missed a captured frame",
     )?;
+    // Cumulative draw diagnostics expose blank frames between captures as well as at captures.
+    // Missing fields mean an older binary cannot qualify the viewport journey.
+    let mut stale_draws = 0;
+    for (index, frame) in frames.iter().enumerate() {
+        let blanks = gpu_count(frame, "blank_photo_draws")?;
+        stale_draws = gpu_count(frame, "stale_photo_draws")?;
+        ensure(
+            blanks == 0,
+            format!("Viewport frame {index} followed {blanks} blank photo draws"),
+        )?;
+    }
     let events = scenario::events(&evidence.join("events.jsonl"))?;
     let [
         draft,
@@ -1193,6 +1204,8 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
             "settled_pan":final_pan["state"],
         },
         "gpu":{
+            "blank_photo_draws":gpu_count(final_pan,"blank_photo_draws")?,
+            "stale_photo_draws":stale_draws,
             "photo_writes_before_settled_pan":before_pan_writes,
             "photo_writes_after_settled_pan":after_pan_writes,
             "upload_bytes_before_settled_pan":gpu_count(settled,"upload_bytes")?,
@@ -2176,6 +2189,17 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         format!("The burst step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    let mut burst_stale_draws = None;
+    if options.moving_pan {
+        for (index, frame) in frames.iter().enumerate() {
+            let blanks = gpu_count(frame, "blank_photo_draws")?;
+            burst_stale_draws = Some(gpu_count(frame, "stale_photo_draws")?);
+            ensure(
+                blanks == 0,
+                format!("Moving-pan burst frame {index} followed {blanks} blank photo draws"),
+            )?;
+        }
+    }
     let last = frames.last().ok_or("No frame was captured")?;
     let before_burst = frames
         .get(frames.len().saturating_sub(2))
@@ -2283,6 +2307,10 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     result["moving_pan"] = json!(options.moving_pan);
     result["burst"]["pan_moves"] = json!(analysis.pan_moves);
     result["burst"]["draw_encoded_frames"] = json!(gpu_delta("drawn_frames"));
+    if options.moving_pan {
+        result["burst"]["blank_photo_draws"] = json!(gpu_count(last, "blank_photo_draws")?);
+        result["burst"]["stale_photo_draws"] = json!(burst_stale_draws);
+    }
     result["burst"]["photo_texture_writes"] = json!(gpu_delta("photo_writes"));
     result["burst"]["photo_upload_bytes"] = json!(gpu_delta("upload_bytes"));
     result["burst"]["regions"] = json!(region_events);
