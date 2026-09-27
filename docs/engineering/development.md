@@ -120,11 +120,20 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 | `quick` | `check` and `editor-acceptance` |
 | `rendered` | quick plus all 30 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls`, `capabilities`, `performance` and the four `mask-*` ones, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
-| `full` | rendered plus timing plus, with `--manifest FILE`, `raw-editor`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
+| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, `raw-editor`, the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
-When to run each tier is in [when to verify](#when-to-verify). Without a manifest, `full` lists
-`raw-editor` as `skipped` with the reason `no --manifest`, and adds no `raw-panel` or RAW
-`performance` components at all, since there is no source to run them over: a skip is never a pass.
+When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
+runs in `full` whether or not a manifest is given. Without a manifest, `full` lists `raw-editor` and
+`raw-authentic` as `skipped` with the reason `no --manifest`, and adds no `raw-panel` or RAW
+`performance` components at all, since there is no source to run them over. `raw-authentic` runs the
+`#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and `luxforge-app`'s
+`raw_json_cli` (the ones that need only `LUXFORGE_RAW_OWNER_DIR`, not `real_files`'s separate
+CC0-fixture test) with that variable pointed at the directory the manifest's own sources live in.
+
+A skip is never a pass: a tier with any component `skipped` or `not_run`, and nothing failed
+outright, is `incomplete` rather than `passed`, naming which components and why in the headline and
+in `summary.json`'s `incomplete` list, and its process exits with its own code (currently `3`),
+distinct from `0` (passed) and the ordinary-failure exit code a real component failure uses.
 
 The command builds `luxforge-app` and `xtask` once in release, then runs each component as a child
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
@@ -168,8 +177,9 @@ artifact paths and how many editor processes it started, then the p50/p95 timing
 tier with their source file, sample count, load and reliability, and each provisional performance
 target with its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
 files are rewritten after every component, from whichever worker finished it, so a partial run still
-reports what it has; components that never ran are `not_run`. The exit status is non-zero when any
-component failed or timed out, and names them.
+reports what it has; components that never ran are `not_run`. The process exits non-zero and names
+the components either way: an ordinary failure when any component failed or timed out, and the
+`incomplete` exit code (above) when nothing failed but some component was `skipped` or `not_run`.
 
 The command never opens a frame. Read a capture as an image only for a failed scenario or a design
 review.
