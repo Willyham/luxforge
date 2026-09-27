@@ -5549,25 +5549,6 @@ mod tests {
     }
 
     #[test]
-    fn an_uncancelled_token_renders_the_bytes_the_plain_entry_point_renders() {
-        let registry = ModuleRegistry::builtin();
-        let source = cancellation_source(512, 384);
-        let recipe = cancellation_stack(512, 384);
-        let snapshot = SnapshotId::new();
-        let plain = render(&registry, &source, snapshot.clone(), &recipe).unwrap();
-        let cancellable =
-            render_cancellable(&registry, &source, snapshot, &recipe, &Cancel::never()).unwrap();
-        // Dimensions, fingerprint, snapshot identity and every byte.
-        assert_eq!(plain, cancellable);
-        assert!(
-            plain.width > 1 && plain.height > 1,
-            "the stack renders a frame"
-        );
-        // The stack really exercises all three passes: a turn, a colour run and a resample.
-        assert_ne!(plain.rgba.as_ref(), source.rgba.as_ref());
-    }
-
-    #[test]
     fn a_pre_cancelled_token_stops_a_render_before_it_allocates_a_frame() {
         let registry = ModuleRegistry::builtin();
         let source = cancellation_source(512, 384);

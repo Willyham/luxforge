@@ -870,25 +870,8 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     json!({"asset_id": staged_asset, "x": INSIDE.0, "y": INSIDE.1}),
                 )?;
                 // Changed: a different file at the same path is a changed source, not a usable one.
-                let other = root.join("fixtures/s0/orientation-6.jpg");
-                let changed = if other.exists() {
-                    fs::copy(&other, &staged)?;
-                    let (code, message) = refused(
-                        &staged_owner,
-                        client,
-                        "source.inspect",
-                        json!({"asset_id": staged_asset}),
-                    )
-                    .unwrap_or_else(|_| {
-                        (
-                            "reported".into(),
-                            "source.inspect reports rather than refusing".into(),
-                        )
-                    });
-                    json!({"code": code, "message": message})
-                } else {
-                    Value::Null
-                };
+                let changed =
+                    changed_original(&staged_owner, client, &staged_asset, &staged, &fixture)?;
                 let still = call(
                     &staged_owner,
                     client,
@@ -1000,4 +983,67 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         "The masking chapter changed its own original",
     )?;
     Ok(outcome)
+}
+
+/// A changed original under an asset: a different file put at the path it was imported from, and
+/// the refusal the asset's picture then gets, asserted rather than recorded.
+///
+/// The different file is `original`'s bytes with more after them, written here, so the step needs
+/// no second fixture and always runs: the same path, a different file. Asking for a pixel is what
+/// reads the source, and it must be refused as `source-unavailable`, naming the changed
+/// fingerprint; anything else — an answer, or another refusal — fails the chapter.
+fn changed_original(
+    owner: &OwnerHandle,
+    client: luxforge_core::ClientId,
+    asset: &Value,
+    staged: &Path,
+    original: &Path,
+) -> Result<Value> {
+    let mut bytes = fs::read(original)?;
+    bytes.extend_from_slice(b"a different file at the same path");
+    fs::write(staged, bytes)?;
+    let (code, message) = refused(
+        owner,
+        client,
+        "render.sample",
+        json!({"asset_id": asset, "x": INSIDE.0, "y": INSIDE.1}),
+    )?;
+    ensure(
+        code == "source-unavailable" && message.contains("fingerprint changed"),
+        format!("A changed original was answered {code}: {message}"),
+    )?;
+    Ok(json!({"code": code, "message": message}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A changed original is refused by name when the picture is asked for — `source-unavailable`,
+    /// saying the fingerprint changed — and the step asserts that code rather than recording
+    /// whatever came back.
+    #[test]
+    fn a_changed_original_is_refused_as_an_unavailable_source() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let dir = luxforge_testkit::fixtures::temp_dir("xtask-changed-original");
+        let staged = dir.join("staged-original.jpg");
+        fs::copy(root.join(FIXTURE), &staged).unwrap();
+        let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
+        let answer = (|| -> Result<Value> {
+            let client = owner.register();
+            let asset = import(&owner, client, &staged)?["asset"]["id"].clone();
+            prepare(&owner, client, &asset)?;
+            changed_original(&owner, client, &asset, &staged, &root.join(FIXTURE))
+        })();
+        owner.stop();
+        join.join().unwrap();
+        let answer = answer.unwrap();
+        assert_eq!(answer["code"], json!("source-unavailable"), "{answer}");
+        assert!(
+            answer["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("fingerprint changed")),
+            "{answer}"
+        );
+    }
 }

@@ -482,7 +482,14 @@ mod tests {
         image.hold(gate.lease());
         let view = image.with_view([1, 0, 1, 1], 6).unwrap();
         let clone = image.clone();
-        assert_eq!(clone, image, "a hold is not image content");
+        // A hold is not image content: held and unheld compare equal, so a held development equals
+        // the same development unheld. Leased from a gate of its own, so this gate's count is the
+        // views' alone.
+        assert_eq!(
+            PlanesHeld::new(Arc::new(PlaneGate::default()).lease()),
+            PlanesHeld::default(),
+            "a hold is not image content"
+        );
         drop(image);
         drop(clone);
         let (done, finished) = std::sync::mpsc::channel();

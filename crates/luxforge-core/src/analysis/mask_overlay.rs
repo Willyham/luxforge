@@ -210,6 +210,27 @@ pub fn coverage_grid(
     pixels: MaskPixels<'_>,
     cancel: &Cancel,
 ) -> Result<Option<Vec<u8>>, Error> {
+    grid_with_threshold(
+        mask,
+        transform,
+        (cells_w, cells_h),
+        pixels,
+        cancel,
+        PARALLEL_GRID_CELLS,
+    )
+}
+
+/// [`coverage_grid`] with an explicit parallel threshold, so a test can take either path on a grid
+/// small enough to check cell by cell. Production always goes through [`coverage_grid`], which fixes
+/// the threshold at [`PARALLEL_GRID_CELLS`].
+fn grid_with_threshold(
+    mask: &CompiledMask,
+    transform: &StageTransform,
+    (cells_w, cells_h): (u32, u32),
+    pixels: MaskPixels<'_>,
+    cancel: &Cancel,
+    parallel_cells: u64,
+) -> Result<Option<Vec<u8>>, Error> {
     cancel.check()?;
     let output = Stage {
         width: transform.output.width,
@@ -270,7 +291,7 @@ pub fn coverage_grid(
     };
     let mut grid = vec![MASK_COVERAGE_NONE; count];
     let row = cells_w as usize;
-    if count as u64 >= PARALLEL_GRID_CELLS {
+    if count as u64 >= parallel_cells {
         grid.par_chunks_mut(row)
             .enumerate()
             .try_for_each(|(cy, slice)| {
@@ -420,9 +441,11 @@ mod tests {
         assert_eq!(grid[grid.len() - 1], MASK_COVERAGE_FULL);
     }
 
-    /// The forced-parallel and forced-serial paths cannot be compared through the public entry
-    /// point without a megapixel of cells, so this compares the real grid against the same row
-    /// function driven serially, which is what the parallel split is a rearrangement of.
+    /// The grid is the same whichever path fills it. A threshold of one cell forces the parallel
+    /// split on the shared pool and one past the grid forces the serial loop, on a grid small
+    /// enough that every cell is checked against its own pixel's coverage, computed independently
+    /// of both paths — so a split that dropped, repeated or misplaced a row fails here. The
+    /// production threshold stays one megapixel of cells.
     #[test]
     fn the_cell_rows_are_independent_of_how_they_are_split() {
         let mask = vertical_gradient();
@@ -430,29 +453,48 @@ mod tests {
         let compiled = compiled(&mask, width, height);
         let transform = identity(width, height);
         let (cells_w, cells_h) = (128, 96);
-        let grid = coverage_grid(
-            &compiled,
-            &transform,
-            cells_w,
-            cells_h,
-            NO_INPUT,
-            &Cancel::never(),
-        )
-        .unwrap()
-        .unwrap();
-        let cells = Cells {
-            content: Stage { width, height },
-            output: Stage { width, height },
-            inverse: transform.inverse,
-            cells_w,
-            cells_h,
-            input: None,
-        };
-        let mut serial = vec![MASK_COVERAGE_NONE; (cells_w * cells_h) as usize];
-        for (cy, slice) in serial.chunks_mut(cells_w as usize).enumerate() {
-            cells.fill_row(slice, cy as u32, &compiled).unwrap();
+        let count = u64::from(cells_w * cells_h);
+        assert!(
+            count < PARALLEL_GRID_CELLS,
+            "the production threshold is not lowered"
+        );
+        let mut expected = Vec::with_capacity(count as usize);
+        for cy in 0..cells_h {
+            let py =
+                (((2 * u64::from(cy) + 1) * u64::from(height)) / (2 * u64::from(cells_h))) as u32;
+            for cx in 0..cells_w {
+                let px = (((2 * u64::from(cx) + 1) * u64::from(width)) / (2 * u64::from(cells_w)))
+                    as u32;
+                expected.push(quantize_coverage(compiled.coverage(px, py, ANY_PIXEL)));
+            }
         }
-        assert_eq!(grid, serial);
+        for (path, threshold) in [("parallel", 1), ("serial", count + 1)] {
+            let grid = grid_with_threshold(
+                &compiled,
+                &transform,
+                (cells_w, cells_h),
+                NO_INPUT,
+                &Cancel::never(),
+                threshold,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(grid, expected, "the {path} path");
+        }
+        // And the public entry point, below the threshold, is the serial one.
+        assert_eq!(
+            coverage_grid(
+                &compiled,
+                &transform,
+                cells_w,
+                cells_h,
+                NO_INPUT,
+                &Cancel::never()
+            )
+            .unwrap()
+            .unwrap(),
+            expected
+        );
     }
 
     /// Nothing to describe is absent, never a grid of zeros. A mask with no components and a mask

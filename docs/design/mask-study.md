@@ -591,9 +591,11 @@ the component stores its strokes in order and why the component list shows that 
 
 **Deleting one stroke is well defined.** The fold is over the stored order, so removing an entry from
 the middle produces, bit for bit, the field the remaining strokes would have produced had the deleted
-one never been made (`deleting_a_stroke_leaves_the_others_bit_identical`, 200 randomized components
-with erase strokes among them). That is what makes `mask.delete-stroke` a forward edit rather than an
-approximation of one.
+one never been made. It is proved on the production brush through `mask.delete-stroke` itself
+(`mask::brush::deleting_a_stroke_is_indistinguishable_from_one_never_made`): a component with an
+erase stroke after the deleted one, compiled against a store that still holds the deleted stroke, is
+bit-identical at every pixel to a component that never held it. That is what makes
+`mask.delete-stroke` a forward edit rather than an approximation of one.
 
 ### Density is not delivered
 

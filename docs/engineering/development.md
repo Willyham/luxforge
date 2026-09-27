@@ -419,8 +419,9 @@ refusals checked by the host's own words; a live agent committing during an open
 conflict on the stale commit, Reapply keeping the agent's edit, and a cancelled gesture writing
 nothing; a read-only historical preview of the entry before the first mask, Restore, undo and redo
 across mask entries; the same catalog served with a maskable module unavailable, which keeps every
-mask and refuses to sample; a missing and a changed original under a masked recipe, which report and
-discard nothing; and a reopen that returns the masks, components and bound layers by identity with the
+mask and refuses to sample; a missing and a changed original under a masked recipe, which discard
+nothing, the changed one — the original's bytes with more after them at the same path — refused as
+`source-unavailable` naming the changed fingerprint; and a reopen that returns the masks, components and bound layers by identity with the
 same sampled pixels. Everything lands in `result.json` under `masks`, and any mismatch fails the
 command.
 
