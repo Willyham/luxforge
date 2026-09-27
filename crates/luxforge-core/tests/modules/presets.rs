@@ -9,9 +9,10 @@
 //! rules and the module's own parse, plan and label are proved in-crate next to their code.
 
 use luxforge_core::{
-    ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, Draft, EditorService, Error,
-    ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry, Mutation, MutationOutcome,
-    ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext, ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, Draft,
+    EditorService, Error, ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry, Mutation,
+    MutationOutcome, ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext,
+    ToolModule,
 };
 use luxforge_testkit::fixtures::{self, jpeg};
 use serde_json::{Map, Value, json};
@@ -440,6 +441,49 @@ fn a_step_of_an_unavailable_module_is_refused() {
         ErrorKind::Incompatible,
         "unavailable module luxforge.presence",
     );
+    drop(service);
+    fs::remove_file(path).expect("the catalog is removed");
+}
+
+/// A step whose module does not apply to the photo is skipped before its availability counts: on
+/// a JPEG, a disabled RAW module's `set-raw` is reported skipped, not refused, and the rest of the
+/// preset applies.
+#[test]
+fn a_step_of_an_unavailable_module_that_does_not_apply_is_skipped() {
+    let (mut service, asset, path) = opened("unavailable-raw", Some(disabled("luxforge.raw")));
+    let result = service
+        .run_action(
+            &asset,
+            mutation(0, "unavailable-raw"),
+            "apply-preset",
+            json!({
+                "settings": {
+                    "set-basic": {"exposure": 1},
+                    "set-raw": {"white-balance": "as-shot"},
+                },
+                "name": "Both kinds",
+            }),
+        )
+        .expect("the applicable step applies");
+    assert_eq!(result.mutation.outcome, MutationOutcome::Applied);
+    assert_eq!(
+        serde_json::to_value(&result.skipped).expect("serializable"),
+        json!([{"action": "set-raw", "reason": "RAW does not apply to a JPEG photo"}])
+    );
+    let layers = recipe(&service, &asset).layers;
+    assert_eq!(layers.len(), 1);
+    assert_eq!(layers[0].effect_id, BASIC_EFFECT);
+    assert_eq!(layers[0].payload, json!({"exposure": 1.0}));
+    // The same module is refused where it does apply: sent alone, `set-raw` names it.
+    let alone = service
+        .run_action(
+            &asset,
+            mutation(result.mutation.revision, "raw-alone"),
+            "set-raw",
+            json!({"white-balance": "as-shot"}),
+        )
+        .expect_err("an unavailable module");
+    assert_eq!(alone.detail, "unavailable module luxforge.raw");
     drop(service);
     fs::remove_file(path).expect("the catalog is removed");
 }

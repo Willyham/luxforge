@@ -1182,20 +1182,18 @@ fn unless(unless: Unless, settings: &HashMap<&str, &RawValue>) -> bool {
     }
 }
 
-/// The value a transfer writes, or why it cannot: the target must be a registered, available
-/// field patch, and the value must pass the target parameter's own check.
+/// The value a transfer writes, or why it cannot: the target must be presettable
+/// ([`ModuleRegistry::patch_action`], whose refusal is the reason), and the value must pass the
+/// target parameter's own check.
 fn transfer_value(
     registry: &ModuleRegistry,
     action: &str,
     field: &str,
     value: &RawValue,
 ) -> Result<Value, String> {
-    let Some((module, descriptor)) = registry.action(action) else {
-        return Err(format!("Luxforge has no {action} action"));
-    };
-    if !descriptor.patch || !module.descriptor().is_available() {
-        return Err(format!("{action} is not available"));
-    }
+    let (_, descriptor) = registry
+        .patch_action(action)
+        .map_err(|refusal| refusal.detail)?;
     let Some(parameter) = descriptor.parameter(field) else {
         return Err(format!("{action} has no {field} field"));
     };
@@ -1210,15 +1208,12 @@ fn transfer_value(
     Ok(applied)
 }
 
-/// Whether `action` is a registered, available field patch declaring `field`, which an import may
-/// write: the check [`transfer_value`] makes for a value it did not convert.
+/// Whether `action` is presettable and declares `field`, which an import may write: the check
+/// [`transfer_value`] makes for a value it did not convert.
 fn writable(registry: &ModuleRegistry, action: &str, field: &str) -> Result<(), String> {
-    let Some((module, descriptor)) = registry.action(action) else {
-        return Err(format!("Luxforge has no {action} action"));
-    };
-    if !descriptor.patch || !module.descriptor().is_available() {
-        return Err(format!("{action} is not available"));
-    }
+    let (_, descriptor) = registry
+        .patch_action(action)
+        .map_err(|refusal| refusal.detail)?;
     if descriptor.parameter(field).is_none() {
         return Err(format!("{action} has no {field} field"));
     }
@@ -1545,14 +1540,9 @@ mod tests {
                 targets.insert((action, field)),
                 "{action}.{field} is mapped twice"
             );
-            let (module, descriptor) = registry
-                .action(action)
-                .unwrap_or_else(|| panic!("{} targets unregistered {action}", row.name));
-            assert!(descriptor.patch, "{action} is not a field patch");
-            assert!(
-                module.descriptor().is_available(),
-                "{action} is unavailable"
-            );
+            let (_, descriptor) = registry
+                .patch_action(action)
+                .unwrap_or_else(|refusal| panic!("{} targets {refusal}", row.name));
             let parameter = descriptor
                 .parameter(field)
                 .unwrap_or_else(|| panic!("{} targets unknown {action}.{field}", row.name));

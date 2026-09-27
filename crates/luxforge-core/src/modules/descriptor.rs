@@ -1361,6 +1361,19 @@ impl ModuleDescriptor {
         self.effects.is_empty() || self.effects.iter().any(|effect| effect.applies_to(kind))
     }
 
+    /// [`Self::is_available`] as a refusal: `incompatible: unavailable module <id>`. A provider
+    /// registered unavailable keeps its descriptor so its stored layers stay readable, but the host
+    /// never plans, queries or commits through it, and no preset may name its actions.
+    pub fn check_available(&self) -> Result<(), Error> {
+        if self.is_available() {
+            return Ok(());
+        }
+        Err(Error::incompatible(format!(
+            "unavailable module {}",
+            self.id
+        )))
+    }
+
     /// [`Self::applies_to`] as a refusal: `validation: RAW does not apply to a JPEG photo`, worded
     /// from this module's title and the kind.
     pub fn check_applies_to(&self, kind: SourceTag) -> Result<(), Error> {
@@ -2598,7 +2611,12 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 )));
             }
         }
-        ParameterKind::Settings => check_settings(name, value)?,
+        ParameterKind::Settings => check_settings(
+            name,
+            value.as_object().ok_or_else(|| {
+                Error::validation(format!("parameter {name} must be a settings object"))
+            })?,
+        )?,
         ParameterKind::Endpoint { classes } => {
             let text = value
                 .as_str()
@@ -2632,13 +2650,12 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
 }
 
 /// The shape of a settings set, and nothing more: 1 to 16 action identities, each giving a
-/// non-empty object of at most 64 fields with valid parameter names. Whether each action exists,
-/// is a field patch and accepts each value is the host's check against the registry, made when the
-/// set is applied, because a descriptor cannot see other modules.
-fn check_settings(name: &str, value: &Value) -> Result<(), Error> {
-    let actions = value
-        .as_object()
-        .ok_or_else(|| Error::validation(format!("parameter {name} must be a settings object")))?;
+/// non-empty object of at most 64 fields with valid parameter names. The one shape check: a
+/// `settings` parameter gets it from the generic check, and the preset library's
+/// [`crate::presets::validate_settings`] runs it under the `settings` parameter's name. Whether
+/// each action is presettable and accepts each value is the host's check against the registry
+/// ([`crate::ModuleRegistry::patch_action`]), because a descriptor cannot see other modules.
+pub(crate) fn check_settings(name: &str, actions: &Map<String, Value>) -> Result<(), Error> {
     if actions.is_empty() || actions.len() > MAX_SETTINGS_ACTIONS {
         return Err(Error::validation(format!(
             "parameter {name} must name 1..={MAX_SETTINGS_ACTIONS} actions"

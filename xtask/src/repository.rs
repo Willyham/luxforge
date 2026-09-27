@@ -677,6 +677,51 @@ fn raw_identity(root: &Path) -> Result<usize> {
     Ok(checked)
 }
 
+/// The presettable-action refusal and the one resolver that words it.
+const PATCH_REFUSAL: &str = "is not a field-patch action";
+const PATCH_RESOLVER: &str = "crates/luxforge-core/src/modules/registry/lookups.rs";
+
+/// Rule (scope: `crates/**/*.rs` product lines; allowed: [`PATCH_RESOLVER`]; match: whole token
+/// [`PATCH_REFUSAL`]; tests: not covered; reason: `ModuleRegistry::patch_action` is the one answer
+/// to "is this a presettable action", so a second copy of the check fails here). Fail on the first
+/// product line elsewhere that words the refusal; answer how many product files were read.
+fn one_patch_resolver(root: &Path) -> Result<usize> {
+    let resolver = root.join(PATCH_RESOLVER);
+    let sources: Vec<PathBuf> = files(&root.join("crates"))?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect();
+    let texts = sources
+        .iter()
+        .map(fs::read_to_string)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
+    let mut test_only = BTreeSet::new();
+    for (path, (_, modules)) in sources.iter().zip(&scanned) {
+        for name in modules {
+            test_only.extend(module_files(path, name));
+        }
+    }
+    let mut checked = 0;
+    for (path, (lines, _)) in sources.iter().zip(&scanned) {
+        if *path == resolver || test_file(path) || test_only.contains(path) {
+            continue;
+        }
+        for (number, line) in lines {
+            ensure(
+                !holds_whole_token(line, PATCH_REFUSAL),
+                format!(
+                    "{}:{number}: only ModuleRegistry::patch_action ({PATCH_RESOLVER}) decides \
+                     whether an action is presettable; resolve it there",
+                    path.display()
+                ),
+            )?;
+        }
+        checked += 1;
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -752,6 +797,10 @@ pub fn check(root: &Path) -> Result {
     println!(
         "PASS RAW identity named only by its module ({} product files)",
         raw_identity(root)?
+    );
+    println!(
+        "PASS one presettable-action resolver ({} product files)",
+        one_patch_resolver(root)?
     );
     Ok(())
 }
@@ -1044,6 +1093,40 @@ mod tests {
             write(path, &before);
         }
         assert_eq!(one_jpeg_codec(root).unwrap(), 4);
+    }
+
+    #[test]
+    fn only_the_registry_resolver_words_the_presettable_action_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        for dir in [core.join("modules/registry"), core.join("presets")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let refusal = "format!(\"{id} is not a field-patch action\")\n";
+        // The resolver, a test file and a test item may word it; a comment names nothing.
+        for (file, text) in [
+            (core.join("modules/registry/lookups.rs"), refusal.to_owned()),
+            (core.join("presets/library_tests.rs"), refusal.to_owned()),
+            (
+                core.join("presets/mod.rs"),
+                format!(
+                    "#[cfg(test)]\nmod tests {{\n    {refusal}}}\n// X is not a field-patch action\n"
+                ),
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(one_patch_resolver(tmp.path()).unwrap(), 1);
+        // A second copy of the check anywhere else is refused.
+        let copy = core.join("presets/library.rs");
+        fs::write(&copy, refusal).unwrap();
+        let error = one_patch_resolver(tmp.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("library.rs:1:") && error.contains("ModuleRegistry::patch_action"),
+            "{error}"
+        );
+        fs::remove_file(copy).unwrap();
+        assert_eq!(one_patch_resolver(tmp.path()).unwrap(), 1);
     }
 
     #[test]

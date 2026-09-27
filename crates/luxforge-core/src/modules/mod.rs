@@ -45,7 +45,8 @@ pub use descriptor::{
     valid_identity, valid_name,
 };
 pub(crate) use descriptor::{
-    check_declaration, check_declared_values, check_parameter_declarations,
+    PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
+    check_settings,
 };
 pub(crate) use descriptor::{not_applicable, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};

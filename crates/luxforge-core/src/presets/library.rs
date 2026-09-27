@@ -175,15 +175,12 @@ fn checked_actor(actor: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// The actions of a settings set that this registry cannot apply, in key order.
+/// The actions of a settings set that this registry cannot apply, in key order: those
+/// [`ModuleRegistry::patch_action`] refuses.
 fn unavailable_actions(registry: &ModuleRegistry, settings: &Map<String, Value>) -> Vec<String> {
     settings
         .keys()
-        .filter(|action_id| {
-            !registry
-                .action(action_id)
-                .is_some_and(|(module, action)| action.patch && module.descriptor().is_available())
-        })
+        .filter(|action_id| registry.patch_action(action_id).is_err())
         .cloned()
         .collect()
 }
@@ -655,29 +652,16 @@ impl EditorService {
         Ok(settings)
     }
 
-    /// The field-patch action a capture reads, from an available module that applies to the photo.
+    /// The presettable action a capture reads ([`ModuleRegistry::patch_action`]), from a module
+    /// that applies to the photo.
     fn capture_action<'r>(
         &self,
         registry: &'r ModuleRegistry,
         action_id: &str,
         kind: crate::SourceTag,
     ) -> Result<(&'r dyn crate::ToolModule, &'r crate::ActionDescriptor), Error> {
-        let (module, action) = registry
-            .action(action_id)
-            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
-        if !action.patch {
-            return Err(Error::validation(format!(
-                "{action_id} is not a field-patch action"
-            )));
-        }
-        let descriptor = module.descriptor();
-        if !descriptor.is_available() {
-            return Err(Error::incompatible(format!(
-                "unavailable module {}",
-                descriptor.id
-            )));
-        }
-        descriptor.check_applies_to(kind)?;
+        let (module, action) = registry.patch_action(action_id)?;
+        module.descriptor().check_applies_to(kind)?;
         Ok((module, action))
     }
 }

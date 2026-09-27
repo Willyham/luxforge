@@ -271,3 +271,52 @@ fn exactly_the_three_delivered_effects_are_maskable() {
         assert!(!registry.action_accepts_mask(action), "{action}");
     }
 }
+
+/// `patch_action` is the one answer to "is this a presettable action": a registered, available
+/// field patch resolves, whichever module plans it (`set-raw` is the RAW module's, not the
+/// field-patch module's), and an unknown, non-patch or unavailable action is refused with the
+/// wording every preset path reports.
+#[test]
+fn patch_action_resolves_an_available_field_patch_and_refuses_the_rest() {
+    let mut registry = ModuleRegistry::new();
+    for module in crate::builtin_modules() {
+        if module.descriptor().id == "luxforge.presence" {
+            registry.register_unavailable(module, "switched off")
+        } else {
+            registry.register(module)
+        }
+        .unwrap();
+    }
+    for (id, module_id) in [("set-basic", "luxforge.basic"), ("set-raw", "luxforge.raw")] {
+        let (module, action) = registry.patch_action(id).expect("a presettable action");
+        assert_eq!(module.descriptor().id, module_id);
+        assert_eq!(action.id, id);
+        assert!(action.patch);
+    }
+    for (id, kind, detail) in [
+        (
+            "set-teleport",
+            ErrorKind::Validation,
+            "unknown action set-teleport",
+        ),
+        (
+            "neutral-sample",
+            ErrorKind::Validation,
+            "unknown action neutral-sample",
+        ),
+        (
+            "reset-basic",
+            ErrorKind::Validation,
+            "reset-basic is not a field-patch action",
+        ),
+        (
+            "set-presence",
+            ErrorKind::Incompatible,
+            "unavailable module luxforge.presence",
+        ),
+    ] {
+        let error = registry.patch_action(id).err().expect("refused");
+        assert_eq!(error.kind, kind, "{id}");
+        assert_eq!(error.detail, detail, "{id}");
+    }
+}
