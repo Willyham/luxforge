@@ -1171,6 +1171,7 @@ mod tests {
         },
     };
     use luxforge_reference::srgb;
+    use luxforge_testbase::Gate;
     use serde_json::{Map, Value, json};
     use std::{
         borrow::Cow,
@@ -1419,6 +1420,49 @@ mod tests {
         }
     }
 
+    /// A unit that passes a test's gate once per tile and then copies its input, so a test can
+    /// hold a render inside a tile.
+    #[derive(Debug)]
+    struct Held {
+        gate: Arc<Gate>,
+    }
+
+    impl SpatialUnit for Held {
+        fn halo(&self, _: Stage) -> u32 {
+            0
+        }
+
+        fn scratch_bytes(&self, _: Stage) -> u64 {
+            0
+        }
+
+        fn apply(
+            &self,
+            input: &Planes<'_>,
+            output: &mut PlanesMut<'_>,
+            _: Option<&Global>,
+            _: &mut [f32],
+            _: Parallelism,
+        ) -> Result<(), Error> {
+            self.gate.pass();
+            let out = output.region();
+            for y in out.y0..out.y1() {
+                for x in out.x0..out.x1() {
+                    output.set(x, y, input.sample(i64::from(x), i64::from(y)));
+                }
+            }
+            Ok(())
+        }
+
+        fn is_finite(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> String {
+            "held copy".into()
+        }
+    }
+
     /// A unit whose coefficients are not finite, which compilation must refuse.
     #[derive(Debug)]
     struct NonFinite;
@@ -1454,16 +1498,17 @@ mod tests {
 
     const TEST_SPATIAL_EFFECT: &str = "test.spatial";
 
-    /// Compiles the test units, each `shift` counting into `prepared` and each `count` into
-    /// `applied`.
+    /// Compiles the test units, each `shift` counting into `prepared`, each `count` into `applied`
+    /// and each `held` passing `gate`.
     struct SpatialTestModule {
         descriptor: ModuleDescriptor,
         prepared: Tally,
         applied: Tally,
+        gate: Arc<Gate>,
     }
 
     impl SpatialTestModule {
-        fn shared(prepared: Tally, applied: Tally) -> Arc<dyn ToolModule> {
+        fn shared(prepared: Tally, applied: Tally, gate: Arc<Gate>) -> Arc<dyn ToolModule> {
             let descriptor = ModuleDescriptor {
                 id: "test.spatial".into(),
                 title: "Test spatial".into(),
@@ -1493,6 +1538,7 @@ mod tests {
                 descriptor,
                 prepared,
                 applied,
+                gate,
             })
         }
     }
@@ -1528,6 +1574,9 @@ mod tests {
                         applied: self.applied.clone(),
                     }),
                     None if unit == "infinite" => Arc::new(NonFinite),
+                    None if unit == "held" => Arc::new(Held {
+                        gate: self.gate.clone(),
+                    }),
                     _ => panic!("unknown test unit {unit}"),
                 });
             }
@@ -1542,12 +1591,28 @@ mod tests {
     /// A spatial registry with the tallies its `shift` units prepare into and its `count` units
     /// run into.
     fn counting_registry() -> (ModuleRegistry, Tally, Tally) {
+        let (registry, prepared, applied, _) = test_registry();
+        (registry, prepared, applied)
+    }
+
+    /// A spatial registry with the open gate its `held` units pass.
+    fn held_registry() -> (ModuleRegistry, Arc<Gate>) {
+        let (registry, _, _, gate) = test_registry();
+        (registry, gate)
+    }
+
+    fn test_registry() -> (ModuleRegistry, Tally, Tally, Arc<Gate>) {
         let (prepared, applied) = (Tally::default(), Tally::default());
+        let gate = Arc::new(Gate::new());
         let mut registry = geometry_registry();
         registry
-            .register(SpatialTestModule::shared(prepared.clone(), applied.clone()))
+            .register(SpatialTestModule::shared(
+                prepared.clone(),
+                applied.clone(),
+                gate.clone(),
+            ))
             .unwrap();
-        (registry, prepared, applied)
+        (registry, prepared, applied, gate)
     }
 
     fn spatial_layer(units: &[&str]) -> Layer {
@@ -3901,14 +3966,20 @@ mod tests {
     // Cancellation.
     // -----------------------------------------------------------------------------------------
 
+    /// The render is held inside its first tile while the token is cancelled, so the stop is
+    /// raised exactly once one batch has started and every later batch is still to come.
     #[test]
     fn a_cancelled_render_stops_between_tile_batches_and_releases_its_reservation() {
-        let registry = spatial_registry();
+        let (registry, gate) = held_registry();
         // Many tiles, one at a time: the target is exactly one working set so the operation runs a
         // batch of one tile, which is where the token is checked.
         let source = gradient(2000, 1500);
-        let stack = recipe(vec![spatial_layer(&["blur:24"])]);
-        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 24 })]).unwrap();
+        let stack = recipe(vec![spatial_layer(&["blur:24", "held"])]);
+        let operation = SpatialOperation::new(vec![
+            Arc::new(BoxBlur { radius: 24 }),
+            Arc::new(Held { gate: gate.clone() }),
+        ])
+        .unwrap();
         let plan = SpatialPlan::new(
             &operation,
             Stage {
@@ -3922,11 +3993,13 @@ mod tests {
         let context = RenderContext::with_spatial_target(plan.working_set());
         let budget = context.spatial();
         let cancel = Cancel::new();
-        let handle = {
-            let cancel = cancel.clone();
+        gate.shut();
+        let canceller = {
+            let (cancel, gate) = (cancel.clone(), gate.clone());
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                gate.wait_reached(1, "the first tile");
                 cancel.cancel();
+                gate.open();
             })
         };
         let render = || {
@@ -3939,18 +4012,18 @@ mod tests {
                 RenderOptions::exact(&cancel),
             )
         };
-        let started = std::time::Instant::now();
         let result = render();
-        let elapsed = started.elapsed();
-        handle.join().unwrap();
+        canceller.join().unwrap();
         let error = match result {
             Ok(_) => panic!("a cancelled render does not return a frame"),
             Err(error) => error,
         };
         assert_eq!(error.kind, ErrorKind::Cancelled);
-        assert!(
-            elapsed < std::time::Duration::from_secs(30),
-            "a cancelled render returns promptly, not in {elapsed:?}"
+        assert_eq!(
+            gate.reached(),
+            1,
+            "the render stopped after the batch it was in, one of {} tiles",
+            plan.tiles().len()
         );
         assert_eq!(budget.in_use(), 0, "the batch reservation is released");
         // An already cancelled token refuses before any tile runs.
@@ -3959,6 +4032,7 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(gate.reached(), 1, "no tile ran");
     }
 
     #[test]

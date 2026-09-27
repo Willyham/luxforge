@@ -9,16 +9,13 @@ use crate::{
     SourceImage, Transform, render,
 };
 use crate::{Component, ComponentMode};
+use luxforge_testbase::{wait_for, wait_until};
 use serde_json::json;
 use std::sync::Arc;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
-
-/// Deadlines are generous on purpose: these tests assert order and content, never speed, and
-/// they run unoptimized in the workspace check.
-const DEADLINE: Duration = Duration::from_secs(120);
 
 fn entry(color: u8) -> PreviewJob {
     job(color, false)
@@ -101,7 +98,7 @@ fn rebuilt(mut job: PreviewJob, change: impl FnOnce(&mut Parts)) -> PreviewJob {
 
 /// [`entry`] with one held colour layer after its pixel layer, so its render waits at `gate`
 /// while the gate is shut and otherwise renders the same picture.
-fn held_entry(gate: &Arc<crate::modules::RenderGate>, color: u8) -> PreviewJob {
+fn held_entry(gate: &Arc<luxforge_testbase::Gate>, color: u8) -> PreviewJob {
     let mut registry = ModuleRegistry::builtin();
     registry
         .register(crate::modules::HeldModule::shared(gate.clone()))
@@ -129,14 +126,14 @@ fn held_entry(gate: &Arc<crate::modules::RenderGate>, color: u8) -> PreviewJob {
 /// replaced it names, delivers nothing.
 #[test]
 fn newest_preview_wins_with_one_active_and_one_pending() {
-    let gate = crate::modules::RenderGate::open_gate();
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
     gate.shut();
     let first = queue.request(held_entry(&gate, 1));
     assert_eq!(queue.pending_generation(), None, "the first job started");
     // Inside the render, past its first check: a job superseded before it begins rendering
     // stops at once and would let the next one start.
-    gate_until(&gate, 1, "the first render never reached its gate");
+    gate.wait_reached(1, "the first render");
     let replaced = queue.request(held_entry(&gate, 2));
     assert_eq!(queue.pending_generation(), Some(replaced));
     let Queued {
@@ -154,35 +151,34 @@ fn newest_preview_wins_with_one_active_and_one_pending() {
         "the third request replaced the second"
     );
     gate.open();
-    let deadline = Instant::now() + DEADLINE;
     let mut delivered: Vec<(u64, bool)> = Vec::new();
-    loop {
-        if let Some(result) = queue.poll() {
-            assert!(
-                delivered
-                    .last()
-                    .is_none_or(|(last, _)| *last < result.generation),
-                "deliveries must strictly increase: {delivered:?} then {}",
-                result.generation
-            );
-            assert_eq!(result.generation, queue.last_delivered());
-            assert_eq!(
-                result.phase(),
-                PreviewPhase::Exact,
-                "no job had a proxy phase"
-            );
-            delivered.push((result.generation, result.cancelled()));
-            if result.generation == wanted {
-                assert_eq!(
-                    result.into_raster().unwrap().pixel(0, 0),
-                    Some([3, 0, 0, 255])
-                );
-                break;
-            }
+    wait_until("the newest preview", || {
+        let Some(result) = queue.poll() else {
+            return false;
+        };
+        assert!(
+            delivered
+                .last()
+                .is_none_or(|(last, _)| *last < result.generation),
+            "deliveries must strictly increase: {delivered:?} then {}",
+            result.generation
+        );
+        assert_eq!(result.generation, queue.last_delivered());
+        assert_eq!(
+            result.phase(),
+            PreviewPhase::Exact,
+            "no job had a proxy phase"
+        );
+        delivered.push((result.generation, result.cancelled()));
+        if result.generation != wanted {
+            return false;
         }
-        assert!(Instant::now() < deadline, "the newest preview never came");
-        std::thread::yield_now();
-    }
+        assert_eq!(
+            result.into_raster().unwrap().pixel(0, 0),
+            Some([3, 0, 0, 255])
+        );
+        true
+    });
     assert_eq!(
         delivered,
         vec![(first, false), (wanted, false)],
@@ -204,7 +200,9 @@ fn a_superseded_job_that_already_finished_is_still_delivered() {
     let first = queue.request(entry(1));
     // The waker says the frame is in the channel, so the request below supersedes a job that
     // has already answered and cancels nothing.
-    wait_until(&sends, 1, "the first job never answered");
+    wait_until("the first job's answer", || {
+        sends.load(Ordering::Relaxed) >= 1
+    });
     let second = queue.request(entry(2));
     let delivered = drain_until(&mut queue, second, PreviewPhase::Exact);
     assert_eq!(
@@ -230,27 +228,28 @@ fn a_result_older_than_the_cancel_floor_is_dropped() {
     }));
     queue.request(entry(1));
     // The frame is finished and waiting in the channel: only the floor can drop it now.
-    wait_until(&sends, 1, "the job never answered");
+    wait_until("the job's answer", || sends.load(Ordering::Relaxed) >= 1);
     queue.cancel();
-    let deadline = Instant::now() + DEADLINE;
-    while queue.is_busy() {
-        assert!(queue.poll().is_none(), "a frame from before the cancel");
-        assert!(Instant::now() < deadline, "the cancelled job never drained");
-        std::thread::yield_now();
-    }
+    drain_nothing(&mut queue, "a frame from before the cancel");
     assert_eq!(queue.last_delivered(), 0, "nothing was ever delivered");
 
     // An exact phase that `cancel` stopped mid-render answers cancelled, and that outcome is
     // at the floor too: the caller that raised it already knows the generation has ended.
     queue.request(stacked(1200, 900, eligible_layers(1200, 900), None));
     queue.cancel();
-    let deadline = Instant::now() + DEADLINE;
-    while queue.is_busy() {
-        assert!(queue.poll().is_none(), "an outcome from before the cancel");
-        assert!(Instant::now() < deadline, "the cancelled job never drained");
-        std::thread::yield_now();
-    }
+    drain_nothing(&mut queue, "an outcome from before the cancel");
     assert_eq!(queue.last_delivered(), 0, "nothing was ever delivered");
+}
+
+/// Poll until the queue is idle, failing with `delivered` if anything is delivered.
+fn drain_nothing(queue: &mut PreviewQueue, delivered: &str) {
+    wait_until("the cancelled job draining", || {
+        if !queue.is_busy() {
+            return true;
+        }
+        assert!(queue.poll().is_none(), "{delivered}");
+        false
+    });
 }
 
 /// The preview worker reduces the frame it just rendered, so a displayed target needs no second
@@ -259,44 +258,27 @@ fn a_result_older_than_the_cancel_floor_is_dropped() {
 fn an_analysing_preview_returns_the_exact_reduction_of_the_frame_it_rendered() {
     let mut queue = PreviewQueue::default();
     let wanted = queue.request(job(9, true));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(result) = queue.poll() {
-            assert_eq!(result.generation, wanted);
-            let raster = result.raster().expect("a frame");
-            assert_eq!(
-                result
-                    .exact()
-                    .and_then(|exact| exact.report.clone())
-                    .expect("the job asked for a report"),
-                crate::analysis::reduce_raster(raster).unwrap()
-            );
-            assert!(result.identity.has_output_stage());
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the analysing preview never came"
-        );
-        std::thread::yield_now();
-    }
+    let result = wait_for("the analysing preview", || queue.poll());
+    assert_eq!(result.generation, wanted);
+    let raster = result.raster().expect("a frame");
+    assert_eq!(
+        result
+            .exact()
+            .and_then(|exact| exact.report.clone())
+            .expect("the job asked for a report"),
+        crate::analysis::reduce_raster(raster).unwrap()
+    );
+    assert!(result.identity.has_output_stage());
     // A job that does not ask carries no report: `None` is "not asked", never empty counts.
     let wanted = queue.request(job(9, false));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(result) = queue.poll() {
-            assert_eq!(result.generation, wanted);
-            assert!(
-                result
-                    .exact()
-                    .and_then(|exact| exact.report.clone())
-                    .is_none()
-            );
-            break;
-        }
-        assert!(Instant::now() < deadline, "the plain preview never came");
-        std::thread::yield_now();
-    }
+    let result = wait_for("the plain preview", || queue.poll());
+    assert_eq!(result.generation, wanted);
+    assert!(
+        result
+            .exact()
+            .and_then(|exact| exact.report.clone())
+            .is_none()
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -414,32 +396,15 @@ fn stacked_with_masks(
     job
 }
 
-fn wait_until(counter: &Arc<AtomicU64>, wanted: u64, what: &str) {
-    let deadline = Instant::now() + DEADLINE;
-    while counter.load(Ordering::Relaxed) < wanted {
-        assert!(Instant::now() < deadline, "{what}");
-        std::thread::yield_now();
-    }
-}
-
 /// Every result the active job has left to send, in order. The queue releases the active slot
 /// when the exact phase lands, so an idle queue with no pending job is the end of the job.
 fn drain_all(queue: &mut PreviewQueue) -> Vec<PreviewResult> {
-    let deadline = Instant::now() + DEADLINE;
     let mut results = Vec::new();
-    loop {
-        if let Some(result) = queue.poll() {
-            results.push(result);
-        }
-        if !queue.is_busy() {
-            return results;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the preview worker never finished"
-        );
-        std::thread::yield_now();
-    }
+    wait_until("the preview worker finishing", || {
+        results.extend(queue.poll());
+        !queue.is_busy()
+    });
+    results
 }
 
 /// Poll until this generation's phase is delivered, collecting what came before it: each
@@ -449,21 +414,14 @@ fn drain_until(
     generation: u64,
     phase: PreviewPhase,
 ) -> Vec<(u64, PreviewPhase, bool)> {
-    let deadline = Instant::now() + DEADLINE;
     let mut delivered = Vec::new();
-    loop {
-        if let Some(result) = queue.poll() {
+    wait_until(&format!("generation {generation} {phase:?}"), || {
+        queue.poll().is_some_and(|result| {
             delivered.push((result.generation, result.phase(), result.cancelled()));
-            if (result.generation, result.phase()) == (generation, phase) {
-                return delivered;
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "generation {generation} {phase:?} never arrived: {delivered:?}"
-        );
-        std::thread::yield_now();
-    }
+            (result.generation, result.phase()) == (generation, phase)
+        })
+    });
+    delivered
 }
 
 fn viewport_job(intent: PreviewIntent) -> PreviewJob {
@@ -1476,14 +1434,28 @@ fn the_waker_is_called_once_per_result() {
         Some(bounds(32, 32)),
     ));
     assert_eq!(drain_all(&mut queue).len(), 2);
-    wait_until(&calls, 2, "the two-phase job woke twice");
+    wait_until("the two-phase job's second call", || {
+        calls.load(Ordering::Relaxed) >= 2
+    });
 
     queue.request(stacked(64, 48, eligible_layers(64, 48), None));
     assert_eq!(drain_all(&mut queue).len(), 1);
-    wait_until(&calls, 3, "the exact-only job woke once");
-    // A generous wait proves no extra call follows the last result.
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(calls.load(Ordering::Relaxed), 3);
+    wait_until("the exact-only job's call", || {
+        calls.load(Ordering::Relaxed) >= 3
+    });
+    // The worker runs one job after another: once the next job's render reaches its gate, the
+    // worker is done with the last one, so any extra call after its result has been made.
+    let gate = Arc::new(luxforge_testbase::Gate::new());
+    gate.shut();
+    queue.request(held(&gate, None));
+    gate.wait_reached(1, "the next job's render");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        3,
+        "no call follows the last result"
+    );
+    gate.open();
+    assert_eq!(drain_all(&mut queue).len(), 1);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1492,7 +1464,7 @@ fn the_waker_is_called_once_per_result() {
 
 /// A job whose one colour layer waits on `gate` in every phase that renders it, so a test can
 /// hold the job in the phase it is about. The layer leaves its pixels as it found them.
-fn held(gate: &Arc<crate::modules::RenderGate>, proxy: Option<ProxyBounds>) -> PreviewJob {
+fn held(gate: &Arc<luxforge_testbase::Gate>, proxy: Option<ProxyBounds>) -> PreviewJob {
     let layer = Layer {
         id: LayerId::new(),
         effect_id: crate::modules::HELD_EFFECT.into(),
@@ -1517,15 +1489,9 @@ fn board_until(
     wanted: impl Fn(&crate::ActivitySnapshot) -> bool,
     what: &str,
 ) -> crate::ActivitySnapshot {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        let snapshot = board.snapshot();
-        if wanted(&snapshot) {
-            return snapshot;
-        }
-        assert!(Instant::now() < deadline, "{what}: {snapshot:?}");
-        std::thread::yield_now();
-    }
+    wait_for(what, || {
+        Some(board.snapshot()).filter(|snapshot| wanted(snapshot))
+    })
 }
 
 /// A job with a proxy phase is listed in `proxy` while that phase runs and ends in `exact`, and
@@ -1534,7 +1500,7 @@ fn board_until(
 #[test]
 fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it() {
     let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
-    let gate = crate::modules::RenderGate::open_gate();
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
     queue.set_activity(board.clone());
     let job = held(&gate, Some(bounds(16, 16)));
@@ -1592,7 +1558,7 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
 #[test]
 fn a_superseded_jobs_activity_ends_cancelled() {
     let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
-    let gate = crate::modules::RenderGate::open_gate();
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
     queue.set_activity(board.clone());
 
@@ -1638,15 +1604,6 @@ fn a_superseded_jobs_activity_ends_cancelled() {
     );
 }
 
-/// Wait until the job held at `gate` has reached it at least `rows` times.
-fn gate_until(gate: &crate::modules::RenderGate, rows: u64, what: &str) {
-    let deadline = Instant::now() + DEADLINE;
-    while gate.reached() < rows {
-        assert!(Instant::now() < deadline, "{what}");
-        std::thread::yield_now();
-    }
-}
-
 /// The two-phase rule under the persistent worker: a newer request arrives while the older
 /// job's proxy render is held at its gate. The proxy phase is not interrupted — its frame is
 /// still newer than anything on screen — and is delivered as a frame; the exact phase behind it
@@ -1654,11 +1611,11 @@ fn gate_until(gate: &crate::modules::RenderGate, rows: u64, what: &str) {
 /// its phases.
 #[test]
 fn a_superseded_jobs_exact_phase_is_cancelled_but_its_proxy_is_not() {
-    let gate = crate::modules::RenderGate::open_gate();
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
     gate.shut();
     let older = queue.request(held(&gate, Some(bounds(16, 16))));
-    gate_until(&gate, 1, "the proxy render never reached its gate");
+    gate.wait_reached(1, "the proxy render");
     let newer = queue.request(held(&gate, Some(bounds(16, 16))));
     gate.open();
     let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
@@ -1679,7 +1636,7 @@ fn a_superseded_jobs_exact_phase_is_cancelled_but_its_proxy_is_not() {
 #[test]
 fn the_next_job_starts_without_a_poll() {
     let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
-    let gate = crate::modules::RenderGate::open_gate();
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
     queue.set_activity(board.clone());
     gate.shut();
@@ -1945,45 +1902,27 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
         job
     };
     let mut queue = PreviewQueue::default();
+    // The proxy frame of `generation`, and whether that job built the proxy.
+    let proxy_of = |queue: &mut PreviewQueue, generation: u64, what: &str| {
+        wait_for(what, || {
+            queue
+                .poll()
+                .filter(|result| {
+                    result.generation == generation && result.phase() == PreviewPhase::Proxy
+                })
+                .map(|result| {
+                    let built = result.proxy().is_some_and(|proxy| proxy.built);
+                    (built, result.into_raster().expect("a proxy frame"))
+                })
+        })
+    };
     let first = queue.request(job_at(0.0, false));
-    let mut dark = None;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while dark.is_none() {
-        if let Some(result) = queue.poll()
-            && result.generation == first
-            && result.phase() == PreviewPhase::Proxy
-        {
-            assert!(
-                result.proxy().is_some_and(|proxy| proxy.built),
-                "the first job builds the proxy"
-            );
-            dark = Some(result.into_raster().expect("a proxy frame"));
-        }
-        assert!(Instant::now() < deadline, "the first proxy never came");
-        std::thread::yield_now();
-    }
-    while queue.is_busy() {
-        let _ = queue.poll();
-        std::thread::yield_now();
-    }
+    let (built, dark) = proxy_of(&mut queue, first, "the first proxy");
+    assert!(built, "the first job builds the proxy");
+    drain_all(&mut queue);
     let second = queue.request(job_at(1.0, false));
-    let mut bright = None;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while bright.is_none() {
-        if let Some(result) = queue.poll()
-            && result.generation == second
-            && result.phase() == PreviewPhase::Proxy
-        {
-            assert!(
-                !result.proxy().is_some_and(|proxy| proxy.built),
-                "the same planes and bounds are a cache hit"
-            );
-            bright = Some(result.into_raster().expect("a proxy frame"));
-        }
-        assert!(Instant::now() < deadline, "the second proxy never came");
-        std::thread::yield_now();
-    }
-    let (dark, bright) = (dark.unwrap(), bright.unwrap());
+    let (built, bright) = proxy_of(&mut queue, second, "the second proxy");
+    assert!(!built, "the same planes and bounds are a cache hit");
     assert_eq!((dark.width, dark.height), (bright.width, bright.height));
     let brighter = dark
         .rgba

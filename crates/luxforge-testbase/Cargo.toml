@@ -1,0 +1,17 @@
+[package]
+name = "luxforge-testbase"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The core-free base of the workspace's test support: the one gate and the one wait every test
+# orders its steps by. It depends on no workspace crate, so the core's own unit tests and the
+# widget crate (luxforge-ui, which may not reach the core) can use it; `cargo xtask
+# check-repository` refuses a manifest of it that names one. Only `[dev-dependencies]` and
+# `luxforge-testkit` name this crate, so no build of a shipped binary compiles it.
+[dependencies]
+
+[lints]
+workspace = true

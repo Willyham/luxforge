@@ -1,6 +1,7 @@
 //! End-to-end transport tests against loopback servers, a fake resolver and a connector that routes
 //! chosen public addresses to those servers. Nothing here leaves the machine.
 use super::*;
+use luxforge_testbase::{Gate, HANG, wait_until};
 use luxforge_testkit::{Options, Request, TestServer, send};
 use rustls::{
     ServerConfig,
@@ -45,6 +46,36 @@ fn server_tls() -> Arc<ServerConfig> {
             .with_single_cert(chain, key)
             .unwrap(),
     )
+}
+
+/// A gate a test's server holds its answer at, shut until the test ends: dropping it opens the gate,
+/// so no held answer outlives its test.
+struct Stall(Arc<Gate>);
+
+impl Stall {
+    fn new() -> Self {
+        let gate = Arc::new(Gate::new());
+        gate.shut();
+        Self(gate)
+    }
+
+    /// The gate, for a server's responder to pass.
+    fn gate(&self) -> Arc<Gate> {
+        self.0.clone()
+    }
+}
+
+impl std::ops::Deref for Stall {
+    type Target = Gate;
+    fn deref(&self) -> &Gate {
+        &self.0
+    }
+}
+
+impl Drop for Stall {
+    fn drop(&mut self) {
+        self.0.open();
+    }
 }
 
 /// The requests a server read, each as it arrived.
@@ -161,7 +192,10 @@ struct Plan {
     total_timeout: Duration,
     redirects: u8,
     origins: Vec<String>,
-    cancel_after: Option<Duration>,
+    /// Cancel the job before the request is sent.
+    cancelled: bool,
+    /// Told the body bytes received so far each time more arrive.
+    received: Option<mpsc::Sender<u64>>,
 }
 
 impl Default for Plan {
@@ -173,7 +207,8 @@ impl Default for Plan {
             total_timeout: Duration::from_secs(10),
             redirects: 0,
             origins: Vec::new(),
-            cancel_after: None,
+            cancelled: false,
+            received: None,
         }
     }
 }
@@ -182,7 +217,6 @@ struct Fetched {
     result: Result<TransportResponse, Error>,
     body: Vec<u8>,
     progress: Vec<(u64, Option<u64>)>,
-    elapsed: Duration,
 }
 
 impl Fetched {
@@ -204,23 +238,10 @@ impl Fetched {
 
 fn fetch(transport: &Transport, request: &TransportRequest, plan: &Plan) -> Fetched {
     let control = JobControl::new();
-    let canceller = plan.cancel_after.map(|after| {
-        let control = control.clone();
-        if after.is_zero() {
-            control.cancel("the request was cancelled");
-        }
-        thread::spawn(move || {
-            thread::sleep(after);
-            control.cancel("the request was cancelled");
-        })
-    });
-    let started = Instant::now();
-    let fetched = send_with(transport, request, plan, &control);
-    drop(canceller);
-    Fetched {
-        elapsed: started.elapsed(),
-        ..fetched
+    if plan.cancelled {
+        control.cancel("the request was cancelled");
     }
+    send_with(transport, request, plan, &control)
 }
 
 /// Send `request` for the job `control`, which the caller may cancel from another thread.
@@ -230,9 +251,13 @@ fn send_with(
     plan: &Plan,
     control: &Arc<JobControl>,
 ) -> Fetched {
-    let started = Instant::now();
     let mut seen = Vec::new();
-    let mut progress = |received, total| seen.push((received, total));
+    let mut progress = |received, total| {
+        seen.push((received, total));
+        if let Some(told) = &plan.received {
+            let _ = told.send(received);
+        }
+    };
     let mut body = Vec::new();
     let result = transport.send(
         request,
@@ -255,7 +280,6 @@ fn send_with(
         result,
         body,
         progress: seen,
-        elapsed: started.elapsed(),
     }
 }
 
@@ -729,9 +753,14 @@ fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
 
 #[test]
 fn a_silent_server_hits_the_read_deadline() {
-    let server = TestServer::http(|_, _| thread::sleep(Duration::from_secs(3))).unwrap();
+    let stall = Stall::new();
+    let gate = stall.gate();
+    let server = TestServer::http(move |_, _| gate.pass()).unwrap();
+    // The server stays silent until the test ends and the request's total outlasts the gate's
+    // hang bound, so only the read timeout can end the request.
     let plan = Plan {
         read_timeout: Duration::from_millis(300),
+        total_timeout: HANG * 2,
         ..Plan::default()
     };
     let fetched = fetch(&loopback(), &request(Method::Get, &server.url("/")), &plan);
@@ -741,66 +770,51 @@ fn a_silent_server_hits_the_read_deadline() {
         "{}",
         fetched.error()
     );
-    assert!(
-        fetched.elapsed < Duration::from_millis(1500),
-        "{:?}",
-        fetched.elapsed
-    );
 }
 
 #[test]
 fn a_trickling_server_hits_the_total_deadline() {
-    let server = TestServer::http(|_, out| {
-        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n");
-        for _ in 0..100 {
+    let (told, received) = mpsc::channel();
+    let received = Mutex::new(received);
+    // One byte at a time, each once the client has read the one before, so the body keeps
+    // flowing until the client gives up, long before its length arrives.
+    let server = TestServer::http(move |_, out| {
+        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n");
+        let received = received.lock().unwrap();
+        loop {
             send(out, b"x");
-            thread::sleep(Duration::from_millis(50));
+            if received.recv_timeout(HANG).is_err() {
+                break;
+            }
         }
     })
     .unwrap();
+    // The read timeout outlasts the hang bound, so only the total deadline can end the request.
     let plan = Plan {
-        read_timeout: Duration::from_secs(1),
+        read_timeout: HANG * 2,
         total_timeout: Duration::from_millis(500),
+        received: Some(told),
         ..Plan::default()
     };
     let fetched = fetch(&loopback(), &request(Method::Get, &server.url("/")), &plan);
     assert_eq!(fetched.code(), "read-error");
     assert!(fetched.error().detail.contains("timed out"));
     assert!(!fetched.body.is_empty(), "the body was flowing");
-    assert!(
-        fetched.elapsed < Duration::from_millis(1500),
-        "{:?}",
-        fetched.elapsed
-    );
 }
 
 #[test]
 fn cancelling_a_stalled_body_returns_cancelled_promptly() {
-    let server = TestServer::http(|_, out| {
-        send(
-            out,
-            b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",
-        );
-        thread::sleep(Duration::from_secs(5));
-    })
-    .unwrap();
-    let cancel_after = Duration::from_millis(300);
-    let plan = Plan {
-        cancel_after: Some(cancel_after),
-        ..Plan::default()
-    };
-    let fetched = fetch(&loopback(), &request(Method::Get, &server.url("/")), &plan);
+    let (server, stall) = stalling(
+        false,
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",
+    );
+    let fetched = cancel_while_stalled(server.url("/"), &stall, 10, "the request was cancelled");
     assert_eq!(fetched.code(), "cancelled");
     assert_eq!(fetched.body, b"0123456789");
-    assert!(
-        fetched.elapsed < cancel_after + Duration::from_millis(500),
-        "{:?}",
-        fetched.elapsed
-    );
 
     let (transport, resolver, routes) = isolated();
     let plan = Plan {
-        cancel_after: Some(Duration::ZERO),
+        cancelled: true,
         ..Plan::default()
     };
     let fetched = fetch(
@@ -821,7 +835,10 @@ fn connection_attempts_share_the_request_deadline() {
     impl Connect for Stalled {
         fn connect(&self, _: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
             self.0.lock().unwrap().push(timeout);
-            thread::sleep(timeout);
+            let started = Instant::now();
+            wait_until("the attempt's timeout to pass", || {
+                started.elapsed() >= timeout
+            });
             Err(io::ErrorKind::TimedOut.into())
         }
     }
@@ -850,11 +867,6 @@ fn connection_attempts_share_the_request_deadline() {
         "the first attempt spent the whole budget"
     );
     assert!(attempts[0] <= Duration::from_millis(300), "{attempts:?}");
-    assert!(
-        fetched.elapsed < Duration::from_millis(1000),
-        "{:?}",
-        fetched.elapsed
-    );
 }
 
 #[test]
@@ -1095,52 +1107,55 @@ fn a_certificate_for_another_name_is_refused() {
     );
 }
 
-/// Start a request on a worker, wait until `stalled` says the server has gone quiet and the client
-/// is blocked, cancel its job from this thread and return how long the worker took to return after
-/// the cancel, with its result.
-fn cancel_while_stalled(url: String, stalled: mpsc::Receiver<()>) -> (Fetched, Duration) {
+/// Start a request to `url` on a worker, wait until the server is held at `stall` and the client
+/// has received `body` bytes of the body, cancel its job with `reason` from this thread and return
+/// its result. The request's timeouts outlast the hang bound and the server is held until the test
+/// ends, so only the cancel can end the request; it must end it while the server still holds it.
+fn cancel_while_stalled(url: String, stall: &Stall, body: u64, reason: &str) -> Fetched {
     let control = JobControl::new();
+    let (told, received) = mpsc::channel();
     let worker = {
         let control = control.clone();
         thread::spawn(move || {
-            let fetched = send_with(
-                &loopback(),
-                &request(Method::Get, &url),
-                &Plan::default(),
-                &control,
-            );
-            (fetched, Instant::now())
+            let plan = Plan {
+                read_timeout: HANG * 2,
+                total_timeout: HANG * 2,
+                received: Some(told),
+                ..Plan::default()
+            };
+            send_with(&loopback(), &request(Method::Get, &url), &plan, &control)
         })
     };
-    stalled
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the server stalled");
-    // Long enough for the client to be parked in its read; far shorter than any timeout.
-    thread::sleep(Duration::from_millis(200));
-    let cancelled_at = Instant::now();
-    control.cancel("permission revoked");
-    let (fetched, returned_at) = worker.join().unwrap();
-    (fetched, returned_at.saturating_duration_since(cancelled_at))
+    stall.wait_reached(1, "the server's stall");
+    let mut arrived = 0;
+    while arrived < body {
+        arrived = received
+            .recv_timeout(HANG)
+            .expect("the body before the stall arrived");
+    }
+    control.cancel(reason);
+    let fetched = worker.join().unwrap();
+    assert!(
+        stall.holding(),
+        "the cancel ended the request while the server held it"
+    );
+    fetched
 }
 
-/// The bound a cancel must meet: it shuts the socket down rather than waiting for a timeout, and
-/// the 5 s read timeout of `Plan::default` is nowhere near.
-const PROMPT: Duration = Duration::from_millis(50);
-
-/// A server that answers `bytes`, says it has stalled and then holds the connection open.
-fn stalling(tls: bool, bytes: &'static [u8]) -> (TestServer, mpsc::Receiver<()>) {
-    let (tx, stalled) = mpsc::sync_channel(1);
+/// A server that answers `bytes` and then holds the connection open at the returned stall.
+fn stalling(tls: bool, bytes: &'static [u8]) -> (TestServer, Stall) {
+    let stall = Stall::new();
+    let gate = stall.gate();
     let respond = move |_: &Request, out: &mut dyn Write| {
         send(out, bytes);
-        let _ = tx.send(());
-        thread::sleep(Duration::from_secs(5));
+        gate.pass();
     };
     let server = if tls {
         TestServer::https(server_tls(), respond)
     } else {
         TestServer::http(respond)
     };
-    (server.unwrap(), stalled)
+    (server.unwrap(), stall)
 }
 
 #[test]
@@ -1165,11 +1180,10 @@ fn cancelling_a_stalled_request_shuts_its_socket_down_promptly() {
             b"HTTP/1.1 200 OK\r\n\r\n0123456789",
         ),
     ] {
-        let (server, stalled) = stalling(tls, bytes);
-        let (fetched, latency) = cancel_while_stalled(server.url("/"), stalled);
+        let (server, stall) = stalling(tls, bytes);
+        let fetched = cancel_while_stalled(server.url("/"), &stall, 0, "permission revoked");
         assert_eq!(fetched.code(), "cancelled", "{what}");
         assert_eq!(fetched.error().detail, "permission revoked", "{what}");
-        assert!(latency < PROMPT, "{what}: {latency:?}");
     }
 }
 
@@ -1178,17 +1192,22 @@ fn cancelling_a_stalled_tls_handshake_shuts_its_socket_down_promptly() {
     // Accepts the connection and never answers the client's hello.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let (tx, stalled) = mpsc::sync_channel(1);
+    let stall = Stall::new();
+    let gate = stall.gate();
     let holder = thread::spawn(move || {
         let (socket, _) = listener.accept().unwrap();
-        let _ = tx.send(());
-        thread::sleep(Duration::from_secs(5));
+        gate.pass();
         drop(socket);
     });
-    let (fetched, latency) = cancel_while_stalled(format!("https://{address}/"), stalled);
+    let fetched = cancel_while_stalled(
+        format!("https://{address}/"),
+        &stall,
+        0,
+        "permission revoked",
+    );
     assert_eq!(fetched.code(), "cancelled");
-    assert!(latency < PROMPT, "{latency:?}");
-    drop(holder);
+    drop(stall);
+    holder.join().unwrap();
 }
 
 #[test]
@@ -1197,9 +1216,12 @@ fn a_stalled_tls_read_hits_the_idle_timeout() {
         &b"HTTP/1.1 200 OK\r\n"[..],
         b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",
     ] {
-        let (server, _stalled) = stalling(true, bytes);
+        // Held silent until the test ends, with a total that outlasts the hang bound: only the
+        // idle timeout can end the request.
+        let (server, _stall) = stalling(true, bytes);
         let plan = Plan {
             read_timeout: Duration::from_millis(300),
+            total_timeout: HANG * 2,
             ..Plan::default()
         };
         let fetched = fetch(&loopback(), &request(Method::Get, &server.url("/")), &plan);
@@ -1208,11 +1230,6 @@ fn a_stalled_tls_read_hits_the_idle_timeout() {
             fetched.error().detail.contains("timed out"),
             "{}",
             fetched.error()
-        );
-        assert!(
-            fetched.elapsed < Duration::from_millis(1500),
-            "{:?}",
-            fetched.elapsed
         );
     }
 }

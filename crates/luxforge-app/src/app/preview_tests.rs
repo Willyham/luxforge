@@ -263,15 +263,10 @@ fn fit_withholds_an_old_whole_photo_after_new_content_region_arrives() {
 #[test]
 fn an_interactive_region_does_not_settle_a_history_preview_step() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"preview":"current"}]"#);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while editor.preview_queue.is_busy() {
+    luxforge_testbase::wait_until("the fixture's preview drains", || {
         while editor.preview_queue.poll().is_some() {}
-        assert!(
-            std::time::Instant::now() < deadline,
-            "test fixture preview drained"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        !editor.preview_queue.is_busy()
+    });
     editor.await_step(Settle::Preview);
     let (analysis, raster) = analysed(&editor, 8, &[[40, 50, 60, 255]], 1, 1);
     let rect = luxforge_core::Region {

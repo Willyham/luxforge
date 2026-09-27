@@ -1865,6 +1865,7 @@ dependencies = [
  "luxforge-core",
  "luxforge-evidence",
  "luxforge-reference",
+ "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-ui",
  "rfd",
@@ -1884,6 +1885,7 @@ dependencies = [
  "luxforge-process",
  "luxforge-raw",
  "luxforge-reference",
+ "luxforge-testbase",
  "luxforge-testkit",
  "moxcms",
  "rayon",
@@ -1929,6 +1931,7 @@ version = "0.0.0"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
+ "luxforge-testbase",
  "objc2 0.6.4",
  "serde",
  "windows-sys 0.61.2",
@@ -1940,6 +1943,7 @@ version = "0.0.0"
 dependencies = [
  "cc",
  "libc",
+ "luxforge-testbase",
  "rayon",
  "serde",
  "serde_json",
@@ -1956,11 +1960,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "luxforge-testbase"
+version = "0.0.0"
+
+[[package]]
 name = "luxforge-testkit"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
  "luxforge-reference",
+ "luxforge-testbase",
  "rustls",
  "serde_json",
  "sha2",
@@ -1972,6 +1981,7 @@ version = "0.0.0"
 dependencies = [
  "iced",
  "iced_wgpu",
+ "luxforge-testbase",
  "wgpu",
 ]
 

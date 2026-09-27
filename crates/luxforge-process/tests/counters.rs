@@ -18,44 +18,92 @@ fn spin(duration: Duration) {
     }
 }
 
-/// Poll `read` until `pred` accepts its value or `deadline` passes, then return the last value
-/// either way. A busy GPU or a coarse driver counter can delay a rise past a single sample; this
-/// keeps the assertion honest by returning the *unmet* value when the deadline runs out, so the
-/// caller's own assertion (not this helper) still fails the test.
+/// Read until `accepted` holds of what `read` answers, through the one hang-bounded wait. A busy
+/// GPU or a coarse driver counter can delay a rise past a single sample.
 #[cfg(target_os = "macos")]
-fn wait_for<T>(
-    deadline: Duration,
+fn read_until<T>(
+    what: &str,
     mut read: impl FnMut() -> T,
-    mut pred: impl FnMut(&T) -> bool,
+    mut accepted: impl FnMut(&T) -> bool,
 ) -> T {
-    let end = Instant::now() + deadline;
-    loop {
-        let value = read();
-        if pred(&value) || Instant::now() > end {
-            return value;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    luxforge_testbase::wait_for(what, || Some(read()).filter(|value| accepted(value)))
 }
 
+/// CPU time the calling thread has spent, in nanoseconds, by the operating system's own
+/// per-thread clock: what the thread actually ran, however loaded the host is.
+#[cfg(unix)]
+fn thread_cpu_ns() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the pointer is to a live, writable timespec, which is all the call writes.
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
+        0
+    );
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
+#[cfg(windows)]
+fn thread_cpu_ns() -> u64 {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentThread, GetThreadTimes},
+    };
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: GetCurrentThread returns a pseudo-handle that is always valid for this thread and
+    // needs no closing; the four pointers are to live, writable FILETIMEs on this stack frame.
+    let ok = unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    assert_ne!(ok, 0, "GetThreadTimes failed");
+    let hundreds =
+        |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    (hundreds(kernel) + hundreds(user)) * 100
+}
+
+/// Another thread spins until its own CPU clock reads 200 ms, and the process's CPU time grows by
+/// at least that, less the coarsest counter's rounding. The thread's own clock decides how long it
+/// spins, so a loaded host that gives it less of each second makes the test slower, never failed.
 #[test]
 fn cpu_time_grows_by_the_work_of_another_thread() {
+    const WORK: u64 = 200_000_000;
     let mut sampler = Sampler::new();
     let before = sampler
         .read()
         .cpu_time_ns
         .expect("CPU time on this platform");
-    std::thread::spawn(|| spin(Duration::from_millis(200)))
-        .join()
-        .unwrap();
+    let spun = std::thread::spawn(|| {
+        let start = thread_cpu_ns();
+        let mut turns = 0_u64;
+        while thread_cpu_ns() - start < WORK {
+            turns = std::hint::black_box(turns.wrapping_add(1));
+        }
+        thread_cpu_ns() - start
+    })
+    .join()
+    .unwrap();
     let after = sampler
         .read()
         .cpu_time_ns
         .expect("CPU time on this platform");
     let grown = after.saturating_sub(before);
+    // Linux reports the sampler's figure in clock ticks, usually 10 ms, truncated for user and
+    // system time separately, as `cpu_time_agrees_with_getrusage` allows too.
+    let slack = 25_000_000;
     assert!(
-        grown >= 150_000_000,
-        "200 ms of spinning added only {grown} ns of CPU time"
+        grown + slack >= spun,
+        "a thread that ran {spun} ns of CPU time added only {grown} ns to the process's"
     );
     assert!(sampler.read().logical_cpus >= 1);
 }
@@ -136,8 +184,8 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     sampler.enable_gpu_allocations();
     // The driver's own allocation accounting can lag a freshly committed private buffer by a
     // beat, the same coarse-update race the GPU time check below waits out.
-    let with_buffer = wait_for(
-        Duration::from_secs(2),
+    let with_buffer = read_until(
+        "allocations rising by the buffer",
         || sampler.read().gpu,
         |with_buffer| {
             with_buffer
@@ -169,8 +217,8 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
         // AppUsage is active GPU time while GPUStartTime..GPUEndTime is the command buffer's GPU
         // window; the blit can occupy a fraction of that window on Apple silicon. Wait for a
         // meaningful fraction rather than treating the command-buffer interval as equal GPU work.
-        let after = wait_for(
-            Duration::from_secs(2),
+        let after = read_until(
+            "GPU time rising by the dispatch",
             || sampler.read().gpu.time_ns.expect("GPU time"),
             |after| after.saturating_sub(before) >= (measured / 8).max(1),
         );
@@ -190,8 +238,8 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     drop(gpu);
     // The same lag applies in reverse: a released buffer's bytes can take a beat to leave the
     // driver's own allocation accounting.
-    let released = wait_for(
-        Duration::from_secs(2),
+    let released = read_until(
+        "allocations falling after the release",
         || sampler.read().gpu,
         |released| {
             released

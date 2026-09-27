@@ -24,12 +24,12 @@ use luxforge_core::{
     AssetId, HostConfig, ModuleDescriptor, OwnerHandle, capabilities::secrets::MemorySecretStore,
     jobs::JobStatus,
 };
+use luxforge_testbase::{wait_for, wait_until};
 use luxforge_testkit::ProofEndpoint;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
-    time::{Duration, Instant},
 };
 
 const MODULE: &str = "luxforge.capabilities";
@@ -95,8 +95,7 @@ impl Proof {
             json!({"path": fixture, "mutation": crate::app::tasks::request()}),
         )
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let asset: AssetId = loop {
+        let asset: AssetId = wait_for("the import", || {
             let (status, _) = call(
                 &owner,
                 client,
@@ -104,12 +103,9 @@ impl Proof {
                 json!({"job_id": imported["job_id"]}),
             )
             .unwrap();
-            if status["status"] == "ready" {
-                break serde_json::from_value(status["result"]["asset"]["id"].clone()).unwrap();
-            }
-            assert!(Instant::now() < deadline, "{status}");
-            std::thread::sleep(Duration::from_millis(2));
-        };
+            (status["status"] == "ready")
+                .then(|| serde_json::from_value(status["result"]["asset"]["id"].clone()).unwrap())
+        });
         call(
             &owner,
             client,
@@ -158,9 +154,10 @@ impl Proof {
 
     /// Poll the tracked live jobs, as the timer would, until none is left.
     fn finish_jobs(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while self.editor.capabilities.live() {
-            assert!(Instant::now() < deadline, "a job never finished");
+        wait_until("every tracked job finishing", || {
+            if !self.editor.capabilities.live() {
+                return true;
+            }
             let polled = poll(
                 &self.editor.owner,
                 self.editor.client,
@@ -168,8 +165,8 @@ impl Proof {
             );
             self.send(CapabilityMessage::Polled(polled));
             self.answer();
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            false
+        });
     }
 
     fn section(&self) -> &crate::state::tools::SectionModel {
@@ -515,7 +512,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
             .ends_with("You declined this before.")
     );
     // Allow grants exactly the refused scope and retries the install once.
-    proof.endpoint.set_palette_delay(Duration::from_secs(10));
+    proof.endpoint.palette().shut();
     proof.send(CapabilityMessage::Consent(true));
     let sent = proof.answer();
     assert_eq!(sent[0]["method"], "module.permission.grant");
@@ -526,31 +523,26 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     assert_eq!(sent[1]["method"], "module.resource.install");
     assert!(proof.editor.capabilities.live(), "the install is followed");
     assert!(proof.editor.capability_poll_subscription().is_some());
-    // The transfer lane reports its first progress asynchronously; poll briefly rather than
-    // assuming it has already done so by the time the status round trip above answered.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let installing = loop {
+    // The transfer lane reports its first progress asynchronously, and the download stays held at
+    // the endpoint's palette gate until the test opens it, so the install is observed running.
+    let installing = wait_for("the install reporting progress", || {
         let installing = proof.section().capability.clone().unwrap().resources[0].clone();
         if installing
             .progress
             .is_some_and(|fraction| (0.0..=1.0).contains(&fraction))
         {
-            break installing;
+            return Some(installing);
         }
-        assert!(
-            Instant::now() < deadline,
-            "the install never reported progress: {installing:?}"
-        );
         let polled = poll(
             &proof.editor.owner,
             proof.editor.client,
             proof.editor.capabilities.live_jobs(),
         );
         proof.send(CapabilityMessage::Polled(polled));
-        std::thread::sleep(Duration::from_millis(5));
-    };
+        None
+    });
     assert!(installing.state.starts_with("Installing"), "{installing:?}");
-    proof.endpoint.set_palette_delay(Duration::ZERO);
+    proof.endpoint.palette().open();
     proof.finish_jobs();
     assert!(proof.editor.capability_poll_subscription().is_none());
     assert_eq!(
@@ -777,7 +769,7 @@ fn a_task_result_belongs_to_its_asset_and_a_wrong_key_fails_the_job() {
 fn cancel_and_deactivate_go_through_the_job_and_activation_methods() {
     let mut proof = Proof::start();
     proof.ready();
-    proof.endpoint.set_delay(Duration::from_secs(10));
+    proof.endpoint.generation().shut();
     proof.send(CapabilityMessage::RunTask {
         module_id: MODULE.into(),
         task: TASK.into(),
@@ -805,7 +797,7 @@ fn cancel_and_deactivate_go_through_the_job_and_activation_methods() {
         sent[0]["params"].get("mutation").is_none(),
         "a cancel converges, so it carries no envelope"
     );
-    proof.endpoint.set_delay(Duration::ZERO);
+    proof.endpoint.generation().open();
     proof.finish_jobs();
     assert!(matches!(
         &proof.state().tasks[TASK].phase,

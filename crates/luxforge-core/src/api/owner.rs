@@ -2017,8 +2017,7 @@ mod tests {
             import_params(path),
         );
         let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_until("the import to become ready", || {
             let status = ok(
                 owner,
                 client,
@@ -2027,17 +2026,11 @@ mod tests {
                 json!({"job_id": job_id}),
             );
             match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the import never became ready: {status}"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 other => panic!("unexpected import job {other:?}: {status}"),
             }
-        }
+        });
         ok(
             owner,
             client,
@@ -2061,21 +2054,12 @@ mod tests {
     }
 
     /// Poll `job.read` until the job leaves `queued` or `running`. Nothing in the owner
-    /// polls: this is the test standing in for a client that would rather be told, and it fails on
-    /// a deadline instead of spinning forever.
+    /// polls: this is the test standing in for a client that would rather be told.
     fn settled(owner: &OwnerHandle, client: ClientId, job_id: &Value) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
+        luxforge_testbase::wait_for("the analysis job to settle", || {
             let read = ok(owner, client, "read", "job.read", json!({"job_id": job_id}));
-            if !matches!(read["status"].as_str(), Some("queued" | "running")) {
-                return read;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the analysis job never settled"
-            );
-            std::thread::yield_now();
-        }
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        })
     }
 
     /// The exact report the contract says a target must produce: render that entry's own stack from
@@ -2132,37 +2116,24 @@ mod tests {
     }
 
     fn wait_source(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
-        let start = std::time::Instant::now();
-        loop {
+        luxforge_testbase::wait_for("the source job to complete", || {
             let status = request(owner, client, "job.read", json!({"job_id":id}));
             assert!(status.error.is_none(), "{:?}", status.error);
             let status = status.result.unwrap();
             match status["status"].as_str() {
-                Some("ready" | "failed") => return status,
-                Some("queued" | "running")
-                    if start.elapsed() < std::time::Duration::from_secs(5) =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(1))
-                }
+                Some("ready" | "failed") => Some(status),
+                Some("queued" | "running") => None,
                 other => panic!("source job did not complete: {other:?}: {status}"),
             }
-        }
+        })
     }
 
     /// A source job's settled status, waiting as long as a photo-sized RAW development takes.
     fn wait_development(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        loop {
+        luxforge_testbase::wait_for("the source job to settle", || {
             let status = ok(owner, client, "status", "job.read", json!({"job_id": id}));
-            if !matches!(status["status"].as_str(), Some("queued" | "running")) {
-                return status;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the source job never settled: {status}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        })
     }
 
     /// On a real RAW file: `render.sample` names no entry, so it samples the session's selection.
@@ -2263,25 +2234,19 @@ mod tests {
         .unwrap();
         let a_id = a["job_id"].as_str().unwrap();
         let b_id = b["job_id"].as_str().unwrap();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        let mut a_ready = false;
-        let mut b_ready = false;
-        while !(a_ready && b_ready) && std::time::Instant::now() < until {
-            let a_status = request(&owner, first, "job.read", json!({"job_id":a_id}))
-                .result
-                .unwrap();
-            let b_status = request(&owner, second, "job.read", json!({"job_id":b_id}))
-                .result
-                .unwrap();
-            assert_ne!(a_status["status"], "failed", "{a_status}");
-            assert_ne!(b_status["status"], "failed", "{b_status}");
-            a_ready = a_status["status"] == "ready";
-            b_ready = b_status["status"] == "ready";
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(
-            a_ready && b_ready,
-            "second RAW import stalled behind retained first float"
+        luxforge_testbase::wait_until(
+            "both RAW imports, the second not stalled behind the retained first float",
+            || {
+                let a_status = request(&owner, first, "job.read", json!({"job_id":a_id}))
+                    .result
+                    .unwrap();
+                let b_status = request(&owner, second, "job.read", json!({"job_id":b_id}))
+                    .result
+                    .unwrap();
+                assert_ne!(a_status["status"], "failed", "{a_status}");
+                assert_ne!(b_status["status"], "failed", "{b_status}");
+                a_status["status"] == "ready" && b_status["status"] == "ready"
+            },
         );
         let assets = request(&owner, first, "catalog.list", json!({}))
             .result
@@ -2292,12 +2257,7 @@ mod tests {
         assert_eq!(assets.len(), 2);
         for (client, asset) in [(first, &assets[0]), (second, &assets[1])] {
             let asset_id = &asset["id"];
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-            loop {
-                assert!(
-                    std::time::Instant::now() < until,
-                    "evicted RAW never became sampleable"
-                );
+            luxforge_testbase::wait_until("the evicted RAW to become sampleable", || {
                 let sample = request(
                     &owner,
                     client,
@@ -2305,30 +2265,25 @@ mod tests {
                     json!({"asset_id":asset_id,"x":100,"y":100}),
                 );
                 match sample.error {
-                    None => break,
+                    None => true,
                     Some(error) if error.code == "preparation-required" => {
-                        let prepared = loop {
+                        let prepared = luxforge_testbase::wait_for("the RAW preparation", || {
                             let status =
                                 request(&owner, client, "job.read", json!({"job_id":error.job_id}))
                                     .result
                                     .unwrap();
                             match status["status"].as_str() {
-                                Some("ready" | "failed") => break status,
-                                Some("queued" | "running") => {
-                                    assert!(
-                                        std::time::Instant::now() < until,
-                                        "RAW preparation stalled: {status}"
-                                    );
-                                    std::thread::sleep(std::time::Duration::from_millis(20));
-                                }
+                                Some("ready" | "failed") => Some(status),
+                                Some("queued" | "running") => None,
                                 other => panic!("invalid source state: {other:?}"),
                             }
-                        };
+                        });
                         assert_eq!(prepared["status"], "ready", "{prepared}");
+                        false
                     }
                     Some(error) => panic!("RAW sample failed: {error:?}"),
                 }
-            }
+            });
         }
         owner.stop();
         join.join().unwrap();
@@ -2600,7 +2555,7 @@ mod tests {
         let photo = temp("source-wait.jpg");
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let hold = gate.clone();
         let (owner, join) = OwnerHandle::start_observed(
             &catalog,
@@ -2649,7 +2604,7 @@ mod tests {
             json!({"job_id": job}),
         );
         for_job
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(luxforge_testbase::HANG)
             .expect("leaving the job ends the client's wait for it")
             .unwrap();
         assert!(
@@ -2658,7 +2613,7 @@ mod tests {
         );
         gate.open();
         for_room
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(luxforge_testbase::HANG)
             .expect("the worker finishing the job makes room")
             .unwrap();
         owner.stop();
@@ -2884,16 +2839,14 @@ mod tests {
         };
         let queued = call(viewer, "import", "catalog.import", import_params(fixture()));
         let job_id = queued["job_id"].as_str().unwrap();
-        let imported = loop {
+        let imported = luxforge_testbase::wait_for("the import job to finish", || {
             let status = call(viewer, "status", "job.read", json!({"job_id":job_id}));
             match status["status"].as_str() {
-                Some("ready") => break status["result"].clone(),
-                Some("queued" | "running") => {
-                    std::thread::sleep(std::time::Duration::from_millis(1))
-                }
+                Some("ready") => Some(status["result"].clone()),
+                Some("queued" | "running") => None,
                 other => panic!("unexpected import job {other:?}: {status}"),
             }
-        };
+        });
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
         let baseline = call(
@@ -3395,7 +3348,7 @@ mod tests {
     fn racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest() {
         let catalog = temp("analysis-race.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let mut registry = ModuleRegistry::builtin();
         registry
             .register(crate::modules::HeldModule::shared(gate.clone()))
@@ -3694,14 +3647,7 @@ mod tests {
         let source = jpeg.rgba.clone();
         let mut queue = crate::PreviewQueue::default();
         queue.request(job);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let result = loop {
-            if let Some(result) = queue.poll() {
-                break result;
-            }
-            assert!(std::time::Instant::now() < deadline, "no preview arrived");
-            std::thread::yield_now();
-        };
+        let result = luxforge_testbase::wait_for("a preview", || queue.poll());
         let exact = result.exact().expect("the exact phase");
         let raster = exact.result.as_ref().expect("a frame");
         let report = exact.report.clone().expect("the job asked for a report");
@@ -3749,18 +3695,9 @@ mod tests {
     /// Read `activity.list` until `wanted` holds. The work under test is held at a gate, so what
     /// this waits for is a worker reaching that gate, never a race with how fast it works.
     fn listed(owner: &OwnerHandle, client: ClientId, wanted: impl Fn(&Value) -> bool) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
-            let list = ok(owner, client, "list", "activity.list", json!({}));
-            if wanted(&list) {
-                return list;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "activity.list never showed the work: {list}"
-            );
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_for("activity.list to show the work", || {
+            Some(ok(owner, client, "list", "activity.list", json!({}))).filter(|list| wanted(list))
+        })
     }
 
     fn active_kind(list: &Value, kind: &str) -> bool {
@@ -3781,8 +3718,8 @@ mod tests {
         let photo = temp("activity-photo.jpg");
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
-        let source_gate = crate::modules::RenderGate::open_gate();
-        let render_gate = crate::modules::RenderGate::open_gate();
+        let source_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let render_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let mut registry = ModuleRegistry::builtin();
         registry
             .register(crate::modules::HeldModule::shared(render_gate.clone()))
@@ -3853,18 +3790,12 @@ mod tests {
         // The worker begins the activity and then tells the owner it started, so the job reads as
         // running a moment after it is listed; it is held there, and still listed, until the
         // gate opens.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while request(&owner, client, "job.read", json!({"job_id": job_id}))
-            .result
-            .unwrap()["status"]
-            != json!("running")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the held job never read as running"
-            );
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the held job to read as running", || {
+            request(&owner, client, "job.read", json!({"job_id": job_id}))
+                .result
+                .unwrap()["status"]
+                == json!("running")
+        });
         assert!(active_kind(
             &ok(&owner, client, "held", "activity.list", json!({})),
             "source.prepare"
@@ -3937,12 +3868,10 @@ mod tests {
         let mut queue = crate::PreviewQueue::default();
         queue.set_activity(owner.activity());
         queue.request(job);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while queue.is_busy() {
+        luxforge_testbase::wait_until("the preview queue to go idle", || {
             let _ = queue.poll();
-            assert!(std::time::Instant::now() < deadline, "no preview arrived");
-            std::thread::yield_now();
-        }
+            !queue.is_busy()
+        });
 
         let events = ok(
             &owner,
@@ -4049,9 +3978,9 @@ mod tests {
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
         std::fs::create_dir_all(&exports).unwrap();
-        let source_gate = crate::modules::RenderGate::open_gate();
-        let render_gate = crate::modules::RenderGate::open_gate();
-        let export_gate = crate::modules::RenderGate::open_gate();
+        let source_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let render_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let export_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let probe = Arc::new(crate::capabilities::testing::Probe::default());
         let mut registry = ModuleRegistry::builtin();
         registry
@@ -4078,19 +4007,16 @@ mod tests {
             });
         };
         let until_running = |job_id: &Value| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            while ok(
-                &owner,
-                client,
-                "poll",
-                "job.read",
-                json!({"job_id": job_id}),
-            )["status"]
-                != json!("running")
-            {
-                assert!(std::time::Instant::now() < deadline, "the job never ran");
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_until("the job to run", || {
+                ok(
+                    &owner,
+                    client,
+                    "poll",
+                    "job.read",
+                    json!({"job_id": job_id}),
+                )["status"]
+                    == json!("running")
+            });
         };
 
         // Source: listed as its worker begins it, and running once the owner hears so.
@@ -4188,29 +4114,23 @@ mod tests {
         );
         export_gate.open();
         owner.hold_exports(None);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while ok(
-            &owner,
-            client,
-            "poll",
-            "job.read",
-            json!({"job_id": export}),
-        )["status"]
-            == json!("running")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the export never ended"
-            );
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the export to end", || {
+            ok(
+                &owner,
+                client,
+                "poll",
+                "job.read",
+                json!({"job_id": export}),
+            )["status"]
+                != json!("running")
+        });
         assert_eq!(
             agreeing(&owner, client, &export, "export")["status"],
             "ready"
         );
 
         // Capability: an activation held by its module on the module lane.
-        probe.hold.store(true, Ordering::SeqCst);
+        probe.hold.shut();
         let activation = ok(
             &owner,
             client,
@@ -4225,23 +4145,17 @@ mod tests {
             (running["kind"].clone(), running["module_id"].clone()),
             (json!("activate"), json!("test.lane0"))
         );
-        probe.hold.store(false, Ordering::SeqCst);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while ok(
-            &owner,
-            client,
-            "poll",
-            "job.read",
-            json!({"job_id": activation}),
-        )["status"]
-            == json!("running")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the activation never ended"
-            );
-            std::thread::yield_now();
-        }
+        probe.hold.open();
+        luxforge_testbase::wait_until("the activation to end", || {
+            ok(
+                &owner,
+                client,
+                "poll",
+                "job.read",
+                json!({"job_id": activation}),
+            )["status"]
+                != json!("running")
+        });
         assert_eq!(
             agreeing(&owner, client, &activation, "module.activate")["status"],
             "ready"
@@ -4279,7 +4193,7 @@ mod tests {
         let photo = temp("source-panic.jpg");
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
         let armed = Arc::new(AtomicBool::new(true));
         let (hold, fault) = (gate.clone(), armed.clone());
@@ -4316,7 +4230,7 @@ mod tests {
         ];
         gate.open();
         for wait in waits {
-            wait.recv_timeout(Duration::from_secs(20))
+            wait.recv_timeout(luxforge_testbase::HANG)
                 .expect("the wait is released")
                 .expect("the owner answered the wait");
         }
@@ -4406,7 +4320,7 @@ mod tests {
         let job_id = queued["job_id"].clone();
         let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
         waiting(&owner, client, Some(job))
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(luxforge_testbase::HANG)
             .expect("the wait is released")
             .expect("the owner answered the wait");
         let status = ok(
@@ -4941,22 +4855,16 @@ mod tests {
             json!({"asset_id": asset, "destination": exported, "mutation": request("export-1")});
         let first = ok(&owner, client, "export", "export.jpeg", export.clone());
         assert_eq!(first["deduplicated"], json!(false));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while ok(
-            &owner,
-            client,
-            "read",
-            "job.read",
-            json!({"job_id": first["job_id"]}),
-        )["status"]
-            != "ready"
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the export never finished"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        luxforge_testbase::wait_until("the export to finish", || {
+            ok(
+                &owner,
+                client,
+                "read",
+                "job.read",
+                json!({"job_id": first["job_id"]}),
+            )["status"]
+                == "ready"
+        });
         let (events, exported_at) = events_after(&owner, client, 0);
         assert_eq!(
             events.last(),
@@ -5356,7 +5264,7 @@ mod tests {
         std::thread::scope(|scope| {
             let held = scope.spawn(|| sample(sampler, "held", 10, 10));
             reached
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(luxforge_testbase::HANG)
                 .expect("the point worker took the sample");
             // The owner is free: another client reads state and commits while the sample is held.
             let before = send(
@@ -5496,17 +5404,12 @@ mod tests {
             };
             let running = sample(clients[0]);
             reached
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(luxforge_testbase::HANG)
                 .expect("the first sample is being evaluated");
             let waiting: Vec<_> = clients[1..].iter().map(|client| sample(*client)).collect();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while owner.points_waiting() < POINT_QUEUE_CAPACITY {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the queue never filled"
-                );
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_until("the point queue to fill", || {
+                owner.points_waiting() >= POINT_QUEUE_CAPACITY
+            });
             let refused = failure(
                 &owner,
                 editor,

@@ -63,8 +63,8 @@ pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
-    STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION,
+    STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{
     ActionRef, ModuleRegistry, QueryRef, Superseded, builtin_modules, insertion_index_among,

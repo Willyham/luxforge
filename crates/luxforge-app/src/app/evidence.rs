@@ -3700,22 +3700,40 @@ mod tests {
     }
 
     /// A `wait` step captures nothing until its interval has passed, and then exactly one frame,
-    /// on the evidence tick that finds it due.
+    /// on the evidence tick that finds it due. The step's due time is its interval after the step
+    /// began; the test then decides when that time has come, moving it first out of any tick's
+    /// reach and then to now, rather than sleeping and hoping no tick is late.
     #[test]
     fn a_scripted_wait_captures_once_its_interval_has_passed() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"wait":{"ms":20}}]"#);
+        let interval = Duration::from_millis(20);
+        let before = Instant::now();
         let _ = editor.next_step();
+        let after = Instant::now();
         assert!(!evidence(&editor).capture_pending);
-        assert!(evidence(&editor).wait_until.is_some());
+        let due = evidence(&editor).wait_until.expect("the wait's due time");
+        assert!(
+            before + interval <= due && due <= after + interval,
+            "the step is due its interval after it began"
+        );
+        let wait = |editor: &mut Editor, until: Instant| {
+            editor.evidence.as_mut().expect("evidence mode").wait_until = Some(until);
+        };
+        wait(&mut editor, due + luxforge_testbase::HANG);
         let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
         assert!(
             !evidence(&editor).capture_pending,
             "a tick before the interval captures nothing"
         );
-        std::thread::sleep(Duration::from_millis(30));
+        wait(&mut editor, Instant::now());
         let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
         assert!(evidence(&editor).capture_pending);
         assert!(evidence(&editor).wait_until.is_none());
+        let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
+        assert!(
+            evidence(&editor).wait_until.is_none(),
+            "a later tick finds no wait left to capture"
+        );
         finish(editor, catalog);
     }
 

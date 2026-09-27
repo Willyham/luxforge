@@ -25,7 +25,6 @@ use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -1961,14 +1960,12 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
         )
         .expect("a preview job");
     masking.editor.request_preview(job);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while evidence(&masking.editor).awaiting.is_some() {
-        assert!(Instant::now() < deadline, "the frame never arrived");
+    luxforge_testbase::wait_until("the refused overlay frame", || {
         let _ = masking
             .editor
             .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        evidence(&masking.editor).awaiting.is_none()
+    });
 
     let run = evidence(&masking.editor);
     assert!(
@@ -2323,14 +2320,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     masking.enter_mask_mode();
     // The committed frame is on screen and nothing else is queued, so every frame the queue holds
     // from here on is one the gesture asked for.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while masking.editor.preview_queue.is_busy() {
-        assert!(Instant::now() < deadline, "the opening frame never arrived");
-        let _ = masking
-            .editor
-            .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    drain_queue(&mut masking);
     let presented = masking.editor.presented_generation;
     assert_eq!(masking.editor.displayed_draft_revision, None);
     let log = attach_log(&mut masking.editor);
@@ -2410,14 +2400,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
 
     // The drag's drafted jobs run to their end through the editor's real queue and worker, and not
     // one of their frames is presented.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while masking.editor.preview_queue.is_busy() {
-        assert!(Instant::now() < deadline, "the drafted jobs never ended");
-        let _ = masking
-            .editor
-            .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    drain_queue(&mut masking);
     assert_eq!(
         masking.editor.presented_generation, presented,
         "no frame was presented after Discard"
@@ -2542,14 +2525,12 @@ fn event_names(records: &[Value]) -> Vec<String> {
 
 /// Wait for the preview queue to finish what it holds, taking each result up as the runtime does.
 fn drain_queue(masking: &mut Masking) {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while masking.editor.preview_queue.is_busy() {
-        assert!(Instant::now() < deadline, "the preview queue never drained");
+    luxforge_testbase::wait_until("the preview queue drains", || {
         let _ = masking
             .editor
             .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !masking.editor.preview_queue.is_busy()
+    });
 }
 
 /// (a) Apply pressed before `draft.begin` has answered is not lost: the draft commits, with every

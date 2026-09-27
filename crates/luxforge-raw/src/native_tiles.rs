@@ -110,7 +110,7 @@ pub(super) extern "C" fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct JobTracker {
         seen: Vec<std::sync::atomic::AtomicUsize>,
@@ -152,7 +152,13 @@ mod tests {
         tracker.seen[job].fetch_add(1, Ordering::Relaxed);
         let active = tracker.active.fetch_add(1, Ordering::Relaxed) + 1;
         tracker.peak.fetch_max(active, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(1));
+        // The tile's work, modelled as a millisecond of wall time so that jobs overlap. The
+        // tests assert only upper bounds on that overlap, so however long a loaded host makes it
+        // take never decides them.
+        let started = Instant::now();
+        luxforge_testbase::wait_until("the job's work", || {
+            started.elapsed() >= Duration::from_millis(1)
+        });
         tracker.active.fetch_sub(1, Ordering::Relaxed);
     }
 

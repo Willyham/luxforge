@@ -193,17 +193,15 @@ mod json_client {
             let queued = Self::call(&owner, client, "catalog.import", json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))
                 .expect("import queues");
             let id = queued["job_id"].as_str().unwrap().to_owned();
-            let asset = loop {
+            let asset = luxforge_testbase::wait_for("the import job to finish", || {
                 let status = Self::call(&owner, client, "job.read", json!({"job_id": id}))
                     .expect("a job this client owns");
                 match status["status"].as_str() {
-                    Some("ready") => break status["result"]["asset"]["id"].clone(),
-                    Some("queued" | "running") => {
-                        std::thread::sleep(std::time::Duration::from_millis(1))
-                    }
+                    Some("ready") => Some(status["result"]["asset"]["id"].clone()),
+                    Some("queued" | "running") => None,
                     other => panic!("unexpected import job {other:?}"),
                 }
-            };
+            });
             Self {
                 owner,
                 client,
