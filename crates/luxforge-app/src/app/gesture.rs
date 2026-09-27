@@ -21,6 +21,7 @@ use crate::{
         tasks::{self, Refresh, RoundTrip, mutation},
     },
     mask_draft::{ContentMap, MaskDraft},
+    state::{self, IN_FLIGHT},
 };
 use iced::Task;
 use luxforge_core::{AssetId, Draft, DraftId, ErrorKind, PreviewJob, mask::commands::MaskTarget};
@@ -92,13 +93,6 @@ impl MaskGesture {
             .then(|| Value::Object(self.shape.fields()))
     }
 }
-
-/// Why a start that needs the editable state is refused with no photograph open.
-pub(crate) const NO_PHOTOGRAPH: &str = "No photograph is open";
-/// Why a start that needs the editable state is refused while a history entry is previewed.
-pub(crate) const NOT_CURRENT: &str = "Return to the current state before editing";
-/// Why a start that waits for requests is refused while one is in flight.
-pub(crate) const IN_FLIGHT: &str = "Waiting for the last request";
 
 /// What wants to start. Each variant declares which halves of [`Editor::gesture_refusal`] it
 /// answers to ([`Starting::halves`]).
@@ -347,8 +341,10 @@ impl Editor {
     /// Why `starting` cannot start now, in the words the status bar uses, or `None` when it can:
     /// the one answer to "may this start" behind every start site, each of which writes the reason
     /// to the status bar. It asks only the halves `starting` declares ([`Starting::halves`]), in
-    /// order: the one-draft rule, then a photograph open with the current state shown
-    /// ([`NO_PHOTOGRAPH`], [`NOT_CURRENT`]), then no request in flight ([`IN_FLIGHT`]).
+    /// order: the one-draft rule, then the view model's one editability rule
+    /// ([`state::editable_refusal`]), then no request in flight ([`IN_FLIGHT`]). With no draft
+    /// open, a start taking the editable and busy halves is refused exactly as
+    /// [`state::edit_refusal`] answers the models.
     ///
     /// A slider, mask or crop gesture's release is answered by [`Editor::release_refusal`] instead.
     pub(crate) fn gesture_refusal(&self, starting: Starting) -> Option<String> {
@@ -358,13 +354,10 @@ impl Editor {
         {
             return Some(reason);
         }
-        if halves.editable {
-            if self.state.is_none() {
-                return Some(NO_PHOTOGRAPH.into());
-            }
-            if !self.session.preview.can_edit() {
-                return Some(NOT_CURRENT.into());
-            }
+        if halves.editable
+            && let Some(reason) = state::editable_refusal(self.state.as_ref(), &self.session)
+        {
+            return Some(reason.into());
         }
         (halves.busy && self.busy).then(|| IN_FLIGHT.into())
     }

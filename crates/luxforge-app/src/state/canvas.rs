@@ -146,7 +146,7 @@ pub(crate) fn mask_workspace(mode: &str) -> bool {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
-    let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
+    let editable = inputs.edit_refusal.is_none();
     let drafting = inputs.drafting;
     // Pointer first, then one entry per available module that takes the whole canvas over — a
     // declared crop frame — in registry order, and the view overlays after them. A pick mode is

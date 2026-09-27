@@ -48,7 +48,7 @@ fn gallery_is_desktop_view_state_without_a_photo_and_respects_developer_mode() {
     let _ = editor.update(Message::View(ViewMessage::Gallery(Some(0))));
     assert_eq!(editor.session, before);
     // The gallery's one refusal is written as it is, not replaced by a generic line.
-    assert_eq!(editor.status, crate::app::gesture::IN_FLIGHT);
+    assert_eq!(editor.status, crate::state::IN_FLIGHT);
     editor.busy = false;
     editor.compare_return = Some(luxforge_core::HistorySelection::Current);
     editor.rederive();

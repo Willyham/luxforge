@@ -8,7 +8,6 @@ use crate::{
         Message, OverlayMessage, PresetMessage, ViewMessage,
     },
     state::{
-        capabilities::CapabilityView,
         fields,
         histogram::HistogramModel,
         presets::{PresetFormModel, PresetRow, PresetsModel},
@@ -222,9 +221,9 @@ fn section_view<'a>(
         let mut rows = Vec::new();
         if let Some(capability) = &section.capability {
             rows.push(PanelRow::Plain(super::capabilities::block(capability)));
-            if capability.view == CapabilityView::Settings && !capability.loading {
-                return finish_rows(rows, menu);
-            }
+        }
+        if !section.shows_controls() {
+            return finish_rows(rows, menu);
         }
         rows.extend(match section.layout {
             SectionLayout::Stacked => control_rows(
@@ -235,7 +234,7 @@ fn section_view<'a>(
                 plot,
                 false,
             ),
-            SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
+            SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot),
         });
         finish_rows(rows, menu)
     });
@@ -261,7 +260,6 @@ fn section_view<'a>(
 /// controls. Any top-level control that is not a group follows as usual.
 fn tabbed_rows<'a>(
     section: &'a SectionModel,
-    selected: usize,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
 ) -> Vec<PanelRow<'a>> {
@@ -275,7 +273,7 @@ fn tabbed_rows<'a>(
             _ => None,
         })
         .collect();
-    let Some(visible) = groups.get(selected).or_else(|| groups.first()).copied() else {
+    let Some(visible) = section.visible_tab() else {
         return control_rows(module_id, enabled, &section.controls, menu, plot, false);
     };
     let tabs = tab_row(

@@ -482,7 +482,7 @@ fn overlay_model(inputs: &Inputs<'_>) -> OverlayModel {
 
 /// The Masks panel for the displayed entry.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
-    let disabled_reason = disabled_reason(inputs);
+    let disabled_reason = inputs.edit_refusal.clone();
     let enabled = disabled_reason.is_none();
     let listing = inputs
         .masks
@@ -552,20 +552,6 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         name: inputs.mask_name.to_owned(),
         overlay: overlay_model(inputs),
     }
-}
-
-/// Why nothing in the panel can run, in the words the status bar uses. The same rules a module
-/// section follows, because a mask command is the same kind of mutation.
-fn disabled_reason(inputs: &Inputs<'_>) -> Option<String> {
-    if inputs.state.is_none() {
-        return Some("No photograph is open".into());
-    }
-    if !inputs.session.preview.can_edit() {
-        return Some("Return to current to edit".into());
-    }
-    inputs
-        .busy
-        .then(|| "Waiting for the last request".to_owned())
 }
 
 fn caption(inputs: &Inputs<'_>, listed: bool, empty: bool) -> Option<String> {
@@ -658,6 +644,9 @@ fn control_action(control: &luxforge_core::Control) -> Option<&str> {
 /// rules rather than discovered by sending a request that will be rejected.
 fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Vec<ComponentRow> {
     let modes = declared_modes();
+    // Why nothing in a row can run: the one editability rule, so a row names a historical preview
+    // as that and not as a request in flight.
+    let refusal = inputs.edit_refusal.as_deref();
     let component_modes: Vec<ComponentMode> = report
         .components
         .iter()
@@ -682,8 +671,8 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 // Moving a row into or out of the leading position is refused whenever it would
                 // leave a component that is not an add at the front, which is the same rule the
                 // host checks; the panel states it here instead of offering the move.
-                up_reason: move_reason(report, &component_modes, component.index, -1, enabled),
-                down_reason: move_reason(report, &component_modes, component.index, 1, enabled),
+                up_reason: move_reason(report, &component_modes, component.index, -1, refusal),
+                down_reason: move_reason(report, &component_modes, component.index, 1, refusal),
                 // The first component's mode is fixed by the composition, so its control is not
                 // offered; every other row carries its own, showing that component's mode.
                 mode_options: if first { Vec::new() } else { modes.clone() },
@@ -715,12 +704,12 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                     && crate::mask_draft::drawable(&component.kind),
                 painted: crate::mask_draft::paintable(&component.kind),
                 strokes: if selected {
-                    stroke_rows(&component.payload, &component.name, enabled)
+                    stroke_rows(&component.payload, &component.name, refusal)
                 } else {
                     Vec::new()
                 },
                 samples: if selected {
-                    sample_rows(&component.payload, &component.kind, enabled)
+                    sample_rows(&component.payload, &component.kind, refusal)
                 } else {
                     Vec::new()
                 },
@@ -728,7 +717,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 picking: pick_mode(&component.kind)
                     .is_some_and(|mode| inputs.session.workspace.mode == mode),
                 pick_label: pick_label(&component.kind),
-                pick_reason: pick_reason(report, component, enabled),
+                pick_reason: pick_reason(report, component, refusal),
                 limits: if selected {
                     kind_limits(&component.kind)
                 } else {
@@ -777,9 +766,13 @@ fn kind_pick(kind: &str) -> Option<(&'static str, &'static str)> {
 /// Why a colour cannot be picked into this component right now, in the words the command family
 /// would use. Every one of these is a state the host itself refuses, stated before the click rather
 /// than discovered by sending a request that will be rejected.
-fn pick_reason(report: &MaskReport, component: &ComponentReport, enabled: bool) -> Option<String> {
-    if !enabled {
-        return Some("Waiting for the last request".into());
+fn pick_reason(
+    report: &MaskReport,
+    component: &ComponentReport,
+    refusal: Option<&str>,
+) -> Option<String> {
+    if let Some(reason) = refusal {
+        return Some(reason.to_owned());
     }
     if !component.available {
         return Some(rules::unknown_kind(&component.kind).detail);
@@ -803,7 +796,7 @@ fn pick_reason(report: &MaskReport, component: &ComponentReport, enabled: bool) 
 
 /// The colours one component's stored payload holds, read through the host's own reserved field so
 /// the panel parses no payload of its own.
-fn sample_rows(payload: &serde_json::Value, kind: &str, enabled: bool) -> Vec<SampleRow> {
+fn sample_rows(payload: &serde_json::Value, kind: &str, refusal: Option<&str>) -> Vec<SampleRow> {
     if luxforge_core::mask::component_sample_limit(kind).is_none() {
         return Vec::new();
     }
@@ -825,7 +818,7 @@ fn sample_rows(payload: &serde_json::Value, kind: &str, enabled: bool) -> Vec<Sa
                 label: format!("Colour {}", index + 1),
                 text: format!("{r:.3}, {g:.3}, {b:.3}"),
                 swatch: [code(r), code(g), code(b)],
-                delete_reason: (!enabled).then(|| "Waiting for the last request".to_owned()),
+                delete_reason: refusal.map(str::to_owned),
             })
         })
         .collect()
@@ -841,7 +834,11 @@ fn code(linear: f64) -> u8 {
 /// The strokes one component's stored payload references, read through the host's own reserved
 /// field so the panel parses no payload of its own. A payload that carries none — every gradient's —
 /// gives no rows, and a malformed one gives none rather than a guess.
-fn stroke_rows(payload: &serde_json::Value, component: &str, enabled: bool) -> Vec<StrokeRow> {
+fn stroke_rows(
+    payload: &serde_json::Value,
+    component: &str,
+    refusal: Option<&str>,
+) -> Vec<StrokeRow> {
     let held = luxforge_core::path::references(payload, component).unwrap_or_default();
     held.iter()
         .enumerate()
@@ -849,11 +846,9 @@ fn stroke_rows(payload: &serde_json::Value, component: &str, enabled: bool) -> V
             stroke: stroke.as_str().to_owned(),
             index,
             label: format!("Stroke {}", index + 1),
-            delete_reason: if !enabled {
-                Some("Waiting for the last request".into())
-            } else {
-                reason(rules::delete_stroke(stroke.as_str(), component, held.len()))
-            },
+            delete_reason: refusal
+                .map(str::to_owned)
+                .or_else(|| reason(rules::delete_stroke(stroke.as_str(), component, held.len()))),
         })
         .collect()
 }
@@ -981,10 +976,10 @@ fn move_reason(
     modes: &[ComponentMode],
     index: usize,
     step: i64,
-    enabled: bool,
+    refusal: Option<&str>,
 ) -> Option<String> {
-    if !enabled {
-        return Some("Waiting for the last request".into());
+    if let Some(reason) = refusal {
+        return Some(reason.to_owned());
     }
     let Ok(target) = u64::try_from(index as i64 + step) else {
         return Some(format!("{} is already at the top of the list", report.name));
@@ -1009,7 +1004,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
     let apply_reason = if inputs.gesture_conflicted {
         Some("Changed elsewhere: discard the draft or reapply it".into())
     } else if !enabled {
-        disabled_reason(inputs)
+        inputs.edit_refusal.clone()
     } else if draft.method().is_none() {
         Some(format!(
             "This build cannot draw a {} component",

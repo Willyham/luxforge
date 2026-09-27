@@ -1,6 +1,6 @@
 //! Behavioral checks for generated gestures, independent of a production module's identity.
 use super::{
-    Editor, gesture,
+    Editor,
     message::{
         ActionMessage, ControlMessage, DraftMessage, HistoryMessage, Message, PaletteAction,
         PreviewMessage, SyncMessage, ViewMessage,
@@ -513,7 +513,7 @@ fn every_refused_control_start_says_why() {
     // A previewed history entry refuses every one of them.
     editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
     for (name, message) in starts.clone() {
-        refused(&mut editor, name, message, gesture::NOT_CURRENT);
+        refused(&mut editor, name, message, crate::state::NOT_CURRENT);
     }
 
     // A request in flight refuses what commits at once; a drafting control's gesture goes ahead
@@ -527,7 +527,7 @@ fn every_refused_control_start_says_why() {
         ) {
             continue;
         }
-        refused(&mut editor, name, message, gesture::IN_FLIGHT);
+        refused(&mut editor, name, message, crate::state::IN_FLIGHT);
     }
     let _ = editor.update(fraction("amount"));
     assert!(editor.slider_gesture().is_some(), "{}", editor.status);
@@ -993,7 +993,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     assert!(!section.enabled, "the panel is editable during a preview");
     assert_eq!(
         section.disabled_reason.as_deref(),
-        Some("Return to current to edit")
+        Some(crate::state::NOT_CURRENT)
     );
     assert!(
         section
@@ -1348,5 +1348,186 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     ))));
     assert!(editor.recipe_rows_shown());
     assert_eq!(editor.status, "Recipe unavailable: unavailable");
+    finish(editor, catalog);
+}
+
+/// The fixture's curve, `(action, first channel)`: the key its samples are requested under.
+fn fixture_curve() -> (String, String) {
+    (ACTION.into(), "master".into())
+}
+
+/// An editor with `modules` registered and a JPEG open, ready to show which curves it samples.
+fn sampling(modules: Vec<luxforge_core::ModuleDescriptor>) -> (Editor, PathBuf) {
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
+    let asset = AssetId::new();
+    let current = entry(&asset, 4, None);
+    let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+    (editor, catalog)
+}
+
+/// A curve is sampled once it is on screen, and the tools panel is what says so: a section its
+/// module declares `collapsed` draws no curve until it is opened, and a developer section outside
+/// developer mode is not drawn at all.
+#[test]
+fn a_curve_in_a_hidden_section_queries_no_samples() {
+    let (editor, catalog) = sampling(vec![controls_descriptor()]);
+    assert!(
+        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        "an expanded section's curve is sampled"
+    );
+    finish(editor, catalog);
+
+    let collapsed = luxforge_core::ModuleDescriptor {
+        collapsed: true,
+        ..controls_descriptor()
+    };
+    let module_id = collapsed.id.clone();
+    let (mut editor, catalog) = sampling(vec![collapsed]);
+    assert!(!editor.workspace.tools.all().any(|section| section.expanded));
+    assert!(
+        editor.curve_sample_requested.is_empty(),
+        "a section declared collapsed shows no curve"
+    );
+    let _ = editor.update(Message::Control(ControlMessage::ToggleSection(module_id)));
+    assert!(
+        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        "opening the section shows its curve"
+    );
+    finish(editor, catalog);
+
+    let developer = luxforge_core::ModuleDescriptor {
+        developer: true,
+        ..controls_descriptor()
+    };
+    let (editor, catalog) = sampling(vec![developer]);
+    assert!(!editor.developer);
+    assert!(
+        editor.curve_sample_requested.is_empty(),
+        "a developer section is not drawn outside developer mode"
+    );
+    finish(editor, catalog);
+}
+
+/// A tabbed module shows one tab at a time, so a curve in another tab is not sampled until its
+/// tab is selected.
+#[test]
+fn a_curve_in_a_hidden_tab_queries_no_samples() {
+    let mut tabs = controls_descriptor();
+    tabs.layout = luxforge_core::ModuleLayout::Tabs;
+    let luxforge_core::Control::Group { controls, .. } = &mut tabs.controls[0] else {
+        unreachable!("the fixture's controls are one group")
+    };
+    let curve = controls
+        .iter()
+        .position(|control| matches!(control, luxforge_core::Control::Curve { .. }))
+        .expect("the fixture's curve");
+    let curve = controls.remove(curve);
+    tabs.controls
+        .push(luxforge_core::Control::group("Curve", vec![curve]));
+    let module_id = tabs.id.clone();
+    let (mut editor, catalog) = sampling(vec![tabs]);
+    assert!(
+        editor.curve_sample_requested.is_empty(),
+        "the curve's tab is not the one shown"
+    );
+    let _ = editor.update(Message::Control(ControlMessage::SelectTab {
+        module_id,
+        index: 1,
+    }));
+    assert!(
+        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        "selecting the curve's tab shows it"
+    );
+    finish(editor, catalog);
+}
+
+/// A module whose effects exist only on RAW photos draws no section on a JPEG, so its curve is
+/// not sampled there; on a RAW photo it is.
+#[test]
+fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
+    let mut raw_only = controls_descriptor();
+    raw_only.effects = vec![luxforge_core::EffectDescriptor {
+        id: "fixture.raw-only".into(),
+        format: 1,
+        stage: luxforge_core::EffectStage::Color,
+        order: 0,
+        maskable: false,
+        artifacts: false,
+        single: false,
+        sources: vec![luxforge_core::SourceTag::Raw],
+    }];
+    let (mut editor, catalog) = sampling(vec![raw_only]);
+    assert_eq!(editor.workspace.tools.all().count(), 0);
+    assert!(
+        editor.curve_sample_requested.is_empty(),
+        "a module that does not apply to a JPEG shows no curve"
+    );
+    let asset = editor.state.as_ref().unwrap().asset.id.clone();
+    let payload = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+    let raw = raw_entry(&asset, 5, None, &payload);
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        raw_refresh(&asset, &raw),
+    )))));
+    assert!(
+        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        "on a RAW photo the module applies and its curve is sampled"
+    );
+    finish(editor, catalog);
+}
+
+/// A group's reset is the one its header shows, which the tools panel resolved for the photo and
+/// the target: on a RAW photo's global target Basic's White balance runs the RAW development's
+/// As shot, not Basic's own reset.
+#[test]
+fn reset_group_runs_the_reset_the_panel_resolved() {
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    let payload = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+    let current = raw_entry(&asset, 4, None, &payload);
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        raw_refresh(&asset, &current),
+    )))));
+    let basic = tools::module_of(&editor.modules, "luxforge.basic")
+        .expect("Basic")
+        .clone();
+    let path = basic
+        .controls
+        .iter()
+        .position(|control| {
+            luxforge_core::resolve_group_reset(
+                &basic.id,
+                control,
+                Some(luxforge_core::SourceTag::Raw),
+                None,
+            )
+            .is_some_and(|resolved| resolved.variant)
+        })
+        .expect("a group whose reset a RAW variant provides");
+    let declared = match &basic.controls[path] {
+        luxforge_core::Control::Group { reset, .. } => reset.clone().expect("a declared reset"),
+        _ => unreachable!("a group"),
+    };
+    let shown = editor
+        .workspace
+        .tools
+        .all()
+        .find(|section| section.module_id == basic.id)
+        .and_then(|section| section.group_reset(&[path]))
+        .cloned()
+        .expect("the reset the header shows");
+    assert_ne!(shown.action, declared.action, "the variant's reset");
+    let _ = editor.update(Message::Control(ControlMessage::ResetGroup {
+        module_id: basic.id.clone(),
+        path: vec![path],
+    }));
+    assert!(
+        editor
+            .status
+            .starts_with(&format!("Running edit.{}", shown.action)),
+        "{}",
+        editor.status
+    );
     finish(editor, catalog);
 }

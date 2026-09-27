@@ -191,9 +191,10 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
                     label: version.name.clone(),
                     trailing: Some(version.entry_sequence.to_string()),
                     selected: version.selected,
-                    enabled: !model.busy,
+                    enabled: model.can_select,
                 },
-                (!model.busy)
+                model
+                    .can_select
                     .then(|| Message::History(HistoryMessage::Select(version.entry_id.clone()))),
                 Some(Message::View(ViewMessage::OpenMenu(MenuTarget::Version(
                     version.name.clone(),
@@ -260,7 +261,6 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
             .padding(Padding::default().bottom(theme::LIST_ROW_SPACING))
     ]
     .spacing(theme::LIST_ROW_SPACING);
-    let editable = !model.busy;
     for entry in &model.history {
         block = block.push(list_row(
             &ListRowModel {
@@ -270,7 +270,7 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
                 trailing: entry.actor.clone(),
                 dimmed: entry.branch,
                 tag: entry.branch.then(|| "branch".to_string()),
-                enabled: editable,
+                enabled: model.can_select,
             },
             Some(Message::History(HistoryMessage::Select(
                 entry.entry_id.clone(),
@@ -291,7 +291,11 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
             .padding(Padding::default().left(LABEL_INSET))
             .height(Length::Fixed(theme::LIST_ROW_HEIGHT))
             .style(theme::button_disclosure)
-            .on_press_maybe(editable.then_some(Message::History(HistoryMessage::LoadOlder))),
+            .on_press_maybe(
+                model
+                    .can_select
+                    .then_some(Message::History(HistoryMessage::LoadOlder)),
+            ),
         );
     }
     if let Some(preview) = model.preview {
@@ -414,7 +418,7 @@ mod tests {
                 can_restore: false,
             }),
             menu: Some(MenuTarget::Version("Warm".into())),
-            busy: false,
+            can_select: true,
         };
         let _: Element<'_, Message> = state_panel(&panel, &PerformanceModel::default());
     }

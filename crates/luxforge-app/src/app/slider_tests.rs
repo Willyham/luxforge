@@ -1150,6 +1150,6 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
         editor.api_sequence, sequence,
         "already busy: no second request"
     );
-    assert_eq!(editor.status, crate::app::gesture::IN_FLIGHT);
+    assert_eq!(editor.status, crate::state::IN_FLIGHT);
     finish(editor, catalog);
 }

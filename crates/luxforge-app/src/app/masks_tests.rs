@@ -904,6 +904,19 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
     assert!(panel.components[0].down_reason.is_some());
     assert!(panel.components[0].delete_reason.is_none());
     assert!(panel.components[1].delete_reason.is_none());
+
+    // While nothing can be edited, a row names why in the one editability rule's words: a request
+    // in flight, and a historical entry on screen, each as itself.
+    masking.editor.busy = true;
+    masking.editor.rederive();
+    let row = &masking.editor.workspace.masks.components[1];
+    assert_eq!(row.down_reason.as_deref(), Some(crate::state::IN_FLIGHT));
+    masking.editor.busy = false;
+    masking.editor.session.preview.selection =
+        luxforge_core::HistorySelection::Entry(luxforge_core::EntryId::new());
+    masking.editor.rederive();
+    let row = &masking.editor.workspace.masks.components[1];
+    assert_eq!(row.down_reason.as_deref(), Some(crate::state::NOT_CURRENT));
 }
 
 /// The overlay is per-client view state: Shift+M toggles it, `O` keeps meaning thirds, and the

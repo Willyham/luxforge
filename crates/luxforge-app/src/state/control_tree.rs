@@ -67,6 +67,12 @@ impl<T: ControlTree> Walk<'_, T> {
         self.stack.iter().map(|(_, next)| next - 1).collect()
     }
 
+    /// How deep the node returned last sits: 1 for a node of the tree's own top level, 2 for a
+    /// child of one of its groups, and so on. It allocates nothing, unlike [`Self::path`].
+    pub(crate) fn depth(&self) -> usize {
+        self.stack.len()
+    }
+
     /// Do not visit the children of the node returned last.
     pub(crate) fn skip_children(&mut self) {
         self.skip = true;

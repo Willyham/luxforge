@@ -252,7 +252,7 @@ fn history_navigation_is_refused_while_a_request_is_in_flight() {
         editor.status.clear();
         let task = editor.update(Message::History(message.clone()));
         assert_eq!(task.units(), 0, "{message:?}: nothing is sent");
-        assert_eq!(editor.status, crate::app::gesture::IN_FLIGHT, "{message:?}");
+        assert_eq!(editor.status, crate::state::IN_FLIGHT, "{message:?}");
     }
     assert_eq!(editor.api_sequence, sequence);
 
