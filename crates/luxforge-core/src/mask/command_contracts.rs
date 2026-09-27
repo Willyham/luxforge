@@ -1012,6 +1012,7 @@ fn a_retried_command_returns_its_original_result_and_a_reused_id_conflicts() {
     let revision = client.revision();
     let listing = client.list();
     let sky = mask_of(&listing, "Mask 1");
+    let linear_1 = component_of(&listing, "Mask 1", "Linear 1");
     // Every mutation of the family deduplicates by the same input hash.
     for (method, target, parameters, request) in [
         (
@@ -1029,6 +1030,15 @@ fn a_retried_command_returns_its_original_result_and_a_reused_id_conflicts() {
             Value::Null,
             "rename",
         ),
+        (
+            "mask.rename-component",
+            MaskTarget {
+                name: Some("Sky edge".into()),
+                ..linear_1.clone()
+            },
+            Value::Null,
+            "rename-component",
+        ),
     ] {
         let mut params = match parameters.clone() {
             Value::Object(object) => object,
@@ -1037,6 +1047,9 @@ fn a_retried_command_returns_its_original_result_and_a_reused_id_conflicts() {
         params.insert("asset_id".into(), asset.clone());
         params.insert("mutation".into(), mutation(client.revision(), request));
         params.insert("mask".into(), json!(target.mask.as_ref().unwrap().as_str()));
+        if let Some(component) = &target.component {
+            params.insert("component".into(), json!(component.as_str()));
+        }
         if let Some(name) = &target.name {
             params.insert("name".into(), json!(name));
         }
