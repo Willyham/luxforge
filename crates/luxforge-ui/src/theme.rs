@@ -260,6 +260,9 @@ pub const THUMB_OUTLINE_WIDTH: f32 = 1.0;
 pub const THUMB_HALO_RADIUS: f32 = 9.0;
 /// How strongly the halo's accent sits over the panel and the rail under it.
 pub const THUMB_HALO_OPACITY: f32 = 0.25;
+/// A range's shoulder grip: an 8 pt disc at the outer end of a shoulder (mask-panels.png, the
+/// luminance range's `.sth`), in the tertiary text colour so it reads as secondary to a thumb.
+pub const SHOULDER_GRIP_RADIUS: f32 = 4.0;
 /// The zero tick's height across the rail.
 pub const ZERO_TICK_HEIGHT: f32 = 6.0;
 /// The zero tick's width.
@@ -312,6 +315,9 @@ pub const CHIP_LABEL: Color = Color::from_rgb8(176, 176, 182);
 pub const SELECTED_FILL: Color = Color::from_rgb8(62, 55, 46);
 /// A number field's row: the label, the value box and any unit.
 pub const FIELD_ROW_HEIGHT: f32 = 24.0;
+/// A field row packed two to a row under a control it belongs to, such as a range's four fields
+/// (mask-panels.png, `.fields .fld`): the same 20 pt box on a 22 pt row.
+pub const COMPACT_FIELD_ROW_HEIGHT: f32 = 22.0;
 /// A number field's value box.
 pub const FIELD_WIDTH: f32 = 56.0;
 /// A value box's height.

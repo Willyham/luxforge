@@ -306,3 +306,61 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
     states.push(columns.into());
     states
 }
+
+/// The range: a luminance band on its black-to-white rail with both shoulders open, the same band
+/// with its high edge dragged, and a disabled band on the plain rail with no shoulders declared.
+pub(crate) fn gallery_ranges() -> Vec<Element<'static, ()>> {
+    let band = RangeSliderModel {
+        label: "Range".into(),
+        readout: "62 – 88".into(),
+        min: 0.0,
+        max: 100.0,
+        values: RangeValues {
+            low: 62.0,
+            high: 88.0,
+            low_feather: Some(10.0),
+            high_feather: Some(6.0),
+        },
+        step: 1.0,
+        rail: RailDecoration::Colors(vec![
+            iced::Color::from_rgb8(0, 0, 0),
+            iced::Color::from_rgb8(255, 255, 255),
+        ]),
+        dragging: None,
+        enabled: true,
+    };
+    vec![
+        range_slider(&band, |_, _| (), |_| (), |_| ()),
+        range_slider(
+            &RangeSliderModel {
+                readout: "62 – 91".into(),
+                values: RangeValues {
+                    high: 91.0,
+                    ..band.values
+                },
+                dragging: Some(RangeGrip::High),
+                ..band.clone()
+            },
+            |_, _| (),
+            |_| (),
+            |_| (),
+        ),
+        range_slider(
+            &RangeSliderModel {
+                readout: "20 – 45".into(),
+                values: RangeValues {
+                    low: 20.0,
+                    high: 45.0,
+                    low_feather: None,
+                    high_feather: None,
+                },
+                rail: RailDecoration::Plain,
+                enabled: false,
+                ..band
+            },
+            |_, _| (),
+            |_| (),
+            |_| (),
+        ),
+    ]
+}
