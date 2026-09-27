@@ -29,7 +29,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Exact current-editor journey, display-independent, including the Basic and histogram, field-patch conformance, Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
-| Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| Verify golden fixtures; generate 24 MP, 60 MP, the mixer scenario's own hue-wheel, the presence scenario's own gradient/edge/texture/flat workload and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
@@ -130,9 +130,9 @@ The command builds `luxforge-app` and `xtask` once in release, then runs each co
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
-measures the same file. The rendered and timing tiers run `generate-fixtures` first when the 24 MP,
-60 MP or hue-wheel workloads are missing. A component that has stopped making progress is killed after twenty
-minutes and recorded as `timed_out`.
+measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
+generated fixture — 24 MP, 60 MP, hue-wheel, presence or range — is missing. A component that has
+stopped making progress is killed after twenty minutes and recorded as `timed_out`.
 
 The rendered scenarios are the one block that overlaps: they run through a bounded pool, three at a
 time by default and `--jobs N` otherwise, with `--jobs 1` as the serial run through the same path.
