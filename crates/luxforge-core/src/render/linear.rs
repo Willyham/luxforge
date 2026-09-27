@@ -1164,6 +1164,7 @@ mod tests {
         modules::{CropPayload, ModuleRegistry},
     };
     use luxforge_reference::srgb as srgb_ref;
+    use luxforge_testbase::Distribution;
     use rayon::prelude::*;
     use sha2::{Digest, Sha256};
     use std::time::Instant;
@@ -1251,12 +1252,6 @@ mod tests {
             masks: Vec::new(),
             ..Recipe::default()
         }
-    }
-
-    fn percentile(values: &[f64], percentile: f64) -> f64 {
-        let mut ordered = values.to_vec();
-        ordered.sort_by(f64::total_cmp);
-        ordered[((ordered.len() as f64 - 1.0) * percentile).ceil() as usize]
     }
 
     fn timed_render(
@@ -1810,32 +1805,24 @@ mod tests {
                     reference_cpu.push(cpu);
                 }
             }
+            let [reference_wall, production_wall] = [&reference_wall, &production_wall]
+                .map(|samples| Distribution::of(samples.iter().copied()).expect("renders ran"));
+            let cpu = |samples: &[f64], p95: bool| {
+                Distribution::of(samples.iter().copied()).map_or_else(
+                    || "unavailable".to_owned(),
+                    |ms| format!("{:.3}", if p95 { ms.p95 } else { ms.p50 }),
+                )
+            };
             println!(
                 "{name}: reference_wall_p50_ms={:.3} reference_wall_p95_ms={:.3} production_wall_p50_ms={:.3} production_wall_p95_ms={:.3} reference_process_cpu_p50_ms={} reference_process_cpu_p95_ms={} production_process_cpu_p50_ms={} production_process_cpu_p95_ms={} row_scratch_bytes_per_folder={} row_scratch_max_at_pool_width={} memory_after_reference={:?} memory_after_production={:?} output_sha256={:x}",
-                percentile(&reference_wall, 0.50),
-                percentile(&reference_wall, 0.95),
-                percentile(&production_wall, 0.50),
-                percentile(&production_wall, 0.95),
-                if reference_cpu.is_empty() {
-                    "unavailable".into()
-                } else {
-                    format!("{:.3}", percentile(&reference_cpu, 0.50))
-                },
-                if reference_cpu.is_empty() {
-                    "unavailable".into()
-                } else {
-                    format!("{:.3}", percentile(&reference_cpu, 0.95))
-                },
-                if production_cpu.is_empty() {
-                    "unavailable".into()
-                } else {
-                    format!("{:.3}", percentile(&production_cpu, 0.50))
-                },
-                if production_cpu.is_empty() {
-                    "unavailable".into()
-                } else {
-                    format!("{:.3}", percentile(&production_cpu, 0.95))
-                },
+                reference_wall.p50,
+                reference_wall.p95,
+                production_wall.p50,
+                production_wall.p95,
+                cpu(&reference_cpu, false),
+                cpu(&reference_cpu, true),
+                cpu(&production_cpu, false),
+                cpu(&production_cpu, true),
                 source.width() as usize * std::mem::size_of::<[f32; 3]>(),
                 source.width() as usize
                     * std::mem::size_of::<[f32; 3]>()
@@ -1992,6 +1979,12 @@ mod tests {
             .zip(sampler.read().cpu_time_ns.ok())
             .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
         let memory_after_contention = sampler.read().memory;
+        let [uncontended_wall, uncontended_cpu, contended_wall] = [
+            &preview_uncontended_wall,
+            &preview_uncontended_cpu,
+            &preview_contended_wall,
+        ]
+        .map(|samples| Distribution::of(samples.iter().copied()).expect("previews ran"));
         println!(
             "fit_proxy_contention: variant={} dimensions={}x{} samples=30 uncontended_p50_p95_ms={:.3}/{:.3} uncontended_process_cpu_p50_p95_ms={:.3}/{:.3} contended_p50_p95_ms={:.3}/{:.3} exact_renders_during_proxy_samples={} overlap_wall_ms={:.3} overlap_process_cpu_ms={} memory_after_contention={:?} loadavg_before={}",
             if worker_reference {
@@ -2001,12 +1994,12 @@ mod tests {
             },
             preview_width,
             preview_height,
-            percentile(&preview_uncontended_wall, 0.50),
-            percentile(&preview_uncontended_wall, 0.95),
-            percentile(&preview_uncontended_cpu, 0.50),
-            percentile(&preview_uncontended_cpu, 0.95),
-            percentile(&preview_contended_wall, 0.50),
-            percentile(&preview_contended_wall, 0.95),
+            uncontended_wall.p50,
+            uncontended_wall.p95,
+            uncontended_cpu.p50,
+            uncontended_cpu.p95,
+            contended_wall.p50,
+            contended_wall.p95,
             exact_renders,
             contention_wall_ms,
             contention_cpu_ms.map_or_else(|| "unavailable".into(), |value| format!("{value:.3}")),
@@ -2380,19 +2373,22 @@ mod tests {
             ));
         }
         let memory = sampler.read().memory;
+        let [serial_wall, serial_cpu, parallel_wall, parallel_cpu] =
+            [&serial_wall, &serial_cpu, &parallel_wall, &parallel_cpu]
+                .map(|samples| Distribution::of(samples.iter().copied()).expect("previews ran"));
         println!(
             "bayer_fit_proxy_contention: source=nikon_z6.NEF dimensions=6064x4040 preview={}x{} samples_per_arm=30 order=serial-parallel-parallel-serial rayon_threads={} max_admitted_normalization_callbacks=8 normalizer_extra_scratch_bytes=0 shared_admission_slot_limit=8 preview_serial_wall_p50_p95_ms={:.3}/{:.3} preview_serial_process_cpu_per_preview_window_p50_p95_ms={:.3}/{:.3} preview_parallel_wall_p50_p95_ms={:.3}/{:.3} preview_parallel_process_cpu_per_preview_window_p50_p95_ms={:.3}/{:.3} exact_serial_started_during_overlap={} exact_serial_completed_during_overlap={} exact_serial_started_in_drain={} exact_serial_completed_in_drain={} exact_parallel_started_during_overlap={} exact_parallel_completed_during_overlap={} exact_parallel_started_in_drain={} exact_parallel_completed_in_drain={} serial_overlap_wall_ms={:.1} serial_overlap_process_cpu_ms={:.1} serial_drain_wall_ms={:.1} serial_drain_process_cpu_ms={:.1} parallel_overlap_wall_ms={:.1} parallel_overlap_process_cpu_ms={:.1} parallel_drain_wall_ms={:.1} parallel_drain_process_cpu_ms={:.1} memory_after_prepare={memory_after_decode:?} process_memory_after_overlap={memory:?} process_memory_peak_scope=whole diagnostic process across both arms including retained mosaic, retained linear planes, preview oracle and transient exact RGB output; not per arm; cancellation=measurement does not cancel exact development; per-row normalization checks and joins; Bayer RCD is noncancellable until its native call returns; includes core preview render, excludes app upload and scanout",
             preview_width,
             preview_height,
             rayon::current_num_threads(),
-            percentile(&serial_wall, 0.50),
-            percentile(&serial_wall, 0.95),
-            percentile(&serial_cpu, 0.50),
-            percentile(&serial_cpu, 0.95),
-            percentile(&parallel_wall, 0.50),
-            percentile(&parallel_wall, 0.95),
-            percentile(&parallel_cpu, 0.50),
-            percentile(&parallel_cpu, 0.95),
+            serial_wall.p50,
+            serial_wall.p95,
+            serial_cpu.p50,
+            serial_cpu.p95,
+            parallel_wall.p50,
+            parallel_wall.p95,
+            parallel_cpu.p50,
+            parallel_cpu.p95,
             exact_started_overlap[0],
             exact_completed_overlap[0],
             exact_started_drain[0],
@@ -3569,10 +3565,6 @@ mod tests {
         let registry = ModuleRegistry::builtin();
         let settings = LinearSettings::default();
         let ms = |start: Instant| start.elapsed().as_secs_f64() * 1e3;
-        let median = |mut values: Vec<f64>| {
-            values.sort_by(f64::total_cmp);
-            (values[values.len() / 2], values[values.len() - 1])
-        };
         println!("{}: {}x{}", path.display(), image.width(), image.height());
         for payload in [
             serde_json::json!({"clarity": 60.0}),
@@ -3633,12 +3625,15 @@ mod tests {
                 .unwrap();
                 frames.push(ms(start));
             }
-            let (sample_p50, sample_max) = median(samples);
-            let (frame_p50, _) = median(frames);
+            let samples = Distribution::of(samples).expect("points were sampled");
+            let frames = Distribution::of(frames).expect("frames were evaluated");
             println!(
-                "{payload}: {} point samples equal the render; sample p50 {sample_p50:.1} ms, \
-                 max {sample_max:.1} ms; the spatial frame alone p50 {frame_p50:.0} ms",
-                points.len()
+                "{payload}: {} point samples equal the render; sample p50 {:.1} ms, \
+                 max {:.1} ms; the spatial frame alone p50 {:.0} ms",
+                points.len(),
+                samples.p50,
+                samples.max,
+                frames.p50
             );
         }
     }

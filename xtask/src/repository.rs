@@ -712,6 +712,32 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "a test holds work at the one luxforge_testbase::Gate, never a gate of its own; \
                  extend that crate instead of writing a second gate",
     },
+    // One percentile definition: every timing figure — xtask's timing tools and the crates' own
+    // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
+    // never from a sort-and-index of its own. The tokens are the shapes each hand-written
+    // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again.
+    SourceRule {
+        name: "one-distribution",
+        tokens: &[
+            "fn percentile",
+            "let percentile",
+            "fn median",
+            "let median",
+            "fn p50",
+            "let p50",
+            "let p95",
+            "div_ceil(100)",
+        ],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-testbase/src/distribution.rs"],
+        mode: Match::Prefix,
+        tests: true,
+        once: false,
+        reason: "a percentile, median or p50/p95 is read from luxforge_testbase::Distribution \
+                 (xtask writes it through stats::row), never computed by a second definition; \
+                 extend that type instead",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -945,8 +971,8 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "luxforge-reference may depend on no workspace crate and no path, so it can never \
                  reach luxforge-core",
     },
-    // The one gate and wait serve every crate's tests, the core's own and the widget crate's
-    // included, so they can never reach the core.
+    // The one gate, wait and distribution serve every crate's tests, the core's own and the widget
+    // crate's included, so they can never reach the core.
     DependencyRule {
         name: "core-free-test-base",
         refuses: Depends::WorkspaceCrate,
@@ -3376,6 +3402,76 @@ mod tests {
         );
         write_all(root, &[(surface, worker)]);
         assert_eq!(read(root, rules).unwrap(), (6, 0));
+    }
+
+    #[test]
+    fn every_percentile_is_read_from_the_one_distribution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let rule = &["one-distribution"];
+        // The one definition, and a crate's timing test and a timing tool that read through it.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-testbase/src/distribution.rs",
+                    "    let rank = (percent * sorted.len()).div_ceil(100).clamp(1, sorted.len());\n    pub fn percentile(&self, percent: usize) -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/render/spatial.rs",
+                    "            let ms = Distribution::of(samples).expect(\"runs ran\");\n            println!(\"p50 {:.0} ms\", ms.p50);\n",
+                ),
+                (
+                    "xtask/src/editor_latency.rs",
+                    "    let input_p95 = stats::Distribution::of(latencies.clone()).map(|d| d.p95);\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, rule).unwrap(), (2, 0));
+        // Each shape a second definition took, in test code and tools alike, comments included.
+        refuses_each(
+            root,
+            "one-distribution",
+            &[
+                (
+                    "crates/luxforge-core/src/capabilities/proof_tests.rs",
+                    "fn percentiles(samples: &mut [f64]) -> (f64, f64) {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/render/linear.rs",
+                    "    fn percentile(values: &[f64], percentile: f64) -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/source.rs",
+                    "        let median = |mut values: Vec<f64>| {\n",
+                ),
+                (
+                    "crates/luxforge-raw/src/lib.rs",
+                    "        fn p50_p95(values: impl Iterator<Item = u128>) -> (u128, u128) {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/modules/presence/oracle.rs",
+                    "            let p50 = samples[samples.len() / 2];\n",
+                ),
+                (
+                    "crates/luxforge-core/tests/resources_cost.rs",
+                    "    let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];\n",
+                ),
+                (
+                    "xtask/src/mask_range_smoke.rs",
+                    "        let rank = (latencies.len() * percent).div_ceil(100).max(1) - 1;\n",
+                ),
+                (
+                    "xtask/src/stats.rs",
+                    "    let percentile = |percent: usize| -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-process/tests/cost.rs",
+                    "// fn median of the samples, by hand\n",
+                ),
+            ],
+            "luxforge_testbase::Distribution",
+        );
     }
 
     #[test]

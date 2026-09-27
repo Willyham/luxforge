@@ -14,15 +14,11 @@ fn micros(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1e6
 }
 
-fn summary(label: &str, mut samples: Vec<f64>) {
-    samples.sort_by(f64::total_cmp);
-    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+fn summary(label: &str, samples: Vec<f64>) {
+    let us = luxforge_testbase::Distribution::of(samples).expect("reads were timed");
     println!(
         "{label}: n={} p50={:.1} µs p95={:.1} µs max={:.1} µs",
-        samples.len(),
-        at(0.5),
-        at(0.95),
-        samples[samples.len() - 1]
+        us.count, us.p50, us.p95, us.max
     );
 }
 

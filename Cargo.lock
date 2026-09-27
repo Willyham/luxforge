@@ -4785,6 +4785,7 @@ dependencies = [
  "luxforge-evidence",
  "luxforge-raw",
  "luxforge-reference",
+ "luxforge-testbase",
  "luxforge-testkit",
  "percent-encoding",
  "regex",

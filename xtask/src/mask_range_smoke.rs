@@ -758,39 +758,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 /// the host with whatever else is running, so its measurement definition is left as `STROKE_INTERVAL_MS`
 /// alone. This figure is also taken on the **heaviest** recipe this scenario builds — four masked
 /// colour layers, three of them holding a component that reads pixels and therefore bounds the whole
-/// stage — which is recorded beside it, because that is most of what the number is. The one-minute
-/// load average is recorded too, since a figure taken above `8.0` is provisional by the repository's
-/// own rule.
+/// stage — which is recorded beside it, because that is most of what the number is. The figure is
+/// written as one row of the one shape every timing tool writes, and the one-minute load average
+/// through the one load record (`launch::load`), since a figure taken above the threshold is
+/// `unreliable` by the repository's own rule.
 fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value> {
     // The pairing itself lives in `editor_latency`, beside the `--mode paint` run that takes the same
     // measurement on a bare recipe at 24 and 60 MP, so the two figures are one definition and not
     // two implementations that could drift apart. The paced stroke no longer races the render
     // pipeline, so there is always at least one pair to find here unless the stroke is genuinely
     // broken.
-    let (queued, mut latencies) = editor_latency::paced_stroke_latencies(events)?;
+    let (queued, latencies) = editor_latency::paced_stroke_latencies(events)?;
     ensure(
         !latencies.is_empty(),
         "The run painted no stroke whose drafted frame reached the screen",
     )?;
-    latencies.sort_by(f64::total_cmp);
-    let percentile = |percent: usize| -> f64 {
-        let rank = (latencies.len() * percent).div_ceil(100).max(1) - 1;
-        latencies[rank.min(latencies.len() - 1)]
-    };
-    let load = crate::verify::load_average(root);
+    let displayed = latencies.len();
     Ok(json!({
         "inputs": queued,
-        "displayed": latencies.len(),
-        "p50_ms": percentile(50),
-        "p95_ms": percentile(95),
-        "max_ms": latencies.last().copied(),
-        "samples_ms": latencies,
+        "displayed": displayed,
+        "rows": [stats::row("input_to_presented_frame", "ms", latencies)],
         "interval_ms": STROKE_INTERVAL_MS,
         "positions": STROKE_POSITIONS,
         "recipe": recipe,
-        "load_average_1m": load,
-        "load_threshold": launch::LOAD_THRESHOLD,
-        "provisional": load.is_none_or(|load| load > launch::LOAD_THRESHOLD),
+        "load": launch::load(launch::load_average(root)),
         "scope": "mask_draft_set to the preview_displayed of the generation it queued, on this scenario's 1440x960 fixture during a smoke run: the same interval editor-latency measures for a slider, over a different gesture. It is not a 24/60 MP baseline, and it is taken on the heaviest recipe this scenario builds, whose masked layers are recorded beside it — a value-based component bounds the whole stage, so those layers are evaluated over every pixel",
     }))
 }
@@ -1461,10 +1452,16 @@ mod tests {
 
         assert_eq!(latency["inputs"], json!(3));
         assert_eq!(latency["displayed"], json!(3));
+        // The one row shape and the one nearest-rank distribution: three 28 ms intervals.
+        let stroke = stats::distribution(&latency, "input_to_presented_frame").expect("a row");
+        assert_eq!(stroke["count"], 3);
+        assert_eq!(stroke["samples"], json!([28.0, 28.0, 28.0]));
         assert_eq!(
-            latency["samples_ms"].as_array().expect("sample list").len(),
-            3
+            (stroke["p50"].clone(), stroke["p95"].clone()),
+            (json!(28.0), json!(28.0))
         );
+        assert_eq!(latency["load"]["load_threshold"], launch::LOAD_THRESHOLD);
+        assert!(latency["load"]["reliability"].is_string());
     }
 
     #[test]

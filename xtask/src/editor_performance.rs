@@ -131,12 +131,6 @@ fn milliseconds(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// The one [`stats::Distribution`] shape every timing tool now writes, in place of this tool's own
-/// `samples_ms`/`p50_ms`/`p95_ms`.
-fn distribution(samples: Vec<f64>) -> Value {
-    stats::distribution_json(samples)
-}
-
 fn render_samples(
     service: &EditorService,
     asset: &luxforge_core::AssetId,
@@ -208,14 +202,14 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     )?;
     // Reduction alone, over the identity raster just rendered above: no decode or render work is
     // inside this timed section, so this isolates `analysis::reduce` from rasterizing cost.
-    let histogram_reduce = distribution(reduce_samples(&original_raster, samples)?);
+    let histogram_reduce = reduce_samples(&original_raster, samples)?;
 
     service.apply_transform(
         &asset,
         mutation(0, "performance-rotate"),
         Transform::RotateRight,
     )?;
-    let one_transform = distribution(render_samples(&service, &asset, samples)?);
+    let one_transform = render_samples(&service, &asset, samples)?;
 
     // Every further transform composes into the same orientation layer, so this measures 200
     // actions against one layer, not 200 layers: the render cost is the commit path's, not the
@@ -227,7 +221,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             Transform::MirrorHorizontal,
         )?;
     }
-    let two_hundred_transform_actions = distribution(render_samples(&service, &asset, samples)?);
+    let two_hundred_transform_actions = render_samples(&service, &asset, samples)?;
 
     // One straightened crop on top of the exact stack: the resample is a stage boundary, so this
     // measures the interpolating pass on the photo-sized input as well as the exact pass before it.
@@ -254,7 +248,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         angle: crop_payload.angle,
     };
     let crop_rect = crop_payload.output_rect(&crop_input)?;
-    let angled_crop = distribution(render_samples(&service, &asset, samples)?);
+    let angled_crop = render_samples(&service, &asset, samples)?;
     let crop_raster = service.render_current(&asset)?;
     ensure(
         (crop_raster.width, crop_raster.height) == (crop_rect.width, crop_rect.height),
@@ -338,7 +332,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         stack_stage == white_balance_stage,
         "A white-balance operation changed the output stage",
     )?;
-    let white_balance_render = distribution(white_balance_samples);
+    let white_balance_render = white_balance_samples;
 
     // The proxy rows: the same crop stack with every Basic field non-neutral, rendered at full
     // resolution and against the display-bounded proxy the preview worker builds for a 2880 × 1800
@@ -356,7 +350,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         stack_stage == full_basic_stage,
         "The full Basic layer changed the output stage",
     )?;
-    let full_basic_render = distribution(full_basic_samples);
+    let full_basic_render = full_basic_samples;
     let plan = render(
         &colour_registry,
         colour_job.evaluation.source(),
@@ -375,7 +369,6 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         proxy_source = Some(built);
     }
     let proxy_source = proxy_source.ok_or("No proxy was built")?;
-    let proxy_build = distribution(proxy_build);
     let (proxy_identity_samples, _) =
         recipe_render_samples(&colour_registry, &proxy_source, &identity, samples)?;
     let (proxy_stack_samples, proxy_stack_stage) =
@@ -392,10 +385,10 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         proxy_stack_stage.0 <= PROXY_DISPLAY.width && proxy_stack_stage.1 <= PROXY_DISPLAY.height,
         "The proxy output stage does not fit the display",
     )?;
-    let proxy_identity_render = distribution(proxy_identity_samples);
-    let proxy_stack_render = distribution(proxy_stack_samples);
-    let proxy_exposure_render = distribution(proxy_exposure_samples);
-    let proxy_full_basic_render = distribution(proxy_full_basic_samples);
+    let proxy_identity_render = proxy_identity_samples;
+    let proxy_stack_render = proxy_stack_samples;
+    let proxy_exposure_render = proxy_exposure_samples;
+    let proxy_full_basic_render = proxy_full_basic_samples;
 
     // The neutral picker: 25 point samples of the stage the Basic layer receives, each evaluated
     // through the compiled stack at O(layers). No frame is allocated and nothing is written, so
@@ -423,7 +416,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             )?;
         }
     }
-    let neutral_picker = distribution(picker);
+    let neutral_picker = picker;
     ensure(
         identity_stage == (state.asset.width, state.asset.height),
         "Identity colour baseline has wrong dimensions",
@@ -434,11 +427,11 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             && stack_stage == vibrance_saturation_stage,
         "A colour operation changed the output stage",
     )?;
-    let identity_render = distribution(identity_samples);
-    let stack_render = distribution(stack_samples);
-    let colour_render = distribution(colour_samples);
-    let toned_render = distribution(toned_samples);
-    let vibrance_saturation_render = distribution(vibrance_saturation_samples);
+    let identity_render = identity_samples;
+    let stack_render = stack_samples;
+    let colour_render = colour_samples;
+    let toned_render = toned_samples;
+    let vibrance_saturation_render = vibrance_saturation_samples;
     drop(service);
 
     // The cold path is the catalog owner's own: the source job's read, hash and decode and the
@@ -467,6 +460,75 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     )?;
     ensure(hash(&source)? == source_hash, "Performance source changed")?;
 
+    // `import` and the other one-shot core steps are single observations, each its own one-sample
+    // row, beside the recipes' sampled distributions.
+    let mut rows = Vec::new();
+    for (metric, value) in [
+        ("import", import_ms),
+        ("cached_preview_job", cached_preview_job_ms),
+        ("original_render", original_render_ms),
+    ] {
+        rows.push(stats::scalar(metric, "ms", Some(value)));
+    }
+    for (metric, samples) in [
+        ("histogram_reduce", histogram_reduce),
+        ("one_transform", one_transform),
+        (
+            "two_hundred_transform_actions_in_one_orientation_layer",
+            two_hundred_transform_actions,
+        ),
+    ] {
+        rows.push(stats::row(metric, "ms", samples));
+    }
+    rows.push(stats::scalar(
+        "crop_fit_commit",
+        "ms",
+        Some(crop_fit_commit_ms),
+    ));
+    for (metric, samples) in [
+        (
+            "two_hundred_transform_actions_and_a_10_degree_crop",
+            angled_crop,
+        ),
+        ("colour_identity_render", identity_render),
+        ("colour_baseline_same_stack_without_colour", stack_render),
+        ("colour_same_stack_with_one_1ev_basic_layer", colour_render),
+        (
+            "colour_same_stack_with_exposure_and_five_tone_fields",
+            toned_render,
+        ),
+        (
+            "colour_same_stack_with_vibrance_50_saturation_20_basic_layer",
+            vibrance_saturation_render,
+        ),
+        (
+            "colour_same_stack_with_one_white_balance_basic_layer",
+            white_balance_render,
+        ),
+        ("colour_same_stack_with_full_basic_layer", full_basic_render),
+        ("proxy_build_for_2880x1800", proxy_build),
+        ("proxy_identity_render", proxy_identity_render),
+        ("proxy_same_stack_without_colour", proxy_stack_render),
+        (
+            "proxy_same_stack_with_one_1ev_basic_layer",
+            proxy_exposure_render,
+        ),
+        (
+            "proxy_same_stack_with_full_basic_layer",
+            proxy_full_basic_render,
+        ),
+        ("neutral_picker_query_25_point_samples", neutral_picker),
+    ] {
+        rows.push(stats::row(metric, "ms", samples));
+    }
+    for (metric, value) in [
+        ("reopen_source_and_preview_job", cold_source_and_job_ms),
+        ("reopen_original_render", cold_original_render_ms),
+        ("total", milliseconds(total)),
+    ] {
+        rows.push(stats::scalar(metric, "ms", Some(value)));
+    }
+
     let result = json!({
         "status":"passed",
         "profile":if cfg!(debug_assertions) { "debug" } else { "release" },
@@ -486,32 +548,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         },
         "samples_per_recipe":samples,
         "method":"Core request-to-render diagnostics with a warm filesystem cache; excludes desktop scheduling, GPU upload and presentation.",
-        "timings_ms":{
-            "import":import_ms,
-            "cached_preview_job":cached_preview_job_ms,
-            "original_render":original_render_ms,
-            "histogram_reduce":histogram_reduce,
-            "one_transform":one_transform,
-            "two_hundred_transform_actions_in_one_orientation_layer":two_hundred_transform_actions,
-            "crop_fit_commit":crop_fit_commit_ms,
-            "two_hundred_transform_actions_and_a_10_degree_crop":angled_crop,
-            "colour_identity_render":identity_render,
-            "colour_baseline_same_stack_without_colour":stack_render,
-            "colour_same_stack_with_one_1ev_basic_layer":colour_render,
-            "colour_same_stack_with_exposure_and_five_tone_fields":toned_render,
-            "colour_same_stack_with_vibrance_50_saturation_20_basic_layer":vibrance_saturation_render,
-            "colour_same_stack_with_one_white_balance_basic_layer":white_balance_render,
-            "colour_same_stack_with_full_basic_layer":full_basic_render,
-            "proxy_build_for_2880x1800":proxy_build,
-            "proxy_identity_render":proxy_identity_render,
-            "proxy_same_stack_without_colour":proxy_stack_render,
-            "proxy_same_stack_with_one_1ev_basic_layer":proxy_exposure_render,
-            "proxy_same_stack_with_full_basic_layer":proxy_full_basic_render,
-            "neutral_picker_query_25_point_samples":neutral_picker,
-            "reopen_source_and_preview_job":cold_source_and_job_ms,
-            "reopen_original_render":cold_original_render_ms,
-            "total":milliseconds(total),
-        },
+        "rows":rows,
         "checks":[
             "Decoded source is cached after import",
             "Original render dimensions are exact",

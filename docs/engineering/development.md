@@ -91,6 +91,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `draft-preview-rule` | `RawSettingsMode::DraftPreview`, the drafted preview's approximate white balance, outside the one evaluation builder (`editor/evaluate.rs`) and the RAW settings resolver (`editor/source.rs`) | Core production code |
 | `test-waits` | `sleep(` and `yield_now`: a test's own sleep, spin or poll loop, outside `luxforge-testbase`'s one wait. The widget crate's GPU retirement worker (`photo_surface.rs`) and the proof module's activation delay (`modules/capabilities_proof.rs`) each keep their one production sleep, on one line, so the tests beside them are held to the rule too | `crates/`, tests and comments included |
 | `test-gates` | `Condvar`: a test's own gate, outside `luxforge-testbase`'s `Gate` and the core's production blocking points (the source worker's plane gate in `source.rs`, the latest-job worker in `latest.rs`, the point-query worker in `api/owner/point.rs`) | `crates/`, tests and comments included |
+| `one-distribution` | A second percentile definition outside `luxforge-testbase`'s `Distribution` (`distribution.rs`): the shapes a hand-written one took (`fn percentile`, `let percentile`, `fn median`, `let median`, `fn p50`, `let p50`, `let p95`) and a nearest-rank rank computed again (`div_ceil(100)`) | `crates/` and `xtask/`, tests and comments included |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, the job table's lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
 | `editor-launch` | An editor argument (`"--evidence-dir"`, `"--evidence-script"`, `"--data-root"`, `"--catalog"`, `"--open"`, `"--developer"`, `"--disable-module"`, `"--proof-endpoint"`, `"--window-size"`), `spawn_editor` or `editor_args` outside the scenario library's launch envelope (`xtask/src/scenario/launch.rs`) and the hidden-window flag's home (`xtask/src/launch.rs`) | Production code under `xtask/` |
 | `raw-manifest-reader` | A RAW manifest read outside the one reader, `raw::manifest` (`xtask/src/raw.rs`): its list named untyped (`["sources"]`) or its fields declared again (`neutral_point:`, `source_url:`). `raw-corpus`, `verify` and the `raw-editor` scenario read their manifests through it | Production code under `xtask/` |
@@ -107,7 +108,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `mozjpeg-links` | A `mozjpeg*` dependency of a shipped crate other than `luxforge-jpeg` |
 | `jpeg-codec-users`, `jpeg-codec-leaf` | A dependency on `luxforge-jpeg` from any crate but `luxforge-core`; any workspace crate or path in `luxforge-jpeg`'s manifest |
 | `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
-| `core-free-test-base` | Any workspace crate or path in `luxforge-testbase`'s manifest, so the core's and the widget crate's tests can use its gate and wait |
+| `core-free-test-base` | Any workspace crate or path in `luxforge-testbase`'s manifest, so the core's and the widget crate's tests can use its gate, wait and distribution |
 | `http-client-crates` | A dependency on `ureq` or `ureq-proto` from any crate but `luxforge-core`, whose module transport is the one HTTP client |
 
 `SENDER_RULES` says which messages product code must send. A row names a message enum and the file that declares it, the file whose `match` handles it, the directories read for senders and the scripted drivers whose constructions do not count. Every variant needs a sender: a production line (tests skipped as for a source rule) outside the drivers that holds `Enum::Variant` under the `Whole` matcher. In the handler, a line that begins with a variant is its match arm, not a sender; elsewhere rustfmt may begin a line with a construction, and it counts.
@@ -188,7 +189,11 @@ passes or fails the same way however loaded that host is:
 `luxforge-testbase` holds the one gate and the one wait. It depends on no workspace crate, so the
 core's own unit tests and the widget crate's can use it; a crate adapts it (a module that holds a
 render at it, a helper that polls its own queue through `wait_until`) rather than writing a second
-one, and the `test-waits` and `test-gates` rules below refuse one.
+one, and the `test-waits` and `test-gates` rules below refuse one. It also holds the one
+`Distribution`, a nearest-rank p50/p95 (`sorted[ceil(percent·n/100) − 1]`, always one of the
+samples) that every timing figure is read from: the crates' own ignored timing tests print theirs
+through it, and `xtask`'s timing tools write theirs through it. The `one-distribution` rule refuses
+a second percentile or median definition.
 
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
@@ -256,13 +261,27 @@ between 2.3 and 5.7 on this fourteen-core host. Every timing summary states the 
 load, on either side of it. When a component started above the threshold, all of its timing rows and
 target verdicts are marked `unreliable` instead of `pass` or `miss`: the measured figure, its sample
 count and the load are all still recorded, but the target is unanswered rather than met or missed,
-and the summary header names the component. Load never fails the run by itself.
+and the summary header names the component. Load never fails the run by itself. Every tool that
+records a load-dependent figure of its own (`editor-latency --mode paint`, `mask-range`'s stroke
+latency, and `verify`'s rows and verdicts) records it through one rule and one shape,
+`{"load_average_1m","load_threshold","reliability"}`, with `reliability` either `reliable` or
+`unreliable`; a host that cannot report its load records a null load, marked `reliable`.
+
+Every timing tool writes its figures in one shape, a `rows` array of
+`{"metric","unit","distribution"}` in its own report: `editor-performance`'s `result.json`,
+`editor-latency`'s `latency.json` in every mode (its viewport scalar and GPU counters included) and
+`resources.json`, `measure`'s `measurements.json` (`<workload>.<figure>` and `idle.<figure>`),
+and `mask-range`'s `stroke_latency`. A distribution is
+`{"count","p50","p95","min","max","samples"}` over the one nearest-rank `Distribution`; a single
+observation (a one-shot core step, an idle window, frames per second, a GPU counter) is a
+one-sample distribution, and a metric the run never reached has a `null` distribution.
 
 The console shows only the Markdown table. `<out>/summary.json` and `<out>/summary.md` hold, per
 component in plan order, its status, start offset, elapsed time, exit code, first failure line,
 artifact paths and how many editor processes it started, then the p50/p95 timing rows of the timing
-tier with their source file, sample count, load and reliability, and each provisional performance
-target with its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
+tier — every row of every timing component's report, read by one loop — with their source file,
+sample count, load and reliability, and each provisional performance target, read from its row, with
+its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
 files are rewritten after every component, from whichever worker finished it, so a partial run still
 reports what it has; components that never ran are `not_run`. The process exits non-zero and names
 the components either way: an ordinary failure when any component failed or timed out, and the
@@ -934,14 +953,15 @@ sends the same fixed values. Its `latency.json` keeps the same header fields as 
 (host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
 and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core
 coalesces away as scripted rather than measured), `draft_sets` and `preview_jobs` (the core's own
-real-time coalescing of that pace), `presented_frames` and `presented_fps` (every `preview_displayed`
-over the run, drafted and committed alike, divided by the seconds from the first `slider_step_value`
-to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
-its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
-`frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
-`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
-superseded, which carry no frame) and `proxy` (the last
-presented frame's `proxy`/`proxy_dimensions`).
+real-time coalescing of that pace), `presented_frames` (every `preview_displayed` over the run,
+drafted and committed alike), `cancelled_exact` (`preview_exact_cancelled` events: full-resolution
+phases a newer request superseded, which carry no frame) and `proxy` (the last presented frame's
+`proxy`/`proxy_dimensions`). Its figures are rows: `presented_fps` (`presented_frames` divided by
+the seconds from the first `slider_step_value` to the last of them), `staleness_ms` (each presented
+drafted frame's own `slider_draft_set` time to its `preview_displayed` time, paired by generation
+exactly as drag mode pairs them), `frame_gap_ms` and `max_gap_ms` (the intervals between
+consecutive presented drafted frames), the GPU counters `draw_encoded_frames`,
+`photo_texture_writes` and `photo_upload_bytes`, and the sampled resources.
 With `--zoom PERCENT --moving-pan`, the same paced tick also moves the photo scrollable on a path
 across and back over the image. Without `--moving-pan`, a zoomed burst holds a fixed viewport and
 its script can run against the pre-viewport binary for a like-for-like baseline. The moving-pan
@@ -956,7 +976,8 @@ settles. The captured states and `preview_displayed` events must name interactiv
 regions for each draft revision. The first viewport-only frame keeps the histogram updating;
 release must produce a current full-image histogram. The final settled pan must draw the same
 full texture without another photograph write. `latency.json` records region geometry, quality,
-generation and draft revision, plus the photo surface's actual draw/write/residency counters.
+generation and draft revision, and its rows hold `input_to_first_region_adoption_ms` and the photo
+surface's actual draw and write counters, each a one-sample row.
 `preview_displayed` remains an adoption timestamp, not GPU upload or display scanout. An older
 binary with no region events is reported as `unavailable`, never as a passing viewport run.
 
@@ -969,8 +990,8 @@ paced step is still one stroke and one history entry. `--samples` is the number 
 Each position is its own mask `draft.set`, preview job and displayed frame, paired by the generation
 `mask_draft_preview` carries, and a position whose job a later one superseded is reported as
 `superseded` rather than averaged away. `latency.json` records the recipe it was painted on, the brush,
-the path, the distribution and the one-minute load average, and marks itself `provisional` above the
-8.0 threshold. It exists because the `mask-range` scenario's paint figure is taken on four masked
+the path, the distributions as rows and, in its `load` record, the one-minute load average at the
+start, marked `unreliable` above the 8.0 threshold (the end-of-run load is recorded beside it). It exists because the `mask-range` scenario's paint figure is taken on four masked
 colour layers, three of whose masks bind the whole stage, and is therefore not a baseline for the
 gesture; the pairing itself is one function shared with that scenario so the two cannot drift.
 This mode's own paced stroke leaves the step's `settle_between` field unset: it is a controlled,

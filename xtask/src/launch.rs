@@ -16,9 +16,42 @@ const GATE_ENV: &str = "LUXFORGE_TIMING_GATE";
 /// and 5.7 on this fourteen-core host.
 pub const LOAD_THRESHOLD: f64 = 8.0;
 
-/// Whether a figure taken at this load may be compared against a target at all.
+/// Whether a figure taken at this load may be compared against a target at all. A host that
+/// cannot report its load (`None`) is not marked unreliable: the figure travels with a null load.
 pub fn unreliable(load: Option<f64>) -> bool {
     load.is_some_and(|value| value > LOAD_THRESHOLD)
+}
+
+/// The one-minute load average, or nothing where `sysctl` cannot report it. The one reader, so
+/// every tool that records a figure with its load reads the same load.
+pub fn load_average(root: &Path) -> Option<f64> {
+    let text = output(root, "sysctl", &["-n", "vm.loadavg"]).ok()?;
+    text.trim()
+        .trim_matches(['{', '}'])
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// How a figure taken at this load is labelled, by [`unreliable`]: `reliable` or `unreliable`.
+pub fn reliability(load: Option<f64>) -> &'static str {
+    if unreliable(load) {
+        "unreliable"
+    } else {
+        "reliable"
+    }
+}
+
+/// The one record of the load a figure was taken at, in every tool that reports a load-dependent
+/// figure: `{"load_average_1m","load_threshold","reliability"}`, so a figure always says what it
+/// was measured against, whichever side of the threshold the host was on.
+pub fn load(load: Option<f64>) -> Value {
+    json!({
+        "load_average_1m": load,
+        "load_threshold": LOAD_THRESHOLD,
+        "reliability": reliability(load),
+    })
 }
 
 /// Exclusive, host-wide permission to run a timing component.
@@ -375,6 +408,20 @@ mod tests {
         );
         assert!(unreliable(Some(8.01)));
         assert!(unreliable(Some(37.0)));
+    }
+
+    /// Every tool records its load through this one shape and label.
+    #[test]
+    fn one_load_record_labels_either_side_of_the_threshold() {
+        assert_eq!(
+            load(Some(8.0)),
+            json!({"load_average_1m":8.0,"load_threshold":8.0,"reliability":"reliable"})
+        );
+        assert_eq!(load(Some(19.4))["reliability"], "unreliable");
+        assert_eq!(
+            load(None),
+            json!({"load_average_1m":null,"load_threshold":8.0,"reliability":"reliable"})
+        );
     }
 
     #[cfg(target_os = "macos")]

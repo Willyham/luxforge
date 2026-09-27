@@ -1248,13 +1248,6 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
     assert_eq!(plan("reset-proof-tint", None, &[]), ActionPlan::NoOp);
 }
 
-/// p50 and p95 in milliseconds of a sorted sample.
-fn percentiles(samples: &mut [f64]) -> (f64, f64) {
-    samples.sort_by(f64::total_cmp);
-    let p95 = samples[((samples.len() as f64 * 0.95).ceil() as usize).max(1) - 1];
-    (samples[samples.len() / 2], p95)
-}
-
 /// The framework's own costs on this host: registration with and without the proof module, the
 /// owner's answer to the capability reads, activation, a whole task against the loopback endpoint,
 /// cancellation of a running activation and of a task stalled in its request, and the disk an
@@ -1267,10 +1260,11 @@ fn percentiles(samples: &mut [f64]) -> (f64, f64) {
 fn capability_timing() {
     const SAMPLES: usize = 30;
     let report = |name: &str, samples: &mut Vec<f64>| {
-        let (p50, p95) = percentiles(samples);
+        let ms = luxforge_testbase::Distribution::of(samples.iter().copied())
+            .expect("the measurement took samples");
         println!(
-            "{name}: p50 {p50:.3} ms, p95 {p95:.3} ms over {} samples",
-            samples.len()
+            "{name}: p50 {:.3} ms, p95 {:.3} ms over {} samples",
+            ms.p50, ms.p95, ms.count
         );
     };
 
