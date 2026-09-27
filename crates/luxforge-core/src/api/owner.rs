@@ -2,7 +2,8 @@
 //! loop finds each request's method in the one method table, calls its handler and records the
 //! events the call announced; the owner handlers the table names live here.
 use super::{
-    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult,
+    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
+    announce_once,
     methods::{self, Planned, Retries, Route},
     params::{NoParams, host_params},
 };
@@ -15,10 +16,7 @@ use crate::{
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
-    capabilities::{
-        host::{CapabilityHost, announce_once},
-        jobs::Origin,
-    },
+    capabilities::host::CapabilityHost,
     editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
     source::{PlaneGate, RawPrepared},
 };
@@ -1305,7 +1303,8 @@ struct EventLog {
 }
 
 impl EventLog {
-    /// Append one event for a committed change, dropping the oldest beyond the log's capacity.
+    /// Append one event for a committed change, naming what it changed, and drop the oldest beyond
+    /// the log's capacity.
     fn record(&mut self, origin: &Origin) {
         self.sequence = self.sequence.saturating_add(1);
         if self.events.len() == EVENT_CAPACITY {
@@ -1315,10 +1314,14 @@ impl EventLog {
             sequence: self.sequence,
             method: origin.method.clone(),
             request_id: origin.request_id.clone(),
+            asset_id: origin.asset_id.clone(),
+            revision: origin.revision,
         });
     }
 
-    /// The events after `after`, and whether the log no longer holds some of them.
+    /// The events after `after`, and whether the client may have missed some: the log no longer
+    /// holds them, or `after` is past the newest sequence, which a cursor kept from an earlier
+    /// owner process is, so none of this process's events can be told apart from ones it read.
     fn since(&self, after: u64) -> EventsResult {
         let oldest = self
             .events
@@ -1332,9 +1335,23 @@ impl EventLog {
                 .cloned()
                 .collect(),
             current_sequence: self.sequence,
-            gap: after.saturating_add(1) < oldest,
+            gap: after.saturating_add(1) < oldest || after > self.sequence,
         }
     }
+}
+
+/// The asset a service method's request changes, if it changes one: the asset its parameters name,
+/// or the asset of the draft it names, which only this client's own session can hold. Read before
+/// the method runs, because a commit ends the draft.
+fn subject(session: &ClientSession, params: &Value) -> Option<AssetId> {
+    if let Some(asset_id) = params.get("asset_id") {
+        return serde_json::from_value(asset_id.clone()).ok();
+    }
+    let draft_id: DraftId = serde_json::from_value(params.get("draft_id")?.clone()).ok()?;
+    session
+        .held_draft(&draft_id)
+        .ok()
+        .map(|draft| draft.asset_id.clone())
 }
 
 /// One request an owner handler answers.
@@ -1431,14 +1448,29 @@ impl Owner {
             Route::Owner(handler) => handler(self, &call).map(Planned::Value),
             Route::Service => {
                 let session = self.sessions.entry(client).or_default();
+                // Read only for a method that can change something, so a read or a draft's
+                // `draft.set` pays nothing for it.
+                let subject = method
+                    .mutates()
+                    .then(|| subject(session, &request.params))
+                    .flatten();
                 let result = method.plan(&mut self.service, session, &request.params);
                 // A service answer says whether it changed anything: a no-op and a retry answered
                 // from a store's request log did not. A planned sample carries no envelope.
-                if result
-                    .as_ref()
-                    .is_ok_and(|planned| methods::mutates(&method, planned.value()))
+                if let Ok(planned) = &result
+                    && methods::mutates(&method, planned.value())
                 {
-                    announce_once(&mut self.announced, &call.origin);
+                    let origin = match subject {
+                        Some(asset_id) => call.origin.clone().changed(
+                            asset_id,
+                            planned
+                                .value()
+                                .and_then(|value| value.get("revision"))
+                                .and_then(Value::as_u64),
+                        ),
+                        None => call.origin.clone(),
+                    };
+                    announce_once(&mut self.announced, &origin);
                 }
                 result
             }
@@ -1647,15 +1679,19 @@ impl Owner {
         } else {
             Err(Error::conflict("source job cancelled"))
         };
-        // An import is announced when it commits an asset, under the request that asked for it.
-        if matches!(outcome, Ok(Completed::Asset(_, true)))
+        // An import is announced when it commits an asset, under the request that asked for it,
+        // naming the asset it created.
+        if let Ok(Completed::Asset(state, true)) = &outcome
             && let Some(request_id) = self
                 .jobs
                 .jobs
                 .get(id)
                 .and_then(|job| job.import_request_id.as_deref())
         {
-            self.log.record(&Origin::new("catalog.import", request_id));
+            self.log.record(
+                &Origin::new("catalog.import", request_id)
+                    .changed(state.asset.id.clone(), Some(state.revision)),
+            );
         }
         self.jobs.complete(
             id,
@@ -4214,6 +4250,160 @@ mod tests {
             ),
             "the log holds the first attempt's event alone"
         );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Every event names what it changed when the change has a subject: an import names the asset
+    /// it created and its revision, a commit, a navigation and a drafted commit name the asset and
+    /// the revision they left it at, and a version names its asset but no revision, because naming
+    /// an entry moves none. A change to the preset library names no asset. So a client with one
+    /// photograph open can tell another client's change to a second photograph from one to its
+    /// own, and a change it already holds from a newer one.
+    #[test]
+    fn events_name_the_asset_and_revision_they_changed() {
+        let catalog = temp("event-subjects.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let desktop = owner.register();
+        let agent = owner.register();
+        let first = import_asset(&owner, desktop, &fixture())["asset"]["id"].clone();
+        let second = import_asset(
+            &owner,
+            agent,
+            &luxforge_testkit::fixtures::fixture("s0/orientation-2.jpg"),
+        )["asset"]["id"]
+            .clone();
+        assert_ne!(first, second);
+        let subjects = |after: u64| -> Vec<(String, Value, Value)> {
+            ok(
+                &owner,
+                desktop,
+                "events",
+                "events.since",
+                json!({"after": after}),
+            )["events"]
+                .as_array()
+                .expect("the events")
+                .iter()
+                .map(|event| {
+                    (
+                        event["method"].as_str().unwrap().to_owned(),
+                        event.get("asset_id").cloned().unwrap_or(Value::Null),
+                        event.get("revision").cloned().unwrap_or(Value::Null),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            subjects(0),
+            [
+                ("catalog.import".to_owned(), first.clone(), json!(0)),
+                ("catalog.import".to_owned(), second.clone(), json!(0)),
+            ],
+            "an import names the asset it created"
+        );
+        let (_, before) = events_after(&owner, desktop, 0);
+
+        pixel_edit(&owner, agent, &second, 0, "agent-edit", [1, 2, 3]);
+        let undo = |client: ClientId, asset: &Value, revision: u64, request: &str| {
+            ok(
+                &owner,
+                client,
+                request,
+                "history.undo",
+                json!({"asset_id": asset, "mutation": {"expected_revision": revision, "request_id": request, "actor": "test"}}),
+            )
+        };
+        undo(agent, &second, 1, "agent-undo");
+        let begun = ok(
+            &owner,
+            desktop,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": first, "action": "set-basic"}),
+        );
+        ok(
+            &owner,
+            desktop,
+            "set",
+            "draft.set",
+            json!({"draft_id": begun["draft_id"], "fields": {"exposure": 0.5}}),
+        );
+        ok(
+            &owner,
+            desktop,
+            "commit",
+            "draft.commit",
+            json!({"draft_id": begun["draft_id"], "mutation": {"expected_revision": 0, "request_id": "drafted", "actor": "test"}}),
+        );
+        ok(
+            &owner,
+            agent,
+            "version",
+            "version.create",
+            json!({"asset_id": first, "name": "Kept", "mutation": envelope()}),
+        );
+        ok(
+            &owner,
+            agent,
+            "preset",
+            "preset.create",
+            json!({"name": "Bright", "settings": {"set-basic": {"exposure": 1.0}}, "mutation": envelope()}),
+        );
+        assert_eq!(
+            subjects(before),
+            [
+                ("edit.set-pixel".to_owned(), second.clone(), json!(1)),
+                ("history.undo".to_owned(), second.clone(), json!(2)),
+                ("draft.commit".to_owned(), first.clone(), json!(1)),
+                ("version.create".to_owned(), first.clone(), Value::Null),
+                ("preset.create".to_owned(), Value::Null, Value::Null),
+            ]
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A cursor past the log's newest sequence was read from another owner process, whose events
+    /// this log never held: the client is told it missed something rather than left waiting for
+    /// sequences this process has already used. A cursor at the newest sequence is simply caught
+    /// up, and one inside the log reads what follows it.
+    #[test]
+    fn events_since_reports_a_gap_for_a_cursor_beyond_the_log() {
+        let mut log = EventLog::default();
+        assert!(!log.since(0).gap, "an empty log and a fresh cursor");
+        assert!(log.since(1).gap, "a cursor ahead of an empty log");
+        for request in ["a", "b", "c"] {
+            log.record(&Origin::new("edit.set-pixel", request));
+        }
+        assert!(!log.since(0).gap && log.since(0).events.len() == 3);
+        assert!(!log.since(2).gap && log.since(2).events.len() == 1);
+        assert!(!log.since(3).gap, "caught up");
+        let ahead = log.since(7);
+        assert!(ahead.gap, "a cursor from an earlier owner process");
+        assert!(ahead.events.is_empty());
+        assert_eq!(ahead.current_sequence, 3);
+
+        // Through the method, as a JSON client reads it.
+        let catalog = temp("event-gap.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        import_asset(&owner, client, &fixture());
+        let read = |after: u64| {
+            ok(
+                &owner,
+                client,
+                "events",
+                "events.since",
+                json!({"after": after}),
+            )
+        };
+        assert_eq!(read(1)["gap"], json!(false));
+        assert_eq!(read(2)["gap"], json!(true));
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

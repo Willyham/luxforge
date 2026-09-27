@@ -5,12 +5,12 @@
 use super::{CapabilityHost, ModuleParams, RESOURCE_REMOVED, registered};
 use crate::{
     Error, JobId, ModuleDescriptor, ModuleRegistry,
-    api::params::host_params,
+    api::{Origin, params::host_params},
     capabilities::{
         consent::{consent_required, download_disclosure},
         descriptor::{CapabilityKind, ResourceDescriptor},
         grants::{DownloadScope, GrantScope},
-        jobs::{Admission, JobControl, JobKind, JobRecord, JobStatus, NewJob, Origin, Work},
+        jobs::{Admission, JobControl, JobKind, JobRecord, JobStatus, NewJob, Work},
         resources::{
             self as transfer, Fetch, InstallJob, InstallSource, ResourceRow, ResourceState,
         },

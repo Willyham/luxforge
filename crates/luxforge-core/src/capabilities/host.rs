@@ -13,7 +13,7 @@
 use super::{
     descriptor::SettingDescriptor,
     grants::{Grant, GrantKind, GrantScope, GrantsStore},
-    jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs, Origin},
+    jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs},
     resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
@@ -24,7 +24,8 @@ use super::{
 };
 use crate::{
     AssetId, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry, ParameterKind,
-    activity::ActivityBoard, api::params::host_params,
+    activity::ActivityBoard,
+    api::{Origin, announce_once, params::host_params},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -102,13 +103,6 @@ impl std::fmt::Debug for HostConfig {
 
 fn encode(value: impl serde::Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
-}
-
-/// Announce `origin` once, however many changes a request made.
-pub(crate) fn announce_once(announce: &mut Vec<Origin>, origin: &Origin) {
-    if !announce.contains(origin) {
-        announce.push(origin.clone());
-    }
 }
 
 host_params! {

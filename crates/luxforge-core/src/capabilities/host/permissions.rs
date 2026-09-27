@@ -2,16 +2,15 @@
 //! authority, recording a denial, revoking a grant and cancelling the jobs that run under it. See
 //! `docs/design/module-capabilities.md#capability-and-consent-contract`.
 use super::{
-    CapabilityHost, announce_once, asset_exists, encode, profile_origin, registered,
-    resources::download_scope,
+    CapabilityHost, asset_exists, encode, profile_origin, registered, resources::download_scope,
 };
 use crate::{
     ClientAuthority, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry,
-    api::params::host_params,
+    api::{Origin, announce_once, params::host_params},
     capabilities::{
         descriptor::{CapabilityDescriptor, CapabilityKind},
         grants::{GrantKind, GrantScope, MAX_REASON, NewGrant},
-        jobs::{Origin, PERMISSION_REVOKED},
+        jobs::PERMISSION_REVOKED,
         settings::WriteOutcome,
     },
 };
