@@ -4783,6 +4783,7 @@ dependencies = [
  "image",
  "luxforge-core",
  "luxforge-evidence",
+ "luxforge-raw",
  "luxforge-reference",
  "luxforge-testkit",
  "percent-encoding",

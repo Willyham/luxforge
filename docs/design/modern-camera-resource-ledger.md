@@ -87,8 +87,9 @@ development. The command shape was:
 | Sony ILCE-7RM2, id 1313 | `fdf3e8deea4ca31c6ee905fe5226efab398ce630ec96e9013850b488ce0e6289` | 8000 × 5320 | 42.56 MP | native develop passed, 3.29 s | 1,030,914,048 bytes (983.1 MiB) |
 
 These are adapter functional measurements, not controlled colour or complete
-editor/UI qualification. The `xtask raw-editor` harness validates mode identities and DNG requirements
-against the camera catalog. The
+editor/UI qualification. The `raw-editor` smoke scenario reads mode identities from the camera
+catalog and checks the imported DNG geometry and correction provenance; the RAW adapter enforces the
+catalog's DNG requirements on import. The
 figures include native decode/develop and both WB passes, but not an editor
 window, preview replacement, display upload, or reopen path.
 

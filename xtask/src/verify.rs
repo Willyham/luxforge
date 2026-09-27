@@ -99,43 +99,25 @@ impl Status {
     }
 }
 
-/// How to count the editor processes a component started. The count is always read from what the
-/// component itself recorded, so a run that stopped early reports the launches it actually made.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Launches {
-    /// No editor process at all (`check`, the core acceptance journey, core timing diagnostics
-    /// and fixture generation), or one that keeps no `launches` list of its own (`raw-authentic`'s
-    /// `cargo test` processes).
-    None,
-    /// A run of the scenario library's launch envelope — every smoke scenario, `editor-latency`,
-    /// `measure` and `hardening` — which lists every editor process it started under `launches`,
-    /// however many it makes.
-    Recorded,
-    RawEditor,
+/// How many editor processes a component started, from its own `run/result.json`: a run of the
+/// scenario library's launch envelope — every smoke scenario, `editor-latency`, `measure` and
+/// `hardening` — lists every editor process it started under `launches`, so a run that stopped
+/// early reports the launches it actually made. A component that starts no editor (`check`, the
+/// core acceptance journey, core timing diagnostics, fixture generation and `raw-authentic`'s
+/// `cargo test` processes) keeps no such list, and counts none.
+fn launches(result: Option<&Value>) -> u64 {
+    result.map_or(0, |result| {
+        result["launches"].as_array().map_or(0, Vec::len) as u64
+    })
 }
 
-impl Launches {
-    /// The count, from the component's own `run/result.json`.
-    fn count(self, result: Option<&Value>) -> u64 {
-        let Some(result) = result else { return 0 };
-        match self {
-            Self::None => 0,
-            Self::Recorded => result["launches"].as_array().map_or(0, Vec::len) as u64,
-            // Each trial is a scripted edit launch and a reopen launch.
-            Self::RawEditor => 2 * result["runs"].as_array().map_or(0, Vec::len) as u64,
-        }
-    }
-}
-
-/// One planned component: the arguments it gets, where its result lives and how to count its
-/// launches.
+/// One planned component: the arguments it gets and where its result lives.
 struct Spec {
     name: String,
     tier: &'static str,
     args: Vec<String>,
     /// The result file inside the component's own `run/` directory, when it writes one.
     result: Option<&'static str>,
-    launches: Launches,
     /// Whether the component takes `--output`, `--binary` and `--manifest`.
     output: bool,
     binary: bool,
@@ -150,31 +132,11 @@ fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
         tier,
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         result: None,
-        launches: Launches::None,
         output: true,
         binary: false,
         manifest: false,
         skip: None,
     }
-}
-
-/// The manifest's own sources, `(id, absolute path)`, so `plan` can build one `raw-panel` component
-/// per source without repeating `raw-editor`'s own full validation, which stays the authority when
-/// `raw-editor` itself runs. `path` resolves the same way every other manifest-relative path here
-/// does: as given when absolute, otherwise joined to the manifest's own directory.
-fn manifest_sources(path: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let manifest: Value = read_json(path)?;
-    let base = path.parent().ok_or("Manifest has no parent")?;
-    manifest["sources"]
-        .as_array()
-        .ok_or("RAW manifest needs a sources array")?
-        .iter()
-        .map(|source| -> Result<(String, PathBuf)> {
-            let id = source["id"].as_str().ok_or("RAW source needs an id")?;
-            let raw_path = source["path"].as_str().ok_or("RAW source needs a path")?;
-            Ok((id.to_owned(), absolute(base, Path::new(raw_path))))
-        })
-        .collect()
 }
 
 /// One `cargo test` invocation `raw-authentic` runs: the package and integration-test binary that
@@ -240,7 +202,7 @@ fn owner_dir(sources: &[(String, PathBuf)]) -> Result<PathBuf> {
 pub fn authentic(root: &Path, manifest_path: &Path, out: &Path) -> Result {
     ensure(!out.exists(), "RAW authentic output must be new")?;
     fs::create_dir_all(out)?;
-    let sources = manifest_sources(manifest_path)?;
+    let sources = raw::sources(manifest_path)?;
     let dir = owner_dir(&sources)?;
     let mut result = json!({
         "status":"failed",
@@ -288,10 +250,10 @@ pub fn authentic(root: &Path, manifest_path: &Path, out: &Path) -> Result {
 /// order, after everything else in the tier and behind the host-wide timing lock, so nothing else
 /// on the machine is competing with them from this command.
 ///
-/// `manifest` is the manifest's own sources, `(id, absolute path)`, read once by the caller; `None`
-/// when `--manifest` was not given. Building one `raw-panel` component per source and one RAW
-/// `performance` component needs the source list itself, not just whether a manifest was given, so
-/// this differs from `raw-editor`'s own `--manifest` forwarding, which the subprocess reads itself.
+/// `manifest` is the manifest's own sources, `(id, absolute path)`, read once by the caller through
+/// the one RAW manifest reader; `None` when `--manifest` was not given. Building one `raw-editor`
+/// and one `raw-panel` component per source and one RAW `performance` component needs the source
+/// list itself, not just whether a manifest was given.
 fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> Vec<Spec> {
     let mut specs = Vec::new();
     if !fixtures && tier != Tier::Quick {
@@ -315,7 +277,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         {
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     &format!("smoke-{}", scenario.name),
@@ -326,26 +287,38 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         }
     }
     if tier == Tier::Full {
-        specs.push(Spec {
-            result: Some("result.json"),
-            launches: Launches::RawEditor,
-            binary: true,
-            manifest: true,
-            skip: manifest.is_none().then_some("no --manifest"),
-            ..spec("raw-editor", "full", &["raw-editor"])
-        });
+        let sources = manifest.unwrap_or(&[]);
+        // The RAW editor journey once per manifest source, each run given the manifest that lists
+        // it. Without a manifest there is nothing to run it over, and the skip says so.
+        if manifest.is_none() {
+            specs.push(Spec {
+                skip: Some("no --manifest"),
+                ..spec("raw-editor", "full", &[])
+            });
+        }
+        for (id, path) in sources {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                binary: true,
+                manifest: true,
+                ..spec(
+                    &format!("raw-editor-{id}"),
+                    "full",
+                    &["smoke", "--scenario", "raw-editor", "--source", &path],
+                )
+            });
+        }
         specs.push(Spec {
             result: Some("result.json"),
             manifest: true,
             skip: manifest.is_none().then_some("no --manifest"),
             ..spec("raw-authentic", "full", &["raw-authentic"])
         });
-        let sources = manifest.unwrap_or(&[]);
         for (id, path) in sources {
             let path = path.to_string_lossy().into_owned();
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     &format!("raw-panel-{id}"),
@@ -358,7 +331,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             let path = path.to_string_lossy().into_owned();
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     "raw-performance",
@@ -369,7 +341,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         }
         specs.push(Spec {
             result: Some("result.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("hardening", "full", &["hardening"])
         });
@@ -387,7 +358,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         specs.push(Spec {
             args: vec!["editor-latency".into(), "--source".into(), twenty_four_mp()],
             result: Some("latency.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("editor-latency", "timing", &[])
         });
@@ -400,13 +370,11 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 "burst".into(),
             ],
             result: Some("latency.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("editor-latency-burst", "timing", &[])
         });
         specs.push(Spec {
             result: Some("measurements.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("measure", "timing", &["measure"])
         });
@@ -1274,9 +1242,7 @@ fn component(
                 .result
                 .and_then(|name| optional(&dir.join("run").join(name)));
             entry.exit_code = code;
-            entry.launches = s
-                .launches
-                .count(optional(&dir.join("run/result.json")).as_ref());
+            entry.launches = launches(optional(&dir.join("run/result.json")).as_ref());
             entry.status = match (timed_out, code) {
                 (true, _) => Status::TimedOut,
                 (false, Some(0)) => Status::Passed,
@@ -1428,7 +1394,7 @@ pub fn run(
     let manifest = manifest.map(|path| absolute(root, &path));
     let raw_sources = manifest
         .as_deref()
-        .map(manifest_sources)
+        .map(raw::sources)
         .transpose()?
         .unwrap_or_default();
     let specs = plan(
@@ -1633,10 +1599,9 @@ mod tests {
                 "measure"
             ]
         );
-        // A manifest with no sources is `full`'s minimal manifest case: `raw-editor` and
-        // `raw-authentic` run, but there is nothing to build a `raw-panel` or RAW `performance`
-        // component from.
-        let full = names(Tier::Full, Some(&[]), true);
+        // Without a manifest, `full` lists `raw-editor` and `raw-authentic`, skipped, and has no
+        // source to build a `raw-panel` or RAW `performance` component from.
+        let full = names(Tier::Full, None, true);
         assert_eq!(&full[..2], ["check", "editor-acceptance"]);
         // Every rendered scenario, then the RAW components and hardening, then the timing
         // components last.
@@ -1662,20 +1627,21 @@ mod tests {
         assert_eq!(names(Tier::Timing, None, false)[0], "generate-fixtures");
     }
     #[test]
-    fn full_adds_one_raw_panel_component_per_source_and_one_raw_performance_run() {
+    fn full_adds_raw_editor_and_raw_panel_components_per_source_and_one_raw_performance_run() {
         let sources = [
             ("z6".to_owned(), PathBuf::from("/tmp/z6.nef")),
             ("x100vi".to_owned(), PathBuf::from("/tmp/x100vi.raf")),
         ];
         let full = plan(Tier::Full, Some(&sources), true);
         let names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
-        // One `raw-panel` component per manifest source, named by source id, and one RAW
-        // `performance` run over the first source, all between `raw-editor`/`raw-authentic` and
+        // One `raw-editor` and one `raw-panel` component per manifest source, named by source id,
+        // around `raw-authentic`, and one RAW `performance` run over the first source, all before
         // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 10..],
+            &names[names.len() - 11..],
             [
-                "raw-editor",
+                "raw-editor-z6",
+                "raw-editor-x100vi",
                 "raw-authentic",
                 "raw-panel-z6",
                 "raw-panel-x100vi",
@@ -1700,6 +1666,31 @@ mod tests {
         );
         assert!(panel_z6.binary && panel_z6.output && !panel_z6.manifest);
         assert_eq!(panel_z6.skip, None);
+        // The journey is the `raw-editor` smoke row, given the manifest that lists its source.
+        let editor_z6 = full.iter().find(|s| s.name == "raw-editor-z6").unwrap();
+        assert_eq!(
+            arguments(
+                editor_z6,
+                Path::new("/v/raw-editor-z6"),
+                Path::new("/bin/luxforge"),
+                Some(Path::new("/m.json"))
+            ),
+            [
+                "smoke",
+                "--scenario",
+                "raw-editor",
+                "--source",
+                "/tmp/z6.nef",
+                "--output",
+                "/v/raw-editor-z6/run",
+                "--binary",
+                "/bin/luxforge",
+                "--manifest",
+                "/m.json"
+            ]
+        );
+        assert_eq!(editor_z6.result, Some("result.json"));
+        assert!(smoke::find("raw-editor").is_ok_and(|row| row.listed()));
         let performance = full.iter().find(|s| s.name == "raw-performance").unwrap();
         assert_eq!(
             performance.args,
@@ -1711,13 +1702,11 @@ mod tests {
                 "/tmp/z6.nef"
             ]
         );
-        // Without a manifest there is no source to run either component over.
+        // Without a manifest there is no source to run any of them over.
         let without = plan(Tier::Full, None, true);
-        assert!(
-            without
-                .iter()
-                .all(|s| !s.name.starts_with("raw-panel") && s.name != "raw-performance")
-        );
+        assert!(without.iter().all(|s| !s.name.starts_with("raw-panel")
+            && !s.name.starts_with("raw-editor-")
+            && s.name != "raw-performance"));
     }
     #[test]
     fn a_missing_manifest_skips_raw_editor_instead_of_passing_it() {
@@ -1726,8 +1715,13 @@ mod tests {
             let s = without.iter().find(|s| s.name == name).unwrap();
             assert_eq!(s.skip, Some("no --manifest"), "{name}");
         }
-        let with = plan(Tier::Full, Some(&[]), true);
-        for name in ["raw-editor", "raw-authentic"] {
+        let with = plan(
+            Tier::Full,
+            Some(&[("z6".to_owned(), PathBuf::from("/raw/z6.nef"))]),
+            true,
+        );
+        assert!(with.iter().all(|s| s.name != "raw-editor"));
+        for name in ["raw-editor-z6", "raw-authentic"] {
             assert!(
                 with.iter().find(|s| s.name == name).unwrap().skip.is_none(),
                 "{name}"
@@ -1964,39 +1958,19 @@ mod tests {
     }
     #[test]
     fn launch_counts_come_from_what_each_component_recorded() {
-        assert_eq!(Launches::None.count(Some(&json!({}))), 0);
-        assert_eq!(Launches::Recorded.count(None), 0);
-        assert_eq!(
-            Launches::Recorded.count(Some(&json!({"launches":[{"exit_code":0}]}))),
-            1
-        );
+        // A component that starts no editor keeps no list, and one that never wrote a result
+        // started none it can prove.
+        assert_eq!(launches(Some(&json!({}))), 0);
+        assert_eq!(launches(None), 0);
+        assert_eq!(launches(Some(&json!({"exit_code":0}))), 0);
+        assert_eq!(launches(Some(&json!({"launches":[{"exit_code":0}]}))), 1);
         // A launch its watcher stopped, as `measure`'s idle process and `hardening`'s ordinary
-        // launches are, is listed with no exit code and counted like any other.
+        // launches are, is listed with no exit code and counted like any other; a `raw-editor`
+        // run lists its edit and its reopen.
         let four = json!({"launches":[{"exit_code":0},{"exit_code":0},{"exit_code":0},{"exit_code":null,"stopped":true}]});
-        assert_eq!(Launches::Recorded.count(Some(&four)), 4);
-        assert_eq!(Launches::Recorded.count(Some(&json!({"exit_code":0}))), 0);
-        assert_eq!(
-            Launches::RawEditor.count(Some(&json!({"runs":[{},{},{}]}))),
-            6
-        );
-        // Every component that launches the editor through the scenario library's envelope is
-        // counted from its recorded list; only `raw-editor` still counts its own way.
-        let manifest = [("z6".to_owned(), PathBuf::from("/raw/z6.nef"))];
-        for spec in plan(Tier::Full, Some(&manifest), true) {
-            let expected = match spec.name.as_str() {
-                "raw-editor" => Launches::RawEditor,
-                "editor-latency"
-                | "editor-latency-burst"
-                | "measure"
-                | "hardening"
-                | "raw-performance" => Launches::Recorded,
-                name if name.starts_with("smoke-") || name.starts_with("raw-panel-") => {
-                    Launches::Recorded
-                }
-                _ => Launches::None,
-            };
-            assert_eq!(spec.launches, expected, "{}", spec.name);
-        }
+        assert_eq!(launches(Some(&four)), 4);
+        let raw_editor = json!({"scenario":"raw-editor","launches":[{"evidence":"edit","exit_code":0},{"evidence":"reopen","exit_code":0}]});
+        assert_eq!(launches(Some(&raw_editor)), 2);
     }
     #[test]
     fn an_all_passed_plan_is_the_only_ok_outcome() {
