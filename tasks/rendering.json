@@ -72,7 +72,7 @@
     {
       "id": "TASK-002",
       "description": "Declare the parallel thresholds, the 512 MiB frame limit, the side limit and the spatial tile size once, in a limits module the core and the RAW crate both import.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. Every speedup later in this group tunes a threshold; each should tune one declaration, not several.",
@@ -156,7 +156,7 @@
     {
       "id": "TASK-003",
       "description": "Trim the pixel-domain pipeline to one resample read-rectangle rule and one spatial-entry helper, delete the GRID policy knob, and move the domain-independent no-op checks into Render.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. The generic pipeline is the right design; it should describe only what the two domains actually do differently.",
@@ -241,7 +241,7 @@
     {
       "id": "TASK-004",
       "description": "Write each spatial tile's batch back with per-row copy_from_slice, produced in the frame's final layout during the parallel phase, instead of copying one pixel at a time on the calling thread.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -311,7 +311,7 @@
     {
       "id": "TASK-005",
       "description": "Allocate frames as Arc<Vec<u8>> from vec![0; n] instead of a serial byte-by-byte fill, and copy an identity segment's source rows inside the parallel pass instead of up front on one thread.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -381,7 +381,7 @@
     {
       "id": "TASK-006",
       "description": "Quantize the byte resample's bilinear sample through the guarded threshold lookup the RAW terminal already uses, and remove per-pixel LazyLock dereferences and view-layout recomputation from the hot colour and RAW read loops.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -452,7 +452,7 @@
     {
       "id": "TASK-007",
       "description": "Choose each rendering pass's parallel threshold from its measured work per pixel instead of the one one-megapixel constant, so small proxies of heavy stacks still use the pool.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
@@ -520,7 +520,7 @@
     {
       "id": "TASK-008",
       "description": "Read tile rows instead of one pixel at a time for point queries through a spatial segment and for the global-estimate reduction that feeds units such as Dehaze.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],

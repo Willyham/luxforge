@@ -255,7 +255,7 @@
     {
       "id": "TASK-004",
       "description": "Bind each generated mask control to its parameter's declared kind instead of assuming Number, validate the host mask descriptor like any module's, and correct the docs' \"one module and one row\" claim.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. This gets the kind table into the shape the next mask kinds need, without building any of those kinds yet.",
@@ -524,7 +524,7 @@
     {
       "id": "TASK-007",
       "description": "Dispatch every mask command through an exhaustive MaskOp enum instead of a method-string match, replace the five-value Planned tuple with a named struct, and split mask/commands.rs by concern.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
