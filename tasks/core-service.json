@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "core-service",
   "title": "Core service and API",
-  "objective": "Make the editor service's front doors single and honest: retries answered, panics contained, events that name what changed, one job table and job API, method envelopes and retry routes declared in the table, one bound evaluation, one preparation path, errors that carry their facts as data and an explicit public surface, then prepare the service for the MCP adapter, the library and export when those milestones start.",
-  "context_summary": "The consolidation gave the service one write path (`mutate` with one `admit`), one planning path and one method table; this plan finishes what that left: three job tables and method families, events with no subject, evaluation prologues repeated across several entry points, a synchronous preparation mode only tests and xtask use, facts clients still parse out of error text, and a public surface built from glob re-exports. The owner's 2026-09-26 decisions and the constraints on this work are recorded in docs/decisions.md and docs/design/post-consolidation.md. The roadmap-groundwork tasks are blocked until their milestone starts.",
+  "objective": "Make the editor service's front doors single and honest: retries answered, panics contained, events that name what changed, one job table and job API, method envelopes and retry routes declared in the table, one bound evaluation, one preparation path, errors that carry their facts as data and an explicit public surface, then prepare the service for the MCP adapter and the library when those milestones start.",
+  "context_summary": "The consolidation gave the service one write path (`mutate` with one `admit`), one planning path and one method table; this plan finishes what that left: four job tables and method families, export's among them, events with no subject, evaluation prologues repeated across several entry points, a synchronous preparation mode only tests and xtask use, facts clients still parse out of error text, and a public surface built from glob re-exports. The owner's 2026-09-26 decisions and the constraints on this work are recorded in docs/decisions.md and docs/design/post-consolidation.md. The roadmap-groundwork tasks are blocked until their milestone starts.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -200,18 +200,18 @@
     },
     {
       "id": "TASK-004",
-      "description": "Give source, analysis and capability jobs one job table and one read and cancel API, keeping their three schedulers and cancel semantics.",
+      "description": "Give source, analysis, capability and export jobs one job table and one read and cancel API, keeping each kind's scheduler and cancel semantics.",
       "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
       "extra_context": [
-        "Wave 2, finish the consolidation. One job status vocabulary landed already; this closes the second half, one job table, that the same plan called for.",
-        "`SourceJobs` in `api/owner.rs` (a flight-key join, per-client interest, a completed ring of 64), `AnalysisStore` in `analysis/jobs.rs` (an identity join, per-client interest, a ring of 32) and `capabilities::jobs::Jobs` (lanes, `JobControl`, a ring of 32, panic containment) each re-implement id minting, interest with cancel-on-last-release, disconnect clean-up, a bounded finished ring and join-by-key. Three method families answer them, `job.status`/`job.adopt`/`job.cancel`, `analysis.read`/`analysis.cancel` and `module.job.read`/`module.job.cancel`, each with its own error shape, and the `activity.list` schema note has to tell a client which of the three reads a given job.",
-        "`capabilities::jobs::Jobs` is already a generic lane runner over a boxed closure, with per-kind admission and containment; it is the natural table to promote for every kind, with source preparation and analysis registering into it while keeping their own scheduling: source joins by flight key, analysis is latest-wins, capability lanes are FIFO.",
-        "JPEG export already runs on a second instance of the capability lane runner; Locate would need its own job kind too. Without one table, each is another copy of the same bookkeeping.",
-        "Owner decision: one job API, `job.read` and `job.cancel`, serves every kind, replacing `analysis.read`, `analysis.cancel`, `module.job.read` and `module.job.cancel`.",
-        "Keep exactly: a source or analysis cancel releases only the caller's interest, never the job itself; a capability cancel cancels the job for everyone; a deactivation already running cannot be cancelled while its activation exists; analysis supersede stays as it is."
+        "Wave 2, finish the consolidation. One job status vocabulary landed already; this closes the second half, one job table, that the same plan called for. The owner folded the delivered export lane into this task on 2026-09-27, since export already runs on the lane runner this task promotes.",
+        "Four tables re-implement id minting, interest with cancel-on-last-release, disconnect clean-up, a bounded finished ring and join-by-key: `SourceJobs` in `api/owner.rs` (a flight-key join, per-client interest, a completed ring of 64), `AnalysisStore` in `analysis/jobs.rs` (an identity join, per-client interest, a ring of 32), the capability host's `capabilities::jobs::Jobs` (`capabilities/host.rs:275`: lanes, `JobControl`, a ring of 32, panic containment) and a second `Jobs` instance the owner holds for export (`api/owner.rs:1020-1028`, its own ring of 32, delivering `OwnerMessage::ExportFinished`). Four method families answer them, `job.status`/`job.adopt`/`job.cancel`, `analysis.read`/`analysis.cancel`, `module.job.read`/`module.job.cancel` and `export.read`/`export.cancel`, each with its own error shape, and the `activity.list` schema note (`api/methods.rs:179-183`) has to tell a client which of the four reads a given job.",
+        "`capabilities::jobs::Jobs` is already a generic lane runner over a boxed closure, with per-kind admission and containment, and its enums already hold export (`Lane::Export`, `JobKind::Export`, `capabilities/jobs.rs:47-85`); it is the natural table to promote for every kind, with source preparation and analysis registering into it while keeping their own scheduling: source joins by flight key, analysis is latest-wins, capability lanes are FIFO, and the export lane runs one job with four waiting and never supersedes. Locate would need its own job kind too.",
+        "The cancel envelopes differ: `module.job.cancel` takes a mutation envelope with owner retries (`JobCancelParams`, `capabilities/host.rs:177-180`), while `job.cancel`, `analysis.cancel` and `export.cancel` take only a `job_id` (`JobParams` and `AnalysisJobParams` in `api/owner.rs`, `ExportJobParams` in `api/owner/export.rs`). The one `job.cancel` declares one shape, and its retry route follows it.",
+        "Owner decision: one job API, `job.read` and `job.cancel`, serves every kind, replacing `analysis.read`, `analysis.cancel`, `module.job.read`, `module.job.cancel`, `export.read` and `export.cancel`; the export decision already says the export methods fold into it when it lands.",
+        "Keep exactly: a source or analysis cancel releases only the caller's interest, never the job itself; a capability or export cancel cancels the job for everyone; a deactivation already running cannot be cancelled while its activation exists; analysis supersede stays as it is; the export lane holds one running and four waiting, is never superseded, and a client's disconnect never cancels its exports; the source worker's own panic containment (`api/owner.rs:840`) and the lane runner's (`capabilities/jobs.rs:748`) both survive the merge."
       ],
       "context_links": [
         {
@@ -236,13 +236,31 @@
           "kind": "file",
           "label": "Capability jobs",
           "target": "crates/luxforge-core/src/capabilities/jobs.rs",
-          "relevance": "The lane runner, `JobControl` and ring buffer this task promotes into the shared job table."
+          "relevance": "The lane runner, `JobControl`, ring buffer and export lane this task promotes into the shared job table."
         },
         {
           "kind": "file",
           "label": "Job methods",
           "target": "crates/luxforge-core/src/api/methods.rs",
-          "relevance": "The three method families and the `activity.list` note naming them, to collapse to one pair."
+          "relevance": "The four method families and the `activity.list` note naming them, to collapse to one pair."
+        },
+        {
+          "kind": "file",
+          "label": "Capability host",
+          "target": "crates/luxforge-core/src/capabilities/host.rs",
+          "relevance": "The capability host's `Jobs` instance and `JobCancelParams`, the mutation-envelope cancel."
+        },
+        {
+          "kind": "file",
+          "label": "Export jobs",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "The export job and its four methods, whose read and cancel fold into the shared pair."
+        },
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "The delivered export lane, its bounds and the decision that its methods fold into the one job API."
         },
         {
           "kind": "file",
@@ -253,25 +271,27 @@
         }
       ],
       "acceptance_criteria": [
-        "One job table serves source, analysis and capability jobs, each still admitted and scheduled by its own rule; `job.read` and `job.cancel` answer every kind with one shape, and `analysis.read`, `analysis.cancel`, `module.job.read` and `module.job.cancel` are gone from `schema.list`.",
+        "One job table serves source, analysis, capability and export jobs, each still admitted and scheduled by its own rule; the owner holds no second runner instance; `job.read` and `job.cancel` answer every kind with one shape, and `analysis.read`, `analysis.cancel`, `module.job.read`, `module.job.cancel`, `export.read` and `export.cancel` are gone from `schema.list`.",
         "`activity.list` and `job.read` agree about a job's status for every kind.",
-        "The desktop, xtask and the user guide use the new methods; a check-repository rule refuses a second job table, such as a new struct holding its own finished-record ring outside the shared job module.",
-        "The two cancel semantics, release this client's interest against cancel the job outright, and analysis supersede behave exactly as before, proved by the existing per-kind tests moved onto the one table."
+        "The desktop, xtask, the user guide and the export design use the new methods; a check-repository rule refuses a second job table outside the shared job module, whether a new struct holding its own finished-record ring or a second instance of the shared table.",
+        "The two cancel semantics, release this client's interest against cancel the job outright, analysis supersede, the export lane's bounds and its disconnect rule, and panic containment on the source worker and the lanes behave exactly as before, proved by the existing per-kind tests moved onto the one table, including the export tests in `api/owner/export_tests.rs`."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Move the source, analysis and capability job lifecycle tests onto the one table.",
+          "Move the source, analysis, capability and export job lifecycle tests onto the one table.",
           "Add a test that `activity.list` and `job.read` agree for a job of each kind.",
-          "Run the desktop's job polling against the new methods."
+          "Run the desktop's job polling and export against the new methods, and the export smoke scenario."
         ],
         "commands": [
           "cargo test -p luxforge-core jobs",
+          "cargo test -p luxforge-core --lib export",
           "cargo test -p luxforge-app",
+          "cargo xtask smoke --scenario export",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
-          "All moved tests pass unchanged in behaviour; the four retired methods are gone from `schema.list`."
+          "All moved tests pass unchanged in behaviour; the six retired methods are gone from `schema.list`; export behaves exactly as before through the shared job API."
         ]
       }
     },
@@ -285,9 +305,10 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. The dispatcher already knows each method's envelope and parameters; several handlers still repeat checks the table could make once.",
-        "Eighteen handlers across `api/methods.rs`, `api/owner.rs` and the capability host files call `mutation.validate()` (or `request.mutation.validate()`) themselves rather than the dispatcher validating it once for every method whose envelope is not `None`. `mutates()` in `api/methods.rs` decides whether a service method's answer emits an event by sniffing `outcome` and `deduplicated` out of its JSON, instead of the handler saying whether it changed anything.",
+        "Nineteen non-test calls to `mutation.validate()` (or `request.mutation.validate()`) sit in handlers rather than in the dispatcher validating once for every method whose envelope is not `None`: `api/methods.rs` (six), `api/owner.rs` (two), `api/owner/export.rs`, `EditorService::mutate` in `editor/history.rs`, and the capability host files `capabilities/host.rs`, `capabilities/settings.rs` and `resources.rs`, `activation.rs` and `permissions.rs` under `capabilities/host/`. `mutates()` in `api/methods.rs` (798-804) decides whether a service method's answer emits an event by sniffing `outcome` and `deduplicated` out of its JSON, and the owner reads the event's revision back out of the answer's `revision` field (`api/owner.rs:1510-1521`), instead of the handler reporting whether it changed anything and at which revision.",
         "`api/owner/capability.rs` is about twenty functions that each only forward one call, with `Owner`'s split borrows, to the capability host; a table macro that takes an inline handler expression would fold these into ordinary table rows and delete the file. Around thirty more service handlers in `api/methods.rs` are 12 lines or fewer, each only calling one service method.",
-        "`draft_begin` in `api/methods.rs` re-implements the mask and component target check inline instead of calling the shared `take_mask_target` (`editor/masks.rs`) and `check_parameters` (`modules/descriptor.rs`) that already enforce it at commit. `host_query` (`editor/masks.rs`) matches on the query id and re-parses named fields such as `x`/`y` from the raw parameter map after the generic check already ran. `Method::Task` carries no task id: `registry.task(task_id)` is used only to check the id exists, and the handler re-strips the id from the method name string afterward.",
+        "`draft_begin` in `api/methods.rs` (its target check at 1817-1856) re-implements the mask and component target check inline instead of calling the shared `take_mask_target` (`editor/masks.rs`) and `check_parameters` (`modules/descriptor.rs`) that already enforce it at commit. A module query's `mask` target is parsed a second way, by `take_query_mask_target` (`editor/masks.rs:294-315`, called from `editor/plan.rs`) and declared separately in `schema.list`. `host_query` (`editor/masks.rs:70-105`) matches on the query id and re-parses named fields such as `x`/`y` from the raw parameter map after the generic check already ran. `Method::Task` carries no task id: `registry.task(task_id)` is used only to check the id exists, and the handler re-strips the id from the method name string afterward.",
+        "The source-kind refusals, an action whose module does not apply to the photo and a Basic field superseded on a RAW global target, need the asset's kind, so they stay in `EditorService::ask` (`editor/plan.rs:260-279`), the one site for actions, queries and composite steps, rather than in envelope validation; `schema.list` already declares them as each method's `sources` and each superseded parameter's `superseded`.",
         "Nineteen capability method-name constants declared across `capabilities/host.rs`, `grants.rs`, `resources.rs`, `jobs.rs` and `settings.rs` are used only inside each file's own tests; production code retypes the same method-name strings dozens of times instead of importing them."
       ],
       "context_links": [
@@ -331,9 +352,9 @@
       ],
       "acceptance_criteria": [
         "No handler calls `mutation.validate()` (or equivalent) itself; the dispatcher validates every method whose envelope is not `None` before any handler runs, and a check-repository rule refuses a new call to it inside a handler.",
-        "No answer decides whether it emits an event by reading its own JSON; service handlers report whether they changed something.",
-        "`api/owner/capability.rs` is deleted and its methods are table rows; `schema.list` is byte-identical to before except for the intended `Method::Task(String)` change.",
-        "`draft_begin` calls the shared target check instead of restating it, and `host_query` reads its declared parameters instead of re-parsing them; production uses the capability method-name constants instead of retyped literals, or the unused constants are removed.",
+        "No answer decides whether it emits an event, or at which revision, by reading its own JSON; service handlers report whether they changed something and the revision they wrote.",
+        "`api/owner/capability.rs` is deleted and its methods are table rows; `schema.list` is byte-identical to the task's own starting point except for the intended `Method::Task(String)` change and any job-method change the one job table made.",
+        "`draft_begin` calls the shared target check instead of restating it, a module query's mask target goes through the same target check as an action's, and `host_query` reads its declared parameters instead of re-parsing them; production uses the capability method-name constants instead of retyped literals, or the unused constants are removed.",
         "The declared-fields test and the every-mutation retry test pass unchanged."
       ],
       "test_strategy": {
@@ -359,8 +380,9 @@
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. The plan called for the service to split around one bound evaluation context; the split happened by file, but the context type was never introduced.",
-        "`AnalysisPlan` and `SamplePlan` in `editor.rs`, `PreviewJob` in `preview/job.rs`, `AnalysisJob` in `analysis/jobs.rs` and `PointPlan` in `editor/evaluate.rs` each carry their own copy of the same bound source, recipe, registry and context. `editor/evaluate.rs` alone has about seven near-identical prologues, state, entry, plan the draft, bind artifacts, verify the source, work out what preparation is missing, and `editor/source.rs` repeats the same shape three more times.",
-        "`EditorService::state` returns an owned `EditorState` whose `current_entry` is a plain `HistoryEntry`, so every call deep-clones the cached `Arc<HistoryEntry>`; several callers only need the entry's id. On a drafted preview job the owner compiles the current stack for the plan context and the drafted stack again for the analysis identity, and the worker then compiles a third time.",
+        "`AnalysisPlan`, `SamplePlan`, `ExportPlan` and `ExportTarget` in `editor.rs`, `PreviewJob` in `preview/job.rs`, `AnalysisJob` in `analysis/jobs.rs` and `PointPlan` in `editor/evaluate.rs` each carry their own copy of the same bound source, recipe, registry and context. `editor/evaluate.rs` repeats the same prologue, state, entry, plan the draft, bind artifacts, verify the source, work out what preparation is missing, at each `needing` site (lines 85, 231, 294, 347, 396, 476 and 548), and `editor/source.rs` repeats the shape three more times. Export's `target()` and `Target` (`editor/evaluate.rs:313-366`) already share the state, entry, draft, bind and identity steps between `analysis_plan` and export: a partial form of this value to grow rather than copy. `validate_source_recipe` (`editor/source.rs`), which now also runs the source-kind applicability and superseded-field checks, has nine non-test callers.",
+        "`EditorService::state` returns an owned `EditorState` whose `current_entry` is a plain `HistoryEntry`, so every call deep-clones the cached `Arc<HistoryEntry>`; several callers only need the entry's id. On a drafted preview job the owner compiles the current stack for the plan context and the drafted stack again for the analysis identity, and the worker then compiles a third time. Every pan or zoom now re-plans a preview through the owner (`view_preview_task` into `ready_preview_job`, `app/tasks.rs`), so the repeated compiles run per view change; a viewport region that fails falls back to the whole-frame run and compiles again (`preview/worker.rs`).",
+        "The desktop edits `PreviewJob`'s presentation fields, `viewport`, `intent`, `proxy` and `viewport_declined`, after the owner plans it (`app/preview.rs`); they stay outside the bound value, and the value stays cheap to clone.",
         "Keep exactly the Strict and DraftPreview evaluation rule and each refusal's own named preparation needs; they do not change, only where they are computed."
       ],
       "context_links": [
@@ -396,6 +418,12 @@
         },
         {
           "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "relevance": "The viewport region run and its whole-frame fallback, which compiles again."
+        },
+        {
+          "kind": "file",
           "label": "Modules and API",
           "target": "docs/design/modules-and-api.md",
           "relevance": "Drafts and the evaluation rule this task must keep true.",
@@ -404,7 +432,7 @@
       ],
       "acceptance_criteria": [
         "One `Evaluation` value, entry, bound recipe, source, registry, context and stage, is built in one service method and owns the `needing` rule, compiled once.",
-        "`PreviewJob`, `AnalysisJob`, `SamplePlan` and `PointPlan` wrap that one value instead of re-deriving it; a test counts one owner compile per drafted preview job.",
+        "`PreviewJob`, `AnalysisPlan`, `AnalysisJob`, `SamplePlan`, `PointPlan`, `ExportPlan` and `ExportTarget` wrap that one value instead of re-deriving it, and export's `Target` becomes it; a test counts one owner compile per drafted preview job, and the viewport fallback's second compile is either removed or named by the test.",
         "A head-only accessor exists for callers that need only the current entry's id, so they no longer force a full clone through `state()`.",
         "The draft-equals-commit byte tests and the preparation-needs tests pass, and renders stay byte-identical."
       ],
@@ -433,7 +461,7 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. Production and tests currently exercise different preparation paths, so the path the product actually takes is proven mostly by owner tests alone.",
-        "`EditorService`'s `allow_sync_source` field (`editor.rs`) defaults to `true`; the owner turns it off with `disable_sync_source`, but nothing else does. With it on, `prepare_file`, `import` and `bind_artifacts` (`editor/source.rs`, `editor/artifact_store.rs`) read, hash and decode the original and its artifacts inline on the caller's thread instead of queuing the owner's worker.",
+        "`EditorService`'s `allow_sync_source` field (`editor.rs`) defaults to `true`; the owner turns it off with `disable_sync_source` (`editor/source.rs`), and otherwise only two tests call it (`editor/artifact_tests.rs`, `editor/evaluate.rs`). With it on, `prepare_file`, `import` and `bind_artifacts` (`editor/source.rs`, `editor/artifact_store.rs`) read, hash and decode the original and its artifacts inline on the caller's thread instead of queuing the owner's worker. `export_plan` (`editor/evaluate.rs`) also reaches the inline `verified_prepared` branch, so the blocking helper serves export's needs, including the capture metadata it reads from the prepared source.",
         "`prepare_file` always calls `prepare_file_cancel` with `target: None`, so a RAW decoded through the inline path develops at as-shot gains, never the entry's own recorded gains the owner's path passes through `file_preparation`. The inline path also never runs the owner's own completion, `import_prepared` and `install_development` in `editor/source.rs`, so a test that needs a RAW with a custom white balance rebuilds the worker job and the adoption by hand.",
         "None of `editor_performance.rs`, `editor_acceptance.rs` or `capabilities_smoke.rs` in xtask ever calls `disable_sync_source`, so all of them exercise the inline path the product never takes; the owner's own path is exercised only by owner tests."
       ],
@@ -478,7 +506,7 @@
       "acceptance_criteria": [
         "`allow_sync_source` and both inline branches are deleted.",
         "One service method factors the owner's completion, import or develop, then adoption, so both the owner and a new blocking helper call the same code.",
-        "A `prepare(&mut self, needs: &PreparationNeeds)` helper runs the worker's own preparation functions inline and then that same completion; unit tests and xtask use it instead of the deleted inline path.",
+        "A `prepare(&mut self, needs: &PreparationNeeds)` helper runs the worker's own preparation functions inline and then that same completion; unit tests, export's tests and xtask use it instead of the deleted inline path.",
         "A reopen test of a RAW with a custom white balance develops at the entry's own gains with no hand-written adoption.",
         "`editor-performance`'s cold-path rows are noted as measuring the real preparation path now that the inline shortcut is gone."
       ],
@@ -506,7 +534,8 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. Error constructors are consistent by kind, but two facts a client needs to act on are still only in the message's prose.",
-        "`ready_preview_job` in `app/tasks.rs` recognises a full queue by matching `error.detail.starts_with(\"RAW mosaic queue is full\")` or `\"source preparation queue is full\"`, and `state/canvas.rs` parses an `unavailable effect <id>` prefix out of another message. If the core ever reworded either message, the desktop's wait would silently become a failure instead of a retry.",
+        "`ready_preview_job` in `app/tasks.rs` recognises a full queue by matching `error.detail.starts_with(\"RAW mosaic queue is full\")` or `\"source preparation queue is full\"`, and `state/canvas.rs` parses an `unavailable effect <id>` prefix out of the preview worker's error, which the desktop keeps as `render_error: (ErrorKind, String)` (`app/preview.rs`) and never passes through `CallError`. If the core ever reworded either message, the desktop's wait would silently become a failure instead of a retry. `ready_preview_job` runs on every pan and zoom, so the queue-full match runs on every view change.",
+        "The unavailable-effect message has eight producers: `editor/plan.rs`, `modules/registry/compile.rs`, `modules/field_patch.rs`, `modules/controls.rs`, `modules/transform.rs`, `modules/crop/module.rs`, `modules/pixel.rs` and the capability proof module. The source-kind refusals, an action whose module does not apply to the photo (`modules/descriptor.rs`), a superseded field (`modules/registry/variants.rs`) and a recipe that does not fit its source kind (`editor/source.rs`), carry no `data` either; the desktop does not parse them, since it resolves applicability from descriptors, but an agent needs the kind and the superseding control as data.",
         "The desktop already has a `CallError { code, message, data, job_id }` type and the plumbing that fills `data` from a wire answer's error object, but the convenience `call()` wrapper in `app/tasks.rs` flattens results down to a display string, and the direct `From<luxforge_core::Error> for CallError` conversion used by the Rust-only entry points always sets `data: None`, so even where the type exists, the fact is not there to read.",
         "`ErrorKind::Startup` and `ErrorKind::Diagnostics` (`error.rs`) have no caller anywhere outside the file that declares them."
       ],
@@ -534,11 +563,17 @@
           "label": "Canvas state",
           "target": "crates/luxforge-app/src/state/canvas.rs",
           "relevance": "The `unavailable effect` prefix parse to replace with structured data."
+        },
+        {
+          "kind": "file",
+          "label": "Preview error",
+          "target": "crates/luxforge-app/src/app/preview.rs",
+          "relevance": "`render_error`, the preview worker's error the canvas parses, which bypasses `CallError`."
         }
       ],
       "acceptance_criteria": [
-        "An unavailable-effect refusal's `data` names the effect id, and a full source or RAW queue's `data` marks it as worth retrying after a job ends; the message text is unchanged.",
-        "The `From<luxforge_core::Error> for CallError` conversion carries the error's `data` through instead of discarding it, and the desktop's queue-full and unavailable-effect handling reads `code` and `data` instead of matching `detail` text.",
+        "An unavailable-effect refusal's `data` names the effect id, from every producer; a full source or RAW queue's `data` marks it as worth retrying after a job ends; a not-applicable refusal names the source kind and module, and a superseded-field refusal names the source kind and the control that supersedes it; the message text is unchanged.",
+        "The `From<luxforge_core::Error> for CallError` conversion carries the error's `data` through instead of discarding it, the preview worker's error keeps its `data` to the canvas, and the desktop's queue-full and unavailable-effect handling reads `code` and `data` instead of matching `detail` text.",
         "`ErrorKind::Startup` and `ErrorKind::Diagnostics` and their constructors are deleted.",
         "The owner's queue-full test and a desktop wait test pass with the new `data` fields."
       ],
@@ -882,52 +917,32 @@
     {
       "id": "TASK-014",
       "description": "Move the export lane onto the one job table, so export jobs are read and cancelled through the shared job API like every other kind.",
-      "status": "blocked",
+      "status": "cancelled",
       "dependencies": [
         "TASK-004"
       ],
       "extra_context": [
-        "Wave 6, roadmap groundwork, now follow-up: JPEG export is delivered on its own instance of the lane runner (`Lane::Export`, `JobKind::Export`), held by the owner and delivering `OwnerMessage::ExportFinished`, with `export.read` and `export.cancel` answering it.",
-        "Blocked until one job table exists. Then the export lane joins it as one more kind, `export.read` and `export.cancel` fold into the shared read and cancel pair, and the owner's second runner instance goes.",
-        "Keep exactly: one running and four waiting on the export lane, never superseded, a cancel that stops the job for every client, and a client's disconnect never cancelling its exports.",
-        "A 128 megapixel RAW export holds one exact RGBA frame inside the 512 MiB evaluated-frame limit; a row sink that avoids it is a separate measured change."
+        "Cancelled 2026-09-27: the owner folded the export lane into the one job table itself, so the table lands with export as one of its kinds and `export.read` and `export.cancel` go in the same change."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Export design",
           "target": "docs/design/export.md",
-          "relevance": "The delivered lane, methods and bounds this task moves onto the shared table."
-        },
-        {
-          "kind": "file",
-          "label": "Export methods",
-          "target": "crates/luxforge-core/src/api/owner/export.rs",
-          "relevance": "The export job and its four methods."
-        },
-        {
-          "kind": "file",
-          "label": "Job lanes",
-          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
-          "relevance": "The lane runner whose export lane moves onto the one table."
+          "relevance": "The delivered export lane the one job table now absorbs."
         }
       ],
       "acceptance_criteria": [
-        "Export jobs live on the one job table with the other kinds; the owner holds no second runner instance.",
-        "The shared read and cancel methods answer export jobs, and `export.read` and `export.cancel` are gone from `schema.list`, the desktop and the user guide.",
-        "The export tests in `api/owner/export_tests.rs` pass unchanged in behavior through the shared methods."
+        "Export jobs are read and cancelled through the one job API, delivered by the one job table task."
       ],
       "test_strategy": {
-        "approach": "integration",
+        "approach": "none",
         "steps": [
-          "Move the export lane onto the shared table and switch the methods, then rerun the export tests and the export smoke scenario."
+          "None; the one job table task carries the export tests."
         ],
-        "commands": [
-          "cargo test -p luxforge-core --lib export",
-          "cargo xtask smoke --scenario export"
-        ],
+        "commands": [],
         "expected_results": [
-          "Export behaves exactly as before, through the shared job API."
+          "Nothing to run here."
         ]
       }
     },
