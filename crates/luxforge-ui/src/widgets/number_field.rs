@@ -88,6 +88,43 @@ pub fn number_field<'a, M: Clone + 'a>(
     on_submit: M,
     on_reset: M,
 ) -> Element<'a, M> {
+    field_row(
+        model,
+        theme::FIELD_ROW_HEIGHT,
+        on_edit_start,
+        on_text,
+        on_submit,
+        on_reset,
+    )
+}
+
+/// A [`number_field`] on a [`theme::COMPACT_FIELD_ROW_HEIGHT`] row, for fields packed two to a row
+/// under the control they belong to.
+pub fn compact_number_field<'a, M: Clone + 'a>(
+    model: &NumberFieldModel,
+    on_edit_start: M,
+    on_text: impl Fn(String) -> M + 'a,
+    on_submit: M,
+    on_reset: M,
+) -> Element<'a, M> {
+    field_row(
+        model,
+        theme::COMPACT_FIELD_ROW_HEIGHT,
+        on_edit_start,
+        on_text,
+        on_submit,
+        on_reset,
+    )
+}
+
+fn field_row<'a, M: Clone + 'a>(
+    model: &NumberFieldModel,
+    height: f32,
+    on_edit_start: M,
+    on_text: impl Fn(String) -> M + 'a,
+    on_submit: M,
+    on_reset: M,
+) -> Element<'a, M> {
     let invalid = invalid(model);
     let mut line = Row::new()
         .push(container(field_label(model, on_reset)).width(Length::Fill))
@@ -98,7 +135,7 @@ pub fn number_field<'a, M: Clone + 'a>(
     let line = line
         .spacing(theme::FIELD_UNIT_SPACING)
         .align_y(Alignment::Center)
-        .height(Length::Fixed(theme::FIELD_ROW_HEIGHT))
+        .height(Length::Fixed(height))
         .width(Length::Fill);
     let mut body = column![line];
     if let Some(message) = invalid {
