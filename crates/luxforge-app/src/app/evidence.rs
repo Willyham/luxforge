@@ -119,6 +119,10 @@ pub(crate) struct CaptureSync {
     /// The state, requested generation and presented photo version recorded with the screenshot
     /// being taken. A newer photo makes an in-flight readback stale.
     pub(crate) state: Option<(Value, u64, u64)>,
+    /// The clipping frame encoded with the photo when readback was requested. A newer overlay
+    /// arriving during the asynchronous screenshot invalidates that request just as a newer photo
+    /// does.
+    pub(crate) clipping_version: Option<u64>,
 }
 
 impl Default for CaptureSync {
@@ -127,6 +131,7 @@ impl Default for CaptureSync {
             updates: 0,
             drawn: Arc::new(AtomicU64::new(u64::MAX)),
             state: None,
+            clipping_version: None,
         }
     }
 }
@@ -136,6 +141,20 @@ impl CaptureSync {
     pub(crate) fn current(&self) -> bool {
         self.drawn.load(Ordering::Relaxed) == self.updates
     }
+}
+
+/// A clipping capture is ready only when the current overlay's own frame was encoded with the
+/// photograph. A failed derivation is captured as a failed step, with its refusal visible.
+fn clipping_capture_ready(
+    enabled: bool,
+    failed: bool,
+    current_version: Option<u64>,
+    drawn_version: Option<u64>,
+    identity_drawn: bool,
+) -> bool {
+    !enabled
+        || failed
+        || current_version.is_some_and(|version| drawn_version == Some(version) && identity_drawn)
 }
 
 /// A widget that draws nothing and, each time it is drawn, stores how many updates the view it
@@ -432,6 +451,32 @@ impl Editor {
         });
         expected.is_some_and(|expected| photo_drawn(expected, luxforge_ui::surface_diagnostics()))
     }
+
+    /// Evidence with clipping enabled must show the requested mask over the current photograph,
+    /// including after a mask-overlay toggle causes a new photo and a new clipping derivation.
+    pub(super) fn capture_clipping_ready(&self) -> bool {
+        if self.state.is_none()
+            || self.crop().is_some()
+            || self.gallery_page().is_some()
+            || self.render_error.is_some()
+        {
+            return true;
+        }
+        let enabled = self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
+        let failed = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.current.as_ref())
+            .is_some_and(|step| step["status"] == "failed");
+        let current = self.overlay_surface().map(luxforge_ui::Frame::version);
+        clipping_capture_ready(
+            enabled,
+            failed,
+            current,
+            luxforge_ui::surface_diagnostics().drawn_clipping_version,
+            self.overlay_summary()["drawn"] == true,
+        )
+    }
     /// One of evidence mode's own messages.
     pub(super) fn evidence_update(&mut self, message: EvidenceMessage) -> Task<Message> {
         match message {
@@ -480,6 +525,7 @@ impl Editor {
                 let rows_shown = self.recipe_rows_shown();
                 let proxy_ready = self.capture_proxy_ready();
                 let photo_ready = self.capture_photo_ready();
+                let clipping_ready = self.capture_clipping_ready();
                 let closing = self.gesture_closing();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
@@ -502,6 +548,7 @@ impl Editor {
                     || !rows_shown
                     || (!proxy_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)
+                    || (!clipping_ready && !evidence.allow_unready_capture)
                     || closing
                 {
                     return Task::none();
@@ -519,9 +566,11 @@ impl Editor {
                 evidence.capture_pending = false;
                 evidence.saving = true;
                 let recorded = (self.snapshot(), self.activity.requested);
+                let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {
                     evidence.sync.state =
                         Some((recorded.0, recorded.1, self.presenter.photo_version()));
+                    evidence.sync.clipping_version = clipping_version;
                 }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
@@ -541,10 +590,15 @@ impl Editor {
                         evidence.sync.state.as_ref().is_some_and(|(_, _, version)| {
                             *version != self.presenter.photo_version()
                         })
+                    })
+                    || self.evidence.as_ref().is_some_and(|evidence| {
+                        evidence.sync.clipping_version
+                            != self.overlay_surface().map(luxforge_ui::Frame::version)
                     });
                 if stale {
                     if let Some(evidence) = &mut self.evidence {
                         evidence.sync.state = None;
+                        evidence.sync.clipping_version = None;
                         evidence.saving = false;
                         evidence.capture_pending = true;
                     }
@@ -552,6 +606,7 @@ impl Editor {
                 }
                 if let Some(evidence) = &mut self.evidence {
                     evidence.capture_overlay = false;
+                    evidence.sync.clipping_version = None;
                 }
                 self.event(
                     "frame_captured",
@@ -3048,6 +3103,28 @@ mod tests {
     use crate::app::message::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
     use luxforge_core::CropStage;
+
+    #[test]
+    fn clipping_capture_requires_the_current_overlay_in_the_gpu_draw() {
+        assert!(clipping_capture_ready(false, false, None, None, false));
+        assert!(
+            !clipping_capture_ready(true, false, None, None, false),
+            "pending derivation"
+        );
+        assert!(
+            !clipping_capture_ready(true, false, Some(9), Some(8), false),
+            "stale GPU frame"
+        );
+        assert!(
+            !clipping_capture_ready(true, false, Some(9), Some(9), false),
+            "wrong photo identity"
+        );
+        assert!(clipping_capture_ready(true, false, Some(9), Some(9), true));
+        assert!(
+            clipping_capture_ready(true, true, None, None, false),
+            "an explicit failure is capturable"
+        );
+    }
 
     #[test]
     fn view_idle_suspends_evidence_redraws_until_it_records_the_pre_capture_surface() {

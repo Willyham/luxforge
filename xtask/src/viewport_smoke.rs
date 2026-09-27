@@ -303,6 +303,22 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
         "Settled pan did not reuse the full photograph texture",
     )?;
     let tint_pixels = changed_pixels(launch.at("settled-pause")?, launch.at("mask-overlay-off")?)?;
+    let clipping_state = at("mask-overlay-off")?;
+    let clipping = &clipping_state["histogram"]["overlay"];
+    ensure(
+        clipping["source_assigned"] == true
+            && clipping["drawn"] == true
+            && clipping["version"].as_u64().is_some()
+            && clipping["version"] == clipping_state["surface"]["gpu"]["drawn_clipping_version"]
+            && clipping["generation"] == clipping_state["surface"]["generation"],
+        "Mask-off capture lacked the current clipping frame's GPU draw",
+    )?;
+    let unclipped_state = at("clipping-off")?;
+    ensure(
+        unclipped_state["histogram"]["overlay"].is_null()
+            && unclipped_state["surface"]["gpu"]["drawn_clipping_version"].is_null(),
+        "Clipping-off capture still drew a clipping frame",
+    )?;
     let clipping_pixels =
         changed_pixels(launch.at("mask-overlay-off")?, launch.at("clipping-off")?)?;
     ensure(
