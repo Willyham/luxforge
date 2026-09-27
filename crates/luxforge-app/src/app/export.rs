@@ -415,16 +415,7 @@ fn plan_task(
     destination: Option<PathBuf>,
 ) -> Task<Message> {
     let target = (asset_id.clone(), entry_id.clone());
-    owner_work(move || {
-        call(
-            &owner,
-            client,
-            "export.plan",
-            json!({"asset_id": asset_id, "entry_id": entry_id}),
-        )
-        .map(|(plan, _)| plan)
-    })
-    .then(move |plan| {
+    owner_work(move || plan_now(&owner, client, &asset_id, &entry_id)).then(move |plan| {
         let (asset_id, entry_id) = target.clone();
         let original = original.clone();
         let destination = destination.clone();
@@ -465,42 +456,73 @@ fn plan_task(
 /// stored answer and writes no second file.
 fn send_task(owner: OwnerHandle, client: ClientId, choice: ExportChoice) -> Task<Message> {
     owner_task(
-        move || {
-            let params = json!({
-                "asset_id": choice.asset_id,
-                "entry_id": choice.entry_id,
-                "destination": choice.destination,
-                "keep_metadata": choice.keep_metadata,
-                "mutation": request(),
-            });
-            let mut attempt = 0;
-            loop {
-                match call_detailed(&owner, client, "export.jpeg", params.clone()) {
-                    Err(error)
-                        if error.code == ErrorKind::PreparationRequired.code()
-                            && attempt < PREPARATION_RETRIES =>
-                    {
-                        attempt += 1;
-                        let job = error
-                            .job_id
-                            .clone()
-                            .unwrap_or_else(|| error.message.clone());
-                        wait_source_job(&owner, client, &job)?;
-                    }
-                    other => break other,
-                }
-            }
-        },
+        move || send_now(&owner, client, &choice),
         |result| Message::Export(ExportMessage::Queued(result)),
     )
+}
+
+/// `export.plan` for one entry, blocking this thread until the owner answers.
+pub(crate) fn plan_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: &AssetId,
+    entry_id: &EntryId,
+) -> Result<Value, String> {
+    call(
+        owner,
+        client,
+        "export.plan",
+        json!({"asset_id": asset_id, "entry_id": entry_id}),
+    )
+    .map(|(plan, _)| plan)
+}
+
+/// `export.jpeg` for one choice, waiting for the source and asking again, under one request id,
+/// when the owner answers `preparation-required`.
+pub(crate) fn send_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    choice: &ExportChoice,
+) -> Result<Value, CallError> {
+    let params = json!({
+        "asset_id": choice.asset_id,
+        "entry_id": choice.entry_id,
+        "destination": choice.destination,
+        "keep_metadata": choice.keep_metadata,
+        "mutation": request(),
+    });
+    let mut attempt = 0;
+    loop {
+        match call_detailed(owner, client, "export.jpeg", params.clone()) {
+            Err(error)
+                if error.code == ErrorKind::PreparationRequired.code()
+                    && attempt < PREPARATION_RETRIES =>
+            {
+                attempt += 1;
+                let job = error
+                    .job_id
+                    .clone()
+                    .unwrap_or_else(|| error.message.clone());
+                wait_source_job(owner, client, &job)?;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// `export.read` for one job.
+pub(crate) fn read_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    job_id: &str,
+) -> Result<Value, String> {
+    call(owner, client, "export.read", json!({"job_id": job_id})).map(|(read, _)| read)
 }
 
 fn read_task(owner: OwnerHandle, client: ClientId, job_id: String) -> Task<Message> {
     let answered = job_id.clone();
     owner_task(
-        move || {
-            call(&owner, client, "export.read", json!({"job_id": job_id})).map(|(read, _)| read)
-        },
+        move || read_now(&owner, client, &job_id),
         move |result| {
             Message::Export(ExportMessage::Read {
                 job_id: answered,

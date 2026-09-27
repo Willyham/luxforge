@@ -195,3 +195,73 @@ fn the_palette_lists_both_exports_for_export_jpeg() {
     );
     finish(editor, catalog);
 }
+
+/// One whole export against a real owner, with the owner's answers handed in as the runtime would:
+/// the plan, the chosen file, the queued job and its reads, then the same file again, refused.
+#[test]
+fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
+    use super::export::{plan_now, read_now, send_now};
+    let catalog = std::env::temp_dir().join(format!(
+        "luxforge-export-{}-{}.sqlite",
+        std::process::id(),
+        super::tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let (mut editor, asset, _) = super::testing::real_photo(&catalog);
+    let folder = catalog.with_extension("exports");
+    std::fs::create_dir_all(&folder).unwrap();
+    let destination = folder.join("photo-edited.jpg");
+    let entry = editor.displayed_entry().unwrap();
+
+    let export_once = |editor: &mut Editor| {
+        let _ = editor.export_start(true, Some(destination.clone()));
+        assert!(editor.export.active(), "{}", editor.status);
+        let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
+        assert_eq!(plan["entry_id"], json!(entry));
+        let choice = ExportChoice {
+            asset_id: asset.clone(),
+            entry_id: entry.clone(),
+            destination: destination.clone(),
+            keep_metadata: true,
+            plan,
+        };
+        let queued = send_now(&editor.owner, editor.client, &choice);
+        let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
+            choice,
+        ))))));
+        let _ = editor.update(Message::Export(ExportMessage::Queued(queued)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while let Some(job) = editor
+            .export
+            .run
+            .as_ref()
+            .and_then(|run| run.job_id.clone())
+        {
+            assert!(std::time::Instant::now() < deadline, "the export never ended");
+            let result = read_now(&editor.owner, editor.client, &job);
+            let _ = editor.update(Message::Export(ExportMessage::Read {
+                job_id: job,
+                result,
+            }));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+
+    export_once(&mut editor);
+    let written = std::fs::read(&destination).unwrap();
+    let decoded = image::load_from_memory(&written).unwrap();
+    let expected = format!(
+        "Exported photo-edited.jpg \u{b7} {} \u{d7} {} \u{b7} ",
+        decoded.width(),
+        decoded.height()
+    );
+    assert!(editor.status.starts_with(&expected), "{}", editor.status);
+
+    // The same file again is refused, and the file is exactly as it was.
+    export_once(&mut editor);
+    assert_eq!(editor.status, refused_text("photo-edited.jpg"));
+    assert_eq!(std::fs::read(&destination).unwrap(), written);
+    assert!(editor.export.run.is_none());
+
+    std::fs::remove_dir_all(&folder).unwrap();
+    finish(editor, catalog);
+}
