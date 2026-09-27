@@ -103,6 +103,8 @@ fn aspect_options() -> Vec<String> {
 fn angle_parameter() -> ParameterDescriptor {
     ParameterDescriptor::number("angle", MIN_ANGLE, MAX_ANGLE)
         .default(0.0)
+        .step(0.5)
+        .fine_step(0.05)
         .unit("deg")
         .notes("straightening angle, positive turns the image clockwise on screen")
 }
@@ -748,6 +750,9 @@ mod tests {
         assert!(!angle.required);
         assert_eq!(angle.default, Some(Value::from(0.0)));
         assert_eq!(angle.unit.as_deref(), Some("deg"));
+        // The steps a stepper and an agent move the angle by: the ±0.5° buttons and the rail's,
+        // and an Option nudge's, 0.05°.
+        assert_eq!((angle.step, angle.fine_step), (Some(0.5), Some(0.05)));
         assert_eq!(
             angle.kind,
             ParameterKind::Number {

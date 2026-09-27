@@ -16,13 +16,6 @@ use luxforge_core::{
 };
 use serde_json::{Value, json};
 
-/// How far one nudge button moves the straightening angle, in degrees.
-pub(crate) const ANGLE_STEP: f64 = 0.5;
-/// How finely a drag on the angle's rail moves the angle: the fine nudge (Option with an arrow),
-/// a tenth of [`ANGLE_STEP`], so the rail reaches exactly the angles the keyboard does. The crop
-/// descriptor declares no step or precision for its angle, so this is the host's own.
-pub(crate) const ANGLE_RAIL_STEP: f64 = ANGLE_STEP / 10.0;
-
 /// The smallest extent a gesture may leave on either axis, in box pixels.
 pub(crate) const MIN_EXTENT: f64 = 1.0;
 
@@ -416,10 +409,6 @@ impl CropDraft {
         }
         self.stage.angle = degrees.clamp(MIN_ANGLE, MAX_ANGLE);
         self.rect = self.stage.refit(&self.reference.0, self.reference.1);
-    }
-
-    pub(crate) fn nudge_angle(&mut self, degrees: f64) {
-        self.set_angle(self.stage.angle + degrees);
     }
 
     /// Choose a declared ratio preset: the center is kept and the largest rectangle of that ratio

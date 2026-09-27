@@ -305,7 +305,8 @@ pub(crate) enum CropPointer {
 }
 
 /// Every crop draft change is one message, so a script can drive the whole editor through the
-/// update function without simulating a pointer.
+/// update function without simulating a pointer. The angle is not among them: it is the generic
+/// stepper of the frame's declared `angle` field, whose [`ControlMessage`]s the crop driver takes.
 #[derive(Clone, Debug)]
 pub(crate) enum CropMessage {
     /// Open a draft on the current stack. Apply, Cancel and Reapply are the one draft lifecycle's
@@ -314,15 +315,6 @@ pub(crate) enum CropMessage {
     /// The truncated preview job for the input stage of a start or a reapply.
     PreviewReady(Result<Box<PreviewJob>, String>),
     Pointer(CropPointer),
-    AngleText(String),
-    SubmitAngle,
-    /// The angle's rail was dragged to this fraction of its range.
-    AngleRail(f64),
-    /// The drag on the angle's rail ended.
-    AngleRailReleased,
-    NudgeAngle(f64),
-    /// The angle back to 0: a double-click on its rail.
-    ResetAngle,
     /// The index of one generated ratio preset.
     Preset(usize),
     CustomWidth(String),
@@ -709,6 +701,56 @@ pub(crate) enum ControlMessage {
         module_id: String,
         path: Vec<usize>,
     },
+}
+
+impl ControlMessage {
+    /// The one declared field a message names, as `(action, parameter)`: every message a number,
+    /// colour or curve control sends. Section, group and tab messages name none.
+    pub(crate) fn field(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Field {
+                action, parameter, ..
+            }
+            | Self::Fraction {
+                action, parameter, ..
+            }
+            | Self::Discrete {
+                action, parameter, ..
+            }
+            | Self::Released { action, parameter }
+            | Self::Step {
+                action, parameter, ..
+            }
+            | Self::KeyNudge {
+                action, parameter, ..
+            }
+            | Self::FieldNudge {
+                action, parameter, ..
+            }
+            | Self::TogglePicker { action, parameter }
+            | Self::Picker {
+                action, parameter, ..
+            }
+            | Self::Curve {
+                action, parameter, ..
+            }
+            | Self::ResetField { action, parameter }
+            | Self::EditValue { action, parameter } => Some((action, parameter)),
+            Self::Submit {
+                action,
+                parameter: Some(parameter),
+            } => Some((action, parameter)),
+            Self::Submit {
+                parameter: None, ..
+            }
+            | Self::ToggleGroup { .. }
+            | Self::SelectTab { .. }
+            | Self::CurveSampled { .. }
+            | Self::ToggleSection(_)
+            | Self::ResetModule(_)
+            | Self::ResetGroup { .. } => None,
+        }
+    }
 }
 
 /// Running a declared action, or copying the request one would send. Handled in `app/actions.rs`.

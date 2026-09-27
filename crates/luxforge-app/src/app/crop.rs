@@ -12,21 +12,20 @@ use crate::{
         draft::{CoreDraft, Event, Round},
         evidence::Settle,
         gesture::{Kind, Starting},
-        message::{CropMessage, CropPointer, Message},
+        message::{ControlMessage, CropMessage, CropPointer, Message},
         tasks::{Refresh, crop_preview_task, mutation},
     },
-    crop_draft::{ANGLE_RAIL_STEP, CropDraft, Modifiers as DraftModifiers},
+    crop_draft::{CropDraft, Modifiers as DraftModifiers},
     state::{
-        number::{decimals_of, number_text},
+        fields::{self, field_id},
+        number::NumberSpec,
         tools::{crop_frame, crop_row},
     },
 };
 use iced::{Task, widget::operation};
 use luxforge_core::{
-    CropPayload, CropStage, LayerId, MAX_ANGLE, MIN_ANGLE, Orientation, POINTER_MODE,
-    insertion_index_among,
+    CropPayload, CropStage, LayerId, Orientation, POINTER_MODE, insertion_index_among,
 };
-use luxforge_ui::geometry::{quantize, value_from_fraction};
 use serde_json::{Map, Value, json};
 
 /// The scrollable around the photo, so a Space drag can scroll it while drafting a crop.
@@ -99,28 +98,26 @@ impl CropRow {
 fn changes_draft(message: &CropMessage) -> bool {
     matches!(
         message,
-        CropMessage::Preset(_)
-            | CropMessage::Lock
-            | CropMessage::Swap
-            | CropMessage::NudgeAngle(_)
-            | CropMessage::ResetAngle
-            | CropMessage::AngleRail(_)
-            | CropMessage::AngleRailReleased
-            | CropMessage::SubmitAngle
-            | CropMessage::Guide(true)
+        CropMessage::Preset(_) | CropMessage::Lock | CropMessage::Swap | CropMessage::Guide(true)
     )
 }
 
-/// The angle a drag on the rail reaches at this fraction: on the rail's own step, within range.
-fn rail_angle(fraction: f64) -> f64 {
-    let angle = value_from_fraction(MIN_ANGLE, MAX_ANGLE, ANGLE_RAIL_STEP, fraction);
-    quantize(
-        angle,
-        MIN_ANGLE,
-        MAX_ANGLE,
-        ANGLE_RAIL_STEP,
-        decimals_of(ANGLE_RAIL_STEP),
-    )
+/// What the angle's stepper does to the frame. A rail drag and a held arrow key move the angle
+/// live and log nothing, and their release is the one draft change, as a frame gesture's end is; a
+/// button press, a submitted number and a reset are one draft change each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AngleChange {
+    Move(f64),
+    Set(f64),
+    Release,
+}
+
+/// The crop frame's declared angle field, read from its parameter: the spec its stepper steps,
+/// snaps and formats with, and the default a reset returns it to.
+struct AngleField {
+    parameter: String,
+    spec: NumberSpec,
+    default: f64,
 }
 
 impl Editor {
@@ -306,31 +303,6 @@ impl Editor {
                     }
                 }
             }
-            CropMessage::AngleText(text) => self.crop_angle = text,
-            // A drag on the angle's rail: the fraction becomes an angle on the rail's step and the
-            // draft follows it, rectangle and all, but a move logs nothing. The release is the one
-            // draft change, as a frame gesture's end is.
-            CropMessage::AngleRail(fraction) => {
-                let Some(draft) = self.crop_mut() else {
-                    return Task::none();
-                };
-                draft.set_angle(rail_angle(fraction));
-                self.crop_angle = number_text(draft.stage.angle);
-            }
-            CropMessage::AngleRailReleased => return self.crop_changed("crop_draft_changed"),
-            CropMessage::SubmitAngle => {
-                let Some(value) = self.typed_angle() else {
-                    return Task::none();
-                };
-                return self.set_crop_angle(value);
-            }
-            CropMessage::NudgeAngle(step) => {
-                if let Some(draft) = self.crop_mut() {
-                    draft.nudge_angle(step);
-                }
-                return self.crop_changed("crop_draft_changed");
-            }
-            CropMessage::ResetAngle => return self.set_crop_angle(0.0),
             CropMessage::Preset(index) => {
                 let Some(preset) = crop_frame(&self.modules)
                     .map(|frame| frame.presets())
@@ -518,28 +490,8 @@ impl Editor {
     }
 
     /// A control of the idle section changed: open the draft seeded from the committed crop, as
-    /// Start does, and apply the change to it at once. A change that leaves the committed crop as
-    /// it is opens nothing: the committed angle submitted again, a reset of a 0° angle or a rail
-    /// release with no drag. Nothing commits until Apply.
+    /// Start does, and apply the change to it at once. Nothing commits until Apply.
     fn idle_change(&mut self, message: CropMessage) -> Task<Message> {
-        if matches!(message, CropMessage::AngleRailReleased) {
-            return Task::none();
-        }
-        // The typed text is read before the draft opens, since opening it shows the committed
-        // angle in the box.
-        let typed = match message {
-            CropMessage::SubmitAngle => match self.typed_angle() {
-                Some(value) => Some(value),
-                None => return Task::none(),
-            },
-            _ => None,
-        };
-        let committed = self.committed_angle();
-        if typed == Some(committed)
-            || (matches!(message, CropMessage::ResetAngle) && committed == 0.0)
-        {
-            return Task::none();
-        }
         let start = self.crop_start();
         let Some(draft) = self.crop() else {
             return start;
@@ -553,24 +505,144 @@ impl Editor {
         {
             return start;
         }
-        let change = match typed {
-            Some(value) => self.set_crop_angle(value),
-            None => self.crop_update(message),
-        };
-        Task::batch([start, change])
+        Task::batch([start, self.crop_update(message)])
     }
 
-    /// The angle typed into the box. Text that is not a number keeps the box open for correcting,
-    /// with the reason; a number closes it.
-    fn typed_angle(&mut self) -> Option<f64> {
-        let Ok(value) = self.crop_angle.trim().parse::<f64>() else {
-            self.status = format!("Angle must be a number from {MIN_ANGLE} to {MAX_ANGLE} degrees");
-            return None;
+    /// Whether `action` is the crop frame's declared action, whose fields are the open frame's.
+    pub(crate) fn is_crop_action(&self, action: &str) -> bool {
+        crop_frame(&self.modules).is_some_and(|frame| frame.action == action)
+    }
+
+    /// The crop frame's angle field as its parameter declares it.
+    fn angle_field(&self) -> Option<AngleField> {
+        let frame = crop_frame(&self.modules)?;
+        let declared = fields::declared(&self.modules, frame.action, frame.angle)?;
+        Some(AngleField {
+            parameter: frame.angle.to_owned(),
+            spec: NumberSpec::of(declared)?,
+            default: fields::parse_field(declared, &fields::seed_text(declared))
+                .ok()
+                .and_then(|value| value.as_f64())?,
+        })
+    }
+
+    /// The angle the section shows: the open frame's, or the committed one while idle.
+    fn shown_angle(&self) -> f64 {
+        self.crop()
+            .map_or_else(|| self.committed_angle(), |draft| draft.stage.angle)
+    }
+
+    /// A message from a control of the crop frame's action: the angle's stepper, which sends what
+    /// every number control sends. Each becomes a change of the frame rather than a request of its
+    /// own, from the idle section too, where the change first opens the draft. The frame's other
+    /// fields have no control, so a message naming one changes nothing.
+    pub(crate) fn crop_control(&mut self, message: ControlMessage) -> Task<Message> {
+        let Some(angle) = self.angle_field() else {
+            return Task::none();
         };
-        if self.editing_angle() {
-            self.editing = None;
+        if message
+            .field()
+            .is_none_or(|(_, parameter)| parameter != angle.parameter)
+        {
+            return Task::none();
         }
-        Some(value)
+        let spec = angle.spec;
+        let change = match message {
+            ControlMessage::Field {
+                action,
+                parameter,
+                text,
+            } => {
+                self.fields.set(&action, &parameter, text);
+                self.editing = Some((action, parameter));
+                return Task::none();
+            }
+            // The box opens on the angle the section shows, whatever the text last held.
+            ControlMessage::EditValue { action, parameter } => {
+                let text = spec.format(self.shown_angle());
+                self.fields.set(&action, &parameter, text);
+                let id = field_id(&action, &parameter, None);
+                self.editing = Some((action, parameter));
+                return operation::focus(iced::widget::Id::from(id));
+            }
+            ControlMessage::Submit { .. } => match self.typed_angle() {
+                Some(value) => AngleChange::Set(value),
+                None => return Task::none(),
+            },
+            ControlMessage::Fraction { fraction, .. } => {
+                let Some(value) = spec.at_fraction(fraction).as_f64() else {
+                    return Task::none();
+                };
+                AngleChange::Move(value)
+            }
+            ControlMessage::KeyNudge {
+                direction,
+                shift,
+                option,
+                ..
+            } => AngleChange::Move(spec.nudged(self.shown_angle(), direction, shift, option)),
+            ControlMessage::Step { direction, .. } => {
+                AngleChange::Set(spec.nudged(self.shown_angle(), direction, false, false))
+            }
+            ControlMessage::Released { .. } => AngleChange::Release,
+            ControlMessage::ResetField { .. } => AngleChange::Set(angle.default),
+            _ => return Task::none(),
+        };
+        self.angle_change(change)
+    }
+
+    /// Apply one change of the angle's stepper to the open frame, or open the draft for it.
+    fn angle_change(&mut self, change: AngleChange) -> Task<Message> {
+        if self.crop().is_none() {
+            return self.idle_angle_change(change);
+        }
+        match change {
+            // The frame follows the angle, rectangle and all, but a move logs nothing.
+            AngleChange::Move(angle) => {
+                if let Some(draft) = self.crop_mut() {
+                    draft.set_angle(angle);
+                }
+                self.show_crop_angle();
+                Task::none()
+            }
+            AngleChange::Set(angle) => self.set_crop_angle(angle),
+            AngleChange::Release => self.crop_changed("crop_draft_changed"),
+        }
+    }
+
+    /// An angle change from the idle section opens the draft, as the section's other controls do,
+    /// and applies to it at once. A change that leaves the committed angle as it is opens nothing:
+    /// a release with no move, or a number, a step or a reset that lands on the committed angle.
+    fn idle_angle_change(&mut self, change: AngleChange) -> Task<Message> {
+        match change {
+            AngleChange::Release => return Task::none(),
+            AngleChange::Set(angle) if angle == self.committed_angle() => return Task::none(),
+            AngleChange::Move(_) | AngleChange::Set(_) => {}
+        }
+        let start = self.crop_start();
+        if self.crop().is_none() {
+            return start;
+        }
+        Task::batch([start, self.angle_change(change)])
+    }
+
+    /// The angle typed into the box, read as its parameter declares it. Text that is not an angle
+    /// in range keeps the box open for correcting, with the reason; an angle closes it.
+    fn typed_angle(&mut self) -> Option<f64> {
+        let frame = crop_frame(&self.modules)?;
+        let declared = fields::declared(&self.modules, frame.action, frame.angle)?;
+        match self.fields.get_value(frame.action, declared) {
+            Ok(value) => {
+                if self.editing_angle() {
+                    self.editing = None;
+                }
+                value.as_f64()
+            }
+            Err(reason) => {
+                self.status = reason;
+                None
+            }
+        }
     }
 
     /// Straighten the open frame to `degrees`: one draft change.
@@ -587,15 +659,23 @@ impl Editor {
         self.crop_row().map_or(0.0, |row| row.angle())
     }
 
-    /// The idle section's angle box opened for typing: it starts from the committed angle, since
-    /// the angle's text otherwise holds whatever the last draft left in it.
-    pub(crate) fn seed_idle_angle(&mut self) {
-        if self.crop().is_none() && self.editing_angle() {
-            self.crop_angle = number_text(self.committed_angle());
-        }
+    /// The angle's text follows the open frame, so a box open for typing shows the angle every
+    /// change leaves.
+    fn show_crop_angle(&mut self) {
+        let (Some(frame), Some(draft)) = (crop_frame(&self.modules), self.crop()) else {
+            return;
+        };
+        let Some(spec) =
+            fields::declared(&self.modules, frame.action, frame.angle).and_then(NumberSpec::of)
+        else {
+            return;
+        };
+        let (action, parameter) = (frame.action.to_owned(), frame.angle.to_owned());
+        let text = spec.format(draft.stage.angle);
+        self.fields.set(&action, &parameter, text);
     }
 
-    /// One draft change reached its end: the angle field follows the frame, the new state is
+    /// One draft change reached its end: the angle's text follows the frame, the new state is
     /// logged and the core draft is offered the payload's declared fields, which it sets now, on
     /// this thread, unless a round trip is in flight or the draft is conflicted. Pointer moves
     /// inside a gesture do not come through here.
@@ -607,11 +687,8 @@ impl Editor {
             return Task::none();
         };
         let fields = Value::Object(frame.params(&crop.frame.payload()).into_iter().collect());
-        let (angle, summary) = (
-            number_text(crop.frame.stage.angle),
-            crop.summary(&gesture.draft),
-        );
-        self.crop_angle = angle;
+        let summary = crop.summary(&gesture.draft);
+        self.show_crop_angle();
         self.event(event, summary);
         self.drive(Event::Offer(fields))
     }
@@ -740,8 +817,87 @@ mod tests {
             core_draft, crop_layer, described_at, entry, finish, open_crop, opened, refresh_for,
         },
     };
-    use crate::crop_draft::{ANGLE_STEP, Corner, Handle};
+    use crate::crop_draft::{Corner, Handle};
+    use crate::state::tools::{ControlModel, NumberControlStyle, SliderControl};
     use luxforge_core::{ClientSession, HistoryEntry, HistorySelection};
+
+    /// The crop angle's declared step: one press of its − or + button.
+    const STEP: f64 = 0.5;
+
+    /// One message of the angle's stepper, naming the crop action's declared angle as the widget
+    /// does.
+    fn angle_message(
+        editor: &Editor,
+        message: impl FnOnce(String, String) -> ControlMessage,
+    ) -> Message {
+        let frame = crop_frame(&editor.modules).expect("a crop frame");
+        Message::Control(message(frame.action.to_owned(), frame.angle.to_owned()))
+    }
+
+    /// Type `text` into the angle's box and press Enter.
+    fn submit_angle(editor: &mut Editor, text: &str) {
+        let typed = angle_message(editor, |action, parameter| ControlMessage::Field {
+            action,
+            parameter,
+            text: text.to_owned(),
+        });
+        let _ = editor.update(typed);
+        let enter = angle_message(editor, |action, parameter| ControlMessage::Submit {
+            action,
+            parameter: Some(parameter),
+        });
+        let _ = editor.update(enter);
+    }
+
+    /// One press of the angle's − (`-1`) or + (`1`) button.
+    fn step_angle(editor: &mut Editor, direction: i8) {
+        let press = angle_message(editor, |action, parameter| ControlMessage::Step {
+            action,
+            parameter,
+            direction,
+        });
+        let _ = editor.update(press);
+    }
+
+    /// A drag on the angle's rail through `fractions`, not yet released.
+    fn drag_angle(editor: &mut Editor, fractions: &[f64]) {
+        for &fraction in fractions {
+            let moved = angle_message(editor, |action, parameter| ControlMessage::Fraction {
+                action,
+                parameter,
+                fraction,
+            });
+            let _ = editor.update(moved);
+        }
+    }
+
+    /// The end of a drag on the angle's rail.
+    fn release_angle(editor: &mut Editor) {
+        let released = angle_message(editor, |action, parameter| ControlMessage::Released {
+            action,
+            parameter,
+        });
+        let _ = editor.update(released);
+    }
+
+    /// The crop section's angle control as the panel draws it.
+    fn angle_control(editor: &Editor) -> SliderControl {
+        editor
+            .workspace
+            .tools
+            .all()
+            .flat_map(|section| section.controls.iter())
+            .find_map(|control| match control {
+                ControlModel::CropFrame(model) => model.angle.clone(),
+                _ => None,
+            })
+            .expect("the crop section's angle")
+    }
+
+    /// The angle the crop section's box shows, as a captured frame records it.
+    fn section_angle(editor: &Editor) -> Value {
+        editor.snapshot()["crop"]["section"]["angle"].clone()
+    }
 
     /// The stage the rows of [`opened`] give a crop with no geometry ahead of it.
     fn stage() -> CropStage {
@@ -804,7 +960,7 @@ mod tests {
             payload.output_rect(&reopened).expect("a valid payload"),
             "reopening shows exactly the rectangle the payload committed"
         );
-        assert_eq!(editor.crop_angle, "7");
+        assert_eq!(section_angle(&editor), json!("7.0"));
         assert_eq!(
             editor.crop_stage(),
             Some(StageView::Rendering {
@@ -833,15 +989,22 @@ mod tests {
         let _ = editor.update(Message::Crop(CropMessage::Start));
         open_crop(&mut editor);
         let log = crate::app::testing::attach_log(&mut editor);
-        // 2.4° is 47.4 of the rail's 90°; a fraction a hair off it snaps to the rail's 0.05° step.
-        for fraction in [0.6, 0.5 + 2.4 / 90.0 + 1e-4] {
-            let _ = editor.update(Message::Crop(CropMessage::AngleRail(fraction)));
-        }
+        // 2.4° is 47.4 of the rail's 90°; a fraction a hair off it snaps to the angle's declared
+        // 0.05° fine step.
+        drag_angle(&mut editor, &[0.6, 0.5 + 2.4 / 90.0 + 1e-4]);
         let draft = editor.crop().expect("the draft stays open");
         assert_eq!(draft.stage.angle, 2.4);
-        assert_eq!(editor.crop_angle, "2.4");
         let rect = draft.rect;
-        let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
+        // The generic stepper with its rail, reading 2.4°, its handle live for the open draft.
+        let control = angle_control(&editor);
+        assert_eq!(control.style, NumberControlStyle::Stepper { rail: true });
+        assert_eq!(
+            (control.display.as_str(), control.unit.as_deref()),
+            ("2.4", Some("\u{b0}"))
+        );
+        assert_eq!((control.value, control.dragging), (2.4, true));
+        assert_eq!((control.spec.step, control.spec.fine_step), (0.5, 0.05));
+        release_angle(&mut editor);
         assert_eq!(editor.crop().expect("still drafting").rect, rect);
         assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
         let changes: Vec<Value> = crate::app::testing::logged(&mut editor, &log)
@@ -853,9 +1016,10 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// A double-click on the angle's rail puts the angle back to 0 and sends it, as a nudge sends
-    /// its angle: the frame, the angle's box and the client's core draft all read 0, and exactly
-    /// one draft change is logged and set on the core draft. Nothing commits.
+    /// A double-click on the angle's rail sends the generic `ResetField`, which puts the angle back
+    /// to its declared default of 0 and sends it, as a button press sends its angle: the frame,
+    /// the angle's box and the client's core draft all read 0, and exactly one draft change is
+    /// logged and set on the core draft. Nothing commits.
     #[test]
     fn a_double_click_on_the_angle_rail_resets_the_angle_as_one_change() {
         let catalog = std::env::temp_dir().join(format!(
@@ -877,15 +1041,19 @@ mod tests {
             crate::app::testing::run_round(&mut editor),
             Some(Round::Begin)
         );
-        let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
-        assert_eq!(editor.crop().expect("a frame").stage.angle, ANGLE_STEP);
+        step_angle(&mut editor, 1);
+        assert_eq!(editor.crop().expect("a frame").stage.angle, STEP);
         let before = draft();
-        assert_eq!(before["fields"]["angle"], json!(ANGLE_STEP));
+        assert_eq!(before["fields"]["angle"], json!(STEP));
 
         let log = crate::app::testing::attach_log(&mut editor);
-        let _ = editor.update(crate::view::tools_panel::angle_reset());
+        let reset = angle_message(&editor, |action, parameter| ControlMessage::ResetField {
+            action,
+            parameter,
+        });
+        let _ = editor.update(reset);
         assert_eq!(editor.crop().expect("still drafting").stage.angle, 0.0);
-        assert_eq!(editor.crop_angle, "0");
+        assert_eq!(section_angle(&editor), json!("0.0"));
         let after = draft();
         assert_eq!(after["fields"]["angle"], json!(0.0));
         assert_eq!(
@@ -925,11 +1093,18 @@ mod tests {
             parameter: key.1.clone(),
         }));
         assert!(editor.editing_angle());
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("two".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        submit_angle(&mut editor, "two");
         assert!(editor.editing_angle(), "invalid text stays open");
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("3.5".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        // The box says why, as every number field does, and so does the status line.
+        assert_eq!(
+            angle_control(&editor).invalid.as_deref(),
+            Some("angle must be a number from -45 to 45")
+        );
+        assert_eq!(editor.status, "angle must be a number from -45 to 45");
+        submit_angle(&mut editor, "46");
+        assert!(editor.editing_angle(), "an angle out of range stays open");
+        assert_eq!(editor.crop().expect("a draft").stage.angle, 0.0);
+        submit_angle(&mut editor, "3.5");
         assert!(!editor.editing_angle());
         assert_eq!(editor.crop().expect("a draft").stage.angle, 3.5);
         finish(editor, catalog);
@@ -998,19 +1173,35 @@ mod tests {
         let dragged = editor.crop().expect("a draft").rect;
         assert_eq!((dragged.x, dragged.y), (80.0, 60.0));
 
-        // The angle field and its nudges.
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("11.5".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        // The angle's stepper: its box, its buttons and the arrow keys, each held key a live move
+        // that its release makes one change. Shift moves ten steps and Option the fine step.
+        submit_angle(&mut editor, "11.5");
         assert_eq!(editor.crop().expect("a draft").stage.angle, 11.5);
-        let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(-ANGLE_STEP)));
+        step_angle(&mut editor, -1);
         assert_eq!(editor.crop().expect("a draft").stage.angle, 11.0);
-        assert_eq!(editor.crop_angle, "11");
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("sideways".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
-        assert_eq!(editor.crop().expect("a draft").stage.angle, 11.0);
-        assert!(editor.status.contains("Angle must be"), "{}", editor.status);
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("0".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        assert_eq!(section_angle(&editor), json!("11.0"));
+        for (shift, option, expected) in [(true, false, 6.0), (false, true, 5.95)] {
+            let key = angle_message(&editor, |action, parameter| ControlMessage::KeyNudge {
+                action,
+                parameter,
+                direction: -1,
+                shift,
+                option,
+            });
+            let _ = editor.update(key);
+            release_angle(&mut editor);
+            let angle = editor.crop().expect("a draft").stage.angle;
+            assert!((angle - expected).abs() < 1e-9, "{angle} is not {expected}");
+        }
+        assert_eq!(section_angle(&editor), json!("5.95"));
+        submit_angle(&mut editor, "sideways");
+        assert!((editor.crop().expect("a draft").stage.angle - 5.95).abs() < 1e-9);
+        assert!(
+            editor.status.contains("angle must be a number"),
+            "{}",
+            editor.status
+        );
+        submit_angle(&mut editor, "0");
 
         // Ratio presets, swap, lock and the custom extents, all by index into the declared list.
         let _ = editor.update(Message::Crop(CropMessage::Preset(option("16:9"))));
@@ -1060,7 +1251,7 @@ mod tests {
         // The idle section is back, reading the stack the draft never committed to.
         assert_eq!(
             summary["section"],
-            json!({"drafting":false,"enabled":true,"chosen":"Free","locked":false,"can_swap":false,"angle":"0","rail":0.0,"guide":false})
+            json!({"drafting":false,"enabled":true,"chosen":"Free","locked":false,"can_swap":false,"angle":"0.0","rail":0.0,"guide":false})
         );
         finish(editor, catalog);
     }
@@ -1161,8 +1352,7 @@ mod tests {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 1);
         let _ = editor.update(Message::Crop(CropMessage::Start));
         open_crop(&mut editor);
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("6".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        submit_angle(&mut editor, "6");
         let composed = editor.crop().expect("a draft").rect;
 
         // Somebody else committed: the draft survives and says so, and Apply is refused.
@@ -1250,7 +1440,7 @@ mod tests {
             crate::app::testing::run_round(&mut editor),
             Some(Round::Begin)
         );
-        let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
+        step_angle(&mut editor, 1);
         let payload = editor.crop().expect("an open frame").payload();
         let held = session(client);
         assert_eq!(held["draft"]["action"], json!("crop"));
@@ -1760,19 +1950,17 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
         let log = crate::app::testing::attach_log(&mut editor);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        assert_eq!(editor.crop_angle, "0", "the committed angle");
+        assert_eq!(section_angle(&editor), json!("0.0"), "the committed angle");
         let _ = editor.update(Message::Crop(CropMessage::Preset(option("4:3"))));
-        let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
+        step_angle(&mut editor, 1);
         assert_eq!(editor.crop().expect("an open frame").stage.angle, 0.5);
-        assert_eq!(editor.crop_angle, "0.5");
-        for fraction in [0.52, 0.55, 0.5 + 2.4 / 90.0 + 1e-4] {
-            let _ = editor.update(Message::Crop(CropMessage::AngleRail(fraction)));
-        }
-        let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
+        assert_eq!(section_angle(&editor), json!("0.5"));
+        drag_angle(&mut editor, &[0.52, 0.55, 0.5 + 2.4 / 90.0 + 1e-4]);
+        release_angle(&mut editor);
         let draft = editor.crop().expect("an open frame");
         assert_eq!(draft.preset, "4:3");
         assert_eq!(draft.stage.angle, 2.4, "the rail's last position");
-        assert_eq!(editor.crop_angle, "2.4");
+        assert_eq!(section_angle(&editor), json!("2.4"));
         assert!(
             matches!(editor.crop_stage(), Some(StageView::Rendering { .. })),
             "the stage is still on its way"
@@ -1824,27 +2012,39 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
         let frame = crop_frame(&editor.modules).expect("a crop frame");
         let key = (frame.action.to_owned(), frame.angle.to_owned());
-        editor.crop_angle = "31".into();
+        editor.fields.set(&key.0, &key.1, "31".into());
         let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: key.0.clone(),
             parameter: key.1.clone(),
         }));
         assert_eq!(
-            editor.crop_angle, "0",
+            editor.fields.get(&key.0, &key.1),
+            Some("0.0"),
             "the idle box opens at the committed angle"
         );
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        let _ = editor.update(Message::Control(ControlMessage::Submit {
+            action: key.0.clone(),
+            parameter: Some(key.1.clone()),
+        }));
         assert!(editor.gesture.is_none() && !editor.editing_angle());
         let _ = editor.update(Message::Control(ControlMessage::EditValue {
+            action: key.0.clone(),
+            parameter: key.1.clone(),
+        }));
+        submit_angle(&mut editor, "level");
+        assert!(editor.gesture.is_none() && editor.editing_angle());
+        assert!(
+            editor.status.contains("angle must be a number"),
+            "{}",
+            editor.status
+        );
+        // A release with no drag, and a double-click reset of an angle already at its default of
+        // 0, change nothing, so nothing opens: the reset needs no case of its own.
+        release_angle(&mut editor);
+        let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: key.0,
             parameter: key.1,
         }));
-        let _ = editor.update(Message::Crop(CropMessage::AngleText("level".into())));
-        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
-        assert!(editor.gesture.is_none() && editor.editing_angle());
-        assert!(editor.status.contains("Angle must be"), "{}", editor.status);
-        let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
-        let _ = editor.update(Message::Crop(CropMessage::ResetAngle));
         let _ = editor.update(Message::Crop(CropMessage::Guide(false)));
         assert!(editor.gesture.is_none());
 

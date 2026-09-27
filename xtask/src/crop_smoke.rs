@@ -20,7 +20,8 @@ const BASIC_MODULE: &str = "luxforge.basic";
 const CROP_MODULE: &str = "luxforge.crop";
 /// The straightening angle the scripted `edit.crop` commits.
 const ANGLE: f64 = 7.0;
-/// How much one scripted nudge adds to it before Apply.
+/// How much one scripted press of the angle's + button adds to it before Apply: the angle's
+/// declared step.
 const NUDGE: f64 = 0.5;
 
 fn stage(angle: f64) -> CropStage {
@@ -136,7 +137,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel)),
         // A second draft, one nudge and Apply, which commits once to the same layer.
         uncommitted("restarted", script::Step::Draft(DraftStep::Start)),
-        uncommitted("nudged", script::Step::Draft(DraftStep::Nudge(NUDGE))),
+        uncommitted("nudged", script::Step::Draft(DraftStep::Nudge(1))),
         Step::new("applied", DraftStep::Apply)
             .commits(1)
             .label("Crop 7.5\u{b0}")
@@ -563,7 +564,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     record(
         fit,
         "the crop section reading the fit as 16:9",
-        idle_section(fit, "16:9", "0")?,
+        idle_section(fit, "16:9", "0.0")?,
     );
 
     // (b) An off-centre straightened rectangle updates that same layer in place, which the plan
@@ -574,7 +575,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     record(
         straightened,
         "the crop section reading the straightened crop at 7 degrees",
-        idle_section(straightened, straightened_reads, "7")?,
+        idle_section(straightened, straightened_reads, "7.0")?,
     );
     ensure(
         committed_payload.angle == ANGLE
@@ -656,7 +657,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     record(
         cancelled,
         "the committed crop again after Cancel",
-        json!({"pixels":shows_committed(cancelled, false)?,"section":idle_section(cancelled, straightened_reads, "7")?}),
+        json!({"pixels":shows_committed(cancelled, false)?,"section":idle_section(cancelled, straightened_reads, "7.0")?}),
     );
 
     // (d) A second draft, one nudge and Apply, which the plan holds as one commit to the same
@@ -733,7 +734,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
     record(
         expanded,
         "the idle section on an uncropped stack: Free at 0 degrees",
-        idle_section(expanded, "Free", "0")?,
+        idle_section(expanded, "Free", "0.0")?,
     );
     // A neutral draft on a stack without a crop layer: the whole stage.
     let draft = &started["state"]["crop"];
