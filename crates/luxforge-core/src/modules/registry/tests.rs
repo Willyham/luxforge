@@ -1,10 +1,10 @@
 //! Test modules and stacks the registry's tests share, some of which other tests in the crate use
 //! too, and the registration tests.
 use super::*;
+use crate::modules::raw::RAW_EFFECT;
 use crate::{
     ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, Component, ComponentMode, EFFECT_FORMAT,
-    EffectDescriptor, Layer, LayerId, Mask, ORIENTATION_EFFECT, PIXEL_EFFECT, RAW_EFFECT, Recipe,
-    SourceImage,
+    EffectDescriptor, Layer, LayerId, Mask, ORIENTATION_EFFECT, PIXEL_EFFECT, Recipe, SourceImage,
     modules::{ActionInput, ActionPlan, Availability, EffectStage, ModuleDescriptor, StageContext},
 };
 use serde_json::{Map, Value, json};
@@ -26,6 +26,7 @@ impl TestModule {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             actions: vec![ActionDescriptor {
                 id: action.into(),
@@ -125,6 +126,7 @@ impl PatchModule {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             actions: vec![ActionDescriptor {
                 id: PATCH_ACTION.into(),
@@ -277,6 +279,7 @@ impl StageModule {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             actions: vec![ActionDescriptor {
                 id: action.into(),
@@ -413,6 +416,7 @@ impl HeldModule {
                     order: 0,
                     artifacts: false,
                     single: false,
+                    sources: Vec::new(),
                     maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
@@ -599,6 +603,106 @@ fn a_module_that_declares_no_effects_registers() {
         .expect("its action is dispatched");
     assert_eq!(module.descriptor().id, "test.effectless");
     assert!(registry.effect("test.unused").is_none());
+}
+
+/// An effect's `sources` names the kinds a layer of it may exist on, by the tags a photo's source
+/// reports, and none is every kind. A module applies to a kind when any of its effects does or it
+/// declares none; the built-in RAW development alone is restricted, to RAW. A kind listed twice
+/// and a kind no source reports are refused.
+#[test]
+fn registry_resolves_applicability_from_the_declared_sources() {
+    use crate::{SourceKind, SourceTag};
+    // The tags are the ones a source serializes in `kind`; a RAW source's needs its camera
+    // interpretation, so its spelling is the variant's, `raw`.
+    assert_eq!(
+        serde_json::to_value(SourceKind::Jpeg).unwrap()["kind"],
+        serde_json::to_value(SourceKind::Jpeg.tag()).unwrap()
+    );
+    assert_eq!(serde_json::to_value(SourceTag::Raw).unwrap(), json!("raw"));
+    let module = |effects: Value| {
+        ModuleDescriptor::parse(&json!({
+            "id": "test.kinds", "title": "Kinds", "effects": effects, "actions": [],
+            "controls": [], "availability": {"kind": "available"},
+        }))
+    };
+    let effect = |id: &str, sources: Value| {
+        let mut effect = json!({"id": id, "format": 1, "stage": "color"});
+        if !sources.is_null() {
+            effect["sources"] = sources;
+        }
+        effect
+    };
+    for (case, effects, jpeg, raw) in [
+        ("no effect", json!([]), true, true),
+        (
+            "an undeclared effect",
+            json!([effect("test.a", Value::Null)]),
+            true,
+            true,
+        ),
+        (
+            "an empty list",
+            json!([effect("test.a", json!([]))]),
+            true,
+            true,
+        ),
+        (
+            "a RAW effect",
+            json!([effect("test.a", json!(["raw"]))]),
+            false,
+            true,
+        ),
+        (
+            "a JPEG effect beside a RAW one",
+            json!([
+                effect("test.a", json!(["raw"])),
+                effect("test.b", json!(["jpeg"]))
+            ]),
+            true,
+            true,
+        ),
+        (
+            "both kinds listed",
+            json!([effect("test.a", json!(["jpeg", "raw"]))]),
+            true,
+            true,
+        ),
+    ] {
+        let descriptor = module(effects).unwrap_or_else(|error| panic!("{case}: {error:?}"));
+        assert_eq!(descriptor.applies_to(SourceTag::Jpeg), jpeg, "{case}");
+        assert_eq!(descriptor.applies_to(SourceTag::Raw), raw, "{case}");
+        let refusal = descriptor.check_applies_to(SourceTag::Jpeg);
+        if jpeg {
+            refusal.unwrap();
+        } else {
+            let error = refusal.unwrap_err();
+            assert_eq!(error.kind, crate::ErrorKind::Validation);
+            assert_eq!(error.detail, "Kinds does not apply to a JPEG photo");
+        }
+    }
+    for (case, sources, fragment) in [
+        (
+            "a repeated kind",
+            json!(["raw", "raw"]),
+            "lists source kind RAW twice",
+        ),
+        ("an unknown kind", json!(["png"]), "unknown variant"),
+    ] {
+        let error = module(json!([effect("test.a", sources)])).unwrap_err();
+        assert!(error.detail.contains(fragment), "{case}: {}", error.detail);
+    }
+
+    let registry = ModuleRegistry::builtin();
+    for module in registry.descriptors() {
+        for effect in &module.effects {
+            let expected: &[SourceTag] = if effect.id == RAW_EFFECT {
+                &[SourceTag::Raw]
+            } else {
+                &[]
+            };
+            assert_eq!(effect.sources, expected, "{}", effect.id);
+        }
+    }
 }
 
 /// A module whose canvas claims one mode-strip letter.

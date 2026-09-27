@@ -85,6 +85,7 @@ impl FieldPatch for Presence {
                 maskable: true,
                 artifacts: false,
                 single: true,
+                sources: Vec::new(),
             },
             set: ActionText {
                 id: SET_PRESENCE,

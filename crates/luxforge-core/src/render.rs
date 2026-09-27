@@ -2402,6 +2402,7 @@ mod tests {
                     maskable: false,
                     artifacts: false,
                     single: false,
+                    sources: Vec::new(),
                 })
                 .collect(),
                 actions: Vec::new(),
@@ -3925,6 +3926,7 @@ mod tests {
                         maskable: true,
                         artifacts: false,
                         single: false,
+                        sources: Vec::new(),
                     }],
                     actions: Vec::new(),
                     queries: Vec::new(),

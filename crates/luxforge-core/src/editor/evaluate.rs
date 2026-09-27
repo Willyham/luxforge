@@ -190,7 +190,7 @@ impl EditorService {
     ) -> Result<PreviewSource, Error> {
         match prepared {
             PreparedSource::Jpeg(image) => {
-                validate_source_recipe(asset, recipe)?;
+                validate_source_recipe(&self.registry, asset, recipe)?;
                 Ok(PreviewSource::Jpeg(image))
             }
             PreparedSource::Raw(raw) => {
@@ -539,7 +539,7 @@ impl EditorService {
     /// answers without the original.
     fn bound_entry(&self, state: &EditorState, entry_id: &EntryId) -> Result<HistoryEntry, Error> {
         let mut entry = self.entry(&state.asset.id, entry_id)?;
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
         let bound = self.bind_artifacts(&mut entry.snapshot.recipe);
         let stack = Evaluated::exactly(&state.asset, &entry.id, &entry.snapshot.recipe);
         self.needing(stack, bound)?;

@@ -160,6 +160,7 @@ impl ShrinkModule {
             maskable: false,
             artifacts: false,
             single: false,
+            sources: Vec::new(),
         };
         Self(ModuleDescriptor {
             id: "test.shrink".into(),

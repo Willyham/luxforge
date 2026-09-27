@@ -200,6 +200,7 @@ impl FieldPatch for Mixer {
                 maskable: true,
                 artifacts: false,
                 single: true,
+                sources: Vec::new(),
             },
             set: ActionText {
                 id: SET_MIXER,

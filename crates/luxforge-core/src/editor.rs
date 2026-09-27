@@ -54,6 +54,38 @@ pub enum SourceKind {
     Raw { metadata: RawInterpretation },
 }
 
+impl SourceKind {
+    /// The kind's tag, exactly as this value serializes it in `kind`.
+    pub fn tag(&self) -> SourceTag {
+        match self {
+            Self::Jpeg => SourceTag::Jpeg,
+            Self::Raw { .. } => SourceTag::Raw,
+        }
+    }
+}
+
+/// A source kind without its interpretation: the `kind` tag `asset.state` reports for a photo's
+/// source, and what an effect's declared `sources` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceTag {
+    Jpeg,
+    Raw,
+}
+
+impl SourceTag {
+    /// Every source kind, in the order the tags are documented.
+    pub const ALL: [Self; 2] = [Self::Jpeg, Self::Raw];
+
+    /// The kind as a sentence names it: `a JPEG photo`, `a RAW photo`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Raw => "RAW",
+        }
+    }
+}
+
 /// What reads cost the catalog, counted per thread, for the tests that prove a cached read decodes
 /// and hashes nothing: every JSON decode of a stored value and every stroke address computed.
 #[cfg(test)]

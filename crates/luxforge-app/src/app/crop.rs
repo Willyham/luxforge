@@ -1411,6 +1411,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             ..luxforge_core::ModuleDescriptor::default()
         };

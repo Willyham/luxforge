@@ -290,6 +290,148 @@ fn independent_references(root: &Path) -> Result<usize> {
     Ok(checked)
 }
 
+/// The RAW development's identity belongs to the RAW module alone: every other surface decides
+/// whether a module applies to a photo from the source kinds its effects declare, and the host's
+/// RAW source reads its layer through the module's own helper. So no product code outside the
+/// module names the module's identity or its effect constant; only the module and test code may.
+/// The harness under `xtask/` drives the module as an API client does and is not product code.
+const RAW_IDENTITY: [&str; 2] = ["\"luxforge.raw\"", "RAW_EFFECT"];
+
+/// The RAW module's own files: `modules/raw.rs` and everything under `modules/raw/`.
+const RAW_MODULE: &str = "crates/luxforge-core/src/modules/raw";
+
+/// Whether `line` holds `token` as a whole token: an identifier token must neither start nor end
+/// inside a longer identifier, so `RAW_EFFECT` is not found in `RAW_EFFECTS` or `MY_RAW_EFFECT`.
+fn holds_whole_token(line: &str, token: &str) -> bool {
+    let identifier = |c: char| c.is_alphanumeric() || c == '_';
+    if !token.starts_with(identifier) {
+        return line.contains(token);
+    }
+    line.match_indices(token).any(|(at, _)| {
+        !line[..at].ends_with(identifier) && !line[at + token.len()..].starts_with(identifier)
+    })
+}
+
+/// Whether `path` is test code by its name alone: a `tests` directory, `tests.rs` or `*_tests.rs`.
+fn test_file(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str() == "tests")
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "tests.rs" || name.ends_with("_tests.rs"))
+}
+
+/// The lines of `text` outside `#[cfg(test)]` items, numbered from one, and the names of the
+/// out-of-line modules it declares under `#[cfg(test)]` (`#[cfg(test)] mod testing;`). An item is
+/// skipped from its attribute to the line that closes its braces, or to its `;` when it opens
+/// none. Comment lines are skipped too: they name nothing a build can reach.
+fn production_lines(text: &str) -> (Vec<(usize, &str)>, Vec<&str>) {
+    let mut lines = Vec::new();
+    let mut test_modules = Vec::new();
+    // `Some((depth, opened))` while inside a test item.
+    let mut skipping: Option<(i64, bool)> = None;
+    for (index, line) in text.lines().enumerate() {
+        let mut trimmed = line.trim();
+        if skipping.is_none() {
+            let Some(rest) = trimmed.strip_prefix("#[cfg(test)]") else {
+                if !trimmed.starts_with("//") {
+                    lines.push((index + 1, line));
+                }
+                continue;
+            };
+            skipping = Some((0, false));
+            trimmed = rest.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+        }
+        let Some((depth, opened)) = skipping.as_mut() else {
+            continue;
+        };
+        if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("//") {
+            continue;
+        }
+        if !*opened
+            && let Some(name) = trimmed
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub ")
+                .strip_prefix("mod ")
+                .and_then(|rest| rest.strip_suffix(';'))
+        {
+            test_modules.push(name.trim());
+        }
+        for c in trimmed.chars() {
+            match c {
+                '{' => {
+                    *depth += 1;
+                    *opened = true;
+                }
+                '}' => *depth -= 1,
+                _ => {}
+            }
+        }
+        if (*opened && *depth <= 0) || (!*opened && trimmed.ends_with(';')) {
+            skipping = None;
+        }
+    }
+    (lines, test_modules)
+}
+
+/// The files an out-of-line module `name` declared in `file` may live in, in either spelling.
+fn module_files(file: &Path, name: &str) -> [PathBuf; 2] {
+    let parent = file.parent().unwrap_or(Path::new(""));
+    let dir = match file.file_stem().and_then(|stem| stem.to_str()) {
+        Some("mod" | "lib" | "main") | None => parent.to_path_buf(),
+        Some(stem) => parent.join(stem),
+    };
+    [
+        dir.join(format!("{name}.rs")),
+        dir.join(name).join("mod.rs"),
+    ]
+}
+
+/// Fail on the first product line outside the RAW module that names its identity, naming the file,
+/// the line and the token; answer how many product files were read.
+fn raw_identity(root: &Path) -> Result<usize> {
+    let module = root.join(RAW_MODULE);
+    let sources: Vec<PathBuf> = files(&root.join("crates"))?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect();
+    let texts = sources
+        .iter()
+        .map(fs::read_to_string)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
+    let mut test_only = BTreeSet::new();
+    for (path, (_, modules)) in sources.iter().zip(&scanned) {
+        for name in modules {
+            test_only.extend(module_files(path, name));
+        }
+    }
+    let mut checked = 0;
+    for (path, (lines, _)) in sources.iter().zip(&scanned) {
+        let owned = path.with_extension("") == module || path.starts_with(&module);
+        if owned || test_file(path) || test_only.contains(path) {
+            continue;
+        }
+        for (number, line) in lines {
+            for token in RAW_IDENTITY {
+                ensure(
+                    !holds_whole_token(line, token),
+                    format!(
+                        "{}:{number}: only the RAW module ({RAW_MODULE}*) and tests may name \
+                         {token}; decide applicability from the declared sources",
+                        path.display()
+                    ),
+                )?;
+            }
+        }
+        checked += 1;
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -356,6 +498,10 @@ pub fn check(root: &Path) -> Result {
     println!(
         "PASS independent references ({} dependency lines, no workspace crate)",
         independent_references(root)?
+    );
+    println!(
+        "PASS RAW identity named only by its module ({} product files)",
+        raw_identity(root)?
     );
     Ok(())
 }
@@ -487,6 +633,86 @@ mod tests {
                 "{what}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_raw_module_and_tests_name_its_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        let state = tmp.path().join("crates/luxforge-app/src/state");
+        for dir in [
+            core.join("modules/raw"),
+            core.join("editor"),
+            tmp.path().join("crates/luxforge-core/tests"),
+            state.clone(),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        // The module, its own directory, test files, test items and test-only modules may name it,
+        // and a comment or a longer identifier is not a name.
+        for (file, text) in [
+            (
+                core.join("modules/raw.rs"),
+                "pub const RAW_EFFECT: &str = \"luxforge.raw\";\n",
+            ),
+            (
+                core.join("modules/raw/white_balance.rs"),
+                "use super::RAW_EFFECT;\n",
+            ),
+            (core.join("modules/lookups_tests.rs"), "RAW_EFFECT\n"),
+            (
+                tmp.path().join("crates/luxforge-core/tests/raw.rs"),
+                "\"luxforge.raw\"\n",
+            ),
+            (
+                state.join("mod.rs"),
+                "#[cfg(test)]\nmod testing;\n#[cfg(test)] mod fixtures;\nlet x = 1;\n\
+                 #[cfg(test)]\nmod tests {\n    fn raw() {\n        let id = \"luxforge.raw\";\n    }\n}\n\
+                 /// Never `RAW_EFFECT` by name.\nlet MY_RAW_EFFECTS = 2;\n",
+            ),
+            (state.join("testing.rs"), "let id = \"luxforge.raw\";\n"),
+            (state.join("fixtures.rs"), "let id = \"luxforge.raw\";\n"),
+            (
+                core.join("editor/source.rs"),
+                "#[cfg(test)]\nuse crate::RAW_EFFECT;\nfn f() {}\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(raw_identity(tmp.path()).unwrap(), 2);
+        // Anywhere else in product code either spelling is refused, after a test item too.
+        for (file, text) in [
+            (
+                core.join("editor/source.rs"),
+                "#[cfg(test)]\nfn t() {\n}\nfn f(l: &Layer) -> bool { l.effect_id == crate::RAW_EFFECT }\n",
+            ),
+            (
+                state.join("canvas.rs"),
+                "let raw = mode != \"luxforge.raw\";\n",
+            ),
+            (
+                core.join("modules/mod.rs"),
+                "pub use raw::{RAW_EFFECT, RawModule};\n",
+            ),
+            (core.join("modules/rawish.rs"), "RAW_EFFECT\n"),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = raw_identity(tmp.path())
+                .err()
+                .unwrap_or_else(|| panic!("{} was accepted", file.display()))
+                .to_string();
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                error.contains(&format!("{name}:")) && error.contains("only the RAW module"),
+                "{error}"
+            );
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(raw_identity(tmp.path()).unwrap(), 2);
     }
 
     fn minimal_plan(id: &str) -> Value {

@@ -93,6 +93,7 @@ impl FieldPatch for Vignette {
                 maskable: false,
                 artifacts: false,
                 single: true,
+                sources: Vec::new(),
             },
             set: ActionText {
                 id: SET_VIGNETTE,

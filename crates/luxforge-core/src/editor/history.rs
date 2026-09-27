@@ -104,7 +104,7 @@ impl EditorService {
     /// is written. `O(layers + components + strokes)`; it rasterizes nothing.
     pub(super) fn admit(&self, asset: &AssetRecord, recipe: &mut Recipe) -> Result<(), Error> {
         self.registry.validate_recipe(recipe)?;
-        validate_source_recipe(asset, recipe)?;
+        validate_source_recipe(&self.registry, asset, recipe)?;
         artifact_store::recorded_artifacts(&self.connection, &self.artifact_root, recipe)?;
         self.bind_artifacts(recipe)?;
         self.registry.compile(asset.width, asset.height, recipe)?;
