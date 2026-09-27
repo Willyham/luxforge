@@ -1,4 +1,5 @@
-//! Baseline quality-90 JPEG with an embedded sRGB ICC profile.
+//! Baseline quality-90 JPEG with an embedded sRGB ICC profile, written by libjpeg-turbo through the
+//! `mozjpeg` crate.
 //!
 //! Contract (`docs/design/export.md#behavior`, step 3):
 //! - `encode_jpeg(out, frame, exif, progress, cancel)` encodes the RGBA8 sRGB `frame` (alpha is
@@ -7,72 +8,67 @@
 //!   output into `out` without building the whole file in memory. `progress` receives the encoded
 //!   fraction in `0..=1`, at most about once per 1% of rows; `cancel` is checked about as often, and
 //!   a cancelled encode returns its error and writes nothing more.
+//! - The file is baseline (SOF0) with full-resolution chroma (4:4:4 at every component's 1×1
+//!   sampling), one interleaved scan and the standard Huffman tables: libjpeg's own fastest
+//!   settings, accepted in `docs/design/export.md#decisions`. One interleaved scan also keeps an
+//!   export clear of the bundled `zune-jpeg` 0.5.15's mis-decode of non-interleaved scans.
+//! - libjpeg reports a fatal error by unwinding. Every call into it runs under `catch_unwind`, so a
+//!   failure is an error, never an abort, and the compressor is destroyed cleanly on every path.
 //! - `srgb_profile()` is the one embedded profile, which `crate::profile::check` accepts.
 
 use crate::{Error, Raster};
-use image::{GenericImageView, ImageEncoder, ImageError, Rgb, codecs::jpeg::JpegEncoder};
+use mozjpeg::{ColorSpace, Compress, Marker};
 use std::{
-    cell::{Cell, RefCell},
-    io::{self, BufWriter, Write},
+    any::Any,
+    cell::RefCell,
+    io::{self, Write},
+    panic::{self, AssertUnwindSafe},
     sync::OnceLock,
 };
 
-/// Wraps the caller's writer so a cancellation recorded by [`FrameView`] fails the next write with
-/// an I/O error, since `GenericImageView::get_pixel` itself cannot return one.
-struct CancelableWriter<'a, W> {
+/// Rows handed to libjpeg per call: its largest MCU height, so a call ends on whole MCU rows and
+/// progress and cancellation are checked between calls without copying the frame.
+const STRIP_ROWS: usize = 16;
+
+/// The most one APPn marker carries after its length field.
+const MAX_MARKER_PAYLOAD: usize = 65533;
+
+const EXIF_HEADER: &[u8] = b"Exif\0\0";
+
+/// Passes writes through and keeps the first I/O error, which libjpeg itself only reports as its
+/// own fatal write error, so the encode can answer with the file system's reason.
+struct RecordingWriter<'a, W> {
     inner: W,
-    cancelled: &'a Cell<bool>,
+    error: &'a RefCell<Option<io::Error>>,
 }
 
-impl<'a, W: Write> Write for CancelableWriter<'a, W> {
+impl<W> RecordingWriter<'_, W> {
+    fn record<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        result.map_err(|error| {
+            let kind = error.kind();
+            if kind != io::ErrorKind::Interrupted {
+                self.error.borrow_mut().get_or_insert(error);
+            }
+            io::Error::from(kind)
+        })
+    }
+}
+
+impl<W: Write> Write for RecordingWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.cancelled.get() {
-            return Err(io::Error::other("export encode cancelled"));
-        }
-        self.inner.write(buf)
+        let result = self.inner.write(buf);
+        self.record(result)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
+        let result = self.inner.flush();
+        self.record(result)
     }
 }
 
-/// A `GenericImageView` over the rendered frame's RGBA bytes read in place: `get_pixel` drops
-/// alpha, reports progress by the highest row read (throttled to about 1% steps, always reporting
-/// the last row) and polls `cancel` once per row, recording a cancellation for the writer to act on.
-struct FrameView<'a> {
-    frame: &'a Raster,
-    rows_done: Cell<u32>,
-    last_reported: Cell<f64>,
-    progress: RefCell<&'a mut dyn FnMut(f64)>,
-    cancel: &'a dyn Fn() -> Result<(), Error>,
-    cancelled: &'a Cell<bool>,
-}
-
-impl GenericImageView for FrameView<'_> {
-    type Pixel = Rgb<u8>;
-
-    fn dimensions(&self) -> (u32, u32) {
-        (self.frame.width, self.frame.height)
-    }
-
-    fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
-        let rows_done = y.saturating_add(1);
-        if rows_done > self.rows_done.get() {
-            self.rows_done.set(rows_done);
-            let height = f64::from(self.frame.height.max(1));
-            let fraction = (f64::from(rows_done) / height).min(1.0);
-            if fraction - self.last_reported.get() >= 0.01 || rows_done >= self.frame.height {
-                self.last_reported.set(fraction);
-                (self.progress.borrow_mut())(fraction);
-            }
-            if !self.cancelled.get() && (self.cancel)().is_err() {
-                self.cancelled.set(true);
-            }
-        }
-        let [r, g, b, _a] = self.frame.pixel(x, y).unwrap_or([0, 0, 0, 255]);
-        Rgb([r, g, b])
-    }
+/// Runs one call into libjpeg, catching the unwind by which it reports a fatal error.
+fn guarded<T>(call: impl FnOnce() -> T) -> Result<T, Box<dyn Any + Send>> {
+    panic::catch_unwind(AssertUnwindSafe(call))
 }
 
 pub fn encode_jpeg<W: Write>(
@@ -82,34 +78,105 @@ pub fn encode_jpeg<W: Write>(
     progress: &mut dyn FnMut(f64),
     cancel: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let cancelled = Cell::new(false);
-    let writer = CancelableWriter {
-        inner: BufWriter::new(out),
-        cancelled: &cancelled,
-    };
-    let mut encoder = JpegEncoder::new_with_quality(writer, super::QUALITY);
-    encoder
-        .set_icc_profile(srgb_profile().to_vec())
-        .map_err(|error| Error::internal(format!("jpeg icc profile: {error}")))?;
-    if let Some(exif) = exif {
-        encoder
-            .set_exif_metadata(exif.to_vec())
-            .map_err(|error| Error::internal(format!("jpeg exif metadata: {error}")))?;
+    let stride = frame.width as usize * 4;
+    let rows = frame.height as usize;
+    if frame.rgba.len() != stride * rows {
+        return Err(Error::internal(
+            "jpeg encode: the frame's pixels do not match its dimensions",
+        ));
     }
-    let view = FrameView {
-        frame,
-        rows_done: Cell::new(0),
-        last_reported: Cell::new(0.0),
-        progress: RefCell::new(progress),
-        cancel,
-        cancelled: &cancelled,
-    };
-    match encoder.encode_image(&view) {
-        Ok(()) => Ok(()),
-        Err(_) if cancelled.get() => Err(Error::cancelled("export encode cancelled")),
-        Err(ImageError::IoError(io_error)) => Err(Error::file_access(io_error.to_string())),
-        Err(other) => Err(Error::render(format!("jpeg encode: {other}"))),
+    let app1 = exif.map(|exif| [EXIF_HEADER, exif].concat());
+    if app1
+        .as_ref()
+        .is_some_and(|app1| app1.len() > MAX_MARKER_PAYLOAD)
+    {
+        return Err(Error::internal(
+            "jpeg encode: the EXIF payload does not fit one APP1 segment",
+        ));
     }
+    let io_error = RefCell::<Option<io::Error>>::new(None);
+    let failure = |payload: Box<dyn Any + Send>| {
+        if let Some(error) = io_error.borrow_mut().take() {
+            return Error::file_access(error.to_string());
+        }
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("libjpeg failed");
+        Error::render(format!("jpeg encode: {message}"))
+    };
+    let refused = |error: io::Error| Error::render(format!("jpeg encode: {error}"));
+    let writer = RecordingWriter {
+        inner: out,
+        error: &io_error,
+    };
+
+    // libjpeg's fastest profile is plain libjpeg-turbo: baseline, one interleaved scan, standard
+    // Huffman tables and no trellis quantization. Its default YCbCr output samples chroma at 2×2,
+    // so every component is set back to 1×1.
+    let mut started = guarded(|| {
+        let mut compress = Compress::new(ColorSpace::JCS_EXT_RGBA);
+        compress.set_fastest_defaults();
+        compress.set_size(frame.width as usize, rows);
+        compress.set_quality(f32::from(super::QUALITY));
+        compress.set_chroma_sampling_pixel_sizes((1, 1), (1, 1));
+        compress.start_compress(writer)
+    })
+    .map_err(&failure)?
+    .map_err(refused)?;
+    // `start_compress` has written SOI and the JFIF APP0; the other markers follow it in order.
+    guarded(|| {
+        if let Some(app1) = &app1 {
+            started.write_marker(Marker::APP(1), app1);
+        }
+        started.write_marker(Marker::APP(2), icc_segment());
+    })
+    .map_err(&failure)?;
+
+    let mut last_reported = 0.0;
+    for (index, strip) in frame.rgba.chunks(STRIP_ROWS * stride).enumerate() {
+        if cancel().is_err() {
+            // Discards what libjpeg still buffers; the compressor is destroyed when dropped.
+            drop(started.abort());
+            return Err(Error::cancelled("export encode cancelled"));
+        }
+        guarded(|| started.write_scanlines(strip))
+            .map_err(&failure)?
+            .map_err(refused)?;
+        let rows_done = ((index + 1) * STRIP_ROWS).min(rows);
+        let fraction = rows_done as f64 / rows as f64;
+        if fraction - last_reported >= 0.01 || rows_done == rows {
+            last_reported = fraction;
+            progress(fraction);
+        }
+    }
+    if cancel().is_err() {
+        drop(started.abort());
+        return Err(Error::cancelled("export encode cancelled"));
+    }
+    guarded(|| started.finish())
+        .map_err(&failure)?
+        .map_err(refused)?;
+    Ok(())
+}
+
+/// The APP2 payload carrying [`srgb_profile`] as the ICC specification's one and only chunk:
+/// `ICC_PROFILE\0`, sequence number 1, count 1, then the profile. It is written by hand because
+/// `mozjpeg`'s `write_icc_profile` numbers chunks from 0, which decoders that follow the
+/// specification, `zune-jpeg` among them, ignore.
+fn icc_segment() -> &'static [u8] {
+    static SEGMENT: OnceLock<Vec<u8>> = OnceLock::new();
+    SEGMENT
+        .get_or_init(|| {
+            let segment = [b"ICC_PROFILE\0".as_slice(), &[1, 1], srgb_profile()].concat();
+            assert!(
+                segment.len() <= MAX_MARKER_PAYLOAD,
+                "the sRGB profile fits one segment"
+            );
+            segment
+        })
+        .as_slice()
 }
 
 /// The one embedded sRGB ICC profile, built once from `moxcms`'s own sRGB definition (which
@@ -128,7 +195,7 @@ pub fn srgb_profile() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SnapshotId;
+    use crate::{ErrorKind, SnapshotId};
     use image::{ImageDecoder, codecs::jpeg::JpegDecoder};
     use std::{cell::Cell, io::Cursor};
 
@@ -170,23 +237,30 @@ mod tests {
         (out, progress_calls)
     }
 
-    /// Walks the top-level JPEG segments and returns the markers present, in order, as `(marker,
-    /// app_tag)`: `app_tag` is the leading identifier of an APPn payload (e.g. `b"JFIF\0"`), or
-    /// empty for a non-APPn marker.
-    fn markers(bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
+    /// The header segments up to and including the first SOS, as `(marker, payload)`, and the
+    /// offset where that scan's entropy-coded data begins.
+    fn segments(bytes: &[u8]) -> (Vec<(u8, &[u8])>, usize) {
         assert_eq!(&bytes[0..2], &[0xff, 0xd8], "SOI");
-        let mut found = vec![(0xd8u8, Vec::new())];
+        let mut found = Vec::new();
         let mut i = 2;
         loop {
             assert_eq!(bytes[i], 0xff, "marker prefix at {i}");
             let marker = bytes[i + 1];
-            i += 2;
-            if marker == 0xd9 {
-                found.push((marker, Vec::new()));
-                break;
+            let size = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+            found.push((marker, &bytes[i + 4..i + 2 + size]));
+            i += 2 + size;
+            if marker == 0xda {
+                return (found, i);
             }
-            let size = u16::from_be_bytes([bytes[i], bytes[i + 1]]) as usize;
-            let payload = &bytes[i + 2..i + size];
+        }
+    }
+
+    /// Walks the top-level JPEG segments and returns the markers present, in order, as `(marker,
+    /// app_tag)`: `app_tag` is the leading identifier of an APPn payload (e.g. `b"JFIF\0"`), or
+    /// empty for a non-APPn marker.
+    fn markers(bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        let mut found = vec![(0xd8u8, Vec::new())];
+        for (marker, payload) in segments(bytes).0 {
             let tag = if (0xe0..=0xef).contains(&marker) {
                 let end = payload
                     .iter()
@@ -198,13 +272,28 @@ mod tests {
                 Vec::new()
             };
             found.push((marker, tag));
-            i += size;
-            if marker == 0xda {
-                // Scan data follows; stop parsing top-level segments here.
-                break;
-            }
         }
         found
+    }
+
+    /// Per-channel mean and maximum absolute error of decoded RGB `pixels` against `frame`.
+    fn error_against(frame: &Raster, pixels: &[u8], channels: usize) -> (f64, i32) {
+        let mut sum_abs = 0f64;
+        let mut max_abs = 0i32;
+        let mut count = 0u64;
+        for (original, decoded) in frame
+            .rgba
+            .chunks_exact(4)
+            .zip(pixels.chunks_exact(channels))
+        {
+            for channel in 0..3 {
+                let diff = (i32::from(original[channel]) - i32::from(decoded[channel])).abs();
+                sum_abs += f64::from(diff);
+                max_abs = max_abs.max(diff);
+                count += 1;
+            }
+        }
+        (sum_abs / count as f64, max_abs)
     }
 
     #[test]
@@ -257,42 +346,57 @@ mod tests {
     }
 
     #[test]
-    fn chroma_sampling_is_4_4_4() {
-        // The design proposal claims full-resolution (4:4:4) chroma; confirm it from the written
-        // SOF0 sampling factors rather than trusting the encoder's own doc comment, which claims
-        // 4:2:2 despite writing every component at h=1,v=1.
-        let frame = gradient_frame(64, 64);
+    fn baseline_4_4_4_in_one_interleaved_scan_with_the_standard_tables() {
+        // Read from the written file: a baseline frame (SOF0, no other SOFn) sampling every
+        // component at 1×1, one scan carrying all three components and nothing but restart-free
+        // entropy data after it up to EOI, and libjpeg's standard (Annex K) luminance DC table
+        // rather than an optimized one.
+        let frame = gradient_frame(257, 131);
         let (bytes, _) = encode(&frame, None);
-        let mut i = 2;
-        loop {
-            let marker = bytes[i + 1];
-            i += 2;
-            let size = u16::from_be_bytes([bytes[i], bytes[i + 1]]) as usize;
-            if marker == 0xc0 {
-                // SOF0 payload: precision(1) height(2) width(2) num_components(1) then
-                // (id, hv, tq) per component.
-                let payload = &bytes[i + 2..i + size];
-                let num_components = payload[5] as usize;
-                assert_eq!(num_components, 3);
-                for c in 0..num_components {
-                    let hv = payload[6 + c * 3 + 1];
-                    assert_eq!(hv, 0x11, "component {c} is not sampled at 4:4:4 (h=1,v=1)");
-                }
-                break;
-            }
-            i += size;
-            assert!(marker != 0xda, "SOF0 not found before scan start");
+        let (headers, scan) = segments(&bytes);
+        let frames: Vec<u8> = headers
+            .iter()
+            .map(|(marker, _)| *marker)
+            .filter(|marker| (0xc0..=0xcf).contains(marker) && ![0xc4, 0xc8, 0xcc].contains(marker))
+            .collect();
+        assert_eq!(frames, [0xc0], "one baseline SOF0");
+        let (_, sof) = headers.iter().find(|(marker, _)| *marker == 0xc0).unwrap();
+        // precision(1) height(2) width(2) components(1), then (id, hv, tq) per component.
+        assert_eq!(sof[0], 8, "8-bit precision");
+        assert_eq!(u16::from_be_bytes([sof[1], sof[2]]), 131);
+        assert_eq!(u16::from_be_bytes([sof[3], sof[4]]), 257);
+        assert_eq!(sof[5], 3, "three components");
+        for component in 0..3 {
+            assert_eq!(
+                sof[6 + component * 3 + 1],
+                0x11,
+                "component {component} is not sampled at 4:4:4 (h=1,v=1)"
+            );
         }
+        let (_, sos) = headers.last().unwrap();
+        assert_eq!(sos[0], 3, "the scan interleaves all three components");
+        // Nothing but stuffed bytes in the entropy data: the next marker is EOI, at the end.
+        let data = &bytes[scan..];
+        let next_marker = data
+            .windows(2)
+            .position(|pair| pair[0] == 0xff && pair[1] != 0x00)
+            .expect("EOI follows the scan");
+        assert_eq!(&data[next_marker..], &[0xff, 0xd9], "one scan, then EOI");
+        let standard_luma_dc_bits = [0u8, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+        let (_, dht) = headers.iter().find(|(marker, _)| *marker == 0xc4).unwrap();
+        assert_eq!(dht[0], 0x00, "the first table is luminance DC");
+        assert_eq!(dht[1..17], standard_luma_dc_bits, "standard Huffman table");
     }
+
+    // Measured on the generated gradient/edge pattern at quality 90, 4:4:4, decoded by `image`'s
+    // JPEG decoder: mean abs error ~0.53/channel and max abs error 7 for 257x131, ~0.33/1 for the
+    // 1x1 case, ~0.49/6 for 1031x677. Bounds are stated generously above that so unrelated encoder
+    // changes do not make these tests flaky.
+    const MEAN_ABS_TOLERANCE: f64 = 1.5;
+    const MAX_ABS_TOLERANCE: i32 = 16;
 
     #[test]
     fn decodes_to_the_same_dimensions_within_tolerance() {
-        // Measured on the generated gradient/edge pattern at quality 90, 4:4:4: mean abs error
-        // ~0.53/channel and max abs error 8 for 257x131, ~0.33/1 for the 1x1 case. Bounds are
-        // stated generously above that so unrelated encoder changes do not make this test flaky.
-        const MEAN_ABS_TOLERANCE: f64 = 1.5;
-        const MAX_ABS_TOLERANCE: i32 = 16;
-
         for (width, height) in [(257u32, 131u32), (1, 1)] {
             let frame = gradient_frame(width, height);
             let (bytes, _) = encode(&frame, None);
@@ -300,28 +404,7 @@ mod tests {
             assert_eq!(decoder.dimensions(), (width, height));
             let mut decoded = vec![0u8; decoder.total_bytes() as usize];
             decoder.read_image(&mut decoded).expect("decode");
-
-            let mut sum_abs = 0f64;
-            let mut max_abs = 0i32;
-            let mut count = 0u64;
-            for y in 0..height {
-                for x in 0..width {
-                    let [r, g, b, _a] = frame.pixel(x, y).unwrap();
-                    let offset = ((y * width + x) * 3) as usize;
-                    let (dr, dg, db) = (
-                        decoded[offset] as i32,
-                        decoded[offset + 1] as i32,
-                        decoded[offset + 2] as i32,
-                    );
-                    for (original, decoded) in [(r as i32, dr), (g as i32, dg), (b as i32, db)] {
-                        let diff = (original - decoded).abs();
-                        sum_abs += diff as f64;
-                        max_abs = max_abs.max(diff);
-                        count += 1;
-                    }
-                }
-            }
-            let mean_abs = sum_abs / count as f64;
+            let (mean_abs, max_abs) = error_against(&frame, &decoded, 3);
             assert!(
                 mean_abs <= MEAN_ABS_TOLERANCE,
                 "{width}x{height}: mean abs error {mean_abs} exceeds {MEAN_ABS_TOLERANCE}"
@@ -331,6 +414,20 @@ mod tests {
                 "{width}x{height}: max abs error {max_abs} exceeds {MAX_ABS_TOLERANCE}"
             );
         }
+    }
+
+    #[test]
+    fn luxforge_opens_an_export_as_a_source_within_tolerance() {
+        // Re-importing an export goes through the source path's own decoder, which has decoded
+        // some valid baseline layouts wrongly (non-interleaved scans with vertical subsampling);
+        // an export must come back as the frame it encoded, within the same bounds.
+        let frame = gradient_frame(1031, 677);
+        let (bytes, _) = encode(&frame, None);
+        let source = crate::source::open_source_bytes(bytes).expect("an export opens as a source");
+        assert_eq!((source.width, source.height), (1031, 677));
+        let (mean_abs, max_abs) = error_against(&frame, &source.rgba, 4);
+        assert!(mean_abs <= MEAN_ABS_TOLERANCE, "mean abs error {mean_abs}");
+        assert!(max_abs <= MAX_ABS_TOLERANCE, "max abs error {max_abs}");
     }
 
     #[test]
@@ -351,9 +448,24 @@ mod tests {
     }
 
     #[test]
+    fn exif_larger_than_one_segment_is_refused_before_writing() {
+        let frame = gradient_frame(32, 32);
+        let exif = vec![0u8; MAX_MARKER_PAYLOAD - EXIF_HEADER.len() + 1];
+        let mut out = Vec::new();
+        let error =
+            encode_jpeg(&mut out, &frame, Some(&exif), &mut |_| {}, &|| Ok(())).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn icc_profile_round_trips_exactly() {
         let frame = gradient_frame(32, 32);
         let (bytes, _) = encode(&frame, None);
+        // One chunk, numbered 1 of 1 as the ICC specification requires.
+        let (headers, _) = segments(&bytes);
+        let (_, icc) = headers.iter().find(|(marker, _)| *marker == 0xe2).unwrap();
+        assert_eq!(icc[..14], *b"ICC_PROFILE\0\x01\x01");
         let mut decoder = JpegDecoder::new(Cursor::new(bytes)).expect("valid jpeg");
         let decoded_profile = decoder
             .icc_profile()
@@ -393,7 +505,12 @@ mod tests {
                 Ok(())
             }
         });
-        assert_eq!(result.unwrap_err().kind, crate::ErrorKind::Cancelled);
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+        assert_eq!(
+            calls.get(),
+            3,
+            "the encode stopped at the first cancelled check"
+        );
 
         let (full, _) = encode(&frame, None);
         assert!(
@@ -403,5 +520,43 @@ mod tests {
             out.len(),
             full.len()
         );
+    }
+
+    #[test]
+    fn a_libjpeg_error_is_an_error_not_an_abort() {
+        // libjpeg refuses an empty image and one wider than its 65,500 px limit with a fatal
+        // error, which unwinds out of the C code and must come back as an ordinary error.
+        for (width, height) in [(0u32, 0u32), (65_536, 1)] {
+            let frame = gradient_frame(width, height);
+            let mut out = Vec::new();
+            let error = encode_jpeg(&mut out, &frame, None, &mut |_| {}, &|| Ok(())).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Render, "{width}x{height}: {error:?}");
+            assert!(
+                error.detail.contains("libjpeg"),
+                "{width}x{height}: {error:?}"
+            );
+        }
+        // The encoder still works afterwards.
+        encode(&gradient_frame(8, 8), None);
+    }
+
+    #[test]
+    fn a_write_failure_is_a_file_access_error() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "the disk is full",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let frame = gradient_frame(257, 131);
+        let error = encode_jpeg(Full, &frame, None, &mut |_| {}, &|| Ok(())).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::FileAccess, "{error:?}");
+        assert!(error.detail.contains("the disk is full"), "{error:?}");
     }
 }
