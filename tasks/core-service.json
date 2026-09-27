@@ -455,7 +455,7 @@
     {
       "id": "TASK-007",
       "description": "Delete the service's synchronous source mode and give tests and xtask one blocking prepare helper that runs the worker's own preparation and then the owner's own completion.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
