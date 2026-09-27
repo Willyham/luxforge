@@ -31,6 +31,7 @@ mod notice_card;
 mod number_field;
 mod overlay_control;
 mod popover;
+mod range_slider;
 mod readout_card;
 mod section_header;
 mod segmented;
@@ -91,12 +92,14 @@ pub use mode_control::{CombineMode, ModeControlModel, mode_control, mode_control
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip, tooltip_text};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};
 pub use number_field::{
-    NumberFieldModel, ValueEdit, boxed_input, channel_row, label_line, number_field, value_input,
+    NumberFieldModel, ValueEdit, boxed_input, channel_row, compact_number_field, label_line,
+    number_field, value_input,
 };
 pub use overlay_control::{
     OverlayControlModel, OverlayMode, OverlayTint, overlay_control, tints_enabled,
 };
 pub use popover::{POPOVER_GAP, popover};
+pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
 pub use readout_card::{readout_card, readout_card_height};
 pub use section_header::{
     SectionHeaderModel, collapsed_section_height, expanded_section_height, module_section,

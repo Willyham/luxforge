@@ -429,6 +429,13 @@ impl Built {
             drafting_key(inputs.mask_draft.is_some()),
             std::mem::discriminant(&inputs.mask_mode),
             inputs.mask_name,
+            // The panel's generated fields — the amount, the invert and the open component's own
+            // geometry and band — read the host's field texts and which of them is typed or held.
+            (
+                inputs.fields.host_digest(),
+                inputs.editing.filter(|(action, _)| action.contains('.')),
+                inputs.dragging.filter(|(action, _)| action.contains('.')),
+            ),
             (
                 inputs.display_entry,
                 inputs.selected_mask,
@@ -639,6 +646,12 @@ impl Workspace {
                                 "kind": "number", "label": slider.label,
                                 "action": slider.action, "parameter": slider.parameter,
                                 "unit": slider.unit,
+                            })),
+                            tools::ControlModel::Range(range) => Some(json!({
+                                "kind": "range", "label": range.label, "action": range.action,
+                                "parameters": range.fields()
+                                    .map(|field| field.parameter.as_str())
+                                    .collect::<Vec<_>>(),
                             })),
                             tools::ControlModel::Action(action) => Some(json!({
                                 "kind": "action", "label": action.label, "action": action.action,

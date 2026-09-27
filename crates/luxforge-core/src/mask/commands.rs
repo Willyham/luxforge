@@ -30,9 +30,9 @@
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
 use super::{
-    REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn, component_parameters,
-    component_sample_limit, component_sample_parameters, declared_geometry_kinds,
-    knows_component_kind, sampling_kinds, stroke_kind,
+    REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_band_control, component_geometry_is_drawn,
+    component_parameters, component_sample_limit, component_sample_parameters,
+    declared_geometry_kinds, knows_component_kind, sampling_kinds, stroke_kind,
 };
 use super::{SAMPLES_FIELD, rules};
 #[cfg(test)]
@@ -1993,6 +1993,9 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
             })
             .expect("every kind generates its patch method")
             .method;
+        // A band's own two-thumb control comes first, over the same patch method, and its number
+        // fields follow it: a typed value is exact, and the fields are what an agent reads too.
+        controls.extend(component_band_control(kind, action));
         controls.extend(geometry_controls(
             action,
             component_parameters(kind, false).expect("a kind from the host's own table"),
@@ -2411,7 +2414,7 @@ mod tests {
     #[test]
     fn every_control_binds_to_a_parameter_its_own_command_declares() {
         for control in controls() {
-            let (action, parameter) = match control {
+            let (action, parameters) = match control {
                 Control::Number {
                     action, parameter, ..
                 }
@@ -2420,13 +2423,75 @@ mod tests {
                 }
                 | Control::Choice {
                     action, parameter, ..
-                } => (action, parameter),
+                } => (action, vec![parameter]),
+                Control::Range {
+                    action,
+                    low,
+                    high,
+                    low_feather,
+                    high_feather,
+                    ..
+                } => (
+                    action,
+                    [
+                        Some(low),
+                        Some(high),
+                        low_feather.as_ref(),
+                        high_feather.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                ),
                 other => panic!("unexpected mask control {other:?}"),
             };
             let command = find(action).unwrap_or_else(|| panic!("no command {action}"));
+            for parameter in parameters {
+                assert!(
+                    command.action.parameter(parameter).is_some(),
+                    "{action} declares no parameter {parameter}"
+                );
+            }
+        }
+    }
+
+    /// The luminance band is one axis, so its patch method gets the one `range` control over its
+    /// four numbers, first and on a black-to-white rail, and keeps the four number fields beneath
+    /// it. No other kind is a band: a colour range is swatches and a radius, and the geometric kinds
+    /// are positions.
+    #[test]
+    fn the_luminance_band_declares_one_range_control_above_its_number_fields() {
+        let bands: Vec<(usize, &Control)> = controls()
+            .iter()
+            .enumerate()
+            .filter(|(_, control)| matches!(control, Control::Range { .. }))
+            .collect();
+        assert_eq!(bands.len(), 1, "{bands:?}");
+        let (at, band) = bands[0];
+        assert_eq!(
+            serde_json::to_value(band).unwrap(),
+            json!({"kind":"range","action":"mask.set-luminance-range","low":"low","high":"high",
+                   "low_feather":"low_feather","high_feather":"high_feather","label":"Range",
+                   "rail":{"gradient":{"stops":[[0,0,0],[255,255,255]]}}})
+        );
+        let fields: Vec<&str> = controls()[at + 1..]
+            .iter()
+            .take(4)
+            .map(|control| match control {
+                Control::Number {
+                    action,
+                    parameter,
+                    style: NumberStyle::Field,
+                    ..
+                } if action == "mask.set-luminance-range" => parameter.as_str(),
+                other => panic!("a band's number field follows it, not {other:?}"),
+            })
+            .collect();
+        assert_eq!(fields, ["low", "low_feather", "high", "high_feather"]);
+        for kind in declared_geometry_kinds().filter(|kind| *kind != "luminance-range") {
             assert!(
-                command.action.parameter(parameter).is_some(),
-                "{action} declares no parameter {parameter}"
+                component_band_control(kind, "mask.set-x").is_none(),
+                "{kind}"
             );
         }
     }

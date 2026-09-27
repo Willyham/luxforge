@@ -42,7 +42,7 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Component, ComponentId, ComponentMode, Error, Mask, ParameterDescriptor,
+    Component, ComponentId, ComponentMode, Control, Error, Mask, ParameterDescriptor,
     modules::{Region, Stage},
     path::StrokeTable,
 };
@@ -203,6 +203,10 @@ struct ComponentKind {
     /// as a module descriptor names its own icon. It lives in the table so a panel, a menu and a
     /// draft bar show one glyph per kind without matching on kind tokens of their own.
     icon: &'static str,
+    /// The one control a kind whose geometry is a band on one axis declares beyond its number
+    /// fields: a `range` over its patch method, named by that method. `None` for every kind that is
+    /// not a band; its number fields are all a panel draws for it.
+    band: Option<fn(&'static str) -> Control>,
 }
 
 /// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
@@ -238,6 +242,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: false,
         limits: &[],
         icon: "linear",
+        band: None,
     },
     ComponentKind {
         kind: radial::KIND,
@@ -248,6 +253,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: false,
         limits: &[],
         icon: "radial",
+        band: None,
     },
     ComponentKind {
         kind: brush::KIND,
@@ -258,6 +264,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: false,
         limits: &[],
         icon: "brush",
+        band: None,
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
@@ -268,6 +275,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: true,
         limits: range::LUMINANCE_LIMITS,
         icon: "luminance",
+        band: Some(range::luminance_band),
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
@@ -281,6 +289,8 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: true,
         limits: range::COLOUR_LIMITS,
         icon: "colour",
+        // A colour range is a set of swatches and a radius, not a band on one axis.
+        band: None,
     },
 ];
 
@@ -395,6 +405,16 @@ pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterD
         .find(|entry| entry.kind == kind)
         .and_then(|entry| entry.parameters)
         .map(|parameters| parameters(required))
+}
+
+/// The `range` control `kind` declares over its patch method `action`, when its geometry is a band
+/// on one axis; none for any other kind and for a kind this build does not know.
+pub fn component_band_control(kind: &str, action: &'static str) -> Option<Control> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.band)
+        .map(|band| band(action))
 }
 
 /// The kinds that sample colours from the photograph, in table order. The command family generates
