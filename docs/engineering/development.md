@@ -80,6 +80,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `patch-action` | A patch action's declaration (`patch: true`, or `"patch": true` in a JSON descriptor) outside the field-patch module and the RAW module, whose `set-raw` keeps its own merge | Production code under `crates/` |
 | `job-records` | A ring of finished job records, `VecDeque<JobId>`, outside the one job table (`jobs.rs`) | Core production code |
 | `job-table` | `Jobs::new` anywhere but once, in the catalog owner's launch (`api/owner.rs`) | Core production code |
+| `one-envelope-check` | `mutation.validate()` outside the dispatcher's one envelope check (`Envelope::check` in `api/params.rs`), which checks every mutating method's envelope before any handler runs | Core production code |
 | `desktop-crop-rows` | `CROP_EFFECT`, `ORIENTATION_EFFECT`, `from_value::<CropPayload>` and `from_value::<Orientation>` anywhere in the desktop: it reads a crop, its stage and the orientation ahead of it from `recipe.describe` rows | Desktop production code (`crates/luxforge-app/src`) |
 | `render-limits-home` | The one-megapixel parallel threshold or the 512 MiB frame limit's literal assignment, `= 1_000_000;` or `= 512 * 1024 * 1024;`, outside `luxforge-raw/src/limits.rs` | `luxforge-core` and `luxforge-raw` production code |
 | `draft-preview-rule` | `RawSettingsMode::DraftPreview`, the drafted preview's approximate white balance, outside the one evaluation builder (`editor/evaluate.rs`) and the RAW settings resolver (`editor/source.rs`) | Core production code |

@@ -2,7 +2,7 @@ use super::{
     ActionResult, AssetRecord, EditorService, EditorState, MutationResult,
     entries::Head,
     history::{Change, CommittedAction, Touched, request_input},
-    masks::{recipe_for_target, resolve_mask_target, take_mask_target, take_query_mask_target},
+    masks::{Targeted, recipe_for_target, resolve_mask_target, take_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
-        StageContext, StageQuestions, action_label, check_parameters, not_applicable,
+        StageContext, StageQuestions, action_label, check_parameters, check_target, not_applicable,
     },
     render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
@@ -58,7 +58,8 @@ impl<'r> Prepared<'r> {
             ActionRef::Module(module, declared) => {
                 module.descriptor().check_available()?;
                 let mut parameters = parameters;
-                let mask = take_mask_target(registry, action_id, &mut parameters)?;
+                let mask =
+                    take_mask_target(registry, Targeted::Action(action_id), &mut parameters)?;
                 let checked = check_parameters(declared, &parameters)?;
                 let input = module.parse(action_id, &checked)?;
                 // The module labels a request its template cannot describe, such as a field patch;
@@ -351,7 +352,9 @@ impl EditorService {
             .ok_or_else(|| Error::validation(format!("unknown query {query_id}")))?;
         let mut parameters = parameters;
         let mask = match query {
-            QueryRef::Module(..) => take_query_mask_target(&registry, query_id, &mut parameters)?,
+            QueryRef::Module(..) => {
+                take_mask_target(&registry, Targeted::Query(query_id), &mut parameters)?
+            }
             QueryRef::Host(_) => None,
         };
         let checked = check_parameters(query.descriptor(), &parameters)?;
@@ -407,6 +410,49 @@ impl EditorService {
             parameters: fields.clone(),
         };
         check_askable(&self.registry, module, kind, mask, Some(&input))
+    }
+
+    /// The target a gesture of `action_id` on `asset_id` edits, checked when `draft.begin` opens
+    /// it through the checks its commit runs, so it is refused in the commit's words before any
+    /// field is drafted: the target is the request the commit will send with no field set yet.
+    ///
+    /// A `mask.*` gesture's target is the identities its command addresses, checked as a patch is
+    /// ([`crate::modules::check_target`]): each must be one the command declares and every one the
+    /// command requires must be named, so a stroke deletion, whose stroke a draft does not take, is
+    /// refused here. A module action's target is the host's one `mask` field, taken by the one
+    /// target check a commit and a query take ([`take_mask_target`]); anything else, a component
+    /// included, is a field the action does not declare, since a module edits a layer through the
+    /// whole mask. Then the draft is refused for what the photo is, as [`Self::check_draft`]
+    /// refuses it. Reads the asset's head, usually cached, and plans nothing.
+    pub(crate) fn draft_target(
+        &self,
+        asset_id: &AssetId,
+        action_id: &str,
+        target: MaskTarget,
+    ) -> Result<Option<MaskTarget>, Error> {
+        let action = self
+            .registry
+            .resolve_action(action_id)
+            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
+        let mut request = target.request(Value::Null);
+        let target = match action {
+            ActionRef::Host(command) => {
+                check_target(&command.action, &request)?;
+                Some(target)
+            }
+            ActionRef::Module(_, declared) => {
+                let mask =
+                    take_mask_target(&self.registry, Targeted::Action(action_id), &mut request)?;
+                check_target(declared, &request)?;
+                mask.map(|mask| MaskTarget {
+                    mask: Some(mask),
+                    ..MaskTarget::default()
+                })
+            }
+        };
+        let mask = target.as_ref().and_then(|target| target.mask.as_ref());
+        self.check_draft(asset_id, action_id, mask, &Map::new())?;
+        Ok(target)
     }
 
     /// The recipe an open draft would produce: the current snapshot with the draft's action planned

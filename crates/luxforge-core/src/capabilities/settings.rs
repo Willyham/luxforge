@@ -885,8 +885,9 @@ impl SettingsStore {
         })
     }
 
-    /// One locked read-modify-write of one module's entry: check the envelope, refuse an
-    /// incompatible entry unless this is a reset, check the revision, apply and number the result.
+    /// One locked read-modify-write of one module's entry, whose envelope the dispatcher has
+    /// checked: refuse an incompatible entry unless this is a reset, check the revision, apply and
+    /// number the result.
     /// Only a committed change is written; a no-op or a refusal leaves the file as it was.
     fn transact(
         &self,
@@ -895,7 +896,6 @@ impl SettingsStore {
         reset: bool,
         apply: impl FnOnce(&mut ModuleEntry) -> Result<Applied, Error>,
     ) -> Result<SettingsWrite, Error> {
-        mutation.validate()?;
         let settings = declared(descriptor)?;
         self.document.transact(|document| {
             let Loaded {
@@ -1202,20 +1202,6 @@ mod tests {
                 .contains_key("requests"),
             "no request is recorded"
         );
-        let invalid = fixture
-            .store
-            .set(
-                &fixture.descriptor,
-                None,
-                &values(json!({"mode": "fast"})),
-                &Mutation {
-                    expected_revision: 1,
-                    request_id: String::new(),
-                    actor: "test".into(),
-                },
-            )
-            .unwrap_err();
-        assert_eq!(invalid.kind, ErrorKind::Validation);
     }
 
     #[test]

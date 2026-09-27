@@ -27,6 +27,10 @@ use crate::{
     activity::{Activity, ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, Report},
     api::{Origin, SourceFlightKey},
+    capabilities::{
+        host::{ACTIVATE, DEACTIVATE},
+        resources::{INSTALL, REMOVE},
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -567,10 +571,10 @@ pub(crate) enum Cancelled {
 /// module, so the panel's job row says which one is running without a dynamic label.
 fn capability_activity(record: &JobRecord) -> ActivitySpec {
     let (kind, label): (&'static str, &'static str) = match record.kind {
-        JobKind::Activate => ("module.activate", "Activating module"),
-        JobKind::Deactivate => ("module.deactivate", "Deactivating module"),
-        JobKind::Install => ("module.resource.install", "Installing resource"),
-        JobKind::Remove => ("module.resource.remove", "Removing resource"),
+        JobKind::Activate => (ACTIVATE, "Activating module"),
+        JobKind::Deactivate => (DEACTIVATE, "Deactivating module"),
+        JobKind::Install => (INSTALL, "Installing resource"),
+        JobKind::Remove => (REMOVE, "Removing resource"),
         JobKind::Task => ("module.task", "Running task"),
         _ => ("export", "Exporting JPEG"),
     };

@@ -21,6 +21,7 @@ use luxforge_core::{
     JobId, Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest,
     OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription,
     StageTransform, Version,
+    jobs::{JOB_CANCEL, JOB_READ},
     mask::commands::{MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
@@ -443,7 +444,7 @@ pub(crate) fn wait_source_job(
             owner,
             client,
             api_request_id(),
-            "job.read",
+            JOB_READ,
             json!({"job_id":job_id}),
         )?;
         match status["status"].as_str() {
@@ -730,12 +731,12 @@ fn import_now(
     };
     // An older import still preparing is no longer wanted: leaving its job ends its task's wait.
     if let Some(older) = open_guard.claim(generation, &job_id) {
-        let _ = call(owner, client, "job.cancel", json!({"job_id":older}));
+        let _ = call(owner, client, JOB_CANCEL, json!({"job_id":older}));
     }
     let prepared = wait_source_job(owner, client, &job_id);
     if open_guard.superseded(generation) {
         if !open_guard.shared_with_newer(generation, &job_id) {
-            let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
+            let _ = call(owner, client, JOB_CANCEL, json!({"job_id":job_id}));
         }
         return Err("superseded open".into());
     }

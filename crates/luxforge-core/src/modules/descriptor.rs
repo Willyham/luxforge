@@ -2790,6 +2790,14 @@ pub fn check_parameters(
     )
 }
 
+/// Check the objects a request addresses before any value it sets: every field named is a declared
+/// parameter with a valid value, and every required identity is named, exactly as a patch is
+/// checked. A gesture's target is checked this way when it begins (`draft.begin`), so it is refused
+/// in the words its commit would use, before the fields it drafts exist.
+pub(crate) fn check_target(action: &ActionDescriptor, input: &Value) -> Result<(), Error> {
+    check_declared_values("action", &action.id, &action.parameters, true, input).map(|_| ())
+}
+
 /// The generic check behind [`check_parameters`], for anything that declares parameters the way an
 /// action does: `what` and `id` name it in every refusal, e.g. `task generate-proof-tint`.
 pub(crate) fn check_declared_values(

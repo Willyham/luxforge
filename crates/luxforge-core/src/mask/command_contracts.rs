@@ -845,7 +845,7 @@ fn a_gradient_drag_is_one_entry_and_a_drag_that_returns_to_its_start_is_none() {
                 json!({"asset_id": asset, "action": "set-basic", "mask": mask_id, "component": target.component.as_ref().unwrap().as_str()}),
             )
             .expect_err("a module edits through the whole mask")["detail"],
-        json!("action set-basic takes no mask component")
+        json!("unknown parameter component for action set-basic")
     );
     assert_eq!(
         client

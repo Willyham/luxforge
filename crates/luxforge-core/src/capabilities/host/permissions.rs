@@ -66,7 +66,6 @@ impl CapabilityHost {
                 "granting a permission needs permission authority",
             ));
         }
-        request.mutation.validate()?;
         let registry = service.registry();
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
@@ -157,7 +156,6 @@ impl CapabilityHost {
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
         let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
@@ -180,7 +178,6 @@ impl CapabilityHost {
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        request.mutation.validate()?;
         let reason = request.reason.unwrap_or_else(|| "revoked".to_owned());
         if reason.trim().is_empty() || reason.chars().count() > MAX_REASON {
             return Err(Error::validation(format!(
