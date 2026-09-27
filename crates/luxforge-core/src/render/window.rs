@@ -1386,7 +1386,6 @@ mod tests {
             &image,
             LinearSettings {
                 white_balance: Some(balance),
-                ..Default::default()
             },
         );
         let oriented = image.with_view([4, 3, 80, 55], 6).unwrap();
