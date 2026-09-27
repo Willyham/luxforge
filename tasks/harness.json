@@ -594,7 +594,7 @@
     {
       "id": "TASK-009",
       "description": "Move `Distribution` into a core-free test crate and use it everywhere a timing figure is computed, in xtask and in the crates' own timing tests, deleting the forwarding wrappers and every disagreeing percentile definition it replaces.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
