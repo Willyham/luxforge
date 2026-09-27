@@ -298,8 +298,14 @@ its texture, and how many times the view has been built. A redraw of an unchange
 nothing, however often the view is rebuilt. It therefore carries no `upload_ms`, and neither does
 `render_ready`: there is no upload step to time. The clipping overlay, the mask coverage and the
 crop draft's input stage are drawn by the same surface from frames of their own, handed over in
-the update that has them: `clipping_overlay` and `mask_overlay` are emitted in that update and
-settle a waiting step there, and the draft opens in the update that takes up its input stage. `preview_exact_adopted` records the exact phase of such a job
+the update that has them: `clipping_overlay` and `mask_overlay` are emitted in that update. For
+ordinary photos with clipping enabled, capture waits for a GPU draw containing both the requested
+photo identity and that request's assigned clipping frame version (`drawn_clipping_version`); if
+the clipping version changes while a screenshot is in flight, capture retries. Empty, crop, gallery
+and render-error captures do not wait for this pair. If clipping derivation or presentation fails,
+the active script step is marked failed and the refusal frame is captured. Mask coverage still
+settles a waiting step in its update, and the crop draft opens in the update that takes up its input
+stage. `preview_exact_adopted` records the exact phase of such a job
 being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer request superseded, under its own generation and with `draft` when it was a crop draft's input stage, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `preview_failed` records every failed preview of the displayed state,

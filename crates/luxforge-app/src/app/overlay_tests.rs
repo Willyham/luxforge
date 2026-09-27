@@ -8,6 +8,38 @@ use super::{
 };
 use luxforge_core::Zoom;
 
+#[test]
+fn failed_clipping_derivation_marks_the_evidence_step_and_releases_capture() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":20}}]"#);
+    let _ = editor.next_step();
+    editor.await_step(evidence::Settle::Overlay);
+    editor.session.workspace.clip_highlights = true;
+    let request = overlay::OverlayRequest {
+        generation: editor.presented_generation,
+        cells_w: 1,
+        cells_h: 1,
+        shadows: false,
+        highlights: true,
+        approximate: false,
+        region: None,
+    };
+    editor.overlay_request = Some(request.clone());
+    editor.overlay_ready(overlay::OverlayResult {
+        request,
+        width: 1,
+        height: 1,
+        result: Err(luxforge_core::Error::render("derived mask failed")),
+    });
+    let evidence = editor.evidence.as_ref().expect("evidence");
+    assert_eq!(evidence.current.as_ref().unwrap()["status"], "failed");
+    assert!(evidence.capture_pending && evidence.awaiting.is_none());
+    assert!(
+        editor.capture_clipping_ready(),
+        "the refusal can be captured"
+    );
+    finish(editor, catalog);
+}
+
 /// A percent zoom is in physical pixels. A 2× display must not halve either grid, and a whole
 /// stage must not inherit the viewport's narrower dimensions at settle.
 #[test]

@@ -241,6 +241,7 @@ impl Editor {
         }
         let (width, height) = (done.width, done.height);
         let approximate = done.request.approximate;
+        let mut failure = None;
         match done.result {
             Ok(rgba) => {
                 let shown = match self.region_raster.as_ref().filter(|region| {
@@ -261,11 +262,13 @@ impl Editor {
                     );
                 } else {
                     self.status = "Could not show the clipping overlay".into();
+                    failure = Some(self.status.clone());
                 }
             }
             Err(error) => {
                 self.presenter.clear_clipping();
                 self.status = format!("Clipping overlay unavailable: {error}");
+                failure = Some(self.status.clone());
                 self.event(
                     "clipping_overlay_failed",
                     json!({"generation":generation,"error_code":error.kind.code(),"approximate":approximate}),
@@ -276,7 +279,17 @@ impl Editor {
         // the mask rather than the photograph a moment before it. A refused overlay releases it
         // too, so the refusal is visible in the evidence rather than leaving the run waiting for a
         // frame nothing will arm.
-        self.settle_step(Settle::Overlay);
+        if let Some(reason) = failure
+            && self
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.current.is_some())
+        {
+            self.refuse_step(&reason);
+            self.capture_next_frame();
+        } else {
+            self.settle_step(Settle::Overlay);
+        }
     }
 
     /// The overlay the current session, zoom and surface ask for, or `None` when neither flag is on.

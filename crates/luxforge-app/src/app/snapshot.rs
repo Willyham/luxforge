@@ -184,6 +184,7 @@ impl Editor {
             Some(request) => {
                 let surface = self.overlay_surface();
                 let assigned = surface.is_some();
+                let version = surface.map(luxforge_ui::Frame::version);
                 let gpu = luxforge_ui::surface_diagnostics();
                 let clipping_drawn = surface
                     .is_some_and(|overlay| gpu.drawn_clipping_version == Some(overlay.version()));
@@ -214,7 +215,7 @@ impl Editor {
                     "highlights":request.highlights,"generation":request.generation,
                     "approximate":request.approximate,"region":request.region.map(|region|
                         [region.x0,region.y0,region.x1(),region.y1()]),
-                    "source_assigned":assigned,"drawn":drawn})
+                    "source_assigned":assigned,"version":version,"drawn":drawn})
             }
             None => Value::Null,
         }
