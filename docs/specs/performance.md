@@ -1862,6 +1862,58 @@ Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cach
 
 Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
 
+### Exposure on RAW: source development against Basic
+
+Host: the owner's M4 MacBook Pro, native, macOS 26.5.2, release profile with locked pins. Date:
+27 September 2026. Commit measured: `ee5743e9`, before the RAW development's own exposure is
+removed ([source-kind controls](../design/source-controls.md#decisions), decision 1). This is
+image-difference evidence for that decision, not a timing measurement: no timing tool is
+involved.
+
+Scope: the three supplied RAW files (Nikon Z6 NEF, Fujifilm X100VI RAF, DJI Air 2S DNG), at EV
+−2.37, −0.5, +0.01, +1 and +3.3. For each file and EV, (A) a RAW development at that EV with no
+Basic layer is compared against (B) a development at 0 EV plus a Basic layer `{exposure: ev}`,
+each drafted through `set-raw-exposure` and `set-basic` and rendered through the production
+render entry point (`render`, `Render::frame`, `Render::render_proxy`) at a display-bounded proxy
+stage (2048×2048 bounds, downscaled through `PreviewSource::proxy`) and at full size, to 8-bit
+sRGB. Compared: the largest per-channel code difference and the share of R, G and B channel
+samples (alpha is opaque on both sides and carries no exposure) more than one code apart, at
+either size.
+
+Reproduce, once per file:
+
+```
+LUXFORGE_RAW_FIXTURE=<path to the NEF/RAF/DNG> \
+  cargo test --release -p luxforge-core --test exposure_move_measure -- --ignored --nocapture
+```
+
+| File | EV | Proxy stage | Proxy max Δcode | Full stage | Full max Δcode | Share beyond 1 code |
+| --- | ---: | --- | ---: | --- | ---: | ---: |
+| Nikon Z6 NEF | −2.37 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
+| Nikon Z6 NEF | −0.5 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
+| Nikon Z6 NEF | +0.01 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
+| Nikon Z6 NEF | +1 | 1363×2048 | 0 | 4024×6048 | 0 | 0 |
+| Nikon Z6 NEF | +3.3 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
+| Fujifilm X100VI RAF | −2.37 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
+| Fujifilm X100VI RAF | −0.5 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
+| Fujifilm X100VI RAF | +0.01 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
+| Fujifilm X100VI RAF | +1 | 2048×1365 | 0 | 7728×5152 | 0 | 0 |
+| Fujifilm X100VI RAF | +3.3 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
+| DJI Air 2S DNG | −2.37 | 2048×1364 | 0 | 5464×3640 | 1 | 0 |
+| DJI Air 2S DNG | −0.5 | 2048×1364 | 1 | 5464×3640 | 1 | 0 |
+| DJI Air 2S DNG | +0.01 | 2048×1364 | 1 | 5464×3640 | 1 | 0 |
+| DJI Air 2S DNG | +1 | 2048×1364 | 0 | 5464×3640 | 0 | 0 |
+| DJI Air 2S DNG | +3.3 | 2048×1364 | 1 | 5464×3640 | 1 | 0 |
+
+Every integer EV (+1) is byte-identical at both sizes on all three files, as an exact power of
+two multiplied in f64 (the source read) and in f32 (Basic's gain) must be. Every non-integer EV
+differs by at most one 8-bit code, on a measured share of exactly zero R/G/B channel samples
+beyond that one code, so within this scope moving Exposure from the source read's f64 multiply to
+Basic's f32 `2^EV` gain is a sub-visible rounding difference, not a visible one, at either size on
+any of the three files. The one asymmetry recorded is the DJI Air 2S DNG at −2.37 EV, where the
+proxy pair is byte-identical (max Δcode 0) but the full-size pair differs by one code; both remain
+within the one-code bound.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
