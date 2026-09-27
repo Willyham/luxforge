@@ -69,7 +69,7 @@ pub use dropdown::{
     DropdownButtonModel, MenuEntry, MenuItem, dropdown, dropdown_button, menu_list,
 };
 pub use field_grid::{GridField, field_grid, field_grid_height, field_grid_rows};
-pub use floating_bar::{DraftBarModel, draft_bar, floating_bar};
+pub use floating_bar::{DraftBarModel, DraftFinish, DraftSubject, draft_bar, floating_bar};
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,

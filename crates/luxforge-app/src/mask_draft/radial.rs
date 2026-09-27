@@ -117,6 +117,19 @@ impl ShapeEditor for RadialEditor {
         ]
     }
 
+    /// `rx × ry · angle° · feather N`: the shape's size, turn and softness. The centre is where
+    /// the handles already show it, so the line spends none of its room on it.
+    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+        let radial = self.shape;
+        format!(
+            "{} \u{d7} {} \u{b7} {}\u{b0} \u{b7} feather {}",
+            number("radius_x", radial.radius_x),
+            number("radius_y", radial.radius_y),
+            number("angle", radial.angle),
+            number("feather", radial.feather),
+        )
+    }
+
     /// Each field takes its own declared range, which is the range the host's parser enforces: a
     /// position, a mask-space distance, one turn of degrees and a percentage.
     fn set_field(&mut self, name: &str, value: f64) -> bool {
@@ -260,7 +273,7 @@ impl ShapeEditor for RadialEditor {
     fn draw(&self, aspect: f64, _pointer: Option<(f64, f64)>, pen: &mut dyn Pen) {
         let radial = self.shape;
         let ring = 1.0 - radial.feather / 100.0;
-        for (scale, alpha, dashed) in [(1.0, 0.85, false), (ring, 0.5, true)] {
+        for (scale, alpha, dashed) in [(1.0, 0.9, false), (ring, 0.6, true)] {
             if scale <= 0.0 {
                 continue;
             }

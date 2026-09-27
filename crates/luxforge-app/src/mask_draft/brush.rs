@@ -223,6 +223,21 @@ impl ShapeEditor for BrushEditor {
         self.stroke.brush.values()
     }
 
+    /// `painting` while the stroke is down, which is all there is to say until it commits on
+    /// release; between strokes, the size and feather the next one will be drawn with, which are
+    /// what the bracket keys change.
+    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+        if self.stroke.painting() {
+            return "painting".to_owned();
+        }
+        let brush = self.stroke.brush;
+        format!(
+            "size {} \u{b7} feather {}",
+            number("size", brush.size),
+            number("feather", brush.feather),
+        )
+    }
+
     /// A stroke's path is decimated here, where it is posted, rather than as it is captured: the
     /// contract is idempotent, so the desktop's decimated path and an agent's raw one reach the same
     /// stored stroke, and the canvas keeps drawing what the pointer actually did.

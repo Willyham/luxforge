@@ -64,6 +64,31 @@ impl MaskHandle {
     pub(crate) fn moves_figure(self) -> bool {
         matches!(self, Self::Middle | Self::Centre)
     }
+
+    /// How this handle's grip is drawn: the one that moves the whole figure is the anchor, the
+    /// rotation grip is square so it reads as another kind of handle, and the rest are round.
+    pub(crate) fn grip(self) -> Grip {
+        if self.moves_figure() {
+            Grip::Anchor
+        } else if self == Self::Rotation {
+            Grip::Square
+        } else {
+            Grip::Round
+        }
+    }
+}
+
+/// The three ways a handle's grip is drawn. The canvas picks each one's colour and shape; which
+/// handle takes which is the editor's knowledge, so it lives here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grip {
+    /// A handle that reshapes the figure: a radius, an end or the feather ring.
+    Round,
+    /// The handle that moves the whole figure — a radial's centre, a linear's midpoint — drawn in
+    /// the accent so it reads as the anchor.
+    Anchor,
+    /// The rotation grip.
+    Square,
 }
 
 /// What a figure is drawn with. The canvas implements it; an editor describes its figure through it
@@ -107,6 +132,17 @@ pub(crate) trait ShapeEditor {
 
     /// The gesture's declared number fields, in the order its command declares them.
     fn values(&self) -> Vec<(&'static str, f64)>;
+
+    /// The draft bar's one line of this shape's numbers. `number` writes one declared field's value
+    /// as that field shows it — to its declared precision — so the bar and the panel's fields always
+    /// agree. A kind that says nothing more specific lists its numbers by name.
+    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+        self.values()
+            .into_iter()
+            .map(|(name, value)| format!("{name} {}", number(name, value)))
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
+    }
 
     /// The fields the commit carries besides the declared numbers and the mode.
     fn extra_fields(&self, _fields: &mut Map<String, Value>) {}
