@@ -15,8 +15,8 @@ use crate::{
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
-            NumberControlStyle, PickerControl, RailStyle, SectionLayout, SectionModel,
-            SliderControl, ToggleControl, ToolsModel, ValueEdit,
+            NumberControlStyle, PickerControl, RailStyle, RangeControl, SectionLayout,
+            SectionModel, SliderControl, ToggleControl, ToolsModel, ValueEdit, drawn_by_range,
         },
     },
 };
@@ -28,12 +28,13 @@ use luxforge_ui::{
     BINS, BadgeModel, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel,
     ColorSwatchModel, ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow,
     HistogramChannel, Icon, IconButtonModel, LabelledButtonModel, MenuChoiceModel,
-    NumberFieldModel, RailDecoration, RowPlacement, SectionHeaderModel, SegmentedModel,
-    SliderModel, StepperModel, StepperRail, StepperRailMessages, SubGroupHeaderModel, Tab,
-    TabRowModel, ToggleModel, badge, boxed_input, button_row, caption, channel_row, chip, chip_row,
-    chip_wrap, color_picker, color_swatch, curve_editor, equal_button_row, error_caption,
-    focus_control, histogram_inspector, icon_button, icon_button_row, inline_menu, label_line,
-    labelled_button, list_heading, menu_choice, module_section, number_field, readout_card,
+    NumberFieldModel, RailDecoration, RangeGrip, RangeSliderModel, RangeValues, RowPlacement,
+    SectionHeaderModel, SegmentedModel, SliderModel, StepperModel, StepperRail,
+    StepperRailMessages, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, badge, boxed_input,
+    button_row, caption, channel_row, chip, chip_row, chip_wrap, color_picker, color_swatch,
+    compact_number_field, curve_editor, equal_button_row, error_caption, focus_control,
+    histogram_inspector, icon_button, icon_button_row, inline_menu, label_line, labelled_button,
+    list_heading, menu_choice, module_section, number_field, range_slider, readout_card,
     row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
     sub_group_header_with_actions, tab_row, text_button, theme, toggle,
 };
@@ -324,7 +325,8 @@ fn tabbed_rows<'a>(
         false,
     ));
     for control in &section.controls {
-        if !matches!(control, ControlModel::Group(_)) {
+        if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(&section.controls, control)
+        {
             rows.push(PanelRow::Plain(control_view(
                 module_id, enabled, control, menu, plot,
             )));
@@ -373,6 +375,10 @@ fn control_rows<'a>(
         }
     };
     for control in controls {
+        // A field a band draws under itself is drawn there and not again.
+        if drawn_by_range(controls, control) {
+            continue;
+        }
         if is_button(control) {
             buttons.push(control);
             continue;
@@ -522,6 +528,7 @@ pub(crate) fn control_view<'a>(
 ) -> Element<'a, Message> {
     match control {
         ControlModel::Slider(field) => number_view(enabled, field, menu),
+        ControlModel::Range(range) => range_view(enabled, range, menu),
         ControlModel::Toggle(toggle) => toggle_view(enabled, toggle, menu),
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
         ControlModel::Color(color) => color_view(enabled, color, menu),
@@ -837,10 +844,155 @@ fn rail_decoration(rail: &RailStyle) -> RailDecoration {
     )
 }
 
+/// A band: its label and readout, the two-thumb rail, and under it the band's own number fields,
+/// two to a row as mask-panels.png lays out the luminance range. Each thumb or grip publishes
+/// exactly the messages a slider's rail publishes for that one field — its fraction while dragged,
+/// its release, and a reset on a double-click — so a drag drafts and commits the one parameter it
+/// moves through the slider's own path. A right-click on the band offers the request that sets the
+/// band as shown, all its fields at once; each field below offers its own.
+fn range_view<'a>(
+    enabled: bool,
+    range: &'a RangeControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let grip_field = |grip: RangeGrip| -> Option<&SliderControl> {
+        match grip {
+            RangeGrip::Low => Some(&range.low),
+            RangeGrip::High => Some(&range.high),
+            RangeGrip::LowShoulder => range.low_feather.as_ref(),
+            RangeGrip::HighShoulder => range.high_feather.as_ref(),
+        }
+    };
+    let grips = [
+        RangeGrip::Low,
+        RangeGrip::High,
+        RangeGrip::LowShoulder,
+        RangeGrip::HighShoulder,
+    ];
+    // The axis is the edges' own rail; a shoulder is a width on it.
+    let axis = &range.low.spec;
+    let model = RangeSliderModel {
+        label: range.label.clone(),
+        readout: format!("{} \u{2013} {}", range.low.display, range.high.display),
+        min: axis.soft_min,
+        max: axis.soft_max,
+        values: RangeValues {
+            low: range.low.value,
+            high: range.high.value,
+            low_feather: range.low_feather.as_ref().map(|field| field.value),
+            high_feather: range.high_feather.as_ref().map(|field| field.value),
+        },
+        step: axis.step,
+        rail: rail_decoration(&range.rail),
+        dragging: grips
+            .into_iter()
+            .find(|grip| grip_field(*grip).is_some_and(|field| field.dragging)),
+        enabled,
+    };
+    // What each grip publishes names its own field: the action, the parameter and, for a moved
+    // value, the fraction of that parameter's own rail, which the host maps back through the
+    // parameter's declared range and step exactly as it maps a slider's. The widget draws and
+    // takes no grip for a shoulder the band does not declare, so the edge a missing shoulder falls
+    // back to here is never published.
+    let targets: [(String, String, f64, f64); 4] = grips.map(|grip| {
+        let field = grip_field(grip).unwrap_or(match grip {
+            RangeGrip::Low | RangeGrip::LowShoulder => &range.low,
+            RangeGrip::High | RangeGrip::HighShoulder => &range.high,
+        });
+        (
+            field.action.clone(),
+            field.parameter.clone(),
+            field.spec.soft_min,
+            field.spec.soft_max,
+        )
+    });
+    let target = move |grip: RangeGrip| {
+        targets[grips.iter().position(|known| *known == grip).unwrap_or(0)].clone()
+    };
+    let (change, release, reset) = (target.clone(), target.clone(), target);
+    let widget = range_slider(
+        &model,
+        move |grip, value| {
+            let (action, parameter, min, max) = change(grip);
+            Message::Control(ControlMessage::Fraction {
+                action,
+                parameter,
+                fraction: luxforge_ui::geometry::fraction_from_value(min, max, value),
+            })
+        },
+        move |grip| {
+            let (action, parameter, ..) = release(grip);
+            Message::Control(ControlMessage::Released { action, parameter })
+        },
+        move |grip| {
+            let (action, parameter, ..) = reset(grip);
+            Message::Control(ControlMessage::ResetField { action, parameter })
+        },
+    );
+    // The band's own request is the band as shown: every field it draws at its current value.
+    // A field whose typed text does not parse is left out rather than sent as a guess.
+    let shown: Map<String, Value> = range
+        .fields()
+        .filter(|field| field.invalid.is_none())
+        .map(|field| (field.parameter.clone(), Value::from(field.value)))
+        .collect();
+    let band = with_control_menu_preset(widget, &range.action, None, Some(&shown), menu);
+    column![band, range_fields(enabled, range, menu)]
+        .spacing(theme::ROW_SPACING)
+        .into()
+}
+
+/// A band's fields two to a row, on compact rows, as the board lays them out: the low edge beside
+/// its shoulder, then the high edge beside its shoulder. Kept private and plain so a shared field
+/// grid can take its place without touching the band.
+fn range_fields<'a>(
+    enabled: bool,
+    range: &'a RangeControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let cell = |field: Option<&'a SliderControl>| -> Element<'a, Message> {
+        match field {
+            Some(field) => number_view_on(enabled, field, menu, theme::COMPACT_FIELD_ROW_HEIGHT),
+            None => Space::new().width(Length::Fill).into(),
+        }
+    };
+    let pair = |left: &'a SliderControl, right: Option<&'a SliderControl>| {
+        row![
+            iced::widget::container(cell(Some(left))).width(Length::Fill),
+            iced::widget::container(cell(right)).width(Length::Fill),
+        ]
+        .spacing(RANGE_FIELD_COLUMN_GAP)
+        .width(Length::Fill)
+    };
+    column![
+        pair(&range.low, range.low_feather.as_ref()),
+        pair(&range.high, range.high_feather.as_ref()),
+    ]
+    .spacing(RANGE_FIELD_ROW_GAP)
+    .into()
+}
+
+/// mask-panels.png, `.fields`: two columns 10 pt apart and rows 2 pt apart. The board also indents
+/// them 22 pt under the band; the declared labels (`Low Feather`) are longer than the board's
+/// (`low shoulder`), so the columns keep the full width instead.
+const RANGE_FIELD_COLUMN_GAP: f32 = 10.0;
+const RANGE_FIELD_ROW_GAP: f32 = 2.0;
+
 fn number_view<'a>(
     enabled: bool,
     field: &'a SliderControl,
     menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    number_view_on(enabled, field, menu, theme::FIELD_ROW_HEIGHT)
+}
+
+/// A number control whose `field` style sits on a row `row_height` tall: a module panel's own
+/// row, or the compact row a range packs its fields on.
+fn number_view_on<'a>(
+    enabled: bool,
+    field: &'a SliderControl,
+    menu: Option<&'a MenuTarget>,
+    row_height: f32,
 ) -> Element<'a, Message> {
     let spec = &field.spec;
     let edit = ui_edit(&field.edit, &field.display, &field.invalid);
@@ -921,6 +1073,9 @@ fn number_view<'a>(
                 submit,
                 reset,
             )
+        }
+        NumberControlStyle::Field if row_height < theme::FIELD_ROW_HEIGHT => {
+            compact_number_field(&field_model, edit_start, on_text, submit, reset)
         }
         NumberControlStyle::Field => number_field(&field_model, edit_start, on_text, submit, reset),
         NumberControlStyle::Stepper => stepper(

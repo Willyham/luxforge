@@ -10,6 +10,7 @@ use crate::{
     state::{
         histogram::HistogramModel,
         masks::{ComponentRow, KindOption, MaskDraftModel, MaskRow, MasksModel},
+        tools::drawn_by_range,
     },
     view::tools_panel::control_view,
 };
@@ -742,6 +743,10 @@ fn component_row<'a>(
     // one generated mask control with no Copy as JSON request, which is a hole in UI/API parity
     // rather than a cosmetic omission.
     for field in &component.fields {
+        // A band draws its own number fields under itself, so they are drawn there once.
+        if drawn_by_range(&component.fields, field) {
+            continue;
+        }
         block = block.push(control_view(HOST, component.available, field, menu, plot));
     }
     // The pointer over the row is what asks the overlay for this component's own contribution, and
