@@ -598,6 +598,183 @@ pub const STATUS_FACT_SPACING: f32 = 12.0;
 pub const STATUS_DOT_SIZE: f32 = 6.0;
 pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
 
+// -- Masks panel ----------------------------------------------------------------------------------
+
+// The Masks panel's rows and controls, from the mask-panels board of the masking workspace design
+// (`docs/design/develop-workspace/html/mask-panels.html`): the mask and component rows, the mode
+// and overlay controls, the kind menu, the two-column fields and the colour range's swatches. Each
+// translucent fill the board draws is stored opaque, composited over the surface it sits on, for
+// the reason [`RULE`] gives; the tests below recompute each composite.
+
+/// A mask row and a component row (`.mrow`, `.crow`): the list row's height.
+pub const MASK_ROW_HEIGHT: f32 = LIST_ROW_HEIGHT;
+/// A mask row's inset: 8 pt before the thumbnail, 6 pt after the menu.
+pub const MASK_ROW_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 6.0,
+    bottom: 0.0,
+    left: 8.0,
+};
+/// Between a mask row's thumbnail, name, dot, amount and buttons.
+pub const MASK_ROW_SPACING: f32 = 8.0;
+/// A component row's inset: 6 pt before the grip, 4 pt after the menu.
+pub const COMPONENT_ROW_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 4.0,
+    bottom: 0.0,
+    left: 6.0,
+};
+/// Between a component row's grip, kind icon, name, mode control and buttons.
+pub const COMPONENT_ROW_SPACING: f32 = 6.0;
+/// The open mask's row: [`ACCENT`] at 12% over [`PANEL`]. A selected component row is
+/// [`LIST_ROW_CURRENT`], white at 7%, as the history's current row is.
+pub const MASK_ROW_SELECTED: Color = Color::from_rgb8(55, 50, 44);
+/// A mask or component row under the pointer, or the component row whose coverage the overlay is
+/// showing: white at 4% over [`PANEL`], a step under a selected row. The board draws no hover, so
+/// this is the smallest step that still reads.
+pub const ROW_HOVER: Color = Color::from_rgb8(41, 41, 44);
+/// A mask's amount readout, right-aligned in this box so the digits keep their place.
+pub const MASK_AMOUNT_WIDTH: f32 = 26.0;
+/// A coverage thumbnail (`.th`): 28 × 19 pt, rounded 3 pt, a 1 pt border of white at 8% over its
+/// near-black ground.
+pub const THUMBNAIL_WIDTH: f32 = 28.0;
+pub const THUMBNAIL_HEIGHT: f32 = 19.0;
+pub const THUMBNAIL_RADIUS: f32 = 3.0;
+pub const THUMBNAIL_BACKGROUND: Color = Color::from_rgb8(0x0e, 0x0e, 0x10);
+pub const THUMBNAIL_BORDER: Color = Color::from_rgb8(33, 33, 35);
+/// A row's small icon button (`.ib.sm`): the header button's square, holding a
+/// [`HEADER_ICON_SIZE`] icon (the eye, the menu) or a [`SMALL_ICON_SIZE`] one (the invert).
+pub const SMALL_ICON_SIZE: f32 = 12.0;
+/// A component row's kind icon column: a [`HEADER_ICON_SIZE`] icon centred in it.
+pub const KIND_ICON_WIDTH: f32 = 16.0;
+/// A component row's drag handle.
+pub const GRIP_SIZE: f32 = 12.0;
+/// The mode control (`.mode`): 18 pt segments inset 1 pt on a track rounded 5 pt, each segment
+/// rounded 4 pt, the glyph a [`MODE_GLYPH_SIZE`] icon.
+pub const MODE_SEGMENT_SIZE: f32 = 18.0;
+pub const MODE_INSET: f32 = 1.0;
+pub const MODE_RADIUS: f32 = 5.0;
+pub const MODE_SEGMENT_RADIUS: f32 = 4.0;
+pub const MODE_GLYPH_SIZE: f32 = 10.0;
+/// A fixed mode control (a mask's first component) is drawn at the board's 55% opacity. Its track
+/// and segment are dark enough that Iced's linear blending matches the board, so they are
+/// [`SEGMENT_TRACK`] and [`SEGMENT_SELECTED`] at this alpha over whatever row they sit on; the ink is
+/// [`TEXT_BRIGHT`] at 55% over that segment, precomputed opaque because a light alpha would render
+/// far brighter.
+pub const MODE_FIXED_OPACITY: f32 = 0.55;
+pub const MODE_FIXED_INK: Color = Color::from_rgb8(153, 153, 156);
+/// The overlay row (`.ov`): 26 pt, its label in a 52 pt box, its parts 6 pt apart, inset 4 pt.
+pub const OVERLAY_ROW_HEIGHT: f32 = 26.0;
+pub const OVERLAY_LABEL_WIDTH: f32 = 52.0;
+pub const OVERLAY_SPACING: f32 = 6.0;
+pub const OVERLAY_PADDING: f32 = 4.0;
+/// An overlay segment: 20 pt tall, 6 pt either side of its 12 pt glyph.
+pub const OVERLAY_SEGMENT_HEIGHT: f32 = 20.0;
+pub const OVERLAY_SEGMENT_PADDING: f32 = 6.0;
+pub const OVERLAY_GLYPH_SIZE: f32 = 12.0;
+/// How strongly the tint glyph shows the tint, as the board draws it at 60%.
+pub const OVERLAY_TINT_GLYPH_OPACITY: f32 = 0.6;
+/// A tint swatch (`.sw2`): 12 pt, rounded 3 pt, with a 2 pt accent ring outside it when chosen.
+pub const OVERLAY_SWATCH_SIZE: f32 = 12.0;
+pub const OVERLAY_SWATCH_RING: f32 = 2.0;
+/// A swatch that cannot be chosen (the overlay is not a tint) is drawn at this opacity.
+pub const SWATCH_DISABLED_OPACITY: f32 = 0.35;
+/// The dark outline round every swatch: black at 50%, which reads on any colour.
+pub const SWATCH_OUTLINE: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.5,
+};
+/// The mask-on-black glyph's outline (`#666`) and the photograph's stand-in colour in the
+/// photo-through-selection glyph (`#7a8a4a`), both the board's.
+pub const MASK_GLYPH_OUTLINE: Color = Color::from_rgb8(0x66, 0x66, 0x66);
+pub const MASK_GLYPH_PHOTO: Color = Color::from_rgb8(0x7a, 0x8a, 0x4a);
+/// A dropdown menu (`.menu`): 200 pt wide on its own surface, inset 5 pt, rounded 8 pt, outlined in
+/// white at 10% and lifted by a soft shadow.
+pub const MENU_WIDTH: f32 = 200.0;
+pub const MENU_PADDING: f32 = 5.0;
+pub const MENU_RADIUS: f32 = 8.0;
+pub const MENU_SURFACE: Color = Color::from_rgb8(0x2a, 0x2a, 0x2e);
+pub const MENU_BORDER: Color = Color::from_rgb8(63, 63, 67);
+pub const MENU_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.5,
+    },
+    offset: iced::Vector { x: 0.0, y: 10.0 },
+    blur_radius: 30.0,
+};
+/// A menu item: 26 pt, inset 8 pt, its icon, label and hint 8 pt apart, rounded 5 pt; white at 6%
+/// under the pointer (the board draws no hover).
+pub const MENU_ITEM_HEIGHT: f32 = 26.0;
+pub const MENU_ITEM_PADDING: f32 = 8.0;
+pub const MENU_ITEM_SPACING: f32 = 8.0;
+pub const MENU_ITEM_RADIUS: f32 = 5.0;
+pub const MENU_ITEM_HOVER: Color = Color::from_rgb8(55, 55, 59);
+/// A menu's separator: white at 8% over [`MENU_SURFACE`], 4 pt above and below, 6 pt in from the
+/// sides.
+pub const MENU_SEPARATOR: Color = Color::from_rgb8(59, 59, 63);
+pub const MENU_SEPARATOR_MARGIN: Padding = Padding {
+    top: 4.0,
+    right: 6.0,
+    bottom: 4.0,
+    left: 6.0,
+};
+/// A dropdown button (New mask): 24 pt tall, inset 9 pt, a 12 pt plus and a 10 pt chevron 5 pt from
+/// its label. A compact one (Add component) is [`COMPACT_BUTTON_HEIGHT`], inset 8 pt.
+pub const DROPDOWN_HEIGHT: f32 = 24.0;
+pub const DROPDOWN_PADDING: f32 = 9.0;
+pub const COMPACT_DROPDOWN_PADDING: f32 = 8.0;
+pub const DROPDOWN_ICON_SIZE: f32 = 12.0;
+pub const DROPDOWN_CHEVRON_SIZE: f32 = 10.0;
+/// What sits under a selected component row — its fields, strokes, swatches and notes — is inset
+/// 22 pt, past the grip, so it reads as the row's.
+pub const COMPONENT_DETAIL_INDENT: f32 = 22.0;
+/// A component's two-column fields (`.fields .fld`): 22 pt rows 2 pt apart, the columns 10 pt
+/// apart, 2 pt above the first row and 4 pt under the last; each an 11.5 pt label and a 52 × 18 pt
+/// box rounded 4 pt, 8 pt apart.
+pub const GRID_ROW_HEIGHT: f32 = 22.0;
+pub const GRID_ROW_SPACING: f32 = 2.0;
+pub const GRID_COLUMN_SPACING: f32 = 10.0;
+pub const GRID_PADDING_TOP: f32 = 2.0;
+pub const GRID_PADDING_BOTTOM: f32 = 4.0;
+pub const GRID_FIELD_WIDTH: f32 = 52.0;
+pub const GRID_FIELD_HEIGHT: f32 = 18.0;
+pub const GRID_FIELD_RADIUS: f32 = 4.0;
+pub const GRID_LABEL_SPACING: f32 = 8.0;
+pub const SIZE_GRID_FIELD: f32 = 11.5;
+/// A toggle row in the Masks panel (Invert mask, Erase): 22 pt, its hint 8 pt after its label.
+pub const COMPACT_TOGGLE_ROW_HEIGHT: f32 = 22.0;
+pub const TOGGLE_HINT_SPACING: f32 = 8.0;
+/// A colour range's swatch slot: 22 × 18 pt, rounded 4 pt, 6 pt apart; an empty slot is a dashed
+/// [`TEXT_FAINT`] outline.
+pub const SWATCH_SLOT_WIDTH: f32 = 22.0;
+pub const SWATCH_SLOT_HEIGHT: f32 = 18.0;
+pub const SWATCH_SLOT_RADIUS: f32 = 4.0;
+pub const SWATCH_SLOT_SPACING: f32 = 6.0;
+/// The dashes of an empty slot's outline.
+pub const SWATCH_SLOT_DASH: f32 = 2.0;
+/// A brush stroke's row: 20 pt, its 11 pt caption after its number right-aligned in 14 pt, and an
+/// 11 pt bin.
+pub const STROKE_ROW_HEIGHT: f32 = 20.0;
+pub const STROKE_INDEX_WIDTH: f32 = 14.0;
+pub const STROKE_ICON_SIZE: f32 = 11.0;
+/// Between a stroke row's number and its caption.
+pub const STROKE_ROW_SPACING: f32 = 8.0;
+/// Between the stroke rows of one brush component.
+pub const STROKE_LIST_SPACING: f32 = 2.0;
+/// A note under a component row: its kind's own line, in secondary ink, inset past the grip and
+/// 4 pt over the next row.
+pub const COMPONENT_NOTE_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 6.0,
+    bottom: 4.0,
+    left: COMPONENT_DETAIL_INDENT,
+};
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -1002,6 +1179,122 @@ pub fn list_row_current(_theme: &Theme, status: button::Status) -> button::Style
         snap: false,
     }
     .with_disabled(status)
+}
+
+/// A mask or component row: `selected` fills it in every state, else [`ROW_HOVER`] shows under the
+/// pointer or while `hovered` says the row is the one being shown, else it has no surface.
+pub fn mask_row(
+    selected: Option<Color>,
+    hovered: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = match selected {
+            Some(fill) => Some(fill),
+            None if hovered || pointer => Some(ROW_HOVER),
+            None => None,
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: if selected.is_some() {
+                TEXT_CURRENT_ROW
+            } else {
+                TEXT_LABEL
+            },
+            border: Border {
+                radius: LIST_ROW_RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+        .with_disabled(status)
+    }
+}
+
+/// The mode control's track: [`SEGMENT_TRACK`] rounded [`MODE_RADIUS`], at
+/// [`MODE_FIXED_OPACITY`] when the mode is fixed.
+pub fn mode_track(fixed: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_theme| {
+        let alpha = if fixed { MODE_FIXED_OPACITY } else { 1.0 };
+        surface(Color {
+            a: alpha,
+            ..SEGMENT_TRACK
+        })
+        .border(Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: MODE_RADIUS.into(),
+        })
+    }
+}
+
+/// One mode segment: raised on [`SEGMENT_SELECTED`] when chosen (at [`MODE_FIXED_OPACITY`] when
+/// fixed), [`CONTROL`] under the pointer, else bare. Its glyph carries the mode's colour.
+pub fn mode_segment(
+    selected: bool,
+    fixed: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, _) => Some(Color {
+                a: if fixed { MODE_FIXED_OPACITY } else { 1.0 },
+                ..SEGMENT_SELECTED
+            }),
+            (false, button::Status::Hovered | button::Status::Pressed) => Some(CONTROL),
+            (false, _) => None,
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: TEXT_PRIMARY,
+            border: Border {
+                radius: MODE_SEGMENT_RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// A dropdown menu's surface: [`MENU_SURFACE`], outlined in [`MENU_BORDER`], rounded
+/// [`MENU_RADIUS`], over [`MENU_SHADOW`].
+pub fn menu_surface(_theme: &Theme) -> container::Style {
+    surface(MENU_SURFACE)
+        .border(Border {
+            color: MENU_BORDER,
+            width: BORDER_WIDTH,
+            radius: MENU_RADIUS.into(),
+        })
+        .shadow(MENU_SHADOW)
+}
+
+/// A menu item: bare at rest, [`MENU_ITEM_HOVER`] under the pointer.
+pub fn menu_item(_theme: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            Some(Background::Color(MENU_ITEM_HOVER))
+        }
+        button::Status::Active | button::Status::Disabled => None,
+    };
+    button::Style {
+        background,
+        text_color: text_color_for(status),
+        border: Border {
+            radius: MENU_ITEM_RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// A menu's separator line.
+pub fn menu_separator(_theme: &Theme) -> container::Style {
+    surface(MENU_SEPARATOR)
 }
 
 /// A selected chip: the accent-tinted fill, borderless.
@@ -1594,5 +1887,69 @@ mod tests {
         assert_eq!((CLIP_TRIANGLE_WIDTH, CLIP_TRIANGLE_HEIGHT), (10.0, 8.0));
         assert_eq!(CLIP_TRIANGLE_INSET, 6.0);
         assert_eq!(HISTOGRAM_INSPECTOR_HEIGHT, 104.0);
+    }
+
+    /// mask-panels.html: the rows' tints and the menu's lines are the board's CSS alphas composited
+    /// over the surfaces they sit on, to within a code.
+    #[test]
+    fn masks_panel_tints_are_the_boards_composites() {
+        let white = Color::WHITE;
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
+        assert!(near(
+            code(MASK_ROW_SELECTED),
+            composite(ACCENT, PANEL, 0.12)
+        ));
+        assert!(near(code(LIST_ROW_CURRENT), composite(white, PANEL, 0.07)));
+        assert!(near(code(ROW_HOVER), composite(white, PANEL, 0.04)));
+        assert!(near(
+            code(THUMBNAIL_BORDER),
+            composite(white, THUMBNAIL_BACKGROUND, 0.08)
+        ));
+        assert!(near(
+            code(MENU_BORDER),
+            composite(white, MENU_SURFACE, 0.10)
+        ));
+        assert!(near(
+            code(MENU_SEPARATOR),
+            composite(white, MENU_SURFACE, 0.08)
+        ));
+        assert!(near(
+            code(MENU_ITEM_HOVER),
+            composite(white, MENU_SURFACE, 0.06)
+        ));
+        let fixed_segment = composite(SEGMENT_SELECTED, PANEL, MODE_FIXED_OPACITY);
+        let fixed_segment = Color::from_rgb8(fixed_segment[0], fixed_segment[1], fixed_segment[2]);
+        assert!(near(
+            code(MODE_FIXED_INK),
+            composite(TEXT_BRIGHT, fixed_segment, MODE_FIXED_OPACITY)
+        ));
+    }
+
+    #[test]
+    fn masks_panel_sizes_match_the_board() {
+        assert_eq!(MASK_ROW_HEIGHT, 26.0);
+        assert_eq!(
+            (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, THUMBNAIL_RADIUS),
+            (28.0, 19.0, 3.0)
+        );
+        assert_eq!(
+            (MODE_SEGMENT_SIZE, MODE_INSET, MODE_RADIUS),
+            (18.0, 1.0, 5.0)
+        );
+        assert_eq!(
+            MODE_SEGMENT_SIZE * 3.0 + MODE_INSET * 4.0,
+            58.0,
+            "three segments on their track"
+        );
+        assert_eq!((OVERLAY_ROW_HEIGHT, OVERLAY_SEGMENT_HEIGHT), (26.0, 20.0));
+        assert_eq!((MENU_WIDTH, MENU_ITEM_HEIGHT), (200.0, 26.0));
+        assert_eq!(
+            (GRID_ROW_HEIGHT, GRID_FIELD_WIDTH, GRID_FIELD_HEIGHT),
+            (22.0, 52.0, 18.0)
+        );
+        assert_eq!(COMPONENT_DETAIL_INDENT, 22.0);
+        assert_eq!(COMPACT_TOGGLE_ROW_HEIGHT, 22.0);
+        assert_eq!((SWATCH_SLOT_WIDTH, SWATCH_SLOT_HEIGHT), (22.0, 18.0));
+        assert_eq!(STROKE_ROW_HEIGHT, 20.0);
     }
 }
