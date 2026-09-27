@@ -25,13 +25,13 @@ mod tone;
 mod white_balance;
 
 use super::{
-    ActionDescriptor, CanvasInteraction, ColorOperation, Control, EffectDescriptor, EffectStage,
-    ParameterDescriptor, PointwiseColor, Processing, Stage, StageContext,
-    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    ActionDescriptor, CanvasInteraction, ColorOperation, Control, EffectStage, ParameterDescriptor,
+    PointwiseColor, Processing, Stage, StageContext,
+    field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
+use crate::Error;
 #[cfg(test)]
-use crate::ErrorKind;
-use crate::{EFFECT_FORMAT, Error};
+use crate::{EFFECT_FORMAT, ErrorKind};
 use colour::ColourAdjust;
 use exposure::Exposure;
 use serde_json::{Map, Value};
@@ -44,7 +44,6 @@ use white_balance::{PARAMETER_RANGE, WhiteBalance};
 pub const BASIC_EFFECT: &str = "luxforge.basic.adjust";
 
 pub(super) const SET_BASIC: &str = "set-basic";
-pub(super) const RESET_BASIC: &str = "reset-basic";
 /// The read-only query the neutral picker runs, in its own `query.<id>` namespace.
 pub(super) const NEUTRAL_SAMPLE: &str = "neutral-sample";
 
@@ -111,32 +110,16 @@ impl FieldPatch for Basic {
         // On a RAW photo's global target the White balance group's controls are the source
         // development's, declared by the RAW module and reached through these variants.
         let raw = super::white_balance_variants();
-        Spec {
-            id: "luxforge.basic",
-            title: "Basic",
-            hint: "Exposure, tone, white balance and colour",
-            noun: "basic",
-            effect: EffectDescriptor {
-                id: BASIC_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Color,
-                order: 0,
-                maskable: true,
-                artifacts: false,
-                single: true,
-                sources: Vec::new(),
-            },
-            set: ActionText {
-                id: SET_BASIC,
-                title: "Set Basic",
-                notes: "merges the named Basic fields into the stack's one Basic layer, which the host places before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
-            },
-            reset: ActionText {
-                id: RESET_BASIC,
-                title: "Reset Basic",
-                notes: "returns the stack's one Basic layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
-            },
-            fields: vec![
+        Spec::new(
+            "luxforge.basic",
+            "Basic",
+            "Exposure, tone, white balance and colour",
+            BASIC_EFFECT,
+            EffectStage::Color,
+        )
+        .maskable()
+        .set_notes("merges the named Basic fields into the stack's one Basic layer, which the host places before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")
+        .fields([
                 white_balance(
                         TEMPERATURE,
                         "Temperature",
@@ -195,17 +178,14 @@ impl FieldPatch for Basic {
                     "Saturation",
                     "scales chroma uniformly about the achromatic axis; -100 is neutral grayscale, not merely a strong desaturation",
                 ),
-            ],
-            groups: vec![
-                Group {
-                    label: "White balance",
-                    fields: vec![TEMPERATURE, TINT],
-                    collapsed: false,
-                    // The neutral picker, beside the two fields a pick sets, and As shot: on a
-                    // JPEG the file's own rendering, Temperature and Tint 0, which is also the
-                    // group's reset; on a RAW photo the camera's white balance.
-                    extra: vec![
-                        Control::picker(NEUTRAL_PICKER_LABEL).variant(raw.picker),
+            ])
+            // The neutral picker, beside the two fields a pick sets, and As shot: on a JPEG the
+            // file's own rendering, Temperature and Tint 0, which is also the group's reset; on a
+            // RAW photo the camera's white balance.
+            .group(
+                Group::new("White balance", [TEMPERATURE, TINT])
+                    .extra(Control::picker(NEUTRAL_PICKER_LABEL).variant(raw.picker))
+                    .extra(
                         Control::action(SET_BASIC, AS_SHOT_LABEL)
                             .preset(Map::from_iter(
                                 [TEMPERATURE, TINT]
@@ -213,25 +193,15 @@ impl FieldPatch for Basic {
                             ))
                             .icon("target")
                             .variant(raw.as_shot),
-                    ],
-                    reset_variants: vec![raw.reset],
-                },
-                Group {
-                    label: "Tone",
-                    fields: vec![EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS],
-                    collapsed: false,
-                    extra: Vec::new(),
-                    reset_variants: Vec::new(),
-                },
-                Group {
-                    label: "Colour",
-                    fields: vec![VIBRANCE, SATURATION],
-                    collapsed: false,
-                    extra: Vec::new(),
-                    reset_variants: Vec::new(),
-                },
-            ],
-            queries: vec![ActionDescriptor {
+                    )
+                    .reset_variant(raw.reset),
+            )
+            .group(Group::new(
+                "Tone",
+                [EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS],
+            ))
+            .group(Group::new("Colour", [VIBRANCE, SATURATION]))
+            .query(ActionDescriptor {
                 id: NEUTRAL_SAMPLE.into(),
                 title: "Neutral sample".into(),
                 notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
@@ -248,10 +218,10 @@ impl FieldPatch for Basic {
                         ))
                     })
                     .into(),
-            }],
+            })
             // The neutral picker: a pick runs the query at the content pixel behind it and submits
             // the settings it returns to `set-basic` once. A refusal commits nothing.
-            canvas: Some(CanvasInteraction::SampleApply {
+            .canvas(CanvasInteraction::SampleApply {
                 query: NEUTRAL_SAMPLE.into(),
                 x: "x".into(),
                 y: "y".into(),
@@ -259,19 +229,12 @@ impl FieldPatch for Basic {
                 title: NEUTRAL_PICKER_LABEL.into(),
                 shortcut: Some("W".into()),
                 icon: None,
-            }),
-            collapsed: false,
-            layout: crate::ModuleLayout::Stacked,
-            developer: false,
-        }
+            })
     }
 
+    /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
+    /// to no units.
     fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
-        // A neutral payload compiles to no units, which the host drops entirely: the identity byte
-        // path and the shared source buffer are kept.
-        if values.is_default() {
-            return Ok(Processing::Color(ColorOperation::neutral()));
-        }
         // The frozen internal order: white balance, then exposure, then the tonal curve, then
         // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
         // layer that moves one slider costs one unit.
@@ -392,12 +355,13 @@ impl FieldPatch for Basic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{ActionInput, ActionPlan, ParameterKind, ResetAction, ToolModule};
+    use crate::modules::{ActionInput, ActionPlan, ToolModule};
     use crate::{Layer, LayerId};
     use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
     use luxforge_reference::srgb;
     use serde_json::json;
 
+    const RESET_BASIC: &str = "reset-basic";
     const STAGE: Stage = Stage {
         width: 480,
         height: 320,
@@ -412,341 +376,6 @@ mod tests {
             mask: None,
             artifacts: Vec::new(),
         }
-    }
-
-    /// The White balance group as `module.list` serializes it: Temperature, Tint, the neutral
-    /// picker and As shot, each with the control the RAW module provides in its place on a RAW
-    /// photo's global target, and the group reset with its RAW variant, As shot.
-    fn white_balance_group() -> Control {
-        serde_json::from_value(json!({
-            "kind": "group",
-            "label": "White balance",
-            "controls": [
-                {"kind": "number", "action": "set-basic", "parameter": "temperature",
-                 "label": "Temperature", "rail": "temperature",
-                 "variants": [{"source": "raw", "module": "luxforge.raw",
-                               "control": {"kind": "number", "action": "set-raw",
-                                           "parameter": "temperature", "label": "Temperature",
-                                           "rail": "temperature",
-                                           "reset": {"action": "set-raw",
-                                                     "preset": {"white-balance": "as-shot"}}}}]},
-                {"kind": "number", "action": "set-basic", "parameter": "tint", "label": "Tint",
-                 "rail": "tint",
-                 "variants": [{"source": "raw", "module": "luxforge.raw",
-                               "control": {"kind": "number", "action": "set-raw",
-                                           "parameter": "tint", "label": "Tint", "rail": "tint",
-                                           "reset": {"action": "set-raw",
-                                                     "preset": {"white-balance": "as-shot"}}}}]},
-                {"kind": "picker", "label": "Neutral picker",
-                 "variants": [{"source": "raw", "module": "luxforge.raw",
-                               "control": {"kind": "picker", "label": "Neutral picker"}}]},
-                {"kind": "action", "action": "set-basic", "label": "As shot",
-                 "preset": {"temperature": 0.0, "tint": 0.0}, "icon": "target",
-                 "variants": [{"source": "raw", "module": "luxforge.raw",
-                               "control": {"kind": "action", "action": "set-raw",
-                                           "label": "As shot",
-                                           "preset": {"white-balance": "as-shot"},
-                                           "icon": "target"}}]}
-            ],
-            "reset": {"action": "set-basic", "preset": {"temperature": 0.0, "tint": 0.0}},
-            "variants": [{"source": "raw", "module": "luxforge.raw",
-                          "reset": {"action": "set-raw",
-                                    "preset": {"white-balance": "as-shot"}}}]
-        }))
-        .expect("the White balance group's JSON")
-    }
-
-    #[test]
-    fn the_descriptor_declares_one_colour_effect_two_actions_and_the_tone_group() {
-        let module = BasicModule::new();
-        let descriptor = module.descriptor();
-        descriptor.validate().expect("a valid descriptor");
-        assert_eq!(descriptor.id, "luxforge.basic");
-        assert_eq!(descriptor.title, "Basic");
-        assert_eq!(
-            descriptor.hint.as_deref(),
-            Some("Exposure, tone, white balance and colour")
-        );
-        assert!(!descriptor.developer);
-        assert_eq!(descriptor.effects.len(), 1);
-        assert_eq!(descriptor.effects[0].id, BASIC_EFFECT);
-        assert_eq!(descriptor.effects[0].format, 1);
-        assert_eq!(descriptor.effects[0].stage, EffectStage::Color);
-        assert_eq!(
-            descriptor.reset,
-            Some(ResetAction {
-                action: RESET_BASIC.into(),
-                preset: Map::new(),
-            })
-        );
-
-        let set = descriptor.action(SET_BASIC).expect("set-basic");
-        assert!(set.patch, "every slider sends one field");
-        assert!(set.summary.is_none());
-        assert_eq!(set.parameters.len(), 10);
-        assert_eq!(
-            set.parameters
-                .iter()
-                .map(|parameter| parameter.name.as_str())
-                .collect::<Vec<_>>(),
-            FIELDS,
-            "every implemented field is a declared parameter of the one patch action, in FIELDS \
-             order"
-        );
-        let exposure = set.parameter(EXPOSURE).expect("the exposure parameter");
-        assert_eq!(
-            exposure.kind,
-            ParameterKind::Number {
-                min: -5.0,
-                max: 5.0
-            }
-        );
-        assert!(!exposure.required);
-        assert_eq!(exposure.default, Some(json!(0.0)));
-        assert_eq!(exposure.unit.as_deref(), Some("EV"));
-        assert_eq!(exposure.step, Some(0.01));
-        assert_eq!(exposure.precision, Some(2));
-        assert!(
-            exposure.notes.contains("2^EV")
-                && exposure.notes.contains("developed scene-linear planes"),
-            "{}",
-            exposure.notes
-        );
-
-        for (name, note_needle) in [
-            (CONTRAST, ""),
-            (HIGHLIGHTS, ""),
-            (SHADOWS, ""),
-            (WHITES, ""),
-            (BLACKS, ""),
-            (VIBRANCE, "colour heuristic"),
-            (SATURATION, "neutral grayscale"),
-        ] {
-            let parameter = set.parameter(name).unwrap_or_else(|| panic!("{name}"));
-            assert_eq!(
-                parameter.kind,
-                ParameterKind::Number {
-                    min: -100.0,
-                    max: 100.0
-                },
-                "{name}"
-            );
-            assert!(!parameter.required, "{name}");
-            assert_eq!(parameter.unit, None, "{name}: no unit is declared");
-            assert_eq!(parameter.step, Some(1.0), "{name}");
-            assert_eq!(parameter.precision, Some(0), "{name}");
-            assert!(!parameter.notes.is_empty(), "{name}");
-            assert!(
-                parameter.notes.contains(note_needle),
-                "{name}: {}",
-                parameter.notes
-            );
-        }
-
-        let reset = descriptor.action(RESET_BASIC).expect("reset-basic");
-        assert!(reset.parameters.is_empty());
-        assert!(!reset.patch);
-
-        assert_eq!(
-            descriptor.controls,
-            vec![
-                white_balance_group(),
-                Control::Group {
-                    label: "Tone".into(),
-                    reset: Some(ResetAction {
-                        action: SET_BASIC.into(),
-                        preset: [
-                            ("exposure".to_owned(), json!(0.0)),
-                            ("contrast".to_owned(), json!(0.0)),
-                            ("highlights".to_owned(), json!(0.0)),
-                            ("shadows".to_owned(), json!(0.0)),
-                            ("whites".to_owned(), json!(0.0)),
-                            ("blacks".to_owned(), json!(0.0)),
-                        ]
-                        .into_iter()
-                        .collect(),
-                    }),
-                    controls: vec![
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "exposure".into(),
-                            label: "Exposure".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "contrast".into(),
-                            label: "Contrast".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "highlights".into(),
-                            label: "Highlights".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "shadows".into(),
-                            label: "Shadows".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "whites".into(),
-                            label: "Whites".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "blacks".into(),
-                            label: "Blacks".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                    ],
-                    collapsed: false,
-                    variants: Vec::new(),
-                },
-                Control::Group {
-                    label: "Colour".into(),
-                    reset: Some(ResetAction {
-                        action: SET_BASIC.into(),
-                        preset: [
-                            ("vibrance".to_owned(), json!(0.0)),
-                            ("saturation".to_owned(), json!(0.0)),
-                        ]
-                        .into_iter()
-                        .collect(),
-                    }),
-                    controls: vec![
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "vibrance".into(),
-                            label: "Vibrance".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "saturation".into(),
-                            label: "Saturation".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                            variants: Vec::new(),
-                        },
-                    ],
-                    collapsed: false,
-                    variants: Vec::new(),
-                },
-            ],
-            "the White balance group's two sliders, its neutral picker and As shot, then the Tone \
-             group's six, then the Colour group's two, each with a group reset naming all of its \
-             fields"
-        );
-    }
-
-    /// The White balance group, its two sliders, its own reset preset and the neutral picker it
-    /// puts on the canvas mode strip.
-    #[test]
-    fn the_descriptor_declares_the_white_balance_group_and_the_neutral_picker() {
-        let module = BasicModule::new();
-        let descriptor = module.descriptor();
-        descriptor.validate().expect("a valid descriptor");
-        assert_eq!(
-            descriptor.controls.first(),
-            Some(&white_balance_group()),
-            "white balance is the first group, before tone, and the neutral picker and As shot sit \
-             with the two fields they set"
-        );
-
-        let set = descriptor.action(SET_BASIC).expect("set-basic");
-        for (name, expected_label) in [(TEMPERATURE, "warms"), (TINT, "magenta")] {
-            let parameter = set.parameter(name).unwrap_or_else(|| panic!("{name}"));
-            assert_eq!(
-                parameter.kind,
-                ParameterKind::Number {
-                    min: -100.0,
-                    max: 100.0
-                },
-                "{name}"
-            );
-            assert!(!parameter.required, "{name}");
-            assert_eq!(parameter.default, Some(json!(0.0)), "{name}");
-            assert_eq!(parameter.unit, None, "{name}: not Kelvin, not a unit");
-            assert_eq!(parameter.step, Some(1.0), "{name}");
-            assert_eq!(parameter.precision, Some(0), "{name}");
-            assert!(
-                parameter.notes.contains("relative")
-                    && parameter
-                        .notes
-                        .contains("a JPEG as decoded; on a RAW photo only through a mask")
-                    && parameter.notes.contains(expected_label),
-                "{name}: {}",
-                parameter.notes
-            );
-        }
-
-        let query = descriptor.query(NEUTRAL_SAMPLE).expect("neutral-sample");
-        assert_eq!(query.title, "Neutral sample");
-        assert!(!query.patch);
-        assert_eq!(
-            query
-                .parameters
-                .iter()
-                .map(|parameter| parameter.name.as_str())
-                .collect::<Vec<_>>(),
-            ["x", "y"]
-        );
-        for parameter in &query.parameters {
-            assert_eq!(
-                parameter.kind,
-                ParameterKind::Integer { min: 0, max: 16383 }
-            );
-            assert!(parameter.required);
-            assert!(
-                parameter.notes.contains("render.locate"),
-                "{}",
-                parameter.notes
-            );
-        }
-        assert_eq!(
-            descriptor.canvas,
-            Some(CanvasInteraction::SampleApply {
-                query: NEUTRAL_SAMPLE.into(),
-                x: "x".into(),
-                y: "y".into(),
-                action: SET_BASIC.into(),
-                title: "Neutral picker".into(),
-                shortcut: Some("W".into()),
-                icon: None,
-            })
-        );
-        assert_eq!(
-            descriptor.canvas.as_ref().unwrap().title(),
-            "Neutral picker"
-        );
-        assert_eq!(descriptor.canvas.as_ref().unwrap().shortcut(), Some("W"));
     }
 
     /// The words a history label and the recipe row use for each field, with its declared decimals,

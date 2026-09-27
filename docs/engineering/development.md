@@ -448,8 +448,9 @@ readable and refusing sampling, analysis and a new edit by name; and a reopen re
 revision, entry, layer and mask identities, rows, pixels and analysis identity. The original's bytes
 are unchanged throughout.
 
-A module's own declaration (its descriptor and the words its history labels use for each field),
-its numerics against its frozen reference and its unique behaviour — Basic's neutral picker,
+A module's descriptor is the [built-in descriptor snapshot](#the-built-in-descriptor-snapshot)'s.
+The words its history labels use for each field, its numerics against its frozen reference and
+its unique behaviour — Basic's neutral picker,
 Presence's halos and tiling, the vignette's recentring against its frozen reference — stay in that
 module's own tests under `crates/luxforge-core/tests/` and `src/modules/`, and Basic's
 numerics on the photo fixture in the Basic and histogram chapter. The placement of Presence, the
