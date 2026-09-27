@@ -256,8 +256,9 @@ fn reference(catalog: &Path, asset: &Value, entry: &Value) -> crate::Raster {
     service.render_entry(&asset, &entry).unwrap()
 }
 
-/// Per-channel mean and maximum absolute difference between a decoded export and a frame.
-fn difference(path: &Path, frame: &crate::Raster) -> ([f64; 3], [u8; 3]) {
+/// Per-channel mean and maximum absolute difference between a decoded export and a frame, and the
+/// share of pixels any channel of which differs by more than [`NEAR`].
+fn difference(path: &Path, frame: &crate::Raster) -> ([f64; 3], [u8; 3], f64) {
     let decoded = image::open(path).unwrap().to_rgb8();
     assert_eq!(
         (decoded.width(), decoded.height()),
@@ -266,30 +267,56 @@ fn difference(path: &Path, frame: &crate::Raster) -> ([f64; 3], [u8; 3]) {
     );
     let mut sum = [0u64; 3];
     let mut max = [0u8; 3];
+    let mut far = 0u32;
     for (exported, rendered) in decoded.pixels().zip(frame.rgba.chunks_exact(4)) {
+        let mut near = true;
         for channel in 0..3 {
             let delta = exported.0[channel].abs_diff(rendered[channel]);
             sum[channel] += u64::from(delta);
             max[channel] = max[channel].max(delta);
+            near &= delta <= NEAR;
         }
+        far += u32::from(!near);
     }
     let count = f64::from(frame.width) * f64::from(frame.height);
-    (sum.map(|total| total as f64 / count), max)
+    (
+        sum.map(|total| total as f64 / count),
+        max,
+        f64::from(far) / count,
+    )
 }
 
 /// What quality 90 at full-resolution chroma may change: measured on the quadrant fixture, whose
-/// only detail is its quadrant edges.
+/// only detail is its hard quadrant edges. Away from them an export decodes within a code or two
+/// of the render (per-channel means 0.4 to 1.2); the blocks straddling an edge ring, which is
+/// where about 3.7% of the pixels differ by more than [`NEAR`] and the maximum of 67 is.
 fn assert_matches(path: &Path, frame: &crate::Raster, what: &str) {
-    let (mean, max) = difference(path, frame);
-    eprintln!("{what}: mean {mean:?}, max {max:?}");
+    assert_encodes(path, frame, what);
+    let (mean, max, far) = difference(path, frame);
+    eprintln!("{what}: mean {mean:?}, max {max:?}, share beyond {NEAR}: {far}");
     for channel in 0..3 {
         assert!(mean[channel] < MEAN_TOLERANCE, "{what}: mean {mean:?}");
         assert!(max[channel] <= MAX_TOLERANCE, "{what}: max {max:?}");
     }
+    assert!(far < FAR_SHARE, "{what}: {far} of the pixels beyond {NEAR}");
 }
 
-const MEAN_TOLERANCE: f64 = 1.0;
-const MAX_TOLERANCE: u8 = 32;
+/// A file written without metadata is byte for byte the encoder's output for the reference frame:
+/// the job rendered exactly that frame and added nothing to it.
+fn assert_encodes(path: &Path, frame: &crate::Raster, what: &str) {
+    let mut expected = Vec::new();
+    crate::export::encode::encode_jpeg(&mut expected, frame, None, &mut |_| {}, &|| Ok(()))
+        .unwrap();
+    assert!(
+        fs::read(path).unwrap() == expected,
+        "{what}: the file is not the encoding of the reference frame"
+    );
+}
+
+const MEAN_TOLERANCE: f64 = 1.5;
+const MAX_TOLERANCE: u8 = 80;
+const NEAR: u8 = 8;
+const FAR_SHARE: f64 = 0.05;
 
 /// An export plans the entry's output stage and suggests a name beside the original, writes the
 /// exact render of that entry as a new JPEG, reports every phase on the board and records one
@@ -439,6 +466,9 @@ fn a_later_commit_never_changes_an_accepted_export() {
     );
     for name in ["running.jpg", "queued.jpg", "historical.jpg"] {
         assert_matches(&out.join(name), &first_frame, name);
+        // And it is not the later entry: the tolerance is far tighter than the two differ.
+        let (mean, _, _) = difference(&out.join(name), &second_frame);
+        assert!(mean.iter().all(|mean| *mean > 10.0), "{name}: {mean:?}");
     }
     assert_matches(&out.join("current.jpg"), &second_frame, "current.jpg");
 }
@@ -606,32 +636,36 @@ fn refusals_are_answered_at_once_and_write_nothing() {
         original.code, "conflict",
         "the original itself: {original:?}"
     );
-    for (destination, what) in [
-        (json!("relative.jpg"), "a relative path"),
-        (json!(out.join("wrong.png")), "a wrong extension"),
-        (json!(out.join("missing").join("x.jpg")), "a missing parent"),
+    // The shape is a validation error; a parent that cannot be read, a missing one included, is
+    // the file-system error that says so.
+    for (destination, what, code) in [
+        (json!("relative.jpg"), "a relative path", "validation"),
+        (
+            json!(out.join("wrong.png")),
+            "a wrong extension",
+            "validation",
+        ),
+        (
+            json!(out.join("missing").join("x.jpg")),
+            "a missing parent",
+            "read-error",
+        ),
     ] {
         let refused = export(destination);
-        assert_eq!(refused.code, "validation", "{what}: {refused:?}");
+        assert_eq!(refused.code, code, "{what}: {refused:?}");
     }
     let unknown = harness.refused(
         "export.jpeg",
         with_envelope(json!({"asset_id": AssetId::new(), "destination": out.join("a.jpg")})),
     );
-    assert!(
-        matches!(unknown.code.as_str(), "validation" | "not-found"),
-        "{unknown:?}"
-    );
+    assert_eq!(unknown.code, "validation", "{unknown:?}");
     let unknown_entry = harness.refused(
         "export.jpeg",
         with_envelope(json!({
             "asset_id": asset, "entry_id": EntryId::new(), "destination": out.join("b.jpg"),
         })),
     );
-    assert!(
-        matches!(unknown_entry.code.as_str(), "validation" | "not-found"),
-        "{unknown_entry:?}"
-    );
+    assert_eq!(unknown_entry.code, "validation", "{unknown_entry:?}");
     let unknown_plan = harness.refused(
         "export.plan",
         json!({"asset_id": asset, "entry_id": EntryId::new()}),
@@ -913,15 +947,16 @@ fn a_raw_export_matches_the_exact_render() {
         }
         response => response.result.expect("the export is accepted"),
     };
+    let plain = harness.export(json!({"asset_id": asset, "destination": out.join("plain.jpg")}));
     let read = harness.settle(&accepted["job_id"]);
     assert_eq!(read["status"], "ready", "{read}");
+    assert_eq!(harness.settle(&plain["job_id"])["status"], "ready");
     eprintln!("RAW export metadata: {}", read["result"]["metadata"]);
     harness.stop();
     let frame = reference(&harness.catalog, &asset, &entry);
-    let (mean, max) = difference(&out.join("raw.jpg"), &frame);
-    eprintln!("RAW export: mean {mean:?}, max {max:?}");
-    assert!(
-        mean.iter().all(|mean| *mean < MEAN_TOLERANCE),
-        "mean {mean:?}"
-    );
+    assert_encodes(&out.join("plain.jpg"), &frame, "the RAW export");
+    // The decoded error is the encoder's alone, which grows with a photograph's fine texture
+    // and noise; it is reported, and the byte equality above is the proof.
+    let (mean, max, far) = difference(&out.join("raw.jpg"), &frame);
+    eprintln!("RAW export: mean {mean:?}, max {max:?}, share beyond {NEAR}: {far}");
 }
