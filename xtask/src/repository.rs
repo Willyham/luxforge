@@ -347,6 +347,43 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only ModuleRegistry::patch_action decides whether an action is presettable; \
                  resolve it there",
     },
+    // A mask component kind is dispatched only through the host's kind table (`mask/mod.rs`) or,
+    // on the desktop, the drawn-kind table (`mask_draft/editor.rs`); each kind's own file declares
+    // its token, and everything else asks a table (`component_geometry_is_drawn`, `stroke_kind`,
+    // `paintable`, `painted_kind`). The names are the constants those files declare a kind's token
+    // in, and the two range tokens no other vocabulary spells. The bare words `"linear"`,
+    // `"radial"` and `"brush"` are not matched: they also name a colour domain, a fixture's seed
+    // and the panel's Brush section in the state capture.
+    SourceRule {
+        name: "component-kind",
+        tokens: &[
+            "BRUSH",
+            "LINEAR",
+            "RADIAL",
+            "KIND",
+            "LUMINANCE_KIND",
+            "COLOUR_KIND",
+            "\"luminance-range\"",
+            "\"colour-range\"",
+        ],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/mask/mod.rs",
+            "crates/luxforge-core/src/mask/linear.rs",
+            "crates/luxforge-core/src/mask/radial.rs",
+            "crates/luxforge-core/src/mask/brush.rs",
+            "crates/luxforge-core/src/mask/range.rs",
+            "crates/luxforge-app/src/mask_draft/editor.rs",
+            "crates/luxforge-app/src/mask_draft/linear.rs",
+            "crates/luxforge-app/src/mask_draft/radial.rs",
+            "crates/luxforge-app/src/mask_draft/brush.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        reason: "only the mask kind table, a kind's own file and the desktop's drawn-kind table and \
+                 editors may name a component kind; ask the kind table instead",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -1008,85 +1045,6 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
-/// Rule (scope `crates/**/*.rs`; allowed `COMPONENT_KIND_OWNERS`; whole-token match on
-/// `COMPONENT_KIND_NAMES`; tests exempt; reason: a mask component kind is dispatched only through
-/// the kind table, so a second match on a kind cannot return).
-///
-/// Every question about a component kind is answered by the host's kind table (`mask/mod.rs`) or,
-/// on the desktop, by the drawn-kind table (`mask_draft/editor.rs`); each kind's own file declares
-/// its token. So no other product code names a kind: it asks a table (`component_geometry_is_drawn`,
-/// `stroke_kind`, `paintable`, `painted_kind`) instead. The names are the constants those files
-/// declare a kind's token in, and the two range tokens, which no other vocabulary spells. The bare
-/// words `"linear"`, `"radial"` and `"brush"` are not matched: they also name a colour domain, a
-/// fixture's seed and the panel's Brush section in the state capture.
-const COMPONENT_KIND_NAMES: [&str; 8] = [
-    "BRUSH",
-    "LINEAR",
-    "RADIAL",
-    "KIND",
-    "LUMINANCE_KIND",
-    "COLOUR_KIND",
-    "\"luminance-range\"",
-    "\"colour-range\"",
-];
-
-/// The kind table's module, each kind's own file, and the desktop's drawn-kind table and editors.
-const COMPONENT_KIND_OWNERS: [&str; 9] = [
-    "crates/luxforge-core/src/mask/mod.rs",
-    "crates/luxforge-core/src/mask/linear.rs",
-    "crates/luxforge-core/src/mask/radial.rs",
-    "crates/luxforge-core/src/mask/brush.rs",
-    "crates/luxforge-core/src/mask/range.rs",
-    "crates/luxforge-app/src/mask_draft/editor.rs",
-    "crates/luxforge-app/src/mask_draft/linear.rs",
-    "crates/luxforge-app/src/mask_draft/radial.rs",
-    "crates/luxforge-app/src/mask_draft/brush.rs",
-];
-
-/// Fail on the first product line outside `COMPONENT_KIND_OWNERS` that names a component kind,
-/// naming the file, the line and the name; answer how many product files were read.
-fn component_kinds(root: &Path) -> Result<usize> {
-    let owners: Vec<PathBuf> = COMPONENT_KIND_OWNERS
-        .iter()
-        .map(|path| root.join(path))
-        .collect();
-    let sources: Vec<PathBuf> = files(&root.join("crates"))?
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect();
-    let texts = sources
-        .iter()
-        .map(fs::read_to_string)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
-    let mut test_only = BTreeSet::new();
-    for (path, (_, modules)) in sources.iter().zip(&scanned) {
-        for name in modules {
-            test_only.extend(module_files(path, name));
-        }
-    }
-    let mut checked = 0;
-    for (path, (lines, _)) in sources.iter().zip(&scanned) {
-        if owners.contains(path) || test_file(path) || test_only.contains(path) {
-            continue;
-        }
-        for (number, line) in lines {
-            for token in COMPONENT_KIND_NAMES {
-                ensure(
-                    !holds_whole_token(line, token),
-                    format!(
-                        "{}:{number}: only the mask kind table, a kind's own file and the desktop's \
-                         drawn-kind table and editors may name {token}; ask the kind table instead",
-                        path.display()
-                    ),
-                )?;
-            }
-        }
-        checked += 1;
-    }
-    Ok(checked)
-}
-
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1153,10 +1111,6 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
-    );
-    println!(
-        "PASS component kinds named only by the kind tables and their kinds ({} product files)",
-        component_kinds(root)?
     );
     Ok(())
 }
@@ -1819,7 +1773,7 @@ mod tests {
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(component_kinds(tmp.path()).unwrap(), 2);
+        assert_eq!(read(tmp.path(), &["component-kind"]).unwrap(), (2, 0));
         // Anywhere else in product code every name is refused, a second kind dispatch included.
         for (file, text) in [
             (
@@ -1846,10 +1800,7 @@ mod tests {
         ] {
             let clean = fs::read_to_string(&file).ok();
             fs::write(&file, text).unwrap();
-            let error = component_kinds(tmp.path())
-                .err()
-                .unwrap_or_else(|| panic!("{} was accepted", file.display()))
-                .to_string();
+            let error = refusal(tmp.path(), &["component-kind"], &file.display().to_string());
             let name = file.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
                 error.contains(&format!("{name}:")) && error.contains("ask the kind table"),
@@ -1860,7 +1811,7 @@ mod tests {
                 None => fs::remove_file(&file).unwrap(),
             }
         }
-        assert_eq!(component_kinds(tmp.path()).unwrap(), 2);
+        assert_eq!(read(tmp.path(), &["component-kind"]).unwrap(), (2, 0));
     }
 
     fn minimal_plan(id: &str) -> Value {
