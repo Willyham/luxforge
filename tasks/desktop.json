@@ -571,7 +571,7 @@
     {
       "id": "TASK-008",
       "description": "Compute visible curve controls, editability and group resets once in the view model and read them from there, instead of re-deriving them in the app.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation.",
