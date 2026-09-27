@@ -1,7 +1,7 @@
 //! The reader and writer against an independent EXIF implementation (`kamadak-exif`): it writes
 //! every input, and reads back every payload the export writes.
 
-use super::{CaptureMetadata, FIELDS, Ifd, MAX_PAYLOAD, Value};
+use super::{CaptureMetadata, FIELDS, Ifd, MAX_PAYLOAD, Value, jpeg_orientation};
 use exif::experimental::Writer;
 use exif::{Field, In, Rational, Reader, SRational, Tag, Value as ExifValue};
 use std::io::Cursor;
@@ -572,4 +572,33 @@ fn oversized_fields_are_dropped_longest_descriptive_first() {
     let payload = metadata.exif_payload(1, 1);
     assert!(payload.len() <= MAX_PAYLOAD);
     Reader::new().read_raw(payload).unwrap();
+}
+
+/// The orientation is IFD0's first Orientation that is one SHORT from 1 to 8, in either byte order,
+/// and 1 otherwise: absent, out of range, of another type or count, or only in IFD1 (a thumbnail's).
+#[test]
+fn the_orientation_is_read_from_ifd0_and_defaults_to_upright() {
+    for value in 1..=8 {
+        for little_endian in [true, false] {
+            let fields = [(Tag::Orientation, ExifValue::Short(vec![value]))];
+            let bytes = jpeg(&tiff(&fields, little_endian, false));
+            assert_eq!(jpeg_orientation(&bytes), value as u8);
+        }
+    }
+    assert_eq!(jpeg_orientation(&jpeg(&tiff(&kept(), true, true))), 1);
+    for (kind, count, value) in [(3, 1, 0), (3, 1, 9), (3, 1, 0x0106), (4, 1, 6), (3, 2, 6)] {
+        let bytes = jpeg(&raw_tiff(&[(0x0112, kind, count, value)], &[]));
+        assert_eq!(
+            jpeg_orientation(&bytes),
+            1,
+            "type {kind}, count {count}, value {value}"
+        );
+    }
+    let first_valid = raw_tiff(&[(0x0112, 4, 1, 3), (0x0112, 3, 1, 6)], &[]);
+    assert_eq!(jpeg_orientation(&jpeg(&first_valid)), 6);
+    assert_eq!(jpeg_orientation(b"not a jpeg"), 1);
+    assert!(
+        CaptureMetadata::from_jpeg(&jpeg(&raw_tiff(&[(0x0112, 3, 1, 6)], &[]))).is_empty(),
+        "the orientation is never kept"
+    );
 }
