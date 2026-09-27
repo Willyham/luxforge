@@ -226,8 +226,6 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
 
 use rayon::prelude::*;
 
-/// [`luxforge_raw::PARALLEL_PIXELS`] under this converter's own name.
-const PARALLEL_CAMERA_PIXELS: usize = luxforge_raw::PARALLEL_PIXELS as usize;
 const CAMERA_CHUNK_PIXELS: usize = 65_536;
 
 /// Convert the existing planar allocation in disjoint slices. A camera pixel is read into three
@@ -265,7 +263,7 @@ fn convert_camera_planes(
         }
         Ok(())
     };
-    if n >= PARALLEL_CAMERA_PIXELS {
+    if n >= (luxforge_raw::PARALLEL_PIXELS as usize) {
         red.par_chunks_mut(CAMERA_CHUNK_PIXELS)
             .zip(green.par_chunks_mut(CAMERA_CHUNK_PIXELS))
             .zip(blue.par_chunks_mut(CAMERA_CHUNK_PIXELS))
@@ -615,7 +613,11 @@ mod tests {
             [-0.061, 1.161, -0.100, f32::MAX],
             [0.002, -0.049, 1.047, f32::MAX],
         ];
-        for n in [3, CAMERA_CHUNK_PIXELS + 3, PARALLEL_CAMERA_PIXELS + 3] {
+        for n in [
+            3,
+            CAMERA_CHUNK_PIXELS + 3,
+            (luxforge_raw::PARALLEL_PIXELS as usize) + 3,
+        ] {
             let mut input = Vec::with_capacity(n * 3);
             for channel in 0..3 {
                 for i in 0..n {
@@ -640,7 +642,7 @@ mod tests {
 
     #[test]
     fn camera_conversion_rejects_overflow_and_cancellation_without_adoption() {
-        let n = PARALLEL_CAMERA_PIXELS + 3;
+        let n = (luxforge_raw::PARALLEL_PIXELS as usize) + 3;
         let mut planes = vec![1.0; 3 * n];
         planes[n - 1] = f32::MAX;
         let matrix = [[2.0, 0.0, 0.0, 0.0]; 3];

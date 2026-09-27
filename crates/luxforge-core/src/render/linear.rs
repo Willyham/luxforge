@@ -20,9 +20,7 @@ use crate::{
 use std::{borrow::Cow, sync::Arc};
 
 const MAX_PIXELS: u64 = luxforge_raw::MAX_PIXELS as u64;
-const MAX_SIDE: u32 = luxforge_raw::MAX_SIDE;
 const MAX_SOURCE_BYTES: u64 = luxforge_raw::MAX_RGB_BYTES as u64;
-const MAX_RGBA_BYTES: u64 = luxforge_raw::MAX_FRAME_BYTES;
 const MAX_RESAMPLES: usize = 1;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
@@ -31,7 +29,7 @@ fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
             "linear source dimensions must be nonzero",
         ));
     }
-    if width > MAX_SIDE || height > MAX_SIDE {
+    if width > luxforge_raw::MAX_SIDE || height > luxforge_raw::MAX_SIDE {
         return Err(Error::resource_limit(
             "linear source side exceeds 16384 pixels",
         ));
@@ -66,7 +64,7 @@ pub(super) fn output_len(width: u32, height: u32) -> Result<usize, Error> {
             "linear output dimensions must be nonzero",
         ));
     }
-    if width > MAX_SIDE || height > MAX_SIDE {
+    if width > luxforge_raw::MAX_SIDE || height > luxforge_raw::MAX_SIDE {
         return Err(Error::resource_limit(
             "linear output side exceeds 16384 pixels",
         ));
@@ -82,7 +80,7 @@ pub(super) fn output_len(width: u32, height: u32) -> Result<usize, Error> {
     let bytes = pixels
         .checked_mul(4)
         .ok_or_else(|| Error::resource_limit("linear output byte length overflow"))?;
-    if bytes > MAX_RGBA_BYTES {
+    if bytes > luxforge_raw::MAX_FRAME_BYTES {
         return Err(Error::resource_limit("linear output exceeds 512 MiB"));
     }
     usize::try_from(bytes).map_err(|_| Error::resource_limit("linear output is not addressable"))
@@ -1214,7 +1212,7 @@ mod tests {
             }
             Ok(())
         };
-        if u64::from(width) * u64::from(height) >= super::super::PARALLEL_RENDER_PIXELS {
+        if u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS {
             rgba.par_chunks_exact_mut(row_bytes)
                 .enumerate()
                 .try_for_each(|(row, pixels)| render_row(row, pixels))

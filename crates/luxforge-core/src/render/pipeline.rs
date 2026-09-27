@@ -815,9 +815,12 @@ pub(super) fn segment_pass<R: SegmentRows>(
     // Whether this pass needs snapshot scratch at all, decided once for the pass: an unmasked
     // segment reserves and allocates exactly what it would without masks.
     let masked = runs.iter().any(|run| run.has_mask());
-    let parallel = segment.width as u64 * segment.height as u64 >= super::PARALLEL_RENDER_PIXELS
+    // A sub-megapixel pass with several colour units has enough independent row chunks to pay for
+    // using the existing Rayon pool below `PARALLEL_PIXELS`. Below `PARALLEL_HEAVY_COLOUR_PIXELS`
+    // too, dispatch costs can outweigh even that colour work.
+    let parallel = segment.width as u64 * segment.height as u64 >= luxforge_raw::PARALLEL_PIXELS
         || (segment.width as u64 * (band.end - band.start) as u64
-            >= super::PARALLEL_HEAVY_COLOUR_PIXELS
+            >= luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS
             && (masked
                 || runs
                     .iter()

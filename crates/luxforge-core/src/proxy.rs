@@ -22,15 +22,6 @@ use crate::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Above this many source pixels the two passes run on the shared Rayon pool, as every other pass
-/// in the renderer does; below it they stay serial. [`luxforge_raw::PARALLEL_PIXELS`] under this
-/// module's own name.
-const PARALLEL_PROXY_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;
-
-/// The frame limit a proxy and its one intermediate are each counted against, which is the limit
-/// [`Raster::expected_len`] applies to a rendered frame.
-const FRAME_LIMIT_BYTES: u64 = luxforge_raw::MAX_FRAME_BYTES;
-
 /// Physical pixels of the photo area the display can show. Fit proxies clamp these bounds before
 /// planning. A viewport's virtual half-resolution stage instead records its full half dimensions
 /// here for cache identity and admits only the requested output/source windows, so a 60 MP image
@@ -393,7 +384,7 @@ fn float_values(width: u32, height: u32, what: &str) -> Result<usize, Error> {
     let bytes = values
         .checked_mul(std::mem::size_of::<f32>() as u64)
         .ok_or_else(|| Error::resource_limit(format!("{what} byte length overflow")))?;
-    if bytes > FRAME_LIMIT_BYTES {
+    if bytes > luxforge_raw::MAX_FRAME_BYTES {
         return Err(Error::resource_limit(format!("{what} exceeds 512 MiB")));
     }
     usize::try_from(values).map_err(|_| Error::resource_limit(format!("{what} is not addressable")))
@@ -508,7 +499,8 @@ impl BoxDownscale {
         let (column_first, _) = horizontal.span(window.x as usize);
         let (column_last, column_weights) = horizontal.span((window.x + window.width - 1) as usize);
         let read_columns = column_last + column_weights.len() as u32 - column_first;
-        let parallel = u64::from(read_columns) * u64::from(source_rows) >= PARALLEL_PROXY_PIXELS;
+        let parallel =
+            u64::from(read_columns) * u64::from(source_rows) >= luxforge_raw::PARALLEL_PIXELS;
         let stride = window.width as usize * 3;
         let mut rows = vec![0f32; intermediate_len];
         let pass = |(y, out): (usize, &mut [f32])| -> Result<(), Error> {

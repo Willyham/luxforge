@@ -25,10 +25,6 @@ use crate::{Cancel, Error, Raster};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// The same one-megapixel threshold `render::PARALLEL_RENDER_PIXELS` and every other per-pixel pass
-/// use: [`luxforge_raw::PARALLEL_PIXELS`] under this reducer's own name.
-const PARALLEL_REDUCE_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;
-
 /// The histogram and clipping contract's declared output domain: the rendered SDR sRGB output of
 /// the full current composition, after crop and edits, before UI overlays or display scaling. Not
 /// the camera/RAW histogram.
@@ -319,7 +315,7 @@ fn reduce_parallel(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
 
 /// `reduce` with an explicit parallel threshold, so tests can force either path on the same
 /// buffer. Production code always goes through `reduce`, which fixes the threshold at
-/// `PARALLEL_REDUCE_PIXELS`.
+/// [`luxforge_raw::PARALLEL_PIXELS`], the same one every other per-pixel pass uses.
 fn reduce_with_threshold(
     rgba: &[u8],
     width: u32,
@@ -368,7 +364,7 @@ pub fn reduce_cancellable(
     height: u32,
     cancel: &Cancel,
 ) -> Result<Report, Error> {
-    reduce_with_threshold(rgba, width, height, PARALLEL_REDUCE_PIXELS, cancel)
+    reduce_with_threshold(rgba, width, height, luxforge_raw::PARALLEL_PIXELS, cancel)
 }
 
 /// [`reduce`] over a rendered [`Raster`], for callers that already hold one (a preview job, a

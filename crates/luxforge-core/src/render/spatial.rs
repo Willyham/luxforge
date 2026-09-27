@@ -613,7 +613,7 @@ pub(crate) fn run_batches<T: Send>(
     mut write: impl FnMut(Region, T) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
-    let large = plan.stage.width as u64 * plan.stage.height as u64 >= super::PARALLEL_RENDER_PIXELS;
+    let large = plan.stage.width as u64 * plan.stage.height as u64 >= luxforge_raw::PARALLEL_PIXELS;
     let workers = rayon::current_num_threads();
     let concurrency = budget.concurrency(plan.working_set);
     let mut start = 0;
@@ -986,7 +986,7 @@ pub(crate) fn build_reduction_cancellable(
         }
         Ok(())
     };
-    if u64::from(stage.width) * u64::from(stage.height) >= super::PARALLEL_RENDER_PIXELS {
+    if u64::from(stage.width) * u64::from(stage.height) >= luxforge_raw::PARALLEL_PIXELS {
         blocks
             .par_chunks_mut(width as usize)
             .enumerate()
