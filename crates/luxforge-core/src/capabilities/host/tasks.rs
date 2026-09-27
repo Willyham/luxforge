@@ -412,6 +412,7 @@ impl CapabilityHost {
                 origin: Some(origin.clone()),
                 grants: grant_ids,
                 admission: Admission::Bounded,
+                activity: None,
             },
             run.control.clone(),
             work,
