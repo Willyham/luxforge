@@ -25,10 +25,9 @@ use crate::{Cancel, Error, Raster};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Mirrors `render::PARALLEL_RENDER_PIXELS`: the same one-megapixel threshold the rasterizer uses
-/// for its own parallel pass. Kept as a separate constant because `render.rs` is out of scope for
-/// this reducer; the two must be changed together if the measured threshold ever moves.
-const PARALLEL_REDUCE_PIXELS: u64 = 1_000_000;
+/// The same one-megapixel threshold `render::PARALLEL_RENDER_PIXELS` and every other per-pixel pass
+/// use: [`luxforge_raw::PARALLEL_PIXELS`] under this reducer's own name.
+const PARALLEL_REDUCE_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;
 
 /// The histogram and clipping contract's declared output domain: the rendered SDR sRGB output of
 /// the full current composition, after crop and edits, before UI overlays or display scaling. Not

@@ -23,7 +23,10 @@ mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
-pub use limits::{MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES};
+pub use limits::{
+    MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES,
+    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, SPATIAL_TILE,
+};
 use profiles::{Catalog, Crop};
 
 /// The camera catalog as static data, which the build script generated from `data/cameras.json`

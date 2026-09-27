@@ -23,12 +23,13 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Above this many source pixels the two passes run on the shared Rayon pool, as every other pass
-/// in the renderer does; below it they stay serial.
-const PARALLEL_PROXY_PIXELS: u64 = 1_000_000;
+/// in the renderer does; below it they stay serial. [`luxforge_raw::PARALLEL_PIXELS`] under this
+/// module's own name.
+const PARALLEL_PROXY_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;
 
 /// The frame limit a proxy and its one intermediate are each counted against, which is the limit
 /// [`Raster::expected_len`] applies to a rendered frame.
-const FRAME_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
+const FRAME_LIMIT_BYTES: u64 = luxforge_raw::MAX_FRAME_BYTES;
 
 /// Physical pixels of the photo area the display can show. Fit proxies clamp these bounds before
 /// planning. A viewport's virtual half-resolution stage instead records its full half dimensions

@@ -20,9 +20,9 @@ use crate::{
 use std::{borrow::Cow, sync::Arc};
 
 const MAX_PIXELS: u64 = luxforge_raw::MAX_PIXELS as u64;
-const MAX_SIDE: u32 = 16_384;
+const MAX_SIDE: u32 = luxforge_raw::MAX_SIDE;
 const MAX_SOURCE_BYTES: u64 = luxforge_raw::MAX_RGB_BYTES as u64;
-const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RGBA_BYTES: u64 = luxforge_raw::MAX_FRAME_BYTES;
 const MAX_RESAMPLES: usize = 1;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
@@ -1155,7 +1155,7 @@ mod tests {
     use super::*;
     use crate::render::{
         SpatialMode,
-        spatial::PRODUCTION_TILE,
+        spatial::SPATIAL_TILE,
         testing::{
             frame_in, linear, linear_evaluation, render_linear, render_linear_cancellable,
             render_linear_proxy_cancellable, sample_in, sample_linear,
@@ -1197,7 +1197,7 @@ mod tests {
             source,
             recipe,
             settings,
-            PRODUCTION_TILE,
+            SPATIAL_TILE,
             SpatialMode::Frames,
         )
         .unwrap();
@@ -2500,7 +2500,7 @@ mod tests {
             &overflowing_source,
             &Recipe::default(),
             overflow,
-            PRODUCTION_TILE,
+            SPATIAL_TILE,
             SpatialMode::Frames,
         )
         .unwrap();
@@ -2753,7 +2753,7 @@ mod tests {
             &view,
             &recipe,
             LinearSettings::default(),
-            PRODUCTION_TILE,
+            SPATIAL_TILE,
             SpatialMode::Point,
         )
         .unwrap();
@@ -3294,7 +3294,7 @@ mod tests {
                 &source,
                 &stack,
                 LinearSettings::default(),
-                PRODUCTION_TILE,
+                SPATIAL_TILE,
                 mode,
             )
             .unwrap()
@@ -3393,7 +3393,7 @@ mod tests {
                 &source,
                 &stack,
                 LinearSettings::default(),
-                PRODUCTION_TILE,
+                SPATIAL_TILE,
                 mode,
             )
             .unwrap()
@@ -3638,7 +3638,7 @@ mod tests {
                     &image,
                     &stack,
                     settings,
-                    PRODUCTION_TILE,
+                    SPATIAL_TILE,
                     SpatialMode::Frames,
                 )
                 .unwrap();
