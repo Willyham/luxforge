@@ -38,6 +38,7 @@ image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
 luxforge-raw = { path = "../luxforge-raw", features = ["performance-diagnostics"] }
 luxforge-reference = { path = "../luxforge-reference" }
+luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
 
 [lints]

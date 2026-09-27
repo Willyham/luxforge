@@ -18,11 +18,7 @@ use luxforge_core::{
 };
 use luxforge_reference::srgb;
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    thread::JoinHandle,
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, thread::JoinHandle};
 
 struct Fixture {
     owner: OwnerHandle,
@@ -48,8 +44,7 @@ impl Fixture {
             json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
         );
         let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_until("the import to settle", || {
             let status = ok(
                 &owner,
                 client,
@@ -58,17 +53,11 @@ impl Fixture {
                 json!({"job_id": job_id}),
             );
             match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "the import never settled: {status}"
-                    );
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 other => panic!("unexpected import job {other:?}: {status}"),
             }
-        }
+        });
         let asset_value = ok(
             &owner,
             client,
@@ -164,17 +153,13 @@ fn ok(owner: &OwnerHandle, client: ClientId, id: &str, method: &str, params: Val
 fn exact(job: luxforge_core::PreviewJob) -> PreviewResult {
     let mut queue = PreviewQueue::default();
     let generation = queue.request(job);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(result) = queue.poll()
-            && result.phase() == PreviewPhase::Exact
-        {
-            assert_eq!(result.generation, generation);
-            return result;
-        }
-        assert!(Instant::now() < deadline, "the exact phase never arrived");
-        std::thread::yield_now();
-    }
+    let result = luxforge_testbase::wait_for("the exact phase", || {
+        queue
+            .poll()
+            .filter(|result| result.phase() == PreviewPhase::Exact)
+    });
+    assert_eq!(result.generation, generation);
+    result
 }
 
 /// The cell arithmetic, transcribed here rather than shared with the unit under test: the pixel at

@@ -131,12 +131,7 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
     let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
     let request = editor.overlay_request.clone().expect("an overlay");
     let log = testing::attach_log(&mut editor);
-    let done = loop {
-        if let Some(done) = editor.overlay_queue.poll() {
-            break done;
-        }
-        std::thread::yield_now();
-    };
+    let done = luxforge_testbase::wait_for("the derived overlay", || editor.overlay_queue.poll());
     // The same result, as though the view had since asked for another grid: it is not drawn.
     editor.overlay_request = Some(overlay::OverlayRequest {
         cells_w: request.cells_w + 1,

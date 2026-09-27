@@ -725,7 +725,6 @@ mod tests {
     use crate::editor::test_support::{
         SHRINK_ACTION, ShrinkModule, fixture, mutation, shrink, temp,
     };
-    use std::time::{Duration, Instant};
 
     #[test]
     fn a_truncated_preview_job_renders_the_layer_prefix_and_rejects_an_out_of_range_count() {
@@ -750,14 +749,9 @@ mod tests {
                 .unwrap();
             let mut queue = PreviewQueue::default();
             queue.request(job);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Some(result) = queue.poll() {
-                    return result.into_raster().unwrap();
-                }
-                assert!(Instant::now() < deadline, "the preview worker answered");
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_for("the preview worker's answer", || queue.poll())
+                .into_raster()
+                .unwrap()
         };
         let full = rendered(&service, None);
         assert_eq!((full.width, full.height), (100, 100));
@@ -845,16 +839,9 @@ mod tests {
             job.viewport = viewport;
             job.intent = crate::PreviewIntent::Settle;
             queue.request(job);
-            let deadline = Instant::now() + Duration::from_secs(60);
-            let result = loop {
-                if let Some(result) = queue.poll()
-                    && result.exact().is_some()
-                {
-                    break result;
-                }
-                assert!(Instant::now() < deadline, "the preview worker answered");
-                std::thread::yield_now();
-            };
+            let result = luxforge_testbase::wait_for("the preview worker's exact answer", || {
+                queue.poll().filter(|result| result.exact().is_some())
+            });
             assert_eq!(result.viewport_declined.is_some(), viewport.is_some());
             let frame = result.into_raster().unwrap();
             assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref(), "{viewport:?}");

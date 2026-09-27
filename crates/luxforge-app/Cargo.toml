@@ -30,6 +30,7 @@ zeroize.workspace = true
 # An independent JPEG decoder for the export tests.
 image = { workspace = true, features = ["jpeg"] }
 luxforge-reference = { path = "../luxforge-reference" }
+luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
 
 [lints]

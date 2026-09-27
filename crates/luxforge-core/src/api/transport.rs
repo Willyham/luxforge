@@ -252,7 +252,7 @@ mod tests {
             .result
             .unwrap();
         let job_id = queued["job_id"].as_str().unwrap();
-        loop {
+        luxforge_testbase::wait_until("the reopen preparation to finish", || {
             let response = owner
                 .call(
                     preparer,
@@ -266,11 +266,11 @@ mod tests {
                 .unwrap();
             let status = response.result.unwrap();
             match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => std::thread::sleep(Duration::from_millis(1)),
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 other => panic!("unexpected reopen preparation {other:?}: {status}"),
             }
-        }
+        });
         owner.disconnect(preparer);
         let mut output = Vec::new();
         let input = [

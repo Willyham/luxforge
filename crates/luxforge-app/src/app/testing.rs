@@ -94,21 +94,14 @@ pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforg
         json!({"path": fixture, "mutation": crate::app::tasks::request()}),
     );
     let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
+    luxforge_testbase::wait_until("source preparation", || {
         let status = call("job.read", json!({"job_id": job_id}));
         match status["status"].as_str() {
-            Some("ready") => break,
-            Some("queued" | "running") => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "source preparation: {status}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            Some("ready") => true,
+            Some("queued" | "running") => false,
             other => panic!("source preparation failed {other:?}: {status}"),
         }
-    }
+    });
     let adopted = call("job.adopt", json!({"job_id": job_id}));
     let asset =
         AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();

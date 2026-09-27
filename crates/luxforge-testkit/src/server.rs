@@ -338,7 +338,7 @@ fn read_request(index: usize, stream: &mut impl Read) -> Result<Request, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use luxforge_testbase::Gate;
 
     /// One raw exchange: the status and the body.
     fn exchange(server: &TestServer, request: &[u8]) -> (u16, Vec<u8>) {
@@ -412,16 +412,23 @@ mod tests {
         assert_eq!(server.hits(), 3, "a refused request reaches no responder");
     }
 
+    /// The stalled answer waits at a shut gate for the whole test, so every step below happens
+    /// while it is held: were the fast answer or the drop to wait for it, the test would hang
+    /// until the gate's hang bound failed the stalled handler, and the checks that it is still held
+    /// would fail.
     #[test]
     fn a_stalled_connection_holds_up_no_other_and_dropping_the_server_stops_it() {
+        let stall = Arc::new(Gate::new());
+        stall.shut();
+        let held = stall.clone();
         let server = TestServer::start(
             Options {
                 unrecorded: true,
                 ..Options::default()
             },
-            |request, out| {
+            move |request, out| {
                 if request.path == "/slow" {
-                    thread::sleep(Duration::from_secs(2));
+                    held.pass();
                 }
                 respond(out, "200 OK", "", b"");
             },
@@ -433,22 +440,25 @@ mod tests {
             stream.write_all(b"GET /slow HTTP/1.1\r\n\r\n").unwrap();
             let mut answer = Vec::new();
             stream.read_to_end(&mut answer).unwrap();
+            answer
         });
-        thread::sleep(Duration::from_millis(50));
-        let started = Instant::now();
+        stall.wait_reached(1, "the stalled request");
         assert_eq!(exchange(&server, b"GET /fast HTTP/1.1\r\n\r\n").0, 200);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(stall.holding(), "the stalled answer is still held");
         assert!(
             server.requests().is_empty(),
             "an unrecorded server keeps nothing"
         );
-        let stopping = Instant::now();
         drop(server);
-        assert!(stopping.elapsed() < Duration::from_secs(1));
+        assert!(
+            stall.holding(),
+            "the drop did not wait for the stalled answer"
+        );
         assert!(
             TcpStream::connect(address).is_err(),
             "nothing listens any more"
         );
-        slow.join().unwrap();
+        stall.open();
+        assert!(slow.join().unwrap().starts_with(b"HTTP/1.1 200"));
     }
 }

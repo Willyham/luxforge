@@ -49,14 +49,14 @@ fn import_asset(owner: &OwnerHandle, client: ClientId, source: &Path) -> Value {
         json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
     );
     let id = queued["job_id"].as_str().unwrap();
-    loop {
+    luxforge_testbase::wait_for("the import job to finish", || {
         let status = call("status", "job.read", json!({"job_id":id}));
         match status["status"].as_str() {
-            Some("ready") => return status["result"]["asset"]["id"].clone(),
-            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(1)),
+            Some("ready") => Some(status["result"]["asset"]["id"].clone()),
+            Some("queued" | "running") => None,
             other => panic!("unexpected import job {other:?}: {status}"),
         }
-    }
+    })
 }
 
 fn mutation(revision: u64, request: &str, actor: &str) -> Mutation {
@@ -460,22 +460,17 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
         requested["status"].as_str(),
         Some("queued" | "running" | "ready")
     ));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let report = loop {
+    let report = luxforge_testbase::wait_for("the analysis job to settle", || {
         let read = call("job.read", json!({"job_id": requested["job_id"]}));
         if read["status"] == json!("ready") {
-            break read["result"].clone();
+            return Some(read["result"].clone());
         }
         assert!(
             matches!(read["status"].as_str(), Some("queued" | "running")),
             "{read}"
         );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the analysis job never settled"
-        );
-        std::thread::yield_now();
-    };
+        None
+    });
     // Every channel's bins sum to the output pixel count, and nothing was committed.
     for channel in ["r", "g", "b"] {
         let sum: u64 = report[channel]

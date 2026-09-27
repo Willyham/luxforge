@@ -7,7 +7,7 @@ use luxforge_testkit::fixtures::{jpeg as fixture, temp_dir};
 use std::{
     fs,
     sync::{Mutex, mpsc},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// One owner over a fresh catalog in its own directory, publishing to a board that keeps work of
@@ -108,15 +108,10 @@ impl Harness {
     }
 
     fn settle_source(&self, job: &Value) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_for("a source job to settle", || {
             let status = self.ok("job.read", json!({"job_id": job}));
-            if !matches!(status["status"].as_str(), Some("queued" | "running")) {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "a source job never settled");
-            thread::sleep(Duration::from_millis(1));
-        }
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        })
     }
 
     /// Commit an exposure as the asset's next entry and answer that entry's id.
@@ -138,17 +133,12 @@ impl Harness {
     }
 
     /// Read an export until it leaves `queued` and `running`. Nothing in the owner polls; this is
-    /// the test standing in for a client, bounded by a deadline.
+    /// the test standing in for a client.
     fn settle(&self, job: &Value) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_for("an export to settle", || {
             let read = self.ok("job.read", json!({"job_id": job}));
-            if !matches!(read["status"].as_str(), Some("queued" | "running")) {
-                return read;
-            }
-            assert!(Instant::now() < deadline, "an export never settled: {read}");
-            thread::sleep(Duration::from_millis(1));
-        }
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        })
     }
 
     /// Hold every export accepted from now on as it begins `phase`: `reached` receives once per
@@ -434,7 +424,7 @@ fn a_later_commit_never_changes_an_accepted_export() {
     let (reached, release) = harness.hold_at(RENDER_PHASE);
     let running =
         harness.export(json!({"asset_id": asset, "destination": out.join("running.jpg")}));
-    reached.recv_timeout(Duration::from_secs(10)).unwrap();
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     let queued = harness.export(json!({"asset_id": asset, "destination": out.join("queued.jpg")}));
     assert_eq!(running["status"], "running");
     assert_eq!(queued["status"], "queued");
@@ -770,7 +760,7 @@ fn a_cancelled_export_leaves_no_file_and_no_temporary_file() {
     let (reached, release) = harness.hold_at("encoding");
     let running =
         harness.export(json!({"asset_id": asset, "destination": out.join("running.jpg")}));
-    reached.recv_timeout(Duration::from_secs(10)).unwrap();
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     let queued = harness.export(json!({"asset_id": asset, "destination": out.join("queued.jpg")}));
     assert_eq!(queued["status"], "queued");
     let staged = listing(&out);
@@ -845,7 +835,7 @@ fn the_export_lane_holds_four_refuses_the_sixth_and_outlives_its_client() {
             "asset_id": asset, "destination": out.join(format!("{index}.jpg")),
         }));
         if index == 0 {
-            reached.recv_timeout(Duration::from_secs(10)).unwrap();
+            reached.recv_timeout(luxforge_testbase::HANG).unwrap();
             assert_eq!(job["status"], "running");
         } else {
             assert_eq!(job["status"], "queued");
@@ -866,8 +856,7 @@ fn the_export_lane_holds_four_refuses_the_sixth_and_outlives_its_client() {
     }
     let reader = harness.owner.register();
     for job in &accepted {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_until("an export to settle", || {
             let read = harness
                 .owner
                 .call(
@@ -883,13 +872,11 @@ fn the_export_lane_holds_four_refuses_the_sixth_and_outlives_its_client() {
                 .result
                 .expect("any client may read an export");
             match read["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {}
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 _ => panic!("an export of a gone client failed: {read}"),
             }
-            assert!(Instant::now() < deadline, "an export never settled");
-            thread::sleep(Duration::from_millis(1));
-        }
+        });
     }
     assert_eq!(listing(&out), ["0.jpg", "1.jpg", "2.jpg", "3.jpg", "4.jpg"]);
 }
@@ -904,7 +891,7 @@ fn stopping_the_owner_cancels_a_running_export_and_leaves_no_file() {
     let out = destinations(&harness);
     let (reached, release) = harness.hold_at("encoding");
     harness.export(json!({"asset_id": asset, "destination": out.join("closing.jpg")}));
-    reached.recv_timeout(Duration::from_secs(10)).unwrap();
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     assert_eq!(listing(&out).len(), 1, "staged");
     harness.owner.stop();
     // The owner is now joining the lane, which is held; letting it go stops the job at its next

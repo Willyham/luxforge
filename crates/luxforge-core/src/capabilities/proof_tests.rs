@@ -24,6 +24,7 @@ use crate::{
     modules::{ActionInput, ActionPlan},
     redact_request,
 };
+use luxforge_testbase::wait_for;
 use luxforge_testkit::ProofEndpoint;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -32,7 +33,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    thread::{self, JoinHandle},
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -331,15 +332,22 @@ impl Owner {
 
     /// Wait for a capability job to finish and return its record.
     fn finished(&self, job_id: &Value) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
+        wait_for(&format!("job {job_id} to finish"), || {
             let job = self.ok(JOB_READ, json!({"job_id": job_id}));
-            if !matches!(job["status"].as_str(), Some("queued" | "running")) {
-                return job;
+            (!matches!(job["status"].as_str(), Some("queued" | "running"))).then_some(job)
+        })
+    }
+
+    /// Wait for a job to be running.
+    fn running(&self, job_id: &Value) {
+        wait_for(&format!("job {job_id} to run"), || {
+            let job = self.ok(JOB_READ, json!({"job_id": job_id}));
+            match job["status"].as_str() {
+                Some("running") => Some(()),
+                Some("queued") => None,
+                _ => panic!("the job ended before it was seen running: {job}"),
             }
-            assert!(Instant::now() < deadline, "the job never finished: {job}");
-            thread::sleep(Duration::from_millis(2));
-        }
+        });
     }
 
     /// Ask for the task, waiting through any preparation job its sampling asks for, as a client
@@ -357,20 +365,8 @@ impl Owner {
                 None => return Ok(response.result.expect("a result")),
                 Some(error) if error.code == "preparation-required" => {
                     let job = error.job_id.expect("a preparation names its job");
-                    let deadline = Instant::now() + Duration::from_secs(20);
-                    loop {
-                        let status = self.ok("job.read", json!({"job_id": job}));
-                        match status["status"].as_str() {
-                            Some("queued" | "running") => {
-                                assert!(Instant::now() < deadline, "{status}");
-                                thread::sleep(Duration::from_millis(2));
-                            }
-                            _ => {
-                                assert_eq!(status["status"], "ready", "{status}");
-                                break;
-                            }
-                        }
-                    }
+                    let status = self.finished(&json!(job));
+                    assert_eq!(status["status"], "ready", "{status}");
                 }
                 Some(error) => return Err(error),
             }
@@ -756,12 +752,8 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         None => reopened.result.unwrap(),
         Some(error) => {
             assert_eq!(error.code, "preparation-required");
-            let job = error.job_id.unwrap();
-            let deadline = Instant::now() + Duration::from_secs(20);
-            while owner.ok("job.read", json!({"job_id": job}))["status"] != "ready" {
-                assert!(Instant::now() < deadline);
-                thread::sleep(Duration::from_millis(2));
-            }
+            let job = owner.finished(&json!(error.job_id.unwrap()));
+            assert_eq!(job["status"], "ready", "{job}");
             owner.sample(asset, 5, 7)
         }
     };
@@ -882,14 +874,11 @@ fn revoking_the_remote_grant_mid_task_cancels_it_and_keeps_the_accepted_tint() {
     let before = owner.state(asset);
     let pixel = owner.sample(asset, 3, 4)["rgba"].clone();
     // The endpoint holds its answer, so the task is running inside its send when the grant goes.
-    fixture.endpoint.set_delay(Duration::from_secs(60));
-    let sends = fixture.endpoint.requests().len();
+    let generation = fixture.endpoint.generation();
+    generation.shut();
+    let sends = generation.reached();
     let queued = owner.task(asset, &profile).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while fixture.endpoint.requests().len() == sends {
-        assert!(Instant::now() < deadline, "the send never arrived");
-        thread::sleep(Duration::from_millis(2));
-    }
+    generation.wait_reached(sends + 1, "the task's send");
     let grant = owner.ok("module.permission.list", json!({"module_id": MODULE}))["grants"]
         .as_array()
         .unwrap()
@@ -897,15 +886,17 @@ fn revoking_the_remote_grant_mid_task_cancels_it_and_keeps_the_accepted_tint() {
         .find(|grant| grant["kind"] == "remote-image-request")
         .unwrap()["grant_id"]
         .clone();
-    let revoked_at = Instant::now();
     let revoked = owner.ok(REVOKE, json!({"grant_id": grant}));
     assert_eq!(revoked["cancelled_jobs"], json!([queued["job_id"]]));
     let job = owner.finished(&queued["job_id"]);
-    assert!(revoked_at.elapsed() < Duration::from_secs(5), "promptly");
+    assert!(
+        generation.holding(),
+        "the task stopped while its answer was still held"
+    );
     assert_eq!(job["status"], "cancelled");
     assert_eq!(job["error"]["message"], "permission revoked");
     assert!(job.get("result").is_none());
-    fixture.endpoint.set_delay(Duration::ZERO);
+    generation.open();
     // The recipe, its history and the accepted artifact are untouched.
     assert_eq!(owner.state(asset), before);
     assert_eq!(owner.sample(asset, 3, 4)["rgba"], pixel);
@@ -1078,27 +1069,24 @@ fn a_running_task_is_cancelled_and_a_deactivated_module_refuses_the_task() {
     let assets = fixture.import();
     let owner = fixture.start();
     let Ready { assets, profile } = ready(&fixture, &owner, assets);
-    fixture.endpoint.set_delay(Duration::from_secs(60));
+    let generation = fixture.endpoint.generation();
+    generation.shut();
+    let sends = generation.reached();
     let queued = owner.task(&assets[0], &profile).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !fixture
-        .endpoint
-        .requests()
-        .iter()
-        .any(|request| request.path == "/generate")
-    {
-        assert!(Instant::now() < deadline, "the send never arrived");
-        thread::sleep(Duration::from_millis(2));
-    }
+    generation.wait_reached(sends + 1, "the task's send");
     let cancelled = owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
     assert_eq!(
         cancelled["status"], "running",
         "a running job stops at its checkpoint"
     );
     let job = owner.finished(&queued["job_id"]);
+    assert!(
+        generation.holding(),
+        "the task stopped while its answer was still held"
+    );
     assert_eq!(job["status"], "cancelled");
     assert_eq!(job["error"]["message"], "the job was cancelled");
-    fixture.endpoint.set_delay(Duration::ZERO);
+    generation.open();
     assert_eq!(owner.ok("artifact.status", json!({}))["bytes"], 0);
     // Deactivated, the module no longer runs the task, and says why.
     let deactivated = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
@@ -1167,15 +1155,10 @@ fn a_running_activation_of_the_proof_module_is_cancelled_by_a_deactivation() {
     let installed = owner.ok(INSTALL, install);
     assert_eq!(owner.finished(&installed["job_id"])["status"], "ready");
     let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while owner.ok(JOB_READ, json!({"job_id": activating["job_id"]}))["status"] != "running" {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(2));
-    }
-    let stopped = Instant::now();
+    owner.running(&activating["job_id"]);
     owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
+    // The loader would take a minute; the job ends cancelled instead.
     let job = owner.finished(&activating["job_id"]);
-    assert!(stopped.elapsed() < Duration::from_secs(5));
     assert_eq!(job["status"], "cancelled");
     assert_eq!(
         owner.ok(STATUS, json!({"module_id": MODULE}))["activation"]["state"],
@@ -1263,22 +1246,12 @@ fn percentiles(samples: &mut [f64]) -> (f64, f64) {
     (samples[samples.len() / 2], p95)
 }
 
-/// Poll a job at a tenth of a millisecond, so the wait adds almost nothing to what is measured.
-fn settled(owner: &Owner, job_id: &Value) -> (Value, f64) {
-    let started = Instant::now();
-    loop {
-        let job = owner.ok(JOB_READ, json!({"job_id": job_id}));
-        if !matches!(job["status"].as_str(), Some("queued" | "running")) {
-            return (job, started.elapsed().as_secs_f64() * 1000.0);
-        }
-        thread::sleep(Duration::from_micros(100));
-    }
-}
-
 /// The framework's own costs on this host: registration with and without the proof module, the
 /// owner's answer to the capability reads, activation, a whole task against the loopback endpoint,
 /// cancellation of a running activation and of a task stalled in its request, and the disk an
-/// installed resource takes. Run explicitly, in release, on a quiet machine:
+/// installed resource takes. A job's end is seen by a wait that looks every millisecond, so the
+/// job measurements are accurate to about a millisecond. Run explicitly, in release, on a quiet
+/// machine:
 /// `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`.
 #[test]
 #[ignore = "measurement, run explicitly in release"]
@@ -1352,19 +1325,13 @@ fn capability_timing() {
     for _ in 0..10 {
         let deactivating = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
         if let Some(job) = deactivating.get("job_id").filter(|job| !job.is_null()) {
-            settled(&owner, job);
+            owner.finished(job);
         }
         let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-        loop {
-            let job = owner.ok(JOB_READ, json!({"job_id": activating["job_id"]}));
-            if job["status"] == "running" {
-                break;
-            }
-            thread::sleep(Duration::from_micros(100));
-        }
+        owner.running(&activating["job_id"]);
         let started = Instant::now();
         owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-        let (job, _) = settled(&owner, &activating["job_id"]);
+        let job = owner.finished(&activating["job_id"]);
         cancel_activation.push(started.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(job["status"], "cancelled", "{job}");
     }
@@ -1385,11 +1352,11 @@ fn capability_timing() {
     for _ in 0..SAMPLES {
         let deactivating = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
         if let Some(job) = deactivating.get("job_id").filter(|job| !job.is_null()) {
-            settled(&owner, job);
+            owner.finished(job);
         }
         let started = Instant::now();
         let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-        let (job, _) = settled(&owner, &activating["job_id"]);
+        let job = owner.finished(&activating["job_id"]);
         activation.push(started.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(job["status"], "ready", "{job}");
     }
@@ -1408,7 +1375,7 @@ fn capability_timing() {
     for _ in 0..SAMPLES {
         let started = Instant::now();
         let queued = owner.task(&assets[0], &profile).unwrap();
-        let (job, _) = settled(&owner, &queued["job_id"]);
+        let job = owner.finished(&queued["job_id"]);
         task.push(started.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(job["status"], "ready", "{job}");
     }
@@ -1442,22 +1409,17 @@ fn capability_timing() {
         "publish one 12-byte artifact (synced, renamed)",
         &mut publish,
     );
-    fixture.endpoint.set_delay(Duration::from_secs(60));
+    // The endpoint holds every answer, so each task stalls in its request.
+    let generation = fixture.endpoint.generation();
+    generation.shut();
     let mut cancel_task = Vec::new();
     for _ in 0..10 {
+        let sends = generation.reached();
         let queued = owner.task(&assets[0], &profile).unwrap();
-        loop {
-            let job = owner.ok(JOB_READ, json!({"job_id": queued["job_id"]}));
-            if job["status"] == "running" {
-                break;
-            }
-            thread::sleep(Duration::from_micros(100));
-        }
-        // Let the request reach the endpoint and stall there.
-        thread::sleep(Duration::from_millis(20));
+        generation.wait_reached(sends + 1, "the task's send");
         let started = Instant::now();
         owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
-        let (job, _) = settled(&owner, &queued["job_id"]);
+        let job = owner.finished(&queued["job_id"]);
         cancel_task.push(started.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(job["status"], "cancelled", "{job}");
     }
@@ -1465,5 +1427,5 @@ fn capability_timing() {
         "cancel a task stalled in its request to cancelled",
         &mut cancel_task,
     );
-    fixture.endpoint.set_delay(Duration::ZERO);
+    generation.open();
 }

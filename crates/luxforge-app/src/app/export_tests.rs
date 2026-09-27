@@ -229,24 +229,22 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             choice,
         ))))));
         let _ = editor.update(Message::Export(ExportMessage::Queued(queued)));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while let Some(job) = editor
-            .export
-            .run
-            .as_ref()
-            .and_then(|run| run.job_id.clone())
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the export never ended"
-            );
+        luxforge_testbase::wait_until("the export ends", || {
+            let Some(job) = editor
+                .export
+                .run
+                .as_ref()
+                .and_then(|run| run.job_id.clone())
+            else {
+                return true;
+            };
             let result = read_now(&editor.owner, editor.client, &job);
             let _ = editor.update(Message::Export(ExportMessage::Read {
                 job_id: job,
                 result,
             }));
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            false
+        });
     };
 
     export_once(&mut editor);

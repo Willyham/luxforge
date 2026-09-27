@@ -16,6 +16,7 @@ use crate::{
     EffectStage, Error, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
     ToolModule,
 };
+use luxforge_testbase::Gate;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -26,7 +27,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    thread,
     time::Duration,
 };
 
@@ -273,8 +273,9 @@ pub(crate) fn lane_descriptor(index: usize) -> ModuleDescriptor {
 /// What a lifecycle test steers and observes of a [`LifecycleModule`].
 #[derive(Default)]
 pub(crate) struct Probe {
-    /// While set, an activation waits after loading, checking its context between short sleeps.
-    pub hold: AtomicBool,
+    /// Shut, it holds an activation after loading until it opens, while the activation checks its
+    /// context for a cancellation about once a millisecond.
+    pub hold: Gate,
     /// An activation fails once it stops waiting.
     pub fail: AtomicBool,
     /// `validate_resource` refuses the staged bytes.
@@ -322,10 +323,12 @@ impl LifecycleModule {
                 .store(!secret.expose().is_empty(), Ordering::SeqCst);
         }
         context.progress(Some(0.5), "loaded");
-        while self.probe.hold.load(Ordering::SeqCst) {
-            context.checkpoint()?;
-            thread::sleep(Duration::from_millis(2));
-        }
+        let mut checked = Ok(());
+        self.probe.hold.pass_unless(|| {
+            checked = context.checkpoint();
+            checked.is_err()
+        });
+        checked?;
         context.checkpoint()?;
         if self.probe.fail.load(Ordering::SeqCst) {
             return Err(Error::decode("the palette is corrupt"));

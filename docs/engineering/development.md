@@ -66,7 +66,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 
 `cargo xtask check-repository` validates the task plans and local links, then applies three rule tables in `xtask/src/repository.rs`. Each row is one rule; a refusal names the file and line, the rule, the token, dependency or message it found, and the table whose row to change.
 
-`SOURCE_RULES` says which files may hold which tokens. A row names its tokens, its scope (directories and file types, since `crates/luxforge-raw/vendor` holds LibRaw's C++ sources), the paths allowed to hold them (a file, a directory, or a module path such as `modules/raw` for `raw.rs` and `raw/`), its match mode, whether it covers test code, whether its allowed paths may hold each token on one line only (an expression written once in its home), and the reason it prints. One matcher serves every row. `Whole` checks an end of the token only where the token has an identifier character there, so `app::` finds `crate::app::State` but not `snapp::`, and `RAW_EFFECT` misses `RAW_EFFECTS`. `Prefix` lets the token run on into a longer identifier, so `mozjpeg` finds `mozjpeg_sys`. A row that covers tests reads every line, comments included. A row that does not skips files that are tests by name (a `tests` directory, `tests.rs`, `*_tests.rs`), modules declared under `#[cfg(test)]` with everything under their directory, `#[cfg(test)]` items, and comment lines. No source rule reads `xtask/src/repository.rs`, which names every token in its rows and tests.
+`SOURCE_RULES` says which files may hold which tokens. A row names its tokens, its scope (directories and file types, since `crates/luxforge-raw/vendor` holds LibRaw's C++ sources), the paths allowed to hold them (a file, a directory, or a module path such as `modules/raw` for `raw.rs` and `raw/`), its match mode, whether it covers test code, whether each allowed path may hold each token on one line only (an expression written once in its home; each file under an allowed directory is a home of its own), and the reason it prints. One matcher serves every row. `Whole` checks an end of the token only where the token has an identifier character there, so `app::` finds `crate::app::State` but not `snapp::`, and `RAW_EFFECT` misses `RAW_EFFECTS`. `Prefix` lets the token run on into a longer identifier, so `mozjpeg` finds `mozjpeg_sys`. A row that covers tests reads every line, comments included. A row that does not skips files that are tests by name (a `tests` directory, `tests.rs`, `*_tests.rs`), modules declared under `#[cfg(test)]` with everything under their directory, `#[cfg(test)]` items, and comment lines. No source rule reads `xtask/src/repository.rs`, which names every token in its rows and tests.
 
 | Rule | Refuses | Where |
 | --- | --- | --- |
@@ -86,6 +86,8 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `declared-crop-angle` | `MIN_ANGLE` and `MAX_ANGLE` outside the frame's geometry (`crop_draft.rs`): the angle's control reads its range, steps and default from the declared parameter | Desktop production code (`crates/luxforge-app/src`) |
 | `render-limits-home` | The one-megapixel parallel threshold or the 512 MiB frame limit's literal assignment, `= 1_000_000;` or `= 512 * 1024 * 1024;`, outside `luxforge-raw/src/limits.rs` | `luxforge-core` and `luxforge-raw` production code |
 | `draft-preview-rule` | `RawSettingsMode::DraftPreview`, the drafted preview's approximate white balance, outside the one evaluation builder (`editor/evaluate.rs`) and the RAW settings resolver (`editor/source.rs`) | Core production code |
+| `test-waits` | `sleep(` and `yield_now`: a test's own sleep, spin or poll loop, outside `luxforge-testbase`'s one wait. The widget crate's GPU retirement worker (`photo_surface.rs`) and the proof module's activation delay (`modules/capabilities_proof.rs`) each keep their one production sleep, on one line, so the tests beside them are held to the rule too | `crates/`, tests and comments included |
+| `test-gates` | `Condvar`: a test's own gate, outside `luxforge-testbase`'s `Gate` and the core's production blocking points (the source worker's plane gate in `source.rs`, the latest-job worker in `latest.rs`, the point-query worker in `api/owner/point.rs`) | `crates/`, tests and comments included |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, the job table's lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
 | `editor-launch` | An editor argument (`"--evidence-dir"`, `"--evidence-script"`, `"--data-root"`, `"--catalog"`, `"--open"`, `"--developer"`, `"--disable-module"`, `"--proof-endpoint"`, `"--window-size"`), `spawn_editor` or `editor_args` outside the scenario library's launch envelope (`xtask/src/scenario/launch.rs`), the hidden-window flag's home (`xtask/src/launch.rs`) and `raw_editor.rs`, whose launch becomes a scenario row later | Production code under `xtask/` |
 | `http-framing` | `ureq_proto::` and `httparse::`, the HTTP/1.1 framing under `ureq`, outside the module transport (`capabilities/transport/`) | `crates/` and `xtask/`, tests included |
@@ -101,6 +103,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `mozjpeg-links` | A `mozjpeg*` dependency of a shipped crate other than `luxforge-jpeg` |
 | `jpeg-codec-users`, `jpeg-codec-leaf` | A dependency on `luxforge-jpeg` from any crate but `luxforge-core`; any workspace crate or path in `luxforge-jpeg`'s manifest |
 | `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
+| `core-free-test-base` | Any workspace crate or path in `luxforge-testbase`'s manifest, so the core's and the widget crate's tests can use its gate and wait |
 | `http-client-crates` | A dependency on `ureq` or `ureq-proto` from any crate but `luxforge-core`, whose module transport is the one HTTP client |
 
 `SENDER_RULES` says which messages product code must send. A row names a message enum and the file that declares it, the file whose `match` handles it, the directories read for senders and the scripted drivers whose constructions do not count. Every variant needs a sender: a production line (tests skipped as for a source rule) outside the drivers that holds `Enum::Variant` under the `Whole` matcher. In the handler, a line that begins with a variant is its match arm, not a sender; elsewhere rustfmt may begin a line with a construction, and it counts.
@@ -159,6 +162,29 @@ module path, for example `cargo test -p luxforge-core --test basic white_balance
 Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
 independent references and their studies live in `luxforge-reference`
 (`cargo test -p luxforge-reference --test studies tone::`).
+
+### Tests that do not depend on host load
+
+The workspace's tests run in parallel, beside other builds and test runs on a shared host, so a test
+passes or fails the same way however loaded that host is:
+
+- **No shared mutable state between tests.** A test reads only figures it owns: its own render
+  context, registry, catalog, queue or pipeline, never a process-wide counter another test also
+  moves.
+- **Order comes from gates and channels, never from sleeping for long enough.** Work a test needs
+  held — a render, a job, a module's activation, a test server's answer — passes a
+  `luxforge_testbase::Gate` the test shut; the test waits for the work to reach it
+  (`Gate::wait_reached`), acts while it is held, then opens it. What a test cannot be told about,
+  such as a job status read through the API, it polls through `luxforge_testbase::wait_until` or
+  `wait_for`.
+- **A deadline only bounds a hang.** Every wait fails naming what never happened after the one hang
+  bound, `luxforge_testbase::HANG` (two minutes); no test outside the timing tier asserts how fast
+  anything happened.
+
+`luxforge-testbase` holds the one gate and the one wait. It depends on no workspace crate, so the
+core's own unit tests and the widget crate's can use it; a crate adapts it (a module that holds a
+render at it, a helper that polls its own queue through `wait_until`) rather than writing a second
+one, and the `test-waits` and `test-gates` rules below refuse one.
 
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a

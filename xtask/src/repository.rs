@@ -227,8 +227,9 @@ struct SourceRule {
     /// a module declared under `#[cfg(test)]` (with everything below its directory) is skipped,
     /// and each other file is read through [`production_lines`], which also skips comment lines.
     tests: bool,
-    /// Whether the allowed paths may hold each token on one line only: an expression written
-    /// once in its home, so a second copy beside the first is refused as one elsewhere is.
+    /// Whether each allowed path may hold each token on one line only: an expression written
+    /// once in its home, so a second copy beside the first is refused as one elsewhere is. An
+    /// allowed directory counts each file under it as a home of its own.
     once: bool,
     /// Why the rule holds, printed with each refusal.
     reason: &'static str,
@@ -603,6 +604,47 @@ const SOURCE_RULES: &[SourceRule] = &[
                  transfer function's constants; every other caller, test code included, computes \
                  through one of them",
     },
+    // Tests that do not depend on host load: a test orders its steps by a gate or a channel and
+    // waits through the one hang-bounded wait, all in `luxforge-testbase`, never by a sleep or a
+    // spin of its own. The two production homes each keep their one sleep: the widget crate's GPU
+    // retirement worker, and the proof module's configured activation delay; each may hold it on
+    // one line only, so the tests beside them are held to the rule too.
+    SourceRule {
+        name: "test-waits",
+        tokens: &["sleep(", "yield_now"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-testbase",
+            "crates/luxforge-ui/src/photo_surface.rs",
+            "crates/luxforge-core/src/modules/capabilities_proof.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: true,
+        reason: "a test waits through luxforge_testbase::wait_until (or holds work at a \
+                 luxforge_testbase::Gate), never a sleep or spin of its own; extend that crate \
+                 instead of writing a second wait",
+    },
+    SourceRule {
+        name: "test-gates",
+        tokens: &["Condvar"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-testbase",
+            // The core's production blocking points: the source worker's plane gate, the
+            // latest-job worker and the point-query worker.
+            "crates/luxforge-core/src/source.rs",
+            "crates/luxforge-core/src/latest.rs",
+            "crates/luxforge-core/src/api/owner/point.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "a test holds work at the one luxforge_testbase::Gate, never a gate of its own; \
+                 extend that crate instead of writing a second gate",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -824,6 +866,17 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "luxforge-reference may depend on no workspace crate and no path, so it can never \
                  reach luxforge-core",
+    },
+    // The one gate and wait serve every crate's tests, the core's own and the widget crate's
+    // included, so they can never reach the core.
+    DependencyRule {
+        name: "core-free-test-base",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-testbase"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-testbase may depend on no workspace crate and no path, so the core's \
+                 and the widget crate's tests can use it",
     },
 ];
 
@@ -1279,13 +1332,13 @@ impl SourceRule {
             test_paths(tree, &paths)?
         };
         let mut read = 0;
-        let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
         for path in &paths {
             let test_only = tests.contains(path);
             let home = permitted(path, self.allowed);
             if test_only || (home && !self.once) {
                 continue;
             }
+            let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
             let text = tree.text(path)?;
             let lines = if self.tests {
                 text.lines().enumerate().map(|(i, l)| (i + 1, l)).collect()
@@ -3000,6 +3053,125 @@ mod tests {
             ],
             "one shared test reference",
         );
+    }
+
+    #[test]
+    fn tests_wait_and_hold_work_only_through_the_shared_wait_and_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let rules = &["test-waits", "test-gates"];
+        let surface = "crates/luxforge-ui/src/photo_surface.rs";
+        let worker = "fn worker() {\n    std::thread::sleep(STEP);\n}\n";
+        // The shared crate's one wait and its gate, each production home's one sleep, the core's
+        // production blocking points, and tests that wait through the shared crate may.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-testbase/src/wait.rs",
+                    "        thread::sleep(POLL);\n",
+                ),
+                (
+                    "crates/luxforge-testbase/src/gate.rs",
+                    "    changed: Condvar,\n            changed: Condvar::new(),\n",
+                ),
+                (surface, worker),
+                (
+                    "crates/luxforge-core/src/modules/capabilities_proof.rs",
+                    "            thread::sleep(rest);\n",
+                ),
+                (
+                    "crates/luxforge-core/src/latest.rs",
+                    "    changed: Condvar,\n",
+                ),
+                (
+                    "crates/luxforge-core/src/preview/tests.rs",
+                    "    wait_until(\"the frame\", || queue.poll().is_some());\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, rules).unwrap(), (6, 0));
+        // A test's own sleep, spin or gate anywhere else, test code and comments included.
+        refuses_each(
+            root,
+            "test-waits",
+            &[
+                (
+                    "crates/luxforge-core/src/api/owner/export_tests.rs",
+                    "            std::thread::sleep(Duration::from_millis(1));\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/masks_tests.rs",
+                    "        std::thread::yield_now();\n",
+                ),
+                (
+                    "crates/luxforge-process/tests/counters.rs",
+                    "    // Spin, then thread::sleep(ms) until the counter moves.\n",
+                ),
+            ],
+            "luxforge_testbase::wait_until",
+        );
+        refuses_each(
+            root,
+            "test-gates",
+            &[
+                (
+                    "crates/luxforge-app/src/app/preview_failure_tests.rs",
+                    "struct Gate {\n    opened: Condvar,\n}\n",
+                ),
+                (
+                    "crates/luxforge-testkit/src/proof.rs",
+                    "    wake: Condvar,\n",
+                ),
+            ],
+            "luxforge_testbase::Gate",
+        );
+        // A production home holds its one sleep only: a second, in the tests beside it, is a
+        // test's own wait, while the next home's one sleep is its own.
+        write_all(
+            root,
+            &[(
+                surface,
+                &format!("{worker}#[cfg(test)]\nmod tests {{\n    std::thread::sleep(STEP);\n}}\n"),
+            )],
+        );
+        let error = refusal(root, &["test-waits"], "a second sleep in a home");
+        assert!(
+            error.contains(&format!("{surface}:6:")) && error.contains("source rule `test-waits`"),
+            "{error}"
+        );
+        write_all(root, &[(surface, worker)]);
+        assert_eq!(read(root, rules).unwrap(), (6, 0));
+    }
+
+    #[test]
+    fn the_shared_test_base_may_depend_on_no_workspace_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-testbase/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-testbase\"\n\n[dependencies]\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["core-free-test-base"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            (
+                "the core",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
+            ),
+            (
+                "the test kit, which depends on the core",
+                "[dev-dependencies]\nluxforge-testkit = { path = \"../luxforge-testkit\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}\n{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-testbase/Cargo.toml:")
+                    && error.contains("no workspace crate")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
     }
 
     fn minimal_plan(id: &str) -> Value {

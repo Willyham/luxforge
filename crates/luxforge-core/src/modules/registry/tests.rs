@@ -7,6 +7,7 @@ use crate::{
     EffectDescriptor, Layer, LayerId, Mask, PIXEL_EFFECT, Recipe, SourceImage,
     modules::{ActionInput, ActionPlan, Availability, EffectStage, ModuleDescriptor, StageContext},
 };
+use luxforge_testbase::Gate;
 use serde_json::{Map, Value, json};
 
 /// A minimal module used to prove registration rules and missing-provider behavior.
@@ -333,55 +334,15 @@ pub(crate) const HELD_EFFECT: &str = "test.held.effect";
 
 pub(crate) const HELD_ACTION: &str = "hold-render";
 
-/// A gate a test shuts to hold every render that reaches it. It is a pointwise colour unit that
-/// leaves its pixels exactly as it found them, so a stack carrying one renders the image it
-/// would render without it; all it changes is *when* that render finishes.
+/// The shared test gate as a pointwise colour unit that leaves its pixels exactly as it found
+/// them, so a stack carrying one renders the image it would render without it; all it changes is
+/// *when* that render finishes. A render reaches it once per row, so [`Gate::reached`] counts the
+/// rows a render has evaluated through the held layer. A test that holds other work, such as a
+/// source preparation, passes the same gate from a hook in that work.
 ///
 /// Shut it only while nothing samples a stack that holds the layer: a point sample evaluates
 /// the same unit on the calling thread, so the caller would wait with it.
-pub(crate) struct RenderGate {
-    shut: std::sync::Mutex<bool>,
-    opened: std::sync::Condvar,
-    /// How many times anything has reached the gate: one per row a render evaluates through it.
-    reached: std::sync::atomic::AtomicU64,
-}
-
-impl RenderGate {
-    /// A gate that is open, which is how a test builds the stack before it holds anything.
-    pub(crate) fn open_gate() -> Arc<Self> {
-        Arc::new(Self {
-            shut: std::sync::Mutex::new(false),
-            opened: std::sync::Condvar::new(),
-            reached: std::sync::atomic::AtomicU64::new(0),
-        })
-    }
-    /// How many times anything has reached the gate, held or not. A render reaches it once per
-    /// row, so this counts the rows a render has evaluated through the held layer.
-    pub(crate) fn reached(&self) -> u64 {
-        self.reached.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    /// Hold every render that reaches this gate from now on.
-    pub(crate) fn shut(&self) {
-        *self.shut.lock().expect("the render gate") = true;
-    }
-    /// Release whatever is waiting and let every later render through.
-    pub(crate) fn open(&self) {
-        *self.shut.lock().expect("the render gate") = false;
-        self.opened.notify_all();
-    }
-    /// Wait here while the gate is shut. A render reaches it through its colour unit; a test
-    /// that holds other work, such as a source preparation, calls it from a hook in that work.
-    pub(crate) fn pass(&self) {
-        self.reached
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut shut = self.shut.lock().expect("the render gate");
-        while *shut {
-            shut = self.opened.wait(shut).expect("the render gate");
-        }
-    }
-}
-
-impl crate::PointwiseColor for RenderGate {
+impl crate::PointwiseColor for Gate {
     fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
         self.pass();
     }
@@ -393,17 +354,17 @@ impl crate::PointwiseColor for RenderGate {
     }
 }
 
-/// A module whose one colour effect compiles to a [`RenderGate`]. A test that is about the
+/// A module whose one colour effect compiles to the shared test [`Gate`]. A test that is about the
 /// analysis worker's slots commits one of these layers and shuts the gate: the job on the
 /// worker then stays there until the test opens it, so what the single pending slot does is
 /// decided by the queue's rule and never by how fast this machine renders a frame.
 pub(crate) struct HeldModule {
     descriptor: ModuleDescriptor,
-    gate: Arc<RenderGate>,
+    gate: Arc<Gate>,
 }
 
 impl HeldModule {
-    pub(crate) fn shared(gate: Arc<RenderGate>) -> Arc<dyn ToolModule> {
+    pub(crate) fn shared(gate: Arc<Gate>) -> Arc<dyn ToolModule> {
         Arc::new(Self {
             descriptor: ModuleDescriptor {
                 id: "test.held".into(),

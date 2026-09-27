@@ -19,6 +19,7 @@ use crate::{
     ModuleDescriptor, ModuleRegistry, OwnerHandle,
     jobs::{JOB_CANCEL, JOB_READ, LANE_QUEUE},
 };
+use luxforge_testbase::{Gate, wait_for};
 use luxforge_testkit::{TestServer, respond};
 use serde_json::{Value, json};
 use std::{
@@ -27,12 +28,8 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     net::TcpStream,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, atomic::Ordering},
+    thread::JoinHandle,
 };
 
 /// How many lane-test modules each fixture registers: enough to fill the module lane and one more.
@@ -244,15 +241,9 @@ impl Owner {
     }
 
     fn until(&self, job_id: &Value, done: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let job = self.job(job_id);
-            if done(&job) {
-                return job;
-            }
-            assert!(Instant::now() < deadline, "job never got there: {job}");
-            thread::sleep(Duration::from_millis(2));
-        }
+        wait_for(&format!("job {job_id} getting there"), || {
+            Some(self.job(job_id)).filter(|job| done(job))
+        })
     }
 
     fn status(&self, module_id: &str) -> Value {
@@ -351,10 +342,13 @@ fn serving() -> TestServer {
     .unwrap()
 }
 
-/// A server whose `/palette` sends its head and four bytes, then waits for `release` before the
-/// rest; `/swatch` answers at once.
-fn stalling(release: Arc<AtomicBool>) -> TestServer {
-    TestServer::http(move |request, out| match request.path.as_str() {
+/// A server whose `/palette` sends its head and four bytes, then waits at the returned gate, shut,
+/// before the rest; `/swatch` answers at once.
+fn stalling() -> (TestServer, Arc<Gate>) {
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    let held = gate.clone();
+    let server = TestServer::http(move |request, out| match request.path.as_str() {
         "/palette" => {
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -363,15 +357,13 @@ fn stalling(release: Arc<AtomicBool>) -> TestServer {
             let _ = out.write_all(head.as_bytes());
             let _ = out.write_all(&PALETTE[..4]);
             let _ = out.flush();
-            let deadline = Instant::now() + Duration::from_secs(20);
-            while !release.load(Ordering::SeqCst) && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(5));
-            }
+            held.pass();
             let _ = out.write_all(&PALETTE[4..]);
         }
         _ => respond(out, "200 OK", "", SWATCH),
     })
-    .unwrap()
+    .unwrap();
+    (server, gate)
 }
 
 /// The latest release job in a module status. The status names it as the activation's job only
@@ -385,15 +377,6 @@ fn release_job(status: &Value) -> Value {
         .find(|job| job["kind"] == json!("deactivate"))
         .expect("a release job")["job_id"]
         .clone()
-}
-
-/// Wait until `condition` holds, for a probe flag set on a worker.
-fn eventually(what: &str, condition: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !condition() {
-        assert!(Instant::now() < deadline, "{what} never happened");
-        thread::sleep(Duration::from_millis(2));
-    }
 }
 
 /// Every file under `root`, read whole.
@@ -662,8 +645,7 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
 
 #[test]
 fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
-    let release = Arc::new(AtomicBool::new(false));
-    let server = stalling(release.clone());
+    let (server, release) = stalling();
     let fixture = Fixture::new("revoke", &server);
     let owner = fixture.start();
     let palette = owner.grant_download(&fixture, "palette", "palette");
@@ -698,7 +680,7 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
     let stopped = owner.finished(&running["job_id"]);
     assert_eq!(stopped["status"], json!("cancelled"));
     assert_eq!(stopped["error"]["message"], json!("permission revoked"));
-    release.store(true, Ordering::SeqCst);
+    release.open();
     fixture.assert_clean("palette", "revoked while running");
     fixture.assert_clean("swatch", "revoked while queued");
     // Everything else is as it was: the settings, and no grant besides these two.
@@ -851,7 +833,7 @@ fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
     let server = serving();
     let fixture = Fixture::new("lane", &server);
     for probe in &fixture.lanes {
-        probe.hold.store(true, Ordering::SeqCst);
+        probe.hold.shut();
     }
     let owner = fixture.start();
     let activate = |index: usize| {
@@ -863,9 +845,9 @@ fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
     };
     let first = activate(0).result.unwrap();
     assert_eq!(first["activation"], json!("activating"));
-    eventually("the first activation runs", || {
-        fixture.lanes[0].running.load(Ordering::SeqCst)
-    });
+    fixture.lanes[0]
+        .hold
+        .wait_reached(1, "the first activation");
     let waiting: Vec<Value> = (1..=LANE_QUEUE)
         .map(|index| activate(index).result.unwrap())
         .collect();
@@ -899,7 +881,7 @@ fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
     let admitted = activate(LANE_QUEUE + 1).result.unwrap();
     assert_eq!(admitted["status"], json!("queued"));
     for probe in &fixture.lanes {
-        probe.hold.store(false, Ordering::SeqCst);
+        probe.hold.open();
     }
     for job in [&first, &waiting[0], &waiting[3], &admitted] {
         assert_eq!(owner.finished(&job["job_id"])["status"], json!("ready"));
@@ -923,7 +905,7 @@ fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
 fn a_running_activation_stops_promptly_and_releases_what_it_loaded() {
     let server = serving();
     let fixture = Fixture::new("running-cancel", &server);
-    fixture.probe.hold.store(true, Ordering::SeqCst);
+    fixture.probe.hold.shut();
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
     owner.install_downloaded(&fixture, "palette");
@@ -936,15 +918,11 @@ fn a_running_activation_stops_promptly_and_releases_what_it_loaded() {
         Some(PALETTE),
         "the activation loaded the palette and holds it"
     );
-    // The owner answers while the activation runs: the worker never holds it.
-    let started = Instant::now();
+    // The owner answers while the activation is held at the probe's gate, which stays shut to the
+    // end of the test: the worker never holds the owner.
     let status = owner.status(MODULE);
     let job = owner.job(&queued["job_id"]);
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the owner answered in {:?}",
-        started.elapsed()
-    );
+    assert!(fixture.probe.hold.holding(), "the activation is still held");
     assert_eq!(status["activation"]["state"], json!("activating"));
     assert_eq!(status["activation"]["job_id"], queued["job_id"]);
     assert_eq!(job["status"], json!("running"));
@@ -952,19 +930,15 @@ fn a_running_activation_stops_promptly_and_releases_what_it_loaded() {
         job["progress"],
         json!({"fraction": 0.5, "message": "loaded"})
     );
-    let started = Instant::now();
     let cancelling = owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
     assert_eq!(
         cancelling["status"],
         json!("running"),
         "it stops at its checkpoint"
     );
+    // The gate is still shut, so the job ended at its checkpoint, not by being let through.
     let stopped = owner.finished(&queued["job_id"]);
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the cancel took {:?}",
-        started.elapsed()
-    );
+    assert!(fixture.probe.hold.is_shut());
     assert_eq!(stopped["status"], json!("cancelled"));
     assert_eq!(stopped["error"]["code"], json!("cancelled"));
     assert_eq!(
@@ -1339,8 +1313,7 @@ fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
 
 #[test]
 fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
-    let release = Arc::new(AtomicBool::new(false));
-    let server = stalling(release.clone());
+    let (server, release) = stalling();
     let fixture = Fixture::new("cancel-download", &server);
     let owner = fixture.start();
     owner.grant_download(&fixture, "palette", "palette");
@@ -1355,15 +1328,12 @@ fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
     });
     assert_eq!(running["status"], json!("running"));
     assert_eq!(running["progress"]["message"], json!("downloading"));
-    let started = Instant::now();
+    // The server still holds the rest of the body at its gate, so the job ended mid-transfer at
+    // its cancellation, not when the transfer could finish.
     owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
     let cancelled = owner.finished(&queued["job_id"]);
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the cancel took {:?}",
-        started.elapsed()
-    );
-    release.store(true, Ordering::SeqCst);
+    assert!(release.holding(), "the rest of the body is still held");
+    release.open();
     assert_eq!(cancelled["status"], json!("cancelled"));
     assert_eq!(
         cancelled["error"],
