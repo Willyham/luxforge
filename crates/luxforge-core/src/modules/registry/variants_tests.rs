@@ -454,6 +454,15 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
             );
             descriptor.actions[0].notes = PRESET_NOTES_BEFORE.into();
         }
+        // The other: the luminance band gained its one `range` control. Without it the masks
+        // descriptor is byte for byte what it was.
+        if id == "luxforge.masks" {
+            let before = descriptor.controls.len();
+            descriptor
+                .controls
+                .retain(|control| !matches!(control, crate::Control::Range { .. }));
+            assert_eq!(descriptor.controls.len(), before - 1);
+        }
         let json = serde_json::to_string(&descriptor).unwrap();
         assert!(!json.contains("\"variants\""), "{id}");
         assert_eq!(

@@ -32,7 +32,7 @@
 //! luminance and one colour space.
 use super::{Binding, ComponentField, Field, smooth};
 use crate::{
-    Component, Error, ParameterDescriptor,
+    Component, Control, Error, ParameterDescriptor, RailDecoration,
     colour::{luma::rec709_f64, oklab::lab_f64, srgb},
     modules::{Region, Stage},
 };
@@ -168,6 +168,18 @@ pub(super) fn luminance_parameters(required: bool) -> Vec<ParameterDescriptor> {
              edge and anything else is at least 1",
         ),
     ]
+}
+
+/// The band's own control over the patch method `action`: two thumbs for `low` and `high` and a
+/// shoulder grip outside each, over a black-to-white rail, because the axis is the histogram's own
+/// and its ends are black and white. The four number fields are generated beside it from the same
+/// declarations, so a typed value stays exact.
+pub(super) fn luminance_band(action: &'static str) -> Control {
+    Control::range(action, "low", "high", "Range")
+        .feathers("low_feather", "high_feather")
+        .rail(RailDecoration::Gradient {
+            stops: vec![[0, 0, 0], [255, 255, 255]],
+        })
 }
 
 fn level(name: &str, required: bool, default: f64, notes: &str) -> ParameterDescriptor {

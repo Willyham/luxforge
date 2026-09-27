@@ -421,9 +421,59 @@ pub(crate) struct PickerControl {
     pub(crate) enabled: bool,
 }
 
+/// A band on one axis: its two edges and, where declared, its two shoulders, each exactly the
+/// number field its parameter is. A thumb or grip drags that one field through the slider's own
+/// draft path, and the fields are drawn under the band, because a typed value is exact.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RangeControl {
+    pub(crate) action: String,
+    pub(crate) label: String,
+    pub(crate) rail: RailStyle,
+    pub(crate) low: SliderControl,
+    pub(crate) high: SliderControl,
+    pub(crate) low_feather: Option<SliderControl>,
+    pub(crate) high_feather: Option<SliderControl>,
+}
+
+impl RangeControl {
+    /// The band's fields in the order they are laid out, two to a row: the low edge and its
+    /// shoulder, then the high edge and its shoulder.
+    pub(crate) fn fields(&self) -> impl Iterator<Item = &SliderControl> {
+        [
+            Some(&self.low),
+            self.low_feather.as_ref(),
+            Some(&self.high),
+            self.high_feather.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Whether this band draws the field of `parameter` of `action` under itself.
+    pub(crate) fn draws(&self, action: &str, parameter: &str) -> bool {
+        self.fields()
+            .any(|field| field.action == action && field.parameter == parameter)
+    }
+}
+
+/// Whether a range control among `controls` already draws `control`, a number field, under its
+/// band, so a list that holds both draws the field once. A declarer may list a band's fields as
+/// number controls of their own — the host does, so every field keeps its declared label and an
+/// agent reads it as one — and the panel still shows each field exactly once.
+pub(crate) fn drawn_by_range(controls: &[ControlModel], control: &ControlModel) -> bool {
+    let ControlModel::Slider(field) = control else {
+        return false;
+    };
+    controls.iter().any(|other| {
+        matches!(other, ControlModel::Range(range) if range.draws(&field.action, &field.parameter))
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ControlModel {
     Slider(SliderControl),
+    /// A two-thumb band over number fields of one action.
+    Range(Box<RangeControl>),
     Toggle(ToggleControl),
     Enum(EnumControl),
     Color(ColorControl),
@@ -1099,15 +1149,52 @@ fn resolved_model(
                     NumberStyle::Field => NumberControlStyle::Field,
                     NumberStyle::Stepper => NumberControlStyle::Stepper,
                 };
-                slider.rail = match rail.unwrap_or(&RailDecoration::Plain) {
-                    RailDecoration::Plain => RailStyle::Plain,
-                    RailDecoration::Hue => RailStyle::Hue,
-                    RailDecoration::Temperature => RailStyle::Temperature,
-                    RailDecoration::Tint => RailStyle::Tint,
-                    RailDecoration::Gradient { stops } => RailStyle::Gradient(stops.clone()),
-                };
+                slider.rail = rail_style(rail);
             }
             model
+        }
+        Rendered::Range {
+            action,
+            low,
+            high,
+            low_feather,
+            high_feather,
+            label,
+            rail,
+        } => {
+            // Each edge and shoulder is modelled exactly as its own number field is, as a field,
+            // under the label its own number control declares. A parameter that is not a number
+            // field names the band's problem in the band's place, as a lone field would.
+            let mut fields: [Option<SliderControl>; 4] = Default::default();
+            for (slot, parameter) in
+                fields
+                    .iter_mut()
+                    .zip([Some(low), Some(high), low_feather, high_feather])
+            {
+                let Some(parameter) = parameter else { continue };
+                let label = owner.field_label(action, parameter);
+                match value_model(owner, inputs, action, parameter, &label) {
+                    ControlModel::Slider(mut field) => {
+                        field.style = NumberControlStyle::Field;
+                        field.reset =
+                            ResetRef::of(declared_field_reset(inputs.modules, action, parameter));
+                        *slot = Some(field);
+                    }
+                    unsupported => return unsupported,
+                }
+            }
+            let [Some(low), Some(high), low_feather, high_feather] = fields else {
+                unreachable!("both edges are always modelled or returned early");
+            };
+            ControlModel::Range(Box::new(RangeControl {
+                action: action.to_owned(),
+                label: label.to_owned(),
+                rail: rail_style(rail),
+                low,
+                high,
+                low_feather,
+                high_feather,
+            }))
         }
         Rendered::Toggle {
             action,
@@ -1242,6 +1329,17 @@ fn resolved_model(
             )))
         }
         Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
+    }
+}
+
+/// The rail a number or range control declares, as the view draws it.
+fn rail_style(rail: Option<&RailDecoration>) -> RailStyle {
+    match rail.unwrap_or(&RailDecoration::Plain) {
+        RailDecoration::Plain => RailStyle::Plain,
+        RailDecoration::Hue => RailStyle::Hue,
+        RailDecoration::Temperature => RailStyle::Temperature,
+        RailDecoration::Tint => RailStyle::Tint,
+        RailDecoration::Gradient { stops } => RailStyle::Gradient(stops.clone()),
     }
 }
 
@@ -1902,6 +2000,16 @@ pub(crate) enum Rendered<'a> {
         style: ActionStyle,
         icon: Option<&'a str>,
     },
+    /// A band over number parameters of one action: its edges and, when declared, its shoulders.
+    Range {
+        action: &'a str,
+        low: &'a str,
+        high: &'a str,
+        low_feather: Option<&'a str>,
+        high_feather: Option<&'a str>,
+        label: &'a str,
+        rail: Option<&'a RailDecoration>,
+    },
     /// The declaring module's own canvas pick, offered in its panel.
     Picker {
         label: &'a str,
@@ -2006,6 +2114,23 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             style: *style,
             icon: icon.as_deref(),
         },
+        Control::Range {
+            action,
+            low,
+            high,
+            low_feather,
+            high_feather,
+            label,
+            rail,
+        } => Rendered::Range {
+            action,
+            low,
+            high,
+            low_feather: low_feather.as_deref(),
+            high_feather: high_feather.as_deref(),
+            label,
+            rail: rail.as_ref(),
+        },
         Control::Picker { label, .. } => Rendered::Picker { label },
         Control::Task { task, label } => Rendered::Task { task, label },
         Control::Presets { action } => Rendered::Presets { action },
@@ -2061,6 +2186,18 @@ impl<'a> ControlOwner<'a> {
                 .action
                 .parameter(parameter),
         }
+    }
+
+    /// The label this owner's own number control declares for one field, else the parameter's
+    /// name: what a band's field is called under the band.
+    fn field_label(self, action: &str, parameter: &str) -> String {
+        let controls = match self {
+            Self::Module(module) => &module.controls[..],
+            Self::Host => luxforge_core::mask::commands::controls(),
+        };
+        labelled_control(controls, action, parameter)
+            .unwrap_or(parameter)
+            .to_owned()
     }
 
     /// The module's own id, for the per-module keys a group's expansion and a tab selection use.

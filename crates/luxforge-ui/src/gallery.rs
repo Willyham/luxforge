@@ -4,7 +4,7 @@
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
 use crate::{
-    BINS, ChipModel, ClipTriangleModel, DraftBarModel, DraftFinish, HistogramChannel,
+    BINS, ChipModel, ClipTriangleModel, DraftBarModel, DraftFinish, DraftSubject, HistogramChannel,
     HistogramModel, Icon, IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel,
     RailDecoration, SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel,
     ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle, compact_chip, double_click,
@@ -609,5 +609,23 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.extend(crate::gallery_panels::gallery_panels());
     states.extend(crate::gallery_panels::gallery_panel_rows());
     states.extend(crate::gallery_masks::gallery_masks());
+    states.extend(crate::gallery_components::gallery_ranges());
+
+    // -- A mask gesture's draft bar: the mask as the lead, the component with its kind's icon and
+    // -- mode, the readout, and Done in place of Apply, as a brush's bar ends.
+    states.push(draft_bar(
+        &DraftBarModel {
+            title: "Face".into(),
+            subject: Some(DraftSubject {
+                icon: Some(Icon::Brush),
+                label: "Brush 1 \u{b7} Subtract".into(),
+            }),
+            readout: "size 0.060 \u{b7} feather 50".into(),
+            apply_reason: None,
+            finish: DraftFinish::Done,
+        },
+        (),
+        None,
+    ));
     states
 }

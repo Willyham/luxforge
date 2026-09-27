@@ -20,7 +20,7 @@ use crate::{
     state::{
         histogram::HistogramModel,
         masks::{ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
-        tools::ControlModel,
+        tools::{ControlModel, drawn_by_range},
     },
     view::tools_panel::{control_copy_menu, control_target, control_view, ui_edit},
 };
@@ -873,6 +873,10 @@ fn component_fields<'a>(
         }
     };
     for field in fields {
+        // A band draws its own number fields under itself, so they are drawn there once.
+        if drawn_by_range(fields, field) {
+            continue;
+        }
         match field {
             ControlModel::Slider(number) => {
                 if open_menu.is_none() {
