@@ -32,7 +32,7 @@ use super::overlay::{MAX_OVERLAY_CELLS, cell_pixel};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Cancel, ComponentId, Error, MaskId, StageTransform, mask::CompiledMask, modules::Stage,
+    Cancel, ComponentId, Error, MaskId, Region, StageTransform, mask::CompiledMask, modules::Stage,
 };
 use rayon::prelude::*;
 
@@ -128,7 +128,7 @@ fn content_pixel(coordinate: f64, extent: u32) -> Option<u32> {
 #[derive(Clone, Copy)]
 struct Cells<'a> {
     content: Stage,
-    output: Stage,
+    region: Region,
     inverse: [f64; 6],
     cells_w: u32,
     cells_h: u32,
@@ -141,11 +141,11 @@ struct Cells<'a> {
 impl Cells<'_> {
     /// Fill one cell row. `row` is that row's slice of the grid and `cy` its cell row index.
     fn fill_row(&self, row: &mut [u8], cy: u32, mask: &CompiledMask) -> Result<(), Error> {
-        let py = cell_pixel(cy, self.output.height, self.cells_h);
+        let py = self.region.y0 + cell_pixel(cy, self.region.height, self.cells_h);
         let oy = f64::from(py) + 0.5;
         let bounds = mask.bounds();
         for (cx, cell) in row.iter_mut().enumerate() {
-            let px = cell_pixel(cx as u32, self.output.width, self.cells_w);
+            let px = self.region.x0 + cell_pixel(cx as u32, self.region.width, self.cells_w);
             let ox = f64::from(px) + 0.5;
             let x = self.inverse[0] * ox + self.inverse[1] * oy + self.inverse[2];
             let y = self.inverse[3] * ox + self.inverse[4] * oy + self.inverse[5];
@@ -210,6 +210,34 @@ pub fn coverage_grid(
     pixels: MaskPixels<'_>,
     cancel: &Cancel,
 ) -> Result<Option<Vec<u8>>, Error> {
+    coverage_grid_region(
+        mask,
+        transform,
+        Region {
+            x0: 0,
+            y0: 0,
+            width: transform.output.width,
+            height: transform.output.height,
+        },
+        cells_w,
+        cells_h,
+        pixels,
+        cancel,
+    )
+}
+
+/// Sample the same uncut mask and geometry over a visible output-stage rectangle. The region
+/// changes only which output pixel each cell addresses; the mask and its value-based input remain
+/// compiled against the complete stage, so a pan cannot recenter or reinterpret them.
+pub fn coverage_grid_region(
+    mask: &CompiledMask,
+    transform: &StageTransform,
+    region: Region,
+    cells_w: u32,
+    cells_h: u32,
+    pixels: MaskPixels<'_>,
+    cancel: &Cancel,
+) -> Result<Option<Vec<u8>>, Error> {
     cancel.check()?;
     let output = Stage {
         width: transform.output.width,
@@ -222,6 +250,11 @@ pub fn coverage_grid(
     if output.width == 0 || output.height == 0 || cells_w == 0 || cells_h == 0 {
         return Err(Error::validation(
             "a mask overlay needs a non-empty frame and a non-empty cell grid",
+        ));
+    }
+    if region.is_empty() || region.x1() > output.width || region.y1() > output.height {
+        return Err(Error::validation(
+            "a mask overlay region must be non-empty and within the output stage",
         ));
     }
     if cells_w > MAX_OVERLAY_CELLS || cells_h > MAX_OVERLAY_CELLS {
@@ -262,7 +295,7 @@ pub fn coverage_grid(
     let count = (cells_w as usize) * (cells_h as usize);
     let cells = Cells {
         content,
-        output,
+        region,
         inverse: transform.inverse,
         cells_w,
         cells_h,
@@ -420,6 +453,46 @@ mod tests {
         assert_eq!(grid[grid.len() - 1], MASK_COVERAGE_FULL);
     }
 
+    #[test]
+    fn a_region_grid_uses_uncut_output_coordinates() {
+        let (width, height) = (200, 120);
+        let mask = vertical_gradient();
+        let compiled = compiled(&mask, width, height);
+        let region = Region {
+            x0: 73,
+            y0: 41,
+            width: 61,
+            height: 47,
+        };
+        let (cells_w, cells_h) = (19, 13);
+        let grid = coverage_grid_region(
+            &compiled,
+            &identity(width, height),
+            region,
+            cells_w,
+            cells_h,
+            NO_INPUT,
+            &Cancel::never(),
+        )
+        .unwrap()
+        .unwrap();
+        for cy in 0..cells_h {
+            let py = region.y0
+                + (((2 * u64::from(cy) + 1) * u64::from(region.height)) / (2 * u64::from(cells_h)))
+                    as u32;
+            for cx in 0..cells_w {
+                let px = region.x0
+                    + (((2 * u64::from(cx) + 1) * u64::from(region.width))
+                        / (2 * u64::from(cells_w))) as u32;
+                assert_eq!(
+                    grid[(cy * cells_w + cx) as usize],
+                    quantize_coverage(compiled.coverage(px, py, ANY_PIXEL)),
+                    "cell ({cx}, {cy}) at full-stage ({px}, {py})"
+                );
+            }
+        }
+    }
+
     /// The forced-parallel and forced-serial paths cannot be compared through the public entry
     /// point without a megapixel of cells, so this compares the real grid against the same row
     /// function driven serially, which is what the parallel split is a rearrangement of.
@@ -442,7 +515,12 @@ mod tests {
         .unwrap();
         let cells = Cells {
             content: Stage { width, height },
-            output: Stage { width, height },
+            region: Region {
+                x0: 0,
+                y0: 0,
+                width,
+                height,
+            },
             inverse: transform.inverse,
             cells_w,
             cells_h,

@@ -11,12 +11,12 @@
 
 use super::{
     Byte, Cancel, Compiled, Evaluation, LayerInput, PixelDomain, Raster, Sample, SpatialMode,
-    StageTransform, check_source, grid_centres,
+    StageSize, StageTransform, check_source, grid_centres,
     linear::{self, Linear, LinearImage, LinearSettings},
     rasterize,
     spatial::PRODUCTION_TILE,
     transform_of,
-    window::WindowPlan,
+    window::{RegionFallback, WindowPlan},
 };
 use crate::{
     Error, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
@@ -144,6 +144,94 @@ pub struct Render<'a> {
     context: &'a RenderContext,
 }
 
+/// At most 32 MiB of returned RGBA8 pixels in one viewport frame. Intermediate/source windows
+/// retain their existing, named frame and scratch limits; spatial halos can exceed this bound.
+const REGION_FRAME_BYTES: u64 = 32 * 1024 * 1024;
+
+/// A region raster's coordinates in its whole evaluated stage, and that stage's relationship to
+/// the original full-resolution output. The raster is only the rectangle: it cannot be reduced
+/// into a full-image report by this API.
+#[derive(Debug)]
+pub struct RegionFrame {
+    pub raster: Raster,
+    pub rect: Region,
+    pub stage: StageSize,
+    pub full_rect: Region,
+    pub full_stage: StageSize,
+    pub approximation: ProxyApproximation,
+}
+
+pub enum RegionRenderOutcome {
+    Rendered(RegionFrame),
+    Declined(RegionFallback),
+}
+
+/// A half-detail viewport proxy source and the part of its whole scaled output stage to produce.
+/// The `proxy` plan, including its source window, is the existing one-entry cache's key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProxyRegionPlan {
+    pub proxy: ProxyPlan,
+    pub output: Region,
+    pub stage: StageSize,
+    pub full_rect: Region,
+    pub full_stage: StageSize,
+}
+
+fn clipped(requested: Region, stage: StageSize) -> Option<Region> {
+    let x0 = requested.x0.min(stage.width);
+    let y0 = requested.y0.min(stage.height);
+    let x1 = requested.x1().min(stage.width);
+    let y1 = requested.y1().min(stage.height);
+    (x1 > x0 && y1 > y0).then_some(Region {
+        x0,
+        y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    })
+}
+
+fn admitted(rect: Region) -> bool {
+    rect.pixels() * 4 <= REGION_FRAME_BYTES
+}
+
+fn scaled_rect(rect: Region, from: StageSize, to: StageSize) -> Region {
+    let floor =
+        |value: u32, a: u32, b: u32| (u64::from(value) * u64::from(b) / u64::from(a)) as u32;
+    let ceil = |value: u32, a: u32, b: u32| {
+        (u64::from(value) * u64::from(b)).div_ceil(u64::from(a)) as u32
+    };
+    let x0 = floor(rect.x0, from.width, to.width);
+    let y0 = floor(rect.y0, from.height, to.height);
+    let x1 = ceil(rect.x1(), from.width, to.width).min(to.width);
+    let y1 = ceil(rect.y1(), from.height, to.height).min(to.height);
+    Region {
+        x0,
+        y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    }
+}
+
+enum RegionSource {
+    Byte(SourceImage),
+    Linear {
+        image: LinearImage,
+        settings: LinearSettings,
+    },
+}
+
+impl RegionSource {
+    fn input(&self) -> RenderSource<'_> {
+        match self {
+            Self::Byte(image) => RenderSource::Byte(image),
+            Self::Linear { image, settings } => RenderSource::Linear {
+                image,
+                settings: *settings,
+            },
+        }
+    }
+}
+
 /// Enter rendering: compile `recipe` against `source` for the phase `options` name.
 ///
 /// This is the one entry point. It refuses what no evaluation of the stack could accept — a source
@@ -231,6 +319,214 @@ impl<'a> Render<'a> {
                 linear::rasterize(&evaluation, snapshot_id, cancel, self.context)
             }
         }
+    }
+
+    /// Render exactly the requested, clipped full-output-stage rectangle. Its global spatial
+    /// estimates are the same whole-stage estimates as `frame()`; only pixel production is cut.
+    /// Unsupported stacks answer a named fallback, never an apparently exact partial image.
+    pub fn region(
+        &self,
+        snapshot_id: SnapshotId,
+        requested: Region,
+    ) -> Result<RegionRenderOutcome, Error> {
+        let (width, height) = self.stage();
+        let stage = StageSize { width, height };
+        let Some(rect) = clipped(requested, stage) else {
+            return Ok(RegionRenderOutcome::Declined(RegionFallback::Empty));
+        };
+        if !admitted(rect) {
+            return Ok(RegionRenderOutcome::Declined(RegionFallback::TooLarge));
+        }
+        let source_size = self.source.dimensions();
+        let windows = match WindowPlan::of_rect(&self.compiled, source_size, rect) {
+            Ok(windows) => windows,
+            Err(reason) => return Ok(RegionRenderOutcome::Declined(reason)),
+        };
+        self.options.cancel.check()?;
+        let source = match self.source {
+            RenderSource::Byte(image) => RegionSource::Byte(
+                if windows.source.x0 == 0
+                    && windows.source.y0 == 0
+                    && windows.source.width == image.width
+                    && windows.source.height == image.height
+                {
+                    image.clone()
+                } else {
+                    image.window(windows.source, &self.options.cancel)?
+                },
+            ),
+            RenderSource::Linear { image, settings } => RegionSource::Linear {
+                image: image.window(windows.source)?,
+                settings,
+            },
+        };
+        let compiled = windows.apply(self.compiled.clone(), source_size, |index| {
+            self.spatial_globals(index)
+        })?;
+        let raster =
+            Render::compiled(source.input(), compiled, self.options.clone(), self.context)?
+                .frame(snapshot_id)?;
+        Ok(RegionRenderOutcome::Rendered(RegionFrame {
+            raster,
+            rect,
+            stage,
+            full_rect: rect,
+            full_stage: stage,
+            approximation: ProxyApproximation::default(),
+        }))
+    }
+
+    /// Plan the first moving viewport phase against a source stage roughly half the exact size on
+    /// each side. The returned source window participates in the existing one-entry proxy key.
+    pub fn plan_proxy_region(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        requested: Region,
+    ) -> Result<ProxyRegionPlan, RegionFallback> {
+        let (width, height) = self.stage();
+        let full_stage = StageSize { width, height };
+        let full_rect = clipped(requested, full_stage).ok_or(RegionFallback::Empty)?;
+        registry
+            .proxy_eligible(recipe)
+            .map_err(|_| RegionFallback::ProxyIneligible)?;
+        // A viewport builds only its source window. Applying ProxyBounds::clamped here would
+        // silently lower a 60 MP half-stage again because its *uncut* area exceeds 8 MP.
+        let (source_width, source_height) = self.source.dimensions();
+        let proxy = ProxyPlan {
+            width: source_width.div_ceil(2),
+            height: source_height.div_ceil(2),
+            bounds: ProxyBounds {
+                width: width.div_ceil(2),
+                height: height.div_ceil(2),
+            },
+            window: None,
+        };
+        if (proxy.width, proxy.height) == (source_width, source_height) {
+            return Err(RegionFallback::ProxyUnavailable);
+        }
+        let compiled = registry
+            .compile_sampled(
+                proxy.width,
+                proxy.height,
+                recipe,
+                RenderPhase::Proxy.sampling(),
+            )
+            .map_err(|_| RegionFallback::SegmentMismatch)?;
+        if !same_segments(&compiled, &self.compiled) {
+            return Err(RegionFallback::SegmentMismatch);
+        }
+        let output_stage = compiled.stage();
+        let stage = StageSize {
+            width: output_stage.width,
+            height: output_stage.height,
+        };
+        let output = scaled_rect(full_rect, full_stage, stage);
+        if !admitted(output) {
+            return Err(RegionFallback::TooLarge);
+        }
+        let windows = WindowPlan::of_rect(&compiled, (proxy.width, proxy.height), output)?;
+        let source = windows.source;
+        let proxy = ProxyPlan {
+            window: (source.x0 != 0
+                || source.y0 != 0
+                || source.width != proxy.width
+                || source.height != proxy.height)
+                .then_some(ProxyWindow {
+                    x: source.x0,
+                    y: source.y0,
+                    width: source.width,
+                    height: source.height,
+                }),
+            ..proxy
+        };
+        Ok(ProxyRegionPlan {
+            proxy,
+            output,
+            stage,
+            full_rect,
+            full_stage,
+        })
+    }
+
+    /// Render a planned half-detail viewport from the worker's cached/built source proxy. The
+    /// whole exact `Render` supplies pan-independent exact global estimates when needed.
+    pub fn render_proxy_region(
+        &self,
+        registry: &ModuleRegistry,
+        source: RenderSource<'_>,
+        recipe: &Recipe,
+        plan: ProxyRegionPlan,
+        snapshot_id: SnapshotId,
+        context: &RenderContext,
+    ) -> Result<RegionRenderOutcome, Error> {
+        self.options.cancel.check()?;
+        if source.dimensions() != plan.proxy.source_dimensions() {
+            return Ok(RegionRenderOutcome::Declined(
+                RegionFallback::SegmentMismatch,
+            ));
+        }
+        let compiled = registry.compile_sampled(
+            plan.proxy.width,
+            plan.proxy.height,
+            recipe,
+            RenderPhase::Proxy.sampling(),
+        )?;
+        if !same_segments(&compiled, &self.compiled) {
+            return Ok(RegionRenderOutcome::Declined(
+                RegionFallback::SegmentMismatch,
+            ));
+        }
+        let windows = match WindowPlan::of_rect(
+            &compiled,
+            (plan.proxy.width, plan.proxy.height),
+            plan.output,
+        ) {
+            Ok(windows) => windows,
+            Err(reason) => return Ok(RegionRenderOutcome::Declined(reason)),
+        };
+        let expected = plan.proxy.window.map_or(
+            Region {
+                x0: 0,
+                y0: 0,
+                width: plan.proxy.width,
+                height: plan.proxy.height,
+            },
+            |window| Region {
+                x0: window.x,
+                y0: window.y,
+                width: window.width,
+                height: window.height,
+            },
+        );
+        if windows.source != expected {
+            return Ok(RegionRenderOutcome::Declined(
+                RegionFallback::SegmentMismatch,
+            ));
+        }
+        let compiled = windows.apply(compiled, (plan.proxy.width, plan.proxy.height), |index| {
+            self.spatial_globals(index)
+        })?;
+        let approximation = {
+            let mut approximation = compiled.approximation();
+            approximation.reduced_detail = true;
+            approximation
+        };
+        let raster = Render::compiled(
+            source,
+            compiled,
+            RenderOptions::proxy(&self.options.cancel),
+            context,
+        )?
+        .frame(snapshot_id)?;
+        Ok(RegionRenderOutcome::Rendered(RegionFrame {
+            raster,
+            rect: plan.output,
+            stage: plan.stage,
+            full_rect: plan.full_rect,
+            full_stage: plan.full_stage,
+            approximation,
+        }))
     }
 
     /// One output pixel without rasterizing a frame: `O(layers)`, and through a spatial layer the

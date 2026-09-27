@@ -16,7 +16,7 @@ pub use jobs::{
 };
 pub use mask_overlay::{
     MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskInputPixel, MaskOverlay, MaskPixels, coverage_grid,
-    quantize_coverage,
+    coverage_grid_region, quantize_coverage,
 };
 pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,

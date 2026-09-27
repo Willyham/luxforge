@@ -465,6 +465,12 @@ impl Editor {
         if self.slider_gesture().is_some() {
             self.dragging = None;
         }
+        self.quiet_since = None;
+        self.quiet_settle_requested = true;
+        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
+        self.released_draft = self
+            .core_gesture()
+            .and_then(|gesture| gesture.draft.draft_id.clone());
         self.drive(Event::Release)
     }
 
@@ -565,7 +571,7 @@ impl Editor {
         // one the cancel asks for. The drafted pixels already on screen stay until it lands. An
         // armed brush drafted nothing, so it has nothing to hold back.
         if gesture.draft.drafted() {
-            self.preview_generation = self.preview_queue.cancel();
+            self.preview_generation = self.cancel_preview_queue();
         }
         match &gesture.kind {
             Kind::Slider(slider) => {
@@ -719,6 +725,9 @@ impl Editor {
             Ok((set, job, round_trip)) => {
                 self.session.draft = Some(set.clone());
                 if let Some(job) = job {
+                    if self.released_draft.as_ref() != Some(&set.draft_id) {
+                        self.note_view_motion();
+                    }
                     let (generation, requested_at) =
                         if self.diagnostics.is_some() && self.mask_gesture().is_some() {
                             self.request_mask_preview_timed(job)
@@ -941,6 +950,7 @@ impl Editor {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
+                self.released_draft = None;
                 // The commit may have landed before its read-back failed: read the log once.
                 self.resync();
                 let prefix = self

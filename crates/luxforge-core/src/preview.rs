@@ -18,10 +18,11 @@ mod result;
 mod tests;
 mod worker;
 
-pub use job::{MaskOverlayRequest, PreviewJob, PreviewSource};
+pub use job::{MaskOverlayRequest, PreviewIntent, PreviewJob, PreviewSource};
 pub use queue::{PreviewQueue, Queued};
 pub use result::{
     ExactOutcome, MaskOverlayOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome,
+    RegionOutcome,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

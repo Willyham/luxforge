@@ -18,7 +18,11 @@ pub mod photo_surface;
 pub mod theme;
 mod widgets;
 
-pub use photo_surface::{Frame, Placement, Turn, photo_surface, stage_surface};
+pub use photo_surface::{
+    Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics, Turn,
+    photo_surface, region_texture_admissible, set_surface_waker, stage_surface,
+    surface_diagnostics, surface_retirement_pending, texture_upload_bytes, viewport_surface,
+};
 pub use widgets::*;
 
 mod gallery;

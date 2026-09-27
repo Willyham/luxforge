@@ -70,6 +70,9 @@ fn job(color: u8, analyse: bool) -> PreviewJob {
         identity,
         analyse,
         proxy: None,
+        viewport: None,
+        intent: PreviewIntent::Immediate,
+        viewport_declined: None,
         mask_overlay: None,
         entry,
     }
@@ -395,6 +398,9 @@ fn stacked_with_masks(
         identity,
         analyse: false,
         proxy,
+        viewport: None,
+        intent: PreviewIntent::Immediate,
+        viewport_declined: None,
         mask_overlay: None,
         entry,
     }
@@ -450,6 +456,115 @@ fn drain_until(
         );
         std::thread::yield_now();
     }
+}
+
+fn viewport_job(intent: PreviewIntent) -> PreviewJob {
+    let mut job = stacked(128, 96, Vec::new(), None);
+    job.viewport = Some(crate::Region {
+        x0: 17,
+        y0: 13,
+        width: 31,
+        height: 23,
+    });
+    job.intent = intent;
+    job.analyse = true;
+    job
+}
+
+#[test]
+fn interactive_viewport_delivers_one_bounded_region_without_a_report() {
+    let mut queue = PreviewQueue::default();
+    let generation = queue.request(viewport_job(PreviewIntent::Interactive));
+    let results = drain_all(&mut queue);
+    assert_eq!(
+        results.len(),
+        1,
+        "moving input ends after its first visible phase"
+    );
+    let result = &results[0];
+    assert_eq!(
+        (result.generation, result.phase()),
+        (generation, PreviewPhase::Region)
+    );
+    let region = result.region().expect("visible region");
+    assert_eq!(
+        (
+            region.frame.full_stage.width,
+            region.frame.full_stage.height
+        ),
+        (128, 96)
+    );
+    assert!(region.frame.full_rect.x0 <= 17 && region.frame.full_rect.x1() >= 48);
+    assert!(region.frame.raster.width <= 64 && region.frame.raster.height <= 48);
+    assert!(
+        result.exact().is_none(),
+        "no whole-image histogram during motion"
+    );
+}
+
+#[test]
+fn settled_viewport_delivers_exact_region_then_whole_report() {
+    let mut queue = PreviewQueue::default();
+    let generation = queue.request(viewport_job(PreviewIntent::Settle));
+    let results = drain_all(&mut queue);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].phase(), PreviewPhase::Region);
+    assert_eq!(results[1].phase(), PreviewPhase::Exact);
+    assert_eq!(results[0].generation, generation);
+    assert_eq!(results[1].generation, generation);
+    let region = results[0].region().unwrap();
+    assert_eq!(
+        region.frame.stage, region.frame.full_stage,
+        "settled region is exact detail"
+    );
+    let exact = results[1].exact().unwrap();
+    assert!(exact.result.is_ok());
+    assert!(
+        exact.report.is_some(),
+        "only the whole image may supply the histogram"
+    );
+}
+
+#[test]
+fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
+    let mask = gradient_mask(0.6);
+    let mut job = stacked_with_masks(128, 96, masked_basic(&mask), vec![mask.clone()], None);
+    job.viewport = Some(crate::Region {
+        x0: 23,
+        y0: 11,
+        width: 41,
+        height: 29,
+    });
+    job.intent = PreviewIntent::Settle;
+    job.analyse = true;
+    job = job
+        .with_mask_overlay(MaskOverlayRequest {
+            mask: mask.id.clone(),
+            component: None,
+            cells_w: 15,
+            cells_h: 11,
+        })
+        .unwrap();
+    let mut queue = PreviewQueue::default();
+    queue.request(job);
+    let results = drain_all(&mut queue);
+    assert_eq!(results.len(), 2);
+    let region = results[0]
+        .mask_overlay()
+        .grid
+        .as_ref()
+        .expect("visible coverage");
+    let whole = results[1]
+        .mask_overlay()
+        .grid
+        .as_ref()
+        .expect("whole-stage coverage");
+    assert_eq!((region.cells_w, region.cells_h), (15, 11));
+    assert_eq!((whole.cells_w, whole.cells_h), (15, 11));
+    assert_ne!(
+        region.coverage, whole.coverage,
+        "the second grid samples the whole output stage for a settled pan"
+    );
 }
 
 /// A job with display bounds smaller than its stage produces two frames under one generation:
@@ -1882,6 +1997,7 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
             &frame,
             &job.recipe,
             &request,
+            None,
             &Cancel::never(),
             &job.context,
         );
@@ -1978,6 +2094,7 @@ fn the_cost_of_a_coverage_grid() {
                     &frame,
                     &recipe,
                     &request,
+                    None,
                     &Cancel::never(),
                     crate::render::testing::context(),
                 );

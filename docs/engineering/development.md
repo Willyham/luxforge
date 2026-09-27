@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram, field-patch conformance, Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%. `--action`/`--parameter` measure another drafting slider (including RAW) in place of Basic exposure. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|viewport] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -805,6 +805,23 @@ its `preview_displayed` time, paired by generation exactly as drag mode pairs th
 `cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
 superseded, which carry no frame) and `proxy` (the last
 presented frame's `proxy`/`proxy_dimensions`).
+With `--zoom PERCENT --moving-pan`, the same paced tick also moves the photo scrollable on a path
+across and back over the image. Without `--moving-pan`, a zoomed burst holds a fixed viewport and
+its script can run against the pre-viewport binary for a like-for-like baseline. The moving-pan
+report counts `slider_step_pan` events and records the region events' content,
+revision, quality, generation and geometry alongside the captured surface GPU counters. A burst
+still measures adoption rather than scanout; multiple adoptions can occur before one draw.
+
+`--zoom PERCENT` sets the view before the measured gesture. `--mode viewport` requires `--zoom
+100` or `--zoom 200`; it opens a slider draft, pans, leaves the draft quiet for 1.5 seconds,
+moves the slider again, pans and pauses again, then releases and pans after the full report
+settles. The captured states and `preview_displayed` events must name interactive and exact
+regions for each draft revision. The first viewport-only frame keeps the histogram updating;
+release must produce a current full-image histogram. The final settled pan must draw the same
+full texture without another photograph write. `latency.json` records region geometry, quality,
+generation and draft revision, plus the photo surface's actual draw/write/residency counters.
+`preview_displayed` remains an adoption timestamp, not GPU upload or display scanout. An older
+binary with no region events is reported as `unavailable`, never as a passing viewport run.
 
 `--mode paint` measures a **paint** gesture instead of a slider, because a stroke is not a field patch
 and the slider modes cannot drive one. It builds the bare recipe the figure is about — one brush mask

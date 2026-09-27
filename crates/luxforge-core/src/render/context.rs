@@ -33,6 +33,10 @@ struct Shared {
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
     compiles: AtomicU64,
+    /// Actual largest byte frame materialized by a resample in this context. Tests use a fresh
+    /// context to guard against a cut viewport silently computing a whole virtual crop stage.
+    #[cfg(test)]
+    resample_peak_bytes: AtomicU64,
 }
 
 impl RenderContext {
@@ -44,6 +48,8 @@ impl RenderContext {
             estimates: EstimateStore::default(),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
+            #[cfg(test)]
+            resample_peak_bytes: AtomicU64::new(0),
         }))
     }
 
@@ -71,6 +77,18 @@ impl RenderContext {
     #[cfg(test)]
     pub(crate) fn compiles(&self) -> u64 {
         self.0.compiles.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_resample_bytes(&self, bytes: usize) {
+        self.0
+            .resample_peak_bytes
+            .fetch_max(bytes as u64, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resample_peak_bytes(&self) -> u64 {
+        self.0.resample_peak_bytes.load(Ordering::Relaxed)
     }
 }
 

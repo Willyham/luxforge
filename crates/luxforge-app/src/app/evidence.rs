@@ -197,6 +197,7 @@ pub(crate) struct PacedSlider {
     pub(crate) parameter: String,
     /// Values still to send, in order; the front is sent by the next tick.
     pub(crate) remaining: VecDeque<f64>,
+    pub(crate) remaining_pan: VecDeque<[f32; 2]>,
     /// How many of the step's values have already been sent, which is the index the next one
     /// records.
     pub(crate) sent: usize,
@@ -291,7 +292,120 @@ pub(crate) enum Settle {
     Capability,
 }
 
+/// The photograph the capture must actually read back. A render can be adopted before its texture
+/// is admitted: bounded GPU retirement may defer the write for one or more draws. In that case a
+/// captured frame still shows the previous texture even though the presenter holds the new raster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpectedPhotoDraw {
+    Full {
+        version: u64,
+        content: Option<u64>,
+    },
+    Region {
+        version: u64,
+        content: u64,
+        generation: u64,
+        quality: luxforge_ui::RegionQuality,
+    },
+}
+
+fn photo_drawn(
+    expected: ExpectedPhotoDraw,
+    gpu: luxforge_ui::photo_surface::SurfaceDiagnostics,
+) -> bool {
+    match expected {
+        ExpectedPhotoDraw::Full { version, content } => {
+            gpu.drawn_full_version == Some(version)
+                && content.is_none_or(|content| gpu.drawn_content == Some(content))
+        }
+        ExpectedPhotoDraw::Region {
+            version,
+            content,
+            generation,
+            quality,
+        } => gpu.drawn_regions.iter().flatten().any(|drawn| {
+            drawn.version == version
+                && drawn.content_id == content
+                && drawn.generation == generation
+                && drawn.quality == quality
+        }),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn capture_accepts_a_drawn_region_beneath_older_exact_detail() {
+    let mut gpu = luxforge_ui::photo_surface::SurfaceDiagnostics {
+        drawn_regions: [
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 4,
+                content_id: 1,
+                generation: 7,
+                quality: luxforge_ui::RegionQuality::Exact,
+            }),
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 5,
+                content_id: 2,
+                generation: 8,
+                quality: luxforge_ui::RegionQuality::Interactive,
+            }),
+        ],
+        ..Default::default()
+    };
+    let expected = ExpectedPhotoDraw::Region {
+        version: 5,
+        content: 2,
+        generation: 8,
+        quality: luxforge_ui::RegionQuality::Interactive,
+    };
+    assert!(photo_drawn(expected, gpu));
+    gpu.drawn_regions[1] = None;
+    assert!(!photo_drawn(expected, gpu));
+}
+
 impl Editor {
+    /// A scripted screenshot waits for the intended photograph's actual GPU draw. The capture
+    /// sync marker proves the widget tree is current; this checks the texture when its write was
+    /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
+    /// and do not inherit a stale diagnostic from the ordinary photograph.
+    pub(super) fn capture_photo_ready(&self) -> bool {
+        if self.state.is_none()
+            || self.crop().is_some()
+            || self.gallery_page().is_some()
+            || self.render_error.is_some()
+        {
+            return true;
+        }
+        let full = self.presenter.photo_for(self.presented_content);
+        let full_current = self.presenter.full_content() == Some(self.presented_content);
+        let expected = if matches!(
+            self.session.preview.view.zoom,
+            luxforge_core::Zoom::Percent { .. }
+        ) && !full_current
+        {
+            self.presenter.region().and_then(|region| {
+                (region.content_id == self.presented_content).then_some(ExpectedPhotoDraw::Region {
+                    version: region.frame.version(),
+                    content: region.content_id,
+                    generation: region.generation,
+                    quality: region.quality,
+                })
+            })
+        } else {
+            None
+        }
+        .or_else(|| {
+            full.map(|photo| ExpectedPhotoDraw::Full {
+                version: photo.version(),
+                content: (matches!(
+                    self.session.preview.view.zoom,
+                    luxforge_core::Zoom::Percent { .. }
+                ) && full_current)
+                    .then_some(self.presented_content),
+            })
+        });
+        expected.is_some_and(|expected| photo_drawn(expected, luxforge_ui::surface_diagnostics()))
+    }
     /// One of evidence mode's own messages.
     pub(super) fn evidence_update(&mut self, message: EvidenceMessage) -> Task<Message> {
         match message {
@@ -324,6 +438,7 @@ impl Editor {
             EvidenceMessage::Capture => {
                 let rows_shown = self.recipe_rows_shown();
                 let proxy_ready = self.capture_proxy_ready();
+                let photo_ready = self.capture_photo_ready();
                 let closing = self.gesture_closing();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
@@ -345,6 +460,7 @@ impl Editor {
                     || self.curve_sample_pending.is_some()
                     || !rows_shown
                     || !proxy_ready
+                    || !photo_ready
                     || closing
                 {
                     return Task::none();
@@ -1347,6 +1463,7 @@ impl Editor {
                     action: step.action,
                     parameter: step.parameter,
                     remaining: step.values.into(),
+                    remaining_pan: step.pan_path.into(),
                     sent: 0,
                     interval_ms,
                     end: step.end,
@@ -1477,6 +1594,7 @@ impl Editor {
         let Some(value) = paced.remaining.pop_front() else {
             return Task::none();
         };
+        let pan = paced.remaining_pan.pop_front();
         let index = paced.sent;
         paced.sent += 1;
         let action = paced.action.clone();
@@ -1492,6 +1610,13 @@ impl Editor {
             parameter: parameter.clone(),
             value,
         }))];
+        if let Some([x, y]) = pan {
+            self.event("slider_step_pan", json!({"index":index,"x":x,"y":y}));
+            tasks.push(iced::widget::operation::snap_to(
+                crate::app::crop::SURFACE_ID,
+                iced::widget::scrollable::RelativeOffset { x, y },
+            ));
+        }
         if done {
             if self.slider_gesture().is_none() && end != SliderEnd::Cancel {
                 return self.fail_step(format!(
@@ -2763,6 +2888,62 @@ mod tests {
     use crate::app::message::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
     use luxforge_core::CropStage;
+
+    #[test]
+    fn a_capture_waits_for_the_adopted_photo_texture_and_checks_region_identity() {
+        let mut gpu = luxforge_ui::photo_surface::SurfaceDiagnostics {
+            drawn_full_version: Some(1),
+            photo_writes: 1,
+            deferred_uploads: 1,
+            ..Default::default()
+        };
+        let expected = ExpectedPhotoDraw::Full {
+            version: 2,
+            content: None,
+        };
+        assert!(
+            !photo_drawn(expected, gpu),
+            "a new CPU raster does not settle while the previous proxy remains drawn"
+        );
+        gpu.drawn_full_version = Some(2);
+        gpu.photo_writes = 2;
+        assert!(
+            photo_drawn(expected, gpu),
+            "a retirement wake can upload that same raster without another adoption"
+        );
+
+        let region = ExpectedPhotoDraw::Region {
+            version: 4,
+            content: 9,
+            generation: 7,
+            quality: luxforge_ui::RegionQuality::Interactive,
+        };
+        gpu.drawn_regions = [
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 3,
+                content_id: 8,
+                generation: 6,
+                quality: luxforge_ui::RegionQuality::Exact,
+            }),
+            Some(luxforge_ui::photo_surface::DrawnRegion {
+                version: 4,
+                content_id: 8,
+                generation: 7,
+                quality: luxforge_ui::RegionQuality::Interactive,
+            }),
+        ];
+        assert!(
+            !photo_drawn(region, gpu),
+            "the region belongs to another content"
+        );
+        gpu.drawn_regions[1].as_mut().unwrap().content_id = 9;
+        assert!(photo_drawn(region, gpu));
+        gpu.drawn_regions[1].as_mut().unwrap().generation = 8;
+        assert!(
+            !photo_drawn(region, gpu),
+            "a newer region is not this capture"
+        );
+    }
 
     /// The desktop reads a script through the shared script types before its window opens: a broken
     /// step fails the whole script, naming the step, and the one check the types cannot make, a

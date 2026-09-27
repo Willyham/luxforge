@@ -413,6 +413,8 @@ pub struct SliderStep {
     pub values: Vec<f64>,
     pub end: SliderEnd,
     pub interval_ms: Option<u64>,
+    /// Optional scroll offsets paired one-for-one with paced values.
+    pub pan_path: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -427,6 +429,8 @@ struct SliderWire {
     cancel: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pan_path: Vec<[f32; 2]>,
 }
 
 impl TryFrom<SliderWire> for SliderStep {
@@ -447,6 +451,7 @@ impl TryFrom<SliderWire> for SliderStep {
             values: wire.values,
             end,
             interval_ms: wire.interval_ms,
+            pan_path: wire.pan_path,
         })
     }
 }
@@ -460,6 +465,7 @@ impl From<SliderStep> for SliderWire {
             release: step.end == SliderEnd::Release,
             cancel: step.end == SliderEnd::Cancel,
             interval_ms: step.interval_ms,
+            pan_path: step.pan_path,
         }
     }
 }
@@ -471,7 +477,21 @@ impl SliderStep {
         if self.values.is_empty() {
             return Err("slider needs at least one value".into());
         }
-        positive(self.interval_ms, "slider interval_ms")
+        positive(self.interval_ms, "slider interval_ms")?;
+        if !self.pan_path.is_empty() {
+            if self.interval_ms.is_none() || self.pan_path.len() != self.values.len() {
+                return Err("slider pan_path needs interval_ms and one offset per value".into());
+            }
+            if self.pan_path.iter().any(|[x, y]| {
+                !x.is_finite()
+                    || !y.is_finite()
+                    || !(0.0..=1.0).contains(x)
+                    || !(0.0..=1.0).contains(y)
+            }) {
+                return Err("slider pan_path offsets must be finite fractions from 0 to 1".into());
+            }
+        }
+        Ok(())
     }
 }
 

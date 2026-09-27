@@ -269,6 +269,36 @@ impl LinearImage {
         })
     }
 
+    /// A rectangle in this image's *oriented output* coordinates, composed into its existing
+    /// base-plane view. The new image shares the same planar allocation and development identity.
+    pub(crate) fn window(&self, region: crate::Region) -> Result<Self, Error> {
+        if region.is_empty() || region.x1() > self.width() || region.y1() > self.height() {
+            return Err(Error::validation(
+                "linear source window lies outside the image",
+            ));
+        }
+        let corners = [
+            (region.x0, region.y0),
+            (region.x1() - 1, region.y0),
+            (region.x0, region.y1() - 1),
+            (region.x1() - 1, region.y1() - 1),
+        ];
+        let mut x0 = u32::MAX;
+        let mut y0 = u32::MAX;
+        let mut x1 = 0;
+        let mut y1 = 0;
+        for (x, y) in corners {
+            let (px, py) = self.view.map(x, y).ok_or_else(|| {
+                Error::internal("a validated linear view could not map its window")
+            })?;
+            x0 = x0.min(px);
+            y0 = y0.min(py);
+            x1 = x1.max(px);
+            y1 = y1.max(py);
+        }
+        self.with_view([x0, y0, x1 - x0 + 1, y1 - y0 + 1], self.view.orientation)
+    }
+
     pub fn width(&self) -> u32 {
         self.view.output_dimensions().0
     }
@@ -990,7 +1020,8 @@ impl LinearRows<'_, '_, '_> {
             (x0 + columns - 1, y0 + rows - 1),
         ] {
             let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-            let (u, v) = resample.input_from(self.segment.entry_origin, input_x, input_y);
+            let (full_x, full_y) = self.segment.resample_output_at(input_x, input_y);
+            let (u, v) = resample.input_from(self.segment.entry_origin, full_x, full_y);
             for (axis, value) in [u, v].into_iter().enumerate() {
                 let index = (value - 0.5).floor();
                 if !index.is_finite() {
@@ -1054,7 +1085,8 @@ impl LinearRows<'_, '_, '_> {
             for y in y0..y0 + rows {
                 for x in x0..x0 + columns {
                     let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-                    let (u, v) = resample.input_from(self.segment.entry_origin, input_x, input_y);
+                    let (full_x, full_y) = self.segment.resample_output_at(input_x, input_y);
+                    let (u, v) = resample.input_from(self.segment.entry_origin, full_x, full_y);
                     let pixel =
                         Linear::blend(u, v, stage.width, stage.height, |x, y| match held {
                             Some(region) if region.contains(x, y) => {

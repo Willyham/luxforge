@@ -109,6 +109,9 @@ impl EditorService {
             // whole stack does not describe, and the desktop shows it only as a drafting aid. It
             // therefore never has a proxy phase, whatever bounds the caller offered.
             proxy: proxy.filter(|_| layer_count.is_none()),
+            viewport: None,
+            intent: crate::PreviewIntent::Immediate,
+            viewport_declined: None,
             // A coverage grid is asked for by the client that will draw it, through
             // `PreviewJob::with_mask_overlay`, which validates it against this stack.
             mask_overlay: None,
