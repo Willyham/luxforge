@@ -341,7 +341,7 @@ impl CapabilityHost {
                     activation.job = None;
                 }
             }
-            JobKind::Install | JobKind::Remove | JobKind::Task => {
+            JobKind::Install | JobKind::Remove | JobKind::Task | JobKind::Export => {
                 if done.record.status == JobStatus::Ready
                     && let Some(origin) = &done.origin
                 {
