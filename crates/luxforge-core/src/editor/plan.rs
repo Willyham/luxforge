@@ -17,7 +17,7 @@ use crate::{
     render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -268,15 +268,7 @@ impl EditorService {
         view: TargetView,
         question: impl FnOnce(&StageContext<'_>, &Recipe) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        module.descriptor().check_available()?;
-        // A module that does not apply to the photo's kind is refused by its declaration, before
-        // it sees anything of a stack it has nothing to say about.
-        let kind = asset.source.tag();
-        module.descriptor().check_applies_to(kind)?;
-        // So is a field whose control another module provides on this kind's global target.
-        if let Some(input) = input {
-            check_superseded(&self.registry, kind, mask, input)?;
-        }
+        check_askable(&self.registry, module, asset.source.tag(), mask, input)?;
         validate_source_recipe(&self.registry, asset, recipe)?;
         // Planning compiles the stack, so its artifacts are bound first.
         let bound = self.bound(recipe)?;
@@ -390,6 +382,31 @@ impl EditorService {
             |context, _| module.query(query_id, &checked, context),
         );
         self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
+    }
+
+    /// Refuse a draft of `action_id` on `asset_id`, drafted through `mask` with `fields` set, that
+    /// its preview and commit would refuse for what the photo is: a module action whose provider is
+    /// unavailable or does not apply to the photo's source kind, or a field another module's control
+    /// variant supersedes on this target. The same [`check_askable`] refusal [`Self::ask`] runs, so
+    /// `draft.begin` (with no fields yet) and `draft.set` (with the fields it merges) refuse what
+    /// the draft could never commit, with the words its commit would have. A host command applies
+    /// to every kind. Reads the asset's head, usually cached, and plans nothing.
+    pub(crate) fn check_draft(
+        &self,
+        asset_id: &AssetId,
+        action_id: &str,
+        mask: Option<&MaskId>,
+        fields: &Map<String, Value>,
+    ) -> Result<(), Error> {
+        let Some(ActionRef::Module(module, _)) = self.registry.resolve_action(action_id) else {
+            return Ok(());
+        };
+        let kind = self.head(asset_id)?.asset.source.tag();
+        let input = ActionInput {
+            action_id: action_id.to_owned(),
+            parameters: fields.clone(),
+        };
+        check_askable(&self.registry, module, kind, mask, Some(&input))
     }
 
     /// The recipe an open draft would produce: the current snapshot with the draft's action planned
@@ -637,6 +654,26 @@ enum TargetView {
     /// The whole stack, which a query about a mask reads: the stage before that mask's own layer
     /// includes the global layer and the earlier masks' layers, exactly as rendered.
     Whole,
+}
+
+/// Refuse asking `module` anything about a photo of `kind` for the target `mask`, before any stack
+/// is read: an unavailable provider; a module that does not apply to the kind, by its declaration
+/// ([`crate::ModuleDescriptor::check_applies_to`]); and a field of `input` whose control another
+/// module provides on this kind's global target ([`check_superseded`]). The one refusal
+/// [`EditorService::ask`] and a draft's [`EditorService::check_draft`] run.
+fn check_askable(
+    registry: &ModuleRegistry,
+    module: &dyn ToolModule,
+    kind: crate::SourceTag,
+    mask: Option<&MaskId>,
+    input: Option<&ActionInput>,
+) -> Result<(), Error> {
+    module.descriptor().check_available()?;
+    module.descriptor().check_applies_to(kind)?;
+    if let Some(input) = input {
+        check_superseded(registry, kind, mask, input)?;
+    }
+    Ok(())
 }
 
 /// Refuse a field of `input` that another module's control variant supersedes on this target: on
