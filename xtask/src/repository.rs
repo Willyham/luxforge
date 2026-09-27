@@ -290,6 +290,204 @@ fn independent_references(root: &Path) -> Result<usize> {
     Ok(checked)
 }
 
+/// The crates a shipped binary links: their non-test code and normal dependencies are held to the
+/// one JPEG codec path below.
+const SHIPPED_CRATES: [&str; 6] = [
+    "crates/luxforge-core",
+    "crates/luxforge-app",
+    "crates/luxforge-ui",
+    "crates/luxforge-raw",
+    "crates/luxforge-process",
+    "crates/luxforge-evidence",
+];
+
+/// The one module that may name `mozjpeg` (and `mozjpeg_sys`): the adapter file and its own
+/// submodules.
+const JPEG_ADAPTER: [&str; 2] = [
+    "crates/luxforge-core/src/jpeg.rs",
+    "crates/luxforge-core/src/jpeg/",
+];
+
+/// Ways to decode JPEG through `image`, which shipped code never uses: JPEG is read only through
+/// the adapter. Tests may, as an independent decoder.
+const IMAGE_JPEG: [&str; 6] = [
+    "codecs::jpeg",
+    "ImageFormat::Jpeg",
+    "JpegDecoder",
+    "image::open",
+    "load_from_memory",
+    "ImageReader",
+];
+
+/// The files under `src` that only a test build compiles: each module declared as
+/// `#[cfg(test)] mod name;`, and everything below its directory.
+fn test_only_files(src: &Path, sources: &[PathBuf]) -> Result<BTreeSet<PathBuf>> {
+    let mut test_only = BTreeSet::new();
+    let mut test_dirs = Vec::new();
+    for path in sources {
+        let text = fs::read_to_string(path)?;
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let parent = path.parent().unwrap_or(src);
+        let dir = if ["mod", "lib", "main"].contains(&stem) {
+            parent.to_path_buf()
+        } else {
+            parent.join(stem)
+        };
+        for pair in lines.windows(2) {
+            if pair[0] != "#[cfg(test)]" {
+                continue;
+            }
+            let declaration = pair[1]
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub ");
+            if let Some(name) = declaration
+                .strip_prefix("mod ")
+                .and_then(|rest| rest.strip_suffix(';'))
+            {
+                test_only.insert(dir.join(format!("{name}.rs")));
+                test_dirs.push(dir.join(name));
+            }
+        }
+    }
+    for path in sources {
+        if test_dirs.iter().any(|dir| path.starts_with(dir)) {
+            test_only.insert(path.clone());
+        }
+    }
+    Ok(test_only)
+}
+
+/// `text` without its inline `#[cfg(test)] mod name { ... }` blocks, each ending at the closing
+/// brace indented as its `mod` line, as rustfmt writes it; each kept line with its number.
+fn non_test_lines(text: &str) -> Vec<(usize, &str)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let opens_test_module = line.trim() == "#[cfg(test)]"
+            && lines.get(index + 1).is_some_and(|next| {
+                let next = next.trim();
+                next.contains("mod ") && next.ends_with('{')
+            });
+        if opens_test_module {
+            let module = lines[index + 1];
+            let close = format!("{}}}", &module[..module.len() - module.trim_start().len()]);
+            index += 2;
+            while index < lines.len() && lines[index] != close {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        kept.push((index + 1, line));
+        index += 1;
+    }
+    kept
+}
+
+/// One JPEG codec path, enforced rather than reviewed: in the shipped crates' non-test code only
+/// the adapter names `mozjpeg`, nothing decodes JPEG through `image`, and no manifest gives a
+/// shipped crate `image`'s `jpeg` feature or names `mozjpeg` outside `luxforge-core`. Answers how
+/// many source files were read.
+fn one_jpeg_codec(root: &Path) -> Result<usize> {
+    let mut checked = 0;
+    for krate in SHIPPED_CRATES {
+        let src = root.join(krate).join("src");
+        if src.is_dir() {
+            let sources: Vec<_> = files(&src)?
+                .into_iter()
+                .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+                .collect();
+            let test_only = test_only_files(&src, &sources)?;
+            for path in sources.iter().filter(|path| !test_only.contains(*path)) {
+                let relative = path.strip_prefix(root).unwrap_or(path);
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                let adapter = JPEG_ADAPTER.iter().any(|allowed| {
+                    relative == *allowed
+                        || (allowed.ends_with('/') && relative.starts_with(allowed))
+                });
+                let text = fs::read_to_string(path)?;
+                for (number, line) in non_test_lines(&text) {
+                    ensure(
+                        adapter || !contains_token(line, "mozjpeg"),
+                        format!(
+                            "{relative}:{number}: only the JPEG adapter ({}) may name mozjpeg",
+                            JPEG_ADAPTER[0]
+                        ),
+                    )?;
+                    for token in IMAGE_JPEG {
+                        ensure(
+                            !contains_token(line, token),
+                            format!(
+                                "{relative}:{number}: shipped code decodes JPEG only through the \
+                                 adapter, not {token}"
+                            ),
+                        )?;
+                    }
+                }
+                checked += 1;
+            }
+        }
+        let manifest = root.join(krate).join("Cargo.toml");
+        if manifest.is_file() {
+            let text = fs::read_to_string(&manifest)?;
+            let mut table = String::new();
+            for (number, line) in text.lines().enumerate() {
+                let line = line.split('#').next().unwrap_or_default().trim();
+                if line.starts_with('[') {
+                    table = line.trim_matches(['[', ']']).to_owned();
+                    continue;
+                }
+                let normal = table == "dependencies" || table.ends_with(".dependencies");
+                if !normal {
+                    continue;
+                }
+                let name = line.split(['=', '.', ' ']).next().unwrap_or_default();
+                ensure(
+                    krate == "crates/luxforge-core" || !name.starts_with("mozjpeg"),
+                    format!(
+                        "{krate}/Cargo.toml:{}: only luxforge-core links the JPEG codec",
+                        number + 1
+                    ),
+                )?;
+                ensure(
+                    name != "image" || !line.contains("jpeg"),
+                    format!(
+                        "{krate}/Cargo.toml:{}: a shipped crate may not enable image's jpeg \
+                         feature",
+                        number + 1
+                    ),
+                )?;
+            }
+        }
+    }
+    let workspace = fs::read_to_string(root.join("Cargo.toml"))?;
+    let mut table = String::new();
+    for (number, line) in workspace.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            table = line.trim_matches(['[', ']']).to_owned();
+            continue;
+        }
+        ensure(
+            table != "workspace.dependencies"
+                || !(line.starts_with("image ") || line.starts_with("image="))
+                || !line.contains("jpeg"),
+            format!(
+                "Cargo.toml:{}: the workspace image dependency may not enable jpeg; a test or tool \
+                 adds it for itself",
+                number + 1
+            ),
+        )?;
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -356,6 +554,10 @@ pub fn check(root: &Path) -> Result {
     println!(
         "PASS independent references ({} dependency lines, no workspace crate)",
         independent_references(root)?
+    );
+    println!(
+        "PASS one JPEG codec ({} shipped source files, mozjpeg only in the adapter)",
+        one_jpeg_codec(root)?
     );
     Ok(())
 }
@@ -486,6 +688,109 @@ mod tests {
                 error.contains("Cargo.toml:") && error.contains("no workspace crate"),
                 "{what}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn only_the_adapter_names_the_jpeg_codec() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let src = root.join("crates/luxforge-core/src");
+        fs::create_dir_all(src.join("jpeg")).unwrap();
+        fs::create_dir_all(src.join("export")).unwrap();
+        let write = |path: &str, text: &str| fs::write(root.join(path), text).unwrap();
+        write(
+            "Cargo.toml",
+            "[workspace.dependencies]\nimage = { version = \"1\", features = [\"png\"] }\n",
+        );
+        write(
+            "crates/luxforge-core/Cargo.toml",
+            "[dependencies]\nmozjpeg.workspace = true\n\n[dev-dependencies]\n\
+             image = { workspace = true, features = [\"jpeg\"] }\n",
+        );
+        write(
+            "crates/luxforge-core/src/lib.rs",
+            "mod jpeg;\nmod export;\n#[cfg(test)]\nmod oracle;\n",
+        );
+        write(
+            "crates/luxforge-core/src/jpeg.rs",
+            "use mozjpeg::Compress;\n#[cfg(test)]\nmod tests;\n",
+        );
+        write(
+            "crates/luxforge-core/src/jpeg/tests.rs",
+            "use mozjpeg_sys::x;\n",
+        );
+        write(
+            "crates/luxforge-core/src/oracle.rs",
+            "let d = image::codecs::jpeg::JpegDecoder::new(r);\n",
+        );
+        write(
+            "crates/luxforge-core/src/export.rs",
+            "pub fn encode() {}\n\n#[cfg(test)]\nmod tests {\n    use image::load_from_memory;\n    \
+             fn f() {\n    }\n}\n",
+        );
+        // lib.rs, the adapter and export.rs; the test modules are not read.
+        assert_eq!(one_jpeg_codec(root).unwrap(), 3);
+
+        for (what, path, text, expected) in [
+            (
+                "mozjpeg outside the adapter",
+                "crates/luxforge-core/src/export/encode.rs",
+                "use mozjpeg::Compress;\n",
+                "may name mozjpeg",
+            ),
+            (
+                "the bindings outside the adapter",
+                "crates/luxforge-core/src/export/encode.rs",
+                "let e = mozjpeg_sys::jpeg_error_mgr::default();\n",
+                "may name mozjpeg",
+            ),
+            (
+                "an image JPEG decode after a test module",
+                "crates/luxforge-core/src/export.rs",
+                "#[cfg(test)]\nmod tests {\n}\nfn open(p: &Path) { image::open(p); }\n",
+                "not image::open",
+            ),
+        ] {
+            write(path, text);
+            let error = one_jpeg_codec(root)
+                .err()
+                .unwrap_or_else(|| panic!("{what} was accepted"))
+                .to_string();
+            assert!(error.contains(expected), "{what}: {error}");
+            fs::remove_file(root.join(path)).unwrap();
+        }
+        write("crates/luxforge-core/src/export.rs", "pub fn encode() {}\n");
+
+        for (what, path, text, expected) in [
+            (
+                "a shipped crate with image's jpeg feature",
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nimage = { workspace = true, features = [\"jpeg\"] }\n",
+                "jpeg",
+            ),
+            (
+                "another crate linking the codec",
+                "crates/luxforge-app/Cargo.toml",
+                "[target.'cfg(unix)'.dependencies]\nmozjpeg-sys = \"2\"\n",
+                "only luxforge-core",
+            ),
+            (
+                "the workspace enabling jpeg",
+                "Cargo.toml",
+                "[workspace.dependencies]\nimage = { version = \"1\", features = [\"jpeg\"] }\n",
+                "workspace image",
+            ),
+        ] {
+            fs::create_dir_all(root.join("crates/luxforge-app")).unwrap();
+            let before = fs::read_to_string(root.join(path)).unwrap_or_default();
+            write(path, text);
+            let error = one_jpeg_codec(root)
+                .err()
+                .unwrap_or_else(|| panic!("{what} was accepted"))
+                .to_string();
+            assert!(error.contains(expected), "{what}: {error}");
+            write(path, &before);
         }
     }
 

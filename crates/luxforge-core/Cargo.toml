@@ -7,11 +7,11 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-image.workspace = true
 luxforge-process = { path = "../luxforge-process" }
 luxforge-raw = { path = "../luxforge-raw" }
 moxcms.workspace = true
 mozjpeg.workspace = true
+mozjpeg-sys.workspace = true
 rayon.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
@@ -29,6 +29,8 @@ zeroize.workspace = true
 security-framework.workspace = true
 
 [dev-dependencies]
+# An independent JPEG decoder and encoder for the tests, and PNG for their diagnostic images.
+image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
 luxforge-raw = { path = "../luxforge-raw", features = ["performance-diagnostics"] }
 luxforge-reference = { path = "../luxforge-reference" }

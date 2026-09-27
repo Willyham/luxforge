@@ -1989,6 +1989,7 @@ dependencies = [
  "luxforge-testkit",
  "moxcms",
  "mozjpeg",
+ "mozjpeg-sys",
  "rayon",
  "roxmltree",
  "rusqlite",

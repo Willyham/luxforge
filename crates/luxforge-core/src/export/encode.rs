@@ -1,5 +1,5 @@
-//! Baseline quality-90 JPEG with an embedded sRGB ICC profile, written by libjpeg-turbo through the
-//! `mozjpeg` crate.
+//! Baseline quality-90 JPEG with an embedded sRGB ICC profile, written through the crate's one
+//! JPEG codec (`crate::jpeg`, libjpeg-turbo).
 //!
 //! Contract (`docs/design/export.md#behavior`, step 3):
 //! - `encode_jpeg(out, frame, exif, progress, cancel)` encodes the RGBA8 sRGB `frame` (alpha is
@@ -10,66 +10,18 @@
 //!   a cancelled encode returns its error and writes nothing more.
 //! - The file is baseline (SOF0) with full-resolution chroma (4:4:4 at every component's 1×1
 //!   sampling), one interleaved scan and the standard Huffman tables: libjpeg's own fastest
-//!   settings, accepted in `docs/design/export.md#decisions`. One interleaved scan also keeps an
-//!   export clear of the bundled `zune-jpeg` 0.5.15's mis-decode of non-interleaved scans.
-//! - libjpeg reports a fatal error by unwinding. Every call into it runs under `catch_unwind`, so a
-//!   failure is an error, never an abort, and the compressor is destroyed cleanly on every path.
+//!   settings, accepted in `docs/design/export.md#decisions`.
+//! - libjpeg's failures come back from the codec as errors, never an abort: a writer failure as
+//!   `file-access` with its reason, anything else as `render`.
 //! - `srgb_profile()` is the one embedded profile, which `crate::profile::check` accepts.
 
-use crate::{Error, Raster};
-use mozjpeg::{ColorSpace, Compress, Marker};
-use std::{
-    any::Any,
-    cell::RefCell,
-    io::{self, Write},
-    panic::{self, AssertUnwindSafe},
-    sync::OnceLock,
+use crate::{
+    Error, Raster,
+    jpeg::{self, MAX_SEGMENT_PAYLOAD, Settings},
 };
-
-/// Rows handed to libjpeg per call: its largest MCU height, so a call ends on whole MCU rows and
-/// progress and cancellation are checked between calls without copying the frame.
-const STRIP_ROWS: usize = 16;
-
-/// The most one APPn marker carries after its length field.
-const MAX_MARKER_PAYLOAD: usize = 65533;
+use std::{io::Write, sync::OnceLock};
 
 const EXIF_HEADER: &[u8] = b"Exif\0\0";
-
-/// Passes writes through and keeps the first I/O error, which libjpeg itself only reports as its
-/// own fatal write error, so the encode can answer with the file system's reason.
-struct RecordingWriter<'a, W> {
-    inner: W,
-    error: &'a RefCell<Option<io::Error>>,
-}
-
-impl<W> RecordingWriter<'_, W> {
-    fn record<T>(&self, result: io::Result<T>) -> io::Result<T> {
-        result.map_err(|error| {
-            let kind = error.kind();
-            if kind != io::ErrorKind::Interrupted {
-                self.error.borrow_mut().get_or_insert(error);
-            }
-            io::Error::from(kind)
-        })
-    }
-}
-
-impl<W: Write> Write for RecordingWriter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let result = self.inner.write(buf);
-        self.record(result)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        let result = self.inner.flush();
-        self.record(result)
-    }
-}
-
-/// Runs one call into libjpeg, catching the unwind by which it reports a fatal error.
-fn guarded<T>(call: impl FnOnce() -> T) -> Result<T, Box<dyn Any + Send>> {
-    panic::catch_unwind(AssertUnwindSafe(call))
-}
 
 pub fn encode_jpeg<W: Write>(
     out: W,
@@ -78,100 +30,60 @@ pub fn encode_jpeg<W: Write>(
     progress: &mut dyn FnMut(f64),
     cancel: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let stride = frame.width as usize * 4;
-    let rows = frame.height as usize;
-    if frame.rgba.len() != stride * rows {
-        return Err(Error::internal(
-            "jpeg encode: the frame's pixels do not match its dimensions",
-        ));
-    }
     let app1 = exif.map(|exif| [EXIF_HEADER, exif].concat());
     if app1
         .as_ref()
-        .is_some_and(|app1| app1.len() > MAX_MARKER_PAYLOAD)
+        .is_some_and(|app1| app1.len() > MAX_SEGMENT_PAYLOAD)
     {
         return Err(Error::internal(
             "jpeg encode: the EXIF payload does not fit one APP1 segment",
         ));
     }
-    let io_error = RefCell::<Option<io::Error>>::new(None);
-    let failure = |payload: Box<dyn Any + Send>| {
-        if let Some(error) = io_error.borrow_mut().take() {
-            return Error::file_access(error.to_string());
-        }
-        let message = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or("libjpeg failed");
-        Error::render(format!("jpeg encode: {message}"))
+    let mut segments = Vec::with_capacity(2);
+    if let Some(app1) = &app1 {
+        segments.push((1, app1.as_slice()));
+    }
+    segments.push((2, icc_segment()));
+    let settings = Settings {
+        quality: super::QUALITY,
+        chroma: (1, 1),
+        segments: &segments,
     };
-    let refused = |error: io::Error| Error::render(format!("jpeg encode: {error}"));
-    let writer = RecordingWriter {
-        inner: out,
-        error: &io_error,
-    };
-
-    // libjpeg's fastest profile is plain libjpeg-turbo: baseline, one interleaved scan, standard
-    // Huffman tables and no trellis quantization. Its default YCbCr output samples chroma at 2×2,
-    // so every component is set back to 1×1.
-    let mut started = guarded(|| {
-        let mut compress = Compress::new(ColorSpace::JCS_EXT_RGBA);
-        compress.set_fastest_defaults();
-        compress.set_size(frame.width as usize, rows);
-        compress.set_quality(f32::from(super::QUALITY));
-        compress.set_chroma_sampling_pixel_sizes((1, 1), (1, 1));
-        compress.start_compress(writer)
-    })
-    .map_err(&failure)?
-    .map_err(refused)?;
-    // `start_compress` has written SOI and the JFIF APP0; the other markers follow it in order.
-    guarded(|| {
-        if let Some(app1) = &app1 {
-            started.write_marker(Marker::APP(1), app1);
-        }
-        started.write_marker(Marker::APP(2), icc_segment());
-    })
-    .map_err(&failure)?;
-
+    let rows = frame.height as usize;
     let mut last_reported = 0.0;
-    for (index, strip) in frame.rgba.chunks(STRIP_ROWS * stride).enumerate() {
-        if cancel().is_err() {
-            // Discards what libjpeg still buffers; the compressor is destroyed when dropped.
-            drop(started.abort());
-            return Err(Error::cancelled("export encode cancelled"));
-        }
-        guarded(|| started.write_scanlines(strip))
-            .map_err(&failure)?
-            .map_err(refused)?;
-        let rows_done = ((index + 1) * STRIP_ROWS).min(rows);
-        let fraction = rows_done as f64 / rows as f64;
-        if fraction - last_reported >= 0.01 || rows_done == rows {
-            last_reported = fraction;
-            progress(fraction);
-        }
-    }
-    if cancel().is_err() {
-        drop(started.abort());
-        return Err(Error::cancelled("export encode cancelled"));
-    }
-    guarded(|| started.finish())
-        .map_err(&failure)?
-        .map_err(refused)?;
-    Ok(())
+    jpeg::encode(
+        out,
+        frame.width,
+        frame.height,
+        &frame.rgba,
+        &settings,
+        &mut |rows_done| {
+            if cancel().is_err() {
+                return Err(Error::cancelled("export encode cancelled"));
+            }
+            if rows_done > 0 {
+                let fraction = rows_done as f64 / rows as f64;
+                if fraction - last_reported >= 0.01 || rows_done == rows {
+                    last_reported = fraction;
+                    progress(fraction);
+                }
+            }
+            Ok(())
+        },
+    )
 }
 
 /// The APP2 payload carrying [`srgb_profile`] as the ICC specification's one and only chunk:
 /// `ICC_PROFILE\0`, sequence number 1, count 1, then the profile. It is written by hand because
-/// `mozjpeg`'s `write_icc_profile` numbers chunks from 0, which decoders that follow the
-/// specification, `zune-jpeg` among them, ignore.
+/// the codec crate's own ICC writer numbers chunks from 0, which decoders that follow the
+/// specification, Luxforge's own among them, refuse or ignore.
 fn icc_segment() -> &'static [u8] {
     static SEGMENT: OnceLock<Vec<u8>> = OnceLock::new();
     SEGMENT
         .get_or_init(|| {
             let segment = [b"ICC_PROFILE\0".as_slice(), &[1, 1], srgb_profile()].concat();
             assert!(
-                segment.len() <= MAX_MARKER_PAYLOAD,
+                segment.len() <= MAX_SEGMENT_PAYLOAD,
                 "the sRGB profile fits one segment"
             );
             segment
@@ -197,7 +109,7 @@ mod tests {
     use super::*;
     use crate::{ErrorKind, SnapshotId};
     use image::{ImageDecoder, codecs::jpeg::JpegDecoder};
-    use std::{cell::Cell, io::Cursor};
+    use std::{cell::Cell, io, io::Cursor};
 
     /// A synthetic frame with gradients and hard edges, sized so neither dimension is a multiple
     /// of 8: `width` and `height` cross block boundaries mid-block, exercising the encoder's
@@ -418,9 +330,9 @@ mod tests {
 
     #[test]
     fn luxforge_opens_an_export_as_a_source_within_tolerance() {
-        // Re-importing an export goes through the source path's own decoder, which has decoded
-        // some valid baseline layouts wrongly (non-interleaved scans with vertical subsampling);
-        // an export must come back as the frame it encoded, within the same bounds.
+        // Re-importing an export goes through the source path's own decoder, the same libjpeg
+        // that wrote it, with its ICC chunk and its own checks; an export must come back as the
+        // frame it encoded, within the bounds the independent decoder meets.
         let frame = gradient_frame(1031, 677);
         let (bytes, _) = encode(&frame, None);
         let source = crate::source::open_source_bytes(bytes).expect("an export opens as a source");
@@ -450,7 +362,7 @@ mod tests {
     #[test]
     fn exif_larger_than_one_segment_is_refused_before_writing() {
         let frame = gradient_frame(32, 32);
-        let exif = vec![0u8; MAX_MARKER_PAYLOAD - EXIF_HEADER.len() + 1];
+        let exif = vec![0u8; MAX_SEGMENT_PAYLOAD - EXIF_HEADER.len() + 1];
         let mut out = Vec::new();
         let error =
             encode_jpeg(&mut out, &frame, Some(&exif), &mut |_| {}, &|| Ok(())).unwrap_err();

@@ -7,6 +7,9 @@ use super::{
     RATIONAL, SHORT, SRATIONAL, Value,
 };
 
+/// The IFD0 tag of the EXIF orientation, read only by [`orientation`].
+const ORIENTATION: u16 = 0x0112;
+
 /// The most entries one IFD may declare; a larger table is not read at all.
 const MAX_ENTRIES: usize = 256;
 
@@ -51,6 +54,19 @@ pub(super) fn jpeg_exif(bytes: &[u8]) -> Option<&[u8]> {
         }
         i += length;
     }
+}
+
+/// IFD0's Orientation in one TIFF structure: the first entry tagged 0x0112 that is one SHORT, when
+/// its value is 1 to 8.
+pub(super) fn orientation(bytes: &[u8]) -> Option<u8> {
+    let (tiff, ifd0) = Tiff::new(bytes)?;
+    let entry = tiff
+        .entries(ifd0)?
+        .find(|entry| entry.tag == ORIENTATION && entry.kind == SHORT && entry.count == 1)?;
+    let value = tiff.u16(entry.at + 8)?;
+    u8::try_from(value)
+        .ok()
+        .filter(|value| (1..=8).contains(value))
 }
 
 /// The JPEG a RAF embeds, when its header's offset and length lie inside the file.

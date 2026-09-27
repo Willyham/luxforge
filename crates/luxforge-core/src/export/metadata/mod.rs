@@ -8,10 +8,13 @@
 //!   `Exif\0\0` header: the kept fields plus Orientation 1, ColorSpace sRGB, PixelXDimension,
 //!   PixelYDimension, ExifVersion and Software.
 //! - `field_names()` lists the kept fields by their EXIF names, in a stable order.
+//! - `jpeg_orientation(bytes)` is a JPEG file's EXIF orientation, 1 when absent or invalid: what
+//!   the import turns the decoded pixels upright by.
 //!
-//! Only the fields of [`FIELDS`] are ever read, each with its own EXIF type and count; everything
+//! Only the fields of [`FIELDS`] are ever kept, each with its own EXIF type and count; everything
 //! else in the original (maker notes, thumbnails, serial numbers, user comments, orientation,
-//! dimensions, colour space) is never looked at, so it cannot reach an export.
+//! dimensions, colour space) is never kept, so it cannot reach an export. The orientation is read
+//! only by `jpeg_orientation`, never into [`CaptureMetadata`].
 
 mod read;
 mod write;
@@ -146,6 +149,15 @@ pub struct CaptureMetadata {
     /// `(index into FIELDS, value)` in table order, each field at most once. Always small enough
     /// for [`CaptureMetadata::exif_payload`] to fit one APP1 segment.
     fields: Vec<(usize, Value)>,
+}
+
+/// The EXIF orientation of a JPEG file's first `Exif` APP1 segment before its scan, read with the
+/// same bounded reader as the kept fields: IFD0's first Orientation entry that is one SHORT from 1
+/// to 8, else 1.
+pub fn jpeg_orientation(bytes: &[u8]) -> u8 {
+    read::jpeg_exif(bytes)
+        .and_then(read::orientation)
+        .unwrap_or(1)
 }
 
 impl CaptureMetadata {

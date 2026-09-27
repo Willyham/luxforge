@@ -15,7 +15,7 @@ publish.workspace = true
 # The studies under `tests/` generate and reload the committed fixture corpora and write review
 # images; the references themselves need none of these.
 [dev-dependencies]
-image.workspace = true
+image = { workspace = true, features = ["jpeg"] }
 serde.workspace = true
 serde_json.workspace = true
 

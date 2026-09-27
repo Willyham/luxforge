@@ -1,26 +1,17 @@
 //! Decoding an original into pixels: the JPEG path (bounded header validation, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
 //! JPEG or an immutable RAW mosaic with one WB development.
-//!
-//! `header`'s bounded walk also guards a decode bug pinned in this build: zune-jpeg 0.5.15, which
-//! `image` 0.25.9 decodes JPEG through, mis-decodes a sequential (SOF0/SOF1) frame that has a
-//! vertically subsampled component (any sampling factor V > 1) and a separate (non-interleaved)
-//! scan (a scan whose SOS names fewer components than the frame). It reads only half that
-//! component's block rows and never decodes the later chroma scans, yet returns success, so the
-//! image imports as silently garbled pixels. Interleaved scans, 4:4:4 and 4:2:2 (H2V1)
-//! non-interleaved files, and progressive (SOF2) frames, which decode through a different path, are
-//! unaffected. Fixed upstream by zune-image PR #421 (with follow-ups #452/#453), not yet in a
-//! released zune-jpeg; remove the guard once a release carrying all three is pinned (tracked in
-//! `tasks/core-service.json`).
 use crate::{
-    Error, ErrorKind, LinearImage, Raster, colour::mat3::matvec_f32, export::CaptureMetadata,
+    Error, ErrorKind, LinearImage, Raster,
+    colour::mat3::matvec_f32,
+    export::{CaptureMetadata, metadata::jpeg_orientation},
+    jpeg,
 };
-use image::{ImageDecoder, ImageReader, Limits};
 use luxforge_raw::{RawError, RawMetadata, RawSource};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{Cursor, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     path::Path,
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError,
@@ -31,6 +22,13 @@ use std::{
 /// The encoded-byte limit for a JPEG original; a RAW original's own limit is
 /// `luxforge_raw::MAX_SOURCE_BYTES`.
 pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
+
+/// The largest JPEG original decoded: 16384 px per side and 64 megapixels, so its RGBA frame stays
+/// inside the 512 MiB evaluated-frame limit.
+const JPEG_LIMITS: jpeg::Limits = jpeg::Limits {
+    max_side: 16384,
+    max_pixels: 64_000_000,
+};
 
 /// The complete upright source, decoded once for non-destructive recipe evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,59 +43,12 @@ pub struct SourceImage {
     pub capture: Arc<CaptureMetadata>,
 }
 
-/// The message a refused non-interleaved subsampled sequential scan carries; also matched by its
-/// test, so the two cannot drift apart.
-const NON_INTERLEAVED_SUBSAMPLED_SCAN: &str = "JPEG with separate (non-interleaved) scans and vertically subsampled colour is not supported \
-     by this build's decoder";
-
-/// The largest vertical sampling factor among a sequential frame's components, read from the SOF
-/// segment's component table at `bytes[i..i + size]`. `size` and `nf` are already known to fit
-/// within `bytes` by the caller's segment-bounds check; this only re-checks that the table itself
-/// (3 bytes per component, after the 8-byte fixed part) fits inside that same segment.
-fn sof_vmax(bytes: &[u8], i: usize, size: usize, nf: u8) -> Result<u8, Error> {
-    let table = 3 * usize::from(nf);
-    if size < 8 + table {
-        return Err(Error::decode("frame component table"));
-    }
-    let mut vmax = 0;
-    for component in 0..usize::from(nf) {
-        vmax = vmax.max(bytes[i + 8 + component * 3 + 1] & 0x0f);
-    }
-    Ok(vmax)
-}
-
-/// Skip one scan's entropy-coded data byte-wise to the marker that follows it: `0xff00` stuffing
-/// and the RST0-7 restart markers are data, not segment markers, so only a real marker byte ends
-/// the scan. Bounded by `bytes.len()`; no allocation.
-fn skip_entropy_coded_data(bytes: &[u8], mut i: usize) -> Result<usize, Error> {
-    while i < bytes.len() {
-        if bytes[i] == 0xff {
-            let next = *bytes.get(i + 1).ok_or_else(|| Error::decode("scan data"))?;
-            if next != 0x00 && !(0xd0..=0xd7).contains(&next) {
-                return Ok(i);
-            }
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    Err(Error::decode("scan data"))
-}
-
-// Walk JPEG header segments without decoding or allocating from declared dimensions. A sequential
-// frame (SOF0/SOF1) with a vertically subsampled component also has every one of its scans walked,
-// past their entropy-coded data, to refuse a separate (non-interleaved) scan: zune-jpeg 0.5.15
-// mis-decodes that combination silently (see the module doc comment). Progressive frames (SOF2)
-// use a different decode path unaffected by this bug and are not walked past their frame header.
+// Walk JPEG header segments without decoding or allocating from declared dimensions.
 fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
     if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
         return Err(Error::decode("missing JPEG SOI/EOI"));
     }
     let mut i = 2;
-    // Set once the frame header is found, only when its scans still need walking (a sequential
-    // frame with a vertically subsampled component); carries the dimensions and component count to
-    // return once every scan up to EOI has been seen without a non-interleaved one among them.
-    let mut frame: Option<(u32, u32, u8)> = None;
     while i + 4 <= bytes.len() {
         if bytes[i] != 0xff {
             return Err(Error::decode("JPEG marker"));
@@ -107,7 +58,7 @@ fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
         }
         let marker = *bytes.get(i).ok_or_else(|| Error::decode("marker"))?;
         i += 1;
-        if marker == 0xd9 {
+        if marker == 0xda || marker == 0xd9 {
             break;
         }
         let size = bytes
@@ -118,49 +69,16 @@ fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
             return Err(Error::decode("segment bounds"));
         }
         if [0xc0, 0xc1, 0xc2].contains(&marker) {
-            if frame.is_some() {
-                return Err(Error::decode("second JPEG frame header"));
-            }
             if size < 8 || bytes[i + 2] != 8 {
                 return Err(Error::unsupported_color("JPEG precision"));
             }
             let h = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
             let w = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
-            let nf = bytes[i + 7];
-            let sequential = marker == 0xc0 || marker == 0xc1;
-            let vmax = if sequential {
-                sof_vmax(bytes, i, size, nf)?
-            } else {
-                0
-            };
-            if !sequential || vmax <= 1 {
-                return Ok((w, h, nf));
-            }
-            frame = Some((w, h, nf));
-            i += size;
-            continue;
-        }
-        if marker == 0xda {
-            let Some((_, _, nf)) = frame else {
-                break;
-            };
-            let ns = *bytes
-                .get(i + 2)
-                .ok_or_else(|| Error::decode("scan header"))?;
-            if usize::from(ns) < usize::from(nf) {
-                return Err(Error::unsupported_input(NON_INTERLEAVED_SUBSAMPLED_SCAN));
-            }
-            // One interleaved scan carries every component; skip its entropy-coded data and keep
-            // walking to EOI in case the stream repeats segments after it.
-            i = skip_entropy_coded_data(bytes, i + size)?;
-            continue;
+            return Ok((w, h, bytes[i + 7]));
         }
         i += size;
     }
-    match frame {
-        Some((w, h, nf)) => Ok((w, h, nf)),
-        None => Err(Error::unsupported_input("JPEG frame type")),
-    }
+    Err(Error::unsupported_input("JPEG frame type"))
 }
 
 /// Hash and decode one bounded snapshot read from an already opened handle. The magic bytes pick
@@ -191,72 +109,103 @@ pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-struct Decoded {
-    upright: image::DynamicImage,
+/// Rows decoded per call when they are turned upright into the frame: the largest MCU height, so
+/// the strip is small and each call hands back whole rows libjpeg has already buffered.
+const UPRIGHT_STRIP_ROWS: usize = 16;
+
+/// Where the decoded pixel `(x, y)` of a `width` × `height` image lands once EXIF `orientation`
+/// turns it upright: the inverse of the orientation's upright-to-stored mapping, so 5 to 8 swap
+/// the dimensions.
+#[inline]
+fn upright_position(
+    orientation: u8,
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+) -> (usize, usize) {
+    match orientation {
+        2 => (width - 1 - x, y),
+        3 => (width - 1 - x, height - 1 - y),
+        4 => (x, height - 1 - y),
+        5 => (y, x),
+        6 => (height - 1 - y, x),
+        7 => (height - 1 - y, width - 1 - x),
+        8 => (y, width - 1 - x),
+        _ => (x, y),
+    }
+}
+
+/// A decoded original turned upright: its frame, its dimensions and the EXIF orientation applied.
+struct Upright {
+    rgba: Arc<[u8]>,
+    width: u32,
+    height: u32,
     orientation: u8,
 }
 
-/// Validate the supported JPEG subset, decode within fixed limits and orient once to upright pixels.
-fn decode_upright(bytes: Vec<u8>) -> Result<Decoded, Error> {
-    let (w, h, components) = header(&bytes)?;
-    if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 64_000_000 {
+/// Validate the supported JPEG subset, check the ICC profile, and decode once to upright RGBA
+/// written into one frame: rows go straight into it when the EXIF orientation is 1, and otherwise
+/// through a strip of [`UPRIGHT_STRIP_ROWS`] rows placed where the orientation puts them.
+fn decode_upright(bytes: &[u8]) -> Result<Upright, Error> {
+    // The header walk bounds the declared frame before libjpeg reads anything; the decoder checks
+    // libjpeg's own reading of it against the same limits.
+    let (w, h, components) = header(bytes)?;
+    let jpeg::Limits {
+        max_side,
+        max_pixels,
+    } = JPEG_LIMITS;
+    if w == 0 || h == 0 || w > max_side || h > max_side || u64::from(w) * u64::from(h) > max_pixels
+    {
         return Err(Error::resource_limit("dimensions"));
     }
     if ![1, 3].contains(&components) {
         return Err(Error::unsupported_color("only RGB/greyscale"));
     }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Jpeg);
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(16384);
-    limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(512 * 1024 * 1024);
-    reader.limits(limits);
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|_| Error::decode("decoder header"))?;
-    if let Some(profile) = decoder
-        .icc_profile()
-        .map_err(|_| Error::unsupported_profile("unreadable ICC"))?
-    {
-        crate::profile::check(&profile, components)?;
+    let mut decoder = jpeg::Decoder::new(bytes, JPEG_LIMITS)?;
+    if let Some(profile) = decoder.icc_profile() {
+        crate::profile::check(profile, decoder.components())?;
     }
-    let orientation = decoder
-        .orientation()
-        .map_err(|_| Error::decode("orientation"))?;
-    let mut upright =
-        image::DynamicImage::from_decoder(decoder).map_err(|_| Error::decode("decode"))?;
-    upright.apply_orientation(orientation);
-    Ok(Decoded {
-        upright,
-        orientation: orientation.to_exif(),
+    let orientation = jpeg_orientation(bytes);
+    let (width, height) = (decoder.width() as usize, decoder.height() as usize);
+    let (upright_width, upright_height) = if orientation >= 5 {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let mut frame = crate::render::zeroed_frame(Raster::expected_len(
+        upright_width as u32,
+        upright_height as u32,
+    )?);
+    let out = crate::render::frame_mut(&mut frame);
+    if orientation == 1 {
+        decoder.read_rows(out)?;
+    } else {
+        let stride = width * 4;
+        let mut strip = vec![0; UPRIGHT_STRIP_ROWS.min(height) * stride];
+        for first in (0..height).step_by(UPRIGHT_STRIP_ROWS) {
+            let rows = UPRIGHT_STRIP_ROWS.min(height - first);
+            let strip = &mut strip[..rows * stride];
+            decoder.read_rows(strip)?;
+            // Column by column, so a quarter turn writes each decoded column's rows as one run
+            // of an upright row.
+            for x in 0..width {
+                for row in 0..rows {
+                    let (ux, uy) = upright_position(orientation, width, height, x, first + row);
+                    let from = row * stride + x * 4;
+                    let to = (uy * upright_width + ux) * 4;
+                    out[to..to + 4].copy_from_slice(&strip[from..from + 4]);
+                }
+            }
+        }
+    }
+    decoder.finish()?;
+    Ok(Upright {
+        rgba: frame,
+        width: upright_width as u32,
+        height: upright_height as u32,
+        orientation,
     })
-}
-
-/// Write `upright`'s pixels into `out` as RGBA, opaque, without an intermediate allocation. `out`
-/// must be exactly `width * height * 4` bytes, the shape [`decode_upright`]'s caller allocates
-/// through [`crate::render::zeroed_frame`].
-fn write_rgba(upright: &image::DynamicImage, out: &mut [u8]) -> Result<(), Error> {
-    match upright {
-        image::DynamicImage::ImageRgb8(buf) => {
-            for (dst, src) in out.chunks_exact_mut(4).zip(buf.as_raw().chunks_exact(3)) {
-                dst[0] = src[0];
-                dst[1] = src[1];
-                dst[2] = src[2];
-                dst[3] = 255;
-            }
-            Ok(())
-        }
-        image::DynamicImage::ImageLuma8(buf) => {
-            for (dst, src) in out.chunks_exact_mut(4).zip(buf.as_raw().iter()) {
-                dst[0] = *src;
-                dst[1] = *src;
-                dst[2] = *src;
-                dst[3] = 255;
-            }
-            Ok(())
-        }
-        _ => Err(Error::decode("unexpected decoded color type")),
-    }
 }
 
 /// Decode the complete upright source once for non-destructive recipe evaluation.
@@ -274,17 +223,13 @@ pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
 pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
     let capture = Arc::new(CaptureMetadata::from_jpeg(&bytes));
-    let decoded = decode_upright(bytes)?;
-    let width = decoded.upright.width();
-    let height = decoded.upright.height();
-    let mut frame = crate::render::zeroed_frame(Raster::expected_len(width, height)?);
-    write_rgba(&decoded.upright, crate::render::frame_mut(&mut frame))?;
+    let upright = decode_upright(&bytes)?;
     Ok(SourceImage {
-        width,
-        height,
-        rgba: frame,
+        width: upright.width,
+        height: upright.height,
+        rgba: upright.rgba,
         fingerprint,
-        orientation: decoded.orientation,
+        orientation: upright.orientation,
         capture,
     })
 }
@@ -1414,13 +1359,10 @@ mod jpeg_tests {
         assert_eq!(*source.capture, expected);
     }
 
-    /// A sequential (SOF0/SOF1) frame with a vertically subsampled component and a separate
-    /// (non-interleaved) scan is refused, naming the unsupported combination; the same content
-    /// re-encoded as one interleaved scan is accepted and decodes. 4:4:4 and 4:2:2 (H2V1)
-    /// non-interleaved files, which zune-jpeg 0.5.15 does not mis-decode because neither has a
-    /// vertically subsampled component, are also accepted, and each decodes within a small
-    /// tolerance of its own interleaved encoding of the same content — proving the guard is
-    /// exactly as wide as the bug, not wider.
+    /// Every scan layout decodes, and each non-interleaved file (one separate scan per component)
+    /// decodes to exactly the bytes of its interleaved twin, which holds the same coefficients:
+    /// 4:2:0, whose vertically subsampled chroma the previous decoder (zune-jpeg 0.5.15) read
+    /// wrongly and the import therefore refused, as well as 4:4:4 and 4:2:2.
     ///
     /// Every fixture here started from the same 48x32 pattern, encoded with libjpeg-turbo's
     /// `cjpeg -quality 85 -sample HxV -baseline` at the named chroma subsampling (2x2, 1x1 or 2x1
@@ -1429,36 +1371,139 @@ mod jpeg_tests {
     /// and `2;` on their own lines. Running `cjpeg`/`jpegtran` again is not required: the test reads
     /// only the committed bytes.
     #[test]
-    fn non_interleaved_subsampled_scans_are_refused_and_other_layouts_decode() {
-        let refused = open_source(&fixture("jpeg-scan-420-noninterleaved.jpg")).unwrap_err();
-        assert_eq!(refused.kind, ErrorKind::UnsupportedInput);
-        assert_eq!(refused.detail, NON_INTERLEAVED_SUBSAMPLED_SCAN);
-
-        let interleaved_420 = open_source(&fixture("jpeg-scan-420-interleaved.jpg")).unwrap();
-        assert_eq!((interleaved_420.width, interleaved_420.height), (48, 32));
-
-        for layout in ["444", "422"] {
+    fn every_scan_layout_decodes_as_its_interleaved_twin() {
+        for layout in ["420", "444", "422"] {
             let interleaved =
                 open_source(&fixture(&format!("jpeg-scan-{layout}-interleaved.jpg"))).unwrap();
             let non_interleaved =
                 open_source(&fixture(&format!("jpeg-scan-{layout}-noninterleaved.jpg"))).unwrap();
             assert_eq!(
                 (interleaved.width, interleaved.height),
+                (48, 32),
+                "{layout}"
+            );
+            assert_eq!(
+                (interleaved.width, interleaved.height),
                 (non_interleaved.width, non_interleaved.height),
                 "{layout}: dimensions"
             );
-            for (index, (a, b)) in interleaved
-                .rgba
-                .iter()
-                .zip(non_interleaved.rgba.iter())
-                .enumerate()
-            {
-                assert!(
-                    a.abs_diff(*b) <= 4,
-                    "{layout}: byte {index} differs by more than ordinary decoder rounding \
-                     ({a} vs {b})"
-                );
+            assert!(
+                interleaved.rgba == non_interleaved.rgba,
+                "{layout}: a separate scan per component decodes to other bytes"
+            );
+        }
+    }
+
+    /// Turning decoded rows upright places every pixel where the `image` crate's
+    /// `apply_orientation`, which the import used before, puts it, for all eight EXIF orientations
+    /// on an odd-sized image whose every pixel is distinct.
+    #[test]
+    fn upright_placement_matches_the_previous_orientation_code() {
+        let (width, height) = (7_u32, 5_u32);
+        let stored = image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([x as u8, y as u8, (x * 16 + y) as u8, 255])
+        });
+        for orientation in 1..=8_u8 {
+            let mut expected = image::DynamicImage::ImageRgba8(stored.clone());
+            expected
+                .apply_orientation(image::metadata::Orientation::from_exif(orientation).unwrap());
+            let expected = expected.to_rgba8();
+            let (upright_width, upright_height) = if orientation >= 5 {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            assert_eq!(expected.dimensions(), (upright_width, upright_height));
+            let mut placed = vec![0; (width * height * 4) as usize];
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let (ux, uy) =
+                        upright_position(orientation, width as usize, height as usize, x, y);
+                    let to = (uy * upright_width as usize + ux) * 4;
+                    placed[to..to + 4].copy_from_slice(&stored.get_pixel(x as u32, y as u32).0);
+                }
+            }
+            assert_eq!(placed, expected.into_raw(), "orientation {orientation}");
+        }
+    }
+
+    /// The previous import path, `image` 0.25.9 (zune-jpeg 0.5.15) behind the same header walk,
+    /// as it was: its outcome, and on success its upright dimensions, orientation and RGBA.
+    fn previous_import(bytes: &[u8]) -> Result<(u32, u32, u8, Vec<u8>), ErrorKind> {
+        use image::{ImageDecoder, ImageReader};
+        let (w, h, components) = header(bytes).map_err(|error| error.kind)?;
+        if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 64_000_000 {
+            return Err(ErrorKind::ResourceLimit);
+        }
+        if ![1, 3].contains(&components) {
+            return Err(ErrorKind::UnsupportedColor);
+        }
+        let reader =
+            ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
+        let mut decoder = reader.into_decoder().map_err(|_| ErrorKind::Decode)?;
+        if let Some(profile) = decoder.icc_profile().unwrap() {
+            crate::profile::check(&profile, components).map_err(|error| error.kind)?;
+        }
+        let orientation = decoder.orientation().unwrap();
+        let mut upright =
+            image::DynamicImage::from_decoder(decoder).map_err(|_| ErrorKind::Decode)?;
+        upright.apply_orientation(orientation);
+        Ok((
+            upright.width(),
+            upright.height(),
+            orientation.to_exif(),
+            upright.to_rgba8().into_raw(),
+        ))
+    }
+
+    /// Every committed s0 JPEG opens as it did through the previous decoder: the same refusal kind,
+    /// or the same upright dimensions and orientation with every channel within the decoders'
+    /// rounding (libjpeg's integer IDCT, fancy upsampling and colour conversion against
+    /// zune-jpeg's). The one difference is the 4:2:0 non-interleaved file, which the import refused
+    /// before because zune-jpeg read it wrongly (a checked comparison, not an assumption: its
+    /// pixels are far from the adapter's there).
+    #[test]
+    fn every_fixture_opens_as_through_the_previous_decoder() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0");
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".jpg"))
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 22);
+        for name in names {
+            let bytes = std::fs::read(dir.join(&name)).unwrap();
+            let now = open_source_bytes(bytes.clone());
+            let before = previous_import(&bytes);
+            match (now, before) {
+                (Err(now), Err(before)) => assert_eq!(now.kind, before, "{name}"),
+                (Ok(now), Ok((width, height, orientation, rgba))) => {
+                    assert_eq!((now.width, now.height), (width, height), "{name}");
+                    assert_eq!(now.orientation, orientation, "{name}");
+                    let largest = now
+                        .rgba
+                        .iter()
+                        .zip(&rgba)
+                        .map(|(a, b)| a.abs_diff(*b))
+                        .max()
+                        .unwrap();
+                    if name == "jpeg-scan-420-noninterleaved.jpg" {
+                        assert!(largest > 32, "{name}: zune-jpeg misread it by {largest}");
+                    } else {
+                        assert!(largest <= DECODER_TOLERANCE, "{name}: {largest} codes");
+                    }
+                }
+                (now, before) => panic!(
+                    "{name}: now {:?}, before {:?}",
+                    now.map(|_| ()),
+                    before.map(|_| ())
+                ),
             }
         }
     }
+
+    /// The largest channel difference between libjpeg's and zune-jpeg's decode of the committed
+    /// fixtures, measured.
+    const DECODER_TOLERANCE: u8 = 3;
 }
