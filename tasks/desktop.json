@@ -377,7 +377,7 @@
     {
       "id": "TASK-006",
       "description": "Declare the crop angle's step and fine step on its parameter and render it as the generic stepper control, deleting the crop's own angle model, messages and constants.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
