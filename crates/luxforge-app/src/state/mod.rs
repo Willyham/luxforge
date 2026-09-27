@@ -1856,6 +1856,20 @@ mod tests {
             "an untouched RAW is not an edit"
         );
         assert_eq!(white_balance(&untouched), tools::GroupState::Original);
+        // A Temperature drag has left the committed As shot before its release commits it, as a
+        // dragged JPEG field has left its default.
+        let dragged = {
+            let mut scene = Scene::new(modules.clone())
+                .opened(vec![original.layer(luxforge_core::LayerId::new())]);
+            scene.state.as_mut().expect("an asset").asset.source = raw_source();
+            scene.dragging = Some(("set-raw".into(), "temperature".into()));
+            scene.derive()
+        };
+        assert_eq!(white_balance(&dragged), tools::GroupState::Custom);
+        assert!(
+            !section(&dragged, basic).active,
+            "the dot follows what is committed"
+        );
         assert_eq!(
             untouched.tools.all().count(),
             modules
