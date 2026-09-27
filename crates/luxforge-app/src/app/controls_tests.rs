@@ -920,7 +920,7 @@ fn every_generated_action_control_matches_its_declared_schema() {
     let (mut editor, catalog) = opened_with_modules(modules.clone(), 1);
 
     let mut checked = 0usize;
-    for (_, _, action) in tools::palette_entries(&modules, editor.developer) {
+    for (_, _, action) in tools::palette_entries(&modules, editor.developer, None, None) {
         let PaletteAction::Run { action, preset } = action else {
             continue;
         };
@@ -1105,12 +1105,12 @@ fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
     finish(editor, catalog);
 }
 
-/// The RAW fields follow the displayed entry's own `recipe.describe` row, exactly as every other
-/// module's do: the desktop reads no RAW payload. Under As shot the temperature and tint show
-/// the camera's as-shot equivalent the core reports, not the 6504 K and 0 no one set; a custom
-/// value shows itself; a field being edited is left alone until the selection changes.
+/// On a RAW photo, Basic's Temperature and Tint are the development's `set-raw` fields, and they
+/// follow the displayed entry's own `recipe.describe` row, exactly as every other module's do: the
+/// desktop reads no RAW payload. Under As shot they show the camera's as-shot equivalent the core
+/// reports, not the 6504 K and 0 no one set; a custom value shows itself; a field being edited is
+/// left alone until the selection changes.
 #[test]
-#[ignore = "TASK-006 desktop: the RAW module draws no section; re-point at Basic's RAW variants (set-raw)"]
 fn raw_fields_show_the_displayed_entrys_described_values() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
     // The real descriptors, because the RAW parameters' declared precision is what decides how
@@ -1129,23 +1129,39 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         raw_refresh(&asset, &current),
     )))));
     let shown = |editor: &Editor| {
-        [
-            "set-raw-exposure.ev",
-            "set-raw-temperature.kelvin",
-            "set-raw-tint.tint",
-        ]
-        .map(|key| editor.fields.summary()[key].as_str().map(str::to_owned))
+        ["set-raw.temperature", "set-raw.tint"]
+            .map(|key| editor.fields.summary()[key].as_str().map(str::to_owned))
     };
     assert_eq!(
         shown(&editor),
-        [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        [Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
     );
+    // And Basic's section draws them, in kelvin, in Temperature's place.
+    let temperature = editor
+        .workspace
+        .tools
+        .all()
+        .flat_map(|section| crate::state::control_tree::walk(&section.controls))
+        .find_map(|control| match control {
+            crate::state::tools::ControlModel::Slider(slider)
+                if slider.action == "set-raw" && slider.parameter == "temperature" =>
+            {
+                Some(slider.clone())
+            }
+            _ => None,
+        })
+        .expect("Basic's Temperature, resolved to the RAW development's");
+    assert_eq!(
+        (temperature.label.as_str(), temperature.unit.as_deref()),
+        ("Temperature", Some("K"))
+    );
+    assert_eq!(temperature.display, "3500");
     // The explicit gains have no control, so no field shows them.
     assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), None);
 
     // A historical As shot entry: the fields change when its rows arrive, not before, and the
     // field being edited is released by the selection.
-    editor.editing = Some(("set-raw-exposure".into(), "ev".into()));
+    editor.editing = Some(("set-raw".into(), "temperature".into()));
     let mut session = editor.session.clone();
     session
         .preview
@@ -1174,7 +1190,7 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     assert_eq!((kelvin.round(), tint.round()), (4861.0, -50.0));
     assert_eq!(
         shown(&editor),
-        [Some("0.00"), Some("4861"), Some("-50")].map(|text| text.map(str::to_owned)),
+        [Some("4861"), Some("-50")].map(|text| text.map(str::to_owned)),
         "As shot shows the camera's own white balance as a temperature and tint"
     );
 
@@ -1198,7 +1214,7 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     assert_eq!(editor.display_entry, Some(current.id));
     assert_eq!(
         shown(&editor),
-        [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        [Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
     );
 
     // A describe that fails for the displayed entry does not hold a frame forever: it is

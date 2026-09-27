@@ -197,6 +197,7 @@ pub(crate) fn refresh_for(
         },
         session: ClientSession::default(),
         request: None,
+        skipped: Vec::new(),
     }
 }
 

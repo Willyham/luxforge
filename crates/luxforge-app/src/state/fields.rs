@@ -27,6 +27,25 @@ impl Fields {
         let mut fields = Self::default();
         for module in modules {
             seed_controls(ControlOwner::Module(module), &module.controls, &mut fields);
+            // A variant's control edits its providing module's parameter, seeded from that
+            // module's declarations: on a RAW photo Temperature is `set-raw`'s, in kelvin.
+            for control in walk(&module.controls) {
+                for variant in control.variants() {
+                    let (Some(provider), Some(control)) = (
+                        modules
+                            .iter()
+                            .find(|provider| provider.id == variant.module),
+                        variant.control.as_deref(),
+                    ) else {
+                        continue;
+                    };
+                    seed_controls(
+                        ControlOwner::Module(provider),
+                        std::slice::from_ref(control),
+                        &mut fields,
+                    );
+                }
+            }
         }
         seed_controls(
             ControlOwner::Host,
@@ -710,6 +729,10 @@ mod tests {
                 "set-presence.clarity",
                 "set-presence.dehaze",
                 "set-presence.texture",
+                // Basic's RAW variants of Temperature and Tint, seeded from the RAW module's
+                // own declarations.
+                "set-raw.temperature",
+                "set-raw.tint",
                 "set-vignette.amount",
                 "set-vignette.feather",
                 "set-vignette.midpoint",
@@ -1053,8 +1076,10 @@ mod tests {
     #[test]
     fn a_double_click_resets_one_field_of_a_patch_action() {
         let modules = descriptors();
+        // The first patch a JPEG shows; the RAW development's fields reset to As shot instead.
         let patch = modules
             .iter()
+            .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");

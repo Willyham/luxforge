@@ -70,7 +70,7 @@ struct FieldTarget {
     max: f64,
     step: f64,
     /// Where the gesture's values start from: zero when the range holds it, as every field-patch
-    /// slider's does, otherwise the declared default (RAW's Custom temperature, 2000..12000 K).
+    /// slider's does, otherwise the declared default (a RAW photo's Temperature, 2000..12000 K).
     origin: f64,
 }
 
@@ -582,7 +582,7 @@ const BURST_RATE_PER_SEC: f64 = 120.0;
 const BURST_PEAK_EV: f64 = 2.0;
 /// The triangle's peak for any field, as a fraction of the smaller half of its declared range
 /// around its origin: exactly [`BURST_PEAK_EV`] on an exposure's -5..5 EV, 40 on a -100..100 field
-/// and 1802 K either side of Custom temperature's 6504 K.
+/// and 1802 K either side of a RAW Temperature's 6504 K.
 const BURST_PEAK_FRACTION: f64 = 0.4;
 
 /// One value per tick, in milliseconds, at [`BURST_RATE_PER_SEC`].
@@ -628,7 +628,7 @@ impl FieldTarget {
     /// origin, peaking at [`BURST_PEAK_FRACTION`] of the smaller half of its declared range, each
     /// on the field's own step grid, as a slider on that step would produce. On an exposure field
     /// (origin 0, -5..5 EV, step 0.01) that is [`burst_values`] itself, value for value; on
-    /// Custom temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
+    /// RAW Temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
     /// field ±40.
     fn burst_values(&self) -> Vec<f64> {
         let amplitude = BURST_PEAK_FRACTION * (self.max - self.origin).min(self.origin - self.min);

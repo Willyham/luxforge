@@ -750,6 +750,7 @@ impl Editor {
             Step::PresetImport { path } => self.preset_import_step(path),
             Step::Performance { expanded } => self.performance_step(expanded),
             Step::Wait { ms } => self.wait_step(ms),
+            Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
@@ -2587,6 +2588,45 @@ impl Editor {
 
     /// Open the palette, type the query, and either stop there or run the first match. The query
     /// step is captured on the next frame; a run settles the way its own entry would.
+    /// One key pressed with no text field focused, through the same key table the keyboard
+    /// reaches: a letter the table binds to a canvas mode waits for the session to follow, as the
+    /// strip and the palette do; any other bound key captures the next frame.
+    fn key_step(&mut self, key: String) -> Task<Message> {
+        use iced::keyboard::{
+            Event as KeyEvent, Key, Location, Modifiers,
+            key::{Named, NativeCode, Physical},
+        };
+        let pressed = if key == luxforge_evidence::KEY_ESCAPE {
+            Key::Named(Named::Escape)
+        } else {
+            Key::Character(key.to_lowercase().into())
+        };
+        let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
+            key: pressed.clone(),
+            modified_key: pressed,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        let status = iced::event::Status::Ignored;
+        match crate::app::keymap::keymap(&event, status, &self.key_context()) {
+            None => self.fail_step(format!("the key {key} does nothing here")),
+            Some(Message::View(ViewMessage::SetMode(mode)))
+                if mode != self.session.workspace.mode =>
+            {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
+            Some(_) => {
+                let task = self.dispatch(Message::Key(event, status));
+                self.capture_next_frame();
+                task
+            }
+        }
+    }
+
     fn palette_step(&mut self, step: PaletteStep) -> Task<Message> {
         let query = match &step {
             PaletteStep::Query(query) | PaletteStep::Run(query) => query.clone(),

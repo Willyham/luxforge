@@ -233,9 +233,14 @@ impl Editor {
                 }));
             }
             ControlMessage::ResetGroup { module_id, path } => {
-                let Some(reset) = tools::module_of(&self.modules, &module_id)
-                    .and_then(|module| group_reset(&module.controls, &path))
-                else {
+                // The reset the group's header shows: resolved for the photo and the target, so
+                // on a RAW photo's global target White balance's reset is the development's As
+                // shot.
+                let kind = tools::source_kind(self.state.as_ref());
+                let target = self.section_target().cloned();
+                let Some(reset) = tools::module_of(&self.modules, &module_id).and_then(|module| {
+                    group_reset(&module.id, &module.controls, &path, kind, target.as_ref())
+                }) else {
                     self.status = format!("{module_id} declares no reset for that group");
                     return Task::none();
                 };
@@ -1078,14 +1083,17 @@ pub(crate) fn initial_group_expanded(
     }
 }
 
+/// The reset the group at `path` of `owner`'s controls runs on a photo of `kind` edited through
+/// `target`, through the core's one rule ([`luxforge_core::resolve_group_reset`]).
 pub(super) fn group_reset(
+    owner: &str,
     controls: &[luxforge_core::Control],
     path: &[usize],
+    kind: Option<luxforge_core::SourceTag>,
+    target: Option<&luxforge_core::MaskId>,
 ) -> Option<luxforge_core::ResetAction> {
-    match at_path(controls, path)? {
-        Control::Group { reset, .. } => reset.clone(),
-        _ => None,
-    }
+    luxforge_core::resolve_group_reset(owner, at_path(controls, path)?, kind, target)
+        .map(|resolved| resolved.reset.clone())
 }
 
 #[cfg(test)]

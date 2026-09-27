@@ -86,6 +86,94 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
     finish(editor, catalog);
 }
 
+/// Basic's Neutral picker pressed on a mask stays on that mask: the pick mode is entered with the
+/// sections still bound to it, its query asks about that mask's input and the answer lands on that
+/// mask's Basic layer; leaving the pick returns to the Masks panel. Entered from the global
+/// sections, the same pick is global, whatever mask the panel last had open.
+#[test]
+fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+    let (mode, query, action) = sample_mode(&editor);
+    let mask = luxforge_core::MaskId::new();
+    // The panel holds that mask, as `mask.list` reported it.
+    *editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+        entry_id: editor.displayed_entry().expect("a displayed entry"),
+        masks: vec![luxforge_core::mask::commands::MaskReport {
+            id: mask.clone(),
+            index: 0,
+            name: "Sky".into(),
+            amount: 100.0,
+            invert: false,
+            components: Vec::new(),
+            layers: Vec::new(),
+        }],
+    });
+    editor.selected_mask = Some(mask.clone());
+    editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
+    assert_eq!(editor.section_target(), Some(&mask));
+    let _ = editor.update(Message::View(super::message::ViewMessage::SetMode(
+        mode.clone(),
+    )));
+    assert!(
+        editor.pick_on_mask,
+        "entered with the sections bound to a mask"
+    );
+    // The session follows the mode the desktop asked for.
+    editor.session.workspace.mode = mode.clone();
+    assert_eq!(
+        editor.section_target(),
+        Some(&mask),
+        "the pick stays on the mask"
+    );
+    assert_eq!(
+        editor.key_context().leave_to.as_deref(),
+        Some(luxforge_core::MASK_MODE),
+        "Escape returns to the Masks panel"
+    );
+    assert_eq!(editor.mode_target(&mode), luxforge_core::MASK_MODE);
+
+    let entry_id = editor.displayed_entry().expect("a displayed entry");
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Pointer(PointerMessage::Located {
+        entry: entry_id.clone(),
+        mode: mode.clone(),
+        view: (7, 9),
+        result: Ok(ContentPoint {
+            content_x: 100,
+            content_y: 42,
+            width: 480,
+            height: 320,
+        }),
+    }));
+    assert_eq!(
+        pick_events(&logged(&mut editor, &log)),
+        vec![
+            &json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":7,"view_y":9,"x":100,"y":42})
+        ],
+        "the query carries the mask"
+    );
+    let fields = Map::from_iter([("temperature".to_owned(), json!(-12.0))]);
+    let (_, request) = editor.request(&action, &fields).expect("a request");
+    assert_eq!(
+        request["mask"],
+        json!(mask.as_str()),
+        "the answer lands on the mask"
+    );
+
+    // Entered from the global sections: global, with the same mask still open in the panel.
+    editor.session.workspace.mode = luxforge_core::POINTER_MODE.into();
+    let _ = editor.update(Message::View(super::message::ViewMessage::SetMode(
+        mode.clone(),
+    )));
+    editor.session.workspace.mode = mode.clone();
+    assert!(!editor.pick_on_mask);
+    assert_eq!(editor.section_target(), None);
+    assert_eq!(editor.key_context().leave_to, None);
+    let (_, request) = editor.request(&action, &fields).expect("a request");
+    assert!(request.get("mask").is_none(), "{request}");
+    finish(editor, catalog);
+}
+
 /// A refused query commits nothing and shows the core's own reason, whose prefix names why.
 #[test]
 fn a_refused_sample_shows_its_reason_and_commits_nothing() {

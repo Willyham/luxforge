@@ -147,10 +147,14 @@ impl Editor {
 
     /// The mode a click on that module's picker selects.
     pub(super) fn mode_target(&self, module_id: &str) -> String {
-        if self.session.workspace.mode == module_id {
-            POINTER_MODE.to_owned()
-        } else {
-            module_id.to_owned()
+        match (
+            self.session.workspace.mode == module_id,
+            self.section_target(),
+        ) {
+            // A pick taken on a mask returns to the Masks panel it was entered from.
+            (true, Some(_)) => luxforge_core::MASK_MODE.to_owned(),
+            (true, None) => POINTER_MODE.to_owned(),
+            (false, _) => module_id.to_owned(),
         }
     }
 

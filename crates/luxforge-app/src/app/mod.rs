@@ -307,6 +307,9 @@ pub(crate) struct Editor {
     /// What last happened to the open photograph, which the status bar says once the current
     /// entry's frame is on screen.
     pub(crate) happened: Option<state::status::Happened>,
+    /// What the last composite action (a preset, Reset Basic) left out because it does not apply
+    /// to the photo, said beside what happened once its frame is on screen.
+    pub(crate) skipped: Option<String>,
     /// The event sync's cursor: the newest event sequence a poll has read up to. Only a poll moves
     /// it, and never backwards; the sequence any other answer carries counts events of other
     /// clients' that no poll has read yet.
@@ -400,6 +403,10 @@ pub(crate) struct Editor {
     /// The mask the Masks panel has open, and the component selected inside it. Per-client
     /// selection: it changes no recipe and is never sent.
     pub(crate) selected_mask: Option<luxforge_core::MaskId>,
+    /// The module pick mode on screen was entered from the Masks panel with a mask open, so the
+    /// pick stays bound to that mask ([`Editor::section_target`]) and leaving it returns to Mask.
+    /// Per-client view state, set by the mode change that entered the pick.
+    pub(crate) pick_on_mask: bool,
     pub(crate) selected_component: Option<luxforge_core::ComponentId>,
     /// The component row the pointer is over, which the overlay shows on its own while it lasts.
     /// View state of the same kind as the selection, and never sent.
@@ -586,6 +593,7 @@ impl Editor {
             status: "Open a photo to begin".into(),
             status_copy: None,
             happened: None,
+            skipped: None,
             api_sequence: 0,
             own_requests: std::collections::VecDeque::new(),
             scale_factor: 1.0,
@@ -632,6 +640,7 @@ impl Editor {
             mode_sync: None,
             masks: Tracked::default(),
             selected_mask: None,
+            pick_on_mask: false,
             selected_component: None,
             hovered_component: None,
             hidden_masks: Tracked::default(),
@@ -1023,7 +1032,13 @@ impl Editor {
             palette_open: self.palette_open,
             export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
-            modes: crate::state::tools::mode_shortcuts(&self.modules, self.state.as_ref()),
+            leave_to: (!self.mask_mode_active() && self.section_target().is_some())
+                .then(|| luxforge_core::MASK_MODE.to_owned()),
+            modes: crate::state::tools::mode_shortcuts(
+                &self.modules,
+                self.state.as_ref(),
+                self.section_target(),
+            ),
         }
     }
 

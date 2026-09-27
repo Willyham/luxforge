@@ -83,6 +83,11 @@ impl Step {
         Self::Hover { x, y }
     }
 
+    /// One key pressed on the photograph: a letter or digit, or [`crate::KEY_ESCAPE`].
+    pub fn key(key: impl Into<String>) -> Self {
+        Self::Key { key: key.into() }
+    }
+
     pub fn pan(x: f32, y: f32) -> Self {
         Self::Pan { x, y }
     }

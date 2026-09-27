@@ -71,6 +71,9 @@ pub(crate) struct Refresh {
     /// in the log needs no refresh of its own when a poll reads it ([`sync_now`]). `None` when the
     /// refresh read back no change of this desktop's.
     pub(crate) request: Option<String>,
+    /// What the composite action this refresh read back left out because it does not apply to
+    /// the photo, as its answer listed it; empty for every other change.
+    pub(crate) skipped: Vec<luxforge_core::SkippedSetting>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -667,6 +670,7 @@ pub(crate) fn refresh(
         job,
         session,
         request: None,
+        skipped: Vec::new(),
     })
 }
 
@@ -799,6 +803,10 @@ pub(crate) fn command_now(
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    // A composite's skips are part of its answer, not of any state read back afterwards.
+    if let Some(skipped) = answer.get("skipped") {
+        refreshed.skipped = parse(skipped.clone())?;
+    }
     Ok(refreshed)
 }
 

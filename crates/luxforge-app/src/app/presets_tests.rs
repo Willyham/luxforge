@@ -265,6 +265,71 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
     library.finish();
 }
 
+/// A preset may hold settings for another kind of photo. The owner skips them and lists them in
+/// its answer, and the status bar says so beside what happened: applied with one setting left out,
+/// or, when nothing applies, that nothing was applied.
+#[test]
+fn a_preset_that_skips_settings_says_so_in_the_status_bar() {
+    let mut library = Library::opened();
+    let action = library.presets().action.clone();
+    fn apply(library: &mut Library, action: &str, settings: Value, name: &str) {
+        let fields = json!({"settings": settings, "name": name})
+            .as_object()
+            .cloned()
+            .expect("an object");
+        let request = library
+            .editor
+            .request_for_preset(action, None, Some(&fields))
+            .expect("a request");
+        let refresh = tasks::command_now(
+            &library.owner(),
+            library.editor.client,
+            library.asset.clone(),
+            request["method"].as_str().expect("a method"),
+            request["params"].clone(),
+            None,
+        )
+        .expect("the preset is answered");
+        let _ = library
+            .editor
+            .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+    }
+    // The RAW development's white balance is skipped on this JPEG; Basic's exposure applies.
+    apply(
+        &mut library,
+        &action,
+        json!({"set-raw": {"white-balance": "as-shot"}, "set-basic": {"exposure": 0.5}}),
+        "Both kinds",
+    );
+    assert_eq!(
+        library.editor.skipped.as_deref(),
+        Some("1 setting does not apply to a JPEG photo")
+    );
+    assert!(matches!(
+        library.editor.happened,
+        Some(crate::state::status::Happened::Applied { .. })
+    ));
+    // Nothing applies: no entry, and the status says so rather than repeating the last one.
+    apply(
+        &mut library,
+        &action,
+        json!({"set-raw": {"temperature": 5000.0, "tint": 5.0}}),
+        "RAW only",
+    );
+    assert_eq!(
+        library.editor.happened,
+        Some(crate::state::status::Happened::NothingApplied)
+    );
+    assert_eq!(
+        library.editor.skipped.as_deref(),
+        Some("1 setting does not apply to a JPEG photo")
+    );
+    // Any other change reads back no skip.
+    library.refresh();
+    assert_eq!(library.editor.skipped, None);
+    library.finish();
+}
+
 #[test]
 fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     let mut library = Library::opened();

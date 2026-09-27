@@ -2,7 +2,7 @@
 use crate::state::{
     Inputs,
     number::number_text,
-    tools::{applies, canvas_pick, module_of},
+    tools::{applies, canvas_pick, pick_reachable},
 };
 use luxforge_core::{
     Availability, CanvasInteraction, ErrorKind, MASK_MODE, ModuleDescriptor, POINTER_MODE, Zoom,
@@ -212,12 +212,16 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         notices: notices(inputs),
         // A click on the photograph belongs to the canvas mode that is on screen, so the surface
         // takes picks only while a mode declaring one is active, and only while the module whose
-        // mode it is applies to the photo's source kind, as its effects declare. A host mode
-        // belongs to no module and applies to every photo.
+        // mode it is applies to the photo's source kind and a resolved picker names that mode for
+        // the photo and target. A host mode belongs to no module and applies to every photo.
         picking: editable
             && canvas_pick(inputs.modules, &inputs.session.workspace.mode).is_some()
-            && module_of(inputs.modules, &inputs.session.workspace.mode)
-                .is_none_or(|module| applies(module, inputs.state)),
+            && pick_reachable(
+                inputs.modules,
+                inputs.state,
+                inputs.target,
+                &inputs.session.workspace.mode,
+            ),
         pointer: inputs.pointer,
         surface_mode: if inputs.crop_space {
             SurfaceMode::Pan
@@ -228,7 +232,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         },
         option: inputs.crop_option,
         masking: inputs.session.workspace.mode == MASK_MODE,
-        mask_panel: mask_workspace(&inputs.session.workspace.mode),
+        // A pick taken on a mask keeps its Masks panel on screen, bound to that mask.
+        mask_panel: mask_workspace(&inputs.session.workspace.mode) || inputs.target.is_some(),
     }
 }
 
