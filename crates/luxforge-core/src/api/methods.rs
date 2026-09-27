@@ -2212,6 +2212,7 @@ mod tests {
                 // component kind, generated from the host's own kind table.
                 "mask.delete",
                 "mask.rename",
+                "mask.rename-component",
                 "mask.duplicate",
                 "mask.set-amount",
                 "mask.set-invert",

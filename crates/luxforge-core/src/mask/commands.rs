@@ -640,6 +640,27 @@ pub(crate) fn plan(
                         Vec::new(),
                     )
                 }
+                "mask.rename-component" => {
+                    let (mask_index, index) = component_at(&next, target)?;
+                    let name = target.name.clone().ok_or_else(|| {
+                        Error::validation("missing required field name for mask.rename-component")
+                    })?;
+                    let mask = &mut next.masks[mask_index];
+                    let previous = std::mem::replace(&mut mask.components[index].name, name.clone());
+                    let component_id = mask.components[index].id.clone();
+                    // Structural only, exactly as a mask's own rename: printable, trimmed and not
+                    // empty, and — unlike a mask's name — unique within this mask, because that is
+                    // the uniqueness `Mask::validate` already enforces over every component's name.
+                    mask.validate()?;
+                    let id = mask.id.clone();
+                    (
+                        format!("Rename {previous} to {name}"),
+                        false,
+                        Some(id),
+                        Some(component_id),
+                        Vec::new(),
+                    )
+                }
                 "mask.duplicate" => {
                     rules::room_for_mask(next.masks.len())?;
                     let index = mask_index(&next, required_mask(target)?)?;
@@ -1729,6 +1750,20 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             ],
         ),
         command(
+            "mask.rename-component",
+            "Rename component",
+            "set a component's display name; a name is a person's text and never an identity. \
+             Unlike a mask's own name, a component's must be unique within its mask, because a \
+             history label and the panel's own list read one by its name",
+            (true, true),
+            false,
+            vec![
+                ParameterDescriptor::string(NAME, crate::MAX_MASK_NAME)
+                    .required(true)
+                    .notes("the display name to set: printable, trimmed and not empty"),
+            ],
+        ),
+        command(
             "mask.duplicate",
             "Duplicate mask",
             "a copy of a mask, its components and the layers bound to it, with new identities, placed after it; a mask without its adjustments is not a useful copy",
@@ -2119,6 +2154,7 @@ mod tests {
                 // The kind-independent commands, in the order the design's method table lists them.
                 "mask.delete",
                 "mask.rename",
+                "mask.rename-component",
                 "mask.duplicate",
                 "mask.set-amount",
                 "mask.set-invert",
@@ -2522,6 +2558,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(again.label, "Mask 1 · Update Linear 1");
+        // A component rename does not already name the mask, so it is prefixed exactly as an
+        // ordinary component edit is once a second mask exists.
+        let renamed = apply(
+            &again.recipe,
+            "mask.rename-component",
+            MaskTarget {
+                mask: Some(mask),
+                component: Some(component),
+                name: Some("Sky edge".into()),
+                ..MaskTarget::default()
+            },
+            Map::new(),
+        )
+        .unwrap();
+        assert_eq!(renamed.label, "Mask 1 · Rename Linear 1 to Sky edge");
     }
 
     #[test]
@@ -3026,6 +3077,149 @@ mod tests {
         );
     }
 
+    /// `mask.rename-component` mirrors `mask.rename`: the same name shape rule, the same no-op on
+    /// the name a component already has, and — unlike a mask, whose name carries no uniqueness rule
+    /// across the recipe — a refusal naming a sibling's name, because `Mask::validate` requires every
+    /// component of one mask to have a distinct name.
+    #[test]
+    fn a_component_rename_names_it_and_is_refused_by_the_same_rules_a_mask_rename_is() {
+        let (recipe, _) = created();
+        let mask = recipe.masks[0].id.clone();
+        let component = recipe.masks[0].components[0].id.clone();
+        let target = MaskTarget {
+            mask: Some(mask.clone()),
+            component: Some(component),
+            ..MaskTarget::default()
+        };
+        let renamed = apply(
+            &recipe,
+            "mask.rename-component",
+            MaskTarget {
+                name: Some("Sky edge".into()),
+                ..target.clone()
+            },
+            Map::new(),
+        )
+        .unwrap();
+        assert_eq!(renamed.label, "Rename Linear 1 to Sky edge");
+        assert_eq!(renamed.recipe.masks[0].components[0].name, "Sky edge");
+        // A rename to the name a component already has changes nothing, exactly as a mask's own.
+        assert!(matches!(
+            plan(
+                find("mask.rename-component").unwrap(),
+                &renamed.recipe,
+                &MaskTarget {
+                    name: Some("Sky edge".into()),
+                    ..target.clone()
+                },
+                &Map::new(),
+                &registry()
+            )
+            .unwrap(),
+            MaskOutcome::NoOp
+        ));
+        // Empty and over-long names are refused by the same helper a mask's own name is, worded for
+        // a component instead.
+        let empty = plan(
+            find("mask.rename-component").unwrap(),
+            &renamed.recipe,
+            &MaskTarget {
+                name: Some(String::new()),
+                ..target.clone()
+            },
+            &Map::new(),
+            &registry(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            empty.detail,
+            format!(
+                "component name must contain 1..={} printable characters",
+                crate::MAX_MASK_NAME
+            )
+        );
+        let too_long = plan(
+            find("mask.rename-component").unwrap(),
+            &renamed.recipe,
+            &MaskTarget {
+                name: Some("x".repeat(crate::MAX_MASK_NAME + 1)),
+                ..target.clone()
+            },
+            &Map::new(),
+            &registry(),
+        )
+        .unwrap_err();
+        assert_eq!(too_long.detail, empty.detail);
+        // Unknown mask and unknown component are the family's own shared refusals, reached exactly
+        // as every other component command reaches them.
+        let stranger = MaskId::new();
+        assert_eq!(
+            plan(
+                find("mask.rename-component").unwrap(),
+                &renamed.recipe,
+                &MaskTarget {
+                    mask: Some(stranger.clone()),
+                    name: Some("Anything".into()),
+                    ..MaskTarget::default()
+                },
+                &Map::new(),
+                &registry()
+            )
+            .unwrap_err()
+            .detail,
+            format!("unknown mask {stranger}")
+        );
+        let absent = ComponentId::new();
+        assert_eq!(
+            plan(
+                find("mask.rename-component").unwrap(),
+                &renamed.recipe,
+                &MaskTarget {
+                    mask: Some(mask.clone()),
+                    component: Some(absent.clone()),
+                    name: Some("Anything".into()),
+                    ..MaskTarget::default()
+                },
+                &Map::new(),
+                &registry()
+            )
+            .unwrap_err()
+            .detail,
+            format!("mask Mask 1 has no component {absent}")
+        );
+        // A second component of the same mask cannot take the name the first already holds.
+        let mut second = radial(0.5, 0.5, 0.3, 10.0);
+        second.insert("mode".into(), json!("add"));
+        let with_radial = apply(
+            &renamed.recipe,
+            "mask.add-radial",
+            MaskTarget {
+                mask: Some(mask.clone()),
+                ..MaskTarget::default()
+            },
+            second,
+        )
+        .unwrap();
+        let radial_component = with_radial.component.clone().unwrap();
+        assert_eq!(
+            plan(
+                find("mask.rename-component").unwrap(),
+                &with_radial.recipe,
+                &MaskTarget {
+                    mask: Some(mask),
+                    component: Some(radial_component),
+                    name: Some("Sky edge".into()),
+                    ..MaskTarget::default()
+                },
+                &Map::new(),
+                &registry()
+            )
+            .unwrap_err()
+            .detail,
+            "duplicate component name Sky edge in mask Mask 1"
+        );
+    }
+
     /// A mask without its adjustments is not a useful copy, so `mask.duplicate` copies the layers
     /// bound to the mask as well — each with a new identity, bound to the copy, and placed by the
     /// ordering rule: after the global layer of its effect and in mask order among the masked ones.
@@ -3391,6 +3585,11 @@ mod tests {
         assert_eq!(
             rename["required"],
             json!(["asset_id", "mutation", "mask", "name"])
+        );
+        let rename_component = schema("mask.rename-component");
+        assert_eq!(
+            rename_component["required"],
+            json!(["asset_id", "mutation", "mask", "component", "name"])
         );
     }
 
