@@ -881,8 +881,7 @@ single- and multi-tile readbacks match, stale overlays are suppressed,
 and a deferred photo becomes current after retirement without another user input. The final focused
 surface run passed 31 tests; its two ignored retirement timing diagnostics were run separately
 after functional work. The current full-photo bound permits a current and retiring allocation up to
-512 MiB each, plus two region sets up to 32 MiB each; the full-slot increase is an unaccepted owner budget
-proposal. Crop-stage GPU textures and backend staging sit outside that photo accounting.
+512 MiB each, plus two region sets up to 32 MiB each; the 1088 MiB temporary-overlap ceiling was provisionally accepted by the owner on 2026-09-27 for photo textures only. It is not a total editor or GPU product budget. Crop GPU textures and tiles, overlays and backend staging sit outside that photo accounting and are not fully measured or bounded; native accounting and bounds remain required before any total-memory guarantee.
 
 The final 24/60 MP Fit exposure drags each had 30 inputs in one release launch. Input to presented
 adoption was 8.34 / 8.95 ms p50 / p95 at 24 MP and 8.57 / 8.80 ms at 60 MP. The runs started at
@@ -955,12 +954,7 @@ under that loaded-host caveat. Earlier native crop-window evidence recorded a 45
 intermediate; the committed 1000 × 800 fixture proves bounded materialization, and the prior core
 window run counted 14 passed and one ignored test. These older figures do not qualify this build.
 
-The RAW white-balance gate remains an owner question. On this final executable, the original
-moving-frame criterion passes for the Nikon Z6 and Fujifilm X100VI but fails for the DJI Air 2S:
-the release residuals are 2.42%, 3.69% and 17.33%, respectively, against the unchanged 10%
-limit. A proposed one-second held-frame comparison produces 0.81%, 1.39% and 5.06%, respectively,
-with the draft still labelled approximate. The held-frame criterion has not been accepted by the
-owner. Neither comparison defines a general numerical photo-error bound.
+The original 2026-09-26 moving-frame RAW white-balance criterion passed for the Nikon Z6 and Fujifilm X100VI on this final executable but failed for the DJI Air 2S: release residuals were 2.42%, 3.69% and 17.33%, respectively, against 10%. The owner revised the 100% criterion on 2026-09-27 to apply the 10% relative-to-adjustment gate to a held full-detail approximate draft after the shared 120 ms quiet refinement and before release. The earlier held comparisons were 0.81%, 1.39% and 5.06%, respectively, measured with a one-second hold under the earlier harness. Fresh native `raw-panel` runs of the revised verifier pass for the Z6, X100VI and Air 2S: 100% held residuals are 0.805669%, 1.387562% and 5.056605%, respectively; Fit moving residuals are 0.293894%, 0.512237% and 3.047137%, with mean differences of 0.017890, 0.048140 and 0.345406 codes. Each passes its 10% relative gate, and each Fit mean stays below one code. The journeys also complete the later crop and placement checks. Evidence is in `artifacts/accepted-preview-decisions/raw-{z6,fuji,air}/result.json` and corresponding `app/raw-panel-checks.json`; `raw-runs.json` records the commands and binary identities. The moving half-detail figures remain recorded; motion now has separate viewport identity, approximate-label, visual-response and refinement checks, without a numeric softness threshold. Fit retains its 10% relative and one-code mean gates. Neither comparison defines a general numerical photo-error bound.
 
 ### Provisional targets: measured
 

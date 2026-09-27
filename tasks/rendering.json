@@ -3,7 +3,7 @@
   "plan_id": "rendering",
   "title": "Rendering, preview and analysis",
   "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, an exact viewport-region path with a half-scale interactive preview, opaque frames, render.rs split by concept and one test per property, then stage-boundary methods before Corrections adds a new boundary.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and some passes now select their parallel path by work; heavy colour with at least three units or a mask uses the shared pool from 256 Ki pixels, while ordinary work retains its existing one-megapixel threshold; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The accepted moving-frame RAW white-balance gate passes Z6 and X100VI but fails Air 2S at 17.33% against 10%. Backend staging is unmeasured and no general numerical photo-error bound is qualified.",
+  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and some passes now select their parallel path by work; heavy colour with at least three units or a mask uses the shared pool from 256 Ki pixels, while ordinary work retains its existing one-megapixel threshold; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The original moving-frame RAW white-balance gate missed on the Air 2S at 17.33% against 10%; the owner revised the 100% gate on 2026-09-27 to test the held full-detail draft after quiet refinement. Fresh native `raw-panel` runs pass for all three supplied cameras under the revised gate. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only; crop GPU textures, overlays and backend staging remain outside it and are not fully measured or bounded. No total-memory guarantee or general numerical photo-error bound is qualified.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -1364,7 +1364,7 @@
         }
       ],
       "acceptance_criteria": [
-        "Current and retiring full-image textures stay within two 512 MiB allocations and region sets within two 32 MiB allocations, including retirement; pan reuses matching full-slot texels without a second upload. The aggregate photo bound is an owner proposal, and crop/overlay/backend staging are separate.",
+        "Current and retiring full-image textures stay within two 512 MiB allocations and region sets within two 32 MiB allocations, including retirement; pan reuses matching full-slot texels without a second upload. The aggregate photo bound is a provisionally accepted engineering ceiling for those slots only; crop/overlay/backend staging remain separate and need accounting before a total-memory guarantee.",
         "A deferred upload may draw one coherent prior photo, marked updating with mismatched overlays suppressed; otherwise missing pixels show the canvas background. After admission, drawn photo and overlays match the requested identity.",
         "Approximate viewport clipping follows displayed interactive pixels and exact visible overlay replaces it on matching refinement; stale/missing regions hide their overlays.",
         "The overlay preserves OR-of-clipped-pixels semantics and existing per-side grid cap; viewport counts never replace whole-image counts."
@@ -1458,8 +1458,8 @@
         "TASK-020"
       ],
       "extra_context": [
-        "Current behavior documentation records the bounded retiring photo, coherent stale fallback, wake subscription, physical-density viewport coverage, separate region and whole-stage mask tint grids, and raster-footprint overlay placement. Final review release binary passes quick and rendered (33 native smoke scenarios); the three permanent viewport journeys have zero blank or stale photo draws. Sixteen targeted timing cases completed with host-load scope in the performance spec. The accepted moving-frame RAW white-balance gate passes Z6 and X100VI but fails Air 2S, so no full-tier or milestone qualification is claimed.",
-        "The final single 60 MP idle window used 1.421% of one core over 30.26 seconds with Performance open, missing the provisional <1% target; backend staging is unmeasured and no general numerical photo-error bound is qualified. The owner-approved raw-panel decision is restored verbatim, while held-full-detail qualification remains only a proposal."
+        "Current behavior documentation records the bounded retiring photo, coherent stale fallback, wake subscription, physical-density viewport coverage, separate region and whole-stage mask tint grids, and raster-footprint overlay placement. Final review release binary passes quick and rendered (33 native smoke scenarios); the three permanent viewport journeys have zero blank or stale photo draws. Sixteen targeted timing cases completed with host-load scope in the performance spec. The original moving-frame RAW white-balance gate passed Z6 and X100VI but missed on Air 2S; the revised 100% held-detail gate passes fresh native checks on all three supplied cameras. No full-tier or milestone qualification is claimed.",
+        "The final single 60 MP idle window used 1.421% of one core over 30.26 seconds with Performance open, missing the provisional <1% target; backend staging is unmeasured and no general numerical photo-error bound is qualified. The owner revised the 100% raw-panel criterion on 2026-09-27; fresh native raw-panel checks pass for the three supplied cameras under the revised gate, without a full-tier result or general photo-error qualification."
       ],
       "context_links": [
         {
@@ -1500,13 +1500,13 @@
         "Design, feature status, user guide and performance spec describe the shipped viewport behavior and named fallback classes consistently.",
         "Performance records native host/profile/cache/sample scope for 100%/200% burst-and-pan cases, plus memory/upload bounds and settled analysis behavior.",
         "Performance-rules checklist records allocation bounds, owner-thread work, queue/cancellation behavior, timing evidence and exactness tests.",
-        "No claim exceeds the captured or measured evidence; unresolved numerical quality choices remain identified as open."
+        "No claim exceeds the captured or measured evidence; unqualified numerical quality limits retain their measured scope."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
           "Review exact-region test results, release scenario captures/logs and native timing output.",
-          "Update the current behavior and performance sections; remove proposal-only wording that no longer matches behavior while retaining unqualified choices as open.",
+          "Update the current behavior and performance sections; remove proposal-only wording that no longer matches behavior while retaining unqualified limits as open.",
           "Run documentation and repository checks after the finished integration."
         ],
         "commands": [
@@ -1515,6 +1515,65 @@
         ],
         "expected_results": [
           "Current docs agree with the implementation and evidence, and verification reports no skipped checks as passing."
+        ]
+      }
+    },
+    {
+      "id": "TASK-022",
+      "description": "Measure and bound GPU resources excluded from the provisional 1088 MiB photo-texture ceiling before making a total-memory guarantee.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner provisionally accepted the 1088 MiB temporary-overlap ceiling on 2026-09-27 for the photo surface slots alone: one current and one retiring full-photo allocation up to 512 MiB each, and two region sets up to 32 MiB each. This is an engineering ceiling, not a total editor or GPU budget.",
+        "Crop GPU textures and tile aprons, overlays and backend-owned upload staging are outside that accounting. The core 512 MiB crop raster limit does not itself bound crop GPU residency. The existing backend staging cost is unmeasured. Use representative 24 MP and 60 MP workflows and native M4 GPU evidence, including temporary overlap and retirement, before proposing a total bound."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Accepted residency scope",
+          "target": "docs/decisions.md",
+          "locator": "Interactive previews at 100%",
+          "relevance": "Provisional ceiling and requirements for excluded allocations."
+        },
+        {
+          "kind": "file",
+          "label": "Viewport texture design",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Region textures and stale pixels",
+          "relevance": "Slot limits, upload behavior and currently excluded resources."
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
+          "relevance": "Current/retiring photo residency and texture publication."
+        },
+        {
+          "kind": "file",
+          "label": "Performance evidence",
+          "target": "docs/specs/performance.md",
+          "locator": "Native viewport-region qualification",
+          "relevance": "Existing native cases and their accounting limits."
+        }
+      ],
+      "acceptance_criteria": [
+        "Native M4 evidence accounts separately for photo slots, crop GPU textures and tiles, overlays, and backend upload staging on representative 24 MP and 60 MP workloads, including temporary overlap and resource retirement.",
+        "Each excluded allocation path has an enforced byte cap or a derived peak-byte bound from bounded allocation sizes and maximum simultaneous overlap, including retirement; resource-limit behavior is explicit where a cap refuses work.",
+        "The measured scope and any resulting total editor/GPU bound are documented without treating the 1088 MiB photo ceiling as a process-wide guarantee; Windows/Linux remain separately qualified."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Inventory crop, overlay and backend GPU allocation and retirement paths; capture native GPU allocations during representative Fit and 100% crop, edit and pan transitions at 24 MP and 60 MP.",
+          "Add the smallest enforceable accounting or limits for omitted resources and verify overlap, retirement and refusal behavior in focused surface tests.",
+          "Repeat native measurement on the bounded implementation, correlate GPU and process counters with application slot logs, and update the design, performance evidence and feature status."
+        ],
+        "commands": [
+          "cargo test -p luxforge-ui photo_surface",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Excluded GPU resources have evidence-backed bounds or explicitly remain unqualified; no total-memory guarantee is asserted without complete accounting."
         ]
       }
     }
@@ -1530,7 +1589,8 @@
         "TASK-010",
         "TASK-011",
         "TASK-012",
-        "TASK-016"
+        "TASK-016",
+        "TASK-022"
       ]
     },
     {
