@@ -28,8 +28,8 @@ use iced::{
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
-    DraftBarModel, Icon, ModeEntry, NoticeCardModel, ToggleEntry, Tone, draft_bar, mode_strip,
-    notice_card, theme,
+    DraftBarModel, DraftFinish, DraftSubject, Icon, ModeEntry, NoticeCardModel, ToggleEntry, Tone,
+    draft_bar, mode_strip, notice_card, theme,
 };
 
 /// The surface the photograph is given around it at Fit, from the design's canvas rule: 20 pt at
@@ -180,8 +180,18 @@ fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
     draft_bar(
         &DraftBarModel {
             title: model.title.clone(),
+            subject: model.subject.as_ref().map(|label| DraftSubject {
+                // A kind the widget library draws no icon for shows its name alone.
+                icon: model.kind.and_then(crate::state::masks::kind_icon),
+                label: label.clone(),
+            }),
             readout: model.readout.clone(),
             apply_reason: model.apply_reason.clone(),
+            finish: if model.done {
+                DraftFinish::Done
+            } else {
+                DraftFinish::Apply
+            },
         },
         Message::Draft(DraftMessage::Cancel),
         model

@@ -481,6 +481,8 @@ pub const DRAFT_BAR_PADDING: Padding = Padding {
     left: 12.0,
 };
 pub const DRAFT_BAR_SPACING: f32 = 12.0;
+/// The gap between the icon and the name of what a draft bar's gesture edits.
+pub const DRAFT_BAR_SUBJECT_SPACING: f32 = 6.0;
 /// A notice card's width, padding and the gap between its icon, text and actions.
 pub const NOTICE_WIDTH: f32 = 560.0;
 pub const NOTICE_PADDING: Padding = Padding {

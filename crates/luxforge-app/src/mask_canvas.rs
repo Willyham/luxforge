@@ -14,7 +14,7 @@
 use crate::{
     app::message::{MaskMessage, MaskPointer, Message},
     canvas_view::{self, CanvasView},
-    mask_draft::{ContentMap, MaskDraft, MaskHandle, Pen},
+    mask_draft::{ContentMap, Grip, MaskDraft, MaskHandle, Pen},
 };
 use iced::{
     Point, Rectangle, Renderer, Theme,
@@ -23,9 +23,17 @@ use iced::{
 };
 use luxforge_ui::theme;
 
-/// The hit radius and the drawn size of one handle, in logical pixels.
+/// The hit radius of one handle, in logical pixels. It is the same for every grip, whatever size
+/// the grip is drawn at, so the anchor's smaller dot is not harder to grab.
 const HIT_RADIUS: f32 = 9.0;
-const HANDLE_RADIUS: f32 = 5.0;
+/// Half the side of a round or square grip, and the anchor's radius, in logical pixels: the board's
+/// 9 px grips and 7 px anchor.
+const HANDLE_RADIUS: f32 = 4.5;
+const ANCHOR_RADIUS: f32 = 3.5;
+/// The square rotation grip's corner radius.
+const SQUARE_CORNER: f32 = 2.0;
+/// How much larger a held grip is drawn, so the one under the pointer reads as taken.
+const HELD_GROWTH: f32 = 1.0;
 /// Content-normalized to canvas-local, and back: the map and the view composed, which is the whole
 /// of what a pointer move costs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,7 +123,8 @@ impl<'a> MaskCanvas<'a> {
 }
 
 /// The pen a shape editor describes its figure through, for one frame: every point mapped through
-/// the affine and the view, in the mask overlay's own tint.
+/// the affine and the view. Outlines are white, as the selected component's handles are; a painted
+/// path is the overlay's own green, because it previews coverage rather than outlining a shape.
 struct FramePen<'c, 'f> {
     canvas: &'c MaskCanvas<'c>,
     frame: &'f mut Frame,
@@ -129,7 +138,7 @@ impl Pen for FramePen<'_, '_> {
                 placement.canvas_point(from.0, from.1),
                 placement.canvas_point(to.0, to.1),
             ),
-            Stroke::default().with_color(tint(alpha)).with_width(1.0),
+            Stroke::default().with_color(outline(alpha)).with_width(1.0),
         );
     }
 
@@ -143,7 +152,7 @@ impl Pen for FramePen<'_, '_> {
     ) {
         self.frame.stroke(
             &self.canvas.mask_ellipse(centre, radii, angle, dashed),
-            Stroke::default().with_color(tint(alpha)).with_width(1.0),
+            Stroke::default().with_color(outline(alpha)).with_width(1.0),
         );
     }
 
@@ -281,26 +290,30 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
                 frame: &mut frame,
             },
         );
-        // One grip per drawn handle, whatever the figure under them is.
+        // One grip per drawn handle, whatever the figure under them is: white, except the one that
+        // moves the whole figure, which is the accent, and each ringed in a hairline of black so it
+        // reads over a bright sky as well as a dark one.
         for (handle, (x, y)) in self.draft.handles() {
             let centre = self.placement.canvas_point(x, y);
-            let held = self.draft.held() == Some(handle);
-            frame.fill(
-                &Path::circle(
-                    centre,
-                    if held {
-                        HANDLE_RADIUS + 1.0
-                    } else {
-                        HANDLE_RADIUS
-                    },
+            let grip = handle.grip();
+            let growth = if self.draft.held() == Some(handle) {
+                HELD_GROWTH
+            } else {
+                0.0
+            };
+            let half = grip_radius(grip) + growth;
+            let shape = |half: f32| match grip {
+                Grip::Square => Path::rounded_rectangle(
+                    Point::new(centre.x - half, centre.y - half),
+                    iced::Size::new(2.0 * half, 2.0 * half),
+                    SQUARE_CORNER.into(),
                 ),
-                tint(if held { 1.0 } else { 0.9 }),
-            );
+                Grip::Round | Grip::Anchor => Path::circle(centre, half),
+            };
+            frame.fill(&shape(half), grip_fill(grip));
             frame.stroke(
-                &Path::circle(centre, HANDLE_RADIUS + 1.5),
-                Stroke::default()
-                    .with_color(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5))
-                    .with_width(1.0),
+                &shape(half + 0.5),
+                Stroke::default().with_color(GRIP_RING).with_width(1.0),
             );
         }
         vec![frame.into_geometry()]
@@ -328,12 +341,39 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
     }
 }
 
-/// The handle colour: the mask overlay's own green, never a clipping colour. The delivered clipping
-/// indicators own red, blue and the magenta between them on this canvas.
+/// A painted path's colour: the mask overlay's own green, never a clipping colour. The delivered
+/// clipping indicators own red, blue and the magenta between them on this canvas.
 fn tint(alpha: f32) -> iced::Color {
     iced::Color {
         a: alpha,
         ..theme::MASK_OVERLAY_GREEN
+    }
+}
+
+/// A figure's outline: white at the editor's alpha, as the selected component's handles are.
+fn outline(alpha: f32) -> iced::Color {
+    iced::Color {
+        a: alpha,
+        ..iced::Color::WHITE
+    }
+}
+
+/// The hairline around every grip.
+const GRIP_RING: iced::Color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5);
+
+/// A grip's fill: the accent for the anchor, white for the rest.
+fn grip_fill(grip: Grip) -> iced::Color {
+    match grip {
+        Grip::Anchor => theme::ACCENT,
+        Grip::Round | Grip::Square => iced::Color::WHITE,
+    }
+}
+
+/// A grip's drawn radius, or half its side for the square one.
+fn grip_radius(grip: Grip) -> f32 {
+    match grip {
+        Grip::Anchor => ANCHOR_RADIUS,
+        Grip::Round | Grip::Square => HANDLE_RADIUS,
     }
 }
 
@@ -568,6 +608,48 @@ mod tests {
             (drawn - expected(1.0)).abs() < 1e-6,
             "a rotated tail changed the brush's drawn size: {drawn}"
         );
+    }
+
+    /// The selected component's grips are white and the one that moves the whole figure is the
+    /// accent — on a linear and on a radial alike — with the rotation grip square, and outlines are
+    /// white too. The grip's drawing never changes what a press grabs.
+    #[test]
+    fn the_grips_are_white_and_the_one_that_moves_the_figure_is_the_accent() {
+        let placement = placement((480, 320), Size::new(960.0, 640.0));
+        for kind in [LINEAR, RADIAL] {
+            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH).expect("a drawn kind");
+            draft.set_aspect(placement.map.aspect());
+            let canvas = MaskCanvas::new(&draft, placement);
+            let mut anchors = 0;
+            for (handle, (x, y)) in draft.handles() {
+                let grip = handle.grip();
+                if handle.moves_figure() {
+                    anchors += 1;
+                    assert_eq!(grip, Grip::Anchor, "{kind} {handle:?}");
+                    assert_eq!(grip_fill(grip), theme::ACCENT, "{kind} {handle:?}");
+                    assert!(
+                        grip_radius(grip) < HANDLE_RADIUS,
+                        "the anchor is the smaller dot"
+                    );
+                } else {
+                    assert_eq!(grip_fill(grip), iced::Color::WHITE, "{kind} {handle:?}");
+                    assert_eq!(
+                        grip == Grip::Square,
+                        handle == MaskHandle::Rotation,
+                        "{kind} {handle:?}"
+                    );
+                }
+                // Every grip, whatever its size, is grabbed within the one hit radius.
+                assert_eq!(
+                    canvas.handle_at(placement.canvas_point(x, y)),
+                    Some(handle),
+                    "{kind} {handle:?}"
+                );
+            }
+            assert_eq!(anchors, 1, "{kind} has exactly one anchor");
+        }
+        let white = outline(0.9);
+        assert_eq!((white.r, white.g, white.b, white.a), (1.0, 1.0, 1.0, 0.9));
     }
 
     /// The overlay and the handles are green or white, never a clipping colour: a person must be

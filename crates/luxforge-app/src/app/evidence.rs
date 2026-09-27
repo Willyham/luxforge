@@ -809,6 +809,16 @@ impl Editor {
         }
     }
 
+    /// What a step that ends the open gesture waits for: the same, for the overlay the setting asks
+    /// of the frame after it.
+    fn settled_mask_settle(&self) -> Settle {
+        if self.settled_mask_overlay_request().is_some() {
+            Settle::MaskOverlay
+        } else {
+            Settle::Preview
+        }
+    }
+
     /// The pointer messages of a mask gesture step have run: wait for the frame they asked for, or
     /// capture the next redraw when they asked for none.
     ///
@@ -1384,7 +1394,15 @@ impl Editor {
         // arms. Whether one went out is read from the request the panel records as it sends it,
         // which is also what the refusal replaces.
         self.last_mask_request = None;
-        self.await_step(self.mask_settle());
+        // Apply and Cancel end the gesture, and the frame they wait for is the first one after it:
+        // it carries the overlay the setting asks for, not the tint the gesture showed of its own
+        // accord.
+        let ending = matches!(expect, Expect::RoundTrip) && self.mask_gesture().is_some();
+        self.await_step(if ending {
+            self.settled_mask_settle()
+        } else {
+            self.mask_settle()
+        });
         let asked = self.preview_generation;
         let task = self.dispatch(message);
         let armed = match expect {
@@ -1394,6 +1412,15 @@ impl Editor {
             // release that ends a sweep, sends nothing, so the frame is the next redraw.
             Expect::Gesture => {
                 let open = self.mask_gesture().is_some();
+                // A gesture that has just opened on a mask shows the tint of its own accord, and its
+                // first frame brings the grid: the step waits for it as for one the setting asked for.
+                if open
+                    && self.mask_overlay_forced()
+                    && let Some(evidence) = &mut self.evidence
+                    && evidence.awaiting == Some(Settle::Preview)
+                {
+                    evidence.awaiting = Some(Settle::MaskOverlay);
+                }
                 if open && !self.mask_frame_coming(asked) {
                     self.capture_next_frame();
                 }

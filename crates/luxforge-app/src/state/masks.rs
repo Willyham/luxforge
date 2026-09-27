@@ -489,7 +489,6 @@ impl MasksModel {
 /// The icon one component kind is drawn with wherever it is named: its row, the New mask and Add
 /// menus, and the draft bar. The host's kind table names the glyph, so a kind the library draws no
 /// icon for shows none rather than another kind's.
-#[allow(dead_code)]
 pub(crate) fn kind_icon(kind: &str) -> Option<luxforge_ui::Icon> {
     luxforge_core::mask::kind_icon(kind).and_then(luxforge_ui::Icon::from_name)
 }
