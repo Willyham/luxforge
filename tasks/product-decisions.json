@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run. Interactive-preview softness and an updating histogram are accepted; the remaining viewport clipping and measured quality/error choices are explicit open questions.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run. Interactive-preview softness, an updating histogram, and viewport-bounded clipping are accepted; measured quality/error choices beyond the authorized baseline remain open.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -309,14 +309,13 @@
     },
     {
       "id": "TASK-007",
-      "description": "Resolve the remaining interactive-preview clipping and measured quality/error choices without reopening the accepted priority of immediate feedback.",
+      "description": "Choose measured quality levels and approximation-error limits for interactive viewport previews beyond the authorized baseline.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "The owner accepts temporary softness at 100% while dragging, full detail restored on pause/release, and the histogram marked updating. These are decisions, not options to ask again. Renderer implementation is not authorized by this decision task.",
-        "The proposed clipping answer extends the current overlay_source rule to the displayed viewport: approximate while using an interactive frame, exact once matching exact region pixels arrive, region/content/quality identity, stale areas hidden, and OR reduction under the existing 4096-cells-per-side cap. Whole-image histogram and clipping counts remain updating until a matching full report. This owner answer is the only remaining gate on the recorded viewport design; it can be decided independently of later quality measurements.",
-        "Half-scale viewport proxies, an approximate whole-image guide for global estimates, and GPU preview arithmetic need explicit quality levels and measured error bounds before their implementation is accepted. The candidate one-code GPU bound is not a decision. Collect representative edges, thin/range masks, saturated highlights and multiple spatial layers; distinguish their preview error from exact settled equality.",
-        "The shared quiet interval is selected by the Fit exact-phase-deferral experiment and reused at 100%; a separate viewport timeout is not proposed. Engineering cache/texture byte bounds and fallback classes are recorded in the viewport design and must be qualified by the implementation."
+        "Temporary softness at 100% during motion, full detail restored on pause/release, an updating full-image histogram, and the documented viewport-bounded clipping behavior are accepted and must not be reopened.",
+        "The documented implementation baseline uses a viewport window on a half-scale proxy while moving, then exact visible-region refinement and whole-frame exact analysis under the shared quiet policy. Further quality levels, global-guide approximation, GPU preview arithmetic, and numerical error limits need representative measurements before acceptance.",
+        "Exact settled pixels, full-image reports and export retain their current contracts; product research does not imply an implementation latency result."
       ],
       "context_links": [
         {
@@ -348,23 +347,22 @@
         }
       ],
       "acceptance_criteria": [
-        "The owner accepts or changes the concrete viewport clipping recommendation; record that answer in docs/decisions.md and the design separately from any unresolved numerical choices.",
-        "Selected interactive quality levels and error limits are tied to representative measured captures and explicitly accepted, or remain identified as unresolved; no hypothetical bound becomes a passed check.",
-        "Exact settled pixels, full-image reports and export retain their current contracts. No viewport-only histogram or omitted recipe effect is accepted implicitly.",
-        "The decisions document, viewport proposal and research agree on accepted versus outstanding choices, and the viewport design task is completed only after its remaining owner answer and checks exist."
+        "Measured comparisons cover representative edges, thin and range masks, saturated highlights, and multiple spatial layers; preview error is distinct from exact settled equality.",
+        "Any accepted additional quality level or error limit is recorded in docs/decisions.md and its specification; unresolved choices remain explicit and do not block the authorized baseline.",
+        "Exact settled pixels, full-image analysis and export retain their current contracts."
       ],
       "test_strategy": {
         "approach": "manual",
         "steps": [
-          "Present the documented clipping recommendation and record the owner answer without asking again about temporary softness or the updating histogram.",
-          "Review representative measured preview/refinement comparisons when available; choose quality/error acceptance or retain specific open questions without inventing evidence.",
-          "Check consistency among the decisions, design and research, including local link anchors."
+          "Review measured preview/refinement comparisons when available for the representative cases named in the research.",
+          "Record an owner decision for any additional quality level or error limit, or retain the specific choice as open.",
+          "Check consistency among decisions, viewport design and research."
         ],
         "commands": [
           "cargo xtask check-repository"
         ],
         "expected_results": [
-          "The overlay question has its own recorded owner answer; remaining quality/error questions are explicit and no implementation or performance result is implied by planning."
+          "No hypothetical error bound becomes a passed check, and unresolved numerical choices do not reopen accepted clipping or the authorized implementation baseline."
         ]
       }
     }
