@@ -424,6 +424,25 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "a spatial entry's estimates are written once, as SpatialEntry::globals in \
                  render/pipeline.rs; resolve them through that",
     },
+    // One field-patch semantics: the field-patch module builds every patch action from its spec,
+    // and the RAW module's `set-raw` keeps its own white-balance merge. A module that wants a patch
+    // declares a `field_patch::Spec` instead of hand-writing merge and canonical form. The tokens
+    // are a patch action's declaration in Rust and in a JSON descriptor.
+    SourceRule {
+        name: "patch-action",
+        tokens: &["patch: true", "\"patch\":true", "\"patch\": true"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/modules/field_patch.rs",
+            "crates/luxforge-core/src/modules/raw.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "only the field-patch module and the RAW module declare a patch action; declare a \
+                 field-patch Spec instead of a second patch implementation",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -1095,60 +1114,6 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
-/// The spellings of a patch action's declaration, in Rust and in a JSON descriptor.
-const PATCH_DECLARATION: [&str; 3] = ["patch: true", "\"patch\":true", "\"patch\": true"];
-/// The modules that may declare one: the field-patch module every field patch is built by, and
-/// the RAW module, whose `set-raw` keeps its own white-balance merge.
-const PATCH_OWNERS: [&str; 2] = [
-    "crates/luxforge-core/src/modules/field_patch.rs",
-    "crates/luxforge-core/src/modules/raw.rs",
-];
-
-/// Rule (scope `crates/**/*.rs`; allowed `modules/field_patch.rs`, `modules/raw.rs`; whole-token
-/// match of [`PATCH_DECLARATION`]; tests exempt; one field-patch semantics, so a module that
-/// wants a patch declares a `field_patch::Spec` instead of hand-writing merge and canonical form).
-/// Fail on the first product line elsewhere that declares a patch action; answer how many product
-/// files were read.
-fn one_field_patch(root: &Path) -> Result<usize> {
-    let owners: Vec<PathBuf> = PATCH_OWNERS.iter().map(|path| root.join(path)).collect();
-    let sources: Vec<PathBuf> = files(&root.join("crates"))?
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect();
-    let texts = sources
-        .iter()
-        .map(fs::read_to_string)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
-    let mut test_only = BTreeSet::new();
-    for (path, (_, modules)) in sources.iter().zip(&scanned) {
-        for name in modules {
-            test_only.extend(module_files(path, name));
-        }
-    }
-    let mut checked = 0;
-    for (path, (lines, _)) in sources.iter().zip(&scanned) {
-        if owners.contains(path) || test_file(path) || test_only.contains(path) {
-            continue;
-        }
-        for (number, line) in lines {
-            for token in PATCH_DECLARATION {
-                ensure(
-                    !holds_whole_token(line, token),
-                    format!(
-                        "{}:{number}: only {} declare a patch action; declare a field-patch Spec \
-                         instead of a second patch implementation",
-                        path.display(),
-                        PATCH_OWNERS.join(" and ")
-                    ),
-                )?;
-            }
-        }
-        checked += 1;
-    }
-    Ok(checked)
-}
-
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1215,10 +1180,6 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
-    );
-    println!(
-        "PASS patch actions declared only by the field-patch and RAW modules ({} product files)",
-        one_field_patch(root)?
     );
     Ok(())
 }
@@ -2023,7 +1984,7 @@ mod tests {
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(one_field_patch(tmp.path()).unwrap(), 1);
+        assert_eq!(read(tmp.path(), &["patch-action"]).unwrap(), (1, 0));
         // Anywhere else in product code any spelling is refused.
         for text in [
             "ActionDescriptor { id, patch: true, parameters }\n",
@@ -2031,7 +1992,7 @@ mod tests {
             "json!({\"patch\": true})\n",
         ] {
             fs::write(modules.join("controls.rs"), text).unwrap();
-            let error = one_field_patch(tmp.path()).unwrap_err().to_string();
+            let error = refusal(tmp.path(), &["patch-action"], text);
             assert!(
                 error.contains("controls.rs:1") && error.contains("declare a patch action"),
                 "{error}"
