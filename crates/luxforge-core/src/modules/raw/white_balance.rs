@@ -149,7 +149,11 @@ fn locus_frame(temperature_kelvin: f64) -> Result<LocusFrame, Error> {
     })
 }
 
-fn tinted_whitepoint_uv(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
+/// Luxforge's own forward locus: the `uv` the given temperature and tint select. `pub(crate)`
+/// only so the Lightroom conversion's tests can check how close Luxforge's answer to a Lightroom
+/// pair lands to the `uv` that pair named; production code reaches it only through
+/// [`gains_from_temperature_tint`].
+pub(crate) fn tinted_whitepoint_uv(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
     let frame = locus_frame(temperature_kelvin)?;
     let duv = tint * TINT_DUV_UNIT;
     Ok([
@@ -357,9 +361,61 @@ fn temperature_tint_from_gains_f64(
         ));
     }
     let target = xy_to_uv(xy)?;
+    let [temperature, tint] = temperature_tint_from_uv(target, |miss| match miss {
+        LocusMiss::BelowMinimum => {
+            "out-of-range: the gains need a temperature below 2000 K".to_owned()
+        }
+        LocusMiss::AboveMaximum => {
+            "out-of-range: the gains need a temperature above 12000 K".to_owned()
+        }
+        LocusMiss::Tint(tint) => {
+            format!("out-of-range: the gains need a tint of {tint:.1}, outside -100..100")
+        }
+        LocusMiss::NoMatch {
+            distance,
+            temperature,
+        } => format!(
+            "out-of-range: no temperature and tint reach the gains' white within {INVERSE_TOLERANCE_UV} uv (nearest {distance:.2e} at {temperature:.3} K)"
+        ),
+    })?;
+    // The end of the tint range answers a white just beyond it on the same terms as a seam: the
+    // white the answer selects is within the tolerance of the gains' white. That is what keeps a
+    // white stored at ±100 answerable, since its `f32` gains land a rounding beyond.
+    gains_f64(temperature, tint, matrix)?;
+    Ok([temperature, tint])
+}
+
+/// Why [`temperature_tint_from_uv`] found no temperature and tint on Luxforge's locus for a
+/// target `uv`, kept generic so each caller can word its own refusal: [`temperature_tint_from_gains`]
+/// speaks of "the gains", [`lightroom_to_luxforge`](super::lightroom_white_balance::lightroom_to_luxforge)
+/// of the Lightroom pair.
+pub(crate) enum LocusMiss {
+    /// The target lies below the temperature the scan's lowest breakpoint reaches.
+    BelowMinimum,
+    /// The target lies above the temperature the scan's highest breakpoint reaches.
+    AboveMaximum,
+    /// A temperature holds the target's tangent component to zero, but the tint the target's
+    /// normal component would need is outside the declared range.
+    Tint(f64),
+    /// No temperature and in-range tint bring Luxforge's locus within [`INVERSE_TOLERANCE_UV`] of
+    /// the target; the closest attempt found, for the message.
+    NoMatch { distance: f64, temperature: f64 },
+}
+
+/// The temperature and Luxforge tint whose white, on Luxforge's own locus, is `target` (a CIE
+/// 1960 `uv`): the search shared by [`temperature_tint_from_gains`], which reaches `target`
+/// through inverted sensor gains, and the Lightroom `Temperature`/`Tint` conversion, which reaches
+/// it through the DNG SDK's `dng_temperature`. `on_miss` builds the refusal message for the
+/// caller's own subject once a search failure is classified; every other error (a degenerate
+/// locus frame) propagates as-is. Nothing here is clamped except the returned tint, held to range
+/// once an answer is found within [`INVERSE_TOLERANCE_UV`].
+pub(crate) fn temperature_tint_from_uv(
+    target: [f64; 2],
+    on_miss: impl FnOnce(LocusMiss) -> String,
+) -> Result<[f64; 2], Error> {
     // One temperature read as an answer: the tangent component, whose sign changes where a white
     // lies on that temperature's tint line, the tint, and how far the white the answer selects,
-    // with its tint held to the range, is from the gains' white.
+    // with its tint held to the range, is from the target white.
     let answer = |temperature: f64| -> Result<Answer, Error> {
         let frame = locus_frame(temperature)?;
         let offset = [target[0] - frame.base[0], target[1] - frame.base[1]];
@@ -434,28 +490,20 @@ fn temperature_tint_from_gains_f64(
         }
     }
     if !best.tint.is_finite() || best.distance > INVERSE_TOLERANCE_UV {
-        return Err(Error::validation(if at_low <= 0.0 {
-            "out-of-range: the gains need a temperature below 2000 K".to_owned()
+        return Err(Error::validation(on_miss(if at_low <= 0.0 {
+            LocusMiss::BelowMinimum
         } else if at_high >= 0.0 {
-            "out-of-range: the gains need a temperature above 12000 K".to_owned()
+            LocusMiss::AboveMaximum
         } else if best.along.abs() <= INVERSE_TOLERANCE_UV {
-            format!(
-                "out-of-range: the gains need a tint of {:.1}, outside -100..100",
-                best.tint
-            )
+            LocusMiss::Tint(best.tint)
         } else {
-            format!(
-                "out-of-range: no temperature and tint reach the gains' white within {INVERSE_TOLERANCE_UV} uv (nearest {:.2e} at {:.3} K)",
-                best.distance, best.temperature
-            )
-        }));
+            LocusMiss::NoMatch {
+                distance: best.distance,
+                temperature: best.temperature,
+            }
+        })));
     }
-    // The end of the tint range answers a white just beyond it on the same terms as a seam: the
-    // white the answer selects is within the tolerance of the gains' white. That is what keeps a
-    // white stored at ±100 answerable, since its `f32` gains land a rounding beyond.
-    let tint = best.tint.clamp(MIN_TINT, MAX_TINT);
-    gains_f64(best.temperature, tint, matrix)?;
-    Ok([best.temperature, tint])
+    Ok([best.temperature, best.tint.clamp(MIN_TINT, MAX_TINT)])
 }
 
 /// One temperature tried by [`temperature_tint_from_gains`].
