@@ -1,4 +1,4 @@
-name: Scaffold checks
+name: Build and verify
 on:
   push:
   pull_request:

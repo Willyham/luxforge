@@ -32,6 +32,18 @@
 using namespace librtprocess;
 
 namespace {
+// These bounds are used inside the tile callback. Keep them at namespace scope so MSVC treats
+// them as compile-time array extents instead of captured enclosing-function locals.
+constexpr int tileBorder = 9;
+constexpr int rcdBorder = 9;
+constexpr int tileSize = 194;
+constexpr int tileSizeN = tileSize - 2 * tileBorder;
+constexpr int w1 = tileSize, w2 = 2 * tileSize, w3 = 3 * tileSize, w4 = 4 * tileSize;
+constexpr float eps = 1e-5f;
+constexpr float epssq = 1e-10f;
+constexpr float scale = 65536.f;
+constexpr int maxJobTiles = 8;
+
 struct RcdWorkerCall {
     std::function<void(size_t)> run;
     std::atomic<rpError> *error;
@@ -85,17 +97,8 @@ rpError rcd_demosaic(int width, int height, const float * const *rawData, float 
 
     setProgCancel(0.0);
     
-    constexpr int tileBorder = 9; // avoid tile-overlap errors
-    constexpr int rcdBorder = 9;
-    constexpr int tileSize = 194;
-    constexpr int tileSizeN = tileSize - 2 * tileBorder;
     const int numTh = height / (tileSizeN) + ((height % (tileSizeN)) ? 1 : 0);
     const int numTw = width / (tileSizeN) + ((width % (tileSizeN)) ? 1 : 0);
-    constexpr int w1 = tileSize, w2 = 2 * tileSize, w3 = 3 * tileSize, w4 = 4 * tileSize;
-    //Tolerance to avoid dividing by zero
-    constexpr float eps = 1e-5f;
-    constexpr float epssq = 1e-10f;
-    constexpr float scale = 65536.f;
 
     // Luxforge: tiles run as jobs of a synchronous executor instead of an
     // OpenMP region (multiThread is unused). A full tile reads only scratch
@@ -112,7 +115,6 @@ rpError rcd_demosaic(int width, int height, const float * const *rawData, float 
     // original raster over the whole frame.
     const int fullRows = height >= tileSize ? (height - tileSize) / tileSizeN + 1 : 0;
     const int fullCols = width >= tileSize ? (width - tileSize) / tileSizeN + 1 : 0;
-    constexpr int maxJobTiles = 8;
     int chunks = (numTw + maxJobTiles - 1) / maxJobTiles;
     if (chunks > 1 && (chunks - 1) * maxJobTiles > fullCols - 1) {
         --chunks;
@@ -390,4 +392,3 @@ rpError rcd_demosaic(int width, int height, const float * const *rawData, float 
 
     return rc;
 }
-

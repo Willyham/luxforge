@@ -123,6 +123,10 @@ void cielab (const float (*rgb)[3], float* l, float* a, float *b, const int widt
 }
 
 namespace {
+// MSVC needs array bounds used inside the tile callback to have namespace scope.
+constexpr int ts = 114;      /* Tile Size */
+constexpr int tsh = ts / 2;  /* half of Tile Size */
+
 struct MarkWorkerCall {
     std::function<void(size_t)> run;
     std::atomic<rpError> *error;
@@ -164,9 +168,6 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
     }
 
     rpError rc = RP_NO_ERROR;
-
-    constexpr int ts = 114;      /* Tile Size */
-    constexpr int tsh = ts / 2;  /* half of Tile Size */
 
     double progress = 0.0;
     setProgCancel(progress);
