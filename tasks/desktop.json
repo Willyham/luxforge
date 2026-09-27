@@ -191,7 +191,7 @@
     {
       "id": "TASK-004",
       "description": "Drive sliders in evidence and tests through the widgets' own messages and delete the evidence-only slider messages and the dead cancel message.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation.",
@@ -1627,7 +1627,7 @@
     {
       "id": "TASK-022",
       "description": "Prove each desktop behaviour once: one import-and-wait fixture on the blocking source wait, testkit's catalog helpers, one events helper, the per-field loop trimmed, and the preset CLI test cut to its transport.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],

@@ -320,7 +320,7 @@
     {
       "id": "TASK-005",
       "description": "Add a validating Spec constructor for field-patch modules, check group membership at build time, and replace the four hard-coded built-in-module lists with one committed descriptor snapshot.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -564,7 +564,7 @@
     {
       "id": "TASK-008",
       "description": "Trim ToolModule to one describe hook in place of three always-together methods, collapse to one history-label mechanism, stop parse re-validating already-declared ranges, and remove the always-unreachable Unavailable forwarding wrapper.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
@@ -791,7 +791,7 @@
     {
       "id": "TASK-011",
       "description": "Delete the per-module copies of sample-equals-render, the host-journey re-run, neutral-compiles-to-nothing and compile-refusal checks that the shape-driven conformance suite now proves generically, naming each deleted assertion's keeper.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
