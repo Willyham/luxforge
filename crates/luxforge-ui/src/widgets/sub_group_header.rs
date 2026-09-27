@@ -53,6 +53,60 @@ pub fn sub_group_header_with_actions<'a, M: Clone + 'a>(
     on_reset: M,
     actions: Vec<(IconButtonModel, Option<M>)>,
 ) -> Element<'a, M> {
+    header(model, on_toggle, Some(on_reset), actions)
+}
+
+/// Plain data for a group rule: a group header with no disclosure and no reset, whose caption
+/// says what the group holds or what state it is in, and whose one action is a menu. The Masks
+/// panel draws the open mask's group (`Face ——— 3 components ⋯`) and the Brush group
+/// (`Brush ——— armed · Esc puts it down`, in the accent) with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupRuleModel {
+    pub label: String,
+    pub caption: Option<String>,
+    /// Draw the caption in the accent.
+    pub caption_accent: bool,
+    /// The menu button's tooltip; `None` draws no menu button.
+    pub menu_tooltip: Option<String>,
+    /// The menu is open: its button is drawn in the accent.
+    pub menu_open: bool,
+    pub enabled: bool,
+}
+
+/// Renders a group rule. A press on its menu button publishes `on_menu`.
+pub fn group_rule<'a, M: Clone + 'a>(model: &GroupRuleModel, on_menu: Option<M>) -> Element<'a, M> {
+    let header_model = SubGroupHeaderModel {
+        label: model.label.clone(),
+        state: model.caption.clone(),
+        state_accent: model.caption_accent,
+        expanded: None,
+        reset: false,
+        enabled: model.enabled,
+    };
+    let actions = model
+        .menu_tooltip
+        .iter()
+        .map(|tooltip| {
+            (
+                IconButtonModel {
+                    icon: Icon::More,
+                    tooltip: tooltip.clone(),
+                    enabled: model.enabled,
+                    selected: model.menu_open,
+                },
+                on_menu.clone(),
+            )
+        })
+        .collect();
+    header(&header_model, None, None, actions)
+}
+
+fn header<'a, M: Clone + 'a>(
+    model: &SubGroupHeaderModel,
+    on_toggle: Option<M>,
+    on_reset: Option<M>,
+    actions: Vec<(IconButtonModel, Option<M>)>,
+) -> Element<'a, M> {
     let expanded = model.expanded.unwrap_or(true);
     let leading: Element<'a, M> = match model.expanded {
         Some(open) => {
@@ -120,7 +174,7 @@ pub fn sub_group_header_with_actions<'a, M: Clone + 'a>(
             move |event| activates(event).then(|| key.clone()).flatten(),
         ));
     }
-    if model.reset {
+    if let Some(on_reset) = on_reset.filter(|_| model.reset) {
         let reset = header_icon_button(
             &IconButtonModel {
                 icon: Icon::Reset,
@@ -177,6 +231,23 @@ mod tests {
                     (),
                 );
             }
+        }
+        for (caption, accent, menu) in [
+            (Some("3 components"), false, Some("Mask actions")),
+            (Some("armed \u{b7} Esc puts it down"), true, None),
+            (None, false, None),
+        ] {
+            let _: Element<'_, ()> = group_rule(
+                &GroupRuleModel {
+                    label: "Face".into(),
+                    caption: caption.map(Into::into),
+                    caption_accent: accent,
+                    menu_tooltip: menu.map(Into::into),
+                    menu_open: false,
+                    enabled: true,
+                },
+                Some(()),
+            );
         }
     }
 }

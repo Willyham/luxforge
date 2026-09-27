@@ -65,10 +65,63 @@ pub fn boxed_input<'a, M: Clone + 'a>(
     on_text: impl Fn(String) -> M + 'a,
     on_submit: M,
 ) -> iced::widget::TextInput<'a, M> {
+    let size = BoxSize {
+        width,
+        ..BoxSize::FIELD
+    };
+    sized_input(
+        placeholder,
+        value,
+        size,
+        invalid,
+        enabled,
+        on_text,
+        on_submit,
+    )
+}
+
+/// A value box's size: the ordinary field's, or a component's compact grid field's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BoxSize {
+    pub width: f32,
+    pub height: f32,
+    pub text_size: f32,
+    pub radius: f32,
+}
+
+impl BoxSize {
+    /// [`theme::FIELD_WIDTH`] × [`theme::FIELD_HEIGHT`] at control size.
+    pub(crate) const FIELD: Self = Self {
+        width: theme::FIELD_WIDTH,
+        height: theme::FIELD_HEIGHT,
+        text_size: theme::SIZE_CONTROL,
+        radius: theme::RADIUS,
+    };
+    /// [`theme::GRID_FIELD_WIDTH`] × [`theme::GRID_FIELD_HEIGHT`] at [`theme::SIZE_GRID_FIELD`].
+    pub(crate) const GRID: Self = Self {
+        width: theme::GRID_FIELD_WIDTH,
+        height: theme::GRID_FIELD_HEIGHT,
+        text_size: theme::SIZE_GRID_FIELD,
+        radius: theme::GRID_FIELD_RADIUS,
+    };
+}
+
+/// A [`value_input`] sized as a box of `size`, its value right-aligned at the box's inset.
+fn sized_input<'a, M: Clone + 'a>(
+    placeholder: &str,
+    value: &str,
+    size: BoxSize,
+    invalid: bool,
+    enabled: bool,
+    on_text: impl Fn(String) -> M + 'a,
+    on_submit: M,
+) -> iced::widget::TextInput<'a, M> {
+    let radius = size.radius;
     value_input(placeholder, value, invalid, enabled, on_text, on_submit)
-        .width(Length::Fixed(width))
+        .size(size.text_size)
+        .width(Length::Fixed(size.width))
         .line_height(LineHeight::Absolute(
-            (theme::FIELD_HEIGHT - 2.0 * theme::FIELD_PADDING_Y).into(),
+            (size.height - 2.0 * theme::FIELD_PADDING_Y).into(),
         ))
         .padding(Padding {
             top: theme::FIELD_PADDING_Y,
@@ -77,7 +130,11 @@ pub fn boxed_input<'a, M: Clone + 'a>(
             left: theme::FIELD_INSET,
         })
         .align_x(Horizontal::Right)
-        .style(theme::field_input_style(invalid))
+        .style(move |iced_theme: &iced::Theme, status| {
+            let mut style = theme::field_input_style(invalid)(iced_theme, status);
+            style.border.radius = radius.into();
+            style
+        })
 }
 
 /// A number field: one row, the label at the left and the value boxed at the right.
@@ -134,7 +191,7 @@ pub fn label_line<'a, M: 'a>(label: String, enabled: bool) -> Element<'a, M> {
     control_label(label, enabled).into()
 }
 
-fn invalid(model: &NumberFieldModel) -> Option<String> {
+pub(crate) fn invalid(model: &NumberFieldModel) -> Option<String> {
     match &model.edit {
         ValueEdit::Editing { invalid, .. } => invalid.clone(),
         ValueEdit::Display => None,
@@ -161,12 +218,23 @@ pub(crate) fn field_box<'a, M: Clone + 'a>(
     on_text: impl Fn(String) -> M + 'a,
     on_submit: M,
 ) -> Element<'a, M> {
+    sized_field_box(model, BoxSize::FIELD, on_edit_start, on_text, on_submit)
+}
+
+/// [`field_box`] at `size`.
+pub(crate) fn sized_field_box<'a, M: Clone + 'a>(
+    model: &NumberFieldModel,
+    size: BoxSize,
+    on_edit_start: M,
+    on_text: impl Fn(String) -> M + 'a,
+    on_submit: M,
+) -> Element<'a, M> {
     match &model.edit {
         ValueEdit::Display => {
             let shown = box_text(&model.display, &model.unit);
             button(
                 text(shown)
-                    .size(theme::SIZE_CONTROL)
+                    .size(size.text_size)
                     .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
                     .wrapping(Wrapping::None)
                     .align_x(Horizontal::Right)
@@ -185,17 +253,21 @@ pub(crate) fn field_box<'a, M: Clone + 'a>(
                 bottom: 0.0,
                 left: theme::FIELD_INSET,
             })
-            .width(Length::Fixed(theme::FIELD_WIDTH))
-            .height(Length::Fixed(theme::FIELD_HEIGHT))
-            .style(theme::button_field)
+            .width(Length::Fixed(size.width))
+            .height(Length::Fixed(size.height))
+            .style(move |iced_theme: &iced::Theme, status| {
+                let mut style = theme::button_field(iced_theme, status);
+                style.border.radius = size.radius.into();
+                style
+            })
             .on_press_maybe(model.enabled.then_some(on_edit_start))
             .into()
         }
         ValueEdit::Editing { text, invalid } => {
-            let input = boxed_input(
+            let input = sized_input(
                 "",
                 text,
-                theme::FIELD_WIDTH,
+                size,
                 invalid.is_some(),
                 model.enabled,
                 on_text,
