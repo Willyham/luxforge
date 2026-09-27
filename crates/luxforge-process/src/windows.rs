@@ -2,8 +2,10 @@
 //! working set. GPU time and GPU allocations are unavailable until a source is chosen; the
 //! per-process GPU performance counters need a PDH query this crate does not make.
 use crate::{Gpu, Memory, MemoryKind, Unavailable};
+use std::{fs::File, io, os::windows::io::AsRawHandle};
 use windows_sys::Win32::{
     Foundation::FILETIME,
+    Storage::FileSystem::{FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx},
     System::{
         ProcessStatus::{
             K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
@@ -11,6 +13,27 @@ use windows_sys::Win32::{
         Threading::{GetCurrentProcess, GetProcessTimes},
     },
 };
+
+/// NTFS change time catches an in-place rewrite even when the source's length and last-write
+/// timestamp are restored. The caller supplies its existing read handle to avoid a path race.
+pub fn file_change_time(file: &File) -> io::Result<i64> {
+    let mut info = FILE_BASIC_INFO::default();
+    // SAFETY: `file` owns a valid handle for this call; `info` is writable and its exact size is
+    // passed with FileBasicInfo. The handle remains open throughout the call.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle().cast(),
+            FileBasicInfo,
+            (&raw mut info).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(info.ChangeTime)
+    }
+}
 
 pub(crate) struct State;
 

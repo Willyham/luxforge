@@ -1200,9 +1200,9 @@ mod jpeg_tests {
     fn oversized_jpeg_is_rejected_from_file_length_before_buffer_allocation() {
         use std::io::{Seek, SeekFrom, Write};
         let path = std::env::temp_dir().join(format!(
-            "luxforge-oversized-jpeg-{}-{}.jpg",
+            "luxforge-oversized-jpeg-{}-{:?}.jpg",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current().id()
         ));
         let mut file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_JPEG_BYTES as u64 + 1).unwrap();
