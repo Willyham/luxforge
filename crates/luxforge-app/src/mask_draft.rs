@@ -330,10 +330,10 @@ impl MaskDraft {
         self.shape.values()
     }
 
-    /// The draft bar's one line of this gesture's numbers, each written by `number` as its declared
-    /// field shows it. What the line says is the drawn kind's own.
-    pub(crate) fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
-        self.shape.readout(number)
+    /// The draft bar's one compact line of this gesture's numbers. What the line says is the drawn
+    /// kind's own; the panel's fields keep each parameter's declared precision.
+    pub(crate) fn readout(&self) -> String {
+        self.shape.readout()
     }
 
     /// A pointer is down: a handle is being dragged, or a stroke is being painted.
