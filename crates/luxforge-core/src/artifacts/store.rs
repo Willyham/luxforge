@@ -10,7 +10,7 @@ use super::{
 use crate::ErrorKind;
 use crate::{
     Error, atomic_file,
-    editor::{SourceSignature, source_signature},
+    editor::{SourceSignature, source_signature, source_signature_for_handle},
     modules::valid_identity,
 };
 use serde::{Deserialize, Serialize};
@@ -368,7 +368,7 @@ pub(crate) fn read_verified(
     };
     let handle_before = stat(file.metadata())?;
     let path_before = stat(path.metadata())?;
-    let signature = source_signature(&path, &handle_before);
+    let signature = source_signature_for_handle(&path, &file, &handle_before);
     if signature != source_signature(&path, &path_before) {
         return Err(Error::conflict(format!(
             "artifact {id} changed before preparation"
@@ -389,7 +389,7 @@ pub(crate) fn read_verified(
     if bytes.len() as u64 != read.bytes || format!("{:x}", Sha256::digest(&bytes)) != id.sha256() {
         return Err(corrupt());
     }
-    if signature != source_signature(&path, &stat(file.metadata())?)
+    if signature != source_signature_for_handle(&path, &file, &stat(file.metadata())?)
         || signature != source_signature(&path, &stat(path.metadata())?)
     {
         return Err(Error::conflict(format!(

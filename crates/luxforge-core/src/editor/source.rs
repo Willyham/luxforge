@@ -192,7 +192,7 @@ impl EditorService {
         let mut file = File::open(&canonical).map_err(file_access)?;
         let handle_before = file.metadata().map_err(file_access)?;
         let path_before = canonical.metadata().map_err(file_access)?;
-        let signature = source_signature(&canonical, &handle_before);
+        let signature = source_signature_for_handle(&canonical, &file, &handle_before);
         if signature != source_signature(&canonical, &path_before) {
             return Err(Error::conflict("source changed before preparation"));
         }
@@ -229,7 +229,7 @@ impl EditorService {
         };
         let handle_after = file.metadata().map_err(file_access)?;
         let path_after = canonical.metadata().map_err(file_access)?;
-        if signature != source_signature(&canonical, &handle_after)
+        if signature != source_signature_for_handle(&canonical, &file, &handle_after)
             || signature != source_signature(&canonical, &path_after)
         {
             return Err(Error::conflict("source changed during preparation"));
@@ -839,6 +839,32 @@ pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignat
     }
 }
 
+/// Use the already-open file's identity when checking the bytes read from that handle. A path
+/// may be replaced between reads, so looking up its identity again would miss that replacement.
+#[cfg(windows)]
+pub(crate) fn source_signature_for_handle(
+    path: &Path,
+    file: &File,
+    metadata: &Metadata,
+) -> SourceSignature {
+    SourceSignature {
+        byte_len: metadata.len(),
+        modified: metadata.modified().ok(),
+        file_identity: windows_file_identity(file)
+            .unwrap_or_else(|| format!("path:{}", path.to_string_lossy().to_lowercase())),
+        change_marker: metadata_change_marker(metadata),
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn source_signature_for_handle(
+    path: &Path,
+    _: &File,
+    metadata: &Metadata,
+) -> SourceSignature {
+    source_signature(path, metadata)
+}
+
 #[cfg(unix)]
 fn metadata_change_marker(metadata: &Metadata) -> Option<(i128, i128)> {
     use std::os::unix::fs::MetadataExt;
@@ -866,12 +892,21 @@ fn file_identity(metadata: &Metadata, _: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn file_identity(metadata: &Metadata, canonical: &Path) -> String {
-    use std::os::windows::fs::MetadataExt;
-    match (metadata.volume_serial_number(), metadata.file_index()) {
-        (Some(volume), Some(index)) => format!("windows:{volume}:{index}"),
-        _ => format!("path:{}", canonical.to_string_lossy().to_lowercase()),
-    }
+fn windows_file_identity(file: &File) -> Option<String> {
+    let info = winapi_util::file::information(file).ok()?;
+    Some(format!(
+        "windows:{}:{}",
+        info.volume_serial_number(),
+        info.file_index()
+    ))
+}
+
+#[cfg(windows)]
+fn file_identity(_: &Metadata, canonical: &Path) -> String {
+    File::open(canonical)
+        .ok()
+        .and_then(|file| windows_file_identity(&file))
+        .unwrap_or_else(|| format!("path:{}", canonical.to_string_lossy().to_lowercase()))
 }
 
 #[cfg(not(any(unix, windows)))]

@@ -1993,6 +1993,7 @@ dependencies = [
  "ureq-proto",
  "url",
  "uuid",
+ "winapi-util",
  "zeroize",
 ]
 
