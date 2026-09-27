@@ -1045,6 +1045,68 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
+/// One pixel-domain pipeline: (scope `crates/luxforge-core/src`; allowed: one product line, in the
+/// token's home; match: whole token; tests not covered; reason: the rectangle a resample reads is
+/// `Resample::reads` in `render.rs`, and a spatial entry's estimates are resolved by
+/// `SpatialEntry::globals` in `render/pipeline.rs`, so a second copy of either fails). The tap
+/// index of a resample coordinate, `(value - 0.5).floor()`, is what every read rectangle computes;
+/// keying the estimate store by the domain's prefix is what every spatial-entry orchestration does.
+const ONE_PIPELINE: [(&str, &str); 2] = [
+    ("- 0.5).floor()", "render.rs"),
+    (".estimate_prefix(", "render/pipeline.rs"),
+];
+
+/// The core crate's sources, which [`ONE_PIPELINE`] covers.
+const CORE_SOURCE: &str = "crates/luxforge-core/src";
+
+/// Fail on a product line of the core crate that holds a [`ONE_PIPELINE`] token outside its home,
+/// or on a second such line in its home, naming the file, the line and the token; answer how many
+/// product files were read.
+fn one_pipeline(root: &Path) -> Result<usize> {
+    let core = root.join(CORE_SOURCE);
+    let sources: Vec<PathBuf> = files(&core)?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect();
+    let texts = sources
+        .iter()
+        .map(fs::read_to_string)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
+    let mut test_only = BTreeSet::new();
+    for (path, (_, modules)) in sources.iter().zip(&scanned) {
+        for name in modules {
+            test_only.extend(module_files(path, name));
+        }
+    }
+    let mut homes = [0; ONE_PIPELINE.len()];
+    let mut checked = 0;
+    for (path, (lines, _)) in sources.iter().zip(&scanned) {
+        if test_file(path) || test_only.contains(path) {
+            continue;
+        }
+        for (number, line) in lines {
+            for ((token, home), seen) in ONE_PIPELINE.iter().zip(&mut homes) {
+                if !holds_whole_token(line, token) {
+                    continue;
+                }
+                *seen += 1;
+                ensure(
+                    *path == core.join(home) && *seen == 1,
+                    format!(
+                        "{}:{number}: {token} is written once, in {CORE_SOURCE}/{home}; read a \
+                         resample's rectangle through Resample::reads and a spatial entry's \
+                         estimates through SpatialEntry::globals",
+                        path.display()
+                    ),
+                )?;
+            }
+        }
+        checked += 1;
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1111,6 +1173,10 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
+    );
+    println!(
+        "PASS one resample read rectangle and one spatial-entry orchestration ({} product files)",
+        one_pipeline(root)?
     );
     Ok(())
 }
@@ -1503,6 +1569,77 @@ mod tests {
         );
         fs::remove_file(copy).unwrap();
         assert_eq!(read(tmp.path(), &["presettable-action"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_pipeline_keeps_one_read_rectangle_and_one_spatial_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        for dir in [core.join("render"), core.join("modules/presence")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let floor = "                let index = (value - 0.5).floor();\n";
+        let keyed = "            &domain.estimate_prefix(self.prefix_hash),\n";
+        // Each home writes its token once; the trait's declarations, the windowed proxy's own halo
+        // and tile rule (`WindowPlan::of_rect`), test items and test-only modules are not copies.
+        for (file, text) in [
+            (core.join("render.rs"), floor.to_owned()),
+            (
+                core.join("render/pipeline.rs"),
+                format!(
+                    "    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str>;\n{keyed}\
+                     #[cfg(test)]\nmod tests {{\n{floor}{keyed}}}\n"
+                ),
+            ),
+            (
+                core.join("render/window.rs"),
+                "                    let grown = read.grown(operation.summed_halo(input), input);\n\
+                 let x0 = grown.x0 / SPATIAL_TILE * SPATIAL_TILE;\n\
+                 needed = resample.reads((0, 0), read, stage);\n"
+                    .to_owned(),
+            ),
+            (
+                core.join("modules/presence/mod.rs"),
+                "#[cfg(test)]\nmod oracle;\n".to_owned(),
+            ),
+            (core.join("modules/presence/oracle.rs"), keyed.to_owned()),
+            (core.join("render/linear_tests.rs"), floor.to_owned()),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(one_pipeline(tmp.path()).unwrap(), 4);
+        // The copies this rule replaced, brought back: the proxy window's and the linear tap
+        // block's read rectangles, the byte band's second one beside `Resample::reads`, and the
+        // byte driver's inline estimate resolution.
+        for (file, text) in [
+            (core.join("render/window.rs"), floor),
+            (core.join("render/linear.rs"), floor),
+            (
+                core.join("render.rs"),
+                "    let start = (top - 0.5).floor() - 2.0;\n",
+            ),
+            (
+                core.join("render.rs"),
+                "                                &domain.estimate_prefix(prefix_hash),\n",
+            ),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, format!("{}{text}", clean.as_deref().unwrap_or(""))).unwrap();
+            let error = one_pipeline(tmp.path())
+                .err()
+                .unwrap_or_else(|| panic!("{text} in {} was accepted", file.display()))
+                .to_string();
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                error.contains(&format!("{name}:")) && error.contains("is written once"),
+                "{error}"
+            );
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(one_pipeline(tmp.path()).unwrap(), 4);
     }
 
     #[test]

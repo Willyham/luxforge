@@ -33,8 +33,8 @@ pub use entry::{
 };
 pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
 pub(crate) use pipeline::{Evaluation, PixelDomain, RowScratch, SpatialMode};
-use pipeline::{SegmentRows, Taps, segment_pass, spatial_output};
-use spatial::{build_reduction_cancellable, fill_planes, resolve_globals};
+use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};
+use spatial::fill_planes;
 pub use window::RegionFallback;
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
@@ -672,6 +672,11 @@ impl ExactGeometry {
     }
 }
 
+/// Pixels [`Resample::reads`] keeps beyond the taps a resample's output reads, on every side: a
+/// bilinear tap reads the pixel at `floor(u - ½)` and the one after it, and the corners of an affine
+/// image bound every interior coordinate only up to rounding, which this covers with room to spare.
+pub(crate) const TAP_MARGIN: u32 = 2;
+
 /// Mapping the output of one resample back into its input frame is the host's too.
 impl Resample {
     /// The continuous input coordinate one output pixel center samples.
@@ -700,38 +705,58 @@ impl Resample {
             (u - f64::from(origin.0), v - f64::from(origin.1))
         }
     }
-}
 
-/// The rows of a resample's input frame that its output can read, with a margin, so the pointwise
-/// colour before a crop is applied only where the crop looks. The mapping is affine, so the region
-/// its output rectangle reads is the convex hull of the four mapped corners, and the bilinear
-/// sample at each of them reads at most one neighbouring pixel in each direction, which the margin
-/// covers with a pixel to spare. Everything outside the band is discarded by the resample, so
-/// leaving it uncoloured changes no output byte.
-fn rows_read_by(
-    resample: Resample,
-    origin: (u32, u32),
-    input_height: u32,
-) -> std::ops::Range<usize> {
-    if resample.output_width == 0 || resample.output_height == 0 || input_height == 0 {
-        return 0..0;
-    }
-    let (last_x, last_y) = (resample.output_width - 1, resample.output_height - 1);
-    let mut top = f64::INFINITY;
-    let mut bottom = f64::NEG_INFINITY;
-    for (x, y) in [(0, 0), (last_x, 0), (0, last_y), (last_x, last_y)] {
-        let (_, v) = resample.input_from(origin, x, y);
-        if !v.is_finite() {
-            return 0..input_height as usize;
+    /// The rectangle of its input frame, a `input` stage whose top-left pixel is `origin` in the
+    /// stage the resample was compiled against, that the resample reads over `window`, a
+    /// rectangle of its full output stage: the one read-rectangle rule, for the colour band before
+    /// a resample, a windowed proxy's cut and the linear driver's tap blocks alike.
+    ///
+    /// The mapping is affine, so the coordinates the window samples lie in the convex hull of its
+    /// four mapped corners, up to rounding. A bilinear tap reads the pixel at `floor(u - ½)` and
+    /// the one after it, clamped to the stage edge, and [`TAP_MARGIN`] pixels on every side cover
+    /// the rounding with room to spare. `None` when the window is empty, `input` is empty or a
+    /// corner maps to a coordinate that is not finite, which a caller answers by reading
+    /// everything or reading each tap on its own.
+    pub(crate) fn reads(self, origin: (u32, u32), window: Region, input: Stage) -> Option<Region> {
+        if window.is_empty() || input.width == 0 || input.height == 0 {
+            return None;
         }
-        top = top.min(v);
-        bottom = bottom.max(v);
+        let mut low = [f64::INFINITY; 2];
+        let mut high = [f64::NEG_INFINITY; 2];
+        for (x, y) in [
+            (window.x0, window.y0),
+            (window.x1() - 1, window.y0),
+            (window.x0, window.y1() - 1),
+            (window.x1() - 1, window.y1() - 1),
+        ] {
+            let (u, v) = self.input_from(origin, x, y);
+            for (axis, value) in [u, v].into_iter().enumerate() {
+                let index = (value - 0.5).floor();
+                if !index.is_finite() {
+                    return None;
+                }
+                low[axis] = low[axis].min(index);
+                high[axis] = high[axis].max(index + 1.0);
+            }
+        }
+        // Each tap index clamped to the stage as the blend clamps it, then the margin, then the
+        // stage again: `first..=last`, never empty.
+        let margin = f64::from(TAP_MARGIN);
+        let span = |low: f64, high: f64, limit: u32| {
+            let last = f64::from(limit - 1);
+            let first = (low.clamp(0.0, last) - margin).max(0.0) as u32;
+            let last = (high.clamp(0.0, last) + margin).min(last) as u32;
+            (first, last - first + 1)
+        };
+        let (x0, width) = span(low[0], high[0], input.width);
+        let (y0, height) = span(low[1], high[1], input.height);
+        Some(Region {
+            x0,
+            y0,
+            width,
+            height,
+        })
     }
-    let start = (top - 0.5).floor() - 2.0;
-    let end = (bottom - 0.5).ceil() + 3.0;
-    let start = start.max(0.0).min(f64::from(input_height)) as usize;
-    let end = end.max(0.0).min(f64::from(input_height)) as usize;
-    start..end.max(start)
 }
 
 /// One interpolating pass: the resample reads the frame it was given and writes the next one.
@@ -741,15 +766,9 @@ fn resample_frame(
     input_height: u32,
     resample: Resample,
     origin: (u32, u32),
-    output_window: Option<Region>,
+    window: Region,
     cancel: &Cancel,
 ) -> Result<Arc<[u8]>, Error> {
-    let window = output_window.unwrap_or(Region {
-        x0: 0,
-        y0: 0,
-        width: resample.output_width,
-        height: resample.output_height,
-    });
     if window.is_empty()
         || window.x1() > resample.output_width
         || window.y1() > resample.output_height
@@ -864,6 +883,17 @@ impl Segment {
             entry_window: None,
             output_origin: (0, 0),
         }
+    }
+
+    /// The rectangle of its resample entry's full output stage this segment's input frame holds:
+    /// [`Self::entry_window`], or the whole stage.
+    pub(crate) fn resample_window(&self, resample: Resample) -> Region {
+        self.entry_window.unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width: resample.output_width,
+            height: resample.output_height,
+        })
     }
 
     #[inline]
@@ -1183,8 +1213,6 @@ impl PixelDomain for Byte<'_> {
     /// A tile's quantized RGB, row-major; alpha is copied when the tile is placed.
     type TileOutput = Vec<u8>;
 
-    const GRID: SpatialMode = SpatialMode::Point;
-
     fn fingerprint(&self) -> &str {
         &self.0.fingerprint
     }
@@ -1194,14 +1222,6 @@ impl PixelDomain for Byte<'_> {
             "{prefix_hash}+byte:{}x{}:orientation:{}",
             self.0.width, self.0.height, self.0.orientation,
         ))
-    }
-
-    fn check(&self, _: &Compiled) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn check_output(&self, _: u32, _: u32) -> Result<(), Error> {
-        Ok(())
     }
 
     #[inline]
@@ -1233,11 +1253,6 @@ impl PixelDomain for Byte<'_> {
         Ok(pixel)
     }
 
-    #[inline]
-    fn finish(pixel: [u8; 4]) -> Result<[u8; 4], Error> {
-        Ok(pixel)
-    }
-
     fn blend(
         u: f64,
         v: f64,
@@ -1261,10 +1276,6 @@ impl PixelDomain for Byte<'_> {
     #[inline]
     fn terminal(pixel: [u8; 4]) -> Result<[u8; 4], Error> {
         Ok(pixel)
-    }
-
-    fn mask_input(pixel: [u8; 4]) -> [f64; 3] {
-        decode_pixel([pixel[0], pixel[1], pixel[2]]).map(f64::from)
     }
 
     fn spatial_frame(stage: Stage) -> Result<Arc<[u8]>, Error> {
@@ -1456,8 +1467,10 @@ impl LayerInput<'_> {
     /// One pixel of the layer's input stage, in linear light, or `None` outside that stage.
     pub(crate) fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         match self {
-            Self::Byte(evaluation) => Ok(evaluation.pixel(x, y)?.map(Byte::mask_input)),
-            Self::Linear(evaluation) => Ok(evaluation.pixel(x, y)?.map(linear::Linear::mask_input)),
+            Self::Byte(evaluation) => Ok(evaluation
+                .pixel(x, y)?
+                .map(|pixel| Byte::spatial_input(pixel).map(f64::from))),
+            Self::Linear(evaluation) => evaluation.pixel(x, y),
         }
     }
 }
@@ -1649,49 +1662,30 @@ pub(super) fn rasterize(
                     height,
                     *resample,
                     segment.entry_origin,
-                    segment.entry_window,
+                    segment.resample_window(*resample),
                     cancel,
                 )?,
-                Entry::Spatial {
-                    operation,
-                    prefix_hash,
-                    globals: handed,
-                } => {
+                Entry::Spatial { .. } => {
                     let stage = Stage { width, height };
-                    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-                        let offset =
-                            ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
-                        Ok(decode_pixel([
-                            input[offset],
-                            input[offset + 1],
-                            input[offset + 2],
-                        ]))
+                    let offset = |x: u32, y: u32| {
+                        ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize
                     };
-                    spatial_output::<Byte>(
+                    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                        let at = offset(x, y);
+                        Ok(decode_pixel([input[at], input[at + 1], input[at + 2]]))
+                    };
+                    spatial_entry(
+                        &domain,
+                        SpatialEntry::of(segment).expect("a spatial entry"),
                         stage,
-                        operation,
-                        || match handed {
-                            Some(globals) => Ok(globals.as_ref().clone()),
-                            None => resolve_globals(
-                                context.estimates(),
-                                operation,
-                                stage,
-                                domain.fingerprint(),
-                                &domain.estimate_prefix(prefix_hash),
-                                || build_reduction_cancellable(stage, cancel, read),
-                            ),
-                        },
                         tile,
                         cancel,
                         context,
+                        read,
                         |region, planes, parallelism| {
                             fill_planes(region, planes, parallelism, read)
                         },
-                        |x, y| {
-                            input[((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4)
-                                as usize
-                                + 3]
-                        },
+                        |x, y| input[offset(x, y) + 3],
                     )?
                 }
             };
@@ -1756,20 +1750,26 @@ pub(super) fn rasterize(
     })
 }
 
-/// The rows of segment `index`'s frame its colour runs reach: those the resample after it reads, or
-/// every row when a spatial boundary, which reads every row plus a halo, or nothing follows it.
+/// The rows of segment `index`'s frame its colour runs reach: those the resample after it reads
+/// ([`Resample::reads`]), or every row when a spatial boundary, which reads every row plus a halo,
+/// or nothing follows it. Everything outside the band is discarded by the resample, so leaving it
+/// uncoloured changes no output byte.
 fn band(compiled: &Compiled, index: usize) -> std::ops::Range<usize> {
-    let height = compiled.segments[index].height;
-    match compiled
-        .segments
-        .get(index + 1)
-        .and_then(|next| next.entry.as_ref())
-    {
-        Some(Entry::Resample(resample)) => {
-            rows_read_by(*resample, compiled.segments[index + 1].entry_origin, height)
-        }
-        Some(Entry::Spatial { .. }) | None => 0..height as usize,
-    }
+    let segment = &compiled.segments[index];
+    let every = 0..segment.height as usize;
+    let Some(next) = compiled.segments.get(index + 1) else {
+        return every;
+    };
+    let Some(Entry::Resample(resample)) = next.entry else {
+        return every;
+    };
+    let input = Stage {
+        width: segment.width,
+        height: segment.height,
+    };
+    resample
+        .reads(next.entry_origin, next.resample_window(resample), input)
+        .map_or(every, |read| read.y0 as usize..read.y1() as usize)
 }
 
 /// What the crate's unit tests render through: [`render`], through a context the test constructs
@@ -2200,6 +2200,112 @@ mod tests {
         ModuleRegistry::builtin()
     }
 
+    /// The one read-rectangle rule holds every tap a resample's output window reads, in a frame at
+    /// the stage's origin or a window of it, at any angle and scale, including taps clamped to an
+    /// edge the output maps beyond; it never leaves the input and answers nothing it cannot bound.
+    #[test]
+    fn a_resample_reads_every_tap_of_its_window_inside_one_rectangle() {
+        let stage = Stage {
+            width: 97,
+            height: 61,
+        };
+        let (output_width, output_height) = (40, 30);
+        let windows = [
+            Region {
+                x0: 0,
+                y0: 0,
+                width: output_width,
+                height: output_height,
+            },
+            Region {
+                x0: 3,
+                y0: 5,
+                width: 7,
+                height: 1,
+            },
+            Region {
+                x0: output_width - 1,
+                y0: output_height - 1,
+                width: 1,
+                height: 1,
+            },
+            Region {
+                x0: 10,
+                y0: 0,
+                width: 30,
+                height: 17,
+            },
+        ];
+        for (angle, scale) in [
+            (0.0, 1.0),
+            (7.0, 1.0),
+            (-30.0, 0.8),
+            (45.0, 2.5),
+            (90.0, 1.0),
+            (13.0, 0.37),
+            (200.0, 4.0),
+        ] {
+            let (sin, cos): (f64, f64) = f64::to_radians(angle).sin_cos();
+            // Output centre (20, 15) onto input centre (48.5, 30.5), rotated and scaled.
+            let resample = Resample {
+                inverse: [
+                    scale * cos,
+                    -scale * sin,
+                    48.5 - scale * (cos * 20.0 - sin * 15.0),
+                    scale * sin,
+                    scale * cos,
+                    30.5 - scale * (sin * 20.0 + cos * 15.0),
+                ],
+                output_width,
+                output_height,
+            };
+            for origin in [(0, 0), (5, 3), (40, 20)] {
+                let frame = Stage {
+                    width: stage.width - origin.0,
+                    height: stage.height - origin.1,
+                };
+                for window in windows {
+                    let read = resample
+                        .reads(origin, window, frame)
+                        .expect("a finite mapping is bounded");
+                    assert!(
+                        !read.is_empty() && read.x1() <= frame.width && read.y1() <= frame.height,
+                        "{angle}° ×{scale} {origin:?} {window:?}: {read:?} leaves the frame"
+                    );
+                    for y in window.y0..window.y1() {
+                        for x in window.x0..window.x1() {
+                            let (u, v) = resample.input_from(origin, x, y);
+                            for (tap_x, tap_y) in Taps::new(u, v, frame.width, frame.height).corners
+                            {
+                                assert!(
+                                    read.contains(tap_x, tap_y),
+                                    "{angle}° ×{scale} {origin:?} {window:?}: tap \
+                                     ({tap_x}, {tap_y}) of ({x}, {y}) is outside {read:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let unbounded = Resample {
+            inverse: [f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0],
+            output_width,
+            output_height,
+        };
+        assert_eq!(unbounded.reads((0, 0), windows[0], stage), None);
+        let empty = Region {
+            width: 0,
+            ..windows[0]
+        };
+        let identity = Resample {
+            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            output_width,
+            output_height,
+        };
+        assert_eq!(identity.reads((0, 0), empty, stage), None);
+    }
+
     /// The colour pass before a crop covers only the rows the crop reads, so the rendered frame
     /// must still agree with the point sampler at every output pixel, and the band must be a
     /// strict subset of the stage for a crop that discards rows.
@@ -2241,10 +2347,10 @@ mod tests {
         let compiled = registry
             .compile(source.width, source.height, &recipe)
             .unwrap();
-        let Some(Entry::Resample(resample)) = compiled.segments[1].entry else {
+        let Some(Entry::Resample(_)) = compiled.segments[1].entry else {
             panic!("a rotated crop resamples");
         };
-        let band = rows_read_by(resample, (0, 0), compiled.segments[0].height);
+        let band = band(&compiled, 0);
         assert!(
             band.start > 0 && band.end < compiled.segments[0].height as usize,
             "the band {band:?} should exclude rows of the {} high stage",

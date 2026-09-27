@@ -15,9 +15,11 @@
 //!
 //! Everything else exists once, here: walking a point back through the segments ([`Evaluation`]),
 //! the resample recursion, a spatial entry answered from the query's tiles or from a materialized
-//! frame, the global estimates a spatial operation reads, a spatial operation's output built tile
-//! by tile ([`spatial_output`]), the replacements and colour runs applied to rows of a segment's
-//! output ([`segment_pass`]) and the terminal conversion a sample and a grid share.
+//! frame, the global estimates a spatial entry reads and its output built tile by tile
+//! ([`SpatialEntry`], [`spatial_entry`], which both drivers materialize a spatial operation
+//! through), the replacements and colour runs applied to rows of a segment's output
+//! ([`segment_pass`]) and the terminal conversion a sample and a grid share. The rectangle a
+//! resample reads is [`super::Resample::reads`], beside the resample's own mapping.
 //!
 //! What stays with each domain's rasterizer is which frames it materializes. The byte driver
 //! ([`super::rasterize`]) writes every segment's output as a byte frame, because a byte frame is
@@ -40,7 +42,7 @@ use super::{
 };
 use crate::{
     Error,
-    modules::{Global, Parallelism, Region, SpatialOperation, Stage},
+    modules::{Global, Parallelism, Reduction, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
 #[cfg(test)]
@@ -54,14 +56,8 @@ pub(crate) trait PixelDomain: Sync {
     type Pixel: Copy + Send + Sync;
     /// One spatial operation's output over its whole stage.
     type SpatialFrame: Send + Sync;
-    /// One evaluated tile, as the parallel half of [`spatial_output`] hands it to the serial write.
+    /// One evaluated tile, as the parallel half of [`spatial_entry`] hands it to the serial write.
     type TileOutput: Send;
-
-    /// How [`super::Render::grid`] answers the pixels of its spatial segments. The byte path reads
-    /// the points through one tile cache; the linear path materializes each spatial output once,
-    /// as a render does, since the points spread over the whole stage and a linear spatial frame is
-    /// exact.
-    const GRID: SpatialMode;
 
     /// The fingerprint a global estimate is keyed by.
     fn fingerprint(&self) -> &str;
@@ -72,12 +68,17 @@ pub(crate) trait PixelDomain: Sync {
     /// settings, none of which the recipe names.
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str>;
 
-    /// Refuse a compilation this domain cannot evaluate. Nothing is refused on the byte path; the
-    /// linear path evaluates at most one resample.
-    fn check(&self, compiled: &Compiled) -> Result<(), Error>;
+    /// Refuse a compilation this domain cannot evaluate. Nothing is refused unless a domain says
+    /// so; the linear path evaluates at most one resample.
+    fn check(&self, _compiled: &Compiled) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Refuse an output stage this domain cannot produce, before a point is answered in it.
-    fn check_output(&self, width: u32, height: u32) -> Result<(), Error>;
+    /// Nothing is refused unless a domain says so; the linear path has its own output limit.
+    fn check_output(&self, _width: u32, _height: u32) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// One pixel of the source, which is the first segment's input.
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error>;
@@ -97,8 +98,11 @@ pub(crate) trait PixelDomain: Sync {
         y: u32,
     ) -> Result<Self::Pixel, Error>;
 
-    /// The pixel a segment answers, once its replacement and colour are applied.
-    fn finish(pixel: Self::Pixel) -> Result<Self::Pixel, Error>;
+    /// The pixel a segment answers, once its replacement and colour are applied: the pixel itself
+    /// unless a domain checks it; the linear path refuses a non-finite value here.
+    fn finish(pixel: Self::Pixel) -> Result<Self::Pixel, Error> {
+        Ok(pixel)
+    }
 
     /// [`Self::colour`] and [`Self::finish`] over one contiguous run of row `y` starting at column
     /// `x0`. Units are pointwise and are handed a row with its coordinates, so a domain may run
@@ -135,9 +139,6 @@ pub(crate) trait PixelDomain: Sync {
 
     /// The terminal byte of one output pixel.
     fn terminal(pixel: Self::Pixel) -> Result<[u8; 4], Error>;
-
-    /// A pixel in linear light, as a value-based mask component reads it.
-    fn mask_input(pixel: Self::Pixel) -> [f64; 3];
 
     /// An empty spatial frame of `stage`, inside the domain's frame limit.
     fn spatial_frame(stage: Stage) -> Result<Self::SpatialFrame, Error>;
@@ -239,22 +240,17 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         // In order, because a later spatial operation pulls its input through the earlier one, and
         // each frame replaces the one before it once it exists.
         for index in 0..evaluation.compiled.segments.len() {
-            let Some(Entry::Spatial {
-                operation,
-                prefix_hash,
-                globals,
-            }) = &evaluation.compiled.segments[index].entry
-            else {
+            let Some(entry) = SpatialEntry::of(&evaluation.compiled.segments[index]) else {
                 continue;
             };
-            let stage = evaluation.spatial_stage(index);
-            let planes = Arc::new(spatial_output::<D>(
-                stage,
-                operation,
-                || evaluation.spatial_globals(index, operation, stage, prefix_hash, globals),
+            let planes = Arc::new(spatial_entry(
+                &evaluation.domain,
+                entry,
+                evaluation.spatial_stage(index),
                 evaluation.tile,
                 cancel,
                 evaluation.context,
+                |x, y| evaluation.spatial_read(index, x, y),
                 |region, planes, parallelism| {
                     evaluation.fill_rows(index - 1, region, planes, parallelism)
                 },
@@ -301,16 +297,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// them; the store then holds them for that frame. Empty when segment `index` does not enter
     /// through a spatial operation.
     pub(crate) fn globals_of(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
-        match &self.compiled.segments[index].entry {
-            Some(Entry::Spatial {
-                operation,
-                prefix_hash,
-                globals,
-            }) => {
-                let stage = self.spatial_stage(index);
-                self.spatial_globals(index, operation, stage, prefix_hash, globals)
-            }
-            _ => Ok(Vec::new()),
+        match SpatialEntry::of(&self.compiled.segments[index]) {
+            Some(entry) => self.spatial_globals(index, entry),
+            None => Ok(Vec::new()),
         }
     }
 
@@ -362,18 +351,14 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     pub(super) fn entry_pixel(&self, index: usize, x: u32, y: u32) -> Result<D::Pixel, Error> {
         match &self.compiled.segments[index].entry {
             None => self.domain.source_pixel(x, y),
-            Some(Entry::Spatial {
-                operation,
-                prefix_hash,
-                globals,
-            }) => match &self.frame {
+            Some(Entry::Spatial { .. }) => match &self.frame {
                 Some(frame) if frame.index == index => Ok(D::frame_pixel(
                     &frame.planes,
                     self.spatial_stage(index),
                     x,
                     y,
                 )),
-                _ => self.spatial_pixel(index, operation, prefix_hash, globals, x, y),
+                _ => self.spatial_pixel(index, x, y),
             },
             Some(Entry::Resample(resample)) => {
                 let previous = &self.compiled.segments[index - 1];
@@ -507,38 +492,25 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
-    /// The global estimates of spatial segment `index`, from the store or from one reduction of
-    /// its input stage. A frame and a point evaluation of the same recipe ask with the same key, so
-    /// they use the same estimate. A frame's reduction reads the stage as a render does; a point
-    /// query's reads through [`PointTiles::reduce`].
+    /// The global estimates of spatial segment `index`, whose entry is `entry`
+    /// ([`SpatialEntry::globals`]). A point query's reduction reads through [`PointTiles::reduce`];
+    /// a frame's, which [`spatial_entry`] resolves itself, reads the stage as a render does.
     fn spatial_globals(
         &self,
         index: usize,
-        operation: &SpatialOperation,
-        stage: Stage,
-        prefix_hash: &str,
-        handed: &Option<super::window::Globals>,
+        entry: SpatialEntry<'_>,
     ) -> Result<Vec<Option<Global>>, Error> {
-        if let Some(globals) = handed {
-            return Ok(globals.as_ref().clone());
-        }
+        let stage = self.spatial_stage(index);
         let read = |x: u32, y: u32| self.spatial_read(index, x, y);
-        resolve_globals(
-            self.context.estimates(),
-            operation,
-            stage,
-            self.domain.fingerprint(),
-            &self.domain.estimate_prefix(prefix_hash),
-            || match &self.tiles {
-                Some(tiles) => tiles.reduce(
-                    stage,
-                    self.compiled.spatial_before(index),
-                    &self.cancel,
-                    read,
-                ),
-                None => build_reduction_cancellable(stage, &self.cancel, read),
-            },
-        )
+        entry.globals(&self.domain, self.context, stage, || match &self.tiles {
+            Some(tiles) => tiles.reduce(
+                stage,
+                self.compiled.spatial_before(index),
+                &self.cancel,
+                read,
+            ),
+            None => build_reduction_cancellable(stage, &self.cancel, read),
+        })
     }
 
     /// One pixel of the frame a spatial entry produces, without its frame.
@@ -554,27 +526,20 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// the stage when a unit's global estimate is not already stored, and it allocates one tile
     /// working set at a time from the spatial budget and no frame. This is the declared exception to
     /// performance rule 4.
-    fn spatial_pixel(
-        &self,
-        index: usize,
-        operation: &SpatialOperation,
-        prefix_hash: &str,
-        handed: &Option<super::window::Globals>,
-        x: u32,
-        y: u32,
-    ) -> Result<D::Pixel, Error> {
+    fn spatial_pixel(&self, index: usize, x: u32, y: u32) -> Result<D::Pixel, Error> {
         let tiles = self
             .tiles
             .as_ref()
             .expect("a pull meets only the latest frame or a point query's tiles");
-        let stage = self.spatial_stage(index);
+        let entry = SpatialEntry::of(&self.compiled.segments[index])
+            .expect("a spatial pixel is asked of a spatial entry");
         let rgb = tiles.pixel(
             index,
-            operation,
-            stage,
+            entry.operation,
+            self.spatial_stage(index),
             x,
             y,
-            || self.spatial_globals(index, operation, stage, prefix_hash, handed),
+            || self.spatial_globals(index, entry),
             |x, y| self.spatial_read(index, x, y),
         )?;
         // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
@@ -677,26 +642,84 @@ fn clamp_index(value: f64, limit: u32) -> u32 {
     }
 }
 
-/// One spatial operation's output over its whole `stage`, written tile by tile into the domain's
-/// frame: `globals` resolves the operation's global estimates once the plan is known, `fill` reads
-/// one rectangle of the stage it reads into three planes and `alpha` one pixel's alpha. Every tile runs through
-/// [`run_tile`], in batches whose concurrency the spatial budget sets, checking `cancel` between
-/// batches. No full-frame float buffer exists beside the output, only one tile's working set per
-/// tile in flight, charged to the spatial budget before each batch of tiles allocates.
+/// A spatial entry as the one orchestration reads it: the operation, the recipe prefix its
+/// estimates are keyed by and the estimates a windowed proxy handed it, if any.
+#[derive(Clone, Copy)]
+pub(super) struct SpatialEntry<'e> {
+    operation: &'e SpatialOperation,
+    prefix_hash: &'e str,
+    handed: Option<&'e super::window::Globals>,
+}
+
+impl<'e> SpatialEntry<'e> {
+    /// `segment`'s entry, when it is a spatial operation.
+    pub(super) fn of(segment: &'e Segment) -> Option<Self> {
+        match segment.entry.as_ref()? {
+            Entry::Spatial {
+                operation,
+                prefix_hash,
+                globals,
+            } => Some(Self {
+                operation,
+                prefix_hash,
+                handed: globals.as_ref(),
+            }),
+            Entry::Resample(_) => None,
+        }
+    }
+
+    /// The global estimates this entry reads over `stage` in `domain`: the ones it was handed, or
+    /// else the store's, or one preparation from `reduce`'s reduction of the stage. A frame and a
+    /// point evaluation of the same recipe ask with the same key, so they use the same estimate.
+    fn globals<D: PixelDomain>(
+        self,
+        domain: &D,
+        context: &RenderContext,
+        stage: Stage,
+        reduce: impl FnOnce() -> Result<Reduction, Error>,
+    ) -> Result<Vec<Option<Global>>, Error> {
+        if let Some(globals) = self.handed {
+            return Ok(globals.as_ref().clone());
+        }
+        resolve_globals(
+            context.estimates(),
+            self.operation,
+            stage,
+            domain.fingerprint(),
+            &domain.estimate_prefix(self.prefix_hash),
+            reduce,
+        )
+    }
+}
+
+/// One spatial entry's output over its whole `stage`, written tile by tile into the domain's frame:
+/// the one place either driver materializes a spatial operation. Its global estimates are
+/// [`SpatialEntry::globals`], reducing `read` (one pixel of the stage it reads) on a store miss;
+/// `fill` reads one rectangle of that stage into three planes and `alpha` one pixel's alpha. Every
+/// tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets, checking
+/// `cancel` between batches. No full-frame float buffer exists beside the output, only one tile's
+/// working set per tile in flight, charged to the spatial budget before each batch of tiles
+/// allocates.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn spatial_output<D: PixelDomain>(
+pub(super) fn spatial_entry<D: PixelDomain>(
+    domain: &D,
+    entry: SpatialEntry<'_>,
     stage: Stage,
-    operation: &SpatialOperation,
-    globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
     tile: u32,
     cancel: &Cancel,
     context: &RenderContext,
+    read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
     fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
     alpha: impl Fn(u32, u32) -> u8 + Sync,
 ) -> Result<D::SpatialFrame, Error> {
+    let operation = entry.operation;
     let plan = SpatialPlan::new(operation, stage, tile)?;
-    let globals = globals()?;
+    let globals = entry.globals(domain, context, stage, || {
+        build_reduction_cancellable(stage, cancel, read)
+    })?;
     let mut frame = D::spatial_frame(stage)?;
+    #[cfg(test)]
+    context.note_spatial_frame();
     run_batches(
         &plan,
         context.spatial(),

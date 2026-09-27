@@ -24,8 +24,9 @@
 //! - **A resample** reads the previous segment's window: its continuous input coordinate is
 //!   translated by the window's integer origin after the resample's own arithmetic, which is exact in
 //!   `f64` (an integer subtracted from a non-negative coordinate below 2^52 is representable), so
-//!   every tap is the same pixel with the same weight. The window holds every tap the output reads
-//!   plus [`TAP_MARGIN`] pixels, or reaches the stage edge where a tap is clamped to it.
+//!   every tap is the same pixel with the same weight. The window is [`super::Resample::reads`]:
+//!   every tap the output reads plus [`super::TAP_MARGIN`] pixels, clamped to the stage edge where
+//!   a tap is clamped to it.
 //! - **A spatial operation** runs over the previous segment's window as its own stage: the rectangle
 //!   the next segment reads, grown by the operation's summed halo and clamped to the stage, with its
 //!   origin moved down to the [`SPATIAL_TILE`] grid. Every unit is tile invariant over tiles anchored
@@ -85,11 +86,6 @@ impl RegionFallback {
     }
 }
 
-/// Pixels kept beyond the taps a resample's output reads, on every side: a bilinear tap reads the
-/// pixel at `floor(u - ½)` and the one after it, and the corners of an affine image bound every
-/// interior coordinate only up to rounding, which this covers with room to spare.
-pub(crate) const TAP_MARGIN: u32 = 2;
-
 /// The estimates one spatial operation is handed instead of reducing its own stage.
 pub(crate) type Globals = Arc<Vec<Option<Global>>>;
 
@@ -137,46 +133,6 @@ fn prepares_estimates(operation: &SpatialOperation) -> bool {
         .units()
         .iter()
         .any(|unit| unit.estimate_key().is_some())
-}
-
-/// The rectangle of `input` the taps of `resample` read over the output rectangle `read`, with
-/// [`TAP_MARGIN`] on every side, clamped to `input`, or `None` when a corner maps to a coordinate
-/// that is not finite.
-fn tap_region(resample: super::Resample, read: Region, input: Stage) -> Option<Region> {
-    let mut low = [f64::INFINITY; 2];
-    let mut high = [f64::NEG_INFINITY; 2];
-    for (x, y) in [
-        (read.x0, read.y0),
-        (read.x1() - 1, read.y0),
-        (read.x0, read.y1() - 1),
-        (read.x1() - 1, read.y1() - 1),
-    ] {
-        let (u, v) = resample.input_at(x, y);
-        for (axis, value) in [u, v].into_iter().enumerate() {
-            let index = (value - 0.5).floor();
-            if !index.is_finite() {
-                return None;
-            }
-            low[axis] = low[axis].min(index);
-            high[axis] = high[axis].max(index + 1.0);
-        }
-    }
-    let margin = f64::from(TAP_MARGIN);
-    let clamp = |value: f64, limit: u32| value.max(0.0).min(f64::from(limit)) as u32;
-    let (x0, x1) = (
-        clamp(low[0] - margin, input.width),
-        clamp(high[0] + margin + 1.0, input.width),
-    );
-    let (y0, y1) = (
-        clamp(low[1] - margin, input.height),
-        clamp(high[1] + margin + 1.0, input.height),
-    );
-    (x1 > x0 && y1 > y0).then_some(Region {
-        x0,
-        y0,
-        width: x1 - x0,
-        height: y1 - y0,
-    })
 }
 
 impl WindowPlan {
@@ -253,7 +209,8 @@ impl WindowPlan {
                     };
                 }
                 Some(Entry::Resample(resample)) => {
-                    needed = tap_region(*resample, read, output_stage(&segments[index - 1]))
+                    needed = resample
+                        .reads((0, 0), read, output_stage(&segments[index - 1]))
                         .ok_or(RegionFallback::UnplannableGeometry)?;
                 }
             }
@@ -1655,7 +1612,7 @@ mod tests {
                     let (sin, cos) = angle.to_radians().sin_cos();
                     let reach = |a: u32, b: u32| {
                         (f64::from(a) * cos + f64::from(b) * sin).ceil() as u32
-                            + 2 * (TAP_MARGIN + 2)
+                            + 2 * (super::super::TAP_MARGIN + 2)
                     };
                     assert!(
                         width <= reach(out_width, out_height)
