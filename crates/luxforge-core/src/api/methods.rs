@@ -144,7 +144,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "activity.list",
         NoParams,
         owner::activity_list,
-        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {fraction, message} and job_id when known; job_id names the job that job.status (source work), analysis.read (histograms) or module.job.read (capability jobs) also answers, all with the shared status vocabulary (queued, running, ready, failed, cancelled, superseded); sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
+        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {fraction, message} and job_id when known; job_id names the job that job.status (source work), analysis.read (histograms), module.job.read (capability jobs) or export.read (kind export) also answers, all with the shared status vocabulary (queued, running, ready, failed, cancelled, superseded); sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
     ),
     owner!(
         "job.adopt",
@@ -539,6 +539,32 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::AnalysisJobParams,
         owner::analysis_cancel,
         "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}"
+    ),
+    // JPEG export (`docs/design/export.md`): the owner plans in O(layers) and checks the
+    // destination; the render, encode and write run on its export lane.
+    owner!(
+        "export.plan",
+        owner::export::ExportPlanParams,
+        owner::export::plan,
+        "{asset_id, entry_id, snapshot_id, width, height, suggested}: the output stage of a saved entry's compiled recipe, the current entry unless entry_id names another, and suggested, an absolute path <original stem>-edited.jpg (or -edited-2.jpg ...) beside the original that does not exist yet, or null; renders and prepares nothing; a stack the host cannot evaluate is refused with its reason"
+    ),
+    owner!(
+        "export.jpeg",
+        owner::export::ExportJpeg,
+        owner::export::jpeg,
+        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond) and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event"
+    ),
+    owner!(
+        "export.read",
+        owner::export::ExportJobParams,
+        owner::export::read,
+        "{job_id, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}}; status is queued, running, ready, failed or cancelled; progress.message names the phase (rendering, encoding, writing); result is {path, bytes, width, height, metadata}, metadata listing the EXIF fields written; any client may read any export job; the owner keeps the last 32 finished"
+    ),
+    owner!(
+        "export.cancel",
+        owner::export::ExportJobParams,
+        owner::export::cancel,
+        "cancels an export for every client: a queued job never starts, a running one stops at its next row or block and removes its temporary file, a finished one is returned unchanged; returns the job as export.read does"
     ),
     service!(
         "artifact.status",
@@ -2161,6 +2187,7 @@ mod tests {
             ("module.activate", "request"),
             ("module.resource.install", "request"),
             ("module.job.cancel", "request"),
+            ("export.jpeg", "request"),
         ] {
             assert_eq!(listed[name]["mutation"], json!(envelope), "{name}");
         }

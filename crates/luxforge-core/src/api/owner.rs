@@ -17,7 +17,7 @@ use crate::{
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
     capabilities::{
         host::{CapabilityHost, announce_once},
-        jobs::Origin,
+        jobs::{Jobs, Origin},
     },
     editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
     source::{PlaneGate, RawPrepared},
@@ -42,6 +42,9 @@ use std::{thread, time::Duration};
 #[cfg(test)]
 mod artifact_tests;
 pub(super) mod capability;
+pub(super) mod export;
+#[cfg(test)]
+mod export_tests;
 mod point;
 mod requests;
 
@@ -104,6 +107,14 @@ enum OwnerMessage {
     /// How many capability lane threads have started, for tests that prove discovery is inert.
     #[cfg(test)]
     CapabilityThreads(SyncSender<usize>),
+    /// The export lane finished a job, posted the same way.
+    ExportFinished {
+        job_id: JobId,
+        result: Result<Value, Error>,
+    },
+    /// Hold every export job accepted from now on as it begins each phase, or stop holding them.
+    #[cfg(test)]
+    HoldExports(Option<export::Hold>),
     /// Hold the point worker before each evaluation, or release that hold.
     #[cfg(test)]
     HoldPoints(Option<point::Hold>),
@@ -950,11 +961,20 @@ impl OwnerHandle {
             }),
             activity.clone(),
         );
+        // And the export lane, the same lane runner's `export` lane in a table of the owner's own.
+        let export_sender = sender.clone();
+        let exports = Jobs::new(
+            Arc::new(move |job_id, result| {
+                let _ = export_sender.send(OwnerMessage::ExportFinished { job_id, result });
+            }),
+            activity.clone(),
+        );
         let owner_activity = activity.clone();
         let join = std::thread::spawn(move || {
             owner_loop(
                 service,
                 host,
+                exports,
                 completions,
                 receiver,
                 jobs,
@@ -1012,6 +1032,14 @@ impl OwnerHandle {
             .send(OwnerMessage::CapabilityThreads(reply))
             .expect("the owner is running");
         answer.recv().expect("the owner answered")
+    }
+
+    /// Have every export accepted from now on call `hold` as it begins each phase, or stop.
+    #[cfg(test)]
+    pub(crate) fn hold_exports(&self, hold: Option<export::Hold>) {
+        self.sender
+            .send(OwnerMessage::HoldExports(hold))
+            .expect("the owner is running");
     }
 
     /// Have the point worker call `hold` before each evaluation, or stop holding it.
@@ -1110,9 +1138,11 @@ impl OwnerHandle {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn owner_loop(
     service: EditorService,
     host: CapabilityHost,
+    exports: Jobs,
     completions: SyncSender<OwnerMessage>,
     receiver: Receiver<OwnerMessage>,
     jobs: SourceJobs,
@@ -1129,6 +1159,9 @@ fn owner_loop(
     let mut owner = Owner {
         service,
         host,
+        exports,
+        #[cfg(test)]
+        export_hold: None,
         jobs,
         sessions: HashMap::new(),
         analyses: AnalysisStore::default(),
@@ -1174,6 +1207,12 @@ fn owner_loop(
             OwnerMessage::CapabilityThreads(reply) => {
                 let _ = reply.send(owner.host.lanes_started());
             }
+            OwnerMessage::ExportFinished { job_id, result } => {
+                export::finished(&mut owner, &job_id, result);
+                owner.record_announced();
+            }
+            #[cfg(test)]
+            OwnerMessage::HoldExports(hold) => owner.export_hold = hold,
             OwnerMessage::WatchEvents { client, wake } => {
                 owner.watchers.insert(client, wake);
             }
@@ -1206,12 +1245,19 @@ fn owner_loop(
         job.cancelled.store(true, Ordering::Relaxed);
     }
     owner.jobs.gate.wake();
-    let Owner { jobs, mut host, .. } = owner;
+    let Owner {
+        jobs,
+        mut host,
+        mut exports,
+        ..
+    } = owner;
     drop(jobs);
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
-    // left waiting on a full channel while the owner waits for it.
+    // left waiting on a full channel while the owner waits for it. A running export stops at its
+    // next row or block and removes its temporary file.
     drop(receiver);
     host.shutdown();
+    exports.shutdown();
     let _ = worker.join();
 }
 
@@ -1270,6 +1316,11 @@ pub(super) struct Call<'a> {
 pub(super) struct Owner {
     pub(super) service: EditorService,
     pub(super) host: CapabilityHost,
+    /// The export lane and its jobs: the capability host's lane runner, in a table of the owner's.
+    exports: Jobs,
+    /// What every export accepted from now on calls as it begins each phase.
+    #[cfg(test)]
+    export_hold: Option<export::Hold>,
     jobs: SourceJobs,
     sessions: HashMap<ClientId, ClientSession>,
     analyses: AnalysisStore,
@@ -4071,6 +4122,44 @@ mod tests {
             wait_source(&owner, client, collect["job_id"].as_str().unwrap())["status"],
             "ready"
         );
+
+        // export: the event is recorded when the job has written its file, so the retry is sent
+        // after that, and answers with the same job rather than a conflict on the file it wrote.
+        let exported = temp("retry-families-export.jpg");
+        let export =
+            json!({"asset_id": asset, "destination": exported, "mutation": request("export-1")});
+        let first = ok(&owner, client, "export", "export.jpeg", export.clone());
+        assert_eq!(first["deduplicated"], json!(false));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while ok(
+            &owner,
+            client,
+            "read",
+            "export.read",
+            json!({"job_id": first["job_id"]}),
+        )["status"]
+            != "ready"
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the export never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let (events, exported_at) = events_after(&owner, client, 0);
+        assert_eq!(
+            events.last(),
+            Some(&("export.jpeg".to_owned(), "export".to_owned()))
+        );
+        let retried = ok(&owner, client, "export", "export.jpeg", export);
+        assert_eq!(retried["deduplicated"], json!(true));
+        assert_eq!(retried["job_id"], first["job_id"]);
+        assert_eq!(events_after(&owner, client, 0).1, exported_at);
+        conflict(
+            "export.jpeg",
+            json!({"asset_id": asset, "destination": temp("retry-families-other.jpg"), "mutation": request("export-1")}),
+        );
+        std::fs::remove_file(exported).unwrap();
 
         // history, a revisioned family: the catalog's request table answers its retry.
         pixel_edit(&owner, client, &asset, 0, "edit-1", [1, 2, 3]);
