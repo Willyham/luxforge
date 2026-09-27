@@ -444,7 +444,7 @@
     {
       "id": "TASK-007",
       "description": "Give tests one sRGB reference module in `luxforge-reference`, with named decode, encode and quantize variants, and replace the private sRGB transcriptions scattered across test code with it.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
