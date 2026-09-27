@@ -15,10 +15,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-// Use the process's shared pool only for photo-sized active areas. A row owns
-// its output; stages and channels still join in order and reuse one warp plane.
-const PARALLEL_CORRECTION_PIXELS: u64 = crate::limits::PARALLEL_PIXELS;
-
 fn correction_rows(
     pixels: &mut [f32],
     width: usize,
@@ -608,8 +604,10 @@ impl DngCorrection {
     /// here: like the development before it, this checks no finiteness, and
     /// the one check is the caller's, where it adopts the converted planes.
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
+        // Use the process's shared pool only for photo-sized active areas. A row owns its output;
+        // stages and channels still join in order and reuse one warp plane.
         let parallel = u64::from(self.active.width) * u64::from(self.active.height)
-            >= PARALLEL_CORRECTION_PIXELS;
+            >= crate::limits::PARALLEL_PIXELS;
         self.apply_rows(rgb, cancel, parallel)
     }
 

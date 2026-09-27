@@ -37,12 +37,6 @@ use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};
 use spatial::fill_planes;
 pub use window::RegionFallback;
 
-/// [`luxforge_raw::PARALLEL_PIXELS`] under this driver's own name.
-const PARALLEL_RENDER_PIXELS: u64 = luxforge_raw::PARALLEL_PIXELS;
-/// A sub-megapixel pass with several colour units has enough independent row chunks to pay for
-/// using the existing Rayon pool. Below this size, dispatch costs can outweigh the colour work.
-/// [`luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS`] under this driver's own name.
-const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS;
 /// The detail every cancelled pass carries. The kind is the meaning; nothing about the work itself
 /// went wrong, so there is nothing image-specific to say.
 pub(crate) const CANCELLED: &str = "superseded by a newer request";
@@ -802,7 +796,7 @@ fn resample_frame(
         }
         Ok(())
     };
-    if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+    if u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS {
         output
             .par_chunks_exact_mut(row_bytes)
             .enumerate()
@@ -2958,7 +2952,7 @@ mod tests {
                 }
             }
             assert!(
-                u64::from(raster.width) * u64::from(raster.height) > PARALLEL_RENDER_PIXELS
+                u64::from(raster.width) * u64::from(raster.height) > luxforge_raw::PARALLEL_PIXELS
                     || width == 64,
                 "{case}: {}x{} does not reach the parallel row path",
                 raster.width,
@@ -4613,7 +4607,7 @@ mod tests {
         let registry = colour_registry();
         let source = gradient(1200, 900);
         assert!(
-            u64::from(source.width) * u64::from(source.height) >= PARALLEL_RENDER_PIXELS,
+            u64::from(source.width) * u64::from(source.height) >= luxforge_raw::PARALLEL_PIXELS,
             "the case must reach the parallel row-chunk path"
         );
         let raster = render(

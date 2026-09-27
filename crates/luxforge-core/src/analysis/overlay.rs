@@ -6,7 +6,7 @@
 //! maps to it, so an isolated clipped pixel survives a Fit reduction instead of disappearing into a
 //! blurred thumbnail, and a cell grid equal to the image is one to one.
 
-use super::{Clip, PARALLEL_REDUCE_PIXELS, clip_class};
+use super::{Clip, clip_class};
 use crate::Error;
 #[cfg(test)]
 use crate::ErrorKind;
@@ -78,7 +78,7 @@ pub fn overlay(
     let cells = (cells_w as usize) * (cells_h as usize);
     let row_bytes = (width as usize) * 4;
     let mut grid = vec![OVERLAY_NONE; cells];
-    if pixels >= PARALLEL_REDUCE_PIXELS {
+    if pixels >= luxforge_raw::PARALLEL_PIXELS {
         let partials = partial_grid_count(cells, cells_h, height, rayon::current_num_threads());
         if partials > 0 {
             fold_partial_grids(&mut grid, rgba, width, height, cells_w, cells_h, partials);
@@ -357,7 +357,7 @@ mod tests {
         let clipped = |x: u32, y: u32| ((y as usize) * (width as usize) + x as usize) * 4;
         rgba[clipped(5, 7)] = 0;
         rgba[clipped(1000, 1000) + 1] = 255;
-        assert!(u64::from(width) * u64::from(height) >= PARALLEL_REDUCE_PIXELS);
+        assert!(u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS);
         let parallel = overlay(&rgba, width, height, 8, 8).unwrap();
         let serial = serial_oracle(&rgba, width, height, 8, 8);
         assert_eq!(parallel, serial);
@@ -452,7 +452,7 @@ mod tests {
     fn tiny_grids_match_the_oracle_for_nondivisible_tall_and_single_row_inputs() {
         for (width, height) in [(1021, 1025), (17, 65_537), (1_000_003, 1)] {
             let rgba = sparse_clipping_frame(width, height);
-            assert!(u64::from(width) * u64::from(height) >= PARALLEL_REDUCE_PIXELS);
+            assert!(u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS);
             for (cells_w, cells_h) in [(1, 1), (8, 8), (MAX_OVERLAY_CELLS, 1), (127, 3)] {
                 assert_eq!(
                     overlay(&rgba, width, height, cells_w, cells_h).unwrap(),

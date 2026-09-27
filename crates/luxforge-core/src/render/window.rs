@@ -752,8 +752,8 @@ mod tests {
         // The whole stage is below the ordinary million-pixel pool threshold but above the
         // heavy-colour threshold; every quarter is below both and uses the serial row path.
         let (width, height) = (899, 831);
-        assert!(u64::from(width) * u64::from(height) < super::super::PARALLEL_RENDER_PIXELS);
-        assert!(u64::from(width) * u64::from(height) >= super::super::PARALLEL_HEAVY_COLOUR_PIXELS);
+        assert!(u64::from(width) * u64::from(height) < luxforge_raw::PARALLEL_PIXELS);
+        assert!(u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS);
         let registry = ModuleRegistry::builtin();
         let stack = recipe(
             vec![layer(
@@ -801,7 +801,7 @@ mod tests {
                         width: x1 - x0,
                         height: y1 - y0,
                     };
-                    assert!(rect.pixels() < super::super::PARALLEL_HEAVY_COLOUR_PIXELS);
+                    assert!(rect.pixels() < luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS);
                     let crate::RegionRenderOutcome::Rendered(part) =
                         render.region(SnapshotId::new(), rect).unwrap()
                     else {
