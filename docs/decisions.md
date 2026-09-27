@@ -192,6 +192,18 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
 
+## Source-kind controls
+
+Decided by the owner on 2026-09-27, who took every recommended default of the [source controls](design/source-controls.md#decisions) design:
+
+- **Exposure is Basic's on every kind.** On a RAW photo it multiplies the developed scene-linear planes in Basic's colour stage, and the source development carries no exposure.
+- **A masked white balance on RAW is relative**, Basic's ±100, as Lightroom's local Temp and Tint are.
+- **JPEG keeps the frozen relative ±100 Temperature and Tint**, with As shot at 0 and 0. Basic's tint unit stays twice RAW's.
+- **RAW keeps 2000–12000 K and ±100 Luxforge tint.**
+- **Lightroom `Temperature` and `Tint` import converts** both together through the illuminant chromaticity they name, and refuses the pair when either result is outside the RAW ranges. It converts values and does not match renderings.
+- **Presets store each kind's white balance separately.** Apply skips and reports a setting that does not apply to the photo's kind.
+- **Reset Basic on a RAW photo also returns the development to As shot**, as one history entry.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -204,7 +216,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
-- Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
+- Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
