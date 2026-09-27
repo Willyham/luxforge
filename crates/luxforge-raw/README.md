@@ -1,6 +1,6 @@
 # Luxforge RAW adapter
 
-`luxforge-raw` is the only Luxforge crate with an explicit unsafe FFI boundary. It builds pinned native source locally; the rest of the workspace keeps its `forbid(unsafe_code)` rule. The safe API takes source bytes owned by the caller, unpacks one qualified RAW image on a worker, retains one immutable sensor mosaic, and develops green-normalized white-balance edits (positive gains up to 32×) into one owned planar float allocation. It never rewrites an original or creates an intermediate file. [THIRD_PARTY.md](THIRD_PARTY.md) records provenance, notices, build flags, and the exact native source selection.
+`luxforge-raw` is one of the few Luxforge crates with an explicit unsafe FFI boundary ([architecture](../../docs/design/architecture.md#workspace)). It builds pinned native source locally; the rest of the workspace keeps its `forbid(unsafe_code)` rule. The safe API takes source bytes owned by the caller, unpacks one qualified RAW image on a worker, retains one immutable sensor mosaic, and develops green-normalized white-balance edits (positive gains up to 32×) into one owned planar float allocation. It never rewrites an original or creates an intermediate file. [THIRD_PARTY.md](THIRD_PARTY.md) records provenance, notices, build flags, and the exact native source selection.
 
 ```rust
 let source = RawSource::decode(verified_bytes, &cancel)?;

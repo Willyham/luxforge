@@ -103,6 +103,7 @@ Luxforge is written in Rust with a deliberately small core. The core owns the ca
 | Crate | What it holds |
 | --- | --- |
 | `luxforge-core` | Images, recipes, rendering, the SQLite catalog and history, preview scheduling, the JSON API |
+| `luxforge-jpeg` | The one JPEG codec (libjpeg-turbo) for reading originals and writing exports, with the JPEG container around it; depends on no workspace crate |
 | `luxforge-process` | CPU, memory and GPU counters for the editor process |
 | `luxforge-raw` | RAW decoding and development |
 | `luxforge-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
