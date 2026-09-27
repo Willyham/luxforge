@@ -72,6 +72,7 @@ mod sync_tests;
 pub(crate) mod tasks;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod thumbnails;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
@@ -437,6 +438,13 @@ pub(crate) struct Editor {
     pub(crate) mask_command_in_flight: bool,
     /// A coverage grid the preview worker filled beside a frame, waiting for the presenter.
     pub(crate) mask_overlay_pending: Option<(u64, luxforge_core::analysis::MaskOverlay)>,
+    /// One active and one replaceable pending job filling every mask's coverage thumbnail, off the
+    /// UI thread and the owner thread.
+    pub(crate) thumbnail_queue: thumbnails::ThumbnailQueue,
+    /// The settled stack the thumbnails describe, and whether it has been asked for.
+    pub(crate) thumbnail_source: thumbnails::ThumbnailSource,
+    /// Every mask's thumbnail as the worker last delivered them.
+    pub(crate) thumbnails: state::masks::MaskThumbnails,
     /// What the desktop knows about every capability-declaring module: its last settings and
     /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
     /// the authoritative state; this is what was last read back.
@@ -654,6 +662,9 @@ impl Editor {
             last_mask_request: None,
             mask_command_in_flight: false,
             mask_overlay_pending: None,
+            thumbnail_queue: thumbnails::ThumbnailQueue::default(),
+            thumbnail_source: thumbnails::ThumbnailSource::default(),
+            thumbnails: state::masks::MaskThumbnails::default(),
             capabilities: Tracked::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
@@ -669,6 +680,7 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        editor.thumbnail_queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
@@ -744,7 +756,9 @@ impl Editor {
             self.local_pan,
         );
         let previous_view_epoch = self.view_plan_epoch;
-        let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
+        let busy = self.preview_queue.is_busy()
+            || self.overlay_queue.is_busy()
+            || self.thumbnail_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
         if (self.session.preview.view.zoom != zoom
@@ -791,6 +805,7 @@ impl Editor {
         let synced = self.sync_when_wanted();
         let task = self.sync_mode(Task::batch([task, sample, rebase, abandoned, synced]));
         self.refresh_overlay();
+        self.refresh_thumbnails();
         let rederive_started = Instant::now();
         self.rederive();
         // A capability section is read for the first time once it is on screen: its first read is
@@ -805,7 +820,11 @@ impl Editor {
         // A queue that went busy in this message may finish before the runtime has built the waker
         // subscription for it. The signal is buffered rather than lost, so this is the second
         // guarantee and it is free: `Poll` against an empty queue does nothing at all.
-        let woken = if !busy && (self.preview_queue.is_busy() || self.overlay_queue.is_busy()) {
+        let woken = if !busy
+            && (self.preview_queue.is_busy()
+                || self.overlay_queue.is_busy()
+                || self.thumbnail_queue.is_busy())
+        {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
             Task::none()
@@ -879,6 +898,7 @@ impl Editor {
             selected_component: self.selected_component.as_ref(),
             hovered_component: self.hovered_component.as_ref(),
             hidden_masks: &self.hidden_masks,
+            thumbnails: &self.thumbnails,
             mask_draft: self.mask_shape(),
             mask_mode: self.mask_mode,
             brush: self.brush,
@@ -1060,6 +1080,7 @@ impl Editor {
         self.state.is_some()
             || self.preview_queue.is_busy()
             || self.overlay_queue.is_busy()
+            || self.thumbnail_queue.is_busy()
             || luxforge_ui::surface_retirement_pending()
     }
 

@@ -76,6 +76,8 @@ pub(crate) fn tools_panel<'a>(
         panel = panel.push(crate::view::masks_panel::masks_panel(masks, menu, plot));
         // The adjustments below the list are the maskable modules' own sections, bound to the open
         // mask; with no mask open there is nothing for them to apply through, so they stay out.
+        // They follow the list with no label of their own: each band's scope chip names the mask it
+        // edits through, which is what says these are not the global sections.
         if masks.selected.is_none() {
             return scrollable(panel)
                 .id(scroll_id())
@@ -83,9 +85,6 @@ pub(crate) fn tools_panel<'a>(
                 .height(Length::Fill)
                 .into();
         }
-        panel = panel.push(
-            iced::widget::container(section_label("Adjustments")).padding(theme::SECTION_PADDING),
-        );
     }
     for section in &model.sections {
         panel = panel.push(section_view(section, menu, plot));
@@ -248,6 +247,7 @@ fn section_view<'a>(
             unavailable: section.unavailable.clone(),
             reset: section.reset.is_some(),
             status: section.status.clone(),
+            scope: section.scope.clone(),
             enabled: section.enabled,
         },
         Message::Control(ControlMessage::ToggleSection(section.module_id.clone())),

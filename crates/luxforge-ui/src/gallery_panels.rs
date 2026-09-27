@@ -43,6 +43,7 @@ fn band(
         unavailable: unavailable.map(Into::into),
         reset: true,
         status: None,
+        scope: None,
         enabled: true,
     }
 }
@@ -255,7 +256,9 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
         .into();
 
     // -- One-line truncation: the two modules' real hints end in an ellipsis inside their band,
-    // -- as default.png draws them, and so does an unavailable reason that does not fit.
+    // -- as default.png draws them, and so does an unavailable reason that does not fit. Under
+    // -- them, two bands bound to a mask as mask-mode.png draws them: the hint gives way to the
+    // -- scope chip on a collapsed band, and the chip sits before the reset on an expanded one.
     let long_bands: Element<'static, ()> = column![
         section_header(
             &band(
@@ -284,6 +287,27 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
                 None,
                 Some("Unavailable \u{b7} disabled by --disable-module lens-profile")
             ),
+            (),
+            ()
+        ),
+        section_header(
+            &SectionHeaderModel {
+                scope: Some("Face".into()),
+                ..band(
+                    "Colour mixer",
+                    false,
+                    Some("Hue, saturation and luminance by range"),
+                    None
+                )
+            },
+            (),
+            ()
+        ),
+        section_header(
+            &SectionHeaderModel {
+                scope: Some("Face".into()),
+                ..band("Presence", true, None, None)
+            },
             (),
             ()
         ),

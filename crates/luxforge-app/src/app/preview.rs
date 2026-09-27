@@ -312,6 +312,9 @@ impl Editor {
                 while let Some(done) = self.overlay_queue.poll() {
                     self.overlay_ready(done);
                 }
+                while let Some(done) = self.thumbnail_queue.poll() {
+                    self.thumbnails_ready(done);
+                }
                 let delivered = self.deliver_previews();
                 return Task::batch([delivered, self.poll_again()]);
             }
@@ -584,7 +587,8 @@ impl Editor {
     /// signal and coalesces, so the signal of a result behind the one just presented may already
     /// have been spent; a result that finishes after this check posts its own.
     pub(super) fn poll_again(&self) -> Task<Message> {
-        if self.overlay_queue.ready() || self.preview_queue.ready() {
+        if self.overlay_queue.ready() || self.preview_queue.ready() || self.thumbnail_queue.ready()
+        {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
             Task::none()
@@ -1462,6 +1466,7 @@ impl Editor {
                 ),
             }
         }
+        self.note_thumbnail_source(&job);
         let bounds = job.proxy;
         let intent = job.intent;
         let requested_view = job.viewport;

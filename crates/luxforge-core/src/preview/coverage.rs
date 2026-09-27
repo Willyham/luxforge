@@ -135,9 +135,7 @@ impl Evaluation {
                     }
                     if let PreviewSource::Raw { settings, .. } = self.source() {
                         std::fmt::write(&mut Sink(&mut hasher), format_args!("{settings:?}"))
-                            .map_err(|_| {
-                                Error::internal("RAW settings could not be formatted")
-                            })?;
+                            .map_err(|_| Error::internal("RAW settings could not be formatted"))?;
                     }
                 }
                 Err(error) => error.detail.hash(&mut hasher),

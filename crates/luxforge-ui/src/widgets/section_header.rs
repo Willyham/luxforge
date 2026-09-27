@@ -4,7 +4,9 @@
 //! [`theme::MODULE_HEADER_HEIGHT`] on the Bar surface carrying the disclosure, the title, the
 //! accent dot for a non-neutral module, and either the hint (collapsed) or the module reset
 //! (expanded). It is the same height expanded or collapsed, so the panel does not jump. An
-//! unavailable module's band shows its reason in the clipping red and does not expand.
+//! unavailable module's band shows its reason in the clipping red and does not expand. A band bound
+//! to a mask carries that mask's name as an accent scope chip before its reset, collapsed or
+//! expanded, so a slider under it never reads as a global one.
 
 use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
 use super::truncated_text::truncated_text;
@@ -30,8 +32,18 @@ pub struct SectionHeaderModel {
     /// A short word for the section's own state while expanded, drawn in the accent before the
     /// reset, such as Draft while its canvas draft is open.
     pub status: Option<String>,
+    /// The name of the mask this section edits through, drawn as an accent chip after the hint and
+    /// before the reset. `None` for a section bound to the global layer.
+    pub scope: Option<String>,
     pub enabled: bool,
 }
+
+/// The scope chip's label size: the small caption size, semibold.
+const SCOPE_SIZE: f32 = theme::SIZE_SMALL_CAPTION;
+/// The scope chip's padding, vertical then horizontal.
+const SCOPE_PADDING: [f32; 2] = [1.0, 6.0];
+/// The scope chip's corner radius.
+const SCOPE_RADIUS: f32 = 4.0;
 
 /// The band's total height including the border above it: what a collapsed section occupies.
 pub const fn collapsed_section_height() -> f32 {
@@ -119,6 +131,12 @@ pub fn section_header<'a, M: Clone + 'a>(
         );
     }
 
+    if model.unavailable.is_none()
+        && let Some(scope) = &model.scope
+    {
+        header = header.push(scope_chip(scope));
+    }
+
     if model.reset && model.expanded && model.unavailable.is_none() {
         header = header.push(header_icon_button(
             &IconButtonModel {
@@ -182,6 +200,32 @@ pub(crate) fn hairline<'a, M: 'a>(style: fn(&Theme) -> container::Style) -> Elem
         .into()
 }
 
+/// The scope chip: the bound mask's name in the accent, semibold, on the accent tint the band's own
+/// Bar surface takes it at ([`theme::STRIP_SELECTED`], the accent at 16% over the Bar). It is not a
+/// button — the band's press still toggles the section — and it never wraps: the hint before it is
+/// what gives way.
+fn scope_chip<'a, M: 'a>(scope: &str) -> Element<'a, M> {
+    container(
+        text(scope.to_owned())
+            .size(SCOPE_SIZE)
+            .font(theme::FONT_SEMIBOLD)
+            .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
+            .wrapping(Wrapping::None)
+            .color(theme::ACCENT),
+    )
+    .padding(SCOPE_PADDING)
+    .style(|_theme: &Theme| {
+        container::Style::default()
+            .background(theme::STRIP_SELECTED)
+            .border(Border {
+                radius: SCOPE_RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            })
+    })
+    .into()
+}
+
 /// A small filled circle in the accent colour, marking a non-neutral module.
 pub(crate) fn accent_dot<'a, M: 'a>() -> Element<'a, M> {
     container(Space::new())
@@ -202,6 +246,38 @@ pub(crate) fn accent_dot<'a, M: 'a>() -> Element<'a, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scope chip is the board's `.scope`: 10.5 pt semibold accent on the accent at 16% over
+    /// the Bar, radius 4, padding 1 × 6. It is 16 pt tall, so it fits the 32 pt band and leaves the
+    /// band's height, collapsed or expanded, what it was.
+    #[test]
+    fn the_scope_chip_is_the_boards_accent_chip_inside_the_band() {
+        assert_eq!(SCOPE_SIZE, 10.5);
+        assert_eq!((SCOPE_PADDING, SCOPE_RADIUS), ([1.0, 6.0], 4.0));
+        const {
+            assert!(
+                theme::CAPTION_LINE_HEIGHT + 2.0 * SCOPE_PADDING[0] <= theme::MODULE_HEADER_HEIGHT
+            );
+        }
+        for (expanded, reset) in [(false, true), (true, true), (true, false)] {
+            let _: Element<'_, ()> = section_header(
+                &SectionHeaderModel {
+                    title: "Basic".into(),
+                    expanded,
+                    active: true,
+                    hint: Some("Exposure +0.60 · Shadows +20".into()),
+                    unavailable: None,
+                    reset,
+                    status: None,
+                    scope: Some("Face".into()),
+                    enabled: true,
+                },
+                (),
+                (),
+            );
+        }
+        assert_eq!(collapsed_section_height(), 33.0);
+    }
 
     /// The Module panels design's resulting heights at 300 pt: a collapsed section is 33 pt, and
     /// an expanded section is its band plus padding, its rows and the gaps between them.
