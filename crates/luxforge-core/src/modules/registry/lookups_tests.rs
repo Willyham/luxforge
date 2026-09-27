@@ -1,8 +1,9 @@
 //! Tests of the registry's lookups.
 use super::{tests::*, *};
+use crate::modules::raw::RAW_EFFECT;
 use crate::{
     ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, ORIENTATION_EFFECT,
-    Orientation, PIXEL_EFFECT, RAW_EFFECT,
+    Orientation, PIXEL_EFFECT,
     modules::{ActionInput, Availability, ModuleDescriptor},
 };
 use serde_json::{Value, json};

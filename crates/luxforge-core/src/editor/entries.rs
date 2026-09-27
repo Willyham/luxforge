@@ -618,6 +618,7 @@ mod tests {
                     },
                     label: "Again".into(),
                     touched: None,
+                    skipped: Vec::new(),
                 },
             )
             .unwrap();

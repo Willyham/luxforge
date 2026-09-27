@@ -28,6 +28,7 @@ step_from! {
     PickStep => Pick,
     SliderDraftStep => SliderDraft,
     ViewStep => View,
+    ViewIdleStep => ViewIdle,
     WorkspaceStep => Workspace,
     PreviewStep => Preview,
     PaletteStep => Palette,
@@ -80,6 +81,11 @@ impl Step {
 
     pub fn hover(x: u32, y: u32) -> Self {
         Self::Hover { x, y }
+    }
+
+    /// One key pressed on the photograph: a letter or digit, or [`crate::KEY_ESCAPE`].
+    pub fn key(key: impl Into<String>) -> Self {
+        Self::Key { key: key.into() }
     }
 
     pub fn pan(x: f32, y: f32) -> Self {
@@ -155,6 +161,7 @@ impl SliderStep {
             values: values.into(),
             end: SliderEnd::Open,
             interval_ms: None,
+            pan_path: Vec::new(),
         }
     }
 
@@ -178,6 +185,11 @@ impl SliderStep {
             interval_ms: Some(interval_ms),
             ..self
         }
+    }
+
+    /// Pair each paced value with a relative scrollable offset on the photograph.
+    pub fn pan_path(self, pan_path: Vec<[f32; 2]>) -> Self {
+        Self { pan_path, ..self }
     }
 }
 

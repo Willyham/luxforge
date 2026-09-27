@@ -153,7 +153,8 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 
 ## RAW white-balance drafts
 
-- The `raw-panel` scenario checks a drafted RAW white balance relative to the drag (owner, 2026-09-26): at Fit and at 100% the released exact frame is within a tenth of the drag's own change from the approximate frame, and at Fit within one code of it on average. The Air 2S's full-size error at a strong gain change is above a code, which the design's accuracy table already records; see [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
+- The original `raw-panel` criterion (owner, 2026-09-26) compared the drafted frame shown during motion with the released exact frame relative to the drag's own change: within 10% at Fit and at 100%, and within one code on average at Fit. On the recorded final review binary the Air 2S moving 100% result missed that criterion at 17.33%; see [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
+- The owner revised the 100% qualification on 2026-09-27: assess motion and a held, full-detail draft separately. At 100% the 10% relative-to-adjustment quality gate applies to the approximate drafted frame **after full-detail visible-region refinement under the shared 120 ms quiet policy, before release**. Motion must present the correct viewport identity, label the white balance approximate, respond visibly and refine to full detail; its half-resolution softness is recorded, without a chosen numeric softness threshold or a claim that every photo's moving quality is acceptable. At Fit the 10% relative gate and one-code mean gate remain. Release still redevelops RAW exactly. The recorded moving residuals (Z6 2.42%, X100VI 3.69%, Air 2S 17.33%) mix softness and white-balance error; fresh native `raw-panel` runs of the revised verifier pass for the Z6, X100VI and Air 2S, with held 100% residuals of 0.805669%, 1.387562% and 5.056605%, respectively. The original moving residuals remain recorded separately. These checks do not establish a general photo-error bound.
 
 ## Post-consolidation review
 
@@ -180,6 +181,17 @@ Decided by the owner on 2026-09-26, who took the recommendations of a whole-code
 
 Not adopted: deferring the whole capabilities framework until the first Corrections adapter. Still open: where Detail's sharpening and noise reduction run (below).
 
+## Interactive previews at 100%
+
+Decided on 2026-09-27. The owner accepted the viewport behavior and authorized implementation; current behavior is described in [viewport rendering](design/instant-preview.md#viewport-rendering-at-100).
+
+- Immediate adjustment feedback takes priority while dragging. A briefly softer image at 100% is acceptable during motion, with full detail restored on pause or release and the full-image histogram marked updating meanwhile.
+- Clipping follows the displayed viewport while exact region pixels are outstanding: the overlay is marked approximate, uses the existing OR-of-clipped-pixels rule on a viewport-bounded grid with the existing 4096-cells-per-side cap, and is replaced by a matching exact-region overlay on refinement. Region, content and quality identity travel with the overlay; missing or stale tiles have no overlay. Viewport clipping never substitutes for whole-image counts.
+- Exact settled pixels, full-image analysis, sampling and export remain the reference. The viewport implementation uses the documented half-scale proxy during motion and exact visible-region refinement under the shared quiet policy; unsupported stacks use their named fallback.
+- The implementation authorization is not a latency or total-memory qualification result. Additional quality levels, guide approximation and GPU preview arithmetic, plus their numerical error limits, remain open in [product decisions](../tasks/product-decisions.json).
+
+The owner provisionally accepted on 2026-09-27 the surface's temporary overlap ceiling: one current and one retiring full-photo allocation of at most 512 MiB each, plus two region sets of at most 32 MiB each, for up to 1088 MiB of photo textures including retirement. This is an engineering ceiling for those slots, not a total editor or GPU product budget. Crop GPU textures and tiles, overlays and backend upload staging are outside that total and are not fully measured. Their residency must be measured and bounded before a total-memory guarantee; the follow-up is in the [rendering plan](../tasks/rendering.json).
+
 ## Export
 
 Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decisions), beyond the export contract under [editing and storage](#editing-and-storage):
@@ -195,6 +207,18 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
 
+## Source-kind controls
+
+Decided by the owner on 2026-09-27, who took every recommended default of the [source controls](design/source-controls.md#decisions) design:
+
+- **Exposure is Basic's on every kind.** On a RAW photo it multiplies the developed scene-linear planes in Basic's colour stage, and the source development carries no exposure.
+- **A masked white balance on RAW is relative**, Basic's ±100, as Lightroom's local Temp and Tint are.
+- **JPEG keeps the frozen relative ±100 Temperature and Tint**, with As shot at 0 and 0. Basic's tint unit stays twice RAW's.
+- **RAW keeps 2000–12000 K and ±100 Luxforge tint.**
+- **Lightroom `Temperature` and `Tint` import converts** both together through the illuminant chromaticity they name, and refuses the pair when either result is outside the RAW ranges. It converts values and does not match renderings.
+- **Presets store each kind's white balance separately.** Apply skips and reports a setting that does not apply to the photo's kind.
+- **Reset Basic on a RAW photo also returns the development to As shot**, as one history entry.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -206,8 +230,9 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
+- For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above.
 - Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
-- Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
+- Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).

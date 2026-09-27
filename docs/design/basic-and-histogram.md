@@ -94,7 +94,7 @@ The core owns one draft per client session, held in `ClientSession.draft` and re
 
 `conflicted` is `base_revision != current revision` of the asset, evaluated whenever the draft is read, set, committed or reported, so a commit by any client, including this client's own undo, redo or restore, marks the draft without a notification path. Draft state is session state: it emits no event and appears in no history. Two drafts of different clients never interact. A draft's effective recipe is the current snapshot with the action's plan applied to the draft's fields, computed on demand and never persisted; a `NoOp` plan means the current recipe.
 
-Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<DraftId>` beside `layer_count`; the job renders the draft's effective recipe and carries `draft_revision` for correlation. `render.sample` accepts an optional `draft_id` and samples the same effective recipe. The desktop bound is one round trip in flight: a pointer move sends `draft.set` and the one preview job for the value it accepted the moment nothing is in flight, synchronously on the desktop thread ([instant previews](instant-preview.md#one-frame-per-hop)), and only records the newest value while one is; the answer sends that newest value. There is no tick and no timer. At Fit the job's proxy phase is what the drag shows and its exact phase is what the histogram reads. Release, key-up or Enter sends `draft.commit`, Escape and focus loss send `draft.cancel`, and an external revision shows the existing Changed elsewhere notice with Discard (`draft.cancel`) and Reapply (`draft.reapply`) while the slider keeps the drafted value. Leaving the mode or starting Compare with a draft open is refused as it is for crop, whose draft is on the same core lifecycle.
+Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<DraftId>` beside `layer_count`; the job renders the draft's effective recipe and carries `draft_revision` for correlation. `render.sample` accepts an optional `draft_id` and samples the same effective recipe. The desktop allows one round trip in flight: a pointer move sends `draft.set` and requests the accepted value's preview synchronously on the desktop thread ([instant previews](instant-preview.md#one-frame-per-hop)), and records only the newest value while a round trip is pending. At Fit the proxy follows motion; the exact phase and whole-image report wait for the shared 120 ms quiet policy or release. At 100% and above, motion shows a half-scale visible region and the clipping overlay follows that region until exact detail arrives. Release, key-up or Enter sends `draft.commit`, Escape and focus loss send `draft.cancel`, and an external revision shows the existing Changed elsewhere notice with Discard (`draft.cancel`) and Reapply (`draft.reapply`) while the slider keeps the drafted value. There is no slider tick; the shared quiet timer is disarmed when settlement finishes. Leaving the mode or starting Compare with a draft open is refused as it is for crop, whose draft is on the same core lifecycle.
 
 ### Pointwise colour processing
 
@@ -264,28 +264,23 @@ not in a capture: the harness cannot hover a widget. Calibrated colour and scree
 are not claimed: every pixel measurement is renderer readback of displayed brightness or channel
 balance.
 
-Item 3 of the histogram and clipping contract — counts and overlays matching the image currently
-presented, drafts included — holds during an active gesture as well. The drafted preview job asks
-for the reduction, so the worker that rendered those pixels reduces them, and the report, the
-raster and the texture are adopted together under the drafted frame's own generation: the plot is
-the drafted population, its identity carries the draft revision the pixels were planned from, and
-the clipping overlay is re-derived from the drafted raster. Between an input and the exact phase of
-its frame landing, the previous report stays plotted and is marked updating, as it is for a
-committed render; it never goes to zero counters. At Fit the drafted pixels on screen are the job's
-proxy phase and the report is reduced from its exact phase, which a newer input cancels, so during a
-fast drag the plot follows the frames the gesture pauses on and the counts are never approximate.
-The bound is one `draft.set` and one preview job per accepted value, with the analysis riding that
-job and no second render. The one exception is a drafted RAW temperature or tint, which is previewed
-approximately on the planes developed at the committed white balance
-([instant previews](instant-preview.md#a-raw-white-balance-during-a-drag)): no phase of that job is
-reduced, so the previous exact report stays plotted and marked updating until the committed frame's
-own report replaces it, and the counts are never taken from approximate pixels.
-The `histogram` scenario's open-gesture frame proves it on the M4 — status ready,
-`identity.draft_revision` present, and the eleven counters equal to an independent core render and
-reduction of the drafted stack rebuilt from the committed layers the frame displays and the drafted
-payload it records — and the desktop's own tests cover the adoption, the updating window, an older
-generation being dropped and the overlay following the drafted raster. The drafted composition's
-arithmetic is separately exact through `analysis.request {target: draft}` in the acceptance chapter.
+During a moving gesture the previous exact whole-image report stays plotted and is marked
+updating; it never goes to zero counters and it is not replaced with approximate counts. At Fit,
+the proxy raster can update while exact report work is deferred. At 100% and above, the clipping
+overlay follows the visible region and is marked approximate until matching exact region pixels
+arrive; this viewport grid never substitutes for the whole-image counts. After the shared 120 ms
+quiet policy or release, exact full-frame analysis updates the report for the matching recipe.
+The one exception is a drafted RAW temperature or tint, which remains preview-only on the planes
+developed at the committed white balance ([instant previews](instant-preview.md#a-raw-white-balance-during-a-drag)):
+no draft phase is reduced, so the previous exact report stays marked updating until redevelopment
+and committed analysis complete. Counts are never taken from approximate pixels.
+
+The `histogram` scenario verifies a paused live draft on the M4: after the quiet policy, status is
+ready, `identity.draft_revision` is present, and the eleven counters equal an independent core
+render and reduction of the drafted stack rebuilt from the committed layers and the recorded draft
+payload. Desktop tests cover the updating window, older-generation rejection and clipping-overlay
+identity. The drafted composition's arithmetic is separately exact through `analysis.request
+{target: draft}` in the acceptance chapter.
 
 ## Later module candidates
 

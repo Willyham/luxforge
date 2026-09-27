@@ -1,18 +1,18 @@
 use super::{
     ActionResult, AssetRecord, EditorService, EditorState, MutationResult,
     history::{Change, CommittedAction, Touched, request_input},
-    masks::{recipe_for_target, resolve_mask_target, take_mask_target},
+    masks::{recipe_for_target, resolve_mask_target, take_mask_target, take_query_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
     AssetId, Draft, EntryId, Error, Layer, LayerId, LinearImage, LinearSettings, MaskId,
-    ModuleRegistry, Mutation, Recipe, ToolModule, Transform,
+    ModuleRegistry, Mutation, Recipe, SkippedSetting, ToolModule, Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
-        StageContext, StageQuestions, action_label, check_parameters,
+        StageContext, StageQuestions, action_label, check_parameters, not_applicable,
     },
     render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
@@ -95,6 +95,28 @@ pub(super) struct Planned {
     pub(super) touched: Option<Touched>,
 }
 
+/// What planning one request answers: the change, or `None` when it changes nothing, and the
+/// settings a composite skipped because they do not apply to the photo, which a no-op reports too.
+pub(super) struct PlannedRequest {
+    pub(super) planned: Option<Planned>,
+    pub(super) skipped: Vec<SkippedSetting>,
+}
+
+/// The stack one plan produces, or `None` when it changes nothing, and what a composite skipped.
+pub(super) struct Resolved {
+    recipe: Option<Recipe>,
+    skipped: Vec<SkippedSetting>,
+}
+
+impl Resolved {
+    fn exactly(recipe: Option<Recipe>) -> Self {
+        Self {
+            recipe,
+            skipped: Vec::new(),
+        }
+    }
+}
+
 impl EditorService {
     /// One action request for every caller: the desktop, the JSON API and headless clients all
     /// arrive here with an action identity and its declared parameters. The mutation result of
@@ -127,8 +149,10 @@ impl EditorService {
         let request = request_input(&prepared.input, &mutation, prepared.mask.as_ref())?;
         self.mutate(asset_id, &mutation, &request, |service, state| {
             let current = &state.current_entry.snapshot.recipe;
-            let Some(planned) = service.plan_request(&state.asset, current, &prepared)? else {
-                return Ok(Change::NoOp);
+            let PlannedRequest { planned, skipped } =
+                service.plan_request(&state.asset, current, &prepared)?;
+            let Some(planned) = planned else {
+                return Ok(Change::NoOp { skipped });
             };
             Ok(Change::append(
                 planned.recipe,
@@ -136,6 +160,7 @@ impl EditorService {
                     input: prepared.input,
                     label: planned.label,
                     touched: planned.touched,
+                    skipped,
                 },
             ))
         })
@@ -153,21 +178,23 @@ impl EditorService {
         asset: &AssetRecord,
         recipe: &Recipe,
         prepared: &Prepared<'_>,
-    ) -> Result<Option<Planned>, Error> {
+    ) -> Result<PlannedRequest, Error> {
         match prepared.action {
             ActionRef::Module(module, _) => {
                 let mask = prepared.mask.as_ref();
-                Ok(self
-                    .plan_action(asset, recipe, module, &prepared.input, mask)?
-                    .map(|next| Planned {
+                let resolved = self.plan_action(asset, recipe, module, &prepared.input, mask)?;
+                Ok(PlannedRequest {
+                    planned: resolved.recipe.map(|next| Planned {
                         recipe: next,
                         label: masked_label(recipe, mask, prepared.label.clone()),
                         touched: None,
-                    }))
+                    }),
+                    skipped: resolved.skipped,
+                })
             }
             ActionRef::Host(command) => {
                 let (target, values) = MaskTarget::split(&prepared.input.parameters)?;
-                Ok(
+                let planned =
                     match self.plan_mask_command(asset, recipe, command, &target, &values)? {
                         MaskOutcome::NoOp => None,
                         MaskOutcome::Change(change) => Some(Planned {
@@ -179,8 +206,11 @@ impl EditorService {
                                 removed_layers: change.removed_layers,
                             }),
                         }),
-                    },
-                )
+                    };
+                Ok(PlannedRequest {
+                    planned,
+                    skipped: Vec::new(),
+                })
             }
         }
     }
@@ -200,32 +230,53 @@ impl EditorService {
         module: &dyn ToolModule,
         input: &ActionInput,
         mask: Option<&MaskId>,
-    ) -> Result<Option<Recipe>, Error> {
-        self.ask(asset, recipe, module, mask, |context, bound| {
-            let plan = module.plan(input, context)?;
-            self.resolve_plan(asset, bound, plan, mask)
-        })
+    ) -> Result<Resolved, Error> {
+        self.ask(
+            asset,
+            recipe,
+            module,
+            Some(input),
+            mask,
+            TargetView::Own,
+            |context, bound| {
+                let plan = module.plan(input, context)?;
+                self.resolve_plan(asset, bound, plan, mask)
+            },
+        )
     }
 
     /// Ask `module` one question about `recipe`, the stack of `asset`, for the target `mask`
     /// names: the one path that plans an action for a commit, a draft or a composite's step, and
     /// answers a query.
     ///
-    /// The module must be available; the stack must be `asset`'s kind of stack; its artifacts are
-    /// bound; a mask target must be one the stack holds; and the module sees the stack of that
+    /// The module must be available and apply to `asset`'s source kind
+    /// ([`crate::ModuleDescriptor::applies_to`]); an action's fields must not be superseded on
+    /// this target ([`check_superseded`]); the stack must be `asset`'s kind of stack; its artifacts
+    /// are bound; a mask target must be one the stack holds; and the module sees the stack of that
     /// target ([`recipe_for_target`]) through a lazy [`StageContext`]
     /// ([`Self::with_stage_context`]). `question` receives the context and the whole bound stack,
     /// which is what a plan is resolved against.
+    #[allow(clippy::too_many_arguments)]
     fn ask<T>(
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
         module: &dyn ToolModule,
+        input: Option<&ActionInput>,
         mask: Option<&MaskId>,
+        view: TargetView,
         question: impl FnOnce(&StageContext<'_>, &Recipe) -> Result<T, Error>,
     ) -> Result<T, Error> {
         available(module)?;
-        validate_source_recipe(asset, recipe)?;
+        // A module that does not apply to the photo's kind is refused by its declaration, before
+        // it sees anything of a stack it has nothing to say about.
+        let kind = asset.source.tag();
+        module.descriptor().check_applies_to(kind)?;
+        // So is a field whose control another module provides on this kind's global target.
+        if let Some(input) = input {
+            check_superseded(&self.registry, kind, mask, input)?;
+        }
+        validate_source_recipe(&self.registry, asset, recipe)?;
         // Planning compiles the stack, so its artifacts are bound first.
         let bound = self.bound(recipe)?;
         // A target the stack does not hold is refused here, before a module plans anything.
@@ -238,7 +289,13 @@ impl EditorService {
             .effects
             .iter()
             .any(|effect| effect.maskable);
-        let target = recipe_for_target(&self.registry, &bound, maskable, mask);
+        let target = match view {
+            TargetView::Own => recipe_for_target(&self.registry, &bound, maskable, mask),
+            TargetView::Whole => {
+                let whole: &Recipe = &bound;
+                std::borrow::Cow::Borrowed(whole)
+            }
+        };
         self.with_stage_context(asset, &target, mask, |context| question(context, &bound))
     }
 
@@ -274,6 +331,8 @@ impl EditorService {
             layers: &recipe.layers,
             registry: &self.registry,
             target,
+            kind: asset.source.tag(),
+            masks: &recipe.masks,
             questions: &questions,
         })
     }
@@ -297,6 +356,11 @@ impl EditorService {
         let query = registry
             .resolve_query(query_id)
             .ok_or_else(|| Error::validation(format!("unknown query {query_id}")))?;
+        let mut parameters = parameters;
+        let mask = match query {
+            QueryRef::Module(..) => take_query_mask_target(&registry, query_id, &mut parameters)?,
+            QueryRef::Host(_) => None,
+        };
         let checked = check_parameters(query.descriptor(), &parameters)?;
         // The host answers its own reads about its own objects, from the same entry.
         let QueryRef::Module(module, _) = query else {
@@ -305,14 +369,25 @@ impl EditorService {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
         let recipe = &entry.snapshot.recipe;
-        // A query carries no mask target, so it asks about the global layer, and the target view
-        // hides the masked layers of the module's own effect. Without it a module that owns one
-        // layer would refuse its own query as ambiguous as soon as a mask held a layer of that
-        // effect, and the pixels it reads are unchanged: what it samples is the stage *before* its
-        // own layer, and a masked layer of the same effect is always after the global one.
-        let answer = self.ask(&state.asset, recipe, module, None, |context, _| {
-            module.query(query_id, &checked, context)
-        });
+        // A query of a maskable module carries the same optional `mask` target its actions do,
+        // and asks about that target's stack: the target view shows the global layer and that
+        // mask's own layer of the module's effect, and hides the other masks', so a module that
+        // owns one layer per target finds its own. Without one it asks about the global layer.
+        // Basic's neutral picker on a mask therefore reads the stage before that mask's own Basic
+        // layer, where the global Basic layer's white balance is already applied.
+        let view = match mask {
+            Some(_) => TargetView::Whole,
+            None => TargetView::Own,
+        };
+        let answer = self.ask(
+            &state.asset,
+            recipe,
+            module,
+            None,
+            mask.as_ref(),
+            view,
+            |context, _| module.query(query_id, &checked, context),
+        );
         self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
     }
 
@@ -339,7 +414,9 @@ impl EditorService {
         let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, current);
         let registry = self.registry.clone();
         let prepared = Prepared::new(&registry, &draft.action, Value::Object(draft.request()))?;
-        let planned = self.plan_request(&state.asset, current, &prepared);
+        let planned = self
+            .plan_request(&state.asset, current, &prepared)
+            .map(|request| request.planned);
         let recipe = match self.needing(stack, planned)? {
             Some(planned) => planned.recipe,
             None => current.clone(),
@@ -373,16 +450,22 @@ impl EditorService {
     /// before anything is written. The final stack is `None` when it equals the starting one. Each
     /// step plans by comparing payloads, so a composite costs `O(steps × layers)` and rasterizes
     /// nothing.
+    ///
+    /// What does not apply to the photo is skipped rather than refused, because a composite such as
+    /// a preset may carry settings for several kinds: a step whose module does not apply to the
+    /// photo's kind, and a field superseded on the global target ([`check_superseded`]). A step left
+    /// with no field is skipped whole. Each skip is reported with the refusal the setting would
+    /// have had alone, and a composite that applies nothing is a no-op.
     fn resolve_plan(
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
         plan: ActionPlan,
         mask: Option<&MaskId>,
-    ) -> Result<Option<Recipe>, Error> {
+    ) -> Result<Resolved, Error> {
         let steps = match plan {
             ActionPlan::Compose(steps) => steps,
-            plan => return self.apply_plan(recipe, plan, mask),
+            plan => return self.apply_plan(recipe, plan, mask).map(Resolved::exactly),
         };
         if mask.is_some() {
             return Err(Error::validation(
@@ -396,7 +479,9 @@ impl EditorService {
             )));
         }
         let registry = self.registry.clone();
+        let kind = asset.source.tag();
         let mut resolved = recipe.clone();
+        let mut skipped = Vec::new();
         for step in steps {
             let action_id = step.action_id.as_str();
             let (module, action) = registry
@@ -407,16 +492,50 @@ impl EditorService {
                     "{action_id} is not a field-patch action"
                 )));
             }
-            let checked = check_parameters(action, &Value::Object(step.parameters))?;
+            if !module.descriptor().applies_to(kind) {
+                skipped.push(SkippedSetting {
+                    action: action_id.to_owned(),
+                    parameter: None,
+                    reason: not_applicable(&module.descriptor().title, kind),
+                });
+                continue;
+            }
+            let mut fields = step.parameters;
+            fields.retain(
+                |name, _| match registry.superseded_field(action_id, name, kind) {
+                    Some(field) => {
+                        skipped.push(SkippedSetting {
+                            action: action_id.to_owned(),
+                            parameter: Some(name.clone()),
+                            reason: registry.superseded_refusal(&field),
+                        });
+                        false
+                    }
+                    None => true,
+                },
+            );
+            if fields.is_empty() {
+                continue;
+            }
+            let checked = check_parameters(action, &Value::Object(fields))?;
             let input = module.parse(action_id, &checked)?;
-            let plan = self.ask(asset, &resolved, module, None, |context, _| {
-                module.plan(&input, context)
-            })?;
+            let plan = self.ask(
+                asset,
+                &resolved,
+                module,
+                Some(&input),
+                None,
+                TargetView::Own,
+                |context, _| module.plan(&input, context),
+            )?;
             if let Some(next) = self.apply_plan(&resolved, plan, None)? {
                 resolved = next;
             }
         }
-        Ok((resolved != *recipe).then_some(resolved))
+        Ok(Resolved {
+            recipe: (resolved != *recipe).then_some(resolved),
+            skipped,
+        })
     }
 
     /// One step's plan applied to a stack: the placement rules of [`Self::resolve_plan`] for a
@@ -485,6 +604,43 @@ impl EditorService {
             json!({"transform":transform}),
         )
     }
+}
+
+/// Which layers a module sees when it is asked about one target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetView {
+    /// The target's own view ([`recipe_for_target`]): the other targets' layers of the module's
+    /// effects are hidden, so an action plans against its own layer alone.
+    Own,
+    /// The whole stack, which a query about a mask reads: the stage before that mask's own layer
+    /// includes the global layer and the earlier masks' layers, exactly as rendered.
+    Whole,
+}
+
+/// Refuse a field of `input` that another module's control variant supersedes on this target: on
+/// the global target of a photo of `kind`, a field whose control has a variant for that kind has
+/// its variant as its one path (`validation: on a RAW photo, Temperature is the source
+/// development's: set-raw temperature (K)`). A mask target always uses the base control, so
+/// nothing is superseded there. Derived from the variants ([`ModuleRegistry::superseded`]) and
+/// never from a list of names; `O(fields × controls)` per request, nothing per frame.
+pub(super) fn check_superseded(
+    registry: &ModuleRegistry,
+    kind: crate::SourceTag,
+    mask: Option<&MaskId>,
+    input: &ActionInput,
+) -> Result<(), Error> {
+    if mask.is_some() {
+        return Ok(());
+    }
+    let superseded = registry.superseded();
+    for name in input.parameters.keys() {
+        if let Some(field) = superseded.iter().find(|field| {
+            field.source == kind && field.action == input.action_id && field.parameter == name
+        }) {
+            return Err(Error::validation(registry.superseded_refusal(field)));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a provider registered unavailable: it keeps its descriptor so its stored layers stay
@@ -1227,6 +1383,7 @@ mod tests {
                     },
                     label: "Stored stack".into(),
                     touched: None,
+                    skipped: Vec::new(),
                 },
             )
             .unwrap();
@@ -2472,27 +2629,158 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// On a real RAW file: a drafted exposure previews exactly the bytes its commit renders, and a
-    /// drafted temperature's effective stack is exactly the one its commit writes, although its
-    /// preview approximates that white balance until the release redevelops the mosaic. Run with
-    /// LUXFORGE_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
+    /// A field is superseded exactly where a control variant takes its place: Basic's Temperature
+    /// and Tint on the global target of a RAW photo, refused naming the variant's field. A mask
+    /// target, a JPEG, and Exposure everywhere are accepted.
+    #[test]
+    fn a_superseded_field_is_refused_only_on_its_kinds_global_target() {
+        let registry = ModuleRegistry::builtin();
+        let input = |fields: Value| ActionInput {
+            action_id: "set-basic".into(),
+            parameters: fields.as_object().unwrap().clone(),
+        };
+        let mask = MaskId::new();
+        for (fields, detail) in [
+            (
+                json!({"temperature": 20.0}),
+                "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+            ),
+            (
+                json!({"exposure": 0.5, "tint": 4.0}),
+                "on a RAW photo, Tint is the source development's: set-raw tint",
+            ),
+        ] {
+            let error = check_superseded(
+                &registry,
+                crate::SourceTag::Raw,
+                None,
+                &input(fields.clone()),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation, "{fields}");
+            assert_eq!(error.detail, detail, "{fields}");
+            check_superseded(
+                &registry,
+                crate::SourceTag::Raw,
+                Some(&mask),
+                &input(fields.clone()),
+            )
+            .expect("a masked white balance is Basic's relative one");
+            check_superseded(&registry, crate::SourceTag::Jpeg, None, &input(fields))
+                .expect("Basic's own on a JPEG");
+        }
+        check_superseded(
+            &registry,
+            crate::SourceTag::Raw,
+            None,
+            &input(json!({"exposure": 1.0, "contrast": 5.0})),
+        )
+        .expect("exposure is Basic's on every kind");
+    }
+
+    /// A preset may carry settings for another kind of photo. Those it skips rather than refuses,
+    /// and reports: on a JPEG a RAW development step is skipped and the rest is applied exactly as
+    /// the direct action applies it; a preset with nothing applicable is a no-op that still says
+    /// what it skipped, and a retry answers the same.
+    #[test]
+    fn a_preset_skips_and_reports_what_does_not_apply_to_the_photo() {
+        let catalog = temp("preset-skips.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let skipped_raw = crate::SkippedSetting {
+            action: "set-raw".into(),
+            parameter: None,
+            reason: "RAW does not apply to a JPEG photo".into(),
+        };
+        let preset = json!({
+            "settings": {
+                "set-raw": {"white-balance": "as-shot"},
+                "set-basic": {"exposure": 0.5, "temperature": 10.0}
+            },
+            "name": "Both kinds",
+        });
+        let applied = service
+            .run_action(&asset, mutation(0, "both"), "apply-preset", preset.clone())
+            .unwrap();
+        assert_eq!(applied.mutation.outcome, MutationOutcome::Applied);
+        assert_eq!(applied.skipped, std::slice::from_ref(&skipped_raw));
+        assert_eq!(
+            serde_json::to_value(&applied).unwrap()["skipped"],
+            json!([{"action": "set-raw", "reason": "RAW does not apply to a JPEG photo"}])
+        );
+        let retried = service
+            .run_action(&asset, mutation(0, "both"), "apply-preset", preset)
+            .unwrap();
+        assert!(retried.mutation.deduplicated);
+        assert_eq!(retried.skipped, applied.skipped);
+        let layers = service
+            .state(&asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe
+            .layers;
+        assert_eq!(layers.len(), 1);
+        assert_eq!(
+            layers[0].payload,
+            json!({"exposure": 0.5, "temperature": 10.0})
+        );
+
+        let only_raw = service
+            .run_action(
+                &asset,
+                mutation(applied.mutation.revision, "raw-only"),
+                "apply-preset",
+                json!({"settings": {"set-raw": {"tint": 5.0}}, "name": "RAW only"}),
+            )
+            .unwrap();
+        assert_eq!(only_raw.mutation.outcome, MutationOutcome::NoOp);
+        assert_eq!(only_raw.skipped, [skipped_raw]);
+        // A module action that applies nowhere is still refused when sent alone.
+        let refused = service
+            .run_action(
+                &asset,
+                mutation(applied.mutation.revision, "raw-alone"),
+                "set-raw",
+                json!({"tint": 5.0}),
+            )
+            .unwrap_err();
+        assert_eq!(refused.detail, "RAW does not apply to a JPEG photo");
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// On a real RAW file, the one Exposure and the one White balance:
+    ///
+    /// - An Exposure drag is Basic's: its drafted preview is exact, equals its committed render
+    ///   byte for byte, and the commit needs no redevelopment, since the development is unchanged.
+    /// - A drafted temperature's effective stack is exactly the one its commit writes, although
+    ///   its preview approximates that white balance until the release redevelops the mosaic.
+    /// - Basic's Temperature and Tint are refused on the global target naming `set-raw`, and
+    ///   accepted on a mask.
+    /// - A preset carrying both kinds' white balance applies the RAW one and skips Basic's.
+    /// - Reset Basic also returns the development to As shot, as one entry.
+    /// - Capture resolves Basic's White balance group to `set-raw`: As shot as As shot, a custom
+    ///   pair as itself and a pick as its equivalent.
+    ///
+    /// Run with LUXFORGE_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
     #[test]
     #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
-    fn a_drafted_raw_exposure_preview_equals_the_committed_render_byte_for_byte() {
+    fn a_raw_photo_has_one_exposure_and_one_white_balance() {
         let path = std::path::PathBuf::from(
             std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"),
         );
-        let catalog = temp("raw-draft-equals-commit.sqlite");
+        let catalog = temp("raw-one-exposure.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         let state = service.import(&path).unwrap();
         let asset = state.asset.id.clone();
+        let original = state.current_entry.snapshot.recipe.layers[0].clone();
+        let revision = |service: &EditorService| service.state(&asset).unwrap().revision;
+        let current = |service: &EditorService| service.state(&asset).unwrap().current_entry;
 
-        let mut temperature = Draft::new("set-raw-temperature", asset.clone(), state.revision);
-        temperature.merge(Map::from_iter([("kelvin".to_owned(), json!(4200.0))]));
-        let (drafted_temperature, _) = service.draft_recipe(&asset, &temperature).unwrap();
-
-        let exposure = Map::from_iter([("ev".to_owned(), json!(0.75))]);
-        let mut draft = Draft::new("set-raw-exposure", asset.clone(), state.revision);
+        // Exposure: Basic's, exact while drafted and without a redevelopment once committed.
+        let exposure = Map::from_iter([("exposure".to_owned(), json!(0.75))]);
+        let mut draft = Draft::new("set-basic", asset.clone(), state.revision);
         draft.merge(exposure.clone());
         let drafted = service
             .preview_job(&asset, None, None, Some(&draft), None)
@@ -2502,34 +2790,187 @@ mod tests {
             "the planes hold the white balance"
         );
         let drafted_frame = preview_frame(&service, &drafted);
-        let result = service
+        service
             .apply_action(
                 &asset,
                 mutation(state.revision, "exposure"),
-                "set-raw-exposure",
+                "set-basic",
                 Value::Object(exposure),
             )
             .unwrap();
-        let committed = service.state(&asset).unwrap().current_entry.snapshot.recipe;
+        let committed = current(&service).snapshot.recipe;
         same_stack(&drafted.recipe, &committed);
+        assert_eq!(
+            committed.layers[0], original,
+            "the development is unchanged"
+        );
+        let job = service
+            .preview_job(&asset, None, None, None, None)
+            .expect("the committed exposure needs no redevelopment");
+        assert!(!job.source.approximate_white_balance());
         let committed_frame = service.render_current(&asset).unwrap();
         assert!(drafted_frame.rgba == committed_frame.rgba, "the same bytes");
 
-        // Undo the exposure, then commit the drafted temperature over the stack it was drafted on.
-        service
-            .undo(&asset, mutation(result.revision, "undo"))
+        // Basic's global white balance is the development's on RAW, and Basic's on a mask.
+        for fields in [json!({"temperature": 10.0}), json!({"tint": -4.0})] {
+            let refused = service
+                .apply_action(
+                    &asset,
+                    mutation(revision(&service), "wb"),
+                    "set-basic",
+                    fields.clone(),
+                )
+                .unwrap_err();
+            assert_eq!(refused.kind, ErrorKind::Validation, "{fields}");
+            assert!(
+                refused.detail.contains("set-raw"),
+                "{fields}: {}",
+                refused.detail
+            );
+        }
+        let created = service
+            .run_action(
+                &asset,
+                mutation(revision(&service), "mask"),
+                "mask.create-linear",
+                json!({"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0}),
+            )
             .unwrap();
-        let at = service.state(&asset).unwrap().revision;
+        let mask = created.mask.expect("a mask");
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service), "masked-wb"),
+                "set-basic",
+                json!({"temperature": 10.0, "mask": mask}),
+            )
+            .expect("a masked white balance is relative");
+
+        // A preset with both kinds' white balance applies the development's and skips Basic's.
+        let preset = service
+            .run_action(
+                &asset,
+                mutation(revision(&service), "preset"),
+                "apply-preset",
+                json!({
+                    "settings": {
+                        "set-basic": {"temperature": 0.0, "tint": 0.0, "exposure": 0.25},
+                        "set-raw": {"temperature": 5200.0, "tint": 6.0}
+                    },
+                    "name": "Both kinds",
+                }),
+            )
+            .unwrap();
+        assert_eq!(preset.mutation.outcome, MutationOutcome::Applied);
+        assert_eq!(
+            preset
+                .skipped
+                .iter()
+                .map(|skip| skip.parameter.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["temperature", "tint"]
+        );
+        let developed =
+            crate::RawPayload::from_layer(&current(&service).snapshot.recipe.layers[0]).unwrap();
+        assert_eq!(
+            (developed.temperature_kelvin, developed.tint),
+            (Some(5200.0), Some(6.0))
+        );
+        let entry = current(&service).id;
+        assert_eq!(
+            Value::Object(
+                service
+                    .capture_preset(
+                        &asset,
+                        &entry,
+                        json!({"set-basic": ["temperature", "tint"]})
+                            .as_object()
+                            .unwrap()
+                    )
+                    .unwrap()
+            ),
+            json!({"set-raw": {"temperature": 5200.0, "tint": 6.0}}),
+            "the White balance group captures the development on RAW"
+        );
+
+        // Reset Basic returns Basic's global fields and the development to As shot, as one entry.
+        let entries = service.history(&asset, None, 100).unwrap().entries.len();
+        let reset = service
+            .run_action(
+                &asset,
+                mutation(revision(&service), "reset"),
+                "reset-basic",
+                json!({}),
+            )
+            .unwrap();
+        assert_eq!(reset.mutation.outcome, MutationOutcome::Applied);
+        assert_eq!(
+            service.history(&asset, None, 100).unwrap().entries.len(),
+            entries + 1
+        );
+        let after = current(&service);
+        assert_eq!(after.label, "Reset Basic");
+        let again = service
+            .run_action(
+                &asset,
+                mutation(revision(&service), "reset-again"),
+                "reset-basic",
+                json!({}),
+            )
+            .unwrap();
+        assert_eq!(
+            again.mutation.outcome,
+            MutationOutcome::NoOp,
+            "Basic at its defaults and the development at As shot"
+        );
+        assert_eq!(after.snapshot.recipe.layers[0].payload, original.payload);
+        assert_eq!(
+            Value::Object(
+                service
+                    .capture_preset(
+                        &asset,
+                        &after.id,
+                        json!({"set-basic": true}).as_object().unwrap()
+                    )
+                    .unwrap()
+            )["set-raw"],
+            json!({"white-balance": "as-shot"}),
+            "As shot captures as As shot"
+        );
+        // The masked Basic layer is another target's and is kept.
+        assert!(
+            after
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .any(|layer| layer.mask.is_some())
+        );
+
+        // The drafted temperature's stack is exactly what its commit writes, although its preview
+        // approximates the white balance until the mosaic is redeveloped.
+        let at = revision(&service);
+        let mut temperature = Draft::new("set-raw", asset.clone(), at);
+        temperature.merge(Map::from_iter([("temperature".to_owned(), json!(4200.0))]));
+        let (drafted_temperature, _) = service.draft_recipe(&asset, &temperature).unwrap();
+        assert!(
+            service
+                .preview_job(&asset, None, None, Some(&temperature), None)
+                .unwrap()
+                .source
+                .approximate_white_balance()
+        );
         service
             .apply_action(
                 &asset,
                 mutation(at, "temperature"),
-                "set-raw-temperature",
-                json!({"kelvin": 4200.0}),
+                "set-raw",
+                json!({"temperature": 4200.0}),
             )
             .unwrap();
-        let committed = service.state(&asset).unwrap().current_entry.snapshot.recipe;
+        let committed = current(&service).snapshot.recipe;
         same_stack(&drafted_temperature, &committed);
+        assert_eq!(current(&service).label, "Temperature 4200 K");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

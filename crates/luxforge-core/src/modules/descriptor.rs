@@ -3,7 +3,7 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Error,
+    Error, SourceTag,
     capabilities::{
         descriptor::{
             ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
@@ -139,6 +139,26 @@ pub struct EffectDescriptor {
     /// Serialized only when it is true, like every other flag here.
     #[serde(default, skip_serializing_if = "is_default")]
     pub single: bool,
+    /// The source kinds a layer of this effect may exist on, named by the `kind` tags `asset.state`
+    /// reports for a photo's source (`jpeg`, `raw`). Empty, the default, is every kind, and is not
+    /// serialized, so an effect that exists on every photo describes itself exactly as it did
+    /// before kinds were declared. A module applies to a photo when any of its effects does
+    /// ([`ModuleDescriptor::applies_to`]); the host refuses an action of a module that does not
+    /// apply, and admission refuses a layer on a kind its effect does not list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceTag>,
+}
+
+impl EffectDescriptor {
+    /// Whether a layer of this effect may exist on a photo of `kind`: `O(sources)`, no allocation.
+    pub fn applies_to(&self, kind: SourceTag) -> bool {
+        self.sources.is_empty() || self.sources.contains(&kind)
+    }
+}
+
+/// What a refusal says when `title`'s module or effect does not apply to a photo of `kind`.
+pub(crate) fn not_applicable(title: &str, kind: SourceTag) -> String {
+    format!("{title} does not apply to a {} photo", kind.label())
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -588,6 +608,137 @@ pub struct ResetAction {
     pub preset: Map<String, Value>,
 }
 
+/// The control another module provides in a control's place on a photo of one source kind, or, on a
+/// group, the reset it provides in the group's. A number, action or picker control carries a
+/// `control` of its own shape over the named module's own actions or pick canvas; a group carries a
+/// `reset` of that module. A variant applies only on the global target of a photo of its kind: a
+/// mask target always uses the base control ([`resolve_control`]). Registration checks each one
+/// against the complete registry ([`crate::ModuleRegistry::check_complete`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlVariant {
+    /// The source kind this variant applies to, named by the `kind` tag `asset.state` reports.
+    pub source: SourceTag,
+    /// The module whose control this is: another registered module that applies to `source`.
+    pub module: String,
+    /// The replacement of a number, action or picker control, of the same kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<Box<Control>>,
+    /// The replacement of a group's reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<ResetAction>,
+}
+
+impl ControlVariant {
+    /// A control `module` provides in a control's place on a photo of `source`.
+    pub fn control(source: SourceTag, module: impl Into<String>, control: Control) -> Self {
+        Self {
+            source,
+            module: module.into(),
+            control: Some(Box::new(control)),
+            reset: None,
+        }
+    }
+
+    /// A reset `module` provides in a group's place on a photo of `source`.
+    pub fn reset(source: SourceTag, module: impl Into<String>, reset: ResetAction) -> Self {
+        Self {
+            source,
+            module: module.into(),
+            control: None,
+            reset: Some(reset),
+        }
+    }
+}
+
+/// A control as it applies to one photo and target: the module that provides it and the control
+/// itself, the base or one of its variants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedControl<'d> {
+    /// The identity of the module whose actions or canvas the control addresses.
+    pub module: &'d str,
+    pub control: &'d Control,
+    /// Whether this is a variant rather than the declaring module's own control.
+    pub variant: bool,
+}
+
+/// A group reset as it applies to one photo and target, and the module whose action it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedReset<'d> {
+    pub module: &'d str,
+    pub reset: &'d ResetAction,
+    pub variant: bool,
+}
+
+/// The one rule that resolves a control for a photo and a target: `control`, declared by the module
+/// `owner`, as it applies to a photo of `kind` edited through `mask`.
+///
+/// A variant applies on the global target (`mask` is `None`) of a photo of its kind; with no photo
+/// (`kind` is `None`), on a mask target, or without a variant for the kind, the base control applies
+/// and `owner` provides it. Every client resolves through this — the desktop's sections, the parity
+/// test and the host's own derivations of superseded fields — so nothing names a module to choose.
+/// `O(variants)`; reads no stack.
+pub fn resolve_control<'d>(
+    owner: &'d str,
+    control: &'d Control,
+    kind: Option<SourceTag>,
+    mask: Option<&crate::MaskId>,
+) -> ResolvedControl<'d> {
+    let variant = match (kind, mask) {
+        (Some(kind), None) => control
+            .variants()
+            .iter()
+            .find(|variant| variant.source == kind)
+            .and_then(|variant| Some((variant.module.as_str(), variant.control.as_deref()?))),
+        _ => None,
+    };
+    match variant {
+        Some((module, control)) => ResolvedControl {
+            module,
+            control,
+            variant: true,
+        },
+        None => ResolvedControl {
+            module: owner,
+            control,
+            variant: false,
+        },
+    }
+}
+
+/// [`resolve_control`] for a group's reset: the reset `group`, declared by `owner`, runs for a photo
+/// of `kind` edited through `mask`, or `None` when `group` is not a group or declares no reset.
+pub fn resolve_group_reset<'d>(
+    owner: &'d str,
+    group: &'d Control,
+    kind: Option<SourceTag>,
+    mask: Option<&crate::MaskId>,
+) -> Option<ResolvedReset<'d>> {
+    let Control::Group {
+        reset, variants, ..
+    } = group
+    else {
+        return None;
+    };
+    if let (Some(kind), None) = (kind, mask)
+        && let Some((module, reset)) = variants
+            .iter()
+            .find(|variant| variant.source == kind)
+            .and_then(|variant| Some((variant.module.as_str(), variant.reset.as_ref()?)))
+    {
+        return Some(ResolvedReset {
+            module,
+            reset,
+            variant: true,
+        });
+    }
+    reset.as_ref().map(|reset| ResolvedReset {
+        module: owner,
+        reset,
+        variant: false,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionDescriptor {
@@ -626,6 +777,11 @@ pub enum Control {
         reset: Option<ResetAction>,
         #[serde(default, skip_serializing_if = "is_default")]
         collapsed: bool,
+        /// The group reset another module provides on a photo of one source kind: each variant
+        /// carries a `reset` and applies on the global target of a photo of its kind
+        /// ([`resolve_group_reset`]). Listed only when declared.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variants: Vec<ControlVariant>,
     },
     Number {
         action: String,
@@ -641,6 +797,10 @@ pub enum Control {
         /// resets to its parameter's declared default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reset: Option<ResetAction>,
+        /// The control another module provides in this place on a photo of one source kind
+        /// ([`ControlVariant`]). Listed only when declared.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variants: Vec<ControlVariant>,
     },
     Toggle {
         action: String,
@@ -679,14 +839,24 @@ pub enum Control {
         style: ActionStyle,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<String>,
+        /// The control another module provides in this place on a photo of one source kind
+        /// ([`ControlVariant`]). Listed only when declared.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variants: Vec<ControlVariant>,
     },
     /// The module's own canvas pick, offered beside the controls that pick fills rather than in a
     /// mode strip. It binds to the [`CanvasInteraction`] this module declares — a `point-pick` or a
     /// `sample-apply`, never a `crop-frame` — and carries no action of its own: entering and
     /// leaving the mode is `workspace.set`, and the pick itself is what the canvas declares. A
-    /// module declares at most one, and a module that declares a pick canvas declares exactly one,
-    /// so every pick mode is reachable from the panel.
-    Picker { label: String },
+    /// module declares at most one. A module that declares a pick canvas declares one, or is reached
+    /// by another module's picker variant, so every pick mode is reachable from the panel.
+    Picker {
+        label: String,
+        /// The picker another module provides in this place on a photo of one source kind, which
+        /// enters that module's own pick canvas ([`ControlVariant`]). Listed only when declared.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variants: Vec<ControlVariant>,
+    },
     /// A button that runs one of this module's own worker tasks through the client's consent and
     /// progress flow; when the task declares `apply`, the client offers Apply with its result.
     Task { task: String, label: String },
@@ -713,6 +883,7 @@ impl Control {
             style: NumberStyle::Slider,
             rail: None,
             reset: None,
+            variants: Vec::new(),
         }
     }
 
@@ -829,6 +1000,7 @@ impl Control {
             preset: Map::new(),
             style: ActionStyle::default(),
             icon: None,
+            variants: Vec::new(),
         }
     }
 
@@ -862,6 +1034,7 @@ impl Control {
             controls,
             reset: None,
             collapsed: false,
+            variants: Vec::new(),
         }
     }
 
@@ -879,6 +1052,48 @@ impl Control {
     pub fn picker(label: impl Into<String>) -> Self {
         Self::Picker {
             label: label.into(),
+            variants: Vec::new(),
+        }
+    }
+
+    /// Add a variant for one source kind: a replacement control on [`Self::Number`],
+    /// [`Self::Action`] and [`Self::Picker`], a replacement reset on [`Self::Group`]. A no-op on any
+    /// other variant; registration refuses a variant of the wrong shape.
+    pub fn variant(mut self, variant: ControlVariant) -> Self {
+        match &mut self {
+            Self::Group { variants, .. }
+            | Self::Number { variants, .. }
+            | Self::Action { variants, .. }
+            | Self::Picker { variants, .. } => variants.push(variant),
+            _ => {}
+        }
+        self
+    }
+
+    /// The variants this control declares; empty for a kind that cannot carry any.
+    pub fn variants(&self) -> &[ControlVariant] {
+        match self {
+            Self::Group { variants, .. }
+            | Self::Number { variants, .. }
+            | Self::Action { variants, .. }
+            | Self::Picker { variants, .. } => variants,
+            _ => &[],
+        }
+    }
+
+    /// The control kind as it is serialized, for a refusal that names a shape.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Group { .. } => "group",
+            Self::Number { .. } => "number",
+            Self::Toggle { .. } => "toggle",
+            Self::Choice { .. } => "choice",
+            Self::Color { .. } => "color",
+            Self::Curve { .. } => "curve",
+            Self::Action { .. } => "action",
+            Self::Picker { .. } => "picker",
+            Self::Task { .. } => "task",
+            Self::Presets { .. } => "presets",
         }
     }
 
@@ -1137,6 +1352,24 @@ impl ModuleDescriptor {
         matches!(self.availability, Availability::Available)
     }
 
+    /// Whether this module applies to a photo of `kind`: when any of its effects may exist on that
+    /// kind ([`EffectDescriptor::applies_to`]), or when it declares no effect at all, since a module
+    /// that writes no layer has nothing a kind could refuse. The one answer to "does this module
+    /// apply to this photo" — the host's action refusal, `module.list` and every client surface read
+    /// it. `O(effects × sources)`, no allocation.
+    pub fn applies_to(&self, kind: SourceTag) -> bool {
+        self.effects.is_empty() || self.effects.iter().any(|effect| effect.applies_to(kind))
+    }
+
+    /// [`Self::applies_to`] as a refusal: `validation: RAW does not apply to a JPEG photo`, worded
+    /// from this module's title and the kind.
+    pub fn check_applies_to(&self, kind: SourceTag) -> Result<(), Error> {
+        if self.applies_to(kind) {
+            return Ok(());
+        }
+        Err(Error::validation(not_applicable(&self.title, kind)))
+    }
+
     /// Reject every descriptor a client could not render or validate against.
     pub fn validate(&self) -> Result<(), Error> {
         if !valid_identity(&self.id) {
@@ -1161,6 +1394,18 @@ impl ModuleDescriptor {
             }
             if !effects.insert(effect.id.as_str()) {
                 return Err(Error::validation(format!("duplicate effect {}", effect.id)));
+            }
+            if let Some(repeated) = effect
+                .sources
+                .iter()
+                .enumerate()
+                .find_map(|(at, kind)| effect.sources[..at].contains(kind).then_some(kind))
+            {
+                return Err(Error::validation(format!(
+                    "effect {} lists source kind {} twice",
+                    effect.id,
+                    repeated.label()
+                )));
             }
             // A mask is stored in content-stage coordinates, so an effect whose input is not that
             // content stage has nothing to read one in: a geometry effect changes the stage and a
@@ -1237,7 +1482,6 @@ impl ModuleDescriptor {
                 commit,
             }) => {
                 self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
-                self.check_picker(pickers)?;
                 let declared = self.declared_action(action)?;
                 for name in [x, y] {
                     let parameter = self.declared_parameter(declared, name)?;
@@ -1271,7 +1515,6 @@ impl ModuleDescriptor {
                 icon,
             }) => {
                 self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
-                self.check_picker(pickers)?;
                 // The query answers the pick and the action receives its result, so both identities
                 // and both coordinate parameters must be declared here before a client sees them.
                 let declared = self.declared_query(query)?;
@@ -1353,21 +1596,23 @@ impl ModuleDescriptor {
         }
     }
 
-    /// A pick mode is entered from the panel, so the module that declares one declares the picker
-    /// control that reaches it. Without this a pick would be reachable only by its letter.
-    fn check_picker(&self, pickers: usize) -> Result<(), Error> {
-        if pickers == 1 {
-            return Ok(());
-        }
-        Err(Error::validation(format!(
-            "module {} declares a pick canvas but no picker control",
-            self.id
-        )))
+    /// Whether this module declares a pick canvas (`point-pick` or `sample-apply`) that none of its
+    /// own controls reaches. A pick mode is entered from the panel, so such a module is valid only
+    /// when another module's picker variant reaches it, which only the complete registry can say
+    /// ([`crate::ModuleRegistry::check_complete`]). Without that a pick would be reachable only by
+    /// its letter.
+    pub(crate) fn needs_foreign_picker(&self) -> bool {
+        matches!(
+            self.canvas,
+            Some(CanvasInteraction::PointPick { .. } | CanvasInteraction::SampleApply { .. })
+        ) && Self::count(&self.controls, &|control| {
+            matches!(control, Control::Picker { .. })
+        }) == 0
     }
 
     /// A reset is validated exactly like an action control: the action must be declared here and
     /// every preset value must be in its parameter's range.
-    fn check_reset(&self, reset: Option<&ResetAction>) -> Result<(), Error> {
+    pub(crate) fn check_reset(&self, reset: Option<&ResetAction>) -> Result<(), Error> {
         let Some(reset) = reset else {
             return Ok(());
         };
@@ -1418,13 +1663,83 @@ impl ModuleDescriptor {
         })
     }
 
-    fn check_control(&self, control: &Control, depth: usize) -> Result<(), Error> {
+    /// What one control's variants must be on their own, before the registry is complete: another
+    /// module's valid identity, at most one per source kind, and the right replacement — a `reset`
+    /// on a group that has a reset of its own, and on a number, action or picker a `control` of the
+    /// same kind that carries no variants itself. Whether the named module exists, applies to the
+    /// kind and declares what the replacement names is [`crate::ModuleRegistry::check_complete`]'s.
+    fn check_variant_shapes(&self, control: &Control) -> Result<(), Error> {
+        let variants = control.variants();
+        let kind = control.kind_name();
+        for (at, variant) in variants.iter().enumerate() {
+            let source = variant.source.label();
+            if variants[..at]
+                .iter()
+                .any(|earlier| earlier.source == variant.source)
+            {
+                return Err(Error::validation(format!(
+                    "{kind} control of module {} declares two variants for {source}",
+                    self.id
+                )));
+            }
+            if !valid_identity(&variant.module) || variant.module == self.id {
+                return Err(Error::validation(format!(
+                    "{source} variant of a {kind} control of module {} must name another module, \
+                     not {}",
+                    self.id, variant.module
+                )));
+            }
+            match (control, &variant.control, &variant.reset) {
+                (Control::Group { reset, .. }, None, Some(_)) => {
+                    if reset.is_none() {
+                        return Err(Error::validation(format!(
+                            "group of module {} declares a {source} reset variant but no reset",
+                            self.id
+                        )));
+                    }
+                }
+                (Control::Group { .. }, _, _) => {
+                    return Err(Error::validation(format!(
+                        "{source} variant of a group of module {} needs a reset and no control",
+                        self.id
+                    )));
+                }
+                (_, Some(replacement), None) => {
+                    if replacement.kind_name() != kind {
+                        return Err(Error::validation(format!(
+                            "{source} variant of a {kind} control of module {} is a {} control",
+                            self.id,
+                            replacement.kind_name()
+                        )));
+                    }
+                    if !replacement.variants().is_empty() {
+                        return Err(Error::validation(format!(
+                            "{source} variant of a {kind} control of module {} declares variants \
+                             of its own",
+                            self.id
+                        )));
+                    }
+                }
+                _ => {
+                    return Err(Error::validation(format!(
+                        "{source} variant of a {kind} control of module {} needs a control and no \
+                         reset",
+                        self.id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_control(&self, control: &Control, depth: usize) -> Result<(), Error> {
         if depth > MAX_CONTROL_DEPTH {
             return Err(Error::validation(format!(
                 "module {} nests controls deeper than {MAX_CONTROL_DEPTH} levels",
                 self.id
             )));
         }
+        self.check_variant_shapes(control)?;
         match control {
             Control::Group {
                 label,
@@ -1562,9 +1877,11 @@ impl ModuleDescriptor {
                 ..
             } => {
                 let declared = self.declared_action(action)?;
-                if declared.patch && preset.len() != 1 {
+                // A button on a patch sends the fields it names and nothing else, so it names at
+                // least one; a group's worth, such as As shot's temperature and tint, is allowed.
+                if declared.patch && preset.is_empty() {
                     return Err(Error::validation(format!(
-                        "action control for patch action {action} needs exactly one preset field"
+                        "action control for patch action {action} needs at least one preset field"
                     )));
                 }
                 for (name, value) in preset {
@@ -1581,7 +1898,7 @@ impl ModuleDescriptor {
             // A picker is the panel's way into this module's own pick mode, so the module must
             // declare one. A crop frame takes the whole canvas and has its own controls; it is not
             // a pick and a picker cannot stand for it.
-            Control::Picker { label } => {
+            Control::Picker { label, .. } => {
                 if label.trim().is_empty() {
                     return Err(Error::validation(format!(
                         "module {} has an unlabelled picker",
@@ -2542,6 +2859,7 @@ mod tests {
                 style: crate::NumberStyle::Slider,
                 rail: None,
                 reset: None,
+                variants: Vec::new(),
             }],
             // The shared descriptor's reset names an action this one does not declare.
             reset: None,
@@ -2595,6 +2913,7 @@ mod tests {
             // A pick canvas declares the picker control that reaches it.
             controls: vec![Control::Picker {
                 label: "Pick".into(),
+                variants: Vec::new(),
             }],
             canvas: Some(sample_apply("neutral-sample", "x", "y", "set-thing")),
             ..descriptor()
@@ -2653,6 +2972,7 @@ mod tests {
                     action: action.into(),
                     preset: preset.as_object().unwrap().clone(),
                 }),
+                variants: Vec::new(),
             }],
             ..descriptor()
         }
@@ -2735,6 +3055,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -2752,6 +3073,7 @@ mod tests {
                         style: crate::NumberStyle::Slider,
                         rail: None,
                         reset: None,
+                        variants: Vec::new(),
                     },
                     Control::Action {
                         action: "set-thing".into(),
@@ -2759,9 +3081,11 @@ mod tests {
                         preset: Map::new(),
                         style: crate::ActionStyle::Default,
                         icon: None,
+                        variants: Vec::new(),
                     },
                 ],
                 collapsed: false,
+                variants: Vec::new(),
             }],
             reset: Some(ResetAction {
                 action: "set-thing".into(),
@@ -2828,7 +3152,8 @@ mod tests {
         // shape a client discovers it by, and it nests in a group like every other control.
         assert_eq!(
             serde_json::to_value(Control::Picker {
-                label: "Neutral picker".into()
+                label: "Neutral picker".into(),
+                variants: Vec::new(),
             })
             .unwrap(),
             json!({"kind": "picker", "label": "Neutral picker"})
@@ -2839,8 +3164,10 @@ mod tests {
                 reset: None,
                 controls: vec![Control::Picker {
                     label: "Pick".into(),
+                    variants: Vec::new(),
                 }],
                 collapsed: false,
+                variants: Vec::new(),
             }],
             ..sample_descriptor()
         };
@@ -2883,6 +3210,7 @@ mod tests {
                         maskable: false,
                         artifacts: false,
                         single: false,
+                        sources: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -2979,6 +3307,7 @@ mod tests {
                         style: crate::NumberStyle::Slider,
                         rail: None,
                         reset: None,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -2993,6 +3322,7 @@ mod tests {
                         style: crate::NumberStyle::Slider,
                         rail: None,
                         reset: None,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3018,6 +3348,7 @@ mod tests {
                         preset: json!({"x": 99}).as_object().unwrap().clone(),
                         style: crate::ActionStyle::Default,
                         icon: None,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3031,6 +3362,7 @@ mod tests {
                         preset: json!({"missing": 1}).as_object().unwrap().clone(),
                         style: crate::ActionStyle::Default,
                         icon: None,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3096,6 +3428,7 @@ mod tests {
                         style: crate::NumberStyle::Slider,
                         rail: None,
                         reset: None,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3187,6 +3520,7 @@ mod tests {
                             preset: json!({"missing": 1}).as_object().unwrap().clone(),
                         }),
                         collapsed: false,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3202,6 +3536,7 @@ mod tests {
                             preset: json!({"mode": "sloppy"}).as_object().unwrap().clone(),
                         }),
                         collapsed: false,
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3424,6 +3759,7 @@ mod tests {
                 ModuleDescriptor {
                     controls: vec![Control::Picker {
                         label: "Pick".into(),
+                        variants: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -3433,6 +3769,7 @@ mod tests {
                 ModuleDescriptor {
                     controls: vec![Control::Picker {
                         label: "Pick".into(),
+                        variants: Vec::new(),
                     }],
                     ..frame_descriptor()
                 },
@@ -3443,14 +3780,17 @@ mod tests {
                     controls: vec![
                         Control::Picker {
                             label: "Pick".into(),
+                            variants: Vec::new(),
                         },
                         Control::Group {
                             label: "Nested".into(),
                             reset: None,
                             controls: vec![Control::Picker {
                                 label: "Pick again".into(),
+                                variants: Vec::new(),
                             }],
                             collapsed: false,
+                            variants: Vec::new(),
                         },
                     ],
                     ..sample_descriptor()
@@ -3459,31 +3799,11 @@ mod tests {
             (
                 "an unlabelled picker",
                 ModuleDescriptor {
-                    controls: vec![Control::Picker { label: "  ".into() }],
+                    controls: vec![Control::Picker {
+                        label: "  ".into(),
+                        variants: Vec::new(),
+                    }],
                     ..sample_descriptor()
-                },
-            ),
-            (
-                "a sample-apply canvas with no picker control",
-                ModuleDescriptor {
-                    controls: Vec::new(),
-                    ..sample_descriptor()
-                },
-            ),
-            (
-                "a point-pick canvas with no picker control",
-                ModuleDescriptor {
-                    controls: Vec::new(),
-                    canvas: Some(CanvasInteraction::PointPick {
-                        action: "set-thing".into(),
-                        x: "x".into(),
-                        y: "x".into(),
-                        title: "Pick".into(),
-                        shortcut: Some("W".into()),
-                        icon: None,
-                        commit: false,
-                    }),
-                    ..descriptor()
                 },
             ),
             (
@@ -3751,6 +4071,7 @@ mod tests {
                                 action: "apply-thing".into(),
                             }],
                             collapsed: false,
+                            variants: Vec::new(),
                         },
                     ],
                     ..presets_descriptor()
@@ -3780,6 +4101,7 @@ mod tests {
                     action: "apply-thing".into(),
                 }],
                 collapsed: false,
+                variants: Vec::new(),
             }],
             ..presets_descriptor()
         };
@@ -4232,6 +4554,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
             // `order` is always serialized, so `module.list` reports it for every effect.
@@ -4679,6 +5002,7 @@ mod tests {
                 style: NumberStyle::Stepper,
                 rail: Some(RailDecoration::Hue),
                 reset: None,
+                variants: Vec::new(),
             },
             Control::Curve {
                 action: "set-controls".into(),
@@ -4696,6 +5020,7 @@ mod tests {
                 preset: json!({"amount": 0.0}).as_object().unwrap().clone(),
                 style: ActionStyle::Icon,
                 icon: Some("rotate-left".into()),
+                variants: Vec::new(),
             },
             Control::Color {
                 action: "set-controls".into(),
@@ -4708,6 +5033,7 @@ mod tests {
                 controls: Vec::new(),
                 reset: None,
                 collapsed: true,
+                variants: Vec::new(),
             },
         ];
         descriptor.reset = None;
@@ -4751,23 +5077,28 @@ mod tests {
     }
 
     #[test]
-    fn patch_action_buttons_name_one_field_but_declared_resets_may_name_a_group() {
+    fn patch_action_buttons_name_at_least_one_field_and_declared_resets_may_name_a_group() {
         let mut descriptor = controls_descriptor();
-        for (preset, description) in [
-            (json!({}), "empty"),
-            (json!({"amount": 0.0, "enabled": true}), "multiple"),
-        ] {
-            if let Control::Action { preset: fields, .. } = &mut descriptor.controls[4] {
-                *fields = preset.as_object().unwrap().clone();
-            }
-            let error = descriptor.validate().expect_err(description);
-            assert_eq!(error.kind, ErrorKind::Validation, "{description}");
-            assert_eq!(
-                error.detail,
-                "action control for patch action set-controls needs exactly one preset field",
-                "{description}"
-            );
+        if let Control::Action { preset: fields, .. } = &mut descriptor.controls[4] {
+            fields.clear();
         }
+        let error = descriptor.validate().expect_err("an empty preset");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            "action control for patch action set-controls needs at least one preset field"
+        );
+        // A button may set a group's worth of fields at once, as As shot sets temperature and
+        // tint.
+        if let Control::Action { preset: fields, .. } = &mut descriptor.controls[4] {
+            *fields = json!({"amount": 0.0, "enabled": true})
+                .as_object()
+                .unwrap()
+                .clone();
+        }
+        descriptor
+            .validate()
+            .expect("a button may name several fields of its patch");
         // A group reset is a separate declared gesture, and may intentionally restore several
         // parameters of a patch action at once without making a button's patch ambiguous.
         descriptor.controls[4] = Control::Action {
@@ -4776,6 +5107,7 @@ mod tests {
             preset: json!({"amount": 0.0}).as_object().unwrap().clone(),
             style: ActionStyle::Icon,
             icon: Some("rotate-left".into()),
+            variants: Vec::new(),
         };
         descriptor.reset = Some(ResetAction {
             action: "set-controls".into(),
@@ -4934,8 +5266,10 @@ mod tests {
                 style: crate::NumberStyle::Slider,
                 rail: None,
                 reset: None,
+                variants: Vec::new(),
             }],
             collapsed: false,
+            variants: Vec::new(),
         };
         ModuleDescriptor {
             controls: vec![group("First"), group("Second")],
@@ -4978,6 +5312,7 @@ mod tests {
             style: crate::NumberStyle::Slider,
             rail: None,
             reset: None,
+            variants: Vec::new(),
         });
         let error = non_group
             .validate()

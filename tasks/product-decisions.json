@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run. Interactive-preview softness, an updating histogram, and viewport-bounded clipping are accepted; measured quality/error choices beyond the authorized baseline remain open. The owner decided the 100% RAW white-balance gate and provisionally accepted the 1088 MiB temporary-overlap photo-texture ceiling on 2026-09-27. Both decisions are recorded below; the revised RAW gate passes fresh native checks, while total GPU-memory accounting remains implementation follow-up.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -306,6 +306,159 @@
           "The Detail design starts from a recorded decision."
         ]
       }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Choose measured quality levels and approximation-error limits for interactive viewport previews beyond the authorized baseline.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Temporary softness at 100% during motion, full detail restored on pause/release, an updating full-image histogram, and the documented viewport-bounded clipping behavior are accepted and must not be reopened.",
+        "The documented implementation baseline uses a viewport window on a half-scale proxy while moving, then exact visible-region refinement and whole-frame exact analysis under the shared quiet policy. Further quality levels, GPU preview arithmetic and numerical error limits need representative measurements before acceptance; the sampled global guide is rejected due to severe periodic aliasing and no approximate-global mode ships.",
+        "Exact settled pixels, full-image reports and export retain their current contracts; product research does not imply an implementation latency result."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Accepted owner tradeoff",
+          "target": "docs/decisions.md",
+          "locator": "Interactive previews at 100%",
+          "relevance": "Records what is already accepted and identifies the remaining questions."
+        },
+        {
+          "kind": "file",
+          "label": "Viewport clipping behavior",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Histogram and clipping",
+          "relevance": "Concrete clipping recommendation and the supporting phase, coordinate and stale-texel contracts."
+        },
+        {
+          "kind": "file",
+          "label": "Preview research and measurements",
+          "target": "docs/research/interactive-adjustments.md",
+          "relevance": "Proposed quality levels, guide/GPU error questions and evidence required to qualify them."
+        },
+        {
+          "kind": "file",
+          "label": "Existing displayed-frame clipping",
+          "target": "crates/luxforge-app/src/app/overlay.rs",
+          "locator": "overlay_source",
+          "relevance": "Current approximate-to-exact overlay behavior the recommendation extends."
+        }
+      ],
+      "acceptance_criteria": [
+        "Measured comparisons cover representative edges, thin and range masks, saturated highlights, and multiple spatial layers; preview error is distinct from exact settled equality.",
+        "Any accepted additional quality level or error limit is recorded in docs/decisions.md and its specification; unresolved choices remain explicit and do not block the authorized baseline.",
+        "Exact settled pixels, full-image analysis and export retain their current contracts."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review measured preview/refinement comparisons when available for the representative cases named in the research.",
+          "Record an owner decision for any additional quality level or error limit, or retain the specific choice as open.",
+          "Check consistency among decisions, viewport design and research."
+        ],
+        "commands": [
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "No hypothetical error bound becomes a passed check, and unresolved numerical choices do not reopen accepted clipping or the authorized implementation baseline."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Decide how to qualify moving and held full-detail RAW white-balance previews at 100%.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "The original 2026-09-26 gate compared the drafted moving frame with the released exact frame at Fit and 100%, within 10% of the drag change, plus one code mean at Fit. The final review binary missed it for the Air 2S moving 100% frame at 17.33%; the Z6 and X100VI moving residuals were 2.42% and 3.69%.",
+        "Owner decision, 2026-09-27: assess motion and held full-detail separately. At 100%, the 10% relative gate applies to the approximate held draft after full-detail refinement under the shared 120 ms quiet policy and before release. Motion checks viewport identity, approximate label, visible response and refinement, with measured softness recorded but no numeric softness threshold. Fit retains the 10% relative and one-code mean gates. The recorded held results were 0.81%, 1.39% and 5.06%; fresh native `raw-panel` runs of the revised verifier pass for all three supplied cameras. RAW redevelopment remains exact on release."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Original and revised RAW panel decisions",
+          "target": "docs/decisions.md",
+          "locator": "RAW white-balance drafts",
+          "relevance": "Records the original 2026-09-26 moving criterion and the owner-approved 2026-09-27 split gate."
+        },
+        {
+          "kind": "file",
+          "label": "RAW preview evidence and accepted gate",
+          "target": "docs/design/instant-preview.md",
+          "locator": "A RAW white balance during a drag",
+          "relevance": "Records the distinct moving and held comparisons and accepted 100% gate."
+        },
+        {
+          "kind": "file",
+          "label": "Native RAW panel journey",
+          "target": "docs/engineering/development.md",
+          "locator": "Commands",
+          "relevance": "Names the current native check."
+        }
+      ],
+      "acceptance_criteria": [
+        "The 2026-09-27 owner decision explicitly separates moving response from the held full-detail 100% numerical gate while retaining the Fit gates and the earlier decision record.",
+        "The Air 2S moving miss and held 5.06% result retain their measured scope; no general photo-error or moving-softness threshold is claimed.",
+        "The native verifier and fresh three-camera runs follow the revised gate; their measured scope does not imply a full-tier or general photo-error qualification."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Compare the decision record and design against the owner choice and recorded camera measurements."
+        ],
+        "commands": [],
+        "expected_results": [
+          "The revised gate passes fresh native raw-panel checks on the three supplied cameras, without claiming a full-tier result or general photo-error bound."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Decide the scope of the temporary photo-texture residency ceiling.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Owner decision, 2026-09-27: provisionally accept the current 1088 MiB photo-texture temporary-overlap ceiling as an engineering ceiling, not a total editor or GPU product budget. It consists of current and retiring full-photo allocations up to 512 MiB each and two region sets up to 32 MiB each.",
+        "Crop GPU textures and tiles, overlays, and backend-owned upload staging remain outside the photo ceiling and are not fully measured or bounded. The rendering follow-up must provide native evidence and bounds before a total-memory guarantee."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Photo residency implementation",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
+          "relevance": "Current and retiring slot bounds and deferred-upload behavior."
+        },
+        {
+          "kind": "file",
+          "label": "Viewport design",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Region textures and stale pixels",
+          "relevance": "Records the provisional ceiling and excluded resources."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rule",
+          "target": "docs/engineering/performance-rules.md",
+          "locator": "Viewport change review",
+          "relevance": "Accounting scope and unmeasured backend staging."
+        }
+      ],
+      "acceptance_criteria": [
+        "The provisional 1088 MiB ceiling is stated as a photo-texture engineering limit including retirement, without implying a total editor or GPU memory budget.",
+        "The excluded crop, overlay and backend staging allocations and required native measurement and bounds are explicit."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review the decision, viewport design and performance rule for the same accounting scope."
+        ],
+        "commands": [],
+        "expected_results": [
+          "A rendering follow-up owns the omitted-resource qualification."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -317,7 +470,10 @@
         "TASK-003",
         "TASK-004",
         "TASK-005",
-        "TASK-006"
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009"
       ]
     }
   ]

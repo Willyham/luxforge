@@ -15,19 +15,27 @@
 //! An overlay belongs to one preview generation. It is kept with that generation and drawn only
 //! while the same generation's photograph is on screen, so a mask derived from one frame is never
 //! drawn over another.
-use luxforge_ui::Frame;
+use luxforge_ui::{Frame, RegionFrame, RegionOverlay, RegionQuality};
 
 /// Every frame the canvas draws, with the versions that tell the surface which are new.
 #[derive(Debug, Default)]
 pub(crate) struct Presenter {
     photo: Option<Frame>,
+    /// Content identity of every whole-photo frame, including a Fit proxy. `full_content` below
+    /// remains exact-only so the percentage-zoom surface never treats a proxy as full detail.
+    photo_content: Option<u64>,
+    full_content: Option<u64>,
     photo_versions: u64,
+    region: Option<RegionFrame>,
+    region_versions: u64,
     stage: Option<Frame>,
     stage_versions: u64,
     clipping: Option<(u64, Frame)>,
     clipping_versions: u64,
+    region_clipping: Option<RegionOverlay>,
     coverage: Option<(u64, Frame)>,
     coverage_versions: u64,
+    region_coverage: Option<RegionOverlay>,
 }
 
 /// One frame of `width` × `height` RGBA pixels at the next of `versions`, or `None` when the buffer
@@ -49,6 +57,8 @@ impl Presenter {
     /// buffer, so this copies no pixels. `false` when the raster does not hold its own size, in
     /// which case the photograph on screen is withdrawn rather than left standing for it.
     pub(crate) fn show_photo(&mut self, raster: &luxforge_core::Raster) -> bool {
+        self.photo_content = None;
+        self.full_content = None;
         self.photo = frame(
             raster.rgba.clone(),
             raster.width,
@@ -58,14 +68,90 @@ impl Presenter {
         self.photo.is_some()
     }
 
+    pub(crate) fn show_proxy(&mut self, raster: &luxforge_core::Raster, content: u64) -> bool {
+        let shown = self.show_photo(raster);
+        self.photo_content = shown.then_some(content);
+        shown
+    }
+
+    pub(crate) fn show_full(&mut self, raster: &luxforge_core::Raster, content: u64) -> bool {
+        let shown = self.show_photo(raster);
+        self.photo_content = shown.then_some(content);
+        self.full_content = shown.then_some(content);
+        shown
+    }
+
+    pub(crate) fn show_region(
+        &mut self,
+        rendered: &luxforge_core::RegionFrame,
+        quality: RegionQuality,
+        content: u64,
+        generation: u64,
+    ) -> bool {
+        let Some(frame) = frame(
+            rendered.raster.rgba.clone(),
+            rendered.raster.width,
+            rendered.raster.height,
+            &mut self.region_versions,
+        ) else {
+            self.region = None;
+            return false;
+        };
+        let rect = [
+            rendered.rect.x0,
+            rendered.rect.y0,
+            rendered.rect.x1(),
+            rendered.rect.y1(),
+        ];
+        self.region = RegionFrame::new(
+            frame,
+            rect,
+            (rendered.stage.width, rendered.stage.height),
+            (rendered.full_stage.width, rendered.full_stage.height),
+            rendered.stage.width as f32 / rendered.full_stage.width as f32,
+            quality,
+            content,
+            generation,
+        );
+        self.region.is_some()
+    }
+
+    pub(crate) fn region(&self) -> Option<&RegionFrame> {
+        self.region.as_ref()
+    }
+
+    pub(crate) fn full_content(&self) -> Option<u64> {
+        self.full_content
+    }
+
+    pub(crate) fn clear_region(&mut self) {
+        self.region = None;
+        self.region_clipping = None;
+        self.region_coverage = None;
+    }
+
     /// Take the photograph off the surface: the frame on screen no longer shows the state the
     /// desktop names.
     pub(crate) fn withdraw_photo(&mut self) {
         self.photo = None;
+        self.photo_content = None;
+        self.full_content = None;
+        self.region = None;
+        self.region_clipping = None;
+        self.region_coverage = None;
     }
 
     pub(crate) fn photo(&self) -> Option<&Frame> {
         self.photo.as_ref()
+    }
+
+    /// Only a whole-photo frame belonging to the content currently presented may enter the
+    /// canvas. A newer viewport region can advance that content while an older whole frame is
+    /// still retained for its own generation.
+    pub(crate) fn photo_for(&self, content: u64) -> Option<&Frame> {
+        self.photo
+            .as_ref()
+            .filter(|_| self.photo_content == Some(content))
     }
 
     /// How many photographs have been handed to the surface.
@@ -111,6 +197,7 @@ impl Presenter {
 
     pub(crate) fn clear_clipping(&mut self) {
         self.clipping = None;
+        self.region_clipping = None;
     }
 
     /// The clipping overlay, when it belongs to `generation`.
@@ -133,11 +220,72 @@ impl Presenter {
 
     pub(crate) fn clear_coverage(&mut self) {
         self.coverage = None;
+        self.region_coverage = None;
     }
 
     /// The mask coverage, when it belongs to `generation`.
     pub(crate) fn coverage(&self, generation: u64) -> Option<&Frame> {
         of(&self.coverage, generation)
+    }
+
+    pub(crate) fn show_region_clipping(
+        &mut self,
+        rgba: Vec<u8>,
+        size: (u32, u32),
+        region: &super::preview::PresentedRegion,
+    ) -> bool {
+        self.region_clipping =
+            frame(rgba, size.0, size.1, &mut self.clipping_versions).and_then(|frame| {
+                RegionOverlay::new(
+                    frame,
+                    [
+                        region.raster_rect.x0,
+                        region.raster_rect.y0,
+                        region.raster_rect.x1(),
+                        region.raster_rect.y1(),
+                    ],
+                    (region.raster_stage.width, region.raster_stage.height),
+                    (region.full_stage.width, region.full_stage.height),
+                    region.quality,
+                    region.content,
+                    region.generation,
+                )
+            });
+        self.region_clipping.is_some()
+    }
+
+    pub(crate) fn show_region_coverage(
+        &mut self,
+        rgba: Vec<u8>,
+        size: (u32, u32),
+        region: &super::preview::PresentedRegion,
+    ) -> bool {
+        self.region_coverage =
+            frame(rgba, size.0, size.1, &mut self.coverage_versions).and_then(|frame| {
+                RegionOverlay::new(
+                    frame,
+                    [
+                        region.rect.x0,
+                        region.rect.y0,
+                        region.rect.x1(),
+                        region.rect.y1(),
+                    ],
+                    (region.full_stage.width, region.full_stage.height),
+                    (region.full_stage.width, region.full_stage.height),
+                    region.quality,
+                    region.content,
+                    region.generation,
+                )
+            });
+        self.region_coverage.is_some()
+    }
+
+    pub(crate) fn region_clipping(&self) -> Option<&RegionOverlay> {
+        self.region_clipping.as_ref()
+    }
+
+    pub(crate) fn region_coverage(&self) -> Option<&RegionOverlay> {
+        self.region_coverage.as_ref()
     }
 }
 
@@ -151,7 +299,7 @@ fn of(overlay: &Option<(u64, Frame)>, generation: u64) -> Option<&Frame> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_core::{Raster, SnapshotId};
+    use luxforge_core::{Raster, Region, SnapshotId, StageSize};
     use std::sync::Arc;
 
     fn raster(width: u32, height: u32) -> Raster {
@@ -162,6 +310,48 @@ mod tests {
             source_fingerprint: "f".into(),
             snapshot_id: SnapshotId::new(),
         }
+    }
+
+    #[test]
+    fn half_detail_clipping_uses_the_rasters_odd_stage_footprint() {
+        let mut presenter = Presenter::default();
+        let region = super::super::preview::PresentedRegion {
+            generation: 7,
+            content: 3,
+            raster: Arc::new(raster(17, 17)),
+            rect: Region {
+                x0: 101,
+                y0: 1,
+                width: 32,
+                height: 32,
+            },
+            full_stage: StageSize {
+                width: 213,
+                height: 159,
+            },
+            raster_rect: Region {
+                x0: 50,
+                y0: 0,
+                width: 17,
+                height: 17,
+            },
+            raster_stage: StageSize {
+                width: 107,
+                height: 80,
+            },
+            quality: RegionQuality::Interactive,
+            approximate: true,
+        };
+        assert!(presenter.show_region_clipping(vec![0; 17 * 17 * 4], (17, 17), &region));
+        let overlay = presenter.region_clipping().unwrap();
+        assert_eq!(overlay.rect, [50, 0, 67, 17]);
+        assert_eq!(overlay.stage, (107, 80));
+        assert_eq!(overlay.full_stage, (213, 159));
+        let x0 = overlay.rect[0] as f32 * 213.0 / overlay.stage.0 as f32;
+        assert!(
+            (x0 - 99.53).abs() < 0.01,
+            "the overlay starts at the raster footprint"
+        );
     }
 
     /// A shown raster is the render's own buffer, and every one moves the photograph's version by

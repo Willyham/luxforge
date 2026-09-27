@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "rendering",
   "title": "Rendering, preview and analysis",
-  "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, a design for viewport tiles, opaque frames, render.rs split by concept and one test per property, then stage-boundary methods before Corrections adds a new boundary.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and runs every pass below one megapixel serially regardless of its actual cost; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md.",
+  "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, an exact viewport-region path with a half-scale interactive preview, opaque frames, render.rs split by concept and one test per property, then stage-boundary methods before Corrections adds a new boundary.",
+  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and some passes now select their parallel path by work; heavy colour with at least three units or a mask uses the shared pool from 256 Ki pixels, while ordinary work retains its existing one-megapixel threshold; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The original moving-frame RAW white-balance gate missed on the Air 2S at 17.33% against 10%; the owner revised the 100% gate on 2026-09-27 to test the held full-detail draft after quiet refinement. Fresh native `raw-panel` runs pass for all three supplied cameras under the revised gate. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only; crop GPU textures, overlays and backend staging remain outside it and are not fully measured or bounded. No total-memory guarantee or general numerical photo-error bound is qualified.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -449,10 +449,9 @@
         "TASK-002"
       ],
       "extra_context": [
-        "Wave 3, speed. PARALLEL_RENDER_PIXELS becomes several thresholds in the limits module this group already gave the constant a home in.",
-        "Rule 9 (docs/engineering/performance-rules.md) measured the one-megapixel threshold for the transform pass only: 'The transform pass goes parallel above one megapixel and stays serial below it', a copy costing about 1-2 ns per pixel. The same constant also gates the colour pass (about 77 ns per pixel for a full Basic layer, from the proxy render figures) and every spatial pass (100+ ns per pixel): the colour row pass (render/pipeline.rs), the resample (render.rs) and the spatial stage's own gate (render/spatial.rs, `large`), which decides both tiled parallelism and per-tile pooled passes.",
-        "A display-bounded proxy is commonly under 1 MP: a 1080p landscape photo at scale 1 is about 0.96 MP, a portrait or a half-screen window smaller still. A full Basic layer there is estimated at about 74 ms serial against about 5 ms on the pool, and a Presence layer at about 150 ms against about 12 ms. Every drag in a small window falls off this cliff; a large window does not.",
-        "Proposal: a threshold per pass kind, declared in the limits module and measured rather than assumed, for example copy-only passes staying at one megapixel, the colour pass going parallel above roughly 64k pixels when the segment has colour, the spatial stage parallel whenever it has more than one tile with pooled per-tile passes when a single tile is large, and the resample parallel above roughly 256k output pixels."
+        "The transform and ordinary rendering paths still use the one-megapixel threshold. A measured heavy-colour change now uses the shared pool from 256 Ki pixels for a colour pass containing at least three units or a mask; see docs/engineering/performance-rules.md Rule 9.",
+        "This is a partial threshold decision, not a completed per-pass redesign. Spatial and resample thresholds remain at their existing rules until separately measured. Do not repeat the former blanket claim that all work below one megapixel is serial.",
+        "Viewport performance evidence uses the native Fit and zoomed scenarios in docs/specs/performance.md. Loaded runs are labeled with their host load and are not treated as clean-load qualification."
       ],
       "context_links": [
         {
@@ -659,14 +658,15 @@
     },
     {
       "id": "TASK-010",
-      "description": "Measure whether withholding a drafted job's exact phase at Fit while the gesture is moving closes the paint and drag latency tail, and adopt a deferral flag if it does.",
-      "status": "ready",
+      "description": "Qualify the drafted-job exact-phase deferral at Fit and record its effect on paint/drag latency and the shared 120 ms quiet policy.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed. This measurement is ordered before the masking group's own paint-latency work, so that work can attribute its figures correctly.",
-        "Every preview job renders its full-resolution exact phase, and a drafted job also asks for .analyse() (crates/luxforge-app/src/app/tasks.rs, draft_set_now), after its proxy frame (crates/luxforge-core/src/preview/worker.rs). Under a paced stroke or drag that phase is always superseded before it is used, and the next position's job does not start until the superseded one notices, at its next chunk boundary. Recorded preview request-to-worker-start is 6.6/18.2 ms (p50/p95, docs/specs/performance.md, 'Bare recipe at photo size').",
+        "Before exact-phase deferral, every Fit preview job rendered its full-resolution exact phase and each drafted request asked for `.analyse()` after the proxy (`crates/luxforge-app/src/app/tasks.rs`, `draft_set_now`; `crates/luxforge-core/src/preview/worker.rs`). During moving input that exact work was often superseded before adoption and could delay the next interactive frame. The baseline preview request-to-worker-start was 6.6/18.2 ms (p50/p95; docs/specs/performance.md, “Bare recipe at photo size”).",
         "The release's commit refresh already renders the exact frame and histogram once the gesture stops, so withholding the drafted exact phase at Fit loses nothing a released frame does not already provide.",
-        "Proposal: run editor-latency --mode paint and --mode drag with the drafted job's exact phase withheld at Fit and compare against current behaviour. If it closes the tail, add a job flag that defers a drafted job's exact phase, and its histogram, at Fit until the gesture is idle, tested at the preview queue; update the performance rules' known-costs table with the result either way."
+        "The 120 ms exact-phase deferral is implemented for Fit drafts. Compare editor-latency --mode paint and --mode drag with before measurements; report the measured result either way and retain exact report adoption after quiet/release.",
+        "The shared pause policy also serves viewport refinement: latest accepted input drained, no pending input, draft round trip or commit, then a measured quiet interval without gesture or view motion. The shared interval is 120 ms, driven by the single 25 ms quiet timer; this task records its latency effect and verifies that the timer is disarmed after settlement. Release bypasses the interval after draining its final input, resumed motion supersedes refinement, and settled idle leaves no timer armed. Do not introduce a separate viewport timeout."
       ],
       "context_links": [
         {
@@ -679,13 +679,13 @@
           "kind": "file",
           "label": "Drafted job exact phase",
           "target": "crates/luxforge-core/src/preview/worker.rs",
-          "relevance": "Every job's exact phase and histogram reduction after its proxy frame."
+          "relevance": "Fit proxy and deferred exact phases in the preview worker."
         },
         {
           "kind": "file",
           "label": "Drafted job driver",
           "target": "crates/luxforge-app/src/app/tasks.rs",
-          "relevance": "draft_set_now, which asks .analyse() on every drafted job's preview request.",
+          "relevance": "draft_set_now and its deferred exact-report request.",
           "locator": "draft_set_now"
         },
         {
@@ -700,19 +700,28 @@
           "target": "docs/engineering/performance-rules.md",
           "relevance": "The row this task's measured result updates.",
           "locator": "Known remaining costs"
+        },
+        {
+          "kind": "file",
+          "label": "Shared preview phase and pause policy",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Fit proxy and exact phases",
+          "relevance": "Shared Fit deferral and viewport phase, token and 120 ms quiet-policy contract."
         }
       ],
       "acceptance_criteria": [
         "The measurement, with and without withholding the drafted exact phase at Fit, is recorded in docs/specs/performance.md with host, load and sample count.",
-        "If adopted: a job flag defers a drafted job's exact phase and histogram at Fit until the gesture is idle, and the preview queue's tests cover a superseded drafted job that never renders its exact phase while the gesture continues.",
+        "A job flag defers a drafted job's exact phase and histogram at Fit during motion; preview-queue tests cover a superseded draft that never renders its exact phase while motion continues.",
         "Renders and samples stay byte-identical on both pixel domains; only when the exact phase runs changes.",
-        "The known-costs row in docs/engineering/performance-rules.md is updated to the measured outcome, whichever way the decision goes."
+        "The known-costs row in docs/engineering/performance-rules.md is updated to the measured outcome, whichever way the decision goes.",
+        "The experiment records the common gesture-idle event and measured quiet interval, with pending-input, round-trip, resume and release behavior; any adopted policy is reused by viewport refinement and leaves no timer armed after settlement."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
           "Run editor-latency --mode paint and --mode drag at 24 MP and 60 MP with the drafted exact phase withheld at Fit, and compare against today's behaviour.",
-          "If it closes the tail, add a job flag that defers the exact phase and histogram until the gesture is idle, and test it at the preview queue.",
+          "Define and measure the shared gesture-idle policy, including a held gesture that pauses, resumes, and releases while a draft round trip or preview is pending.",
+          "Verify the implemented job flag defers exact rendering and histogram reduction until the shared quiet policy or release, including pending input, round trip and resume behavior.",
           "Update the performance rules' known-costs row with the outcome."
         ],
         "commands": [
@@ -728,14 +737,14 @@
     },
     {
       "id": "TASK-011",
-      "description": "Design viewport-tile rendering for a 100% drag from the window-rectangle walk that already exists, correct the documented blocker, and bring the histogram-during-drag question to the owner.",
-      "status": "ready",
+      "description": "Complete the viewport-tile design from the existing window-rectangle walk, correct the documented blocker, and record the owner’s histogram and clipping answer.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Wave 3, speed. This is a design task: it produces a design section and an owner answer, not the viewport-tile implementation itself.",
-        "docs/engineering/performance-rules.md's known-costs table and docs/design/instant-preview.md both say viewport tiles need 'the inverse of the geometry tail over a rectangle, which the crop contract does not define yet'. WindowPlan::of / apply (render/window.rs) already walk a needed rectangle back through exact geometry, a resample and a spatial boundary to a source rectangle, for the proxy window; that is exactly the missing piece, already built and tested.",
-        "A 100% drag today renders the whole exact frame per input: about 200-300 ms at 60 MP with a full Basic layer, against about 25 ms for a 2880x1800 viewport (5.2 MP).",
-        "Remaining design work: WindowPlan::of_rect starting from the viewport instead of the whole output; a coordinate origin for a finish unit in a cut segment (masks already map through the suffix; a finish unit is handed frame coordinates today); a source-rectangle view (free for RAW's LinearImage::with_view, a parallel copy or an origin offset for the byte path); and the owner's answer on what the histogram and clipping overlay show mid-drag, recommended as keeping them marked updating during the drag, as they already are between a proxy frame and its exact phase, since the full exact frame still renders on release."
+        "Wave 3, speed. The reviewed viewport behavior and the owner’s histogram/clipping answer are recorded. On 2026-09-27, the owner accepted the viewport-bounded clipping behavior and authorized implementation; the viewport path is now implemented, with native timing/quality/residency qualification tracked downstream.",
+        "docs/design/instant-preview.md covers the output-rectangle walk, finish-unit origins, both source domains, uncut mask/coordinate evaluation, phase tokens, shared-slot admission, pause semantics, region/full texture separation, stale-texel hiding, residency bounds, exact shared estimate identities and named fallbacks. WindowPlan::of / apply already provide the inverse rectangle walk; the documents no longer describe it as missing.",
+        "docs/decisions.md records the accepted temporary softness at 100% during motion, full detail on the 120 ms quiet policy or release, an updating full-image histogram, and viewport-bounded clipping. Prior native timing and texture-reuse cases passed on their recorded builds; source and overlay identity across zoom/quality transitions is covered by focused tests. Post-review quick and 33-scenario rendered checks pass, and 16 targeted timing cases completed. No post-review full-tier result is claimed. Backend staging is unmeasured, and numerical photo-error qualification is open.",
+        "Prior native functional journeys and critical 60 MP crop/mask viewport and moving-pan timing cases passed on their recorded builds. The cold Dehaze region exposes the whole-stage exact-estimate cost; burst evidence and Fit results are recorded with sample and host-load scope in docs/specs/performance.md. Current-view filtering and quality-matched overlay identity are covered by focused tests. Post-review quick and rendered checks pass; targeted timing is recorded with host-load scope. A post-review full-tier run was not made. Backend staging remains unmeasured, and numerical photo-error qualification remains open. See docs/research/interactive-adjustments.md for current scope."
       ],
       "context_links": [
         {
@@ -753,9 +762,9 @@
         },
         {
           "kind": "file",
-          "label": "Viewport tiles at 100%",
+          "label": "Viewport rendering at 100%",
           "target": "docs/design/instant-preview.md",
-          "relevance": "The stated blocker this task corrects and the design section it adds to."
+          "relevance": "Current viewport phase, coordinates, texture bounds and explicit fallback contract."
         },
         {
           "kind": "file",
@@ -763,27 +772,45 @@
           "target": "docs/engineering/performance-rules.md",
           "relevance": "The 100% drag row this task's design addresses.",
           "locator": "Known remaining costs"
+        },
+        {
+          "kind": "file",
+          "label": "Accepted interaction tradeoff",
+          "target": "docs/decisions.md",
+          "locator": "Interactive previews at 100%",
+          "relevance": "Accepted temporary softness and updating full-image counts; the viewport clipping behavior is delivered."
+        },
+        {
+          "kind": "file",
+          "label": "Current clipping source selection",
+          "target": "crates/luxforge-app/src/app/overlay.rs",
+          "locator": "overlay_source",
+          "relevance": "Displayed viewport clipping source and its content/quality identity."
+        },
+        {
+          "kind": "file",
+          "label": "Research and qualification scope",
+          "target": "docs/research/interactive-adjustments.md",
+          "relevance": "Separates source evidence, code findings, historical timings and unmeasured viewport/cache/GPU proposals."
         }
       ],
       "acceptance_criteria": [
         "A design section in docs/design/instant-preview.md covers WindowPlan::of_rect, the finish-unit coordinate origin and the source-rectangle view for both pixel domains.",
         "The known-costs row in docs/engineering/performance-rules.md and the corresponding line in docs/design/instant-preview.md no longer say the crop contract is missing a piece that already exists.",
-        "The owner's answer on what the histogram and clipping overlay show during a 100% drag is recorded in docs/decisions.md.",
-        "Implementation is out of scope for this task and follows as its own change once designed."
+        "The owner’s answer on what the histogram and clipping overlay show during a 100% drag is recorded in docs/decisions.md.",
+        "Implementation is tracked as a separate set of tasks after the design and owner answer."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Read WindowPlan::of / apply against the viewport case and write the design section covering of_rect, the finish-unit origin and the source-rectangle view.",
-          "Correct the known-costs row and the instant-preview.md line that call the inverse-geometry-tail piece missing.",
-          "Bring the histogram-during-drag question to the owner and record the answer."
+          "Review the recorded viewport design against WindowPlan, latest-job cancellation/admission, photo-surface residency and the overlay source contract.",
+          "Check the corrected geometry references and accepted histogram/clipping answer against the design and decisions documents."
         ],
         "commands": [
           "cargo xtask check"
         ],
         "expected_results": [
-          "The design section and the corrected documents pass the documentation check.",
-          "The owner's answer is recorded in docs/decisions.md."
+          "The design section and corrected documents describe the existing geometry walk and the recorded owner answer; implementation remains separate."
         ]
       }
     },
@@ -1158,6 +1185,397 @@
           "The new stage-boundary kind's own tests pass through the same methods, not a new arm set."
         ]
       }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Render exact requested output rectangles and half-scale interactive viewport regions through eligible recipe stages for byte and RAW pixels.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Core owns render/window/entry/linear/source APIs. Keep an uncut compilation for geometry, mask coverage and coordinate queries; only the pixel producer receives a cut compilation. Preserve finish-unit origins and whole-stage spatial estimates. Explicitly report existing fallbacks for unsupported positional or point-replacement cases; do not broaden eligibility without exactness and memory proof.",
+        "Interactive regions use exact whole-stage spatial estimates from the existing shared eight-entry cache. A cold estimate, including Dehaze after its upstream state changes, can still require whole-stage work. Do not ship a reduced sampled-guide namespace: periodic inputs alias severely (reduction-cell mean 1.0 versus full-resolution cell mean 0.0625). Estimate-after-spatial remains a named fallback."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Viewport rendering design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Required rectangle walk, phases, fallback classes, bounds and exactness contract.",
+          "locator": "Viewport rendering at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Existing window planner",
+          "target": "crates/luxforge-core/src/render/window.rs",
+          "relevance": "Extend the existing walk to requested output rectangles and source views.",
+          "locator": "WindowPlan"
+        },
+        {
+          "kind": "file",
+          "label": "Render entry points",
+          "target": "crates/luxforge-core/src/render.rs",
+          "relevance": "Byte path and stage compilation for exact viewport evaluation."
+        },
+        {
+          "kind": "file",
+          "label": "Linear render path",
+          "target": "crates/luxforge-core/src/render/linear.rs",
+          "relevance": "RAW region view and exact viewport evaluation."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Frame, cancellation, memory and photo-sized evidence requirements.",
+          "locator": "Known remaining costs"
+        }
+      ],
+      "acceptance_criteria": [
+        "For supported stacks, every byte in the region equals the matching rectangle from the exact full render, including fractional/rotated crops, masks, finish effects, spatial seams and estimates.",
+        "Byte and linear source windows compose orientations and existing views without copying the full source.",
+        "Uncut coordinate and mask-coverage evaluation remains in full-stage coordinates; unsupported stacks take a named existing-path fallback.",
+        "Viewport buffers and scratch obey the existing frame and scratch bounds.",
+        "Interactive and exact region evaluations use the shared exact estimate identity and eight-entry cap; cold global-estimate work is included in native timing scope."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Extend the rectangle walk to a requested output rectangle while preserving origin and spatial alignment.",
+          "Add immutable byte source-region access and compose RAW regions through LinearImage views.",
+          "Compare region buffers against full-render crops across both pixel domains and the supported boundary cases; exercise named fallbacks."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core window",
+          "cargo test -p luxforge-core render"
+        ],
+        "expected_results": [
+          "Region buffers match full-frame slices exactly for supported cases, and unsupported cases report their documented fallback."
+        ]
+      }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Schedule interactive viewport previews, exact viewport refinement and whole-frame exact analysis through the existing bounded preview worker and shared quiet policy.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-010",
+        "TASK-017"
+      ],
+      "extra_context": [
+        "Core preview worker and desktop own preview job/result/queue flow. Reuse one active/one pending worker and the selected quiet policy from the Fit deferral work. Interactive work uses abandoned cancellation and can progress under sustained input; refinement and analysis use superseded cancellation. Carry content, region, quality, request generation and recipe revision through results, and preserve release/cancel/asset fences. Interactive regions and exact refinement share only exact whole-stage estimate identities from the existing shared eight-entry cache; no approximate-guide identity is used.",
+        "The core exact region API comes from the preceding core task. Interactive regions use exact whole-stage estimates; estimate-after-spatial remains a named fallback."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Viewport rendering design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Required rectangle walk, phases, fallback classes, bounds and exactness contract.",
+          "locator": "Viewport rendering at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "relevance": "One active and one replaceable pending job, proxy cache and exact-analysis phases."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop preview job flow",
+          "target": "crates/luxforge-app/src/app/preview.rs",
+          "relevance": "Desktop job admission, result identity and shared quiet policy."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Frame, cancellation, memory and photo-sized evidence requirements.",
+          "locator": "Known remaining costs"
+        }
+      ],
+      "acceptance_criteria": [
+        "Motion runs the selected half-scale viewport proxy first and never waits for whole-frame exact analysis; unsupported stacks use the explicit fallback.",
+        "Pause refines the latest live draft region and then schedules whole-frame exact render/analysis; release settles committed state without waiting for the quiet interval.",
+        "New motion cancels stale refinement, viewport work makes forward progress under sustained input, and commit/cancel/history/asset fences reject obsolete frames.",
+        "Viewport-only frames cannot satisfy analysis; sampling remains an exact point query and export keeps its full-image path. Interactive work uses exact whole-stage estimates."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Connect viewport geometry and scale to the bounded worker’s existing admission and replacement identities.",
+          "Implement interactive, refinement and whole-frame phases using the shared quiet policy; reconcile pan requests across gesture gates.",
+          "Test replacement pairs, sustained input, pause/resume, release fences, exact estimate identity and cold-estimate fallback, and full-frame analysis isolation."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core proxy",
+          "cargo test -p luxforge-app preview"
+        ],
+        "expected_results": [
+          "Only the latest compatible region can advance the live draft, refinement restores exact region detail, and full-image reports remain exact."
+        ]
+      }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Present viewport regions in a separately bounded surface slot and draw generation-matched clipping overlays without exposing stale pixels.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-018"
+      ],
+      "extra_context": [
+        "Desktop owns app/UI presentation. Retain the full-image slot for settled pans and full-resolution analysis; use bounded front/back region tile sets for viewport frames. Include submitted-but-not-retired allocations, retire GPU resources asynchronously, and hide uncovered or stale texels. Overlay clipping uses the accepted viewport-bounded OR grid and region/content/quality identity; whole-image counts remain marked updating until a matching full report.",
+        "Current-view source filtering, readiness before capture, and suppression of an older overlay under any later overlapping region with a different content, generation or quality identity are implemented. The missing older overlay remains hidden until a matching grid arrives, so it never claims pixels from a different displayed region. Focused UI and surface tests pass; post-review quick and rendered checks pass, with 16 targeted timing cases recorded. No post-review full-tier run is claimed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Viewport rendering design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Required rectangle walk, phases, fallback classes, bounds and exactness contract.",
+          "locator": "Viewport rendering at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
+          "relevance": "Full-image texture slot and bounded viewport region presentation."
+        },
+        {
+          "kind": "file",
+          "label": "Clipping overlay selection",
+          "target": "crates/luxforge-app/src/app/overlay.rs",
+          "relevance": "Extend displayed-frame source selection to viewport overlays."
+        },
+        {
+          "kind": "file",
+          "label": "Accepted viewport behavior and authorization",
+          "target": "docs/decisions.md",
+          "relevance": "Records the accepted clipping rule and implementation authorization.",
+          "locator": "Interactive previews at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Frame, cancellation, memory and photo-sized evidence requirements.",
+          "locator": "Known remaining costs"
+        }
+      ],
+      "acceptance_criteria": [
+        "Current and retiring full-image textures stay within two 512 MiB allocations and region sets within two 32 MiB allocations, including retirement; pan reuses matching full-slot texels without a second upload. The aggregate photo bound is a provisionally accepted engineering ceiling for those slots only; crop/overlay/backend staging remain separate and need accounting before a total-memory guarantee.",
+        "A deferred upload may draw one coherent prior photo, marked updating with mismatched overlays suppressed; otherwise missing pixels show the canvas background. After admission, drawn photo and overlays match the requested identity.",
+        "Approximate viewport clipping follows displayed interactive pixels and exact visible overlay replaces it on matching refinement; stale/missing regions hide their overlays.",
+        "The overlay preserves OR-of-clipped-pixels semantics and existing per-side grid cap; viewport counts never replace whole-image counts."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add bounded region front/back storage and explicit region/content/quality/generation identity to surface publication.",
+          "Add async texture retirement and bounded chunk upload accounting, retaining matching full-slot uploads across pan.",
+          "Extend overlay source selection and grid construction; test stale/missing coverage and exact region refinement."
+        ],
+        "commands": [
+          "cargo test -p luxforge-ui photo_surface",
+          "cargo test -p luxforge-app overlay"
+        ],
+        "expected_results": [
+          "No stale texels or overlays are visible, full-slot reuse avoids re-upload, and viewport clipping remains distinct from whole-image analysis."
+        ]
+      }
+    },
+    {
+      "id": "TASK-020",
+      "description": "Extend release latency scenarios to exercise zoomed slider bursts, moving pans, viewport identity, surface reuse, exact analysis and RAW coverage.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-018",
+        "TASK-019"
+      ],
+      "extra_context": [
+        "The release scenario accepts --zoom and --moving-pan and records viewport/content/quality/generation identity, full-slot reuse, exact analysis and RAW scope. Generated 24 MP and 60 MP bursts, the 60 MP 200% moving-pan case, dedicated 60 MP 100% viewport run, 24 MP multi-mask journey and exact-fallback scenario pass.",
+        "Those results belong to their recorded release binaries. The post-review binary passed quick and rendered (33 native scenarios), including three viewport journeys with zero blank and stale photo draws; 16 targeted timing cases completed. Adoption is not display scanout and photo-texture writes do not measure backend staging. No post-review full-tier run is claimed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Editor latency scenarios",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Extend release scenarios to request zoomed viewports and log correlated state."
+        },
+        {
+          "kind": "file",
+          "label": "Viewport rendering design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Required rectangle walk, phases, fallback classes, bounds and exactness contract.",
+          "locator": "Viewport rendering at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Interactive preview research",
+          "target": "docs/research/interactive-adjustments.md",
+          "relevance": "Measurement cases and error reporting scope.",
+          "locator": "Qualification"
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Supported scenario execution and evidence conventions."
+        }
+      ],
+      "acceptance_criteria": [
+        "Release scenario accepts explicit 100% and 200% viewport cases and reports accepted input, presented region, content/revision/quality/generation and overlay state with correlated logs/captures.",
+        "Tests prove full-slot upload reuse after pan and prove whole-image histogram/clipping counts remain exact after settlement.",
+        "Scenario matrix covers sustained slider bursts with moving pan, supported JPEG and RAW assets, pause/refinement, release and explicit fallback classes.",
+        "Native M4 input-to-present figures report their scope, sample count and cache state without claiming display scanout."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Extend scenario parsing and evidence records to accept zoom and pan controls plus viewport identity assertions.",
+          "Run the scenario on the generated 24 MP and 60 MP JPEG fixtures and qualified RAW fixtures with background-only launch.",
+          "Inspect correlated state, logs and captures for stale texels/overlays, full-slot reuse and settled exact analysis."
+        ],
+        "commands": [
+          "cargo xtask verify --tier rendered",
+          "cargo xtask verify --tier timing"
+        ],
+        "expected_results": [
+          "The release scenarios exercise both zooms and all required state transitions; evidence includes native timing and correlated rendered-state proof."
+        ]
+      }
+    },
+    {
+      "id": "TASK-021",
+      "description": "Record the finished viewport behavior, performance evidence, bounds and remaining fallback/quality limits in current documentation.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-017",
+        "TASK-018",
+        "TASK-019",
+        "TASK-020"
+      ],
+      "extra_context": [
+        "Current behavior documentation records the bounded retiring photo, coherent stale fallback, wake subscription, physical-density viewport coverage, separate region and whole-stage mask tint grids, and raster-footprint overlay placement. Final review release binary passes quick and rendered (33 native smoke scenarios); the three permanent viewport journeys have zero blank or stale photo draws. Sixteen targeted timing cases completed with host-load scope in the performance spec. The original moving-frame RAW white-balance gate passed Z6 and X100VI but missed on Air 2S; the revised 100% held-detail gate passes fresh native checks on all three supplied cameras. No full-tier or milestone qualification is claimed.",
+        "The final single 60 MP idle window used 1.421% of one core over 30.26 seconds with Performance open, missing the provisional <1% target; backend staging is unmeasured and no general numerical photo-error bound is qualified. The owner revised the 100% raw-panel criterion on 2026-09-27; fresh native raw-panel checks pass for the three supplied cameras under the revised gate, without a full-tier result or general photo-error qualification."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Viewport rendering design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Required rectangle walk, phases, fallback classes, bounds and exactness contract.",
+          "locator": "Viewport rendering at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Frame, cancellation, memory and photo-sized evidence requirements.",
+          "locator": "Known remaining costs"
+        },
+        {
+          "kind": "file",
+          "label": "Interactive preview research",
+          "target": "docs/research/interactive-adjustments.md",
+          "relevance": "Measurement cases and error reporting scope.",
+          "locator": "Qualification"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Current implementation and evidence status."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "User-facing viewport preview behavior."
+        }
+      ],
+      "acceptance_criteria": [
+        "Design, feature status, user guide and performance spec describe the shipped viewport behavior and named fallback classes consistently.",
+        "Performance records native host/profile/cache/sample scope for 100%/200% burst-and-pan cases, plus memory/upload bounds and settled analysis behavior.",
+        "Performance-rules checklist records allocation bounds, owner-thread work, queue/cancellation behavior, timing evidence and exactness tests.",
+        "No claim exceeds the captured or measured evidence; unqualified numerical quality limits retain their measured scope."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review exact-region test results, release scenario captures/logs and native timing output.",
+          "Update the current behavior and performance sections; remove proposal-only wording that no longer matches behavior while retaining unqualified limits as open.",
+          "Run documentation and repository checks after the finished integration."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Current docs agree with the implementation and evidence, and verification reports no skipped checks as passing."
+        ]
+      }
+    },
+    {
+      "id": "TASK-022",
+      "description": "Measure and bound GPU resources excluded from the provisional 1088 MiB photo-texture ceiling before making a total-memory guarantee.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner provisionally accepted the 1088 MiB temporary-overlap ceiling on 2026-09-27 for the photo surface slots alone: one current and one retiring full-photo allocation up to 512 MiB each, and two region sets up to 32 MiB each. This is an engineering ceiling, not a total editor or GPU budget.",
+        "Crop GPU textures and tile aprons, overlays and backend-owned upload staging are outside that accounting. The core 512 MiB crop raster limit does not itself bound crop GPU residency. The existing backend staging cost is unmeasured. Use representative 24 MP and 60 MP workflows and native M4 GPU evidence, including temporary overlap and retirement, before proposing a total bound."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Accepted residency scope",
+          "target": "docs/decisions.md",
+          "locator": "Interactive previews at 100%",
+          "relevance": "Provisional ceiling and requirements for excluded allocations."
+        },
+        {
+          "kind": "file",
+          "label": "Viewport texture design",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Region textures and stale pixels",
+          "relevance": "Slot limits, upload behavior and currently excluded resources."
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
+          "relevance": "Current/retiring photo residency and texture publication."
+        },
+        {
+          "kind": "file",
+          "label": "Performance evidence",
+          "target": "docs/specs/performance.md",
+          "locator": "Native viewport-region qualification",
+          "relevance": "Existing native cases and their accounting limits."
+        }
+      ],
+      "acceptance_criteria": [
+        "Native M4 evidence accounts separately for photo slots, crop GPU textures and tiles, overlays, and backend upload staging on representative 24 MP and 60 MP workloads, including temporary overlap and resource retirement.",
+        "Each excluded allocation path has an enforced byte cap or a derived peak-byte bound from bounded allocation sizes and maximum simultaneous overlap, including retirement; resource-limit behavior is explicit where a cap refuses work.",
+        "The measured scope and any resulting total editor/GPU bound are documented without treating the 1088 MiB photo ceiling as a process-wide guarantee; Windows/Linux remain separately qualified."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Inventory crop, overlay and backend GPU allocation and retirement paths; capture native GPU allocations during representative Fit and 100% crop, edit and pan transitions at 24 MP and 60 MP.",
+          "Add the smallest enforceable accounting or limits for omitted resources and verify overlap, retirement and refusal behavior in focused surface tests.",
+          "Repeat native measurement on the bounded implementation, correlate GPU and process counters with application slot logs, and update the design, performance evidence and feature status."
+        ],
+        "commands": [
+          "cargo test -p luxforge-ui photo_surface",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Excluded GPU resources have evidence-backed bounds or explicitly remain unqualified; no total-memory guarantee is asserted without complete accounting."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1171,7 +1589,8 @@
         "TASK-010",
         "TASK-011",
         "TASK-012",
-        "TASK-016"
+        "TASK-016",
+        "TASK-022"
       ]
     },
     {
@@ -1181,25 +1600,35 @@
         "TASK-005",
         "TASK-006",
         "TASK-007",
-        "TASK-008"
+        "TASK-008",
+        "TASK-017"
       ]
     },
     {
       "wave": 3,
       "task_ids": [
-        "TASK-013"
+        "TASK-013",
+        "TASK-018"
       ]
     },
     {
       "wave": 4,
       "task_ids": [
-        "TASK-014"
+        "TASK-014",
+        "TASK-019"
       ]
     },
     {
       "wave": 5,
       "task_ids": [
-        "TASK-015"
+        "TASK-015",
+        "TASK-020"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-021"
       ]
     }
   ]

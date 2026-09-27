@@ -194,6 +194,7 @@ impl TransformModule {
                     maskable: false,
                     artifacts: false,
                     single: false,
+                    sources: Vec::new(),
                 }],
                 actions: vec![ActionDescriptor {
                     id: TRANSFORM_ACTION.into(),
@@ -484,6 +485,8 @@ mod tests {
                     layers,
                     registry: &ModuleRegistry::builtin(),
                     target: None,
+                    kind: crate::SourceTag::Jpeg,
+                    masks: &[],
                     questions: &Oriented(layers),
                 },
             )
@@ -586,6 +589,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }]
         );
         let action = descriptor

@@ -85,6 +85,7 @@ impl FieldPatch for Presence {
                 maskable: true,
                 artifacts: false,
                 single: true,
+                sources: Vec::new(),
             },
             set: ActionText {
                 id: SET_PRESENCE,
@@ -121,6 +122,7 @@ impl FieldPatch for Presence {
                 fields: FIELDS.to_vec(),
                 collapsed: false,
                 extra: Vec::new(),
+                reset_variants: Vec::new(),
             }],
             queries: Vec::new(),
             canvas: None,
@@ -247,6 +249,7 @@ mod tests {
             reset,
             controls,
             collapsed,
+            ..
         } = &descriptor.controls[0]
         else {
             panic!("the one top-level control is a group");

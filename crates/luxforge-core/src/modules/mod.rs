@@ -35,18 +35,19 @@ pub use crop::geometry::{
     guide_angle, largest_with_ratio_inside,
 };
 pub use crop::{CROP_EFFECT, CropModule};
-pub(crate) use descriptor::title_case;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
-    Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, IdentityKind,
-    MAX_COORDINATE, MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS,
+    Control, ControlVariant, CurveBackground, CurveChannel, EffectDescriptor, EffectStage,
+    IdentityKind, MAX_COORDINATE, MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS,
     MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor,
-    ParameterKind, RailDecoration, ResetAction, action_label, check_parameters, check_value,
-    render_summary, valid_identity, valid_name,
+    ParameterKind, RailDecoration, ResetAction, ResolvedControl, ResolvedReset, action_label,
+    check_parameters, check_value, render_summary, resolve_control, resolve_group_reset,
+    valid_identity, valid_name,
 };
 pub(crate) use descriptor::{
     check_declaration, check_declared_values, check_parameter_declarations,
 };
+pub(crate) use descriptor::{not_applicable, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
 pub use pixel::{PIXEL_EFFECT, PixelModule};
 pub use presence::{PRESENCE_EFFECT, PresenceModule};
@@ -54,14 +55,19 @@ pub use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
+pub(crate) use raw::is_raw_development;
+pub use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
-pub use raw::{RAW_EFFECT, RawModule, RawPayload, WhiteBalanceMode};
+pub(crate) use raw::white_balance_variants;
+pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 #[cfg(test)]
 pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
     STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
-pub use registry::{ActionRef, ModuleRegistry, QueryRef, builtin_modules, insertion_index_among};
+pub use registry::{
+    ActionRef, ModuleRegistry, QueryRef, Superseded, builtin_modules, insertion_index_among,
+};
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
     MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS,
@@ -71,7 +77,7 @@ pub use spatial::{
 pub use transform::{ORIENTATION_EFFECT, TransformModule};
 pub use vignette::{VIGNETTE_EFFECT, VignetteModule};
 
-use crate::{ArtifactId, Error, Layer, LayerId, MaskId};
+use crate::{ArtifactId, Error, Layer, LayerId, MaskId, SourceTag};
 use serde_json::{Map, Value};
 
 /// A normalized action request: the durable history action identity and the parameter object
@@ -213,6 +219,12 @@ pub struct StageContext<'a> {
     /// The target this plan or query addresses: `None` for the global layer, or the mask the
     /// request named.
     pub target: Option<&'a MaskId>,
+    /// The photo's source kind, the `kind` tag `asset.state` reports: what a plan reads instead of
+    /// inspecting the stack to learn which kind of photo it edits.
+    pub kind: SourceTag,
+    /// The recipe's masks in list order, which place a masked layer among the layers of its own
+    /// effect ([`StageContext::insertion_index_for`]).
+    pub masks: &'a [crate::Mask],
     /// The answers that compile a prefix or read pixels.
     pub questions: &'a dyn StageQuestions,
 }
@@ -228,12 +240,15 @@ impl<'a> StageContext<'a> {
         self.registry.own_layer(self.layers, effect_id, self.target)
     }
 
-    /// Where the host would put an [`ActionPlan::Commit`] of a layer of this effect, by the stage
-    /// and order its descriptor declares ([`ModuleRegistry::insertion_index_for`]). A module plans
-    /// against that position instead of choosing one, so [`StageContext::stage_before`] of this
-    /// index is the stage its coordinates address. `O(layers)`; reads no pixels.
+    /// Where the host would put an [`ActionPlan::Commit`] of a layer of this effect for this
+    /// context's target, by the stage and order its descriptor declares and, for a mask, after the
+    /// layers of the same effect its target follows ([`ModuleRegistry::insertion_index_for_target`]).
+    /// A module plans against that position instead of choosing one, so
+    /// [`StageContext::stage_before`] of this index is the stage its coordinates address.
+    /// `O(layers · masks)`; reads no pixels.
     pub fn insertion_index_for(&self, effect_id: &str) -> usize {
-        self.registry.insertion_index_for(self.layers, effect_id)
+        self.registry
+            .insertion_index_for_target(self.layers, effect_id, self.target, self.masks)
     }
 
     /// The stage the layer at index `index` receives ([`StageQuestions::stage_before`]);
@@ -264,6 +279,7 @@ pub(crate) struct FixedStage {
     pub stage: Stage,
     pub pixel: Option<[u8; 4]>,
     pub neutral: Option<[f32; 3]>,
+    pub kind: SourceTag,
 }
 
 #[cfg(test)]
@@ -274,7 +290,13 @@ impl FixedStage {
             stage,
             pixel: None,
             neutral: None,
+            kind: SourceTag::Jpeg,
         }
+    }
+
+    /// The stack of a photo of `kind`.
+    pub(crate) fn of_kind(self, kind: SourceTag) -> Self {
+        Self { kind, ..self }
     }
 
     /// Every point reads `pixel`.
@@ -296,6 +318,8 @@ impl FixedStage {
             layers,
             registry,
             target: None,
+            kind: self.kind,
+            masks: &[],
             questions: self,
         }
     }
@@ -362,6 +386,19 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<Map<String, Value>, Error> {
         let _ = (effect_id, format, payload);
         Ok(Map::new())
+    }
+    /// What a preset captures of a stored layer: the fields, named as the module's patch action's
+    /// parameters, that reproduce this layer's state when applied to another photo. The default is
+    /// [`ToolModule::values`]; a module whose values report more than a preset should carry narrows
+    /// it, as the RAW development captures `{white-balance: as-shot}` under As shot rather than
+    /// this camera's equivalent temperature. Reading a payload only.
+    fn settings(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<Map<String, Value>, Error> {
+        self.values(effect_id, format, payload)
     }
     /// Answer one declared read-only query about the current stack.
     ///

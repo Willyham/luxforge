@@ -4,8 +4,10 @@
 //!
 //! Idle means asleep: there is no timer that wakes up to ask whether a frame is ready or whether
 //! anything changed. A worker posts one signal when it has something to deliver, and the
-//! subscription that carries it into the event loop as [`PreviewMessage::Poll`] exists only while
-//! one of the queues is busy. The owner posts one signal per message that recorded another client's
+//! subscription that carries it into the event loop as [`PreviewMessage::Poll`] exists while a
+//! photograph is open or one of the queues is busy. The surface can begin a retirement in
+//! `prepare`, after subscriptions were recomputed, so its later wake needs this blocked stream.
+//! The owner posts one signal per message that recorded another client's
 //! event ([`luxforge_core::OwnerHandle::watch_events`]), and the subscription that carries it in as
 //! [`SyncMessage::Changed`] exists only while a photograph is open; with nothing happening, the
 //! update loop does not run at all.
@@ -125,7 +127,7 @@ impl Drop for Wakes {
 }
 
 /// One `PreviewMessage::Poll` per signal a worker posts. Gated by the caller on either queue being
-/// busy.
+/// busy or a photograph being open; the blocked stream has no idle tick.
 pub(crate) fn subscription() -> iced::Subscription<Message> {
     iced::Subscription::run(|| preview().stream())
 }

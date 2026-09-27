@@ -51,9 +51,10 @@ pub use proxy::{
     ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan, ProxyWindow,
 };
 pub use render::{
-    Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Render, RenderContext,
-    RenderOptions, RenderPhase, RenderSource, Sample, ScratchBudget, SpatialBudget, StageSize,
-    StageTransform, WhiteBalanceApproximation, render, stage_transform,
+    Cancel, ContentPoint, LinearImage, LinearSettings, ProxyRegionPlan, Raster, RegionFallback,
+    RegionFrame, RegionRenderOutcome, Render, RenderContext, RenderOptions, RenderPhase,
+    RenderSource, Sample, ScratchBudget, SpatialBudget, StageSize, StageTransform,
+    WhiteBalanceApproximation, render, stage_transform,
 };
 pub use source::{SourceImage, open_source};
 pub(crate) use source::{open_source_bytes, read_bounded_file};

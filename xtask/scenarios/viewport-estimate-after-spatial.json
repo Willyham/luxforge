@@ -1,0 +1,14 @@
+[
+  {"workspace":{"state_panel":false}},
+  {"performance":{"expanded":true}},
+  {"api":{"method":"mask.create-linear","params":{"x0":0.5,"y0":0.2,"x1":0.5,"y1":0.8}}},
+  {"api":{"method":"edit.set-presence","params":{"mask":{"name":"Mask 1"},"clarity":30.0}}},
+  {"api":{"method":"mask.create-radial","params":{"x":0.5,"y":0.5,"radius_x":0.3,"radius_y":0.24,"angle":0.0,"feather":50.0}}},
+  {"api":{"method":"edit.set-presence","params":{"mask":{"name":"Mask 2"},"dehaze":24.0}}},
+  {"view":{"zoom":100}},
+  {"slider":{"action":"set-basic","parameter":"exposure","values":[0.35]}},
+  {"pan":{"x":0.7,"y":0.35}},
+  {"wait":{"ms":1200}},
+  {"slider":{"action":"set-basic","parameter":"exposure","values":[0.5],"release":true}},
+  {"wait":{"ms":1800}}
+]

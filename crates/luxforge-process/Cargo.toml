@@ -10,7 +10,7 @@ publish.workspace = true
 serde.workspace = true
 
 # Every platform dependency is already in the lockfile, pinned here to the version it resolves to,
-# so reading the process's own counters adds no package.
+# so reading platform counters and Windows file metadata adds no package.
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"
 
@@ -21,6 +21,7 @@ objc2 = "=0.6.4"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }

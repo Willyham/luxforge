@@ -207,6 +207,20 @@ impl ModuleRegistry {
             .any(|effect| effect.maskable)
     }
 
+    /// Whether this query carries the host's optional `mask` target field: the queries of a module
+    /// that declares a maskable effect do, by the rule [`Self::action_accepts_mask`] states for its
+    /// actions.
+    pub fn query_accepts_mask(&self, query_id: &str) -> bool {
+        let Some((module, _)) = self.queries.get(query_id) else {
+            return false;
+        };
+        self.modules[*module]
+            .descriptor()
+            .effects
+            .iter()
+            .any(|effect| effect.maskable)
+    }
+
     /// The provider that can evaluate this effect, or `None` when none is registered or the
     /// registered one reports itself unavailable.
     pub(super) fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {

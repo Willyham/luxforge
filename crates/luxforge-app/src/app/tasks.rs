@@ -71,6 +71,9 @@ pub(crate) struct Refresh {
     /// in the log needs no refresh of its own when a poll reads it ([`sync_now`]). `None` when the
     /// refresh read back no change of this desktop's.
     pub(crate) request: Option<String>,
+    /// What the composite action this refresh read back left out because it does not apply to
+    /// the photo, as its answer listed it; empty for every other change.
+    pub(crate) skipped: Vec<luxforge_core::SkippedSetting>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -667,6 +670,7 @@ pub(crate) fn refresh(
         job,
         session,
         request: None,
+        skipped: Vec::new(),
     })
 }
 
@@ -799,6 +803,10 @@ pub(crate) fn command_now(
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    // A composite's skips are part of its answer, not of any state read back afterwards.
+    if let Some(skipped) = answer.get("skipped") {
+        refreshed.skipped = parse(skipped.clone())?;
+    }
     Ok(refreshed)
 }
 
@@ -1214,6 +1222,37 @@ pub(crate) fn current_preview_task(
     owner_task(
         move || current_preview(&owner, client, asset_id, entry_id, proxy),
         |result| Message::Preview(PreviewMessage::Loaded(result.map(Box::new))),
+    )
+}
+
+/// Plan one view-only frame without reading or changing the session. The app re-reads its local
+/// pan before admission, so a coalesced scroll remains the newest rectangle.
+pub(crate) fn view_preview_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    draft: Option<DraftId>,
+    epoch: u64,
+    intent: luxforge_core::PreviewIntent,
+) -> Task<Message> {
+    owner_task(
+        move || {
+            let mut request = PreviewRequest::new(client, asset_id)
+                .entry(entry_id)
+                .analyse();
+            if let Some(draft) = draft {
+                request = request.draft(draft);
+            }
+            ready_preview_job(&owner, request)
+        },
+        move |result| {
+            Message::Preview(PreviewMessage::ViewLoaded {
+                epoch,
+                intent,
+                result: result.map(Box::new),
+            })
+        },
     )
 }
 

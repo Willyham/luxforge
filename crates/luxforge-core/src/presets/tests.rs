@@ -60,7 +60,6 @@ const GRADING: &str = "Luxforge has no colour grading";
 const CURVE: &str = "Luxforge has no tone curve";
 const PROFILES: &str = "Luxforge has no profiles";
 const CROP: &str = "crop belongs to one photo, not to a preset";
-const RAW_WB: &str = "sets RAW white balance, which no Luxforge field carries";
 
 fn develop_report(format: &str) -> ImportReport {
     ImportReport {
@@ -291,7 +290,7 @@ fn an_earlier_process_preset_refuses_every_mapped_value_and_so_maps_nothing() {
                 ),
                 because("ToneCurveName", "Medium Contrast", earlier),
                 because("Vibrance", "+10", version),
-                because("WhiteBalance", "As Shot", RAW_WB),
+                because("WhiteBalance", "As Shot", version),
             ],
         }
     );
@@ -318,10 +317,14 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
     let preset = parse_preset(OUT_OF_RANGE, Some("bright.xmp"), &registry()).unwrap();
     assert_eq!(preset.name, "Too Bright");
     assert_eq!(preset.group, None);
+    // Lightroom's absolute pair converts through the white it names, together; Custom is then
+    // neutral, since the values it names are mapped. The relative temperature is Basic's.
+    let [kelvin, tint] = crate::lightroom_to_luxforge(5500.0, 10.0).unwrap();
     assert_eq!(
         preset.settings,
         object(json!({
-            "set-basic": {"contrast": -100, "saturation": 100, "shadows": 20, "temperature": 15}
+            "set-basic": {"contrast": -100, "saturation": 100, "shadows": 20, "temperature": 15},
+            "set-raw": {"temperature": kelvin, "tint": tint}
         }))
     );
     assert_eq!(
@@ -340,8 +343,16 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
                 ),
                 mapped("Saturation", "+100", "set-basic", "saturation", json!(100)),
                 mapped("Shadows2012", "+20", "set-basic", "shadows", json!(20)),
+                mapped(
+                    "Temperature",
+                    "5500",
+                    "set-raw",
+                    "temperature",
+                    json!(kelvin)
+                ),
+                mapped("Tint", "+10", "set-raw", "tint", json!(tint)),
             ],
-            neutral: vec![],
+            neutral: vec![neutral("WhiteBalance", "Custom")],
             unsupported: vec![],
             refused: vec![
                 because(
@@ -355,14 +366,7 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
                     "-10",
                     "outside Luxforge's range 0..100"
                 ),
-                because(
-                    "Temperature",
-                    "5500",
-                    "RAW Kelvin white balance has no calibrated conversion"
-                ),
-                because("Tint", "+10", "RAW tint has no calibrated conversion"),
                 because("Vibrance", "lots", "not a number"),
-                because("WhiteBalance", "Custom", RAW_WB),
             ],
         }
     );
@@ -382,9 +386,14 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
     let preset = parse_preset(SIDECAR, Some("DSC_0001.xmp"), &registry()).unwrap();
     assert_eq!(preset.name, "DSC_0001");
     assert_eq!(preset.group, None);
+    // As Shot is the camera's own white balance on a RAW photo and the file's own rendering,
+    // Basic's relative pair at 0, on a JPEG; the pair Lightroom writes beside it is that white.
     assert_eq!(
         preset.settings,
-        object(json!({"set-basic": {"exposure": 0.2, "shadows": 10}}))
+        object(json!({
+            "set-basic": {"exposure": 0.2, "shadows": 10, "temperature": 0.0, "tint": 0.0},
+            "set-raw": {"white-balance": "as-shot"}
+        }))
     );
     let noise = "Luxforge has no noise reduction";
     let lens = "Luxforge has no lens corrections";
@@ -396,6 +405,21 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
             mapped: vec![
                 mapped("Exposure2012", "+0.20", "set-basic", "exposure", json!(0.2)),
                 mapped("Shadows2012", "+10", "set-basic", "shadows", json!(10)),
+                mapped(
+                    "WhiteBalance",
+                    "As Shot",
+                    "set-raw",
+                    "white-balance",
+                    json!("as-shot")
+                ),
+                mapped(
+                    "WhiteBalance",
+                    "As Shot",
+                    "set-basic",
+                    "temperature",
+                    json!(0.0)
+                ),
+                mapped("WhiteBalance", "As Shot", "set-basic", "tint", json!(0.0)),
             ],
             neutral: vec![
                 neutral("CropAngle", "0"),
@@ -405,6 +429,8 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
                 neutral("LuminanceNoiseReductionDetail", "50"),
                 neutral("LuminanceSmoothing", "0"),
                 neutral("MaskGroupBasedCorrections", ""),
+                neutral("Temperature", "5450"),
+                neutral("Tint", "+8"),
             ],
             unsupported: vec![
                 because("CameraProfile", "Camera Standard", PROFILES),
@@ -417,15 +443,7 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
                 because("LensProfileEnable", "1", lens),
                 because("LensProfileSetup", "LensDefaults", lens),
             ],
-            refused: vec![
-                because(
-                    "Temperature",
-                    "5450",
-                    "RAW Kelvin white balance has no calibrated conversion"
-                ),
-                because("Tint", "+8", "RAW tint has no calibrated conversion"),
-                because("WhiteBalance", "As Shot", RAW_WB),
-            ],
+            refused: vec![],
         }
     );
     assert_eq!(
@@ -449,6 +467,7 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
         object(json!({
             "set-basic": {"blacks": 20, "contrast": -15, "exposure": 0.25, "temperature": 5},
             "set-presence": {"clarity": -10},
+            "set-raw": {"white-balance": "as-shot"},
             "set-vignette": {"amount": -12, "feather": 50, "midpoint": 50, "roundness": 0}
         }))
     );
@@ -499,6 +518,14 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                     "roundness",
                     json!(0)
                 ),
+                // Its relative temperature is Basic's, so As shot sets only the development's.
+                mapped(
+                    "WhiteBalance",
+                    "As Shot",
+                    "set-raw",
+                    "white-balance",
+                    json!("as-shot")
+                ),
             ],
             neutral: vec![
                 neutral("AutoGrayscaleMix", "true"),
@@ -507,7 +534,6 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                 neutral("SplitToningHighlightHue", "40"),
                 neutral("SplitToningHighlightSaturation", "18"),
                 neutral("ToneCurvePV2012Blue", "0, 0; 255, 255"),
-                neutral("WhiteBalance", "As Shot"),
             ],
             unsupported: vec![
                 because("CameraProfile", "Camera [Faded]", PROFILES),
@@ -657,6 +683,90 @@ fn a_preset_without_process_version_is_legacy_only_when_it_uses_earlier_tone_fie
     assert_eq!(
         unknown.report.refused,
         vec![because("Texture", "3", "unrecognised process version next")]
+    );
+}
+
+/// Lightroom's white balance lands on each kind's own: the absolute `Temperature` and `Tint`
+/// convert together onto the RAW development and are refused together; `As Shot` is the
+/// development's own white balance and Basic's relative pair at 0 unless the preset carries a
+/// relative value; `Custom` is neutral only when the values it names are mapped; `Auto` and named
+/// modes are refused. Nothing converts between Kelvin and the relative scale.
+#[test]
+fn lightroom_white_balance_maps_onto_each_kinds_own_white_balance() {
+    let modern = |settings: &str| {
+        inspect_preset(
+            &settings_template(&format!("ProcessVersion = \"15.4\", {settings}")),
+            None,
+            &registry(),
+        )
+        .unwrap()
+    };
+    let custom = "a custom white balance whose Temperature and Tint are refused";
+    let far = modern("WhiteBalance = \"Custom\", Temperature = 50000, Tint = 150");
+    assert!(far.settings.is_empty(), "{:?}", far.settings);
+    let refused: Vec<(&str, &str)> = far
+        .report
+        .refused
+        .iter()
+        .map(|entry| (entry.setting.as_str(), entry.reason.as_deref().unwrap()))
+        .collect();
+    assert_eq!(refused.len(), 3, "{refused:?}");
+    for (setting, reason) in &refused[..2] {
+        assert!(["Temperature", "Tint"].contains(setting));
+        assert!(reason.starts_with("out-of-range:"), "{setting}: {reason}");
+        assert_eq!(reason, &refused[0].1, "the pair is refused together");
+    }
+    assert_eq!(refused[2], ("WhiteBalance", custom));
+
+    let half = modern("Temperature = 5000");
+    assert_eq!(
+        half.report.refused,
+        vec![because(
+            "Temperature",
+            "5000",
+            "Lightroom's Temperature and Tint convert together, and the preset holds only one"
+        )]
+    );
+
+    let pair = modern("WhiteBalance = \"Custom\", Temperature = 5000, Tint = 0");
+    let [kelvin, tint] = crate::lightroom_to_luxforge(5000.0, 0.0).unwrap();
+    assert_eq!(
+        pair.settings,
+        object(json!({"set-raw": {"temperature": kelvin, "tint": tint}}))
+    );
+    assert_eq!(pair.report.neutral, vec![neutral("WhiteBalance", "Custom")]);
+
+    for mode in ["Auto", "Daylight", "Tungsten"] {
+        let named = modern(&format!("WhiteBalance = \"{mode}\""));
+        assert_eq!(
+            named.report.refused,
+            vec![because(
+                "WhiteBalance",
+                mode,
+                "Luxforge has no Auto or named white balance"
+            )]
+        );
+    }
+    let bare = modern("WhiteBalance = \"Custom\"");
+    assert_eq!(
+        bare.report.refused,
+        vec![because(
+            "WhiteBalance",
+            "Custom",
+            "a custom white balance that names no temperature or tint"
+        )]
+    );
+
+    let as_shot = modern("WhiteBalance = \"As Shot\", IncrementalTint = 4");
+    assert_eq!(
+        as_shot.settings,
+        object(json!({"set-basic": {"tint": 4}, "set-raw": {"white-balance": "as-shot"}}))
+    );
+    let exposure = modern("Exposure2012 = 0.5");
+    assert_eq!(
+        exposure.settings,
+        object(json!({"set-basic": {"exposure": 0.5}})),
+        "exposure is Basic's on every kind"
     );
 }
 
@@ -1241,7 +1351,7 @@ fn origins_and_reports_serialize_to_the_record_shapes() {
                "field": "contrast", "applied": -100})
     );
     assert_eq!(
-        value["refused"][5],
+        value["refused"][3],
         json!({"setting": "Vibrance", "value": "lots", "reason": "not a number"})
     );
     assert_eq!(
@@ -1255,7 +1365,7 @@ fn origins_and_reports_serialize_to_the_record_shapes() {
     );
     assert_eq!(
         serde_json::to_value(report.counts()).unwrap(),
-        json!({"mapped": 4, "neutral": 0, "unsupported": 0, "refused": 7})
+        json!({"mapped": 6, "neutral": 1, "unsupported": 0, "refused": 4})
     );
 }
 

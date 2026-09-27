@@ -504,15 +504,27 @@ impl EditorService {
     }
 
     /// `preset.capture`: a settings set read from one entry's stack. `fields` maps field-patch
-    /// actions to an array of their parameter names or to `true` for all of them. Each action reads
-    /// the global layers of its module's effects — a masked layer is another target's, and a preset
-    /// never reads or writes one: with none, each field takes its declared default; with one, its
-    /// value comes from the module's `values` for that layer and a missing value takes the default;
-    /// two or more are `validation: ambiguous`. A field with no value and no default is refused
-    /// rather than left out.
+    /// actions to an array of their parameter names or to `true` for all of them.
     ///
-    /// This reads stored payloads only, `O(layers × actions)`: no source is opened and nothing is
-    /// sampled or rendered, so a JPEG and a RAW entry cost the same.
+    /// The request names controls as the photo's section shows them, and capture resolves them for
+    /// the photo's kind the way the section does ([`crate::resolve_control`]): a field whose control
+    /// has a variant for this kind is superseded on the global target a preset addresses
+    /// ([`ModuleRegistry::superseded`]), so it is captured as its variant's action instead, whole.
+    /// So `{"set-basic": ["temperature", "tint"]}` — the White balance group — captures
+    /// `set-basic`'s relative pair on a JPEG and `set-raw`'s development on a RAW photo, and a
+    /// client never names the RAW module. A named action whose module does not apply to the photo
+    /// is refused as an action of it would be.
+    ///
+    /// Each action reads the global layers of its module's effects — a masked layer is another
+    /// target's, and a preset never reads or writes one. `true` captures the module's
+    /// [`crate::ToolModule::settings`] for its one layer, which a module narrows to what a preset
+    /// should carry (the RAW development's `{white-balance: as-shot}` under As shot), and every
+    /// declared default without one; named fields take the module's `values` for that layer, and a
+    /// missing value takes its default. Two or more layers are `validation: ambiguous`. A field with
+    /// no value and no default is refused rather than left out.
+    ///
+    /// This reads stored payloads only, `O(layers × actions + controls)`: no source is opened and
+    /// nothing is sampled or rendered, so a JPEG and a RAW entry cost the same.
     pub fn capture_preset(
         &self,
         asset_id: &AssetId,
@@ -526,62 +538,63 @@ impl EditorService {
             )));
         }
         let registry = self.registry();
+        let kind = self.state(asset_id)?.asset.source.tag();
         let entry = self.entry(asset_id, entry_id)?;
         let layers = &entry.snapshot.recipe.layers;
-        let mut settings = Map::new();
-        for (action_id, wanted) in fields {
-            let (module, action) = registry
-                .action(action_id)
-                .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
-            if !action.patch {
-                return Err(Error::validation(format!(
-                    "{action_id} is not a field-patch action"
-                )));
-            }
-            let descriptor = module.descriptor();
-            if !descriptor.is_available() {
-                return Err(Error::incompatible(format!(
-                    "unavailable module {}",
-                    descriptor.id
-                )));
-            }
-            let names: Vec<&str> = match wanted {
-                Value::Bool(true) => action
-                    .parameters
-                    .iter()
-                    .map(|parameter| parameter.name.as_str())
-                    .collect(),
-                Value::Array(names) if !names.is_empty() && names.len() <= MAX_SETTINGS_FIELDS => {
-                    let mut seen = HashSet::new();
-                    names
-                        .iter()
-                        .map(|name| {
-                            let name = name.as_str().ok_or_else(|| {
-                                Error::validation(format!(
-                                    "the fields of {action_id} must be parameter names"
-                                ))
-                            })?;
-                            if action.parameter(name).is_none() {
-                                return Err(Error::validation(format!(
-                                    "unknown parameter {name} for action {action_id}"
-                                )));
-                            }
-                            if !seen.insert(name) {
-                                return Err(Error::validation(format!(
-                                    "the fields of {action_id} name {name} twice"
-                                )));
-                            }
-                            Ok(name)
-                        })
-                        .collect::<Result<_, Error>>()?
+        // What to capture, per action, once the request is resolved for this photo: `None` for the
+        // module's whole settings, or the named fields.
+        let mut wanted: Vec<(String, Option<Vec<String>>)> = Vec::new();
+        let whole = |wanted: &mut Vec<(String, Option<Vec<String>>)>, action: &str| match wanted
+            .iter_mut()
+            .find(|(id, _)| id == action)
+        {
+            Some((_, names)) => *names = None,
+            None => wanted.push((action.to_owned(), None)),
+        };
+        for (action_id, requested) in fields {
+            let (_, action) = self.capture_action(registry, action_id, kind)?;
+            let names = requested_names(action_id, action, requested)?;
+            let all = matches!(requested, Value::Bool(true));
+            let mut kept = Vec::with_capacity(names.len());
+            for name in names {
+                match registry.superseded_field(action_id, name, kind) {
+                    Some(field) => whole(&mut wanted, field.by_action),
+                    None => kept.push(name.to_owned()),
                 }
-                _ => {
-                    return Err(Error::validation(format!(
-                        "the fields of {action_id} must be true or an array of 1 to \
-                         {MAX_SETTINGS_FIELDS} parameter names"
-                    )));
-                }
+            }
+            if kept.is_empty() {
+                continue;
+            }
+            // `true` stays the module's whole settings unless a field of it was resolved away.
+            let entry = if all && kept.len() == action.parameters.len() {
+                None
+            } else {
+                Some(kept)
             };
+            match wanted.iter_mut().find(|(id, _)| id == action_id) {
+                Some((_, existing)) => match (existing.as_mut(), entry) {
+                    (Some(existing), Some(entry)) => {
+                        for name in entry {
+                            if !existing.contains(&name) {
+                                existing.push(name);
+                            }
+                        }
+                    }
+                    (_, None) => *existing = None,
+                    (None, Some(_)) => {}
+                },
+                None => wanted.push((action_id.clone(), entry)),
+            }
+        }
+        if wanted.len() > MAX_SETTINGS_ACTIONS {
+            return Err(Error::validation(format!(
+                "fields resolve to more than {MAX_SETTINGS_ACTIONS} actions"
+            )));
+        }
+        let mut settings = Map::new();
+        for (action_id, names) in wanted {
+            let (module, action) = self.capture_action(registry, &action_id, kind)?;
+            let descriptor = module.descriptor();
             // A preset addresses the global layer, so capture reads the layer a preset step of this
             // action plans against, through the one lookup planning uses: the global target's,
             // never a masked layer's.
@@ -597,19 +610,34 @@ impl EditorService {
                     owned = Some(layer);
                 }
             }
-            let values = match owned {
-                None => Map::new(),
-                Some(layer) => {
-                    module.values(&layer.effect_id, layer.effect_format, &layer.payload)?
+            let (values, names) = match (owned, names) {
+                (Some(layer), None) => {
+                    let captured =
+                        module.settings(&layer.effect_id, layer.effect_format, &layer.payload)?;
+                    settings.insert(action_id, Value::Object(captured));
+                    continue;
                 }
+                (None, None) => (
+                    Map::new(),
+                    action
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.name.clone())
+                        .collect(),
+                ),
+                (Some(layer), Some(names)) => (
+                    module.values(&layer.effect_id, layer.effect_format, &layer.payload)?,
+                    names,
+                ),
+                (None, Some(names)) => (Map::new(), names),
             };
             let mut captured = Map::new();
             for name in names {
                 let parameter = action
-                    .parameter(name)
+                    .parameter(&name)
                     .expect("every name was matched to a declared parameter above");
                 let value = values
-                    .get(name)
+                    .get(&name)
                     .or(parameter.default.as_ref())
                     .ok_or_else(|| {
                         Error::validation(format!(
@@ -617,13 +645,83 @@ impl EditorService {
                              not set it"
                         ))
                     })?;
-                captured.insert(name.to_owned(), value.clone());
+                captured.insert(name, value.clone());
             }
-            settings.insert(action_id.clone(), Value::Object(captured));
+            settings.insert(action_id, Value::Object(captured));
         }
         // The module's own reading of a payload must be a set the action accepts, or the capture
         // would hand the client a preset it cannot store or apply.
         validate_settings(registry, &settings)?;
         Ok(settings)
+    }
+
+    /// The field-patch action a capture reads, from an available module that applies to the photo.
+    fn capture_action<'r>(
+        &self,
+        registry: &'r ModuleRegistry,
+        action_id: &str,
+        kind: crate::SourceTag,
+    ) -> Result<(&'r dyn crate::ToolModule, &'r crate::ActionDescriptor), Error> {
+        let (module, action) = registry
+            .action(action_id)
+            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
+        if !action.patch {
+            return Err(Error::validation(format!(
+                "{action_id} is not a field-patch action"
+            )));
+        }
+        let descriptor = module.descriptor();
+        if !descriptor.is_available() {
+            return Err(Error::incompatible(format!(
+                "unavailable module {}",
+                descriptor.id
+            )));
+        }
+        descriptor.check_applies_to(kind)?;
+        Ok((module, action))
+    }
+}
+
+/// The parameter names one action of a capture request asks for: every declared parameter for
+/// `true`, or 1 to 64 distinct declared names.
+fn requested_names<'a>(
+    action_id: &str,
+    action: &'a crate::ActionDescriptor,
+    requested: &'a Value,
+) -> Result<Vec<&'a str>, Error> {
+    match requested {
+        Value::Bool(true) => Ok(action
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect()),
+        Value::Array(names) if !names.is_empty() && names.len() <= MAX_SETTINGS_FIELDS => {
+            let mut seen = HashSet::new();
+            names
+                .iter()
+                .map(|name| {
+                    let name = name.as_str().ok_or_else(|| {
+                        Error::validation(format!(
+                            "the fields of {action_id} must be parameter names"
+                        ))
+                    })?;
+                    if action.parameter(name).is_none() {
+                        return Err(Error::validation(format!(
+                            "unknown parameter {name} for action {action_id}"
+                        )));
+                    }
+                    if !seen.insert(name) {
+                        return Err(Error::validation(format!(
+                            "the fields of {action_id} name {name} twice"
+                        )));
+                    }
+                    Ok(name)
+                })
+                .collect()
+        }
+        _ => Err(Error::validation(format!(
+            "the fields of {action_id} must be true or an array of 1 to {MAX_SETTINGS_FIELDS} \
+             parameter names"
+        ))),
     }
 }

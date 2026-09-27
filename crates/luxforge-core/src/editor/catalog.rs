@@ -1474,6 +1474,7 @@ mod tests {
                     },
                     label: "Brush past the bound".into(),
                     touched: None,
+                    skipped: Vec::new(),
                 },
             )
             .expect_err("past the serialized bound");

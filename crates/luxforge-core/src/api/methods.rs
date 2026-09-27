@@ -158,7 +158,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "schema.list",
         NoParams,
         schema_list,
-        "protocol identity and every method with its parameters"
+        "protocol identity and every method with its parameters; a generated method lists the source kinds its module applies to as sources when that is not every kind, and a parameter another module's control variant supersedes on a kind's global target lists superseded: [{source, by}], the field that is its one path there"
     ),
     owner!(
         "catalog.import",
@@ -245,7 +245,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.list",
         ModuleList,
         module_list,
-        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses"
+        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
     ),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
@@ -850,6 +850,39 @@ fn method_schema(
     schema
 }
 
+/// The source kinds a module's generated methods apply to, listed only when the module does not
+/// apply to every kind — as an effect's `sources` is — so a method of a module that applies
+/// everywhere is listed exactly as before kinds were declared.
+fn method_sources(descriptor: &crate::ModuleDescriptor) -> Option<Value> {
+    let kinds: Vec<crate::SourceTag> = crate::SourceTag::ALL
+        .into_iter()
+        .filter(|kind| descriptor.applies_to(*kind))
+        .collect();
+    (kinds.len() != crate::SourceTag::ALL.len()).then(|| json!(kinds))
+}
+
+/// Mark each declared parameter of `action` that a control variant supersedes with `superseded:
+/// [{source, by}]`: on the global target of a photo of `source` the field is refused and `by` —
+/// `set-raw.temperature` — is its one path, so a client learns the refusal without trying it.
+fn mark_superseded(schema: &mut Value, action: &str, superseded: &[crate::Superseded<'_>]) {
+    let Some(parameters) = schema.get_mut("parameters").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for parameter in parameters {
+        let Some(name) = parameter.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let by: Vec<Value> = superseded
+            .iter()
+            .filter(|field| field.action == action && field.parameter == name)
+            .map(|field| json!({"source": field.source, "by": field.by()}))
+            .collect();
+        if !by.is_empty() {
+            parameter["superseded"] = Value::Array(by);
+        }
+    }
+}
+
 pub fn schemas(registry: &ModuleRegistry) -> Value {
     // The host's own methods, from the parameters each one declares.
     let mut methods: Map<String, Value> = METHODS
@@ -880,6 +913,8 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         .collect();
     let descriptors = registry.descriptors();
     let host = registry.host_descriptors();
+    // The fields a control variant supersedes, derived once from the variants.
+    let superseded = registry.superseded();
     // The modules' descriptors and the host's own — the `mask.*` family — through one loop, so a
     // client discovers a mask command and a module action from one listing in one shape. Each
     // method's name is the one its action or query is called through ([`crate::ActionRef::method`]).
@@ -890,6 +925,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         // declared parameters, and declared on its own as `target`, an identity parameter checked
         // like any other: sending it to any other action is a validation error naming that action.
         let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
+        let sources = method_sources(descriptor);
         for action in &descriptor.actions {
             let Some(resolved) = registry.resolve_action(&action.id) else {
                 continue;
@@ -910,6 +946,10 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             if maskable {
                 schema["target"] = json!(target);
             }
+            if let Some(sources) = &sources {
+                schema["sources"] = sources.clone();
+            }
+            mark_superseded(&mut schema, &action.id, &superseded);
             methods.insert(resolved.method(), schema);
         }
         // A query reads the stack of `entry_id`, the session's selection by default.
@@ -922,7 +962,18 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 "entry_id".to_owned(),
                 json!("entry to ask about; default the session's selection"),
             );
-            let schema = method_schema(
+            // A maskable module's query asks about the target its actions would edit.
+            let target = crate::editor::mask_target_parameter();
+            if maskable && matches!(resolved, crate::QueryRef::Module(..)) {
+                optional.insert(
+                    target.name.clone(),
+                    json!(
+                        "the mask whose stack to ask about, as this module's actions take it; \
+                         omit it to ask about the layer that applies everywhere"
+                    ),
+                );
+            }
+            let mut schema = method_schema(
                 &Method::Query(query.id.clone()),
                 vec![json!("asset_id")],
                 optional,
@@ -930,6 +981,12 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 Some(&query.parameters),
                 None,
             );
+            if maskable && matches!(resolved, crate::QueryRef::Module(..)) {
+                schema["target"] = json!(target);
+            }
+            if let Some(sources) = &sources {
+                schema["sources"] = sources.clone();
+            }
             methods.insert(resolved.method(), schema);
         }
         // A task carries the `request` envelope, and `asset_id` and `profile_id` are its envelope
@@ -1042,7 +1099,7 @@ host_params! {
 
 host_params! {
     pub(super) struct ModuleList {
-        asset_id: Option<AssetId> = "filter controls for this asset source kind",
+        asset_id: Option<AssetId> = "keep only the modules that apply to this asset's source kind; default every module",
     }
 }
 
@@ -1227,23 +1284,33 @@ fn schema_list(
     Ok(schemas(service.registry()))
 }
 
+/// The modules `module.list` answers with: those that apply to a photo of `kind`, or every module
+/// when no photo is named. Every module describes the source kinds its effects may exist on, so a
+/// caller holding the whole list and filtering it with [`crate::ModuleDescriptor::applies_to`]
+/// for a photo's kind holds exactly what naming that photo returns.
+fn listed_modules(
+    registry: &crate::ModuleRegistry,
+    kind: Option<crate::SourceTag>,
+) -> Vec<&crate::ModuleDescriptor> {
+    registry
+        .descriptors()
+        .into_iter()
+        .filter(|module| kind.is_none_or(|kind| module.applies_to(kind)))
+        .collect()
+}
+
 fn module_list(
     service: &mut EditorService,
     _: &mut ClientSession,
     p: ModuleList,
 ) -> Result<Value, Error> {
-    let raw = p
+    let kind = p
         .asset_id
         .as_ref()
         .map(|id| service.state(id))
         .transpose()?
-        .is_some_and(|state| matches!(state.asset.source, crate::SourceKind::Raw { .. }));
-    let modules = service
-        .registry()
-        .descriptors()
-        .into_iter()
-        .filter(|module| p.asset_id.is_none() || module.id != "luxforge.raw" || raw)
-        .collect::<Vec<_>>();
+        .map(|state| state.asset.source.tag());
+    let modules = listed_modules(service.registry(), kind);
     // The host's own descriptors beside them, in the same shape, so an agent discovers a `mask.*`
     // command, its parameters and its controls exactly as it discovers a module action.
     Ok(json!({"modules": modules, "host": service.registry().host_descriptors()}))
@@ -2041,14 +2108,10 @@ mod tests {
             [
                 "edit.apply-preset",
                 "edit.set-pixel",
-                "edit.set-raw-exposure",
-                "edit.set-raw-temperature",
-                "edit.set-raw-tint",
+                "edit.set-raw",
                 "edit.set-raw-red-gain",
                 "edit.set-raw-blue-gain",
                 "edit.pick-raw-neutral",
-                "edit.use-as-shot-wb",
-                "edit.reset-raw",
                 "edit.set-basic",
                 "edit.reset-basic",
                 "edit.set-presence",
@@ -2188,9 +2251,59 @@ mod tests {
                 .expect("the query's optional fields")
                 .keys()
                 .collect::<Vec<_>>(),
-            ["entry_id"],
-            "a query answers about the session's selection unless an entry is named"
+            ["entry_id", "mask"],
+            "a query answers about the session's selection unless an entry is named, and about \
+             the global target unless a mask is named"
         );
+        assert_eq!(
+            listed["query.neutral-sample"]["target"]["kind"],
+            json!("identity"),
+            "a maskable module's query declares the target its actions take"
+        );
+        // A method lists the source kinds its module applies to only when that is not every kind.
+        for method in [
+            "edit.set-raw",
+            "edit.set-raw-red-gain",
+            "edit.set-raw-blue-gain",
+            "edit.pick-raw-neutral",
+        ] {
+            assert_eq!(listed[method]["sources"], json!(["raw"]), "{method}");
+        }
+        for method in [
+            "edit.set-basic",
+            "edit.apply-preset",
+            "query.neutral-sample",
+        ] {
+            assert!(listed[method].get("sources").is_none(), "{method}");
+        }
+        // Each superseded parameter names the source kind and the field that is its one path there.
+        let parameter = |method: &str, name: &str| {
+            listed[method]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|parameter| parameter["name"] == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("{method} {name}"))
+        };
+        assert_eq!(
+            parameter("edit.set-basic", "temperature")["superseded"],
+            json!([{"source": "raw", "by": "set-raw.temperature"}])
+        );
+        assert_eq!(
+            parameter("edit.set-basic", "tint")["superseded"],
+            json!([{"source": "raw", "by": "set-raw.tint"}])
+        );
+        for (method, name) in [
+            ("edit.set-basic", "exposure"),
+            ("edit.set-raw", "temperature"),
+            ("edit.set-presence", "clarity"),
+        ] {
+            assert!(
+                parameter(method, name).get("superseded").is_none(),
+                "{method} {name}"
+            );
+        }
         assert_eq!(
             schema["modules"].as_array().unwrap().len(),
             service.registry().descriptors().len()
@@ -2308,13 +2421,20 @@ mod tests {
         );
         assert_eq!(
             picker(&module("luxforge.basic")),
-            json!({"kind": "picker", "label": "Neutral picker"}),
-            "the neutral picker is a control of the White balance group"
+            json!({"kind": "picker", "label": "Neutral picker",
+                   "variants": [{"source": "raw", "module": "luxforge.raw",
+                                 "control": {"kind": "picker", "label": "Neutral picker"}}]}),
+            "the neutral picker is a control of the White balance group, and on a RAW photo it \
+             enters the RAW module's sensor pick"
         );
+        let raw = module("luxforge.raw");
         assert_eq!(
-            picker(&module("luxforge.raw")),
-            json!({"kind": "picker", "label": "Neutral WB"})
+            raw["controls"],
+            json!([]),
+            "the RAW module draws no section"
         );
+        assert_eq!(raw["canvas"]["title"], json!("Neutral picker"));
+        assert_eq!(raw["canvas"]["shortcut"], json!(null));
         assert_eq!(pixel["actions"][0]["summary"], json!("Pixel {x}, {y}"));
         let transform = module("luxforge.transform");
         assert_eq!(transform["hint"], json!("Rotate, mirror and flip"));
@@ -2823,6 +2943,7 @@ mod tests {
                     maskable: false,
                     artifacts: false,
                     single: false,
+                    sources: Vec::new(),
                 }],
                 actions: vec![crate::ActionDescriptor {
                     id: "test-angle".into(),
@@ -2914,6 +3035,7 @@ mod tests {
                     maskable: false,
                     artifacts: false,
                     single: false,
+                    sources: Vec::new(),
                 }],
                 actions: vec![crate::ActionDescriptor {
                     id: MARK_ACTION.into(),
@@ -3049,6 +3171,151 @@ mod tests {
                 (json!(crate::ORIENTATION_EFFECT), json!(true)),
             ],
             "both layers are still stored and neither changes anything"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `module.list` reports each effect's declared source kinds and answers with the same modules
+    /// whether a caller names the photo or filters the whole list itself with the one rule; and
+    /// every action of a module that does not apply to a photo's kind is refused by that rule,
+    /// worded from the descriptor. Nothing here names a module: the kind-specific ones are found by
+    /// their declarations.
+    #[test]
+    fn module_list_and_actions_follow_each_modules_declared_sources() {
+        use crate::SourceTag;
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-methods-sources-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let state = service.import(&fixture()).unwrap();
+        assert_eq!(state.asset.source.tag(), SourceTag::Jpeg);
+        let asset = json!(state.asset.id);
+
+        // The tag an effect declares is the one `asset.state` reports for the photo's source.
+        let reported = ok(
+            &mut service,
+            &mut session,
+            "asset.state",
+            json!({"asset_id": asset}),
+        );
+        assert_eq!(reported["asset"]["source"]["kind"], json!(SourceTag::Jpeg));
+
+        let parse = |listed: &Value| -> Vec<ModuleDescriptor> {
+            serde_json::from_value(listed["modules"].clone()).expect("module descriptors")
+        };
+        let every = ok(&mut service, &mut session, "module.list", json!({}));
+        let modules = parse(&every);
+        assert_eq!(
+            modules.len(),
+            service.registry().descriptors().len(),
+            "without a photo, every module"
+        );
+        // An effect that exists on every kind describes itself as before; one that does not lists
+        // its kinds, and the RAW development lists only RAW.
+        let mut restricted = 0;
+        for (module, listed) in modules.iter().zip(every["modules"].as_array().unwrap()) {
+            for (effect, value) in module
+                .effects
+                .iter()
+                .zip(listed["effects"].as_array().unwrap())
+            {
+                match effect.sources.as_slice() {
+                    [] => assert!(value.get("sources").is_none(), "{}", effect.id),
+                    kinds => {
+                        restricted += 1;
+                        assert_eq!(value["sources"], json!(kinds), "{}", effect.id);
+                    }
+                }
+            }
+        }
+        let raw_only: Vec<&ModuleDescriptor> = modules
+            .iter()
+            .filter(|module| {
+                module.applies_to(SourceTag::Raw) && !module.applies_to(SourceTag::Jpeg)
+            })
+            .collect();
+        assert!(!raw_only.is_empty() && restricted > 0);
+        assert!(raw_only.iter().all(|module| {
+            module
+                .effects
+                .iter()
+                .all(|effect| effect.sources == [SourceTag::Raw])
+        }));
+
+        // The same filtered result whether or not the photo is named.
+        let named = parse(&ok(
+            &mut service,
+            &mut session,
+            "module.list",
+            json!({"asset_id": asset}),
+        ));
+        let filtered: Vec<ModuleDescriptor> = modules
+            .iter()
+            .filter(|module| module.applies_to(SourceTag::Jpeg))
+            .cloned()
+            .collect();
+        assert_eq!(named, filtered);
+        assert!(named.len() < modules.len());
+        for kind in SourceTag::ALL {
+            let resolved: Vec<&ModuleDescriptor> = modules
+                .iter()
+                .filter(|module| module.applies_to(kind))
+                .collect();
+            assert_eq!(
+                listed_modules(service.registry(), Some(kind)),
+                resolved,
+                "{}",
+                kind.label()
+            );
+        }
+
+        // Every action of a module that does not apply to a JPEG is refused on one, before it
+        // plans, with the descriptor's own words; nothing is written.
+        let mut refused = 0;
+        for module in &raw_only {
+            for action in &module.actions {
+                let mut params = json!({
+                    "asset_id": asset,
+                    "mutation": mutation(state.revision, &format!("refused-{}", action.id)),
+                });
+                for parameter in action.parameters.iter().filter(|p| p.required) {
+                    params[&parameter.name] = match (&parameter.default, &parameter.kind) {
+                        (Some(value), _) => value.clone(),
+                        (None, crate::ParameterKind::Number { min, max }) => {
+                            json!((min + max) / 2.0)
+                        }
+                        (None, crate::ParameterKind::Integer { min, .. }) => json!(min),
+                        (None, crate::ParameterKind::Enum { options }) => json!(options[0]),
+                        (None, crate::ParameterKind::Boolean) => json!(false),
+                        (None, other) => panic!("no sample value for {other:?}"),
+                    };
+                }
+                let response = call(
+                    &mut service,
+                    &mut session,
+                    &format!("edit.{}", action.id),
+                    params,
+                );
+                let error = response.error.expect("refused on a JPEG");
+                assert_eq!(error.code, ErrorKind::Validation.code(), "{}", action.id);
+                assert_eq!(
+                    error.message,
+                    format!("{} does not apply to a JPEG photo", module.title),
+                    "{}",
+                    action.id
+                );
+                refused += 1;
+            }
+        }
+        assert!(refused > 0);
+        assert_eq!(
+            service.state(&state.asset.id).unwrap().revision,
+            state.revision,
+            "a refused action writes nothing"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

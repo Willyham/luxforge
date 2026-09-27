@@ -69,15 +69,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
     let applicable: Vec<_> = inputs
         .modules
         .iter()
-        .filter(|module| {
-            module.id != "luxforge.raw"
-                || inputs.state.is_some_and(|state| {
-                    matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                })
-        })
+        .filter(|module| crate::state::tools::applies(module, inputs.state))
         .cloned()
         .collect();
-    let mut raw = palette_entries(&applicable, inputs.developer);
+    let mut raw = palette_entries(&applicable, inputs.developer, inputs.state, inputs.target);
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
     let entries: Vec<PaletteEntry> = filter(raw, inputs.palette_query)
@@ -265,7 +260,7 @@ mod tests {
     #[test]
     fn every_module_offers_its_actions_its_own_reset_and_its_canvas_mode_in_registry_order() {
         let modules = descriptors();
-        let entries = palette_entries(&modules, false);
+        let entries = palette_entries(&modules, false, None, None);
         let rotate = entries
             .iter()
             .find(|(label, ..)| label == "Transforms · Rotate right")
@@ -289,13 +284,19 @@ mod tests {
         );
         // A module's own controls are collected before its reset and its canvas mode, exactly the
         // registry order the tools panel renders in.
+        let crop = modules
+            .iter()
+            .find(|module| module.id == "luxforge.crop")
+            .expect("the crop module");
         let crop_reset = entries
             .iter()
-            .position(|(label, ..)| label.ends_with("· Reset"))
+            .position(|(label, ..)| *label == format!("{} · Reset", crop.title))
             .expect("a reset entry");
         let crop_mode = entries
             .iter()
-            .position(|(label, ..)| label.starts_with("Mode · "))
+            .position(|(label, ..)| {
+                *label == format!("Mode · {}", crop.canvas.as_ref().unwrap().title())
+            })
             .expect("a mode entry");
         assert!(crop_reset < crop_mode, "reset is listed before the mode");
     }

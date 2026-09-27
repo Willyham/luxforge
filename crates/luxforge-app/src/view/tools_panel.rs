@@ -1939,8 +1939,8 @@ mod tests {
     }
 
     /// A run is an icon row only when every control in it is an action naming a known icon: the
-    /// four transforms are, RAW's Neutral WB picker beside As shot is not, so As shot keeps its
-    /// label beside its crosshair.
+    /// four transforms are, White balance's Neutral picker beside As shot is not, so As shot keeps
+    /// its label beside its crosshair.
     #[test]
     fn only_a_run_of_icon_actions_becomes_an_icon_row() {
         let transforms: Vec<ControlModel> = ["rotate-left", "rotate-right", "mirror", "flip"]
@@ -1951,15 +1951,15 @@ mod tests {
         assert_eq!(icon_run(&run).map(|icons| icons.len()), Some(4));
 
         let picker = ControlModel::Picker(crate::state::tools::PickerControl {
-            module_id: "luxforge.raw".into(),
-            label: "Neutral WB".into(),
-            title: "Pick neutral".into(),
-            shortcut: Some("N".into()),
+            module_id: "fixture.picker".into(),
+            label: "Neutral picker".into(),
+            title: "Neutral picker".into(),
+            shortcut: Some("W".into()),
             selected: false,
-            target: "luxforge.raw".into(),
+            target: "fixture.picker".into(),
             enabled: true,
         });
-        let as_shot = action("use-as-shot-wb", Some("target"));
+        let as_shot = action("set-basic", Some("target"));
         assert!(icon_run(&[&picker, &as_shot]).is_none());
         let unnamed = action("apply", None);
         assert!(icon_run(&[&as_shot, &unnamed]).is_none());

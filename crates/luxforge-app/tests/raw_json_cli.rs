@@ -179,10 +179,27 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     let catalog = fixtures::temp_catalog(&format!("raw-json-{label}"));
     let mut client = start(&catalog);
     let schema = client.call("schema.list", Value::Null);
-    let temperature_action = raw_action(&schema, "raw-temperature", "kelvin");
-    let tint_action = raw_action(&schema, "raw-tint", "tint");
-    assert_eq!(temperature_action, "edit.set-raw-temperature");
-    assert_eq!(tint_action, "edit.set-raw-tint");
+    let temperature_action = raw_action(&schema, "set-raw", "temperature");
+    let tint_action = raw_action(&schema, "set-raw", "tint");
+    assert_eq!(temperature_action, "edit.set-raw");
+    assert_eq!(tint_action, "edit.set-raw");
+    // Basic's relative pair is superseded on a RAW photo's global target, and the schema says so.
+    let basic = schema["methods"]["edit.set-basic"]["parameters"]
+        .as_array()
+        .expect("set-basic parameters");
+    let superseded = |name: &str| {
+        basic
+            .iter()
+            .find(|parameter| parameter["name"] == name)
+            .map(|parameter| parameter["superseded"].clone())
+            .expect("a declared parameter")
+    };
+    assert_eq!(
+        superseded("temperature"),
+        json!([{"source": "raw", "by": "set-raw.temperature"}])
+    );
+    assert_eq!(superseded("exposure"), Value::Null);
+    assert_eq!(schema["methods"]["edit.set-raw"]["sources"], json!(["raw"]));
 
     let initial = import_and_adopt(&mut client, path);
     let asset = asset_id(&initial);
@@ -199,19 +216,20 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     let initial_sample =
         sample_after_preparation(&mut client, &asset, &initial_entry, sample_x, sample_y);
 
+    // Exposure is Basic's on every kind.
     let exposed = apply_action(
         &mut client,
-        "edit.set-raw-exposure",
+        "edit.set-basic",
         &initial,
         "raw-exposure",
-        json!({"ev":1.0}),
+        json!({"exposure":1.0}),
     );
     let temperature = apply_action(
         &mut client,
         &temperature_action,
         &exposed,
         "raw-temperature",
-        json!({"kelvin":6504.0}),
+        json!({"temperature":6504.0}),
     );
     let custom_zero = apply_action(
         &mut client,
@@ -280,10 +298,10 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
 
     let as_shot = apply_action(
         &mut client,
-        "edit.use-as-shot-wb",
+        "edit.set-raw",
         &redone,
         "raw-as-shot",
-        json!({}),
+        json!({"white-balance":"as-shot"}),
     );
     let as_shot_entry = current_entry_id(&as_shot);
     let _as_shot_sample =
@@ -438,7 +456,7 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
             &temperature_action,
             &reopened_state,
             "raw-dng-endpoint-temperature",
-            json!({"kelvin":2000.0}),
+            json!({"temperature":2000.0}),
         );
         let endpoint_tint = apply_action(
             &mut reopened,

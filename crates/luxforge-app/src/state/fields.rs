@@ -27,6 +27,25 @@ impl Fields {
         let mut fields = Self::default();
         for module in modules {
             seed_controls(ControlOwner::Module(module), &module.controls, &mut fields);
+            // A variant's control edits its providing module's parameter, seeded from that
+            // module's declarations: on a RAW photo Temperature is `set-raw`'s, in kelvin.
+            for control in walk(&module.controls) {
+                for variant in control.variants() {
+                    let (Some(provider), Some(control)) = (
+                        modules
+                            .iter()
+                            .find(|provider| provider.id == variant.module),
+                        variant.control.as_deref(),
+                    ) else {
+                        continue;
+                    };
+                    seed_controls(
+                        ControlOwner::Module(provider),
+                        std::slice::from_ref(control),
+                        &mut fields,
+                    );
+                }
+            }
         }
         seed_controls(
             ControlOwner::Host,
@@ -710,9 +729,10 @@ mod tests {
                 "set-presence.clarity",
                 "set-presence.dehaze",
                 "set-presence.texture",
-                "set-raw-exposure.ev",
-                "set-raw-temperature.kelvin",
-                "set-raw-tint.tint",
+                // Basic's RAW variants of Temperature and Tint, seeded from the RAW module's
+                // own declarations.
+                "set-raw.temperature",
+                "set-raw.tint",
                 "set-vignette.amount",
                 "set-vignette.feather",
                 "set-vignette.midpoint",
@@ -936,8 +956,11 @@ mod tests {
                             runnable(action, preset),
                             "{action} is not runnable from its declared control"
                         );
+                        // A patch runs with whichever fields it is sent, so only another
+                        // action's button needs its preset.
+                        let patch = declared_action(&modules, action).is_some_and(|a| a.patch);
                         assert!(
-                            preset.is_empty() || !runnable(action, &Map::new()),
+                            preset.is_empty() || patch || !runnable(action, &Map::new()),
                             "{action} needs its preset to run"
                         );
                     }
@@ -987,8 +1010,10 @@ mod tests {
     fn a_patch_actions_control_submits_its_own_field_and_nothing_else() {
         let modules = descriptors();
         let mut fields = Fields::seeded(&modules);
+        // The first patch a JPEG shows; the RAW development's applies only to a RAW photo.
         let patch = modules
             .iter()
+            .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
@@ -1051,8 +1076,10 @@ mod tests {
     #[test]
     fn a_double_click_resets_one_field_of_a_patch_action() {
         let modules = descriptors();
+        // The first patch a JPEG shows; the RAW development's fields reset to As shot instead.
         let patch = modules
             .iter()
+            .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
@@ -1146,6 +1173,7 @@ mod tests {
                 controls: Vec::new(),
                 reset: None,
                 collapsed: false,
+                variants: Vec::new(),
             },
             Control::Number {
                 action: "act".into(),
@@ -1154,6 +1182,7 @@ mod tests {
                 style: luxforge_core::NumberStyle::Slider,
                 rail: None,
                 reset: None,
+                variants: Vec::new(),
             },
             Control::Color {
                 action: "act".into(),
@@ -1167,6 +1196,7 @@ mod tests {
                 preset: Map::new(),
                 style: luxforge_core::ActionStyle::Default,
                 icon: None,
+                variants: Vec::new(),
             },
         ];
         for (control, kind) in controls.iter().zip(["group", "number", "color", "action"]) {

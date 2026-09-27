@@ -412,6 +412,92 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     let _ = fs::remove_file(image.path);
 }
 
+/// A query takes the `mask` target its module's actions take. On a mask the picker reads the stage
+/// before that mask's own Basic layer, where the global Basic layer's white balance is already
+/// applied: once the global layer neutralizes the cast, a masked pick of the same patch asks for
+/// nothing more, while the global pick still reads the cast before its own layer.
+#[test]
+fn the_picker_on_a_mask_reads_the_stage_with_the_global_white_balance() {
+    let image = write_cast_image("masked");
+    let catalog = fixtures::temp_catalog("basic-wb-masked");
+    let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
+    let client = owner.register();
+    let schema = call(&owner, client, "schema.list", json!({})).unwrap();
+    assert!(
+        schema["methods"]["query.neutral-sample"]["optional"]
+            .get("mask")
+            .is_some(),
+        "the query lists the mask target"
+    );
+    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let (x, y) = image.neutral;
+    let pick = |mask: Option<&Value>| {
+        let mut request = json!({"asset_id": asset, "x": x, "y": y});
+        if let Some(mask) = mask {
+            request["mask"] = mask.clone();
+        }
+        let picked = call(&owner, client, "query.neutral-sample", request).unwrap();
+        (
+            picked["temperature"].as_i64().expect("a temperature"),
+            picked["tint"].as_i64().expect("a tint"),
+        )
+    };
+    let (temperature, tint) = pick(None);
+    assert!(
+        temperature.abs() > 5 && tint.abs() > 5,
+        "the cast is visible"
+    );
+    call(
+        &owner,
+        client,
+        "edit.set-basic",
+        json!({
+            "asset_id": asset,
+            "mutation": {"expected_revision": 0, "request_id": "global", "actor": "test"},
+            "temperature": temperature,
+            "tint": tint,
+        }),
+    )
+    .unwrap();
+    let created = call(
+        &owner,
+        client,
+        "mask.create-linear",
+        json!({
+            "asset_id": asset,
+            "mutation": {"expected_revision": 1, "request_id": "mask", "actor": "test"},
+            "x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0,
+        }),
+    )
+    .unwrap();
+    let mask = created["mask"].clone();
+    assert_eq!(
+        pick(None),
+        (temperature, tint),
+        "the global pick reads before its layer"
+    );
+    let (masked_temperature, masked_tint) = pick(Some(&mask));
+    assert!(
+        masked_temperature.abs() <= 1 && masked_tint.abs() <= 1,
+        "the masked pick reads the neutralized patch: ({masked_temperature}, {masked_tint})"
+    );
+    // A mask the stack does not hold is refused, as it is for an action.
+    let (code, message) = refused(
+        &owner,
+        client,
+        "query.neutral-sample",
+        json!({"asset_id": asset, "x": x, "y": y, "mask": luxforge_core::MaskId::new()}),
+    )
+    .unwrap();
+    assert_eq!(code, "validation", "{message}");
+
+    owner.disconnect(client);
+    owner.stop();
+    join.join().expect("the owner loop ends");
+    let _ = fs::remove_file(catalog);
+    let _ = fs::remove_file(image.path);
+}
+
 /// The picker evaluates before the Basic layer, so a strong correction already in the stack does
 /// not change what the next pick reads or returns.
 #[test]
