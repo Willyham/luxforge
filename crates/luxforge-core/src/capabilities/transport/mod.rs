@@ -12,6 +12,8 @@ pub mod policy;
 #[cfg(test)]
 mod tests;
 mod tls;
+#[cfg(test)]
+mod ureq_spike;
 
 pub use net::{Connect, Resolve, SystemConnector, SystemResolver};
 pub use policy::{Endpoint, EndpointClass, address_allowed, parse_endpoint};
