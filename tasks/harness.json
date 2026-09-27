@@ -305,14 +305,18 @@
     },
     {
       "id": "TASK-005",
-      "description": "Generalize `check-repository`'s three layering rules into a table of (token, allowed paths, reason) entries covering what already holds today, so a later task that finishes a concept can add its own one-path rule to the same mechanism.",
+      "description": "Replace `check-repository`'s five hand-written checks with two declarative tables, a source-rule table and a dependency-rule table, served by one token matcher and one test-exclusion parser, so a later task that finishes a concept adds its one-path rule as a row.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Wave 2, finish the consolidation. Every task in this programme that finishes a concept is expected to add the repository rule that keeps it single; this task builds the table those rules go into.",
-        "`xtask/src/repository.rs`'s `BOUNDARIES` constant enforces exactly three rules today: the desktop's view model may not reach Iced or `app::`; its view may not reach the core or call the owner directly; the widget crate may not reach the core at all. Nothing mechanical stops a second commit path, worker thread, owner-call helper or limit constant from returning once one is removed; every such leftover is findable with a grep, so a check can refuse it.",
-        "Proposal: generalize `BOUNDARIES` into a table of (token, allowed path prefixes, reason), checked over `crates/` and `xtask/`, with each rule choosing whether it covers test code. Seed it with rules that already hold today: thread spawning confined to the declared worker locations, no `Handle::from_rgba` anywhere in the app, and no bare `lightwell` identifier anywhere in source.",
-        "Document in `docs/engineering/development.md` that a task finishing a concept adds its own rule to this table rather than inventing a bespoke check."
+        "Wave 2, finish the consolidation. Every task in this programme that finishes a concept is expected to add the repository rule that keeps it single; this task builds the tables those rules go into.",
+        "After validating plans and links, `check()` (xtask/src/repository.rs:680) runs five hand-written checks: `boundaries` (:205), over the three-entry `BOUNDARIES` table (:192) that keeps the desktop's view model off Iced and `app::`, its view off the core and the owner, and the widget crate off the core; `independent_references` (:257), which keeps `luxforge-reference`'s manifest free of workspace crates and paths; `one_jpeg_codec` (:397), which also calls `jpeg_codec_dependencies` (:492); and `raw_identity` (:640), which lets only the RAW module and tests name `\"luxforge.raw\"` or `RAW_EFFECT`.",
+        "They duplicate their helpers. Two token matchers: `contains_token` (:241) checks only where an identifier token starts, `holds_whole_token` (:550) checks both ends. Two test-exclusion parsers: `test_only_files` (:324) with `non_test_lines` (:366) strip only inline `#[cfg(test)] mod` blocks and out-of-line test modules, while `production_lines` (:573) with `module_files` (:626) and `test_file` (:561) strip any `#[cfg(test)]` item, out-of-line test modules, files that are tests by name, and comment lines.",
+        "Their scopes differ. The layering rules read `.rs` and `.toml` files under three directories. The JPEG rule reads the non-test sources and normal dependency tables of `SHIPPED_CRATES` (:295) plus the root `Cargo.toml`'s `workspace.dependencies`, and its dependency half reads every dependency table of every manifest under `crates/` and `xtask/`. The RAW rule reads every `.rs` file under `crates/`. `crates/luxforge-raw/vendor` holds LibRaw's C++ sources, so each rule filters by file type rather than reading everything under a directory.",
+        "Proposal: two tables. A source-rule row names its tokens, its scope (directories and file types), its allowed paths, its match mode, whether it covers test code, and the reason its failure prints. A dependency-rule row names a dependency or feature, the manifest tables it reads (normal, dev, build, target-specific or `workspace.dependencies`), the crates allowed to depend on it, and its reason; its first rows are `image`'s `jpeg` feature, the `mozjpeg*` names outside `luxforge-jpeg`, `luxforge-jpeg` depended on only by `luxforge-core` and itself on no workspace crate, and `luxforge-reference` on no workspace crate or path. All five checks become rows; `holds_whole_token`'s whole-token matcher and `production_lines`'s parser serve every row.",
+        "Constraint: the one matcher checks an end only where the token has an identifier character there, so `app::` still matches `crate::app::State` while `RAW_EFFECT` still misses `RAW_EFFECTS`.",
+        "Seed it with rules that already hold today: no `Handle::from_rgba` and no `lightwell` identifier anywhere under `crates/` or `xtask/` (both have no hits), and production thread spawning (`thread::spawn`, `thread::Builder`, `thread::scope`) confined to the declared worker homes. Those are the core's source worker and owner loop (api/owner.rs:1005, :1029), point-query worker (api/owner/point.rs:131), API transport accept and connection threads (api/transport.rs:58, :71), capability job lanes (capabilities/jobs.rs:465) and latest-job worker (latest.rs:238); the desktop's diagnostics log writer (luxforge-app/src/diagnostics.rs:24); the widget crate's GPU retirement worker (luxforge-ui/src/photo_surface.rs:2271); `luxforge-testkit`'s process and server threads (process.rs:48, :56; server.rs:139, :149); and `verify`'s component pool (xtask/src/verify.rs:1353). The spawning rule does not cover test code.",
+        "`docs/engineering/development.md` does not yet describe any of these rules; it should, including that a task finishing a concept adds its rule to these tables rather than inventing a bespoke check."
       ],
       "context_links": [
         {
@@ -325,51 +329,54 @@
           "kind": "file",
           "label": "Repository check",
           "target": "xtask/src/repository.rs",
-          "relevance": "`BOUNDARIES`, `boundaries()` and `contains_token`, which this task generalizes into a table."
+          "relevance": "`check()`, the five checks, their two matchers and two test-exclusion parsers, and the per-rule unit tests this task turns into table rows."
         },
         {
           "kind": "file",
           "label": "Development guide",
           "target": "docs/engineering/development.md",
-          "relevance": "Where the convention that concept-finishing tasks add their own rule is documented."
+          "relevance": "Where the rule tables and the convention that concept-finishing tasks add their own rule are documented."
         }
       ],
       "acceptance_criteria": [
-        "The rule table replaces `BOUNDARIES`, keeping the three existing rules' behavior unchanged, with a failure message that names the one table to extend rather than suggesting a bespoke check.",
-        "A unit test covers an allowed path and a refused path for each rule, including the ones seeded in this task.",
+        "A source-rule table and a dependency-rule table replace `BOUNDARIES` and the hand-written bodies of `boundaries`, `independent_references`, `one_jpeg_codec`, `jpeg_codec_dependencies` and `raw_identity`; a failure names the rule, the file and line, and the table to extend rather than suggesting a bespoke check.",
+        "One whole-token matcher and one test-exclusion parser (`production_lines`'s) remain; `contains_token`, `test_only_files` and `non_test_lines` are deleted.",
+        "Every existing rule still refuses what it refuses today; where the JPEG rule's move onto `production_lines` also exempts comment lines and `#[cfg(test)]` items outside inline modules, the change says so.",
+        "The existing rule tests (`layer_boundaries_reject_a_forbidden_import`, `the_reference_crate_may_depend_on_no_workspace_crate`, `only_the_codec_crate_names_the_jpeg_codec` and `only_the_raw_module_and_tests_name_its_identity`, repository.rs:778, :845, :888, :1049) are kept as per-rule tests, and each seeded rule gains one with an allowed and a refused path.",
         "The rules seeded in this task (thread spawning, `Handle::from_rgba`, the `lightwell` identifier) pass against the current tree.",
-        "`docs/engineering/development.md` states the convention that a concept-finishing task adds its rule here."
+        "`docs/engineering/development.md` describes both tables and states the convention that a concept-finishing task adds its rule there."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Generalize `BOUNDARIES` into the (token, allowed paths, reason) table with unit tests for each rule's allowed and refused paths.",
-          "Seed the three new rules and fix any incidental hit they find in the current tree before landing."
+          "Build the two tables, the one matcher and the one parser, and move each of the five checks onto rows with their existing unit tests passing unchanged.",
+          "Seed the three new rules with an allowed and a refused path each, and fix any incidental hit they find in the current tree before landing."
         ],
         "commands": [
           "cargo test -p xtask repository",
           "cargo xtask check-repository"
         ],
         "expected_results": [
-          "The three existing boundary rules still refuse exactly what they refused before.",
+          "The five existing checks still refuse what their unit tests refuse.",
           "The new seeded rules pass against the current tree and refuse a deliberately introduced violation in a test."
         ]
       }
     },
     {
       "id": "TASK-006",
-      "description": "State one rule for tests that must not depend on host load, no shared state, ordering from gates not sleeps, a deadline that only bounds a hang, and give every crate a core-free gate and wait helper in testkit, fixing the load-dependent tests found.",
+      "description": "State one rule for tests that must not depend on host load, no shared state, ordering from gates not sleeps, a deadline that only bounds a hang, and give every crate, the widget crate included, one core-free gate and wait helper, fixing the load-dependent tests found.",
       "status": "pending",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. Four flakes have already been fixed one at a time; this states the rule that stops the next one and gives every crate the tool the fixes need.",
-        "The core's unit tests share one static render context across a whole test binary whose tests run in parallel: two mutexes serialize the tests that read shared budgets, dozens of call sites reset a shared estimate store, and several tests assert exact in-use or peak figures that any other concurrently running render can move. This is the same shape as a recently recorded flake in the RAW crate, where an admitted-permit count came in short because something outside a shared lock still held a slot.",
-        "Elsewhere, ordering is assumed from elapsed time rather than a gate: a desktop evidence test scripts a wait and asserts the very next tick sees nothing, which a scheduling delay between the two calls can violate; a preview-queue test asserts a second held job is pending without first waiting for the first job to reach its own gate; a spatial-render test raises its cancellation from a thread that merely sleeps 20 ms and panics if the render finished first; a capability journey test uses a proof endpoint's ten-second delay as if it were a gate that opens on its own schedule. Speed is also asserted in the default, non-timing suite: a process-counters test spins for 200 ms and requires 150 ms of measured CPU time, three capability tests bound their own promptness at two seconds, and a shared test server sleeps 50 ms and asserts the result lands in under a second.",
-        "The core already has a `RenderGate`/`HeldModule` pair for exactly this purpose, but it is `pub(crate)` and test-only, so the desktop keeps its own separate copy of the same idea rather than sharing it.",
-        "Constraint: the shared gate and wait helper must not depend on `luxforge-core`, so the core's own unit tests can use them too; each crate adds a small adapter rather than a second implementation.",
-        "The check-repository rule table this plan builds elsewhere gains an entry forbidding a second private test-ordering gate or wait helper outside `luxforge-testkit`, naming the shared `Gate`/`wait_until` as the one place to extend."
+        "Ordering is assumed from elapsed time rather than a gate: a desktop evidence test scripts a 20 ms wait and asserts the tick straight after it captures nothing, then sleeps and asserts the next one does (luxforge-app/src/app/evidence.rs:3545-3557), so a scheduling delay between the calls fails it; a spatial-render test raises its cancellation from a thread that merely sleeps 20 ms (luxforge-core/src/render/spatial.rs:3935) and panics if the render finished first; a desktop capability test holds a job running with a proof endpoint's ten-second delay (luxforge-app/src/app/capabilities_tests.rs:780) as if it were a gate.",
+        "Speed is asserted in the default, non-timing suite: a process-counters test spins a thread for 200 ms (luxforge-process/tests/counters.rs:48) and requires 150 ms of measured CPU time (:57); three of the core's capability lifecycle tests bound their own promptness at two seconds (luxforge-core/src/capabilities/lifecycle_tests.rs:948, :968, :1366); the shared test server's concurrency test sleeps 50 ms behind a `/slow` handler that sleeps two seconds (luxforge-testkit/src/server.rs:437, :424) and asserts the fast answer lands in under a second; and a desktop preview test drains the queue against a two-second deadline (luxforge-app/src/app/preview_tests.rs:266).",
+        "The gate idea is written privately more than once: the core's `RenderGate` and `HeldModule` (luxforge-core/src/modules/registry/tests.rs:342, :400) are `pub(crate)` and test-only, so the desktop keeps its own `Gate`, `Hold` and `wait_for` (luxforge-app/src/app/preview_failure_tests.rs:47, :134, :224), and wait helpers recur, such as the core preview tests' `wait_until` (luxforge-core/src/preview/tests.rs:411) and the process counters' `wait_for` (counters.rs:26).",
+        "The widget crate's photo surface keeps process-wide statics (`TEXTURE_WRITES`, `TEXTURE_UPLOAD_BYTES`, `RETIREMENT_PENDING` and `RETIREMENT_WAKER`, luxforge-ui/src/photo_surface.rs:85-90, and `DIAGNOSTICS`, :158). Its GPU tests serialize on a static `GPU_TEST_LOCK` (:3191) and poll for up to ten seconds (:3201, :3216, :3404, :3419), and the desktop's evidence reads the same statics through `luxforge_ui::surface_diagnostics()`, including in `capture_clipping_ready` (evidence.rs:457).",
+        "Constraint: the shared gate and wait helper must not depend on `luxforge-core`, so the core's own unit tests can use them and so can `luxforge-ui`, which may not reach the core. `luxforge-testkit` depends on the core, so this task places `Gate` and `wait_until` in a core-free crate: the one the test-binaries task in this plan splits out of testkit if it already exists, otherwise one this task creates and that split extends. Each crate adds a small adapter rather than a second implementation.",
+        "The check-repository rule table gains an entry forbidding a second private test-ordering gate or wait helper outside that crate, naming the shared `Gate`/`wait_until` as the one place to extend."
       ],
       "context_links": [
         {
@@ -386,41 +393,42 @@
         },
         {
           "kind": "file",
-          "label": "Test kit",
-          "target": "crates/luxforge-testkit/src/lib.rs",
-          "relevance": "Where the core-free `Gate` and `wait_until` are added."
-        },
-        {
-          "kind": "file",
-          "label": "Render testing context",
-          "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "The shared static render context every `render::testing` helper renders through today."
+          "label": "Test kit manifest",
+          "target": "crates/luxforge-testkit/Cargo.toml",
+          "relevance": "Depends on `luxforge-core`, which is why the shared gate needs a core-free home."
         },
         {
           "kind": "file",
           "label": "Desktop's own gate copy",
           "target": "crates/luxforge-app/src/app/preview_failure_tests.rs",
-          "relevance": "`Hold`, `Gate` and `wait_for`, duplicating the core's gate idea for the same purpose."
+          "relevance": "`Gate`, `Hold` and `wait_for`, duplicating the core's gate idea for the same purpose."
         },
         {
           "kind": "file",
           "label": "Evidence wait test",
           "target": "crates/luxforge-app/src/app/evidence.rs",
-          "relevance": "The scripted-wait test ordered by elapsed time rather than a gate."
+          "relevance": "The scripted-wait test ordered by elapsed time rather than a gate, and `capture_clipping_ready`'s read of the photo surface's statics."
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
+          "relevance": "The process-wide diagnostics statics, `GPU_TEST_LOCK` and the GPU tests' ten-second polls."
         }
       ],
       "acceptance_criteria": [
         "`docs/engineering/development.md` states the rule: no shared mutable state between tests, ordering from gates and channels rather than sleeps, and a deadline that only bounds a hang and never asserts speed outside a timing tier.",
-        "A core-free `Gate` (shut, open, pass, reached) and a `wait_until` live in `luxforge-testkit`, usable by the core's own unit tests as well as the app's.",
-        "Each named instance is fixed: the core's unit-test helpers build a fresh render context per call instead of sharing one static; the evidence wait test, the preview-queue test, the spatial cancellation test and the capability journey test all order from a gate instead of elapsed time; the process-counters test measures the spinning thread's own CPU clock instead of a wall-clock bound; the two-second promptness bounds are dropped where the gate already proves the outcome.",
-        "The core, app and process test suites pass repeatedly beside another loaded build running on the same host.",
-        "The check-repository rule table gains an entry forbidding a second private test-ordering gate or wait helper outside `luxforge-testkit`."
+        "A core-free `Gate` (shut, open, pass, reached) and a `wait_until` live in a crate that neither depends on `luxforge-core` nor reaches it, usable by the core's own unit tests, the app's and the widget crate's.",
+        "Each named instance is fixed: the evidence wait test, the spatial cancellation test and the desktop capability test order from a gate instead of elapsed time; the process-counters test measures the spinning thread's own CPU clock instead of a wall-clock bound; the two-second promptness bounds, the test server's sleep-then-assert and the preview drain deadline are dropped where a gate already proves the outcome, or kept only as hang bounds; the desktop's `Gate`/`Hold`/`wait_for`, the core's `RenderGate`/`HeldModule` and the private wait helpers become adapters over the shared ones.",
+        "The photo surface's GPU tests stop serializing on `GPU_TEST_LOCK` and polling process-wide statics: each reads figures it owns, or the change states why those diagnostics must stay process-wide.",
+        "The core, app, widget and process test suites pass repeatedly beside another loaded build running on the same host.",
+        "The check-repository rule table gains an entry forbidding a second private test-ordering gate or wait helper outside the shared crate."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Add `Gate`/`wait_until` to `luxforge-testkit` with its own unit tests.",
-          "Rewrite each named test to use a fresh context or a gate instead of shared state or elapsed time.",
+          "Add `Gate`/`wait_until` to the core-free crate with its own unit tests.",
+          "Rewrite each named test to use a gate instead of shared state or elapsed time, and turn each private gate or wait helper into an adapter over the shared one.",
           "Run the affected suites repeatedly while another build runs on the same machine, to reproduce the load conditions the original flakes needed."
         ],
         "commands": [
@@ -429,7 +437,7 @@
         ],
         "expected_results": [
           "No test in the affected files fails when run beside another loaded build.",
-          "The exact in-use and peak-count assertions in the core's render tests are deterministic because each test owns its own context."
+          "No named test asserts speed or orders its steps by elapsed time outside a timing tier."
         ]
       }
     },
@@ -442,9 +450,10 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. A disagreeing oracle is worse than none: this is the same duplication an earlier consolidation task removed from production colour math, still present in the tests that check it.",
-        "Test code carries roughly twenty private copies of sRGB decode, encode and quantize across the reference crate's own studies and the core's unit and integration tests, under a handful of shared names that actually mean three different functions: encoding clamped to `[0, 1]`, encoding clamped only below zero, and encoding left unclamped, with rounding written as both `floor(x + 0.5)` and `round()`. The reference crate itself exports its decode function under three aliased names.",
+        "Test code and the reference crate carry roughly twenty private copies of sRGB decode, encode and quantize: in the reference crate's library modules (the extended encode/decode pairs in tone.rs:107, :120 and presence.rs:113, :122, beside lib.rs's own `srgb_encode` at :48), in its studies, and in the core's unit and integration tests. A handful of shared names actually mean three different functions: encoding clamped to `[0, 1]`, encoding clamped only below zero, and encoding left unclamped, with rounding written as both `floor(x + 0.5)` and `round()`. The reference crate itself exports its decode function under three aliased names.",
         "Proposal: one `luxforge_reference::srgb` module with named variants (`decode`, `decode_encoded`, `encode_clamped`, `encode_nonnegative`, `encode_extended`, `quantize`, `code`), with the old aliases deleted and every study and test calling the new module.",
         "Constraint: no committed number may move. The reference crate's own reload tests, which recompute each frozen corpus and fail on drift, must pass unchanged, and every production-against-reference comparison keeps its existing tolerance.",
+        "Production keeps its own transfer functions: the core's `colour.rs` macro (luxforge-core/src/colour.rs:20-26 decode, :32-38 encode, `12.92` at :22 and :34) is the one production copy, and the rule must allow it. The thresholds are written both as `0.040_45`/`0.003_130_8` and as `0.04045`/`0.0031308`, so the rule matches the `12.92` slope or normalises underscores before matching a threshold; it covers test code and reads only `.rs` files.",
         "The check-repository rule table gains an entry forbidding a private sRGB transfer-function transcription outside `luxforge_reference::srgb`."
       ],
       "context_links": [
@@ -458,7 +467,7 @@
           "kind": "file",
           "label": "Reference crate root",
           "target": "crates/luxforge-reference/src/lib.rs",
-          "relevance": "The three-times-aliased decode function and the encode/quantize functions this task consolidates."
+          "relevance": "The three-times-aliased decode function and the encode/quantize functions this task consolidates; tone.rs and presence.rs beside it hold the extended pairs."
         },
         {
           "kind": "file",
@@ -471,14 +480,20 @@
           "label": "Conformance suite pixel probes",
           "target": "crates/luxforge-core/tests/modules/conformance/pixels.rs",
           "relevance": "Another private transcription, inside the suite every field-patch module is checked against."
+        },
+        {
+          "kind": "file",
+          "label": "Production sRGB",
+          "target": "crates/luxforge-core/src/colour.rs",
+          "relevance": "The one production transfer-function copy the repository rule must allow."
         }
       ],
       "acceptance_criteria": [
         "`luxforge_reference::srgb` exists with the named variants, and the old aliased names are deleted.",
-        "Every private sRGB transcription in test code, including the reference crate's own studies and the core's mask, conformance, render, proxy and module tests, is replaced with a call to the shared module.",
+        "Every private sRGB transcription in test code and in the reference crate, including its library modules' extended pairs, its studies and the core's mask, conformance, render, proxy and module tests, is replaced with a call to the shared module.",
         "The corpus reload tests pass unchanged, proving no committed figure moved.",
         "Every production-against-reference comparison that used a private copy now uses the shared module at the same tolerance.",
-        "The check-repository rule table gains an entry forbidding a private sRGB transfer-function transcription outside `luxforge_reference::srgb`."
+        "The check-repository rule table gains an entry forbidding a private sRGB transfer-function transcription in any `.rs` file, test code included, outside `luxforge_reference::srgb` and the core's production `colour.rs`."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -499,16 +514,18 @@
     },
     {
       "id": "TASK-008",
-      "description": "Launch and watch every editor process the timing tools start, `editor-latency`, `raw-editor`, `measure` and `hardening`, through the smoke scenario library's own launch envelope and one watch loop, instead of each tool assembling arguments and polling by hand.",
+      "description": "Launch and watch every editor process `editor-latency` (every mode, viewport included), `measure` and `hardening` start through the smoke scenario library's own launch envelope and one watch loop, instead of each tool assembling arguments and polling by hand.",
       "status": "pending",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. An earlier task gave the smoke scenarios one launch builder and one run envelope; the timing tools are the one place that still does not use it.",
-        "`editor_latency.rs`, `raw_editor.rs` and `diagnostics.rs` each build their own `--evidence-dir`/`--evidence-script`/`--open`/`--catalog` argument list and carry their own process-watch loop with its own deadline, sample and sleep logic, eight such loops in all. `performance_smoke.rs` runs its own `ps` invocation beside the shared usage sampler rather than calling it. The provenance header (host, binary, lockfile) is written with drifting field names across the tools, and `editor-latency` records a fixed `\"profile\":\"release\"` regardless of the binary it was actually given.",
-        "Because only the smoke scenarios record a `launches` list, `verify` keeps a separate `Launches` enum that hand-codes how many editor processes each tool starts, which this task lets it delete in favor of reading the count each tool now records itself.",
-        "Constraint: timing figures must not move. Each watch loop's own poll rate stays a parameter rather than a shared constant, and the argument list produced for each tool must be byte-identical to today's before and after.",
+        "Editor argument lists (`--evidence-dir`, `--evidence-script`, `--open`, `--catalog`) are assembled by hand at xtask/src/editor_latency.rs:975 (in `run_viewport`, :946), :1427, :1674, :2159 and :2346, raw_editor.rs:194, and diagnostics.rs:53 and :187. Process-watch loops, each with its own deadline, sample and sleep logic, sit at editor_latency.rs:267 and :2382, raw_editor.rs:207, diagnostics.rs:10 and :217, and performance_smoke.rs:190, six in all. `performance_smoke.rs` also runs its own `ps` invocation beside the shared usage sampler rather than calling it.",
+        "`editor-latency --mode viewport` has its own argument assembly and its own provenance header. The provenance header (host, binary, lockfile) is written with drifting field names across the tools, and `editor-latency` hard-codes `\"profile\":\"release\"` in four places (editor_latency.rs:1194, :1515, :1873, :2245) regardless of the binary it was given.",
+        "`raw-editor` is not migrated here: the scenario-row task in this plan replaces its launch and watch loop with a smoke scenario row.",
+        "Because only the smoke scenarios record a `launches` list, `verify` keeps a `Launches` enum (verify.rs:105) that hand-codes how many editor processes each tool starts. This task lets it read the count each migrated tool records instead, leaving only `raw-editor`'s case for the scenario-row task to remove.",
+        "Constraint: timing figures must not move. Each watch loop's own poll rate stays a parameter rather than a shared constant, and each tool's scripts and argument lists must be byte-identical before and after. The existing dump tests (`dump_scripts`, editor_latency.rs:2446 and smoke.rs:1214) cover scripts only; the proof extends them to argument lists and to the viewport, `--zoom` and `--moving-pan` variants.",
         "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside the scenario library's `Launch`/`Run`."
       ],
       "context_links": [
@@ -528,13 +545,7 @@
           "kind": "file",
           "label": "Editor latency tool",
           "target": "xtask/src/editor_latency.rs",
-          "relevance": "One of the tools with its own argument assembly and watch loop to migrate."
-        },
-        {
-          "kind": "file",
-          "label": "RAW editor timing tool",
-          "target": "xtask/src/raw_editor.rs",
-          "relevance": "Another tool with its own launch and watch logic."
+          "relevance": "Five argument assemblies, two watch loops, four hard-coded profiles and the viewport mode's own provenance header to migrate."
         },
         {
           "kind": "file",
@@ -544,49 +555,57 @@
         },
         {
           "kind": "file",
+          "label": "Performance watch",
+          "target": "xtask/src/performance_smoke.rs",
+          "relevance": "Its own watch loop and `ps` invocation beside the shared usage sampler."
+        },
+        {
+          "kind": "file",
           "label": "Verification tiers",
           "target": "xtask/src/verify.rs",
-          "relevance": "The `Launches` enum this task lets `verify` delete."
+          "relevance": "The `Launches` enum whose per-tool counts this task replaces with recorded ones."
         }
       ],
       "acceptance_criteria": [
-        "`editor-latency`, `raw-editor`, `measure` and `hardening` launch every editor process through the scenario library's `Launch`/`Run` builder, and each launch is recorded in a `launches` list.",
-        "One `watch` function serves every tool's process-watching loop, replacing the eight separate ones.",
-        "One `provenance` function writes the same header fields everywhere and reads the profile from the binary rather than asserting it.",
-        "`verify`'s `Launches` enum is deleted; launch counts are read from what each tool actually recorded.",
-        "A dumped argument list for each tool is unchanged from before this task, and one full `timing` tier run before and after, back to back, produces the same figures within normal run-to-run variation.",
-        "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside `scenario::launch`."
+        "`editor-latency` (every mode, viewport, `--zoom` and `--moving-pan` included), `measure` and `hardening` launch every editor process through the scenario library's `Launch`/`Run` builder, and each launch is recorded in a `launches` list.",
+        "One `watch` function serves every migrated tool's process-watching loop, replacing the five in `editor_latency.rs`, `diagnostics.rs` and `performance_smoke.rs`.",
+        "One `provenance` function writes the same header fields everywhere, the viewport mode's included, and reads the profile from the binary rather than asserting it.",
+        "`verify` reads each migrated tool's launch count from what it recorded; `Launches` keeps no case for them.",
+        "Each tool's dumped scripts and argument lists, over the viewport, `--zoom` and `--moving-pan` variants too, are byte-identical before and after this task, and one full `timing` tier run before and after, back to back, produces the same figures within normal run-to-run variation.",
+        "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside `scenario::launch`, allowing `raw_editor.rs` only until the scenario-row task deletes its launch."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
           "Add `data_root` and `evidence_dir` to the scenario library's `Launch` builder so the timing tools can use it.",
-          "Migrate each timing tool's argument assembly and watch loop to the shared builder and `watch` function, one tool at a time.",
-          "Dump each tool's argument list before and after migration and diff them for equality; delete `verify`'s `Launches` enum once every tool records its own launches."
+          "Extend the dump tests to write each tool's argument lists beside its scripts, over the viewport, `--zoom` and `--moving-pan` variants, and record them before migrating.",
+          "Migrate `editor-latency`, `measure` and `hardening` one at a time onto the shared builder and `watch` function, diffing the dumps after each, then remove their cases from `verify`'s `Launches`."
         ],
         "commands": [
           "cargo test -p xtask",
           "cargo xtask verify --tier timing"
         ],
         "expected_results": [
-          "Every timing tool's arguments and scripts are byte-identical to before this task.",
-          "`verify`'s launch counts come from what each component recorded, with no tool-specific counting logic left."
+          "Every migrated tool's arguments and scripts are byte-identical to before this task.",
+          "`verify`'s launch counts for the migrated tools come from what each component recorded."
         ]
       }
     },
     {
       "id": "TASK-009",
-      "description": "Move `Distribution` into `luxforge-testkit` and use it everywhere a timing figure is computed, in xtask and in the crates' own ignored timing tests, deleting the forwarding wrappers and the four disagreeing percentile definitions it replaces.",
+      "description": "Move `Distribution` into a core-free test crate and use it everywhere a timing figure is computed, in xtask and in the crates' own timing tests, deleting the forwarding wrappers and every disagreeing percentile definition it replaces.",
       "status": "pending",
       "dependencies": [
         "TASK-008"
       ],
       "extra_context": [
         "Wave 2, finish the consolidation. Depends on the timing tools sharing one launch path, since this task also gives them one report shape to write into.",
-        "`stats::Distribution` in xtask is one correct nearest-rank percentile with its own golden tests. Around it, four one-line wrapper functions do nothing but forward to it, `mask-range`'s own stroke-latency check hand-writes a fifth percentile and its own JSON shape for a measurement `editor-latency`'s paint mode already makes, and the crates' own ignored timing tests, in `luxforge-core` and `luxforge-process`, use four more percentile definitions that disagree with nearest-rank and with each other at ordinary sample counts.",
-        "`verify`'s report collector still special-cases four different report layouts because not every tool writes the same shape, and whether a load reading counts as reliable is worded differently in different tools for the same underlying rule.",
+        "`stats::Distribution` in xtask is one correct nearest-rank percentile with its own golden tests. Around it, four one-line wrapper functions do nothing but forward to it, and `mask-range`'s own stroke-latency check hand-writes a fifth percentile and its own JSON shape for a measurement `editor-latency`'s paint mode already makes.",
+        "Every percentile the crates compute in their own tests is a private definition that disagrees with nearest-rank or with the others at ordinary sample counts. In `luxforge-core`: activity.rs:796, proxy.rs:1699 and :1813-1814, presets/tests.rs:1520, render/linear.rs:1294 (and a median at :3588), capabilities/proof_tests.rs:1260, tests/resources_cost.rs:19, render/spatial.rs:4067-4068, :4165, :4296 and :4385, modules/presence/oracle.rs:801-808, and the upper median at source.rs:1558 in the ignored `decode_timing` test. In `luxforge-process`: tests/cost.rs:23.",
+        "`verify`'s report collector still special-cases four report layouts because not every tool writes the same shape, and `editor-latency --mode viewport`'s `latency.json`, a scalar `input_to_first_region_adoption_ms` plus GPU counters, is a fifth. Whether a load reading counts as reliable is worded differently in different tools for the same underlying rule.",
+        "Constraint: `Distribution` must not depend on `luxforge-core`, so the core's own tests can use it; it goes in the same core-free crate as the shared test gate, created here if it does not exist yet, not in `luxforge-testkit` while testkit depends on the core.",
         "Constraint: recorded p95 figures from the crates' timing tests may shift by one rank once they move to nearest-rank; note this where a figure is recorded rather than silently changing it.",
-        "The check-repository rule table gains an entry forbidding a second percentile or distribution implementation outside `luxforge-testkit`'s `Distribution`."
+        "The check-repository rule table gains an entry forbidding a second percentile or distribution implementation outside the shared `Distribution`."
       ],
       "context_links": [
         {
@@ -603,9 +622,9 @@
         },
         {
           "kind": "file",
-          "label": "Test kit",
-          "target": "crates/luxforge-testkit/src/lib.rs",
-          "relevance": "Where `Distribution` moves to, so both xtask and the crates' own timing tests can use it."
+          "label": "Test kit manifest",
+          "target": "crates/luxforge-testkit/Cargo.toml",
+          "relevance": "Depends on `luxforge-core`, which is why `Distribution` needs a core-free home the core's own tests can reach."
         },
         {
           "kind": "file",
@@ -618,25 +637,31 @@
           "label": "Verification report collection",
           "target": "xtask/src/verify.rs",
           "relevance": "`collect`'s four special-cased report layouts, to become one loop."
+        },
+        {
+          "kind": "file",
+          "label": "Spatial render timing tests",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "relevance": "Four of the private percentile definitions the crates' ignored timing tests use."
         }
       ],
       "acceptance_criteria": [
-        "`Distribution` lives in `luxforge-testkit` and is used by xtask's timing tools and by the crates' own ignored timing tests; no second percentile definition remains anywhere in the workspace.",
+        "`Distribution` lives in a core-free test crate and is used by xtask's timing tools and by the crates' own timing tests; no second percentile or median definition remains anywhere in the workspace, including each one listed above.",
         "The four one-line forwarding wrappers and `mask-range`'s own percentile and JSON shape are deleted; `mask-range`'s stroke latency is reported in the one shared shape.",
-        "Every timing tool writes one `{\"rows\":[{\"metric\",\"unit\",\"distribution\"}]}` shape, and `verify`'s collector is one loop over it instead of four special cases.",
+        "Every timing tool writes one `{\"rows\":[{\"metric\",\"unit\",\"distribution\"}]}` shape, `editor-latency --mode viewport`'s scalar and GPU counters included, and `verify`'s collector is one loop over it instead of per-tool special cases.",
         "One `reliable`/`unreliable` load rule is used by every tool that reports a load-dependent figure.",
-        "The check-repository rule table gains an entry forbidding a second percentile or distribution implementation outside `luxforge-testkit`."
+        "The check-repository rule table gains an entry forbidding a second percentile or distribution implementation outside the shared `Distribution`."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Move `Distribution` to `luxforge-testkit` with its existing golden tests intact.",
-          "Replace each of the four wrappers, `mask-range`'s own percentile, and the four crate-level percentile definitions with the shared type.",
+          "Move `Distribution` to the core-free test crate with its existing golden tests intact.",
+          "Replace each of the four wrappers, `mask-range`'s own percentile, and every crate-level percentile definition with the shared type.",
           "Update `verify`'s collector to the one shared report shape and rerun a timing tier to confirm the figures are sane."
         ],
         "commands": [
           "cargo test -p xtask stats",
-          "cargo test -p luxforge-testkit",
+          "cargo test --locked --workspace",
           "cargo xtask verify --tier timing"
         ],
         "expected_results": [
@@ -653,11 +678,14 @@
         "TASK-008"
       ],
       "extra_context": [
-        "Wave 2, finish the consolidation. Depends on the timing tools sharing one launch path, since this scenario row needs the same envelope RAW-editor timing already moves onto.",
-        "`xtask/src/raw_editor.rs`, at 909 lines, keeps its own launch, frame verifier and pixel sampler, its own hand-kept frame indices, and its own exact request comparisons, so it gets none of the universal per-frame checks or the replay tool every smoke scenario already has. It branches on the literal camera mode name `\"DjiAir2sDng16\"` rather than the profile's own declared field, and separately re-reads and re-parses `cameras.json` untyped to check DNG provenance the RAW adapter has already enforced against the same profile. RAW manifests are read three separate ways across `raw_editor.rs`, `raw.rs` and `verify.rs`.",
+        "Wave 2, finish the consolidation. Depends on the timing tools' launch path, which gives the scenario library's `Launch` the data root and evidence directory this row's launches need; `raw-editor` itself is migrated here, not there.",
+        "`xtask/src/raw_editor.rs`, at 916 lines, keeps its own launch, frame verifier and pixel sampler, its own hand-kept frame indices (`HISTORICAL_FRAME`, `CURRENT_FRAME`, `FINAL_FRAME`, :40-42), and its own exact request comparisons, so it gets none of the universal per-frame checks or the replay tool every smoke scenario already has. Its script sets exposure through `set-basic`, the RAW channel gains, and temperature and tint through `set-raw` (:47-51); `verify_displayed_raw_controls` (:301) reads exposure from Basic's global layer and the rest from the RAW layer (:312-340).",
+        "Inside `validate_manifest` (:84) it branches on the literal camera mode name `\"DjiAir2sDng16\"` (:130) rather than the profile's own declared field, and it re-reads and re-parses `crates/luxforge-raw/data/cameras.json` untyped at runtime (:789) to check DNG provenance the RAW adapter has already enforced against the same profile; the `include_str!` of that file at :861 belongs to a test. RAW manifests are read three separate ways: `load_manifest` (raw.rs:30), `manifest_sources` (verify.rs:180) and raw_editor.rs's own (:84, :788).",
+        "The harness names the RAW module's identity `\"luxforge.raw\"` at raw_editor.rs:309 and raw_panel_smoke.rs:32-33; the repository's RAW identity rule reads only `crates/`, so the harness may keep naming it as an API client does.",
         "The scenario table already supports the two-launch, reopen-through-a-named-catalog shape this journey needs; the `basic-restart` and `unavailable` rows both do it, so this is a fit rather than a new mechanism.",
         "Constraint: keep the manifest-specific checks (dimensions, orientation, DNG opcodes, the displayed RAW controls) as the new row's own verifier; if repeated trials are still wanted, they are `verify` running the row multiple times rather than a loop inside the tool.",
-        "The check-repository rule table gains an entry forbidding a second RAW manifest reader outside `raw.rs`."
+        "`verify`'s last hand-coded launch count, `Launches::RawEditor`, goes with the tool, since the row records its own launches like every other scenario.",
+        "The check-repository rule table gains an entry forbidding a second RAW manifest reader outside `raw.rs`, and the launch-assembly rule's allowance for `raw_editor.rs` is removed."
       ],
       "context_links": [
         {
@@ -670,7 +698,7 @@
           "kind": "file",
           "label": "RAW editor timing tool",
           "target": "xtask/src/raw_editor.rs",
-          "relevance": "The 909-line tool this task turns into a scenario row, including its DJI mode-name branch and untyped `cameras.json` re-read."
+          "relevance": "The 916-line tool this task turns into a scenario row, including its frame indices, DJI mode-name branch and untyped `cameras.json` re-read."
         },
         {
           "kind": "file",
@@ -689,14 +717,21 @@
           "label": "RAW panel scenario",
           "target": "xtask/src/raw_panel_smoke.rs",
           "relevance": "The other `Source::Supplied` RAW scenario already on the plan library, for comparison."
+        },
+        {
+          "kind": "file",
+          "label": "Verification tiers",
+          "target": "xtask/src/verify.rs",
+          "relevance": "`manifest_sources`, one of the three manifest readers, and the `Launches` enum's `raw-editor` case."
         }
       ],
       "acceptance_criteria": [
         "`raw-editor`'s journey is a `Source::Supplied` scenario row with an edit launch and a reopen launch reading the first launch's catalog, verified through the plan library's universal per-frame checks plus its own manifest-specific checks.",
         "One RAW manifest reader in `raw.rs` is used by the new row, `raw-corpus` and `verify`; the other two readers are deleted.",
-        "The DJI geometry branch keys off the camera profile's own declared field rather than the mode name string, and the untyped re-read of `cameras.json` is removed.",
+        "The DJI geometry branch keys off the camera profile's own declared field rather than the mode name string, and the untyped runtime re-read of `cameras.json` is removed.",
         "`smoke --verify-only` can replay a recorded run of the new row, and the plan-mutation proof still fails it on a dropped step or a changed label.",
-        "The check-repository rule table gains an entry forbidding a second RAW manifest reader outside `raw.rs`."
+        "`verify`'s `Launches` enum is deleted; every launch count comes from what a component recorded.",
+        "The check-repository rule table gains an entry forbidding a second RAW manifest reader outside `raw.rs`, and no longer allows an argument assembly in `raw_editor.rs`."
       ],
       "test_strategy": {
         "approach": "end-to-end",

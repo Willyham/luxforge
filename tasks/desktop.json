@@ -195,10 +195,12 @@
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "`ControlMessage::SliderMoved` and `SliderReleased` (`app/message.rs`, handled in `app/controls.rs`) are sent only by the evidence driver (`app/evidence.rs`) and by tests; the slider widget itself sends `Fraction` and `Released`, wired in `view/tools_panel.rs`. `CancelEdit` is sent by no widget at all, only by one test.",
-        "The two paths disagree: `SliderMoved` on a non-drafting slider goes straight to `slider_moved(...)` and skips the `editable()` check `control_value` makes for `Fraction`; `SliderReleased` calls `release()` on whatever gesture is open, while `Released` only releases a control that is drafting. So the `slider` evidence step and the slider tests prove a path the shipped widget never takes.",
-        "Convert the evidence `slider` step to send `Fraction`/`Released`, computed from each scripted value through the same `NumberSpec` the widget uses, so evidence values round-trip through a fraction and back exactly; give tests a `slide()` helper over the same messages.",
-        "Delete `SliderMoved`, `SliderReleased`, `Editor::slider_moved` and `CancelEdit` once nothing sends them; add a `check-repository` rule (or a test) that refuses a control message that only evidence or a test constructs, so a future evidence-only message is caught the same way."
+        "`ControlMessage::SliderMoved` and `SliderReleased` (`app/message.rs`, handled in `app/controls.rs`) are sent only by the evidence driver (`app/evidence.rs`) and by tests; the slider widget itself sends `Fraction` and `Released`, wired in `view/tools_panel.rs`. `CancelEdit` is sent by no widget at all, only by tests.",
+        "The two paths disagree. On a non-drafting slider, `SliderMoved` writes a physical value into the field and marks it dragging without the `editable()` check `control_value` makes for `Fraction`, and without the fine-step snap `NumberSpec::at_fraction` applies; on a drafting one it reaches the gesture through `Editor::slider_moved` (`app/slider.rs`). `SliderReleased` releases an open slider gesture whichever control it belongs to, while `Released` releases only the control that is drafting. So the evidence steps and the slider tests prove a path the shipped widget never takes.",
+        "Evidence sends `SliderMoved` from three paths, `slider_step`, `double_click_step`'s first press and the paced `slider_paced_tick`, and `end_slider_gesture` sends `SliderReleased`; all of them convert. The generated-controls step already drives the widget path: `ControlsStep::Slider` sends `Fraction` and ends through `finish_generated_gesture`. Merge the `slider` step into it or build the conversion on it rather than write another driver; `Step::Key` (`key_step`), which replays keys through the real keymap, is the same precedent for keys.",
+        "`NumberSpec::at_fraction` (`state/number.rs`) maps a fraction to a value and has no inverse; add one. `at_fraction` spans the soft range and snaps to `fine_step`, so a scripted value outside the soft range or off the fine grid cannot round-trip, and the round-trip test names every such value. Give tests a `slide()` helper over the same messages.",
+        "The scripted values include `set-raw` Temperature drags in kelvin (the raw-panel smoke's 3500 K and 2500 K), double-clicks on `set-raw` Temperature and Tint and on `set-basic` Exposure, the basic smoke's JPEG Temperature drag, and `editor-latency`'s bursts on `set-raw` Temperature and Tint. A variant's field is keyed by its providing module (`set-raw.temperature`, seeded in `state/fields.rs`), so each value converts through its provider's `NumberSpec`.",
+        "Delete `SliderMoved`, `SliderReleased`, `Editor::slider_moved` and `CancelEdit` once nothing sends them, and add a `check-repository` rule that refuses a control message only evidence or a test constructs, so a future evidence-only message fails the same way. The check's existing `holds_whole_token` and `production_lines` helpers already answer both halves of that question."
       ],
       "context_links": [
         {
@@ -217,47 +219,58 @@
           "kind": "file",
           "label": "Controls driver",
           "target": "crates/luxforge-app/src/app/controls.rs",
-          "relevance": "Handles both message pairs today; `Fraction`/`Released` are what the widget actually sends."
+          "relevance": "Handles both message pairs today; `Fraction` (`control_fraction`, `control_value`) and `Released` (`control_release`) are what the widget actually sends."
+        },
+        {
+          "kind": "file",
+          "label": "Slider driver",
+          "target": "crates/luxforge-app/src/app/slider.rs",
+          "relevance": "`Editor::slider_moved`, to be deleted.",
+          "locator": "slider_moved"
         },
         {
           "kind": "file",
           "label": "Evidence driver",
           "target": "crates/luxforge-app/src/app/evidence.rs",
-          "relevance": "The `slider` step, to be rewritten onto `Fraction`/`Released`."
+          "relevance": "`slider_step`, `double_click_step`, `slider_paced_tick` and `end_slider_gesture`, to convert; `ControlsStep::Slider` and `key_step`, the widget-path precedents."
         },
         {
           "kind": "file",
           "label": "Number spec",
           "target": "crates/luxforge-app/src/state/number.rs",
-          "relevance": "`NumberSpec`, the one place a value maps to and from a rail fraction."
+          "relevance": "`NumberSpec::at_fraction`, the one place a rail fraction maps to a value, which gains its inverse.",
+          "locator": "at_fraction"
         },
         {
           "kind": "file",
           "label": "Repository check",
           "target": "xtask/src/repository.rs",
-          "relevance": "Where a one-path rule against evidence-only messages would live, beside the existing textual boundary check."
+          "relevance": "Where the rule against evidence-only messages lives, on the existing `holds_whole_token` and `production_lines` helpers."
         }
       ],
       "acceptance_criteria": [
-        "For every declared slider in the scripted evidence values, converting to a fraction through `NumberSpec` and back gives the original value, proved by a unit test.",
-        "The `basic`, `histogram` and `crop-draft` smokes and `editor-latency` give the same verdicts as before the change.",
+        "For every slider and double-click value the evidence scenarios script, including the `set-raw` kelvin and tint values, converting to a fraction through the providing module's `NumberSpec` and back gives the original value, proved by a unit test that names any value that does not.",
+        "The `basic`, `histogram`, `raw-panel`, `presence`, `mixer`, `vignette`, `mask`, `mask-brush`, `mask-combine` and `mask-range` smokes and `editor-latency` give the same verdicts as before the change, and the scenario plan tests pass.",
+        "Every evidence slider and double-click path sends `Fraction` and `Released`, through the generated-controls driver or one built on it.",
         "`SliderMoved`, `SliderReleased`, `Editor::slider_moved` and `CancelEdit` no longer exist.",
-        "A test or `cargo xtask check-repository` rule fails if a control message exists that only evidence or a test constructs."
+        "A `cargo xtask check-repository` rule fails if a control message exists that only evidence or a test constructs."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Add the fraction round-trip test over the scripted slider values.",
-          "Rewrite the evidence `slider` step and the slider tests onto `Fraction`/`Released` through a shared `slide()` helper.",
-          "Run the controls and slider test modules, then the rendered tier."
+          "Add the fraction round-trip test over the scripted slider and double-click values.",
+          "Rewrite the evidence slider, double-click and paced paths onto `Fraction`/`Released` through the generated-controls driver, and the slider tests onto a shared `slide()` helper.",
+          "Run the controls and slider test modules, the scenario plan tests and the repository check, then the rendered tier."
         ],
         "commands": [
           "cargo test -p luxforge-app controls",
           "cargo test -p luxforge-app slider",
+          "cargo test -p xtask scenario",
+          "cargo xtask check-repository",
           "cargo xtask verify --tier rendered"
         ],
         "expected_results": [
-          "The round-trip test passes for every declared slider; the rendered tier's basic, histogram and crop-draft scenarios are unchanged."
+          "The round-trip test passes for every scripted value; the rendered tier's slider and double-click scenarios give the same verdicts; the repository check passes and refuses an evidence-only control message."
         ]
       }
     },
@@ -270,11 +283,12 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "Crop already runs on the core `draft.*` lifecycle, but keeps its own `CropMessage::{Apply, Cancel, Reapply}` beside the shared `DraftMessage::{Commit, Cancel, Reapply}`, which `app/gesture.rs`'s `release_refusal` already routes crop through via `crop_refusal`. It also keeps its own keymap branch in `app/keymap.rs`, two extra `NoticeAction` variants and a `mask: bool` flag on the draft bar, and three near-identical \"Changed elsewhere\" notices in `state/canvas.rs` that differ only by naming a slider draft, a mask gesture or a crop draft.",
-        "Whether Apply can run is decided three times with three different wordings: `state/tools.rs`'s `can_apply` (`enabled && !gesture_conflicted`, no wording), `state/canvas.rs`'s `apply_reason` (conflicted, preview or busy, one set of sentences) and `app/crop.rs`'s `crop_refusal` (busy, preview, conflicted, plus the output error, a different set). The two view-model copies leave out the output check the app itself makes, so the button can read enabled while the app would refuse the request.",
-        "The start waits for a truncated, full-resolution render to learn a size every `recipe.describe` row already reports as `input_stage`; that produces a pending state, `app/crop.rs`'s 32-deep `QUEUED_CHANGES` with rail coalescing, \"prospective\" angle text duplicated in `app/crop.rs` and `state/tools.rs`, and currency checks. Open the frame synchronously instead, from an existing crop's row (`input_stage` and `values`) or, for a new crop, the row at the insertion index; add an `output_stage` to `RecipeDescription` for the append case, since it does not exist there today.",
-        "The start also re-derives geometry the core already reports: `app/crop.rs`'s `orientation_ahead` parses `ORIENTATION_EFFECT` payloads and folds them on the desktop, although the develop-workspace design states \"the desktop folds no geometry itself\"; `crop_draft.rs` re-implements the core's own `refit` inline in `rebase` instead of calling it; and the crop aspect vocabulary is spelled twice (`crop/module.rs`'s presets and `crop_draft.rs`'s `parse_ratio`), where \"free\" means a different thing in each. Read committed values and the orientation ahead of a row from `recipe.describe` instead of parsing payloads.",
-        "Owner decision (2026-09-26): a crop draft opens before the stage's pixels arrive, so the section is live at once and the canvas shows the frame once the stage renders — delivered here; showing the input stage itself from a proxy at Fit is separate, later work in this plan. The owner also decided that `CropMessage::Cancel` on a draft that is still starting now cancels it outright rather than being silently ignored as it is today; record that as the intended behaviour in the develop-workspace design, since it is more honest than doing nothing."
+        "Crop already runs on the core `draft.*` lifecycle, but keeps its own `CropMessage::{Apply, Cancel, Reapply}` beside the shared `DraftMessage::{Commit, Cancel, Reapply}`, which `app/gesture.rs`'s `release_refusal` already routes crop through via `crop_refusal`. It also keeps its own Enter/Escape branch in `app/keymap.rs`, two extra `NoticeAction` variants and a `mask: bool` flag on the draft bar, and three near-identical \"Changed elsewhere\" notices in `state/canvas.rs` that differ only by naming a slider draft, a mask gesture or a crop draft.",
+        "Whether Apply can run is decided in four places with three wordings: `state/tools.rs`'s `can_apply` (`enabled && !gesture_conflicted`, no wording); two copies of `apply_reason` in `state/canvas.rs`'s draft bar, one for a mask gesture and one for the crop draft, identical but for one word (conflicted, preview or busy); and `app/crop.rs`'s `crop_refusal` (busy, preview, conflicted, plus the output error, in other sentences). The view-model copies leave out the output check the app itself makes, so the button can read enabled while the app would refuse the request.",
+        "The start waits for a truncated, full-resolution render to learn a size every `recipe.describe` row already reports as `input_stage`; that produces a pending state, `app/crop.rs`'s 32-deep `QUEUED_CHANGES` with rail coalescing, \"prospective\" angle text parsed back in both `app/crop.rs` and `state/tools.rs`, and currency checks. Open the frame synchronously instead, from an existing crop's row (`input_stage` and `values`) or, for a new crop, the row at the insertion index; add an `output_stage` to `RecipeDescription` for the append case, since it does not exist there today.",
+        "The start also re-derives geometry the core already reports: `app/crop.rs`'s `orientation_ahead` parses `ORIENTATION_EFFECT` payloads and folds them on the desktop, although the develop-workspace design states \"the desktop folds no geometry itself\"; `crop_draft.rs` re-implements the core's own `refit` inline in `rebase` instead of calling it; and the crop aspect vocabulary is spelled twice (`crop/module.rs`'s presets and `crop_draft.rs`'s `parse_ratio`), where \"free\" means a different thing in each. Committed values are parsed too: `app/crop.rs`'s `committed_crop_angle` deserializes the current entry's crop layer into a `CropPayload` (the angle text's submit and reset short-circuits and `seed_idle_angle` call it), and `state/tools.rs`'s `committed_crop` deserializes the describe row's `values` into one to work out the angle and aspect. Read committed values and the orientation ahead of a row from `recipe.describe` instead of parsing payloads.",
+        "Folding the crop's keymap branch into the shared draft branch keeps the keymap's rules: an open Export menu's Escape still closes the menu before any draft hears it (a keymap test covers it); Escape from a pick taken on a mask still returns to Mask mode through `KeyContext::leave_to`; and Space and Option (`CropMessage::Space`, `CropMessage::Option`) stay crop-only.",
+        "Owner decision (2026-09-26): a crop draft opens before the stage's pixels arrive, so the section is live at once and the canvas shows the frame once the stage renders — delivered here; showing the input stage itself from a proxy at Fit is separate, later work in this plan. The owner also decided that `CropMessage::Cancel` on a draft that is still starting cancels it outright rather than being silently ignored as it is today; record that as the intended behaviour in the develop-workspace design, since it is more honest than doing nothing."
       ],
       "context_links": [
         {
@@ -287,7 +301,7 @@
           "kind": "file",
           "label": "Crop driver",
           "target": "crates/luxforge-app/src/app/crop.rs",
-          "relevance": "`CropMessage`'s own Apply/Cancel/Reapply, the change queue and `orientation_ahead`, all to be replaced or deleted."
+          "relevance": "`CropMessage`'s own Apply/Cancel/Reapply, `crop_refusal`, the change queue, `orientation_ahead` and `committed_crop_angle`, all to be replaced or deleted."
         },
         {
           "kind": "file",
@@ -298,15 +312,21 @@
         },
         {
           "kind": "file",
+          "label": "Keymap",
+          "target": "crates/luxforge-app/src/app/keymap.rs",
+          "relevance": "The crop-only Enter/Escape branch to fold into the shared one, and the Export-menu, `leave_to`, Space and Option rules it keeps."
+        },
+        {
+          "kind": "file",
           "label": "Canvas view model",
           "target": "crates/luxforge-app/src/state/canvas.rs",
-          "relevance": "The three \"Changed elsewhere\" notices and one of the three `apply_reason` copies to unify."
+          "relevance": "`DraftBar.mask`, `NoticeAction`'s crop variants, the two `apply_reason` copies and the three \"Changed elsewhere\" notices to unify."
         },
         {
           "kind": "file",
           "label": "Tools panel view model",
           "target": "crates/luxforge-app/src/state/tools.rs",
-          "relevance": "`can_apply` and the idle section's committed-crop reads, to take from `recipe.describe` instead of parsed payloads."
+          "relevance": "`can_apply`, `committed_crop`'s payload parse and the queued angle text, to take from `recipe.describe` instead."
         },
         {
           "kind": "file",
@@ -329,9 +349,10 @@
       ],
       "acceptance_criteria": [
         "Every gesture kind, including crop, has one lifecycle and one refusal function; the button's enabled state and the app's own refusal agree by construction, with no case where Apply reads enabled but the request is refused.",
-        "No desktop code parses a crop or orientation payload; committed values and geometry come from `recipe.describe` rows.",
+        "No desktop code parses a crop or orientation payload, `committed_crop_angle` and `committed_crop` included; committed values and geometry come from `recipe.describe` rows.",
         "Starting or changing the idle Crop section opens or updates the draft with no change queue; the 32-deep queue no longer exists.",
         "`CropMessage::{Apply, Cancel, Reapply}`, the crop-only keymap branch, `NoticeAction::{DiscardDraft,ReapplyDraft}` and `DraftBar.mask` are gone.",
+        "The keymap tests pass unchanged for an open Export menu's Escape during a draft, the return to Mask mode from a pick taken on a mask, and crop-only Space and Option.",
         "The crop app tests and the `crop`, `crop-draft` and `workspace` smokes pass, and the develop-workspace design's crop section describes the one driver and the new Cancel-while-starting behaviour."
       ],
       "test_strategy": {
@@ -339,10 +360,11 @@
         "steps": [
           "Update the crop app tests for the shared `DraftMessage` path and the new Cancel-while-starting behaviour.",
           "Add a core test asserting `recipe.describe` reports the added `output_stage` for a stack with no existing crop.",
-          "Run the crop-draft and workspace smokes and the rendered tier."
+          "Run the keymap tests, then the crop-draft and workspace smokes and the rendered tier."
         ],
         "commands": [
           "cargo test -p luxforge-app crop",
+          "cargo test -p luxforge-app keymap",
           "cargo test -p luxforge-core describe",
           "cargo xtask smoke --scenario crop-draft --output NEW_DIR",
           "cargo xtask verify --tier rendered"
@@ -361,10 +383,10 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "The crop angle is a second, hand-built stepper beside the generic one: `state/tools.rs`'s `CropSectionModel` angle fields and `AngleRailModel`, `view/tools_panel.rs`'s `angle_stepper` with its own Shift-x10/Option-divide-10 handling, `app/crop.rs`'s `rail_angle` plus five messages (`AngleText`, `SubmitAngle`, `AngleRail`, `AngleRailReleased`, `NudgeAngle`), and `crop_draft.rs`'s `ANGLE_STEP`/`ANGLE_RAIL_STEP` constants.",
+        "The crop angle is a second, hand-built stepper beside the generic one: `state/tools.rs`'s `CropSectionModel` angle fields and `AngleRailModel`; `view/tools_panel.rs`'s `angle_stepper`, with its own Shift-x10/Option-divide-10 handling, and `angle_reset`; `app/crop.rs`'s `rail_angle` plus six angle-only messages (`AngleText`, `SubmitAngle`, `AngleRail`, `AngleRailReleased`, `NudgeAngle`, `ResetAngle`); and `crop_draft.rs`'s `ANGLE_STEP` (0.5) and `ANGLE_RAIL_STEP` (0.05).",
         "The core's angle parameter (`modules/crop/module.rs`'s `angle_parameter`) declares no `step` or `fine_step`, although `ParameterDescriptor` already has both fields with builder methods used elsewhere, and `state/number.rs`'s `NumberSpec` already derives a rail step, nudge amounts, decimals and the reset value from whatever a parameter declares.",
         "Declare `step: 0.5` and `fine_step: 0.05` on the angle parameter so agents can read the steps from the schema, then render the angle through the same generic stepper control every other numeric parameter uses, routing its field messages to the crop driver's frame action.",
-        "The double-click reset fix must survive this task: the generic path's reset (`ResetField`) already sets the default and sends it, so the earlier defect closes as a side effect of using the shared control."
+        "A double-click on the angle's rail sends its own `CropMessage::ResetAngle` (built by `view::tools_panel::angle_reset`), which `app/crop.rs` handles as its own case and short-circuits when the committed angle is already 0. This task deletes `ResetAngle`, `angle_reset` and that special case: the rail's double-click sends the generic `ControlMessage::ResetField`, whose `reset_field` (`app/slider.rs`) resets the field to its declared default and sends it, and `a_double_click_on_the_angle_rail_resets_the_angle_as_one_change` is ported to that message."
       ],
       "context_links": [
         {
@@ -383,13 +405,27 @@
           "kind": "file",
           "label": "Tools panel view",
           "target": "crates/luxforge-app/src/view/tools_panel.rs",
-          "relevance": "`angle_stepper`, to be replaced by the generic stepper's view function."
+          "relevance": "`angle_stepper` and `angle_reset`, to be replaced by the generic stepper's view function.",
+          "locator": "angle_stepper"
         },
         {
           "kind": "file",
           "label": "Crop driver",
           "target": "crates/luxforge-app/src/app/crop.rs",
-          "relevance": "`rail_angle` and the five angle-only messages, to be deleted."
+          "relevance": "`rail_angle`, the six angle-only messages and `ResetAngle`'s short-circuit, to be deleted; the double-click reset test, to port."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop messages",
+          "target": "crates/luxforge-app/src/app/message.rs",
+          "relevance": "`CropMessage`'s angle variants, to be deleted, and `ControlMessage::ResetField`, which the rail's double-click sends instead."
+        },
+        {
+          "kind": "file",
+          "label": "Slider driver",
+          "target": "crates/luxforge-app/src/app/slider.rs",
+          "relevance": "`reset_field`, the generic reset the angle's double-click goes through.",
+          "locator": "reset_field"
         },
         {
           "kind": "file",
@@ -407,14 +443,14 @@
       ],
       "acceptance_criteria": [
         "The angle parameter's descriptor reports `step: 0.5` and `fine_step: 0.05`, readable through `schema.list`.",
-        "The angle renders as the generic stepper control, with no angle-specific model, view function or messages left in the desktop.",
+        "The angle renders as the generic stepper control, with no angle-specific model, view function or messages left in the desktop; `ResetAngle` and `angle_reset` are gone.",
         "A drafted angle still reads as \"2.4°\" and the rail's Shift/Option nudges behave as before.",
-        "The double-click reset works through the generic `ResetField` path with no special case."
+        "A double-click on the angle's rail resets it to 0 as one change through `ControlMessage::ResetField`, with no special case, proved by the ported double-click test."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Update the crop app tests to route through the generic stepper messages.",
+          "Update the crop app tests to route through the generic stepper messages, and port the double-click reset test to `ResetField`.",
           "Add a core test asserting the angle parameter's declared `step`/`fine_step`.",
           "Run the crop-draft smoke."
         ],
@@ -437,9 +473,11 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "The one-draft rule itself is one function (`gesture_refusal`), but the editability half is re-written per call site with different wording: `app/slider.rs` and `app/masks.rs` say \"Return to the current state before editing\"; `app/pointer.rs` says \"...before picking from the photograph\"; `app/crop.rs` says \"A request is already in flight\"; several sites say \"Waiting for the last request\". `app/controls.rs` and `app/view_state.rs` have their own versions again.",
-        "Some sites fail silently: crop start, control values and Submit return `Task::none()` with no status message at all when refused. The developer gallery replaces the refusal's own text with a generic one of its own.",
-        "Add one `refusal(starting: Starting) -> Option<String>` that applies the one-draft rule and then the shared editability rule, where `Starting` records whether `busy` matters for that call. Every start site calls it and always writes the returned reason to the status bar; no start site returns silently."
+        "The one-draft rule is one function, `app/gesture.rs`'s `gesture_refusal`, and its `Starting` enum already names every start (slider, mask, mask command, crop, mode, pick, gallery, compare, preset, action, history, refit). The busy and editability halves are re-written per call site with different wording: `app/slider.rs`'s `slider_refusal` and `app/masks.rs` say \"Return to the current state before editing\"; `app/pointer.rs` says \"...before picking from the photograph\" in its refusal but \"...before editing\" on a pick's commit; `app/crop.rs`'s `crop_refusal` says \"A request is already in flight\" and \"Return to the current state before applying a crop\"; `app/pointer.rs`, `app/masks.rs` and `app/presets.rs` say \"Waiting for the last request\".",
+        "Some sites fail silently: `crop_start` returns `Task::none()` on busy or a previewed entry with no status; `app/controls.rs`'s `Submit`, `control_value`, the colour picker's change and the curve's points change each return `Task::none()` when `!self.editable()`; and `app/slider.rs`'s `reset_field` drops a refused reset through `reset.filter(|_| self.editable())`. The developer gallery replaces the refusal's own text with a generic one of its own.",
+        "Extend `Starting` and `gesture_refusal` with the busy and editability halves, so one call answers \"may this start\"; every start site calls it and always writes the returned reason to the status bar, and no start site returns silently. Each `Starting` variant declares which halves apply. `Refit` takes the one-draft rule alone: `app/preview.rs`'s `refit_proxy` and `proxy_refit_deferred` and `app/masks.rs`'s overlay read `gesture_refusal(Starting::Refit).is_some()` as a flag, and a refit must still run while a request is in flight or a history entry is previewed. `History` never takes the editability half, since Restore runs from a previewed entry. `Slider` takes the one-draft rule and editability but not busy, as `slider_refusal` does today; `Crop`, `Mask`, `Pick`, `Action` and `MaskCommand` take all three, as their sites check today; `Mode`, `Gallery`, `Compare` and `Preset` keep the halves their sites check today, stated on the variant.",
+        "Export has its own refusals: `app/export.rs`'s `export_start` words busy as \"Waiting for the last request\" beside a running export and an open dialog, and `state/title.rs`'s `can_export` restates them for the menu. Route export's busy half through the one refusal with the one-draft rule stated as not applying, since export writes the displayed entry, which an open draft does not change; `can_export` reads the same answer.",
+        "Canvas-mode shortcuts, W among them, reach `ViewMessage::SetMode` (`app/view_state.rs`), which already refuses through `gesture_refusal(Starting::Mode)` and writes the reason; they need no start site of their own."
       ],
       "context_links": [
         {
@@ -452,42 +490,73 @@
           "kind": "file",
           "label": "Gesture driver",
           "target": "crates/luxforge-app/src/app/gesture.rs",
-          "relevance": "`gesture_refusal`, the existing one-draft rule this task extends with the shared editability half."
+          "relevance": "`Starting` and `gesture_refusal`, the one-draft rule this task extends with the busy and editability halves.",
+          "locator": "gesture_refusal"
         },
         {
           "kind": "file",
           "label": "Slider driver",
           "target": "crates/luxforge-app/src/app/slider.rs",
-          "relevance": "One of the six hand-written wrappers."
+          "relevance": "`slider_refusal`, one of the hand-written wrappers, and `reset_field`'s silent refusal."
+        },
+        {
+          "kind": "file",
+          "label": "Controls driver",
+          "target": "crates/luxforge-app/src/app/controls.rs",
+          "relevance": "`Submit`, `control_value` and the picker and curve changes, which refuse silently on `!self.editable()`."
         },
         {
           "kind": "file",
           "label": "Mask driver",
           "target": "crates/luxforge-app/src/app/masks.rs",
-          "relevance": "Another of the six wrappers, with its own wording."
+          "relevance": "Two more wrappers with their own wording, and the overlay's `Starting::Refit` flag."
         },
         {
           "kind": "file",
           "label": "Pointer driver",
           "target": "crates/luxforge-app/src/app/pointer.rs",
-          "relevance": "Its own wording for the same rule."
+          "relevance": "Its own wording for the same rule, in the pick's refusal and its commit."
         },
         {
           "kind": "file",
           "label": "Crop driver",
           "target": "crates/luxforge-app/src/app/crop.rs",
-          "relevance": "Silent refusals on crop start."
+          "relevance": "`crop_start`'s silent refusals and `crop_refusal`'s own wording."
+        },
+        {
+          "kind": "file",
+          "label": "Preview driver",
+          "target": "crates/luxforge-app/src/app/preview.rs",
+          "relevance": "`refit_proxy` and `proxy_refit_deferred`, which read `Starting::Refit` as a flag and must not gain the busy or editability half.",
+          "locator": "refit_proxy"
+        },
+        {
+          "kind": "file",
+          "label": "Export driver",
+          "target": "crates/luxforge-app/src/app/export.rs",
+          "relevance": "`export_start`'s own busy wording, to route through the one refusal.",
+          "locator": "export_start"
+        },
+        {
+          "kind": "file",
+          "label": "Title bar view model",
+          "target": "crates/luxforge-app/src/state/title.rs",
+          "relevance": "`can_export`, which restates export's refusals for the menu.",
+          "locator": "can_export"
         }
       ],
       "acceptance_criteria": [
-        "One `refusal(starting)` function answers every start site's \"may this begin\" question, with `Starting` recording whether `busy` applies.",
-        "No start site returns without writing a status message when it refuses.",
+        "`gesture_refusal`, extended with the busy and editability halves, answers every start site's \"may this begin\" question, and each `Starting` variant declares which halves apply; `Refit` and `History` never take the editability half, and `Refit` takes neither.",
+        "No start site returns without writing a status message when it refuses, including crop start, control submits and values, picker and curve changes and a refused field reset.",
+        "Export's busy refusal comes from the same function, with the one-draft rule not applying to it, and the Export menu's enabled state agrees with it.",
+        "A proxy refit still runs while a history entry is previewed.",
         "Evidence's refusal expectations are updated wherever the wording changed, and the affected app tests pass."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Add or update a test per start site asserting the shared refusal function is used and a status message is always set.",
+          "Add a test that a refit runs while a history entry is previewed, and one that export's refusal and `can_export` agree.",
           "Run the full app test suite and the quick tier."
         ],
         "commands": [
@@ -501,15 +570,16 @@
     },
     {
       "id": "TASK-008",
-      "description": "Compute visible curve controls and editability once in the view model and read them from there, instead of re-deriving them in the app.",
+      "description": "Compute visible curve controls, editability and group resets once in the view model and read them from there, instead of re-deriving them in the app.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "`app/controls.rs`'s `request_visible_curve_samples`, run from `app/mod.rs` on every update, re-derives which curve controls are on screen and gets it wrong: its `== Some(false)` check on the expanded-sections map ignores a module's declared `collapsed` default, so a curve declared collapsed like other sections would still be sampled while hidden; it also ignores `layout: tabs` (a curve in a hidden tab still counts as visible) and developer filtering, and it allocates the declared-curve list on every message.",
-        "`editable` is computed four times with different shapes: a boolean in `app/mod.rs`'s `editable()`, the same boolean logic again in `state/title.rs`'s `derive` and `state/canvas.rs`'s `derive`, and a fourth, differently-worded version in `state/tools.rs`'s `disabled_reason`.",
-        "Read visible curves from `workspace.tools` after `rederive`, where the headerless-group, tab and collapse rules the view already applies are resolved, instead of re-deriving them; pass `editable` and its reason into `Inputs` once, computed by the view model.",
-        "Declared source kinds (a capability landing in the module contract work) will remove the desktop's RAW-by-name checks in a later change; this task does not touch those checks."
+        "`app/controls.rs`'s `request_visible_curve_samples` runs from `app/mod.rs`'s update before `rederive`, re-derives which curve controls are on screen and gets it wrong: its `== Some(false)` check on the expanded-sections map ignores a module's declared `collapsed` default, so a curve declared collapsed like other sections would still be sampled while hidden; it also ignores `layout: tabs` (a curve in a hidden tab still counts as visible) and developer filtering, and it allocates the declared-curve list on every message.",
+        "It also skips the source-kind rules the view model applies to every section: `state/tools.rs` drops a section whose module does not apply to the photo's source kind (`applies`) and resolves each control to the module that provides it for that kind and target (`resolved`, `providers`), while `request_visible_curve_samples` walks every available module's declared controls with neither.",
+        "`editable` is computed four times with different shapes: a boolean in `app/mod.rs`'s `editable()`, the same boolean logic again in `state/title.rs`'s `derive` and `state/canvas.rs`'s `derive`, and a fourth, differently-worded version in `state/tools.rs`'s `disabled_reason`. The state panel has its own again: `state/panel.rs` sets `can_return` and `can_restore` from `!inputs.busy` alone and ignores `history_refusal`, so the panel offers Restore where the app's own refusal refuses it, and `view/state_panel.rs` enables its history rows and Load older from its own `!model.busy`.",
+        "Group resets are resolved twice: the view model resolves each group's reset for the source kind and target (`luxforge_core::resolve_group_reset` in `state/tools.rs`), and `app/controls.rs`'s `ResetGroup` handler resolves it again through its own `group_reset`.",
+        "Run the visible-curve request after `rederive`, reading `workspace.tools`, where the headerless-group, tab, collapse, source-kind and variant rules the view already applies are resolved, as `request_capability_loads` (`app/capabilities.rs`) and `section_controls` (`state/mod.rs`) already read it; send the group reset the view model resolved; and pass `editable` and its reason into `Inputs` once, computed by the view model, for every view model that reads it."
       ],
       "context_links": [
         {
@@ -522,14 +592,14 @@
           "kind": "file",
           "label": "Controls driver",
           "target": "crates/luxforge-app/src/app/controls.rs",
-          "relevance": "`request_visible_curve_samples`, the re-derivation to replace with a read of `workspace.tools`.",
+          "relevance": "`request_visible_curve_samples`, the re-derivation to replace with a read of `workspace.tools`, and `ResetGroup`'s second resolution through `group_reset`.",
           "locator": "request_visible_curve_samples"
         },
         {
           "kind": "file",
           "label": "Desktop update loop",
           "target": "crates/luxforge-app/src/app/mod.rs",
-          "relevance": "Calls `request_visible_curve_samples` every update, and holds one of the four `editable` copies."
+          "relevance": "Calls `request_visible_curve_samples` before `rederive` and `request_capability_loads` after it, and holds one of the `editable` copies."
         },
         {
           "kind": "file",
@@ -539,30 +609,51 @@
         },
         {
           "kind": "file",
+          "label": "Canvas view model",
+          "target": "crates/luxforge-app/src/state/canvas.rs",
+          "relevance": "A third `editable` computation."
+        },
+        {
+          "kind": "file",
           "label": "Tools panel view model",
           "target": "crates/luxforge-app/src/state/tools.rs",
-          "relevance": "`disabled_reason`, a fourth, differently-worded editability rule.",
+          "relevance": "`disabled_reason`, a fourth, differently-worded editability rule; `applies`, `resolved` and `providers`, the source-kind rules the curve request skips; and the group reset it already resolves.",
           "locator": "disabled_reason"
+        },
+        {
+          "kind": "file",
+          "label": "State panel view model",
+          "target": "crates/luxforge-app/src/state/panel.rs",
+          "relevance": "`can_return`/`can_restore` from `busy` alone, ignoring `history_refusal`."
+        },
+        {
+          "kind": "file",
+          "label": "State panel view",
+          "target": "crates/luxforge-app/src/view/state_panel.rs",
+          "relevance": "Its own `editable = !model.busy` for the history rows and Load older."
         }
       ],
       "acceptance_criteria": [
-        "Visible curve controls are read from `workspace.tools` after `rederive`, honouring a module's declared `collapsed` default, `layout: tabs` and developer filtering.",
-        "`editable` and its refusal reason are computed once and passed into `Inputs`; the other three copies are gone.",
-        "A test with a collapsed curve module queries no samples for it."
+        "Visible curve controls are read from `workspace.tools` after `rederive`, honouring a module's declared `collapsed` default, `layout: tabs`, developer filtering and the source-kind and variant rules.",
+        "`editable` and its refusal reason are computed once and passed into `Inputs`; the other copies, the state panel's included, are gone, and the panel's Restore is disabled whenever the app would refuse it.",
+        "`ResetGroup` sends the reset the view model resolved, with no second resolution in the app.",
+        "A test with a collapsed curve module, and one with a curve module that does not apply to the open photo's source kind, query no samples for it."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Add a test with a curve module declared collapsed and assert no sample request is made for it while collapsed.",
-          "Add a test for a curve inside a hidden tab.",
-          "Run the controls and tools view-model tests."
+          "Add a test for a curve inside a hidden tab, and one for a curve module that does not apply to the open photo's source kind.",
+          "Add a state panel test that Restore is disabled while `history_refusal` holds.",
+          "Run the controls, tools and panel view-model tests."
         ],
         "commands": [
           "cargo test -p luxforge-app controls",
-          "cargo test -p luxforge-app tools"
+          "cargo test -p luxforge-app tools",
+          "cargo test -p luxforge-app panel"
         ],
         "expected_results": [
-          "The new visibility tests pass; existing curve-sample tests for visible, expanded curves are unaffected."
+          "The new visibility, source-kind and Restore tests pass; existing curve-sample tests for visible, expanded curves are unaffected."
         ]
       }
     },
