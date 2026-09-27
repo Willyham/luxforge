@@ -479,37 +479,104 @@ fn a_retried_export_is_answered_from_the_first_and_writes_one_file() {
     assert_eq!(listing(&out), ["once.jpg"]);
 }
 
+/// The quadrant fixture with its EXIF segment replaced by one a camera might write: supported
+/// capture fields beside a maker note and a serial number, which an export never carries.
+fn camera_jpeg() -> Vec<u8> {
+    use exif::{Field, In, Tag, Value as ExifValue, experimental::Writer};
+    let ascii = |text: &str| ExifValue::Ascii(vec![text.as_bytes().to_vec()]);
+    let fields = [
+        (Tag::Orientation, ExifValue::Short(vec![1])),
+        (Tag::Make, ascii("NIKON CORPORATION")),
+        (Tag::Model, ascii("NIKON Z 6")),
+        (Tag::Artist, ascii("Will")),
+        (Tag::MakerNote, ExifValue::Undefined(vec![7; 16], 0)),
+        (Tag::BodySerialNumber, ascii("6000123")),
+    ]
+    .map(|(tag, value)| Field {
+        tag,
+        ifd_num: In::PRIMARY,
+        value,
+    });
+    let mut writer = Writer::new();
+    for field in &fields {
+        writer.push_field(field);
+    }
+    let mut tiff = std::io::Cursor::new(Vec::new());
+    writer.write(&mut tiff, false).unwrap();
+    let payload = [b"Exif\0\0".as_slice(), &tiff.into_inner()].concat();
+    let original = fs::read(fixture()).unwrap();
+    // SOI and the JFIF APP0, then the fixture's own EXIF APP1, which is replaced.
+    let app0 = 2 + 2 + usize::from(u16::from_be_bytes([original[4], original[5]]));
+    assert_eq!(
+        original[app0 + 1],
+        0xe1,
+        "the fixture's EXIF follows its JFIF header"
+    );
+    let app1 = app0 + 2 + usize::from(u16::from_be_bytes([original[app0 + 2], original[app0 + 3]]));
+    let mut out = original[..app0].to_vec();
+    out.extend_from_slice(&[0xff, 0xe1]);
+    out.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+    out.extend_from_slice(&payload);
+    out.extend_from_slice(&original[app1..]);
+    out
+}
+
 /// Metadata is off by default: no APP1 segment at all. With Keep metadata the file carries one
-/// EXIF segment with the structural fields, Orientation 1 among them, and the result lists the
-/// original's fields it kept.
+/// EXIF segment, read back by an independent reader: the original's supported fields, the
+/// structural ones with Orientation 1 and the output's size, and no maker note or serial number.
 #[test]
 fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
     let harness = Harness::start("metadata");
-    let state = harness.import("metadata.jpg");
-    let asset = state["asset"]["id"].clone();
+    let original = harness.dir.join("camera.jpg");
+    fs::write(&original, camera_jpeg()).unwrap();
+    let queued = harness.ok(
+        "catalog.import",
+        json!({"path": original, "mutation": request_envelope()}),
+    );
+    let status = harness.settle_source(&queued["job_id"]);
+    assert_eq!(status["status"], "ready", "{status}");
+    let asset = status["asset"]["asset"]["id"].clone();
     let out = destinations(&harness);
     let stripped =
         harness.export(json!({"asset_id": asset, "destination": out.join("stripped.jpg")}));
     let kept = harness.export(json!({
         "asset_id": asset, "destination": out.join("kept.jpg"), "keep_metadata": true,
     }));
+    assert_eq!(stripped["keep_metadata"], json!(false));
     assert_eq!(kept["keep_metadata"], json!(true));
     let stripped = harness.settle(&stripped["job_id"]);
     let kept = harness.settle(&kept["job_id"]);
     assert_eq!(stripped["result"]["metadata"], json!([]));
     assert!(!has_app1(&fs::read(out.join("stripped.jpg")).unwrap()));
     let bytes = fs::read(out.join("kept.jpg")).unwrap();
-    assert!(has_app1(&bytes), "the kept file has its EXIF segment");
-    let mut decoder = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(&bytes)).unwrap();
-    let exif = image::ImageDecoder::exif_metadata(&mut decoder)
+    let written: Vec<&str> = kept["result"]["metadata"]
+        .as_array()
         .unwrap()
-        .expect("an EXIF segment");
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    assert_eq!(written, ["Make", "Model", "Artist"]);
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(&bytes))
+        .expect("the independent reader finds the EXIF segment");
+    let value = |tag: exif::Tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .map(|field| field.display_value().to_string())
+    };
     assert_eq!(
-        image::metadata::Orientation::from_exif_chunk(&exif),
-        Some(image::metadata::Orientation::NoTransforms)
+        value(exif::Tag::Make).as_deref(),
+        Some("\"NIKON CORPORATION\"")
     );
-    // The fixture carries none of the supported capture fields.
-    assert_eq!(kept["result"]["metadata"], json!([]));
+    assert_eq!(value(exif::Tag::Model).as_deref(), Some("\"NIKON Z 6\""));
+    assert_eq!(value(exif::Tag::Artist).as_deref(), Some("\"Will\""));
+    assert_eq!(
+        value(exif::Tag::Orientation).as_deref(),
+        Some("row 0 at top and column 0 at left")
+    );
+    assert_eq!(value(exif::Tag::PixelXDimension).as_deref(), Some("480"));
+    assert_eq!(value(exif::Tag::PixelYDimension).as_deref(), Some("320"));
+    assert_eq!(value(exif::Tag::MakerNote), None);
+    assert_eq!(value(exif::Tag::BodySerialNumber), None);
 }
 
 /// Every obvious refusal is answered at once and writes nothing: the destination's shape, an
