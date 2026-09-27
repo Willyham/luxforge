@@ -765,6 +765,7 @@ fn source_worker(
             }),
             SourceTaskKind::Develop(request) => RawPrepared::develop(
                 request.sensor.clone(),
+                request.capture.clone(),
                 request.fingerprint.clone(),
                 request.gains,
                 &task.cancelled,
@@ -2248,6 +2249,7 @@ mod tests {
             fingerprint: "test".into(),
             gains: sensor.metadata().as_shot_gains,
             sensor,
+            capture: Arc::default(),
             file_name: None,
         };
         let a = request(&first_path, first_sensor);

@@ -61,6 +61,7 @@ fn job(color: u8, analyse: bool) -> PreviewJob {
             rgba: vec![0, 0, 0, 255].into(),
             fingerprint: "test".into(),
             orientation: 1,
+            capture: Default::default(),
         }),
         registry: Arc::new(ModuleRegistry::builtin()),
         context: crate::render::testing::context().clone(),
@@ -293,6 +294,7 @@ fn synthetic(width: u32, height: u32) -> PreviewSource {
         rgba: rgba.into(),
         fingerprint: "sha256:preview-proxy-fixture".into(),
         orientation: 1,
+        capture: Default::default(),
     })
 }
 

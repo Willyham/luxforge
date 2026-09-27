@@ -421,6 +421,8 @@ pub(crate) struct RawDevelopment {
     pub(crate) signature: SourceSignature,
     pub(crate) fingerprint: String,
     pub(crate) sensor: Arc<luxforge_raw::RawSource>,
+    /// The original's kept EXIF fields, which the development carries on unchanged.
+    pub(crate) capture: Arc<crate::export::CaptureMetadata>,
     pub(crate) gains: [f32; 3],
     /// The original's file name, which the activity board shows beside the development; the
     /// development itself reads only the retained sensor data.
