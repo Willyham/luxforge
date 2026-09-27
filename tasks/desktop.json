@@ -467,7 +467,7 @@
     {
       "id": "TASK-007",
       "description": "Answer \"may this start\" with one refusal function for every start site, and always write its reason to the status bar.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
