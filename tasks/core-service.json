@@ -988,6 +988,53 @@
           "Every `jpeg-scan-*.jpg` fixture decodes, and the formerly refused one agrees with its interleaved counterpart within the existing tolerance."
         ]
       }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Write the export's ICC profile through mozjpeg's own write_icc_profile once a release numbers its chunks from 1, deleting Luxforge's hand-written chunk.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Owner-decided follow-up, 2026-09-27, not a wave of this plan: `mozjpeg` 0.10.13's `write_icc_profile` numbers its APP2 chunks from 0, which ICC.1 Annex B.4 does not allow, so zune-jpeg ignores the profile; `encode_jpeg` writes the one chunk itself with `write_marker`.",
+        "A fix (count from 1, with a test of the sequence numbers and the reassembled profile) is prepared for ImageOptim/mozjpeg-rust; blocked until a released `mozjpeg` carries it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export encoder",
+          "target": "crates/luxforge-core/src/export/encode.rs",
+          "relevance": "The hand-written ICC chunk and its byte test, which this task replaces with the crate's call."
+        },
+        {
+          "kind": "file",
+          "label": "Notices",
+          "target": "crates/luxforge-core/THIRD_PARTY.md",
+          "relevance": "Records the workaround; the sentence goes with it."
+        },
+        {
+          "kind": "url",
+          "label": "mozjpeg-rust",
+          "target": "https://github.com/ImageOptim/mozjpeg-rust",
+          "relevance": "Where the fix is proposed and released."
+        }
+      ],
+      "acceptance_criteria": [
+        "`mozjpeg` is pinned to a release whose `write_icc_profile` numbers chunks from 1.",
+        "`encode_jpeg` calls `write_icc_profile`; the hand-written chunk and the THIRD_PARTY.md sentence about it are gone.",
+        "The encoder's ICC tests still find sequence number 1 and the profile round-trips byte-exact through Luxforge's own decoder."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Bump the pin, switch the call and rerun the encoder tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib export::encode"
+        ],
+        "expected_results": [
+          "The ICC profile round-trips through zune-jpeg from the crate's own writer."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -999,7 +1046,8 @@
         "TASK-003",
         "TASK-006",
         "TASK-013",
-        "TASK-015"
+        "TASK-015",
+        "TASK-016"
       ]
     },
     {
