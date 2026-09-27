@@ -394,6 +394,7 @@ impl EditorService {
             signature: cached.signature.clone(),
             fingerprint: state.asset.fingerprint,
             sensor: raw.sensor.clone(),
+            capture: raw.capture.clone(),
             gains,
             file_name: state
                 .asset
@@ -1405,6 +1406,7 @@ mod tests {
             .unwrap();
         let developed = RawPrepared::develop(
             request.sensor.clone(),
+            request.capture.clone(),
             request.fingerprint.clone(),
             request.gains,
             &AtomicBool::new(false),

@@ -28,6 +28,7 @@ zeroize.workspace = true
 security-framework.workspace = true
 
 [dev-dependencies]
+kamadak-exif.workspace = true
 luxforge-raw = { path = "../luxforge-raw", features = ["performance-diagnostics"] }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testkit = { path = "../luxforge-testkit" }

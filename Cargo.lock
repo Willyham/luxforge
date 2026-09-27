@@ -1976,6 +1976,7 @@ name = "luxforge-core"
 version = "0.0.0"
 dependencies = [
  "image",
+ "kamadak-exif",
  "luxforge-process",
  "luxforge-raw",
  "luxforge-reference",
