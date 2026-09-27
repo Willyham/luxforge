@@ -39,6 +39,122 @@ fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
     }
 }
 
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).expect("create staged native source directory");
+    for entry in fs::read_dir(source).expect("read bundled native source directory") {
+        let entry = entry.expect("bundled native source entry");
+        let target = destination.join(entry.file_name());
+        if entry
+            .file_type()
+            .expect("bundled native source type")
+            .is_dir()
+        {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).expect("stage bundled native source");
+        }
+    }
+}
+
+fn hunk_position(token: &str, prefix: char) -> (usize, usize) {
+    let coordinates = token.strip_prefix(prefix).expect("patch hunk coordinate");
+    let (start, count) = coordinates.split_once(',').expect("patch hunk count");
+    (
+        start.parse().expect("patch hunk start"),
+        count.parse().expect("patch hunk length"),
+    )
+}
+
+/// Apply the checked-in unified diff without an external `patch` or Git executable. Exact
+/// context matching deliberately rejects an upstream update until its patch is reviewed.
+fn apply_patch(root: &Path, patch: &str) {
+    let mut lines = patch.lines().peekable();
+    while let Some(header) = lines.next() {
+        let name = header.strip_prefix("--- a/").expect("patch source header");
+        let updated = lines
+            .next()
+            .and_then(|line| line.strip_prefix("+++ b/"))
+            .expect("patch target header");
+        assert_eq!(name, updated, "patch cannot rename native source files");
+        assert!(
+            matches!(
+                name,
+                "src/demosaic/markesteijn.cc"
+                    | "src/demosaic/rcd.cc"
+                    | "src/include/librtprocess.h"
+                    | "src/include/mytime.h"
+            ),
+            "patch targets an unexpected native source: {name}"
+        );
+        let path = root.join(name);
+        let original = fs::read_to_string(&path).expect("read staged native source");
+        let source_lines: Vec<_> = original.split_inclusive('\n').collect();
+        let mut result = String::new();
+        let mut cursor = 0;
+        while lines.peek().is_some_and(|line| line.starts_with("@@ ")) {
+            let hunk = lines.next().expect("patch hunk");
+            let mut fields = hunk.split_whitespace();
+            assert_eq!(fields.next(), Some("@@"), "patch hunk marker");
+            let (old_start, old_count) =
+                hunk_position(fields.next().expect("old hunk position"), '-');
+            let (new_start, new_count) =
+                hunk_position(fields.next().expect("new hunk position"), '+');
+            assert!(
+                old_start > 0 && new_start > 0,
+                "unsupported empty-file hunk"
+            );
+            assert!(old_start > cursor && old_start - 1 <= source_lines.len());
+            for line in &source_lines[cursor..old_start - 1] {
+                result.push_str(line);
+            }
+            assert_eq!(
+                result.lines().count(),
+                new_start - 1,
+                "patch hunk position drift in {name}"
+            );
+            cursor = old_start - 1;
+            let (mut consumed, mut emitted) = (0, 0);
+            while let Some(line) = lines.peek() {
+                if line.starts_with("@@ ") || line.starts_with("--- a/") {
+                    break;
+                }
+                let line = lines.next().expect("patch content");
+                let (kind, content) = line.split_at(1);
+                match kind {
+                    " " | "-" => {
+                        assert_eq!(
+                            source_lines.get(cursor).copied(),
+                            Some(format!("{content}\n").as_str()),
+                            "patch context differs from upstream in {name} at line {}",
+                            cursor + 1
+                        );
+                        cursor += 1;
+                        consumed += 1;
+                        if kind == " " {
+                            result.push_str(content);
+                            result.push('\n');
+                            emitted += 1;
+                        }
+                    }
+                    "+" => {
+                        result.push_str(content);
+                        result.push('\n');
+                        emitted += 1;
+                    }
+                    _ => panic!("unsupported patch line in {name}: {line}"),
+                }
+            }
+            assert_eq!(consumed, old_count, "patch removed-line count in {name}");
+            assert_eq!(emitted, new_count, "patch added-line count in {name}");
+        }
+        assert!(cursor > 0, "patch has no hunks for {name}");
+        for line in &source_lines[cursor..] {
+            result.push_str(line);
+        }
+        fs::write(path, result).expect("write patched native source");
+    }
+}
+
 /// Borrowed static text: a `Debug`-escaped string is a valid Rust string literal.
 fn text(value: &str) -> String {
     format!("Cow::Borrowed({value:?})")
@@ -143,7 +259,7 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
 fn main() {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let libraw = manifest.join("vendor/libraw-0.22.2");
-    let rt = manifest.join("vendor/librtprocess-9a858270");
+    let rt_upstream = manifest.join("vendor/librtprocess-9a858270");
     let catalog = profiles::Catalog::parse(include_str!("data/cameras.json"))
         .expect("invalid RAW camera catalog");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("output dir"));
@@ -198,6 +314,12 @@ fn main() {
     fs::write(out.join("raw_modes.rs"), rust).expect("write mode identifiers");
     fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
         .expect("write static camera catalog");
+    let rt = out.join("librtprocess-9a858270");
+    if rt.exists() {
+        fs::remove_dir_all(&rt).expect("remove previous staged native sources");
+    }
+    copy_tree(&rt_upstream, &rt);
+    apply_patch(&rt, include_str!("patches/librtprocess-local.patch"));
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -228,4 +350,5 @@ fn main() {
     println!("cargo:rerun-if-changed=native/adapter.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");
+    println!("cargo:rerun-if-changed=patches/librtprocess-local.patch");
 }

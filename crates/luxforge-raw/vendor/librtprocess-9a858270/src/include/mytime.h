@@ -19,7 +19,7 @@
 #ifndef _MYTIME_
 #define _MYTIME_
 
-#if defined(_WIN32)
+#ifdef WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -33,7 +33,7 @@ class MyTime
 {
 
 public:
-#if !defined(_WIN32)
+#ifndef WIN32
     timespec t;
 #else
     LONGLONG t;
@@ -50,7 +50,7 @@ public:
 
     void set ()
     {
-#if defined(_WIN32)
+#ifdef WIN32
         LARGE_INTEGER ulf;
         QueryPerformanceCounter(&ulf);
         t = ulf.QuadPart;
@@ -66,7 +66,7 @@ public:
 
     int etime (MyTime a)
     {
-#if !defined(_WIN32)
+#ifndef WIN32
         return (t.tv_sec - a.t.tv_sec) * 1000000 + (t.tv_nsec - a.t.tv_nsec) / 1000;
 #else
         return (t - a.t) * 1000 / (baseFrequency / 1000);
