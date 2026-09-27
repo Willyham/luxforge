@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "module-contract",
   "title": "Module contract, tool modules and presets",
-  "objective": "Finish the module contract so a new tool is a declaration plus its equations: declared source kinds, one presettable-action rule, field patches over the whole parameter vocabulary with structural invariants, a descriptor snapshot instead of hand-kept lists, a smaller ToolModule and descriptor, developer-only test modules, and the shared Exposure and White balance controls once the owner answers their open questions.",
-  "context_summary": "The consolidation made Basic, the colour mixer, Presence and the vignette one field-patch module each, gave the host layer identity, format and mask, and one placement rule. What remains: applicability to a source kind is decided by the RAW module's name in six places even though the declaration itself is already decided; field patches take numbers only, so the developer controls proof is a second patch implementation and Tone Curve could not be expressed as a spec; field-patch specs restate their invariants by hand; four hard-coded lists of built-in modules must be edited for every new module; and the trait, descriptor and test suites carry mechanisms with only one user. The owner's decisions are in docs/decisions.md's \"Post-consolidation review\" section; constraints are in docs/design/post-consolidation.md.",
+  "objective": "Finish the module contract so a new tool is a declaration plus its equations: declared source kinds, one presettable-action rule, field patches over the whole parameter vocabulary with structural invariants, a descriptor snapshot instead of hand-kept lists, a smaller ToolModule and descriptor, developer-only test modules, and the shared Exposure and White balance controls.",
+  "context_summary": "The consolidation made Basic, the colour mixer, Presence and the vignette one field-patch module each, gave the host layer identity, format and mask, and one placement rule. Source kinds are declared and JPEG and RAW photos share one Exposure and White balance set. What remains: the presettable-action rule is checked at six sites in three vocabularies; field patches take numbers only, so the developer controls proof is a second patch implementation and Tone Curve could not be expressed as a spec; field-patch specs restate their invariants by hand; four hard-coded lists of built-in modules must be edited for every new module; and the trait, descriptor and test suites carry mechanisms with only one user. The owner's decisions are in docs/decisions.md's \"Post-consolidation review\" section; constraints are in docs/design/post-consolidation.md.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -79,7 +79,7 @@
       "extra_context": [
         "Wave 2, finish the consolidation. Declared source kinds remove the desktop's name checks in the same change.",
         "The rule \"RAW applies only to a RAW photo\" is written six times today: `api/methods.rs`'s `module_list` filters the literal `\"luxforge.raw\"`, but only when the request carries an `asset_id`; the desktop's own call to it (`app/tasks.rs`'s `modules_task`) sends none, so the desktop's own checks are what actually enforce this there. `editor/source.rs`'s `validate_source_recipe` names `crate::RAW_EFFECT` directly on its JPEG branch. The desktop repeats `module.id != \"luxforge.raw\"` (or the mode-string form) in `app/mod.rs`, `state/tools.rs`, `state/canvas.rs` (whose own comment calls this \"the one thing the descriptor cannot say\") and `state/palette.rs`.",
-        "Owner decision: a module's applicability to a source kind is declared, not named by the desktop. This is part 1 of the source-kind design and touches none of that design's open questions, so it lands on its own.",
+        "Owner decision: a module's applicability to a source kind is declared, not named by the desktop. This is part 1 of the source-kind design.",
         "Current shapes only: EffectDescriptor gaining a `sources` field is an additive schema change. The RAW-only invariants that stay separate (one source layer at index zero, calibration equal to the asset's) are not part of this rule and are untouched.",
         "The rendered raw-panel check needs a private RAW manifest; without one, verification is limited to the JPEG smoke scenarios and the desktop's unit and state tests."
       ],
@@ -94,7 +94,7 @@
           "kind": "file",
           "label": "Source-kind controls design",
           "target": "docs/design/source-controls.md",
-          "relevance": "Part 1 of the shape: declared sources, independent of the design's open questions.",
+          "relevance": "Part 1 of the shape: declared sources.",
           "locator": "The shape"
         },
         {
@@ -137,7 +137,7 @@
       "acceptance_criteria": [
         "EffectDescriptor carries a sources list (defaulting to every kind); the RAW effect declares [\"raw\"]; one function answers applicability and is called by action refusal, admission, module.list and all four desktop sites.",
         "No production code outside modules/raw* (and its tests) names \"luxforge.raw\" or RAW_EFFECT; a cargo xtask check-repository rule refuses a reintroduced literal anywhere else.",
-        "module.list reports each module's sources and returns the same filtered result whether or not the caller passes asset_id.",
+        "module.list reports each module's sources: with an asset_id it returns the modules that apply to that photo's kind, and without one every module, which a caller reduces to the same set by filtering with applies_to for the kind, as the desktop does.",
         "Desktop state tests show the correct sections, palette entries, mode shortcuts and pick gate on a JPEG asset and on a RAW asset.",
         "docs/design/modules-and-api.md, docs/features.md and the user guide describe the declared sources field."
       ],
@@ -168,9 +168,11 @@
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "The rule \"registered, a field-patch action, and its module available\" is checked five times with three different message vocabularies: `presets/mod.rs`'s `validate_settings`, `presets/library.rs`'s `unavailable_actions` and again inline in `capture_preset`, `presets/mapping.rs`'s `transfer_value` (\"Luxforge has no X action\" / \"X is not available\"), and `editor/plan.rs`'s composite-step handling. The settings-set shape (action count, field names, non-empty field objects) is separately checked in `descriptor.rs`'s `check_settings`, `presets/mod.rs` and `presets/library.rs`.",
-        "Add a `ModuleRegistry::patch_action(id)` that refuses an unknown, non-patch or unavailable action with one wording; rebuild `validate_settings` as `check_settings` plus `patch_action` plus `check_parameters`.",
-        "Host-facing error messages stay byte-identical; only the Lightroom mapping's report text (which already used its own wording) may reword."
+        "The rule \"registered, a `patch: true` action, and its module available\" is checked at six sites in three vocabularies: `presets/mod.rs`'s `validate_settings` (238-276); `presets/library.rs`'s `unavailable_actions` (179-189) and `capture_action` (658-682), which adds `check_applies_to(kind)`; `presets/mapping.rs`'s `transfer_value` (1187-1200) and `writable` (1212-1225), worded \"Luxforge has no X action\" and \"X is not available\"; and `editor/plan.rs`'s `resolve_plan` (486-494), which checks unknown and patch and reaches availability only later, through `ask()`.",
+        "The settings-set shape (1 to 16 valid action names, each a non-empty object of at most 64 fields) is checked twice in two wordings: `modules/descriptor.rs`'s `check_settings` (~2638-2673), the parameter check every settings parameter gets, says \"must name 1..=16 actions\" and words an empty and an oversized field object separately, while `validate_settings` says \"names 1 to 16 actions; this one names 17\" and \"must be an object of 1 to 64 fields\".",
+        "Add a `ModuleRegistry::patch_action(id)` that refuses an unknown, non-patch or unavailable action with one wording, and rebuild `validate_settings` as `check_settings` plus `patch_action` plus `check_parameters`, so the shape has one check and `check_settings`'s wording. The shape assertions that change with it are presets/tests.rs ~1039, 1073, 1078, 1092, 1098 and 1179 and presets/library_tests.rs ~290 and 309; capture's own `fields` request (\"fields names 1 to 16 actions\", library.rs ~534) is a different parameter and keeps its wording. The rule messages (\"unknown action X\", \"X is not a field-patch action\", \"unavailable module M\") are already shared by validation, capture and plans and stay byte-identical; only the Lightroom mapping's report text rewords.",
+        "`patch_action` stays independent of source kind and asset: registered, `patch` and available. It keys on `action.patch`, not on the action belonging to a field-patch module, so `set-raw` resolves through it. The source-kind rules stay layered on top at their callers: `check_applies_to` in capture, and in `resolve_plan` the `applies_to` skip (~495) and the `superseded_field` skip (~505-516).",
+        "`resolve_plan`'s order stays: an unknown or non-patch step is refused, then a step whose module does not apply to the photo is skipped, and only then is availability checked. A step from an unavailable RAW module on a JPEG photo is therefore reported skipped, not refused."
       ],
       "context_links": [
         {
@@ -183,43 +185,47 @@
           "kind": "file",
           "label": "Presets validation",
           "target": "crates/luxforge-core/src/presets/mod.rs",
-          "relevance": "validate_settings, the settings-set shape check."
+          "relevance": "validate_settings, the second settings-set shape check."
         },
         {
           "kind": "file",
           "label": "Preset library",
           "target": "crates/luxforge-core/src/presets/library.rs",
-          "relevance": "unavailable_actions and capture_preset's own checks."
+          "relevance": "unavailable_actions and capture_action's own checks."
         },
         {
           "kind": "file",
           "label": "Preset mapping",
           "target": "crates/luxforge-core/src/presets/mapping.rs",
-          "relevance": "transfer_value's own wording for the same rule."
+          "relevance": "transfer_value and writable, the same rule in their own wording."
         },
         {
           "kind": "file",
           "label": "Editor plan",
           "target": "crates/luxforge-core/src/editor/plan.rs",
-          "relevance": "Composite steps checking action.patch directly."
+          "relevance": "resolve_plan's composite steps: the unknown and patch checks, the applies_to and superseded skips, and availability through ask()."
         },
         {
           "kind": "file",
           "label": "Module descriptor",
           "target": "crates/luxforge-core/src/modules/descriptor.rs",
-          "relevance": "check_settings, the settings-set shape rule."
+          "relevance": "check_settings, the settings-set shape rule and the wording kept."
         }
       ],
       "acceptance_criteria": [
-        "One ModuleRegistry method resolves a presettable action for the preset library, capture, apply, composite plans and the Lightroom mapping.",
-        "Existing preset validation, capture and apply error messages are unchanged; only the Lightroom mapping's report wording may differ.",
-        "presets/tests.rs, library_tests.rs and the presets conformance tests pass unchanged."
+        "One ModuleRegistry method, patch_action, resolves a presettable action (registered, patch, available) for the preset library, capture, apply, composite plans and the Lightroom mapping; the source-kind rules stay at their callers.",
+        "The settings-set shape is checked once, by check_settings, in its wording; validate_settings is check_settings plus patch_action plus check_parameters.",
+        "The rule messages for an unknown, non-patch or unavailable action are unchanged; only the shape assertions listed above and the Lightroom mapping's report wording differ.",
+        "A composite step from an unavailable module that does not apply to the photo is reported skipped, not refused, and a test proves it.",
+        "presets/tests.rs, library_tests.rs and the presets conformance tests pass, with only the listed shape substrings changed."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Add patch_action with its three refusal cases",
-          "Point all five call sites at it and delete their own checks",
+          "Point all six sites at it and delete their own checks, keeping resolve_plan's skip before availability",
+          "Rebuild validate_settings on check_settings and update the listed shape assertions",
+          "Add the unavailable-and-not-applicable composite step test",
           "Run the presets and library test suites"
         ],
         "commands": [
@@ -227,20 +233,22 @@
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
-          "All five call sites share one resolver and one set of messages",
-          "Presets and library tests pass unchanged"
+          "All six sites share one resolver and one set of messages",
+          "Presets and library tests pass with only the listed shape substrings changed"
         ]
       }
     },
     {
       "id": "TASK-004",
-      "description": "Generalize the field-patch module's Field and Values to any declared parameter kind, and turn the developer controls proof into a field-patch spec so every patch control shares one semantics.",
+      "description": "Generalize the field-patch module's Field and Values to any declared parameter kind, and turn the developer controls proof into a field-patch spec so every field-patch module shares one semantics.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. Tone Curve, the next planned module, needs this to be a spec rather than a third hand-written module.",
-        "`field_patch.rs`'s Field holds only f64 state and Values holds a Vec<f64>, so its `read` re-implements the numeric range check `check_value` already provides, and its labels format numbers only. `tests/modules/conformance/shape.rs`'s `Field::read` accepts only Number parameters, so a curve, enum or boolean patch module is invisible to the suite.",
+        "`field_patch.rs`'s `Field` holds only f64 state (36-62) and `Values` a `Vec<f64>` (253-280) read through `get`, `as_slice` and `all_default`, which `number(name)` and a by-value default check replace; its `read` re-implements the numeric range check `check_value` already provides, and its labels format numbers only. `tests/modules/conformance/shape.rs`'s `Field::read` (29-31) accepts only Number parameters, so a curve, enum or boolean patch module is invisible to the suite.",
         "`modules/controls.rs` (281 lines, the only exerciser of curve, toggle, choice and colour patch controls) hand-writes merge, canonical form, a no-op test by JSON-map equality (so a stored `{\"amount\":1}` and the bare number `1.0` count as different), and \"exactly one field\" enforced twice, and it refuses a stored default that equals the field's own declared default.",
+        "What field_patch.rs gained for control variants must carry over: `Field.variants` and `Group.reset_variants` are folded onto `Control::number` and the group in `Spec::descriptor` (~165-210), so a non-numeric field with variants needs a build-time rule; `variant_reset` (~458-486) writes `number(field.default)` for every field not superseded; and `whole_group` (~439-450) and its use in `label()` (~631-636) take `(&String, f64)` pairs. The conformance suite mirrors the whole-group label rule in `shape.rs`'s `expected_label`.",
+        "`set-raw` is also `patch: true` but is not a field patch: the RAW module merges it itself under the white-balance-in-force rule (modules/raw.rs ~357, 461-500) and keeps that merge. The suite recognizes modules by the field-patch shape, so `set-raw` is outside it; consider having it exercise every `patch: true` action generically so `set-raw` is covered too.",
         "The curve control vocabulary stays even though only the controls proof uses it today; Tone Curve is its planned consumer, so the generalization must leave curve, enum, boolean and colour controls usable by a real module, not only the proof.",
         "Renders stay byte-identical: every numeric module must keep compiling the same f64s through the generalized accessor. A stored-payload refusal's wording may change under current-shapes-only, but the conformance suite's refusal-by-name checks must still pass."
       ],
@@ -255,7 +263,7 @@
           "kind": "file",
           "label": "Field patch",
           "target": "crates/luxforge-core/src/modules/field_patch.rs",
-          "relevance": "Field, Values and read, numeric-only today."
+          "relevance": "Field, Values and read, numeric-only today, and the variant folding, variant reset and whole-group label."
         },
         {
           "kind": "file",
@@ -272,13 +280,20 @@
         {
           "kind": "file",
           "label": "Conformance shape",
-          "target": "crates/luxforge-core/tests/modules/conformance/pixels.rs",
-          "relevance": "Where the suite's field-patch shape rules live beside shape.rs."
+          "target": "crates/luxforge-core/tests/modules/conformance/shape.rs",
+          "relevance": "Field::read, Number only, and the mirrored label rules; the pixel checks sit beside it in pixels.rs."
+        },
+        {
+          "kind": "file",
+          "label": "RAW module",
+          "target": "crates/luxforge-core/src/modules/raw.rs",
+          "relevance": "set-raw, a patch action with its own merge that stays outside the field-patch semantics."
         }
       ],
       "acceptance_criteria": [
         "Field wraps a declared parameter of any kind (number, integer, boolean, enum, colour, curve) with its slider label, history word, rail and own-control flag; Values holds canonical Values with a number(name) accessor for numeric fields.",
         "read validates every stored key with the one generic parameter check; the canonical form drops a field equal to its default by value equality, not JSON-map identity.",
+        "Control variants, the variant reset and the whole-group label work over the generalized fields; a spec declaring variants on a field its control cannot carry them for is refused at build time.",
         "ControlsModule is rebuilt as a spec plus its sample query rather than a hand-written ToolModule; the conformance suite derives payloads for enum, boolean, colour and curve fields.",
         "Every existing numeric field-patch module's render output is byte-identical before and after."
       ],
@@ -311,9 +326,10 @@
       ],
       "extra_context": [
         "Wave 2, finish the consolidation.",
-        "The same EffectDescriptor literal (format: EFFECT_FORMAT, artifacts: false, single: true) and templated set/reset ActionText are repeated in basic/mod.rs, mixer/mod.rs, presence/mod.rs and vignette/mod.rs, each also repeating its own neutral short-circuit; about 680 lines across those four files' tests exist only to restate the same descriptor table. field_patch.rs builds a module's groups with filter_map(|name| self.field(name)), so a misspelled group entry silently produces a field with no slider whose group reset does not reset it, and nothing today catches that.",
-        "Separately, registering a built-in module means editing four hard-coded lists: the 22-method literal in api/methods.rs's host_and_generated_methods_are_unique_complete_and_match_the_schema test, registry/tests.rs's action list and descriptors().len() == 9 assertions, xtask/src/editor_acceptance.rs's module and action lists, and the maskable-effects list in registry/lookups_tests.rs.",
-        "Descriptor JSON must serialize identically before and after; the snapshot this task adds is the proof. A spec must not silently allow single: false or another change to the forced fields."
+        "The same EffectDescriptor literal (format: EFFECT_FORMAT, artifacts: false, single: true, sources: Vec::new()) and templated set/reset ActionText are repeated in basic/mod.rs (123-131), mixer/mod.rs (195-203), presence/mod.rs (80-88) and vignette/mod.rs (88-96). Each also repeats its own neutral short-circuit in compile: basic (:282), mixer (:251) and the vignette (:178) return ColorOperation::neutral() and presence (:144) SpatialOperation::neutral(); the vignette's asks its own is_neutral override (:171-173, an amount of 0) while the others ask all_default. The shared short-circuit therefore asks the module's is_neutral and returns the Color or Spatial neutral by stage.",
+        "About 700 lines across those four files' tests exist only to restate the same descriptor table, and Basic's (~429-760) now restate its control variants too. field_patch.rs builds a module's groups with filter_map(|name| self.field(name)) twice, for the sliders (:187) and the group reset's preset (:197), so a misspelled group entry silently produces a field with no slider whose group reset does not reset it, and nothing today catches that.",
+        "Separately, registering a built-in module means editing four hard-coded lists: the 18-method literal (~2108-2127) in api/methods.rs's host_and_generated_methods_are_unique_complete_and_match_the_schema test (~2086), registry/tests.rs's action list and descriptors().len() == 9 assertion (:521), xtask/src/editor_acceptance.rs's lists of 9 modules and 18 actions (49-82), and the maskable-effects list in registry/lookups_tests.rs (238-256).",
+        "Descriptor JSON must serialize identically before and after; the snapshot this task adds is the proof, and it captures each effect's sources, each control's variants, each parameter's superseded list in schema.list, and module.list's host array beside the modules. A spec must not silently allow single: false, a sources list or another change to the forced fields."
       ],
       "context_links": [
         {
@@ -326,7 +342,7 @@
           "kind": "file",
           "label": "Field patch",
           "target": "crates/luxforge-core/src/modules/field_patch.rs",
-          "relevance": "The group filter_map that silently drops a misspelled field."
+          "relevance": "The two group filter_maps that silently drop a misspelled field, and the neutral short-circuit's shared home."
         },
         {
           "kind": "file",
@@ -344,7 +360,7 @@
           "kind": "file",
           "label": "Host methods",
           "target": "crates/luxforge-core/src/api/methods.rs",
-          "relevance": "The hard-coded 22-method generated-list test."
+          "relevance": "The hard-coded 18-method generated-list test."
         },
         {
           "kind": "file",
@@ -366,10 +382,10 @@
         }
       ],
       "acceptance_criteria": [
-        "Spec::new(id, title, hint, effect_id, stage) derives the set-/reset- action identities, titles, notes and noun, and forces format: EFFECT_FORMAT, artifacts: false and single: true; group validation at build time refuses an unknown field name and a field belonging to zero or more than one group.",
-        "FieldPatchModule::compile returns the neutral operation from one place shared by every field-patch module, not once per module.",
-        "One committed snapshot of module.list and schema.list for ModuleRegistry::builtin() replaces the four hard-coded lists; editor_acceptance compares against builtin_modules() instead of a literal.",
-        "The descriptor-restatement tests in basic/mod.rs, mixer/mod.rs, presence/mod.rs and vignette/mod.rs are deleted, each naming in the commit the kept test (the snapshot, plus each module's own history-word test) that proves the same fact.",
+        "Spec::new(id, title, hint, effect_id, stage) derives the set-/reset- action identities, titles, notes and noun, and forces format: EFFECT_FORMAT, artifacts: false, single: true and an empty sources list (every kind); group validation at build time refuses an unknown field name and a field belonging to zero or more than one group.",
+        "FieldPatchModule::compile returns the neutral operation from one place shared by every field-patch module, decided by the module's own is_neutral and shaped by its stage (Color or Spatial), not once per module.",
+        "One committed snapshot of module.list (with its host array) and schema.list for ModuleRegistry::builtin() replaces the four hard-coded lists; editor_acceptance compares against builtin_modules() instead of a literal.",
+        "The descriptor-restatement tests in basic/mod.rs (including its variant restatements), mixer/mod.rs, presence/mod.rs and vignette/mod.rs are deleted, each naming in the commit the kept test (the snapshot, plus each module's own history-word test) that proves the same fact.",
         "Registering a new built-in field-patch module touches only its own directory, one registration line and its own tests."
       ],
       "test_strategy": {
