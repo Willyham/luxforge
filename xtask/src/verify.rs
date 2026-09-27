@@ -103,8 +103,9 @@ impl Status {
 /// component itself recorded, so a run that stopped early reports the launches it actually made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Launches {
-    /// No editor process at all: `check`, the core acceptance journey, core timing diagnostics
-    /// and fixture generation.
+    /// No editor process at all (`check`, the core acceptance journey, core timing diagnostics
+    /// and fixture generation), or one that keeps no `launches` list of its own (`raw-authentic`'s
+    /// `cargo test` processes, `hardening`'s own handful of short-lived editor launches).
     None,
     Smoke,
     Measure,
@@ -191,6 +192,112 @@ fn manifest_sources(path: &Path) -> Result<Vec<(String, PathBuf)>> {
         .collect()
 }
 
+/// One `cargo test` invocation `raw-authentic` runs: the package and integration-test binary that
+/// hold the `#[ignore]`d authentic-file tests, and, where more than one test in that binary is
+/// `#[ignore]`d for a reason `raw-authentic` cannot answer (a separate CC0 public-fixture directory
+/// no manifest here names), the exact names of the ones it can.
+struct Authentic {
+    package: &'static str,
+    test: &'static str,
+    filters: &'static [&'static str],
+}
+
+/// The authentic RAW tests `raw-authentic` can run from a manifest alone: every ignored test in
+/// `luxforge-raw`'s `real_files` and `luxforge-app`'s `raw_json_cli` that needs nothing beyond one
+/// `LUXFORGE_RAW_OWNER_DIR` directory of exactly-named files
+/// (`docs/engineering/development.md`). `real_files` also holds `authentic_public_modes_preserve_sources_and_develop_float`,
+/// which needs its own separate `LUXFORGE_RAW_PUBLIC_DIR` of CC0 fixtures no manifest here names, so
+/// it is filtered out rather than left to fail on a missing environment variable.
+const AUTHENTIC: [Authentic; 2] = [
+    Authentic {
+        package: "luxforge-raw",
+        test: "real_files",
+        filters: &[
+            "authentic_owner_modes_preserve_sources_and_develop_float",
+            "required_dji_opcodes_are_applied_to_fc3411",
+            "malformed_or_unknown_dji_opcode_fails_explicitly",
+        ],
+    },
+    Authentic {
+        package: "luxforge-app",
+        test: "raw_json_cli",
+        filters: &[],
+    },
+];
+
+fn authentic_args(invocation: &Authentic) -> Vec<String> {
+    let mut args: Vec<String> = ["test", "--release", "--locked", "--package"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    args.push(invocation.package.into());
+    args.extend(["--test".into(), invocation.test.into()]);
+    args.extend(["--".into(), "--ignored".into(), "--nocapture".into()]);
+    args.extend(invocation.filters.iter().map(|f| (*f).to_owned()));
+    args
+}
+
+/// The manifest's own RAW directory: the parent of its sources, which is where every filename the
+/// authentic tests read (`nikon_z6.NEF`, `fujifilm_x100vi.RAF`, `mavic_air_2s.DNG`, …) lives, since
+/// the manifest's sources are exactly the owner's qualified files in that one directory.
+fn owner_dir(sources: &[(String, PathBuf)]) -> Result<PathBuf> {
+    sources
+        .first()
+        .and_then(|(_, path)| path.parent())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "RAW manifest has no source to read an owner directory from".into())
+}
+
+/// Run the authentic RAW tests a manifest makes possible: the owner-supplied native and JSON tests
+/// that are otherwise `#[ignore]`d and sit in no tier at all. Every invocation is logged to its own
+/// file inside `out`, and `result.json` records what was run, against which directory, and whether
+/// it all passed.
+pub fn authentic(root: &Path, manifest_path: &Path, out: &Path) -> Result {
+    ensure(!out.exists(), "RAW authentic output must be new")?;
+    fs::create_dir_all(out)?;
+    let sources = manifest_sources(manifest_path)?;
+    let dir = owner_dir(&sources)?;
+    let mut result = json!({
+        "status":"failed",
+        "manifest":manifest_path,
+        "owner_dir":dir,
+        "invocations":AUTHENTIC.iter().map(|i| json!({"package":i.package,"test":i.test,"filters":i.filters})).collect::<Vec<_>>(),
+    });
+    let checked = (|| -> Result {
+        for (index, invocation) in AUTHENTIC.iter().enumerate() {
+            let log = out.join(format!("{}-{}.log", invocation.package, invocation.test));
+            let file = fs::File::create(&log)?;
+            let args = authentic_args(invocation);
+            let status = cargo_command()
+                .current_dir(root)
+                .env("LUXFORGE_RAW_OWNER_DIR", &dir)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(file.try_clone()?)
+                .stderr(file)
+                .status()?;
+            ensure(
+                status.success(),
+                format!(
+                    "Authentic RAW test {} of {} ({} --test {}) failed; see {}",
+                    index + 1,
+                    AUTHENTIC.len(),
+                    invocation.package,
+                    invocation.test,
+                    log.display()
+                ),
+            )?;
+        }
+        Ok(())
+    })();
+    match &checked {
+        Ok(()) => result["status"] = json!("passed"),
+        Err(e) => result["error"] = json!(e.to_string()),
+    }
+    write_json(&out.join("result.json"), &result)?;
+    checked
+}
+
 /// What each tier runs, in order. Every tier includes the ones below it. The rendered scenarios are
 /// the one block that runs through a pool; the timing components run strictly serially, in this
 /// order, after everything else in the tier and behind the host-wide timing lock, so nothing else
@@ -242,6 +349,12 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             skip: manifest.is_none().then_some("no --manifest"),
             ..spec("raw-editor", "full", &["raw-editor"])
         });
+        specs.push(Spec {
+            result: Some("result.json"),
+            manifest: true,
+            skip: manifest.is_none().then_some("no --manifest"),
+            ..spec("raw-authentic", "full", &["raw-authentic"])
+        });
         let sources = manifest.unwrap_or(&[]);
         for (id, path) in sources {
             let path = path.to_string_lossy().into_owned();
@@ -269,6 +382,11 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 )
             });
         }
+        specs.push(Spec {
+            result: Some("result.json"),
+            binary: true,
+            ..spec("hardening", "full", &["hardening"])
+        });
     }
     if tier.timing() {
         specs.push(Spec {
@@ -847,17 +965,43 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
     (rows, targets)
 }
 
+/// Every component that proved nothing: `skipped` (a prerequisite this run does not have, such as
+/// no `--manifest`) or `not_run` (never reached, usually because an earlier setup step failed). A
+/// skip is not a pass, so a tier with one of these and no outright failure is `incomplete` rather
+/// than `passed`.
+fn incomplete(entries: &[Entry]) -> Vec<&Entry> {
+    entries
+        .iter()
+        .filter(|e| matches!(e.status, Status::Skipped | Status::NotRun))
+        .collect()
+}
+
 fn markdown(header: &Value, entries: &[Entry], rows: &[Value], targets: &[Value]) -> String {
     let failed: Vec<_> = entries
         .iter()
         .filter(|e| e.status.failure())
         .map(|e| e.component.clone())
         .collect();
+    let incomplete: Vec<String> = incomplete(entries)
+        .into_iter()
+        .map(|e| {
+            format!(
+                "{} ({}{})",
+                e.component,
+                e.status.name(),
+                e.error
+                    .as_deref()
+                    .map(|why| format!(": {why}"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect();
     let mut text = String::from("# Verification summary\n\n");
     let verdict = match header["refused"].as_str() {
         Some(why) => format!("REFUSED ({why})"),
-        None if failed.is_empty() => "passed".to_owned(),
-        None => format!("FAILED ({})", failed.join(", ")),
+        None if !failed.is_empty() => format!("FAILED ({})", failed.join(", ")),
+        None if !incomplete.is_empty() => format!("INCOMPLETE ({})", incomplete.join(", ")),
+        None => "passed".to_owned(),
     };
     text.push_str(&format!(
         "Tier {}: {}. Host {}. Binary SHA-256 {} ({}). Cargo.lock SHA-256 {}. Total {} s. Output {}.\n\n",
@@ -974,6 +1118,8 @@ fn write(
         "refused"
     } else if entries.iter().any(|e| e.status.failure()) {
         "failed"
+    } else if !incomplete(entries).is_empty() {
+        "incomplete"
     } else {
         "passed"
     });
@@ -984,6 +1130,12 @@ fn write(
             .map(|e| e.component.clone())
             .collect::<Vec<_>>()
     );
+    summary["incomplete"] = json!(
+        incomplete(entries)
+            .iter()
+            .map(|e| json!({"component":e.component,"status":e.status.name(),"reason":e.error}))
+            .collect::<Vec<_>>()
+    );
     summary["components"] = json!(entries.iter().map(Entry::value).collect::<Vec<_>>());
     summary["timing_rows"] = json!(rows);
     summary["targets"] = json!(targets);
@@ -992,7 +1144,27 @@ fn write(
     Ok(text)
 }
 
-/// Name every component that failed or timed out, so the exit status says what to look at.
+/// A tier that ran to completion but proved less than a full pass: nothing failed outright, but
+/// some component was `skipped` or `not_run`. Its own error type, distinct from an ordinary
+/// failure, so `main` can give it its own exit code: a skip is not a pass, but it is not the same
+/// as a defect either, and a script needs to be able to tell the two apart.
+#[derive(Debug)]
+pub struct Incomplete(pub String);
+impl std::fmt::Display for Incomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl std::error::Error for Incomplete {}
+
+/// The process exit code `main` gives an `incomplete` tier: distinct from `0` (passed) and `1`
+/// (an ordinary failure, `ExitCode::FAILURE`), so a script can tell "nothing failed but the tier
+/// did not prove everything it lists" apart from both.
+pub const INCOMPLETE_EXIT_CODE: u8 = 3;
+
+/// Name every component that failed, timed out, was skipped or never ran, so the exit status says
+/// what to look at. A failure anywhere makes the whole tier an ordinary failure; short of that, any
+/// skip or non-run makes it `incomplete` rather than a silent pass.
 fn outcome(entries: &[Entry], out: &Path) -> Result {
     let failed: Vec<_> = entries
         .iter()
@@ -1006,7 +1178,30 @@ fn outcome(entries: &[Entry], out: &Path) -> Result {
             failed.join(", "),
             out.join("summary.md").display()
         ),
-    )
+    )?;
+    let incomplete: Vec<_> = incomplete(entries)
+        .into_iter()
+        .map(|e| {
+            format!(
+                "{} ({}{})",
+                e.component,
+                e.status.name(),
+                e.error
+                    .as_deref()
+                    .map(|why| format!(": {why}"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect();
+    if incomplete.is_empty() {
+        Ok(())
+    } else {
+        Err(Box::new(Incomplete(format!(
+            "Verification incomplete: {}. Summary: {}",
+            incomplete.join(", "),
+            out.join("summary.md").display()
+        ))))
+    }
 }
 
 /// Everything a component needs to run, shared unchanged by the serial phases and the pool.
@@ -1450,15 +1645,19 @@ mod tests {
                 "measure"
             ]
         );
-        // A manifest with no sources is `full`'s minimal manifest case: `raw-editor` runs, but there
-        // is nothing to build a `raw-panel` or RAW `performance` component from.
+        // A manifest with no sources is `full`'s minimal manifest case: `raw-editor` and
+        // `raw-authentic` run, but there is nothing to build a `raw-panel` or RAW `performance`
+        // component from.
         let full = names(Tier::Full, Some(&[]), true);
         assert_eq!(&full[..2], ["check", "editor-acceptance"]);
-        // Every rendered scenario, then the RAW components, then the timing components last.
+        // Every rendered scenario, then the RAW components and hardening, then the timing
+        // components last.
         assert_eq!(
-            &full[full.len() - 5..],
+            &full[full.len() - 7..],
             [
                 "raw-editor",
+                "raw-authentic",
+                "hardening",
                 "editor-performance",
                 "editor-latency",
                 "editor-latency-burst",
@@ -1467,7 +1666,7 @@ mod tests {
         );
         assert_eq!(
             full.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 5
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 7
         );
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, None, false)[0], "check");
@@ -1483,14 +1682,17 @@ mod tests {
         let full = plan(Tier::Full, Some(&sources), true);
         let names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
         // One `raw-panel` component per manifest source, named by source id, and one RAW
-        // `performance` run over the first source, all between `raw-editor` and the timing tier.
+        // `performance` run over the first source, all between `raw-editor`/`raw-authentic` and
+        // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 8..],
+            &names[names.len() - 10..],
             [
                 "raw-editor",
+                "raw-authentic",
                 "raw-panel-z6",
                 "raw-panel-x100vi",
                 "raw-performance",
+                "hardening",
                 "editor-performance",
                 "editor-latency",
                 "editor-latency-burst",
@@ -1532,15 +1734,81 @@ mod tests {
     #[test]
     fn a_missing_manifest_skips_raw_editor_instead_of_passing_it() {
         let without = plan(Tier::Full, None, true);
-        let raw = without.iter().find(|s| s.name == "raw-editor").unwrap();
-        assert_eq!(raw.skip, Some("no --manifest"));
+        for name in ["raw-editor", "raw-authentic"] {
+            let s = without.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(s.skip, Some("no --manifest"), "{name}");
+        }
         let with = plan(Tier::Full, Some(&[]), true);
-        assert!(
-            with.iter()
-                .find(|s| s.name == "raw-editor")
-                .unwrap()
-                .skip
-                .is_none()
+        for name in ["raw-editor", "raw-authentic"] {
+            assert!(
+                with.iter().find(|s| s.name == name).unwrap().skip.is_none(),
+                "{name}"
+            );
+        }
+    }
+    #[test]
+    fn hardening_is_scheduled_only_in_full() {
+        for tier in [Tier::Quick, Tier::Rendered, Tier::Timing] {
+            assert!(!names(tier, None, true).contains(&"hardening".to_owned()));
+        }
+        let full = plan(Tier::Full, None, true);
+        let hardening = full.iter().find(|s| s.name == "hardening").unwrap();
+        assert_eq!(hardening.args, ["hardening"]);
+        assert!(hardening.binary && hardening.output && !hardening.manifest);
+        assert_eq!(hardening.skip, None, "hardening needs no --manifest");
+    }
+    #[test]
+    fn raw_authentic_runs_both_ignored_test_binaries_with_the_owner_directory() {
+        let sources = [
+            ("z6".to_owned(), PathBuf::from("/tmp/raw/nikon_z6.NEF")),
+            (
+                "x100vi".to_owned(),
+                PathBuf::from("/tmp/raw/fujifilm_x100vi.RAF"),
+            ),
+        ];
+        assert_eq!(
+            owner_dir(&sources).unwrap(),
+            PathBuf::from("/tmp/raw"),
+            "the manifest's own sources' shared directory"
+        );
+        assert!(owner_dir(&[]).is_err(), "no source, no directory to read");
+        let full = plan(Tier::Full, Some(&sources), true);
+        let authentic = full.iter().find(|s| s.name == "raw-authentic").unwrap();
+        assert_eq!(authentic.args, ["raw-authentic"]);
+        assert!(authentic.manifest && authentic.output && !authentic.binary);
+        assert_eq!(AUTHENTIC.len(), 2);
+        assert_eq!(
+            authentic_args(&AUTHENTIC[0]),
+            [
+                "test",
+                "--release",
+                "--locked",
+                "--package",
+                "luxforge-raw",
+                "--test",
+                "real_files",
+                "--",
+                "--ignored",
+                "--nocapture",
+                "authentic_owner_modes_preserve_sources_and_develop_float",
+                "required_dji_opcodes_are_applied_to_fc3411",
+                "malformed_or_unknown_dji_opcode_fails_explicitly",
+            ]
+        );
+        assert_eq!(
+            authentic_args(&AUTHENTIC[1]),
+            [
+                "test",
+                "--release",
+                "--locked",
+                "--package",
+                "luxforge-app",
+                "--test",
+                "raw_json_cli",
+                "--",
+                "--ignored",
+                "--nocapture",
+            ]
         );
     }
     fn entry(component: &str, status: Status) -> Entry {
@@ -1735,19 +2003,31 @@ mod tests {
         assert_eq!(Launches::Latency.count(dir, Some(&json!({}))), 3);
     }
     #[test]
+    fn an_all_passed_plan_is_the_only_ok_outcome() {
+        assert!(outcome(&[entry("check", Status::Passed)], Path::new("/tmp/verify")).is_ok());
+    }
+    #[test]
+    fn a_skipped_or_not_run_component_is_incomplete_not_a_silent_pass() {
+        let out = Path::new("/tmp/verify");
+        let error = outcome(
+            &[
+                entry("check", Status::Passed),
+                entry("raw-editor", Status::Skipped),
+                entry("measure", Status::NotRun),
+            ],
+            out,
+        )
+        .unwrap_err();
+        // Its own error type, never an ordinary failure's, so `main` can give it its own exit code.
+        assert!(error.downcast_ref::<Incomplete>().is_some(), "{error}");
+        let text = error.to_string();
+        assert!(text.contains("raw-editor (skipped"), "{text}");
+        assert!(text.contains("measure (not_run"), "{text}");
+        assert!(text.contains("summary.md"), "{text}");
+    }
+    #[test]
     fn any_failure_names_its_components_in_the_exit_error() {
         let out = Path::new("/tmp/verify");
-        assert!(
-            outcome(
-                &[
-                    entry("check", Status::Passed),
-                    entry("raw-editor", Status::Skipped),
-                    entry("measure", Status::NotRun)
-                ],
-                out
-            )
-            .is_ok()
-        );
         let error = outcome(
             &[
                 entry("smoke-crop", Status::Failed),
@@ -1756,11 +2036,34 @@ mod tests {
             ],
             out,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+        // A real failure is an ordinary failure, never `Incomplete`, even alongside a skip.
+        assert!(error.downcast_ref::<Incomplete>().is_none(), "{error}");
+        let error = error.to_string();
         assert!(error.contains("smoke-crop (failed)"), "{error}");
         assert!(error.contains("measure (timed_out)"), "{error}");
         assert!(error.contains("summary.md"), "{error}");
+    }
+    #[test]
+    fn an_incomplete_tier_is_reported_incomplete_not_passed_in_both_summaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = [
+            entry("check", Status::Passed),
+            entry("raw-editor", Status::Skipped),
+        ];
+        let header = json!({
+            "tier":"full","host":"x","binary":"/tmp/b","binary_sha256":"a",
+            "lockfile_sha256":"b","output":"/tmp/o","elapsed_s":1.0,
+        });
+        let text = write(tmp.path(), &header, &entries, &[], &[]).unwrap();
+        assert!(
+            text.contains("Tier full: INCOMPLETE (raw-editor (skipped"),
+            "{text}"
+        );
+        let summary: Value = read_json(&tmp.path().join("summary.json")).unwrap();
+        assert_eq!(summary["status"], "incomplete");
+        assert_eq!(summary["incomplete"][0]["component"], "raw-editor");
+        assert_eq!(summary["incomplete"][0]["status"], "skipped");
     }
     #[test]
     fn an_existing_output_directory_is_refused() {
