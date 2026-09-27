@@ -32,6 +32,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
+    io,
+    net::{Shutdown, TcpStream},
     panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex,
@@ -235,6 +237,9 @@ pub struct JobControl {
     /// Cancelled with the job, so a render the job runs stops within one row or chunk without
     /// the job polling for it: the render's passes read this token themselves.
     render: Cancel,
+    /// A clone of the socket of the network request the job is making, if any: its cancel shuts
+    /// the socket down, so a read or write blocked on it returns at once.
+    connection: Mutex<Option<TcpStream>>,
 }
 
 impl JobControl {
@@ -260,6 +265,27 @@ impl JobControl {
         }
         self.cancelled.store(true, Ordering::Release);
         self.render.cancel();
+        if let Some(socket) = self.connection.lock().expect("job connection").as_ref() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+
+    /// Keep a clone of `socket`, the job's network request's connection, for `cancel` to shut
+    /// down; `false`, keeping nothing, if the job is already cancelled. The check and the
+    /// registration share the lock `cancel` takes after setting its flag, so a cancel cannot fall
+    /// between them.
+    pub(crate) fn hold_connection(&self, socket: &TcpStream) -> io::Result<bool> {
+        let mut held = self.connection.lock().expect("job connection");
+        if self.is_cancelled() {
+            return Ok(false);
+        }
+        *held = Some(socket.try_clone()?);
+        Ok(true)
+    }
+
+    /// Drop the connection's clone once its request is over.
+    pub(crate) fn release_connection(&self) {
+        *self.connection.lock().expect("job connection") = None;
     }
 
     /// The render cancellation token this job's cancel also sets, for a job that renders.

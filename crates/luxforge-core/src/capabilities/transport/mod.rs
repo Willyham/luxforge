@@ -1,41 +1,66 @@
 //! The host's only network path: endpoint classification, resolution checks, redirects, limits and
 //! TLS. See `docs/design/module-capabilities.md#transport`.
 //!
-//! A request connects directly to an address it checked, over this module's own socket and TLS
-//! session; `ureq-proto` only writes the request and frames the response on that connection. Proxy
-//! settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment variables, are
-//! deliberately ignored: a proxy would choose the address after the check and could read or
-//! rewrite the request.
-mod exchange;
+//! A request runs on its own `ureq` agent ([`agent`]) that connects directly to an address it
+//! checked, over this module's own socket and TLS session; `ureq` writes the request and frames the
+//! response on that connection, and this module keeps the redirects, bounds and the framing it
+//! refuses. Proxy settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment
+//! variables, are deliberately ignored: a proxy would choose the address after the check and could
+//! read or rewrite the request.
+mod agent;
 mod net;
 pub mod policy;
 #[cfg(test)]
 mod tests;
 mod tls;
-#[cfg(test)]
-mod ureq_spike;
 
 pub use net::{Connect, Resolve, SystemConnector, SystemResolver};
 pub use policy::{Endpoint, EndpointClass, address_allowed, parse_endpoint};
 pub use rustls::pki_types::CertificateDer;
 pub use tls::TlsTrust;
 
-use crate::Error;
+use crate::{Error, jobs::JobControl};
+use agent::Pace;
 use rustls::ClientConfig;
 use std::{
     borrow::Cow,
     fmt,
-    io::Write,
-    net::TcpStream,
+    io::{self, Read, Write},
     sync::Arc,
     time::{Duration, Instant},
 };
-use url::Url;
+use ureq::http::{self, Response, Version};
+use url::{Position, Url};
 
 /// A request follows at most this many redirects, whatever its policy asks for.
 pub const MAX_REDIRECTS: u8 = 3;
 /// Statuses that redirect a request. Other `3xx` statuses are returned as data.
 const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
+/// One header block holds at most this many fields.
+const MAX_FIELDS: usize = 100;
+/// The request head, including the caller's headers, is at most this many bytes.
+const MAX_REQUEST_HEAD_BYTES: usize = 16 * 1024;
+/// The caller supplies at most this many headers.
+const MAX_CALLER_HEADERS: usize = 32;
+/// Body bytes read and handed to the sink at a time.
+const PIECE_BYTES: usize = 16 * 1024;
+/// Headers only the host writes, or that would enable something the transport does not support.
+const HOST_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "upgrade",
+    "te",
+    "trailer",
+    "expect",
+    "accept-encoding",
+    "user-agent",
+    "cookie",
+    "proxy-authorization",
+    "proxy-connection",
+];
 
 /// The methods the transport sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,9 +124,10 @@ pub struct SendOptions<'a> {
     /// The whole request, resolution and redirects included.
     pub total_timeout: Duration,
     pub redirects: RedirectPolicy<'a>,
-    /// Checked before each connection and every read and write; `true` stops the request with
-    /// `cancelled`.
-    pub cancel: &'a dyn Fn() -> bool,
+    /// The job the request runs for. Its cancel stops the request with its `cancelled` error: the
+    /// connection holds the job's cancel, which shuts the socket down, so a blocked read or write
+    /// returns at once; a request whose job is already cancelled never resolves or connects.
+    pub control: &'a Arc<JobControl>,
     /// Called after each piece of the final response body reaches the sink, with the bytes
     /// written so far and the declared length, if there is one.
     pub progress: &'a mut dyn FnMut(u64, Option<u64>),
@@ -164,6 +190,15 @@ impl fmt::Debug for Transport {
     }
 }
 
+/// Drops the job's clone of a connection's socket once its request is over, however it ends.
+struct Held<'a>(&'a JobControl);
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.0.release_connection();
+    }
+}
+
 impl Transport {
     pub fn new(config: TransportConfig) -> Result<Self, Error> {
         Ok(Self {
@@ -198,7 +233,7 @@ impl Transport {
             read_timeout,
             total_timeout,
             redirects,
-            cancel,
+            control,
             progress,
         } = options;
         let mut endpoint =
@@ -226,7 +261,7 @@ impl Transport {
                     .ok_or_else(|| Error::validation("a redirect origin is not a valid origin"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        exchange::check_headers(&request.headers)?;
+        check_headers(&request.headers)?;
         if request.method == Method::Get && !request.body.is_empty() {
             return Err(Error::validation("a GET request has no body"));
         }
@@ -244,37 +279,32 @@ impl Transport {
         let mut headers = Cow::Borrowed(request.headers.as_slice());
         let mut followed = 0;
         loop {
-            if cancel() {
-                return Err(Error::cancelled("the request was cancelled"));
-            }
-            let prepared = exchange::prepare(method, &endpoint.url, &headers, body.len())?;
-            let server_name = match endpoint.url.scheme() {
-                "https" => Some(tls::server_name(&endpoint)?),
-                _ => None,
-            };
-            let name = endpoint.url.host_str().unwrap_or_default().to_owned();
-            let socket = net::connect(
-                &endpoint,
-                &*self.resolver,
-                &*self.connector,
-                connect_timeout,
-                deadline,
-            )?;
-            slice(&socket, &name)?;
-            let stream: Box<dyn exchange::Stream> = match server_name {
-                Some(server_name) => Box::new(tls::wrap(&self.tls, server_name, socket)?),
-                None => Box::new(socket),
-            };
-            let pace = exchange::Pace {
-                name: &name,
+            control.checkpoint()?;
+            let prepared = prepare(method, &endpoint.url, &headers)?;
+            let pace = Arc::new(Pace {
+                name: endpoint.url.host_str().unwrap_or_default().to_owned(),
+                control: control.clone(),
                 idle: read_timeout,
                 deadline,
-                cancel,
+            });
+            let agent = agent::agent(
+                &endpoint,
+                &self.tls,
+                &self.resolver,
+                &self.connector,
+                connect_timeout,
+                &pace,
+            );
+            let _held = Held(control);
+            let sent = match method {
+                Method::Get => agent.run(prepared),
+                Method::Post => agent.run(prepared.map(|()| body)),
             };
-            let mut exchange = exchange::Exchange::new(stream, pace);
-            let mut head = exchange.send(prepared, body)?;
-            if REDIRECT_STATUSES.contains(&head.status) {
-                let target = redirect(&endpoint, &head.fields, redirects.max, followed, &origins)?;
+            let mut response = sent.map_err(|error| pace.error(error))?;
+            let fields = check_head(&response, &pace.name)?;
+            let status = response.status().as_u16();
+            if REDIRECT_STATUSES.contains(&status) {
+                let target = redirect(&endpoint, &fields, redirects.max, followed, &origins)?;
                 if target.origin() != endpoint.origin() {
                     headers
                         .to_mut()
@@ -286,10 +316,10 @@ impl Transport {
                 followed += 1;
                 continue;
             }
-            let received = exchange.read_body(&mut head, max_response_bytes, sink, progress)?;
+            let received = read_body(&mut response, max_response_bytes, sink, progress, &pace)?;
             return Ok(TransportResponse {
-                status: head.status,
-                headers: head.fields,
+                status,
+                headers: fields,
                 final_url: endpoint.url,
                 received,
             });
@@ -297,19 +327,206 @@ impl Transport {
     }
 }
 
-/// Make every blocking read and write on `socket` return after `exchange::SLICE`, so the exchange
-/// can check cancellation and its deadlines while a server is silent.
-fn slice(socket: &TcpStream, name: &str) -> Result<(), Error> {
-    socket
-        .set_nodelay(true)
-        .and_then(|()| socket.set_read_timeout(Some(exchange::SLICE)))
-        .and_then(|()| socket.set_write_timeout(Some(exchange::SLICE)))
-        .map_err(|error| {
+fn is_token(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(byte))
+}
+
+/// Check the caller's headers. No refusal repeats a header's value.
+fn check_headers(headers: &[(String, String)]) -> Result<(), Error> {
+    if headers.len() > MAX_CALLER_HEADERS {
+        return Err(Error::validation(format!(
+            "a request has at most {MAX_CALLER_HEADERS} headers"
+        )));
+    }
+    for (name, value) in headers {
+        if !is_token(name.as_bytes()) {
+            return Err(Error::validation(
+                "a request header name is not a valid token",
+            ));
+        }
+        if HOST_HEADERS
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved))
+        {
+            return Err(Error::validation(format!(
+                "a request may not set the {name} header"
+            )));
+        }
+        if value
+            .bytes()
+            .any(|byte| (byte < 0x20 && byte != b'\t') || byte == 0x7f)
+        {
+            return Err(Error::validation(format!(
+                "the value of request header {name} contains a control character"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The head of a request for `url` with the caller's checked `headers`, before anything connects.
+/// Only the host writes `Host`, `User-Agent`, `Accept-Encoding: identity` and `Connection: close`;
+/// the agent adds a `POST`'s `Content-Length`.
+fn prepare(
+    method: Method,
+    url: &Url,
+    headers: &[(String, String)],
+) -> Result<http::Request<()>, Error> {
+    let target = &url[Position::BeforePath..Position::AfterQuery];
+    let mut host = url.host_str().unwrap_or_default().to_owned();
+    if let Some(port) = url.port() {
+        host = format!("{host}:{port}");
+    }
+    let fixed = [
+        ("host", host.as_str()),
+        (
+            "user-agent",
+            concat!("Luxforge/", env!("CARGO_PKG_VERSION")),
+        ),
+        ("accept-encoding", "identity"),
+        ("connection", "close"),
+    ];
+    let fields = fixed
+        .iter()
+        .map(|(name, value)| name.len() + value.len())
+        .chain(headers.iter().map(|(name, value)| name.len() + value.len()));
+    if target.len() + fields.map(|bytes| bytes + 4).sum::<usize>() > MAX_REQUEST_HEAD_BYTES {
+        return Err(Error::resource_limit(format!(
+            "the request head is larger than {MAX_REQUEST_HEAD_BYTES} bytes"
+        )));
+    }
+    let mut request = http::Request::builder()
+        .method(match method {
+            Method::Get => http::Method::GET,
+            Method::Post => http::Method::POST,
+        })
+        .uri(url.as_str())
+        .version(Version::HTTP_11);
+    for (name, value) in fixed {
+        request = request.header(name, value);
+    }
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_bytes());
+    }
+    request
+        .body(())
+        .map_err(|_| Error::validation("the request cannot be sent: a header is not valid"))
+}
+
+fn too_many_fields(name: &str) -> Error {
+    Error::resource_limit(format!(
+        "the response from {name} has more than {MAX_FIELDS} header fields"
+    ))
+}
+
+/// The final response's header fields, once its status, field count and framing pass. The framing
+/// `ureq` would accept but the transport refuses rather than guess: compression, any transfer
+/// coding but `chunked` on HTTP/1.1, both a transfer coding and a length, and lengths that are not
+/// one plain number.
+fn check_head<B>(response: &Response<B>, name: &str) -> Result<Vec<(String, String)>, Error> {
+    let malformed = |what: &str| Error::file_access(format!("the response from {name} {what}"));
+    let status = response.status().as_u16();
+    if status == 101 {
+        return Err(malformed("switched protocols"));
+    }
+    if status >= 600 {
+        return Err(malformed("has an invalid status line"));
+    }
+    if response.headers().len() > MAX_FIELDS {
+        return Err(too_many_fields(name));
+    }
+    let fields: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let values = |field: &'static str| {
+        fields
+            .iter()
+            .filter(move |(name, _)| name == field)
+            .map(|(_, value)| value.as_str())
+    };
+    if values("content-encoding").any(|coding| !coding.eq_ignore_ascii_case("identity")) {
+        return Err(malformed("is compressed"));
+    }
+    if status == 204 || status == 304 {
+        return Ok(fields);
+    }
+    let http10 = response.version() == Version::HTTP_10;
+    let encodings: Vec<_> = values("transfer-encoding").collect();
+    let lengths: Vec<_> = values("content-length").collect();
+    match (encodings.as_slice(), lengths.as_slice()) {
+        ([], []) => {}
+        ([encoding], []) if encoding.eq_ignore_ascii_case("chunked") && !http10 => {}
+        (_, []) => return Err(malformed("uses an unsupported transfer coding")),
+        ([], [first, rest @ ..])
+            if !first.is_empty()
+                && first.bytes().all(|byte| byte.is_ascii_digit())
+                && rest.iter().all(|other| other == first) => {}
+        ([], _) => return Err(malformed("has an invalid Content-Length")),
+        _ => return Err(malformed("has both Transfer-Encoding and Content-Length")),
+    }
+    Ok(fields)
+}
+
+/// Stream the final response's body into `sink`, refusing it once it would pass `limit` bytes:
+/// before reading when its length is declared, and before writing the piece that crosses it
+/// otherwise. `ureq` reads at most one byte past the limit. A cancel overrides the body's end,
+/// because a shut-down plain socket reads as the end of a close-delimited body. Returns the number
+/// of body bytes written.
+fn read_body(
+    response: &mut Response<ureq::Body>,
+    limit: u64,
+    sink: &mut dyn Write,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+    pace: &Pace,
+) -> Result<u64, Error> {
+    let name = &pace.name;
+    let too_large = || {
+        Error::resource_limit(format!(
+            "the response from {name} is larger than {limit} bytes"
+        ))
+    };
+    let total = response.body().content_length();
+    if total.is_some_and(|length| length > limit) {
+        return Err(too_large());
+    }
+    let mut reader = response
+        .body_mut()
+        .with_config()
+        .limit(limit.saturating_add(1))
+        .reader();
+    let mut piece = vec![0; PIECE_BYTES];
+    let mut received = 0;
+    loop {
+        let read = match reader.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(pace.error(ureq::Error::from(error))),
+        };
+        if read as u64 > limit - received {
+            return Err(too_large());
+        }
+        sink.write_all(&piece[..read]).map_err(|error| {
             Error::file_access(format!(
-                "cannot configure the connection to {name}: {}",
+                "cannot store the response from {name}: {}",
                 error.kind()
             ))
-        })
+        })?;
+        received += read as u64;
+        progress(received, total);
+    }
+    pace.control.checkpoint()?;
+    Ok(received)
 }
 
 /// The endpoint a redirect leads to, if the policy allows following it: within the count, with a

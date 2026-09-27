@@ -1,7 +1,7 @@
 //! Resolution and connection. A request resolves its host exactly once, requires every answer to
 //! belong to the endpoint's class and connects only to an address it checked, so no second lookup
 //! can rebind the name between the check and the connection.
-use super::policy::{Endpoint, address_allowed};
+use super::policy::{Endpoint, EndpointClass, address_allowed};
 use crate::Error;
 use std::{
     io,
@@ -41,31 +41,34 @@ impl Connect for SystemConnector {
     }
 }
 
-fn timed_out(name: &str) -> Error {
-    Error::file_access(format!("connecting to {name} timed out"))
+fn not_in_class(address: SocketAddr, class: EndpointClass) -> Error {
+    Error::validation(format!(
+        "{} is not a {} address",
+        address.ip(),
+        class.label()
+    ))
 }
 
-/// Resolve `endpoint` once, check every address against its class and connect to the first
-/// checked address that accepts, spending at most `timeout` on each and never passing `deadline`.
-/// An IP-literal host is checked the same way without a lookup.
-pub(super) fn connect(
+/// Resolve `endpoint` once and check every address against its class. An IP-literal host is
+/// checked the same way without a lookup.
+pub(super) fn resolve(
     endpoint: &Endpoint,
     resolver: &dyn Resolve,
-    connector: &dyn Connect,
-    timeout: Duration,
-    deadline: Instant,
-) -> Result<TcpStream, Error> {
+) -> Result<Vec<SocketAddr>, Error> {
     let url = &endpoint.url;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| Error::validation("URL has no port"))?;
     let name = url.host_str().unwrap_or_default();
-    let addresses = match url.host() {
-        Some(Host::Domain(domain)) => resolver.resolve(domain, port).map_err(|error| {
-            Error::file_access(format!("cannot resolve {name}: {}", error.kind()))
-        })?,
-        Some(Host::Ipv4(address)) => vec![SocketAddr::new(address.into(), port)],
-        Some(Host::Ipv6(address)) => vec![SocketAddr::new(address.into(), port)],
+    let (addresses, looked_up) = match url.host() {
+        Some(Host::Domain(domain)) => (
+            resolver.resolve(domain, port).map_err(|error| {
+                Error::file_access(format!("cannot resolve {name}: {}", error.kind()))
+            })?,
+            true,
+        ),
+        Some(Host::Ipv4(address)) => (vec![SocketAddr::new(address.into(), port)], false),
+        Some(Host::Ipv6(address)) => (vec![SocketAddr::new(address.into(), port)], false),
         None => return Err(Error::validation("URL has no host")),
     };
     if addresses.is_empty() {
@@ -73,24 +76,43 @@ pub(super) fn connect(
             "{name} did not resolve to any address"
         )));
     }
-    if let Some(address) = addresses
+    let class = endpoint.class;
+    if let Some(&address) = addresses
         .iter()
-        .map(SocketAddr::ip)
-        .find(|&address| !address_allowed(address, endpoint.class))
+        .find(|address| !address_allowed(address.ip(), class))
     {
-        let class = endpoint.class.label();
-        return Err(Error::validation(match url.host() {
-            Some(Host::Domain(_)) => {
-                format!("{name} resolved to {address}, which is not a {class} address")
-            }
-            _ => format!("{address} is not a {class} address"),
-        }));
+        return Err(if looked_up {
+            Error::validation(format!(
+                "{name} resolved to {}, which is not a {} address",
+                address.ip(),
+                class.label()
+            ))
+        } else {
+            not_in_class(address, class)
+        });
     }
+    Ok(addresses)
+}
+
+/// Connect to the first of `addresses` that accepts, checking each against `class` again,
+/// spending at most `timeout` on each and never passing `deadline`.
+pub(super) fn connect(
+    addresses: &[SocketAddr],
+    class: EndpointClass,
+    name: &str,
+    connector: &dyn Connect,
+    timeout: Duration,
+    deadline: Instant,
+) -> Result<TcpStream, Error> {
+    let timed_out = || Error::file_access(format!("connecting to {name} timed out"));
     let mut last = io::ErrorKind::NotConnected;
-    for address in addresses {
+    for &address in addresses {
+        if !address_allowed(address.ip(), class) {
+            return Err(not_in_class(address, class));
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(timed_out(name));
+            return Err(timed_out());
         }
         match connector.connect(address, timeout.min(remaining)) {
             Ok(stream) => return Ok(stream),
@@ -98,7 +120,7 @@ pub(super) fn connect(
         }
     }
     Err(if last == io::ErrorKind::TimedOut {
-        timed_out(name)
+        timed_out()
     } else {
         Error::file_access(format!("cannot connect to {name}: {last}"))
     })

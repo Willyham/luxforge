@@ -1377,7 +1377,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | Cancel a running activation to `cancelled` (the proof's slow loader checks every ~10 ms) | 10.2 / 15.1 ms | 10 |
 | A whole `task.generate-proof-tint`: request to `ready`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
 | … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
-| Cancel a task stalled inside its request to `cancelled` (100 ms read slice) | 84.8 / 89.6 ms | 10 |
+| Cancel a task stalled inside its request to `cancelled` (the cancel shuts the request's socket down; measured 2026-09-27 on the [`ureq` transport](#transport-on-ureqs-agent), load 35 to 39) | 0.28 / 0.89 ms | 10 |
 | Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |
 
 Discovery, registration and catalog reopen start no worker thread and create no directory: `schema.list` and `module.list` against a fresh data root leave it empty, and the owner tests assert that no lane has started and the secret store saw no call. The two lanes block on their channels while idle.
@@ -1398,16 +1398,16 @@ Discovery, registration and catalog reopen start no worker thread and create no 
 
 The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
 
-### Transport on `ureq-proto`
+### Transport on `ureq`'s agent
 
-Release builds (`cargo xtask build --release`) of `2f972b0` and of the change moving the transport's HTTP/1.1 onto `ureq-proto`, back to back in one worktree on the M4, 2026-09-24. Size only; nothing was timed.
+Release builds (`cargo xtask build --release`) of `cdd5667`, whose transport framed HTTP/1.1 with `ureq-proto` in its own read loop, and of the change moving it onto `ureq`'s agent and pinning `idna_adapter` to 1.0.0, in one worktree on the M4, 2026-09-27. Size only; the cancel row above is the one timing this change moved.
 
 | Measurement | Before | After |
 | --- | --- | --- |
-| Executable size | 28,499,744 bytes (28.5 MB) | 28,665,072 bytes (28.7 MB), 161 KiB larger |
-| `Cargo.lock` packages | 495 | 499: `ureq-proto`, `http`, `httparse` and `base64` |
+| Executable size | 30,106,048 bytes (30.1 MB) | 30,102,240 bytes (30.1 MB), 3.7 KiB smaller |
+| `Cargo.lock` packages | 509 | 488: `ureq` and `utf8-zero` become normal dependencies, and the 21 packages of the ICU4X normalizer behind `idna_adapter` 1.2.2 go |
 
-The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference to 28.5 MB.
+The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference.
 
 ## Performance section, activity board and resource counters
 

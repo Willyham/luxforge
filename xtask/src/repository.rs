@@ -612,6 +612,21 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "the harness assembles editor arguments only in the scenario library's Launch and \
                  launches the editor only through its Run (xtask/src/scenario/launch.rs)",
     },
+    // One HTTP/1.1 implementation: the module transport runs on `ureq`'s agent, and only it names
+    // the protocol crate under that agent or its head parser, so no second hand-written framing
+    // appears elsewhere, test code included.
+    SourceRule {
+        name: "http-framing",
+        tokens: &["ureq_proto::", "httparse::"],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/capabilities/transport"],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "only the module transport (crates/luxforge-core/src/capabilities/transport) \
+                 speaks HTTP/1.1, through ureq; no other code frames HTTP",
+    },
     SourceRule {
         name: "no-pixel-image-handle",
         tokens: &["Handle::from_rgba"],
@@ -737,6 +752,15 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
+    },
+    // The HTTP client is the core's: `ureq` and `ureq-proto` belong to the module transport.
+    DependencyRule {
+        name: "http-client-crates",
+        refuses: Depends::Prefixed("ureq"),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-core"],
+        reason: "only luxforge-core, for its module transport, may depend on ureq or ureq-proto",
     },
     // The references are independent by construction: nothing they build against can reach the
     // core they check, directly or through a crate that depends on it.
@@ -2265,6 +2289,86 @@ mod tests {
             ],
             "uploads a new texture",
         );
+    }
+
+    #[test]
+    fn only_the_module_transport_frames_http() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let transport = "crates/luxforge-core/src/capabilities/transport";
+        // The transport and its tests may; a longer name and the rules file are not the token.
+        write_all(
+            root,
+            &[
+                (
+                    &format!("{transport}/agent.rs"),
+                    "use ureq_proto::Error;\nlet h = httparse::Status::Partial;\n",
+                ),
+                (
+                    &format!("{transport}/tests.rs"),
+                    "let e = ureq_proto::Error::HttpParseTooManyHeaders;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/capabilities/context.rs",
+                    "use my_ureq_proto::x;\nlet agent = ureq::Agent::new_with_defaults();\n",
+                ),
+                (RULES_FILE, "tokens: &[\"ureq_proto::\", \"httparse::\"],\n"),
+                (
+                    "crates/luxforge-core/Cargo.toml",
+                    "[dependencies]\nureq.workspace = true\nureq-proto.workspace = true\n",
+                ),
+                (
+                    "crates/luxforge-testkit/Cargo.toml",
+                    "[dependencies]\nurl.workspace = true\n",
+                ),
+            ],
+        );
+        let rules = ["http-framing", "http-client-crates"];
+        assert!(read(root, &rules).is_ok());
+        // Anywhere else, test code included, it is refused.
+        refuses_each(
+            root,
+            "http-framing",
+            &[
+                (
+                    "crates/luxforge-testkit/src/server.rs",
+                    "let mut headers = [httparse::EMPTY_HEADER; 64];\n",
+                ),
+                (
+                    "crates/luxforge-core/src/capabilities/resources.rs",
+                    "use ureq_proto::client::Call;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/capabilities/proof_tests.rs",
+                    "let call = ureq_proto::client::Call::new(request);\n",
+                ),
+                (
+                    "xtask/src/scenario/capabilities.rs",
+                    "let parsed = httparse::Response::new(&mut headers);\n",
+                ),
+            ],
+            "speaks HTTP/1.1",
+        );
+        for (path, text) in [
+            (
+                "crates/luxforge-testkit/Cargo.toml",
+                "[dev-dependencies]\nureq-proto = \"0.6\"\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[dependencies]\nclient = { package = \"ureq\", version = \"3\" }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(&format!("{path}:"))
+                    && error.contains("may depend on ureq")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
     }
 
     #[test]
