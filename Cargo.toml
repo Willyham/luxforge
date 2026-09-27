@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-core", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testkit", "xtask"]
+members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testkit", "xtask"]
 exclude = ["probes/raw"]
 resolver = "3"
 
@@ -15,14 +15,15 @@ publish = false
 # tests, the reference crate and xtask add `jpeg` for themselves, as an independent decoder.
 image = { version = "=0.25.9", default-features = false, features = ["png"] }
 moxcms = { version = "=0.7.11", default-features = false }
-# The one JPEG codec, for importing originals and writing exports: libjpeg-turbo as bundled by
-# `mozjpeg-sys`, built from its source with `cc`. `with_simd` is NEON on aarch64 through the C
-# compiler; x86_64 SIMD would need NASM, which `nasm_simd` is not asked for, so x86_64 builds the
-# portable C path. The crate itself turns on `unwinding`, which lets libjpeg's errors unwind to
-# Rust instead of aborting.
+# The one JPEG codec, for importing originals and writing exports, named only by `luxforge-jpeg`:
+# libjpeg-turbo as bundled by `mozjpeg-sys`, built from its source with `cc`. `with_simd` is NEON on
+# aarch64 through the C compiler; x86_64 SIMD would need NASM, which `nasm_simd` is not asked for,
+# so x86_64 builds the portable C path. The crate itself turns on `unwinding`, which lets libjpeg's
+# errors unwind to Rust instead of aborting.
 mozjpeg = { version = "=0.10.13", default-features = false, features = ["with_simd"] }
-# `mozjpeg`'s own C bindings, the package it already builds, named for one type: the decoder's
-# error manager, which `mozjpeg` accepts but does not export, so a libjpeg warning can stop a decode.
+# `mozjpeg`'s own C bindings, the package it already builds, named for the decoder's error manager,
+# which `mozjpeg` accepts but does not export, and for libjpeg's warning codes, which that manager
+# classifies so that a warning standing for lost data stops a decode.
 mozjpeg-sys = { version = "=2.2.3", default-features = false }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }

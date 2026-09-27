@@ -17,7 +17,6 @@ mod error;
 pub mod export;
 /// One persistent worker that runs the newest job, behind the preview, the analysis and the
 /// desktop's clipping overlay.
-mod jpeg;
 pub mod latest;
 /// The host's compiled mask and the component kinds this build can evaluate.
 pub mod mask;

@@ -1983,13 +1983,12 @@ version = "0.0.0"
 dependencies = [
  "image",
  "kamadak-exif",
+ "luxforge-jpeg",
  "luxforge-process",
  "luxforge-raw",
  "luxforge-reference",
  "luxforge-testkit",
  "moxcms",
- "mozjpeg",
- "mozjpeg-sys",
  "rayon",
  "roxmltree",
  "rusqlite",
@@ -2012,6 +2011,17 @@ dependencies = [
  "serde",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "luxforge-jpeg"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "mozjpeg",
+ "mozjpeg-sys",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
