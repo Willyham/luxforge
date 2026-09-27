@@ -54,6 +54,7 @@ pub use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
+pub use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RAW_EFFECT, RawModule, RawPayload, WhiteBalanceMode};
 #[cfg(test)]

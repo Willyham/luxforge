@@ -1,4 +1,5 @@
 //! The required source-stage interpretation of a RAW original.
+pub mod lightroom_white_balance;
 pub mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,

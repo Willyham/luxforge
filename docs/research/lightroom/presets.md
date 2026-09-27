@@ -47,6 +47,89 @@ Lightroom Classic 7.3 and later store presets as `.xmp` files.
 
 **U.** No source describes what Lightroom does to `Temperature` and `Tint` when a preset saved from a RAW photo is applied to a JPEG. Adobe says a preset tied to a RAW-only profile does not work on a JPEG (S54), and it calls presets whose settings cannot all be applied *partially compatible* (S54, S55). Do not guess a conversion between Kelvin and incremental values.
 
+## RAW Temperature/Tint conversion
+
+The [source-kind controls](../../decisions.md#source-kind-controls) decision converts a preset's
+RAW `Temperature`/`Tint` pair (`crs:Temperature`, `crs:Tint`) to Luxforge's own RAW Temperature
+and Tint through the illuminant chromaticity both pairs name, refusing the pair together when the
+result falls outside Luxforge's 2,000–12,000 K / ±100 tint range. This section records the
+confirmed constants; the implementation is
+[`crates/luxforge-core/src/modules/raw/lightroom_white_balance.rs`](../../../crates/luxforge-core/src/modules/raw/lightroom_white_balance.rs).
+
+**D.** Lightroom's pair is Adobe's `dng_temperature` class, whose source is openly published in
+the Adobe DNG SDK. Checked against `dng_temperature.cpp`
+(`$Id: //mondo/dng_sdk_1_4/dng_sdk/source/dng_temperature.cpp#1 $`,
+`$DateTime: 2012/05/30 13:28:51 $`, Copyright 2006 Adobe Systems Incorporated), read from the open
+mirror <https://raw.githubusercontent.com/aizvorski/dng_sdk/master/source/dng_temperature.cpp>
+(also mirrored at
+<https://android.googlesource.com/platform/external/dng_sdk/+/master/source/dng_temperature.cpp>).
+The accompanying `LICENSE` in that mirror is Adobe's own DNG SDK agreement: a royalty-free grant
+to use, reproduce, modify and distribute the Software, conditioned on keeping the copyright
+notice; that grant and notice are carried into Luxforge's source comment, with no claim that a
+formal license audit was done (AGENTS.md, "Manual license reviews are deferred").
+
+- **The table.** `kTempTable` is 31 rows of `(r, u, v, t)`: `r` is reciprocal megakelvin
+  (`1.0e6 / kelvin`), `u` and `v` are the isotemperature line's point on the Planckian locus in
+  **CIE 1960 `uv`**, and `t = dv/du` is that line's slope. The comment in the SDK credits the
+  table to Wyszecki & Stiles, *Color Science*, second edition, page 228. Rows run `r = 0, 10, 20,
+  …, 100` (step 10) then `r = 125, 150, …, 600` (step 25); `r = 600` is `1,666.67` K, `r = 0` is an
+  infinitely hot blackbody.
+- **Forward map (`Get_xy_coord`).** For a temperature, `r = 1.0e6 / kelvin` locates the bracketing
+  pair of table rows by ascending scan (the last row is used past the table's end, an
+  extrapolation Luxforge's converter never reaches because it only receives temperatures inside
+  Lightroom's own declared 2,000–50,000 K). The two rows' `(u, v)` and unit slope vectors
+  `(1, t)/‖(1, t)‖` are linearly interpolated by `r`'s fractional position between them (a mired,
+  not Kelvin, interpolation), giving the temperature's own point on the locus and its
+  isotemperature direction. Tint is added along that direction: `offset = tint / kTintScale`,
+  `(u, v) += (offset · unit_slope)`.
+- **`kTintScale = -3000.0`** (S64: matches the community-reported "3000 × Duv", with Adobe's sign
+  making positive Tint move toward `−v`, opposite Luxforge's own positive-tint-is-magenta,
+  +`v`-ward convention). The scale is a plain division in `uv` space, not a percentage or a
+  camera-relative unit, so Lightroom's ±150 Tint is exactly ±0.05 `uv` (`150 / 3000`).
+- **What the SDK does not state.** Neither `dng_temperature.cpp` nor its header declares the
+  2,000–50,000 K / ±150 range; that is Lightroom's UI and namespace-schema restriction ([field
+  inventory](#field-inventory-for-luxforges-controls)), not a limit the table or the interpolation
+  enforce. The table's own `r` domain (`0..600`) covers roughly `1,667` K upward without a fixed
+  upper bound.
+- **Accuracy check.** [`lightroom_white_balance.rs`](../../../crates/luxforge-core/src/modules/raw/lightroom_white_balance.rs)'s
+  tests check the Rust transcription two ways: against a second, independently-shaped
+  reimplementation of the same interpolation (differently ordered table walk, `1/r` kept instead
+  of `r`), agreeing to `1e-9` in `xy` over a grid spanning Lightroom's declared domain; and against
+  CIE Illuminant A's published chromaticity (`x = 0.4476, y = 0.4074`, the same Wyszecki & Stiles
+  source), which the table reproduces at its nominal `2,856` K, tint 0 to within `2e-4` in `x` and
+  `y`. D65 (`x = 0.3127, y = 0.3290`) is checked only loosely (`0.01`): D65 is not on the
+  Planckian locus the table approximates, so Adobe's `6,504` K, tint 0 is expected to land *near*
+  D65, not on it, and this is not a claim that the two coincide.
+
+**Luxforge's own solve.** Luxforge's inverse locus search
+([`temperature_tint_from_uv`](../../../crates/luxforge-core/src/modules/raw/white_balance.rs),
+factored out of the gains inverse `temperature_tint_from_gains` without changing that function's
+results) takes the `uv` the DNG table names and finds the temperature and tint on *Luxforge's own*
+blackbody/daylight-blend locus that reach the same `uv`, refusing with `out-of-range: ...` when
+none does within its stated tolerance — in particular whenever the answer would sit outside
+2,000–12,000 K or ±100 tint. This is a **value conversion**: Luxforge's own locus is a different
+numerical approximation (a Planckian/daylight blend over 3,800–4,500 K, not Adobe's Robertson
+table) from Lightroom's, and the result is turned into sensor gains through LibRaw's camera
+matrix, never Adobe's DNG colour pipeline, so an imported preset changes the assumed illuminant,
+not an attempt to reproduce Lightroom's rendering. Sample conversions (frozen in the crate's
+tests, `matches_the_independent_reference_over_lightrooms_declared_domain` and
+`luxforge_answer_reproduces_the_lightroom_white_through_a_camera_matrix`):
+
+| Lightroom `Temperature`/`Tint` | Luxforge `Temperature`/`Tint` |
+| --- | --- |
+| 5500 K, +10 | 5501.872 K, −0.5716 |
+| 3200 K, 0 | 3208.192 K, +0.3160 |
+| 7500 K, −20 | 7520.251 K, −99.3120 |
+
+The tint numbers do not track Lightroom's own sign or magnitude one-for-one: Lightroom's Tint is
+an offset along *its* isotemperature line at *its* temperature, in units of `uv/3000`; Luxforge's
+is an offset along a different locus's normal at a (slightly different) solved temperature, in
+units of `1e-4` `uv`. A pair carries the same illuminant, not the same two numbers.
+
+A pair whose result falls outside Luxforge's ranges is refused together, for example
+`lightroom_to_luxforge(50_000.0, 0.0)`, which asks for a temperature Luxforge's locus does not
+reach.
+
 ## Process versions
 
 **D.** Adobe names the process versions 2003, 2010, 2012, 5 and 6, and never upgrades a photo's process version silently (S07). **F** establishes these `ProcessVersion` strings: `6.7` is Process 2012 (a template using the `*2012` fields) and `11.0` is Process 5 (S49). Community sources give `5.0` for 2003, `5.7` for 2010, `10.0` for Process 4 and `15.4` for Process 6; those four are unverified.
