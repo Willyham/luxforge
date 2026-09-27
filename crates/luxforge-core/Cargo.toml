@@ -28,6 +28,9 @@ zeroize.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+winapi-util = "=0.1.11"
+
 [dev-dependencies]
 kamadak-exif.workspace = true
 luxforge-raw = { path = "../luxforge-raw", features = ["performance-diagnostics"] }

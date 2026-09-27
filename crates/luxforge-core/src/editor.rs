@@ -45,7 +45,7 @@ pub(crate) use evaluate::PointPlan;
 pub use masks::{MASK_FIELD, mask_target_parameter};
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
-pub(crate) use source::{FilePreparation, source_signature};
+pub(crate) use source::{FilePreparation, source_signature, source_signature_for_handle};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
