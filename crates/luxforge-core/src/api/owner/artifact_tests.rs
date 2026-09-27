@@ -1,5 +1,6 @@
 //! Derived artifacts through the catalog owner and the JSON methods: preparation as a source job,
-//! pinned preview jobs, corrupt bytes and collection.
+//! pinned preview jobs, corrupt bytes, the collection queued automatically when a catalog opens
+//! and the explicit `artifact.collect` method.
 use super::*;
 use crate::{
     Mutation,
@@ -294,16 +295,23 @@ fn a_corrupt_artifact_fails_its_preparation_job_and_nothing_is_rewritten() {
     fs::remove_dir_all(directory).unwrap();
 }
 
-#[test]
-fn collection_through_the_api_counts_what_it_removed() {
-    let directory = directory("collect");
-    let catalog = directory.join("catalog.sqlite");
-    let root = directory.join("catalog.artifacts");
-    let (asset, _, kept, expected) = tinted_catalog(&catalog, [0.35, 0.8, 0.8]);
-    // Recorded in a session that has ended and never committed, an orphan object without a row
-    // and a stale staged file.
+/// A catalog with a row and object no entry references, an object with no row at all and a stale
+/// staged file, all recorded by a session that wrote them and closed before this one opens. What
+/// still references `kept` is the tinted asset's current entry.
+fn orphaned_catalog(
+    catalog: &Path,
+    root: &Path,
+) -> (
+    AssetId,
+    ArtifactId,
+    ArtifactId,
+    PathBuf,
+    ArtifactId,
+    [u8; 4],
+) {
+    let (asset, _, kept, expected) = tinted_catalog(catalog, [0.35, 0.8, 0.8]);
     let unused = {
-        let mut service = EditorService::open_with(&catalog, TintModule::registry()).unwrap();
+        let mut service = EditorService::open_with(catalog, TintModule::registry()).unwrap();
         let (record, bytes) = service
             .artifact_writer()
             .unwrap()
@@ -320,7 +328,7 @@ fn collection_through_the_api_counts_what_it_removed() {
     let orphan_bytes = TintModule::bytes([0.35, 0.35, 0.8]);
     let orphan =
         ArtifactId::for_hash(&format!("{:x}", sha2::Sha256::digest(&orphan_bytes))).unwrap();
-    fs::write(object_path(&root, &orphan), &orphan_bytes).unwrap();
+    fs::write(object_path(root, &orphan), &orphan_bytes).unwrap();
     let stale = root.join("tmp").join("stale");
     fs::write(&stale, b"stale").unwrap();
     File::options()
@@ -329,38 +337,101 @@ fn collection_through_the_api_counts_what_it_removed() {
         .unwrap()
         .set_modified(SystemTime::now() - Duration::from_secs(2 * 60 * 60))
         .unwrap();
+    (asset, unused, orphan, stale, kept, expected)
+}
+
+/// Wait for a path to stop existing, as a client would wait for the source worker to finish a
+/// collection it has no job id for. Nothing polls this in production; the test stands in.
+fn removed_eventually(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} was never removed",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn opening_a_catalog_collects_what_a_closed_session_left_and_keeps_what_is_referenced() {
+    let directory = directory("open-collect");
+    let catalog = directory.join("catalog.sqlite");
+    let root = directory.join("catalog.artifacts");
+    let (asset, unused, orphan, stale, kept, expected) = orphaned_catalog(&catalog, &root);
+
+    // No client calls `artifact.collect` anywhere in this test.
     let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
     let client = owner.register();
-    let status = ok(&owner, client, "artifact.status", json!({}));
+
+    // The row query and deletion already ran on the thread that opened the catalog, before the
+    // owner answered its first call: the orphaned row is already gone, the referenced one is not.
     assert_eq!(
-        (
-            &status["referenced"],
-            &status["candidates"],
-            &status["bytes"]
-        ),
-        (&json!(1), &json!(1), &json!(24))
-    );
-    let inspected = ok(
-        &owner,
-        client,
-        "artifact.inspect",
-        json!({"artifact_id": unused}),
+        ok(&owner, client, "artifact.status", json!({}))["candidates"],
+        json!(0)
     );
     assert_eq!(
-        (
-            &inspected["file"],
-            &inspected["references"],
-            &inspected["live"],
-            &inspected["meta"]["kind"],
-            &inspected["module_id"]
-        ),
-        (
-            &json!("present"),
-            &json!(0),
-            &json!(false),
-            &json!("tint"),
-            &json!(TINT_MODULE)
+        failure(
+            &owner,
+            client,
+            "artifact.inspect",
+            json!({"artifact_id": unused})
         )
+        .message,
+        format!("unknown artifact {unused}")
+    );
+    assert_eq!(
+        ok(
+            &owner,
+            client,
+            "artifact.inspect",
+            json!({"artifact_id": kept})
+        )["references"],
+        json!(1)
+    );
+
+    // The source worker removes the files once it runs; wait for it the way a client without a
+    // job id would.
+    removed_eventually(&object_path(&root, &unused));
+    removed_eventually(&object_path(&root, &orphan));
+    removed_eventually(&stale);
+    assert!(
+        object_path(&root, &kept).exists(),
+        "a referenced artifact's file survives"
+    );
+
+    // The tinted stack still samples the same bytes.
+    assert_eq!(
+        prepared(
+            &owner,
+            client,
+            "render.sample",
+            json!({"asset_id": asset, "x": 3, "y": 4})
+        )["rgba"],
+        json!(expected)
+    );
+
+    // Nothing announced a mutation: no client asked for this collection.
+    assert_eq!(events(&owner, client), Vec::<String>::new());
+    owner.stop();
+    join.join().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn artifact_collect_through_the_api_answers_once_the_open_has_already_swept_everything() {
+    let directory = directory("collect");
+    let catalog = directory.join("catalog.sqlite");
+    let root = directory.join("catalog.artifacts");
+    let (asset, _, kept, expected) = tinted_catalog(&catalog, [0.35, 0.8, 0.8]);
+    let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
+    let client = owner.register();
+    // Nothing is left for the explicit method to find: the automatic collection at open already
+    // swept anything a prior session could have left.
+    assert_eq!(
+        ok(&owner, client, "artifact.status", json!({}))["candidates"],
+        json!(0)
     );
     assert_eq!(
         failure(
@@ -383,26 +454,9 @@ fn collection_through_the_api_counts_what_it_removed() {
     assert_eq!(done["status"], "ready", "{done}");
     assert_eq!(
         done["result"],
-        json!({"rows": 1, "objects": 2, "temporary": 1})
+        json!({"rows": 0, "objects": 0, "temporary": 0})
     );
-    assert!(!object_path(&root, &unused).exists());
-    assert!(!object_path(&root, &orphan).exists());
-    assert!(!stale.exists());
     assert!(object_path(&root, &kept).exists());
-    assert_eq!(
-        ok(&owner, client, "artifact.status", json!({}))["candidates"],
-        json!(0)
-    );
-    assert_eq!(
-        failure(
-            &owner,
-            client,
-            "artifact.inspect",
-            json!({"artifact_id": unused})
-        )
-        .message,
-        format!("unknown artifact {unused}")
-    );
     assert_eq!(
         prepared(
             &owner,

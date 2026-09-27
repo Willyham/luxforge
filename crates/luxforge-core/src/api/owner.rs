@@ -66,6 +66,11 @@ impl ClientId {
     }
 }
 
+/// No registered client: [`OwnerHandle::register`] hands out `1` and up, so this id never
+/// collides with one. Attached to the collection [`launch`] queues on its own, which no client
+/// asked for and none can read through `job.status`.
+const SYSTEM_CLIENT: ClientId = ClientId(0);
+
 struct OwnerCall {
     client: ClientId,
     request: ApiRequest,
@@ -396,7 +401,8 @@ impl SourceJobs {
         self.submit(client, key, kind, artifacts, None, true)
     }
 
-    /// A collection: work a client asked for explicitly, which another request never joins.
+    /// A collection: either a client asked for it explicitly, or [`OwnerHandle::launch`] queued it
+    /// on its own when the catalog opened. Never shared: another request never joins it.
     fn enqueue_maintenance(
         &mut self,
         client: ClientId,
@@ -1000,7 +1006,21 @@ impl OwnerHandle {
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
         let worker_sender = sender.clone();
         let gate = Arc::new(PlaneGate::default());
-        let jobs = SourceJobs::new(source_sender, gate.clone());
+        let mut jobs = SourceJobs::new(source_sender, gate.clone());
+        // One collection, queued here rather than on the owner thread or in response to any
+        // client: the row query and deletion happen now, on the thread opening the catalog, and
+        // the source worker removes the files once it starts. Skipped when there is nothing to
+        // find: no unreferenced row and no artifact root yet, the common case for a catalog that
+        // has never published an artifact, so a fresh catalog queues no source job. A planning
+        // error or a full queue (unreachable this early) simply leaves the objects for the next
+        // open to collect; it never fails opening the catalog.
+        if let Ok(collection) = service.plan_collection()
+            && (collection.rows > 0 || collection.root.exists())
+        {
+            let root = collection.root.clone();
+            let _ =
+                jobs.enqueue_maintenance(SYSTEM_CLIENT, root, SourceTaskKind::Collect(collection));
+        }
         let worker_activity = activity.clone();
         let worker = std::thread::spawn(move || {
             source_worker(source_receiver, worker_sender, gate, worker_activity, hold)
