@@ -16,7 +16,7 @@
 //! same reference, so a silent drift between the file and the frozen
 //! formulas fails the build instead of going unnoticed.
 
-use luxforge_reference::colour;
+use luxforge_reference::{colour, srgb};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -36,24 +36,12 @@ impl Input {
     fn to_linear(&self) -> [f64; 3] {
         match self {
             Input::Srgb8 { rgb } => [
-                reference_code_to_linear(rgb[0]),
-                reference_code_to_linear(rgb[1]),
-                reference_code_to_linear(rgb[2]),
+                srgb::decode(rgb[0]),
+                srgb::decode(rgb[1]),
+                srgb::decode(rgb[2]),
             ],
             Input::Linear { rgb } => *rgb,
         }
-    }
-}
-
-// The study recomputes the one conversion it needs from the published sRGB
-// constants directly, matching `luxforge_reference::srgb_decode` exactly, so
-// its inputs do not go through the reference it checks.
-fn reference_code_to_linear(code: u8) -> f64 {
-    let encoded = f64::from(code) / 255.0;
-    if encoded <= 0.04045 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
     }
 }
 

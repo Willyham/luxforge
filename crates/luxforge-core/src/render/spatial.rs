@@ -1170,6 +1170,7 @@ mod tests {
             tests::{CropReference, crop_layer, fitted_crop, geometry_registry, gradient, turn},
         },
     };
+    use luxforge_reference::srgb;
     use serde_json::{Map, Value, json};
     use std::{
         borrow::Cow,
@@ -1630,19 +1631,11 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     fn encode_reference(linear: f64) -> f64 {
-        if linear <= 0.003_130_8 {
-            12.92 * linear
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        }
+        srgb::encode_extended(linear)
     }
 
     fn decode_reference(encoded: f64) -> f64 {
-        if encoded <= 0.040_45 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }
+        srgb::decode_encoded(encoded)
     }
 
     fn reference_code(linear: f64) -> u8 {

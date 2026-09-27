@@ -648,6 +648,7 @@ impl ComponentField for CompiledColour {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_reference::srgb;
 
     /// The axis returns every grey code to its own histogram bin, which is what makes the band's
     /// numbers mean what the histogram's axis means.
@@ -719,10 +720,6 @@ mod tests {
 
     /// The linear grey whose encoded luminance is `e`.
     fn linear_grey(e: f64) -> f64 {
-        if e <= 0.040_45 {
-            e / 12.92
-        } else {
-            ((e + 0.055) / 1.055).powf(2.4)
-        }
+        srgb::decode_encoded(e)
     }
 }

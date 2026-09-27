@@ -143,9 +143,9 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
     assert_eq!((rendered.width, rendered.height), (24, 16));
 
     let input_linear = [
-        reference::srgb_to_linear(128),
-        reference::srgb_to_linear(96),
-        reference::srgb_to_linear(64),
+        reference::srgb::decode(128),
+        reference::srgb::decode(96),
+        reference::srgb::decode(64),
     ];
     for (x, y) in [(0u32, 0u32), (23, 0), (0, 15), (23, 15), (12, 8)] {
         let expected_mask = reference::vignette::mask(
@@ -162,9 +162,9 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
         );
         let expected_linear = reference::vignette::apply(input_linear, expected_mask, amount);
         let expected = [
-            reference::linear_to_srgb_code(expected_linear[0]),
-            reference::linear_to_srgb_code(expected_linear[1]),
-            reference::linear_to_srgb_code(expected_linear[2]),
+            reference::srgb::code(expected_linear[0]),
+            reference::srgb::code(expected_linear[1]),
+            reference::srgb::code(expected_linear[2]),
         ];
         let actual = rendered.pixel(x, y).expect("an in-bounds pixel");
         for channel in 0..3 {
@@ -182,9 +182,9 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
     // must be exactly the quantized input, unmoved by the vignette at all.
     let centre = rendered.pixel(12, 8).expect("an in-bounds pixel");
     let centre_expected = [
-        reference::linear_to_srgb_code(input_linear[0]),
-        reference::linear_to_srgb_code(input_linear[1]),
-        reference::linear_to_srgb_code(input_linear[2]),
+        reference::srgb::code(input_linear[0]),
+        reference::srgb::code(input_linear[1]),
+        reference::srgb::code(input_linear[2]),
     ];
     assert_eq!(
         &centre[..3],
@@ -219,13 +219,13 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
             input[1].as_f64().unwrap(),
             input[2].as_f64().unwrap(),
         ];
-        let byte = input_linear.map(reference::linear_to_srgb_code);
-        let quantized_linear = byte.map(reference::srgb_to_linear);
+        let byte = input_linear.map(reference::srgb::code);
+        let quantized_linear = byte.map(reference::srgb::decode);
         let params = &case["params"];
         let amount = params["amount"].as_f64().unwrap();
         let expected_mask = case["expected_mask"].as_f64().unwrap();
         let expected_linear = reference::vignette::apply(quantized_linear, expected_mask, amount);
-        let expected = expected_linear.map(reference::linear_to_srgb_code);
+        let expected = expected_linear.map(reference::srgb::code);
 
         let pixels = vec![byte; (width * height) as usize];
         let source = source_of(width, height, &pixels);
@@ -265,7 +265,7 @@ fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 202);
     let grey_byte = 160u8;
-    let grey_linear = reference::srgb_to_linear(grey_byte);
+    let grey_linear = reference::srgb::decode(grey_byte);
     for case in &cases {
         let width = case["width"].as_u64().unwrap() as u32;
         let height = case["height"].as_u64().unwrap() as u32;
@@ -275,7 +275,7 @@ fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
         let expected_mask = case["expected_mask"].as_f64().unwrap();
         let amount = -100.0;
         let expected_linear = reference::vignette::apply([grey_linear; 3], expected_mask, amount);
-        let expected = reference::linear_to_srgb_code(expected_linear[0]);
+        let expected = reference::srgb::code(expected_linear[0]);
 
         let pixels = vec![[grey_byte; 3]; (width * height) as usize];
         let source = source_of(width, height, &pixels);

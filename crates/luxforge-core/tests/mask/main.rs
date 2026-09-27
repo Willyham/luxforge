@@ -113,7 +113,7 @@ fn decoded(source: &SourceImage) -> LinearImage {
         .rgba
         .chunks_exact(4)
         .map(|pixel| {
-            std::array::from_fn(|channel| luxforge_reference::srgb_to_linear(pixel[channel]))
+            std::array::from_fn(|channel| luxforge_reference::srgb::decode(pixel[channel]))
         })
         .collect();
     fixtures::linear_source_of(source.width, source.height, &pixels)

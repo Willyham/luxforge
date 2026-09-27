@@ -8,9 +8,10 @@
 //! axis with `L` untouched, so composing their gains before scaling changes no arithmetic on
 //! `a`/`b` itself; only the number of round trips through the independently rounded inverse
 //! matrices changes (see `colour_adjust_matches_the_sequential_pair_within_the_frozen_tolerance`
-//! below for the measured difference this makes). This file never imports the reference: the two
-//! are written
-//! independently so they never share a bug.
+//! below for the measured difference this makes). This file never imports the reference's colour
+//! module: the two are written independently so they never share a bug. Its tests decode an sRGB
+//! byte to linear light through `luxforge_reference::srgb`, the one shared sRGB oracle, which is
+//! not part of that comparison.
 use crate::{
     colour::oklab::{Oklab, chroma, from_oklab, hue_degrees, to_oklab},
     modules::PointwiseColor,
@@ -188,6 +189,7 @@ impl PointwiseColor for ColourAdjust {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_reference::srgb;
     use serde::Deserialize;
     use std::{fs, path::PathBuf};
 
@@ -282,12 +284,7 @@ mod tests {
     }
 
     fn code_to_linear(code: u8) -> f32 {
-        let encoded = f64::from(code) / 255.0;
-        (if encoded <= 0.04045 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }) as f32
+        srgb::decode(code) as f32
     }
 
     fn row_of(rgb: [f32; 3]) -> [[f32; 3]; 1] {

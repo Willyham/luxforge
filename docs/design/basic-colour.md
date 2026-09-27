@@ -185,4 +185,4 @@ Limitations recorded from this review (in addition to the gamut-clamp hue shift 
 - [Björn Ottosson, "A perceptual color space for image processing" (Oklab)](https://bottosson.github.io/posts/oklab/) — source of the matrices reproduced above.
 - [Basic adjustments and histogram](basic-and-histogram.md) — integration contract (unit order, domain, output boundary, general float tolerance) and the "Saturation and vibrance" numerical task description this study answers.
 - [Lightroom tone/color research](../research/lightroom/tone-and-color-tools.md) — behavioural context only; no equivalence is claimed anywhere in this document.
-- [W3C CSS Color 4 conversion code](https://www.w3.org/TR/css-color-4/#color-conversion-code) — an independent secondary reference for the sRGB transfer function used by `code_to_linear`/`linear_to_code`, not a dependency.
+- [W3C CSS Color 4 conversion code](https://www.w3.org/TR/css-color-4/#color-conversion-code) — an independent secondary reference for the sRGB transfer function used by `luxforge_reference::srgb::decode`/`code`, not a dependency.

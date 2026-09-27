@@ -6,8 +6,8 @@
 //! with `cargo test -p luxforge-reference --test studies -- --ignored`,
 //! look at the PNGs it writes under a temp directory, and record findings in the design doc.
 
+use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{apply, solve_from_patch};
-use luxforge_reference::{srgb_decode, srgb_encode, srgb_quantize};
 use std::path::PathBuf;
 
 const SETTINGS: [(f64, f64, &str); 6] = [
@@ -27,13 +27,13 @@ fn output_dir() -> PathBuf {
 
 fn byte(v: f64) -> u8 {
     // Clamp only here, at the displayed-PNG output boundary; `apply` itself never clamps.
-    srgb_quantize(srgb_encode(v.clamp(0.0, 1.0)))
+    srgb::quantize(srgb::encode_nonnegative(v.clamp(0.0, 1.0)))
 }
 
 fn apply_to_image(input: &image::RgbImage, temperature: f64, tint: f64) -> image::RgbImage {
     image::RgbImage::from_fn(input.width(), input.height(), |x, y| {
         let p = input.get_pixel(x, y);
-        let linear = [srgb_decode(p[0]), srgb_decode(p[1]), srgb_decode(p[2])];
+        let linear = [srgb::decode(p[0]), srgb::decode(p[1]), srgb::decode(p[2])];
         let out = apply(temperature, tint, linear);
         image::Rgb([byte(out[0]), byte(out[1]), byte(out[2])])
     })

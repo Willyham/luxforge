@@ -89,38 +89,22 @@ pub fn luminance(rgb: [f64; 3]) -> f64 {
     LUMA_R * rgb[0] + LUMA_G * rgb[1] + LUMA_B * rgb[2]
 }
 
-/// The sRGB OETF (linear -> encoded), analytically continued to every finite
-/// real `l`, not just `[0, 1]`. The standard piecewise formula needs no
-/// modification to do this: the linear branch (`12.92 * l`) is defined for
-/// every real `l`, and the power branch (`1.055 * l.powf(1.0/2.4) - 0.055`) is
-/// defined for every `l > 0`, which is exactly the branch's domain
-/// (`l > 0.0031308`). No clamping is applied, so this is monotone increasing
-/// and continuous (though not C1 at the breakpoint) on the whole real line.
-/// This is the "working tone domain" the curve stages below operate in.
+/// The sRGB OETF (linear -> encoded), analytically continued to every finite real `l`, not just
+/// `[0, 1]`: [`crate::srgb::encode_extended`]. This is the "working tone domain" the curve stages
+/// below operate in.
 ///
-/// `pub` (not private) so the vignette reference can reuse the same
-/// analytically-continued sRGB OETF for its positive-amount mapping instead of
-/// duplicating it; see `docs/design/presence-mixer-vignette.md`'s "Vignette:
-/// one positional unit" and `crates/luxforge-reference/src/vignette.rs`.
+/// `pub` (not private) so the vignette reference can reuse the same analytically-continued sRGB
+/// OETF for its positive-amount mapping instead of duplicating it; see
+/// `docs/design/presence-mixer-vignette.md`'s "Vignette: one positional unit" and
+/// `crates/luxforge-reference/src/vignette.rs`.
 pub fn encode_srgb_extended(l: f64) -> f64 {
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    }
+    crate::srgb::encode_extended(l)
 }
 
-/// The inverse of `encode_srgb_extended`, equally extended: the linear branch
-/// (`e / 12.92`) is defined for every real `e`, and the power branch
-/// (`((e + 0.055) / 1.055).powf(2.4)`) is defined for every `e > -0.055`, which
-/// holds everywhere the branch is used (`e > 0.04045`). No clamping. `pub` for
-/// the same cross-reference reason as `encode_srgb_extended` above.
+/// The inverse of `encode_srgb_extended`, equally extended: [`crate::srgb::decode_encoded`].
+/// `pub` for the same cross-reference reason as `encode_srgb_extended` above.
 pub fn decode_srgb_extended(e: f64) -> f64 {
-    if e <= 0.040_45 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
+    crate::srgb::decode_encoded(e)
 }
 
 /// Stage 1: Whites/Blacks. An endpoint-anchored linear remap `y = (x - bp) /

@@ -9,6 +9,7 @@
 
 use super::approximately_equal;
 use luxforge_reference::SplitMix64;
+use luxforge_reference::srgb;
 use luxforge_reference::vignette::{VignetteParams, apply, corner_radius, mask, vignette_pixel};
 use std::path::{Path, PathBuf};
 
@@ -460,11 +461,7 @@ fn corners_go_black_at_amount_minus_100_whenever_corner_mask_is_one() {
 // ---------------------------------------------------------------------------
 
 fn encode_ext(l: f64) -> f64 {
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    }
+    srgb::encode_extended(l)
 }
 
 #[test]

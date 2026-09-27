@@ -165,7 +165,7 @@ Checked in this order:
 
 1. **Clipped**: any sampled pixel has any channel at code 0 or 255. Checked on the raw bytes, before decoding or averaging — a single blown highlight or crushed shadow pixel in the patch rejects the whole sample.
 2. **Near-black**: the patch's mean relative luminance (`Y`, the same `0.2126729·R + 0.7151522·G + 0.0721750·B` row `RGB_TO_XYZ` already uses) is below `NEAR_BLACK_LUMINANCE = 0.02`. That is about sRGB code 39 for a neutral grey — dark enough that colour information is unreliable, and it also protects the solver's `XYZ → xy` division from a near-zero denominator.
-3. **Non-finite**: any sampled or computed value is not finite. Unreachable from real 8-bit input by construction (`srgb_decode` of any byte is finite), but checked defensively since the same solver machinery may later be reused for a drafted linear buffer that isn't 8-bit-quantized.
+3. **Non-finite**: any sampled or computed value is not finite. Unreachable from real 8-bit input by construction (`luxforge_reference::srgb::decode` of any byte is finite), but checked defensively since the same solver machinery may later be reused for a drafted linear buffer that isn't 8-bit-quantized.
 
 ### Solving
 

@@ -405,6 +405,7 @@ impl PointwiseColor for Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_reference::srgb;
     use serde_json::Value;
     use std::{fs, path::PathBuf};
 
@@ -428,12 +429,7 @@ mod tests {
     ];
 
     fn code_to_linear(code: u8) -> f64 {
-        let encoded = f64::from(code) / 255.0;
-        if encoded <= 0.040_45 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }
+        srgb::decode(code)
     }
 
     fn apply(rgb: [f32; 3], unit: &Mixer) -> [f32; 3] {

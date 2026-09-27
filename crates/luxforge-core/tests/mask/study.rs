@@ -14,12 +14,12 @@
 //! ```
 
 use super::*;
-use luxforge_reference::linear_to_code;
 use luxforge_reference::mask::{
     Algebra, Component, DISTANCE_MAX, DISTANCE_MIN, Easing, Kind, Linear, Mask, Mode, Radial,
     Stage, axis_is_legal, blend, combine, component_coverage, coverage, distance_is_legal, ease,
     linear_coverage, radial_coverage, radial_coverage_branch_form, smooth,
 };
+use luxforge_reference::srgb;
 
 // ---------------------------------------------------------------------------
 // The study's own inputs.
@@ -892,7 +892,7 @@ fn study_components() -> [Component; 3] {
 /// from a coverage difference to a difference a person could see.
 fn code_at(m: f64) -> u8 {
     let input = 0.18;
-    linear_to_code(blend(input, input * 2.0, m))
+    srgb::code(blend(input, input * 2.0, m))
 }
 
 #[test]

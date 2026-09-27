@@ -8,7 +8,7 @@
 
 use super::basic_layer;
 use luxforge_core::{ModuleRegistry, SnapshotId};
-use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
+use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use luxforge_testkit::fixtures::{render, sample};
 use serde_json::json;
@@ -128,9 +128,9 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
             // The pre-quantization linear reference value, composed the same way, for the
             // boundary tolerance check.
             let mut channels = [
-                srgb_to_linear(input[0]),
-                srgb_to_linear(input[1]),
-                srgb_to_linear(input[2]),
+                srgb::decode(input[0]),
+                srgb::decode(input[1]),
+                srgb::decode(input[2]),
             ];
             for channel in &mut channels {
                 *channel = exposure(*channel, ev);

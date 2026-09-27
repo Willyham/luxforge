@@ -692,6 +692,7 @@ mod tests {
         LinearSettings, Mask, ModuleRegistry, Orientation, PIXEL_EFFECT, RECIPE_FORMAT, Recipe,
         SnapshotId, Stage, colour::srgb::decode_u8, render::Cancel,
     };
+    use luxforge_reference::srgb;
     use serde_json::json;
 
     // -----------------------------------------------------------------------------------------
@@ -709,13 +710,7 @@ mod tests {
     /// path's threshold table encodes; computing it directly here keeps the reference independent
     /// of that table.
     fn encoded(linear: f64) -> u8 {
-        let linear = linear.clamp(0.0, 1.0);
-        let value = if linear <= 0.003_130_8 {
-            12.92 * linear
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        };
-        (value * 255.0).round() as u8
+        (srgb::encode_clamped(linear) * 255.0).round() as u8
     }
 
     fn jpeg_source(width: u32, height: u32, pixels: &[[u8; 3]]) -> PreviewSource {

@@ -154,7 +154,7 @@ fn every_saturation_slider_at_minus_100_renders_exact_greys() {
     let source = source_of(width, height, &pixels);
     let decoded: Vec<[f64; 3]> = pixels
         .iter()
-        .map(|pixel| pixel.map(reference::srgb_to_linear))
+        .map(|pixel| pixel.map(reference::srgb::decode))
         .collect();
     let linear = linear_source_of(width, height, &decoded);
     let mut desaturated = Map::new();
@@ -278,7 +278,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                 let expected = case["expected_linear"].as_array().unwrap();
                 for channel in 0..3 {
                     let linear = expected[channel].as_f64().unwrap();
-                    let code = reference::linear_to_srgb_code(linear);
+                    let code = reference::srgb::code(linear);
                     fixtures::assert_code_near_threshold(
                         pixel[channel],
                         code,
@@ -336,7 +336,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                 let expected = case["expected_linear"].as_array().unwrap();
                 for channel in 0..3 {
                     let reference_linear = expected[channel].as_f64().unwrap();
-                    let code = reference::linear_to_srgb_code(reference_linear);
+                    let code = reference::srgb::code(reference_linear);
                     fixtures::assert_code_near_threshold(
                         pixel[channel],
                         code,

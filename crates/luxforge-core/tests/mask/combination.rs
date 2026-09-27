@@ -31,7 +31,7 @@ use luxforge_reference::mask::{
     Algebra, Brush, BrushStroke, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode,
     Radial, Stage as RefStage, axis_is_legal, blend, brush_coverage, combine, coverage,
 };
-use luxforge_reference::{linear_to_srgb_code, srgb_to_linear};
+use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::render;
 use serde_json::{Value, json};
 
@@ -173,12 +173,12 @@ fn a_mixed_kind_mask_renders_exactly_as_the_reference_composes_it() {
                     let offset = ((y * WIDTH + x) * 4) as usize;
                     let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                     for (channel, &code) in pixel.iter().enumerate().take(3) {
-                        let input = srgb_to_linear(source.rgba[offset + channel]);
+                        let input = srgb::decode(source.rgba[offset + channel]);
                         let effect = input * 2.0_f64.powf(MASKED_EV);
                         let blended = blend(input, effect, m);
                         assert_code(
                             code,
-                            linear_to_srgb_code(blended),
+                            srgb::code(blended),
                             blended,
                             &format!(
                                 "{components} components, round {round}, ({x}, {y}) channel \
@@ -280,12 +280,12 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
             let offset = ((y * WIDTH + x) * 4) as usize;
             let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
             for (channel, &code) in pixel.iter().enumerate().take(3) {
-                let input = srgb_to_linear(source.rgba[offset + channel]);
+                let input = srgb::decode(source.rgba[offset + channel]);
                 let effect = input * 2.0_f64.powf(MASKED_EV);
                 let blended = blend(input, effect, m);
                 assert_code(
                     code,
-                    linear_to_srgb_code(blended),
+                    srgb::code(blended),
                     blended,
                     &format!("({x}, {y}) channel {channel}"),
                 );
@@ -828,12 +828,12 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
                 let offset = ((y * WIDTH + x) * 4) as usize;
                 let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
                 for (channel, &code) in pixel.iter().enumerate().take(3) {
-                    let input = srgb_to_linear(source.rgba[offset + channel]);
+                    let input = srgb::decode(source.rgba[offset + channel]);
                     let effect = input * 2.0_f64.powf(MASKED_EV);
                     let blended = blend(input, effect, m);
                     assert_code(
                         code,
-                        linear_to_srgb_code(blended),
+                        srgb::code(blended),
                         blended,
                         &format!("round {round}, ({x}, {y}) channel {channel}"),
                     );

@@ -8,10 +8,10 @@
 //! it and recomputes every case, so a constant change that is not also reflected in the fixture
 //! (or vice versa) fails the suite.
 
+use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{
     self, PARAMETER_RANGE, RejectReason, apply, average_patch, gains, gather_patch, solve_neutral,
 };
-use luxforge_reference::{srgb_decode, srgb_encode, srgb_quantize};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -52,10 +52,10 @@ fn identity_at_zero_zero_is_exact_to_1e12() {
 #[test]
 fn identity_on_all_256_greys_through_quantizer() {
     for code in 0u8..=255 {
-        let linear = srgb_decode(code);
+        let linear = srgb::decode(code);
         let out = apply(0.0, 0.0, [linear, linear, linear]);
         for c in 0..3 {
-            let round_tripped = srgb_quantize(srgb_encode(out[c]));
+            let round_tripped = srgb::quantize(srgb::encode_nonnegative(out[c]));
             assert_eq!(
                 round_tripped, code,
                 "grey code {code} channel {c}: linear={linear} out={out:?}"
@@ -285,7 +285,7 @@ fn dithered_patch(rgb: [f64; 3]) -> Vec<[u8; 3]> {
             let tau = (k as f64 + 0.5) / n as f64;
             let mut pixel = [0u8; 3];
             for c in 0..3 {
-                let encoded = srgb_encode(rgb[c].clamp(0.0, 1.0));
+                let encoded = srgb::encode_nonnegative(rgb[c].clamp(0.0, 1.0));
                 let scaled = 255.0 * encoded;
                 let base = scaled.floor();
                 let frac = scaled - base;
@@ -350,9 +350,9 @@ struct Fixtures {
 
 fn transform_case(input_rgb_u8: [u8; 3], temperature: f64, tint: f64) -> TransformCase {
     let linear = [
-        srgb_decode(input_rgb_u8[0]),
-        srgb_decode(input_rgb_u8[1]),
-        srgb_decode(input_rgb_u8[2]),
+        srgb::decode(input_rgb_u8[0]),
+        srgb::decode(input_rgb_u8[1]),
+        srgb::decode(input_rgb_u8[2]),
     ];
     let expected_linear_f64 = apply(temperature, tint, linear);
     TransformCase {
@@ -435,7 +435,7 @@ fn build_fixtures() -> Fixtures {
         let luminance = 0.3;
         let xyz = [x / y * luminance, luminance, (1.0 - x - y) / y * luminance];
         let rgb = white_balance::mat3_vec(&rgb_to_xyz_inverse(), xyz);
-        let byte = |v: f64| srgb_quantize(srgb_encode(v.clamp(0.0, 1.0)));
+        let byte = |v: f64| srgb::quantize(srgb::encode_nonnegative(v.clamp(0.0, 1.0)));
         let pixel = [byte(rgb[0]), byte(rgb[1]), byte(rgb[2])];
         let patch = gather_patch(10, 10, 0, 0, |_, _| pixel);
         let solved = solve_from_patch(&patch).expect("edge-clipped patch must still solve");

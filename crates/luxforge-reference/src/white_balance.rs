@@ -7,7 +7,7 @@
 //! anything from `luxforge_core::render` or reuse its sRGB table, so a match between the two is
 //! evidence, not a tautology.
 
-use super::srgb_decode;
+use super::srgb;
 
 // ---------------------------------------------------------------------------------------------
 // Linear algebra: plain 3x3 matrices, no crate dependency.
@@ -316,7 +316,7 @@ pub fn average_patch(pixels: &[[u8; 3]]) -> Result<[f64; 3], RejectReason> {
     let mut sum = [0.0; 3];
     for p in pixels {
         for c in 0..3 {
-            sum[c] += srgb_decode(p[c]);
+            sum[c] += srgb::decode(p[c]);
         }
     }
     let mean = [sum[0] / n, sum[1] / n, sum[2] / n];
