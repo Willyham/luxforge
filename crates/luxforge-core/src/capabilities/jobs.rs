@@ -8,6 +8,7 @@
 use crate::{
     Error, ErrorKind, JobId,
     activity::{Activity, ActivityBoard, ActivitySpec, Outcome},
+    api::Origin,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,23 +125,6 @@ pub struct JobRecord {
     /// The request that started the job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
-}
-
-/// The request a job, or a change it causes, is announced under: the method and request identity a
-/// client watching `events.since` sees.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Origin {
-    pub method: String,
-    pub request_id: String,
-}
-
-impl Origin {
-    pub fn new(method: &str, request_id: &str) -> Self {
-        Self {
-            method: method.to_owned(),
-            request_id: request_id.to_owned(),
-        }
-    }
 }
 
 /// The state a job's worker and the owner share: the cancel flag with its reason, set by the
