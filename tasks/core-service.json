@@ -930,6 +930,64 @@
           "Export behaves exactly as before, through the shared job API."
         ]
       }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Remove the non-interleaved subsampled JPEG guard once a stable zune-jpeg ≥ 0.5.16 (with #421, #452, #453) is pinned.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Owner-decided fix, 2026-09-27, not a wave of this plan: `header` in `crates/luxforge-core/src/source.rs` refuses a sequential (SOF0/SOF1) JPEG that has a vertically subsampled component (V > 1) and a separate, non-interleaved scan, because zune-jpeg 0.5.15 (behind `image` 0.25.9, pinned in the workspace `Cargo.toml`) mis-decodes exactly that combination and returns success on silently garbled pixels.",
+        "The fix landed upstream as zune-image PR #421 (commit 0346b87), with follow-up fixes #452 and #453 still unreleased as of 2026-09-27; none has shipped in a zune-jpeg release, only in 0.5.16 release candidates.",
+        "Blocked until a released `zune-jpeg` carrying #421, #452 and #453 can be pinned through `image`'s own dependency; re-review at that point rather than on a fixed date.",
+        "The guard is exactly as wide as the bug: it does not touch interleaved scans, 4:4:4 or 4:2:2 (H2V1) non-interleaved files, or progressive (SOF2) frames, which use a different decode path."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "The guard",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "`header`'s scan walk and the module doc comment recording the bug this task removes.",
+          "locator": "header"
+        },
+        {
+          "kind": "file",
+          "label": "Dependency pin",
+          "target": "Cargo.toml",
+          "relevance": "The workspace's exact `image` version, which brings in the affected zune-jpeg release."
+        },
+        {
+          "kind": "file",
+          "label": "Refused-layout fixture",
+          "target": "fixtures/s0/jpeg-scan-420-noninterleaved.jpg",
+          "relevance": "The only fixture the guard refuses; must decode correctly once the guard is gone."
+        },
+        {
+          "kind": "file",
+          "label": "User guide's JPEG input limits",
+          "target": "docs/user-guide.md",
+          "relevance": "States the refusal in the Open section; the sentence is deleted with the guard."
+        }
+      ],
+      "acceptance_criteria": [
+        "`image`/zune-jpeg is pinned to a release that includes zune-image PR #421 and the follow-up fixes #452 and #453.",
+        "The guard in `header` (the scan walk, `sof_vmax`, `skip_entropy_coded_data` and the refusal) is deleted, along with its test and the module doc comment describing the bug.",
+        "`fixtures/s0/jpeg-scan-420-noninterleaved.jpg`, previously refused, now decodes and matches its interleaved counterpart within the same tolerance the other accepted layouts already use.",
+        "The refusal sentence is removed from `docs/user-guide.md` and the caveat from `docs/features.md`'s JPEG open row."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Pin the fixed zune-jpeg release, delete the guard and its test, then decode every `jpeg-scan-*.jpg` fixture and compare the previously-refused one against the others."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib source",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Every `jpeg-scan-*.jpg` fixture decodes, and the formerly refused one agrees with its interleaved counterpart within the existing tolerance."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -940,7 +998,8 @@
         "TASK-002",
         "TASK-003",
         "TASK-006",
-        "TASK-013"
+        "TASK-013",
+        "TASK-015"
       ]
     },
     {

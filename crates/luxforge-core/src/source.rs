@@ -1,6 +1,17 @@
 //! Decoding an original into pixels: the JPEG path (bounded header validation, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
 //! JPEG or an immutable RAW mosaic with one WB development.
+//!
+//! `header`'s bounded walk also guards a decode bug pinned in this build: zune-jpeg 0.5.15, which
+//! `image` 0.25.9 decodes JPEG through, mis-decodes a sequential (SOF0/SOF1) frame that has a
+//! vertically subsampled component (any sampling factor V > 1) and a separate (non-interleaved)
+//! scan (a scan whose SOS names fewer components than the frame). It reads only half that
+//! component's block rows and never decodes the later chroma scans, yet returns success, so the
+//! image imports as silently garbled pixels. Interleaved scans, 4:4:4 and 4:2:2 (H2V1)
+//! non-interleaved files, and progressive (SOF2) frames, which decode through a different path, are
+//! unaffected. Fixed upstream by zune-image PR #421 (with follow-ups #452/#453), not yet in a
+//! released zune-jpeg; remove the guard once a release carrying all three is pinned (tracked in
+//! `tasks/core-service.json`).
 use crate::{
     Error, ErrorKind, LinearImage, Raster, colour::mat3::matvec_f32, export::CaptureMetadata,
 };
@@ -34,12 +45,59 @@ pub struct SourceImage {
     pub capture: Arc<CaptureMetadata>,
 }
 
-// Walk JPEG header segments without decoding or allocating from declared dimensions.
+/// The message a refused non-interleaved subsampled sequential scan carries; also matched by its
+/// test, so the two cannot drift apart.
+const NON_INTERLEAVED_SUBSAMPLED_SCAN: &str = "JPEG with separate (non-interleaved) scans and vertically subsampled colour is not supported \
+     by this build's decoder";
+
+/// The largest vertical sampling factor among a sequential frame's components, read from the SOF
+/// segment's component table at `bytes[i..i + size]`. `size` and `nf` are already known to fit
+/// within `bytes` by the caller's segment-bounds check; this only re-checks that the table itself
+/// (3 bytes per component, after the 8-byte fixed part) fits inside that same segment.
+fn sof_vmax(bytes: &[u8], i: usize, size: usize, nf: u8) -> Result<u8, Error> {
+    let table = 3 * usize::from(nf);
+    if size < 8 + table {
+        return Err(Error::decode("frame component table"));
+    }
+    let mut vmax = 0;
+    for component in 0..usize::from(nf) {
+        vmax = vmax.max(bytes[i + 8 + component * 3 + 1] & 0x0f);
+    }
+    Ok(vmax)
+}
+
+/// Skip one scan's entropy-coded data byte-wise to the marker that follows it: `0xff00` stuffing
+/// and the RST0-7 restart markers are data, not segment markers, so only a real marker byte ends
+/// the scan. Bounded by `bytes.len()`; no allocation.
+fn skip_entropy_coded_data(bytes: &[u8], mut i: usize) -> Result<usize, Error> {
+    while i < bytes.len() {
+        if bytes[i] == 0xff {
+            let next = *bytes.get(i + 1).ok_or_else(|| Error::decode("scan data"))?;
+            if next != 0x00 && !(0xd0..=0xd7).contains(&next) {
+                return Ok(i);
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    Err(Error::decode("scan data"))
+}
+
+// Walk JPEG header segments without decoding or allocating from declared dimensions. A sequential
+// frame (SOF0/SOF1) with a vertically subsampled component also has every one of its scans walked,
+// past their entropy-coded data, to refuse a separate (non-interleaved) scan: zune-jpeg 0.5.15
+// mis-decodes that combination silently (see the module doc comment). Progressive frames (SOF2)
+// use a different decode path unaffected by this bug and are not walked past their frame header.
 fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
     if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
         return Err(Error::decode("missing JPEG SOI/EOI"));
     }
     let mut i = 2;
+    // Set once the frame header is found, only when its scans still need walking (a sequential
+    // frame with a vertically subsampled component); carries the dimensions and component count to
+    // return once every scan up to EOI has been seen without a non-interleaved one among them.
+    let mut frame: Option<(u32, u32, u8)> = None;
     while i + 4 <= bytes.len() {
         if bytes[i] != 0xff {
             return Err(Error::decode("JPEG marker"));
@@ -49,7 +107,7 @@ fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
         }
         let marker = *bytes.get(i).ok_or_else(|| Error::decode("marker"))?;
         i += 1;
-        if marker == 0xda || marker == 0xd9 {
+        if marker == 0xd9 {
             break;
         }
         let size = bytes
@@ -60,16 +118,49 @@ fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
             return Err(Error::decode("segment bounds"));
         }
         if [0xc0, 0xc1, 0xc2].contains(&marker) {
+            if frame.is_some() {
+                return Err(Error::decode("second JPEG frame header"));
+            }
             if size < 8 || bytes[i + 2] != 8 {
                 return Err(Error::unsupported_color("JPEG precision"));
             }
             let h = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
             let w = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
-            return Ok((w, h, bytes[i + 7]));
+            let nf = bytes[i + 7];
+            let sequential = marker == 0xc0 || marker == 0xc1;
+            let vmax = if sequential {
+                sof_vmax(bytes, i, size, nf)?
+            } else {
+                0
+            };
+            if !sequential || vmax <= 1 {
+                return Ok((w, h, nf));
+            }
+            frame = Some((w, h, nf));
+            i += size;
+            continue;
+        }
+        if marker == 0xda {
+            let Some((_, _, nf)) = frame else {
+                break;
+            };
+            let ns = *bytes
+                .get(i + 2)
+                .ok_or_else(|| Error::decode("scan header"))?;
+            if usize::from(ns) < usize::from(nf) {
+                return Err(Error::unsupported_input(NON_INTERLEAVED_SUBSAMPLED_SCAN));
+            }
+            // One interleaved scan carries every component; skip its entropy-coded data and keep
+            // walking to EOI in case the stream repeats segments after it.
+            i = skip_entropy_coded_data(bytes, i + size)?;
+            continue;
         }
         i += size;
     }
-    Err(Error::unsupported_input("JPEG frame type"))
+    match frame {
+        Some((w, h, nf)) => Ok((w, h, nf)),
+        None => Err(Error::unsupported_input("JPEG frame type")),
+    }
 }
 
 /// Hash and decode one bounded snapshot read from an already opened handle. The magic bytes pick
@@ -1314,5 +1405,53 @@ mod jpeg_tests {
         let source = open_source_bytes(bytes).unwrap();
         assert_eq!(source.capture.field_names(), ["Make"]);
         assert_eq!(*source.capture, expected);
+    }
+
+    /// A sequential (SOF0/SOF1) frame with a vertically subsampled component and a separate
+    /// (non-interleaved) scan is refused, naming the unsupported combination; the same content
+    /// re-encoded as one interleaved scan is accepted and decodes. 4:4:4 and 4:2:2 (H2V1)
+    /// non-interleaved files, which zune-jpeg 0.5.15 does not mis-decode because neither has a
+    /// vertically subsampled component, are also accepted, and each decodes within a small
+    /// tolerance of its own interleaved encoding of the same content — proving the guard is
+    /// exactly as wide as the bug, not wider.
+    ///
+    /// Every fixture here started from the same 48x32 pattern, encoded with libjpeg-turbo's
+    /// `cjpeg -quality 85 -sample HxV -baseline` at the named chroma subsampling (2x2, 1x1 or 2x1
+    /// for 4:2:0, 4:4:4 and 4:2:2) and, for the "-noninterleaved" files, rewritten losslessly into
+    /// one separate scan per component with `jpegtran -scans SCRIPT`, `SCRIPT` holding `0;`, `1;`
+    /// and `2;` on their own lines. Running `cjpeg`/`jpegtran` again is not required: the test reads
+    /// only the committed bytes.
+    #[test]
+    fn non_interleaved_subsampled_scans_are_refused_and_other_layouts_decode() {
+        let refused = open_source(&fixture("jpeg-scan-420-noninterleaved.jpg")).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::UnsupportedInput);
+        assert_eq!(refused.detail, NON_INTERLEAVED_SUBSAMPLED_SCAN);
+
+        let interleaved_420 = open_source(&fixture("jpeg-scan-420-interleaved.jpg")).unwrap();
+        assert_eq!((interleaved_420.width, interleaved_420.height), (48, 32));
+
+        for layout in ["444", "422"] {
+            let interleaved =
+                open_source(&fixture(&format!("jpeg-scan-{layout}-interleaved.jpg"))).unwrap();
+            let non_interleaved =
+                open_source(&fixture(&format!("jpeg-scan-{layout}-noninterleaved.jpg"))).unwrap();
+            assert_eq!(
+                (interleaved.width, interleaved.height),
+                (non_interleaved.width, non_interleaved.height),
+                "{layout}: dimensions"
+            );
+            for (index, (a, b)) in interleaved
+                .rgba
+                .iter()
+                .zip(non_interleaved.rgba.iter())
+                .enumerate()
+            {
+                assert!(
+                    a.abs_diff(*b) <= 4,
+                    "{layout}: byte {index} differs by more than ordinary decoder rounding \
+                     ({a} vs {b})"
+                );
+            }
+        }
     }
 }
