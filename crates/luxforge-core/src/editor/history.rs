@@ -171,7 +171,7 @@ impl EditorService {
             Change::Navigate { target, .. } => {
                 (MutationOutcome::Navigated, next, target.clone(), None)
             }
-            Change::NoOp => (
+            Change::NoOp { .. } => (
                 MutationOutcome::NoOp,
                 state.revision,
                 state.current_entry.id.clone(),
@@ -199,6 +199,11 @@ impl EditorService {
             result.mask = touched.mask.take();
             result.component = touched.component.take();
             result.removed_layers = std::mem::take(&mut touched.removed_layers);
+        }
+        match &mut change {
+            Change::Append { action, .. } => result.skipped = std::mem::take(&mut action.skipped),
+            Change::NoOp { skipped } => result.skipped = std::mem::take(skipped),
+            Change::Navigate { .. } => {}
         }
         let artifact_root = &self.artifact_root;
         let moved = write(&mut self.connection, |tx| {
@@ -234,7 +239,7 @@ impl EditorService {
                     Some(Vec::new())
                 }
                 Change::Navigate { redo, .. } => Some(redo),
-                Change::NoOp => None,
+                Change::NoOp { .. } => None,
             };
             if let Some(redo) = &redo {
                 tx.execute(
@@ -311,14 +316,14 @@ impl EditorService {
             let target = match navigation {
                 Navigation::Undo => {
                     let Some(parent) = state.current_entry.undo_parent.clone() else {
-                        return Ok(Change::NoOp);
+                        return Ok(Change::no_op());
                     };
                     redo.push(state.current_entry.id.clone());
                     parent
                 }
                 Navigation::Redo => {
                     let Some(entry) = redo.pop() else {
-                        return Ok(Change::NoOp);
+                        return Ok(Change::no_op());
                     };
                     entry
                 }
@@ -344,7 +349,7 @@ impl EditorService {
         self.mutate(asset_id, &mutation, &request, |service, state| {
             let target = service.shared_entry(asset_id, target_id)?;
             if target.snapshot.recipe == state.current_entry.snapshot.recipe {
-                return Ok(Change::NoOp);
+                return Ok(Change::no_op());
             }
             let mut parameters = Map::new();
             parameters.insert("target_entry_id".into(), json!(target_id));
@@ -357,6 +362,7 @@ impl EditorService {
                     },
                     label: format!("Restore entry {}", target.sequence),
                     touched: None,
+                    skipped: Vec::new(),
                 },
                 restore_target: Some(target_id.clone()),
             })
@@ -565,7 +571,9 @@ enum Navigation {
 }
 
 /// What one mutation's plan decided to do to the asset's history, which [`EditorService::mutate`]
-/// writes.
+/// writes. A change is built once per request and moved once into the write, so boxing its largest
+/// variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Change {
     /// Write a new entry holding this stack and make it current, one revision on, with nothing left
     /// to redo. `restore_target` names the entry a Restore copied.
@@ -577,8 +585,9 @@ pub(super) enum Change {
     /// Make an entry already written current, one revision on, leaving `redo` to redo. No entry is
     /// written.
     Navigate { target: EntryId, redo: Vec<EntryId> },
-    /// Change nothing. Only the request's result is recorded, so a retry is answered the same way.
-    NoOp,
+    /// Change nothing. Only the request's result is recorded, so a retry is answered the same way,
+    /// with the settings a composite skipped.
+    NoOp { skipped: Vec<crate::SkippedSetting> },
 }
 
 impl Change {
@@ -590,6 +599,13 @@ impl Change {
             restore_target: None,
         }
     }
+
+    /// A change of nothing that skipped nothing.
+    pub(super) fn no_op() -> Self {
+        Self::NoOp {
+            skipped: Vec::new(),
+        }
+    }
 }
 
 /// What one action records on the entry it commits: the durable identity and stored parameters the
@@ -599,6 +615,8 @@ pub(super) struct CommittedAction {
     pub(super) input: ActionInput,
     pub(super) label: String,
     pub(super) touched: Option<Touched>,
+    /// The settings a composite left out ([`crate::SkippedSetting`]), reported with the answer.
+    pub(super) skipped: Vec<crate::SkippedSetting>,
 }
 
 /// What a host command says it touched: the mask and component it addressed or minted and the
@@ -1146,6 +1164,7 @@ mod tests {
                         },
                         label: "Commit".into(),
                         touched: None,
+                        skipped: Vec::new(),
                     },
                 )
                 .expect_err("a commit refuses the stack");

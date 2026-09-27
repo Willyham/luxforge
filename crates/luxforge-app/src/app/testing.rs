@@ -602,9 +602,12 @@ pub(crate) fn accepted_set(
 /// The first patch action any registered module declares, and its first field: the tests below
 /// drive that control, so no module or parameter is named here either.
 pub(crate) fn patch_control(editor: &Editor) -> (String, String) {
+    // The first patch a JPEG shows: the RAW development's `set-raw` is registered earlier but
+    // applies only to a RAW photo, and draws no controls of its own.
     let action = editor
         .modules
         .iter()
+        .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
         .flat_map(|module| module.actions.iter())
         .find(|action| action.patch)
         .expect("a built-in declares a field patch");

@@ -19,10 +19,10 @@
 
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, ParameterDescriptor,
-    Processing, RailDecoration, ResetAction, Stage, StageContext, ToolModule,
+    ControlVariant, EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer,
+    ParameterDescriptor, Processing, RailDecoration, ResetAction, Stage, StageContext, ToolModule,
 };
-use crate::Error;
+use crate::{Error, SourceTag};
 use serde_json::{Map, Number, Value};
 
 /// A finite f64 as a JSON number. Every value written here is finite, so the fallback is never
@@ -54,6 +54,11 @@ pub struct Field {
     pub zero: Option<f64>,
     pub rail: Option<RailDecoration>,
     pub notes: String,
+    /// The controls other modules provide in this field's slider's place on a photo of one source
+    /// kind ([`ControlVariant`]). On the global target of such a photo the field is superseded: the
+    /// host refuses it and the variant is its one path, and the module's reset leaves it to the
+    /// group reset's variant.
+    pub variants: Vec<ControlVariant>,
 }
 
 impl Field {
@@ -74,6 +79,7 @@ impl Field {
             zero: None,
             rail: None,
             notes: notes.into(),
+            variants: Vec::new(),
         }
     }
 
@@ -113,6 +119,9 @@ pub struct Group {
     pub collapsed: bool,
     /// Controls drawn after the group's sliders, such as Basic's neutral picker.
     pub extra: Vec<Control>,
+    /// The resets other modules provide in the group reset's place on a photo of one source kind
+    /// ([`ControlVariant::reset`]).
+    pub reset_variants: Vec<ControlVariant>,
 }
 
 /// An action's identity and the words discovery shows for it.
@@ -156,10 +165,15 @@ impl Spec {
     fn descriptor(&self) -> ModuleDescriptor {
         let slider = |field: &Field| {
             let control = Control::number(self.set.id, field.name, field.label.clone());
-            match field.rail.clone() {
+            let control = match field.rail.clone() {
                 Some(rail) => control.rail(rail),
                 None => control,
-            }
+            };
+            field
+                .variants
+                .iter()
+                .cloned()
+                .fold(control, Control::variant)
         };
         let controls = self
             .groups
@@ -185,6 +199,14 @@ impl Spec {
                         .collect(),
                 })
                 .collapsed(group.collapsed)
+            })
+            .zip(&self.groups)
+            .map(|(control, group)| {
+                group
+                    .reset_variants
+                    .iter()
+                    .cloned()
+                    .fold(control, Control::variant)
             })
             .collect();
         ModuleDescriptor {
@@ -412,6 +434,56 @@ impl<M: FieldPatch> FieldPatchModule<M> {
             })
             .map(|group| group.label)
     }
+
+    /// The group a patch sets entirely, when it is one: a patch holding exactly one group's fields
+    /// reads as that group, such as a neutral pick's temperature and tint as `White balance`.
+    fn whole_group(&self, sent: &[(&String, f64)]) -> Option<&'static str> {
+        self.spec
+            .groups
+            .iter()
+            .find(|group| {
+                sent.len() == group.fields.len()
+                    && sent
+                        .iter()
+                        .all(|(name, _)| group.fields.contains(&name.as_str()))
+            })
+            .map(|group| group.label)
+    }
+
+    /// What the module reset runs on the global target of a photo of `kind` whose controls have
+    /// variants there, or `None` when none do. A superseded field belongs to its variant, so the
+    /// reset is the patch of every other field to its default composed with each group reset's
+    /// variant for `kind`, one entry that still reads as the module's reset: on a RAW photo Reset
+    /// Basic also returns the development to As shot. `O(fields + groups)`.
+    fn variant_reset(&self, kind: SourceTag) -> Option<Vec<ActionInput>> {
+        let spec = &self.spec;
+        let superseded = |field: &Field| field.variants.iter().any(|v| v.source == kind);
+        let resets: Vec<ActionInput> = spec
+            .groups
+            .iter()
+            .flat_map(|group| &group.reset_variants)
+            .filter(|variant| variant.source == kind)
+            .filter_map(|variant| variant.reset.as_ref())
+            .map(|reset| ActionInput {
+                action_id: reset.action.clone(),
+                parameters: reset.preset.clone(),
+            })
+            .collect();
+        if resets.is_empty() && !spec.fields.iter().any(superseded) {
+            return None;
+        }
+        let defaults: Map<String, Value> = spec
+            .fields
+            .iter()
+            .filter(|field| !superseded(field))
+            .map(|field| (field.name.to_owned(), number(field.default)))
+            .collect();
+        let own = (!defaults.is_empty()).then(|| ActionInput {
+            action_id: spec.set.id.to_owned(),
+            parameters: defaults,
+        });
+        Some(own.into_iter().chain(resets).collect())
+    }
 }
 
 impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
@@ -468,6 +540,13 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
             }
             merged
         } else if input.action_id == spec.reset.id {
+            // On the global target of a photo whose controls have variants, the reset composes the
+            // module's own fields with the variants' group resets.
+            if context.target.is_none()
+                && let Some(steps) = self.variant_reset(context.kind)
+            {
+                return Ok(ActionPlan::Compose(steps));
+            }
             spec.defaults()
         } else {
             return Err(Error::validation(format!(
@@ -551,6 +630,9 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
             .collect();
         if let Some(group) = self.reset_group(&sent) {
             return Some(format!("Reset {group}"));
+        }
+        if let ([_, _, ..], Some(group)) = (sent.as_slice(), self.whole_group(&sent)) {
+            return Some(group.to_owned());
         }
         match sent.as_slice() {
             [(name, value)] => Some(match spec.field(name) {

@@ -230,7 +230,7 @@ fn slider_double_click_field_and_reset_steps_round_trip() {
         {"slider":{"action":"set-basic","parameter":"exposure","values":[0.1,0.2],"release":true,"cancel":false,"interval_ms":8}},
         {"slider_draft":"discard"},
         {"slider_draft":"reapply"},
-        {"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000.0,"gap_ms":120}},
+        {"double_click":{"action":"set-raw","parameter":"temperature","value":5000.0,"gap_ms":120}},
         {"field":{"action":"set-basic","parameter":"exposure","text":"1.5","submit":true}},
         {"reset":{"module":"luxforge.basic"}},
         {"reset":{"module":"luxforge.basic","group":"Tone"}},

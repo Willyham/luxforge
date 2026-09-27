@@ -50,37 +50,192 @@ struct RobertsonPoint {
 /// (`1_666.67` K), unevenly spaced: every `10` from `0` to `100`, then every `25` from `100` to
 /// `600`.
 const DNG_TEMP_TABLE: [RobertsonPoint; 31] = [
-    RobertsonPoint { r: 0.0, u: 0.180_06, v: 0.263_52, t: -0.243_41 },
-    RobertsonPoint { r: 10.0, u: 0.180_66, v: 0.265_89, t: -0.254_79 },
-    RobertsonPoint { r: 20.0, u: 0.181_33, v: 0.268_46, t: -0.268_76 },
-    RobertsonPoint { r: 30.0, u: 0.182_08, v: 0.271_19, t: -0.285_39 },
-    RobertsonPoint { r: 40.0, u: 0.182_93, v: 0.274_07, t: -0.304_70 },
-    RobertsonPoint { r: 50.0, u: 0.183_88, v: 0.277_09, t: -0.326_75 },
-    RobertsonPoint { r: 60.0, u: 0.184_94, v: 0.280_21, t: -0.351_56 },
-    RobertsonPoint { r: 70.0, u: 0.186_11, v: 0.283_42, t: -0.379_15 },
-    RobertsonPoint { r: 80.0, u: 0.187_40, v: 0.286_68, t: -0.409_55 },
-    RobertsonPoint { r: 90.0, u: 0.188_80, v: 0.289_97, t: -0.442_78 },
-    RobertsonPoint { r: 100.0, u: 0.190_32, v: 0.293_26, t: -0.478_88 },
-    RobertsonPoint { r: 125.0, u: 0.194_62, v: 0.301_41, t: -0.582_04 },
-    RobertsonPoint { r: 150.0, u: 0.199_62, v: 0.309_21, t: -0.704_71 },
-    RobertsonPoint { r: 175.0, u: 0.205_25, v: 0.316_47, t: -0.849_01 },
-    RobertsonPoint { r: 200.0, u: 0.211_42, v: 0.323_12, t: -1.018_2 },
-    RobertsonPoint { r: 225.0, u: 0.218_07, v: 0.329_09, t: -1.216_8 },
-    RobertsonPoint { r: 250.0, u: 0.225_11, v: 0.334_39, t: -1.451_2 },
-    RobertsonPoint { r: 275.0, u: 0.232_47, v: 0.339_04, t: -1.729_8 },
-    RobertsonPoint { r: 300.0, u: 0.240_10, v: 0.343_08, t: -2.063_7 },
-    RobertsonPoint { r: 325.0, u: 0.247_02, v: 0.346_55, t: -2.468_1 },
-    RobertsonPoint { r: 350.0, u: 0.255_91, v: 0.349_51, t: -2.964_1 },
-    RobertsonPoint { r: 375.0, u: 0.264_00, v: 0.352_00, t: -3.581_4 },
-    RobertsonPoint { r: 400.0, u: 0.272_18, v: 0.354_07, t: -4.363_3 },
-    RobertsonPoint { r: 425.0, u: 0.280_39, v: 0.355_77, t: -5.376_2 },
-    RobertsonPoint { r: 450.0, u: 0.288_63, v: 0.357_14, t: -6.726_2 },
-    RobertsonPoint { r: 475.0, u: 0.296_85, v: 0.358_23, t: -8.595_5 },
-    RobertsonPoint { r: 500.0, u: 0.305_05, v: 0.359_07, t: -11.324 },
-    RobertsonPoint { r: 525.0, u: 0.313_20, v: 0.359_68, t: -15.628 },
-    RobertsonPoint { r: 550.0, u: 0.321_29, v: 0.360_11, t: -23.325 },
-    RobertsonPoint { r: 575.0, u: 0.329_31, v: 0.360_38, t: -40.770 },
-    RobertsonPoint { r: 600.0, u: 0.337_24, v: 0.360_51, t: -116.45 },
+    RobertsonPoint {
+        r: 0.0,
+        u: 0.180_06,
+        v: 0.263_52,
+        t: -0.243_41,
+    },
+    RobertsonPoint {
+        r: 10.0,
+        u: 0.180_66,
+        v: 0.265_89,
+        t: -0.254_79,
+    },
+    RobertsonPoint {
+        r: 20.0,
+        u: 0.181_33,
+        v: 0.268_46,
+        t: -0.268_76,
+    },
+    RobertsonPoint {
+        r: 30.0,
+        u: 0.182_08,
+        v: 0.271_19,
+        t: -0.285_39,
+    },
+    RobertsonPoint {
+        r: 40.0,
+        u: 0.182_93,
+        v: 0.274_07,
+        t: -0.304_70,
+    },
+    RobertsonPoint {
+        r: 50.0,
+        u: 0.183_88,
+        v: 0.277_09,
+        t: -0.326_75,
+    },
+    RobertsonPoint {
+        r: 60.0,
+        u: 0.184_94,
+        v: 0.280_21,
+        t: -0.351_56,
+    },
+    RobertsonPoint {
+        r: 70.0,
+        u: 0.186_11,
+        v: 0.283_42,
+        t: -0.379_15,
+    },
+    RobertsonPoint {
+        r: 80.0,
+        u: 0.187_40,
+        v: 0.286_68,
+        t: -0.409_55,
+    },
+    RobertsonPoint {
+        r: 90.0,
+        u: 0.188_80,
+        v: 0.289_97,
+        t: -0.442_78,
+    },
+    RobertsonPoint {
+        r: 100.0,
+        u: 0.190_32,
+        v: 0.293_26,
+        t: -0.478_88,
+    },
+    RobertsonPoint {
+        r: 125.0,
+        u: 0.194_62,
+        v: 0.301_41,
+        t: -0.582_04,
+    },
+    RobertsonPoint {
+        r: 150.0,
+        u: 0.199_62,
+        v: 0.309_21,
+        t: -0.704_71,
+    },
+    RobertsonPoint {
+        r: 175.0,
+        u: 0.205_25,
+        v: 0.316_47,
+        t: -0.849_01,
+    },
+    RobertsonPoint {
+        r: 200.0,
+        u: 0.211_42,
+        v: 0.323_12,
+        t: -1.018_2,
+    },
+    RobertsonPoint {
+        r: 225.0,
+        u: 0.218_07,
+        v: 0.329_09,
+        t: -1.216_8,
+    },
+    RobertsonPoint {
+        r: 250.0,
+        u: 0.225_11,
+        v: 0.334_39,
+        t: -1.451_2,
+    },
+    RobertsonPoint {
+        r: 275.0,
+        u: 0.232_47,
+        v: 0.339_04,
+        t: -1.729_8,
+    },
+    RobertsonPoint {
+        r: 300.0,
+        u: 0.240_10,
+        v: 0.343_08,
+        t: -2.063_7,
+    },
+    RobertsonPoint {
+        r: 325.0,
+        u: 0.247_02,
+        v: 0.346_55,
+        t: -2.468_1,
+    },
+    RobertsonPoint {
+        r: 350.0,
+        u: 0.255_91,
+        v: 0.349_51,
+        t: -2.964_1,
+    },
+    RobertsonPoint {
+        r: 375.0,
+        u: 0.264_00,
+        v: 0.352_00,
+        t: -3.581_4,
+    },
+    RobertsonPoint {
+        r: 400.0,
+        u: 0.272_18,
+        v: 0.354_07,
+        t: -4.363_3,
+    },
+    RobertsonPoint {
+        r: 425.0,
+        u: 0.280_39,
+        v: 0.355_77,
+        t: -5.376_2,
+    },
+    RobertsonPoint {
+        r: 450.0,
+        u: 0.288_63,
+        v: 0.357_14,
+        t: -6.726_2,
+    },
+    RobertsonPoint {
+        r: 475.0,
+        u: 0.296_85,
+        v: 0.358_23,
+        t: -8.595_5,
+    },
+    RobertsonPoint {
+        r: 500.0,
+        u: 0.305_05,
+        v: 0.359_07,
+        t: -11.324,
+    },
+    RobertsonPoint {
+        r: 525.0,
+        u: 0.313_20,
+        v: 0.359_68,
+        t: -15.628,
+    },
+    RobertsonPoint {
+        r: 550.0,
+        u: 0.321_29,
+        v: 0.360_11,
+        t: -23.325,
+    },
+    RobertsonPoint {
+        r: 575.0,
+        u: 0.329_31,
+        v: 0.360_38,
+        t: -40.770,
+    },
+    RobertsonPoint {
+        r: 600.0,
+        u: 0.337_24,
+        v: 0.360_51,
+        t: -116.45,
+    },
 ];
 
 /// The unit vector along an isotemperature line of slope `t` (`dv/du = t`), oriented the same way
@@ -198,8 +353,10 @@ mod tests {
         let (r0, r1) = (DNG_TEMP_TABLE[index].r, DNG_TEMP_TABLE[index + 1].r);
         let weight_low = (r1 - inverse_megakelvin) / (r1 - r0);
 
-        let base_u = DNG_TEMP_TABLE[index].u * weight_low + DNG_TEMP_TABLE[index + 1].u * (1.0 - weight_low);
-        let base_v = DNG_TEMP_TABLE[index].v * weight_low + DNG_TEMP_TABLE[index + 1].v * (1.0 - weight_low);
+        let base_u =
+            DNG_TEMP_TABLE[index].u * weight_low + DNG_TEMP_TABLE[index + 1].u * (1.0 - weight_low);
+        let base_v =
+            DNG_TEMP_TABLE[index].v * weight_low + DNG_TEMP_TABLE[index + 1].v * (1.0 - weight_low);
 
         let slope = |t: f64| {
             let norm = (1.0 + t * t).sqrt();
@@ -232,7 +389,9 @@ mod tests {
     /// on the DNG SDK's forward map regardless of what Luxforge later does with it.
     #[test]
     fn matches_the_independent_reference_over_lightrooms_declared_domain() {
-        for temperature in [2_000.0, 2_856.0, 5_000.0, 5_500.0, 6_500.0, 6_504.0, 10_000.0, 50_000.0] {
+        for temperature in [
+            2_000.0, 2_856.0, 5_000.0, 5_500.0, 6_500.0, 6_504.0, 10_000.0, 50_000.0,
+        ] {
             for tint in [-150.0, -20.0, 0.0, 10.0, 150.0] {
                 let uv = dng_uv_for_temperature_tint(temperature, tint).unwrap();
                 let [u, v] = uv;
@@ -287,7 +446,9 @@ mod tests {
     /// named.
     #[test]
     fn luxforge_answer_reproduces_the_lightroom_white_through_a_camera_matrix() {
-        use super::super::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
+        use super::super::white_balance::{
+            gains_from_temperature_tint, temperature_tint_from_gains,
+        };
 
         // LibRaw cam_xyz copied from the supplied Nikon Z6 metadata (same fixture the
         // white_balance tests use).
@@ -304,8 +465,7 @@ mod tests {
 
             let gains =
                 gains_from_temperature_tint(luxforge_kelvin, luxforge_tint, z6_cam_xyz).unwrap();
-            let [back_kelvin, back_tint] =
-                temperature_tint_from_gains(gains, z6_cam_xyz).unwrap();
+            let [back_kelvin, back_tint] = temperature_tint_from_gains(gains, z6_cam_xyz).unwrap();
             close(back_kelvin, luxforge_kelvin, 0.01);
             close(back_tint, luxforge_tint, 1.0e-3);
 
@@ -330,7 +490,9 @@ mod tests {
         let error = lightroom_to_luxforge(50_000.0, 0.0).expect_err("too warm for Luxforge");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(
-            error.detail.starts_with("out-of-range: the Lightroom pair needs a temperature"),
+            error
+                .detail
+                .starts_with("out-of-range: the Lightroom pair needs a temperature"),
             "{}",
             error.detail
         );

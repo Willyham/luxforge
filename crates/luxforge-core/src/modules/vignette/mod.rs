@@ -156,6 +156,7 @@ impl FieldPatch for Vignette {
                 fields: FIELDS.to_vec(),
                 collapsed: false,
                 extra: Vec::new(),
+                reset_variants: Vec::new(),
             }],
             queries: Vec::new(),
             canvas: None,
@@ -287,6 +288,7 @@ mod tests {
                 controls,
                 reset,
                 collapsed,
+                ..
             } => {
                 assert_eq!(label, "Vignette");
                 assert!(!collapsed, "the one group itself is not collapsed");

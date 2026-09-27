@@ -485,6 +485,8 @@ mod tests {
                     layers,
                     registry: &ModuleRegistry::builtin(),
                     target: None,
+                    kind: crate::SourceTag::Jpeg,
+                    masks: &[],
                     questions: &Oriented(layers),
                 },
             )

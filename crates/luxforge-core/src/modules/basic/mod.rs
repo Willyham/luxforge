@@ -65,6 +65,8 @@ const SATURATION: &str = "saturation";
 
 /// The neutral picker's name, on its control in the White balance group and on its canvas mode.
 const NEUTRAL_PICKER_LABEL: &str = "Neutral picker";
+/// The White balance group's button that returns the photo to its own white balance.
+const AS_SHOT_LABEL: &str = "As shot";
 
 /// Every implemented Basic field, in the payload's declared order. A later slice adds further
 /// optional keys of the same format, and a neutral-defaulting key changes no existing
@@ -110,6 +112,9 @@ pub type BasicModule = FieldPatchModule<Basic>;
 impl FieldPatch for Basic {
     fn spec() -> Spec {
         let tone = |name, label, notes| Field::slider(name, label, notes);
+        // On a RAW photo's global target the White balance group's controls are the source
+        // development's, declared by the RAW module and reached through these variants.
+        let raw = super::white_balance_variants();
         Spec {
             id: "luxforge.basic",
             title: "Basic",
@@ -138,18 +143,20 @@ impl FieldPatch for Basic {
             fields: vec![
                 Field {
                     rail: Some(crate::RailDecoration::Temperature),
+                    variants: vec![raw.temperature],
                     ..white_balance(
                         TEMPERATURE,
                         "Temperature",
-                        "a relative warm/cool correction of the photo as rendered (a JPEG as decoded, a RAW as developed at its own white balance), not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
+                        "a relative warm/cool correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
                     )
                 },
                 Field {
                     rail: Some(crate::RailDecoration::Tint),
+                    variants: vec![raw.tint],
                     ..white_balance(
                         TINT,
                         "Tint",
-                        "a relative green/magenta correction of the photo as rendered (a JPEG as decoded, a RAW as developed at its own white balance), not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
+                        "a relative green/magenta correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
                     )
                 },
                 Field {
@@ -161,7 +168,7 @@ impl FieldPatch for Basic {
                     ..Field::slider(
                         EXPOSURE,
                         "Exposure",
-                        "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed linear planes, after the RAW source's own exposure",
+                        "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
                     )
                 },
                 tone(
@@ -205,20 +212,34 @@ impl FieldPatch for Basic {
                     label: "White balance",
                     fields: vec![TEMPERATURE, TINT],
                     collapsed: false,
-                    // The neutral picker, beside the two fields a pick sets.
-                    extra: vec![Control::picker(NEUTRAL_PICKER_LABEL)],
+                    // The neutral picker, beside the two fields a pick sets, and As shot: on a
+                    // JPEG the file's own rendering, Temperature and Tint 0, which is also the
+                    // group's reset; on a RAW photo the camera's white balance.
+                    extra: vec![
+                        Control::picker(NEUTRAL_PICKER_LABEL).variant(raw.picker),
+                        Control::action(SET_BASIC, AS_SHOT_LABEL)
+                            .preset(Map::from_iter(
+                                [TEMPERATURE, TINT]
+                                    .map(|name| (name.to_owned(), Value::from(NEUTRAL))),
+                            ))
+                            .icon("target")
+                            .variant(raw.as_shot),
+                    ],
+                    reset_variants: vec![raw.reset],
                 },
                 Group {
                     label: "Tone",
                     fields: vec![EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS],
                     collapsed: false,
                     extra: Vec::new(),
+                    reset_variants: Vec::new(),
                 },
                 Group {
                     label: "Colour",
                     fields: vec![VIBRANCE, SATURATION],
                     collapsed: false,
                     extra: Vec::new(),
+                    reset_variants: Vec::new(),
                 },
             ],
             queries: vec![ActionDescriptor {
@@ -381,7 +402,7 @@ impl FieldPatch for Basic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{ActionInput, ParameterKind, ResetAction, ToolModule};
+    use crate::modules::{ActionInput, ActionPlan, ParameterKind, ResetAction, ToolModule};
     use crate::{Layer, LayerId};
     use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
     use serde_json::json;
@@ -400,6 +421,48 @@ mod tests {
             mask: None,
             artifacts: Vec::new(),
         }
+    }
+
+    /// The White balance group as `module.list` serializes it: Temperature, Tint, the neutral
+    /// picker and As shot, each with the control the RAW module provides in its place on a RAW
+    /// photo's global target, and the group reset with its RAW variant, As shot.
+    fn white_balance_group() -> Control {
+        serde_json::from_value(json!({
+            "kind": "group",
+            "label": "White balance",
+            "controls": [
+                {"kind": "number", "action": "set-basic", "parameter": "temperature",
+                 "label": "Temperature", "rail": "temperature",
+                 "variants": [{"source": "raw", "module": "luxforge.raw",
+                               "control": {"kind": "number", "action": "set-raw",
+                                           "parameter": "temperature", "label": "Temperature",
+                                           "rail": "temperature",
+                                           "reset": {"action": "set-raw",
+                                                     "preset": {"white-balance": "as-shot"}}}}]},
+                {"kind": "number", "action": "set-basic", "parameter": "tint", "label": "Tint",
+                 "rail": "tint",
+                 "variants": [{"source": "raw", "module": "luxforge.raw",
+                               "control": {"kind": "number", "action": "set-raw",
+                                           "parameter": "tint", "label": "Tint", "rail": "tint",
+                                           "reset": {"action": "set-raw",
+                                                     "preset": {"white-balance": "as-shot"}}}}]},
+                {"kind": "picker", "label": "Neutral picker",
+                 "variants": [{"source": "raw", "module": "luxforge.raw",
+                               "control": {"kind": "picker", "label": "Neutral picker"}}]},
+                {"kind": "action", "action": "set-basic", "label": "As shot",
+                 "preset": {"temperature": 0.0, "tint": 0.0}, "icon": "target",
+                 "variants": [{"source": "raw", "module": "luxforge.raw",
+                               "control": {"kind": "action", "action": "set-raw",
+                                           "label": "As shot",
+                                           "preset": {"white-balance": "as-shot"},
+                                           "icon": "target"}}]}
+            ],
+            "reset": {"action": "set-basic", "preset": {"temperature": 0.0, "tint": 0.0}},
+            "variants": [{"source": "raw", "module": "luxforge.raw",
+                          "reset": {"action": "set-raw",
+                                    "preset": {"white-balance": "as-shot"}}}]
+        }))
+        .expect("the White balance group's JSON")
     }
 
     #[test]
@@ -453,7 +516,8 @@ mod tests {
         assert_eq!(exposure.step, Some(0.01));
         assert_eq!(exposure.precision, Some(2));
         assert!(
-            exposure.notes.contains("2^EV") && exposure.notes.contains("developed linear planes"),
+            exposure.notes.contains("2^EV")
+                && exposure.notes.contains("developed scene-linear planes"),
             "{}",
             exposure.notes
         );
@@ -495,40 +559,7 @@ mod tests {
         assert_eq!(
             descriptor.controls,
             vec![
-                Control::Group {
-                    label: "White balance".into(),
-                    reset: Some(ResetAction {
-                        action: SET_BASIC.into(),
-                        preset: [
-                            ("temperature".to_owned(), json!(0.0)),
-                            ("tint".to_owned(), json!(0.0)),
-                        ]
-                        .into_iter()
-                        .collect(),
-                    }),
-                    controls: vec![
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "temperature".into(),
-                            label: "Temperature".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: Some(crate::RailDecoration::Temperature),
-                            reset: None,
-                        },
-                        Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: "tint".into(),
-                            label: "Tint".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: Some(crate::RailDecoration::Tint),
-                            reset: None,
-                        },
-                        Control::Picker {
-                            label: "Neutral picker".into(),
-                        },
-                    ],
-                    collapsed: false,
-                },
+                white_balance_group(),
                 Control::Group {
                     label: "Tone".into(),
                     reset: Some(ResetAction {
@@ -552,6 +583,7 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -560,6 +592,7 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -568,6 +601,7 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -576,6 +610,7 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -584,6 +619,7 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -592,9 +628,11 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                     ],
                     collapsed: false,
+                    variants: Vec::new(),
                 },
                 Control::Group {
                     label: "Colour".into(),
@@ -615,6 +653,7 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -623,13 +662,16 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                             reset: None,
+                            variants: Vec::new(),
                         },
                     ],
                     collapsed: false,
+                    variants: Vec::new(),
                 },
             ],
-            "the White balance group's two sliders and its neutral picker, then the Tone group's \
-             six, then the Colour group's two, each with a group reset naming all of its fields"
+            "the White balance group's two sliders, its neutral picker and As shot, then the Tone \
+             group's six, then the Colour group's two, each with a group reset naming all of its \
+             fields"
         );
     }
 
@@ -642,42 +684,9 @@ mod tests {
         descriptor.validate().expect("a valid descriptor");
         assert_eq!(
             descriptor.controls.first(),
-            Some(&Control::Group {
-                label: "White balance".into(),
-                reset: Some(ResetAction {
-                    action: SET_BASIC.into(),
-                    preset: [
-                        ("temperature".to_owned(), json!(0.0)),
-                        ("tint".to_owned(), json!(0.0)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                }),
-                controls: vec![
-                    Control::Number {
-                        action: SET_BASIC.into(),
-                        parameter: "temperature".into(),
-                        label: "Temperature".into(),
-                        style: crate::NumberStyle::Slider,
-                        rail: Some(crate::RailDecoration::Temperature),
-                        reset: None,
-                    },
-                    Control::Number {
-                        action: SET_BASIC.into(),
-                        parameter: "tint".into(),
-                        label: "Tint".into(),
-                        style: crate::NumberStyle::Slider,
-                        rail: Some(crate::RailDecoration::Tint),
-                        reset: None,
-                    },
-                    Control::Picker {
-                        label: "Neutral picker".into(),
-                    },
-                ],
-                collapsed: false,
-            }),
-            "white balance is the first group, before tone, and the neutral picker sits with the \
-             two fields a pick sets"
+            Some(&white_balance_group()),
+            "white balance is the first group, before tone, and the neutral picker and As shot sit \
+             with the two fields they set"
         );
 
         let set = descriptor.action(SET_BASIC).expect("set-basic");
@@ -700,7 +709,7 @@ mod tests {
                 parameter.notes.contains("relative")
                     && parameter
                         .notes
-                        .contains("a JPEG as decoded, a RAW as developed")
+                        .contains("a JPEG as decoded; on a RAW photo only through a mask")
                     && parameter.notes.contains(expected_label),
                 "{name}: {}",
                 parameter.notes
@@ -776,6 +785,102 @@ mod tests {
             });
             assert_eq!(label.as_deref(), Some(expected), "{parameters}");
         }
+    }
+
+    /// A patch of exactly one group's fields reads as that group — a neutral pick's temperature and
+    /// tint as `White balance` — and at their defaults, which is what As shot sends on a JPEG, as
+    /// that group's reset. Fields from more than one group are counted.
+    #[test]
+    fn a_patch_of_one_groups_fields_reads_as_the_group() {
+        let module = BasicModule::new();
+        for (parameters, expected) in [
+            (json!({"temperature": 12.0, "tint": -3.0}), "White balance"),
+            (
+                json!({"temperature": 0.0, "tint": 0.0}),
+                "Reset White balance",
+            ),
+            (json!({"vibrance": 10.0, "saturation": 5.0}), "Colour"),
+            (
+                json!({"exposure": 0.5, "contrast": 10.0}),
+                "Basic (2 fields)",
+            ),
+            (
+                json!({"temperature": 12.0, "exposure": 0.5}),
+                "Basic (2 fields)",
+            ),
+        ] {
+            let label = module.label(&ActionInput {
+                action_id: SET_BASIC.to_owned(),
+                parameters: parameters.as_object().cloned().unwrap(),
+            });
+            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+        }
+    }
+
+    /// On a RAW photo's global target, Reset Basic is one composite: every field but the
+    /// superseded white balance to its default, then the White balance group's RAW reset, As shot.
+    /// On a JPEG, and on a mask of either kind, it is Basic's own reset.
+    #[test]
+    fn reset_basic_on_a_raw_photo_also_returns_the_development_to_as_shot() {
+        let module = BasicModule::new();
+        let registry = crate::ModuleRegistry::builtin();
+        let reset = ActionInput {
+            action_id: RESET_BASIC.to_owned(),
+            parameters: Map::new(),
+        };
+        let layer = basic_layer(json!({"exposure": 0.5}));
+        let layers = std::slice::from_ref(&layer);
+        let raw = crate::modules::FixedStage::new(STAGE).of_kind(crate::SourceTag::Raw);
+        let ActionPlan::Compose(steps) = module
+            .plan(&reset, &raw.context(layers, &registry))
+            .unwrap()
+        else {
+            panic!("a composite on a RAW photo");
+        };
+        let defaults: Map<String, Value> = FIELDS
+            .iter()
+            .filter(|name| ![TEMPERATURE, TINT].contains(name))
+            .map(|name| ((*name).to_owned(), json!(0.0)))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ActionInput {
+                    action_id: SET_BASIC.into(),
+                    parameters: defaults,
+                },
+                ActionInput {
+                    action_id: "set-raw".into(),
+                    parameters: json!({"white-balance": "as-shot"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                },
+            ]
+        );
+        assert_eq!(module.label(&reset).as_deref(), Some("Reset Basic"));
+
+        let jpeg = crate::modules::FixedStage::new(STAGE);
+        assert!(matches!(
+            module
+                .plan(&reset, &jpeg.context(layers, &registry))
+                .unwrap(),
+            ActionPlan::Update(_)
+        ));
+        let mask = crate::MaskId::new();
+        let masked = basic_layer(json!({"exposure": 0.5}));
+        let masked = Layer {
+            mask: Some(mask.clone()),
+            ..masked
+        };
+        let on_mask = StageContext {
+            target: Some(&mask),
+            ..raw.context(std::slice::from_ref(&masked), &registry)
+        };
+        assert!(matches!(
+            module.plan(&reset, &on_mask).unwrap(),
+            ActionPlan::Update(_)
+        ));
     }
 
     #[test]
@@ -987,6 +1092,8 @@ mod tests {
                 layers,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,
+                kind: crate::SourceTag::Jpeg,
+                masks: &[],
                 questions: probe,
             },
         )

@@ -77,7 +77,7 @@ fn a_layer_is_neutral_by_its_own_modules_rule() {
         (as_shot.layer(LayerId::new()), true),
         (
             crate::RawPayload {
-                exposure_ev: 0.25,
+                wb_mode: crate::WhiteBalanceMode::Custom,
                 ..as_shot.clone()
             }
             .layer(LayerId::new()),

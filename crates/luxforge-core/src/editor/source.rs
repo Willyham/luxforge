@@ -668,12 +668,63 @@ pub(super) fn validate_source_recipe(
             )));
         }
     }
+    reject_superseded_fields(registry, kind, recipe)?;
     if let SourceKind::Raw { ref metadata } = asset.source {
         let payload = raw_payload(recipe)?;
         if payload.as_shot_gains != metadata.as_shot_gains || payload.cam_xyz != metadata.cam_xyz {
             return Err(Error::incompatible(
                 "RAW source layer calibration differs from original",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a global layer holding a field another module's control variant supersedes on a photo of
+/// `kind` ([`crate::ModuleRegistry::superseded`]): on a RAW photo the global white balance lives
+/// only in the source development, so a global Basic layer with a temperature or tint is data no
+/// commit could have written. A field holds a value when the module's own `values` for the layer
+/// differ from the parameter's declared default; a masked layer is a mask's target, where nothing
+/// is superseded. `O(controls + layers × fields)`; nothing is parsed when no variant names `kind`.
+fn reject_superseded_fields(
+    registry: &crate::ModuleRegistry,
+    kind: crate::SourceTag,
+    recipe: &crate::Recipe,
+) -> Result<(), Error> {
+    let superseded: Vec<_> = registry
+        .superseded()
+        .into_iter()
+        .filter(|field| field.source == kind)
+        .collect();
+    if superseded.is_empty() {
+        return Ok(());
+    }
+    for layer in recipe.layers.iter().filter(|layer| layer.mask.is_none()) {
+        let Some((module, _)) = registry.effect(&layer.effect_id) else {
+            continue;
+        };
+        let descriptor = module.descriptor();
+        let mut values = None;
+        for field in &superseded {
+            let Some(parameter) = descriptor
+                .action(field.action)
+                .and_then(|action| action.parameter(field.parameter))
+            else {
+                continue;
+            };
+            let values = match &values {
+                Some(values) => values,
+                None => values.insert(module.values(
+                    &layer.effect_id,
+                    layer.effect_format,
+                    &layer.payload,
+                )?),
+            };
+            if let Some(value) = values.get(field.parameter)
+                && Some(value) != parameter.default.as_ref()
+            {
+                return Err(Error::incompatible(registry.superseded_refusal(field)));
+            }
         }
     }
     Ok(())
@@ -732,10 +783,7 @@ fn resolve_raw_settings(
     developed_present: bool,
     mode: RawSettingsMode,
 ) -> Result<crate::LinearSettings, Error> {
-    let gains = match payload.wb_mode {
-        crate::WhiteBalanceMode::AsShot => as_shot_gains,
-        crate::WhiteBalanceMode::Custom => payload.gains,
-    };
+    let gains = development_gains_of(payload, as_shot_gains);
     let required = |detail: String| Error::preparation_required(detail);
     if !developed_present {
         return Err(required("RAW white balance development required".into()));
@@ -762,10 +810,16 @@ fn resolve_raw_settings(
             }
         }
     };
-    Ok(crate::LinearSettings {
-        exposure_ev: payload.exposure_ev,
-        white_balance,
-    })
+    Ok(crate::LinearSettings { white_balance })
+}
+
+/// The sensor gains one RAW development develops at: the camera's as-shot gains under As shot and
+/// the payload's own otherwise. The one place the host resolves the white-balance mode.
+fn development_gains_of(payload: &crate::RawPayload, as_shot_gains: [f32; 3]) -> [f32; 3] {
+    match payload.wb_mode {
+        crate::WhiteBalanceMode::AsShot => as_shot_gains,
+        crate::WhiteBalanceMode::Custom => payload.gains,
+    }
 }
 
 /// One stack an evaluation reads, which is what a `preparation-required` refusal of that
@@ -813,10 +867,7 @@ fn development_gains(
 /// The sensor gains a RAW stack develops at, read from its source layer.
 fn raw_gains(metadata: &RawInterpretation, recipe: &crate::Recipe) -> Result<[f32; 3], Error> {
     let payload = raw_payload(recipe)?;
-    Ok(match payload.wb_mode {
-        crate::WhiteBalanceMode::AsShot => metadata.as_shot_gains,
-        crate::WhiteBalanceMode::Custom => payload.gains,
-    })
+    Ok(development_gains_of(&payload, metadata.as_shot_gains))
 }
 
 fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
@@ -1094,7 +1145,9 @@ mod tests {
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {
+                // As shot is canonical, so the development's gains are the as-shot ones.
                 corrupted.as_shot_gains[0] += 0.1;
+                corrupted.gains = corrupted.as_shot_gains;
             } else {
                 corrupted.cam_xyz[0][0] += 0.1;
             }
@@ -1108,6 +1161,54 @@ mod tests {
                 "{calibration}"
             );
         }
+
+        // On a RAW photo the global white balance is the development's alone: a global Basic
+        // layer holding a temperature or tint is refused, by the rule the variants derive, while
+        // a global exposure and a masked white balance are admitted. The same layers on a JPEG
+        // are Basic's own.
+        let basic = |payload: Value, mask: Option<crate::MaskId>| crate::Layer {
+            id: LayerId::new(),
+            effect_id: crate::BASIC_EFFECT.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload,
+            mask,
+            artifacts: Vec::new(),
+        };
+        let with = |layer: crate::Layer| {
+            let mut recipe = snapshot.recipe.clone();
+            recipe.layers.push(layer);
+            recipe
+        };
+        for (payload, detail) in [
+            (
+                json!({"temperature": 12.0}),
+                "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+            ),
+            (
+                json!({"tint": -3.0, "exposure": 0.5}),
+                "on a RAW photo, Tint is the source development's: set-raw tint",
+            ),
+        ] {
+            let refused =
+                validate_source_recipe(&registry, &asset, &with(basic(payload.clone(), None)))
+                    .unwrap_err();
+            assert_eq!(refused.kind, ErrorKind::Incompatible, "{payload}");
+            assert_eq!(refused.detail, detail, "{payload}");
+            let mut on_jpeg = with(basic(payload.clone(), None));
+            on_jpeg.layers.remove(0);
+            validate_source_recipe(&registry, &jpeg, &on_jpeg).expect("Basic's own on a JPEG");
+        }
+        for admitted in [
+            with(basic(json!({"exposure": 1.25, "contrast": 10.0}), None)),
+            // A field spelled at its default holds nothing.
+            with(basic(json!({"temperature": 0.0, "exposure": 1.0}), None)),
+            with(basic(
+                json!({"temperature": 25.0, "tint": 5.0}),
+                Some(crate::MaskId::new()),
+            )),
+        ] {
+            validate_source_recipe(&registry, &asset, &admitted).expect("admitted");
+        }
     }
 
     /// A camera matrix with rows summing to one and strong cross terms, as a real `rgb_cam` has.
@@ -1117,9 +1218,8 @@ mod tests {
         [0.04, -0.52, 1.48, 0.0],
     ];
 
-    fn custom(gains: [f32; 3], exposure_ev: f64) -> crate::RawPayload {
+    fn custom(gains: [f32; 3]) -> crate::RawPayload {
         crate::RawPayload {
-            exposure_ev,
             wb_mode: crate::WhiteBalanceMode::Custom,
             gains,
             as_shot_gains: [2.0, 1.0, 1.5],
@@ -1139,7 +1239,7 @@ mod tests {
         let camera = RGB_CAM.map(|row| [row[0], row[1], row[2]].map(f64::from));
         for mode in [Strict, DraftPreview] {
             let held = resolve_raw_settings(
-                &custom(developed, 0.4),
+                &custom(developed),
                 developed,
                 RGB_CAM,
                 developed,
@@ -1150,7 +1250,6 @@ mod tests {
             assert_eq!(
                 held,
                 crate::LinearSettings {
-                    exposure_ev: 0.4,
                     white_balance: None,
                 },
                 "{mode:?}: planes that hold the white balance need no approximation"
@@ -1158,7 +1257,7 @@ mod tests {
             // As shot resolves to the camera's gains, which these planes hold.
             let as_shot = crate::RawPayload {
                 wb_mode: crate::WhiteBalanceMode::AsShot,
-                ..custom(target, 0.0)
+                ..custom(target)
             };
             assert_eq!(
                 resolve_raw_settings(&as_shot, developed, RGB_CAM, developed, true, mode)
@@ -1167,7 +1266,7 @@ mod tests {
                 None
             );
             let missing = resolve_raw_settings(
-                &custom(developed, 0.0),
+                &custom(developed),
                 developed,
                 RGB_CAM,
                 developed,
@@ -1178,19 +1277,13 @@ mod tests {
             assert_eq!(missing.kind, ErrorKind::PreparationRequired, "{mode:?}");
         }
 
-        let strict = resolve_raw_settings(
-            &custom(target, 0.4),
-            developed,
-            RGB_CAM,
-            developed,
-            true,
-            Strict,
-        )
-        .unwrap_err();
+        let strict =
+            resolve_raw_settings(&custom(target), developed, RGB_CAM, developed, true, Strict)
+                .unwrap_err();
         assert_eq!(strict.kind, ErrorKind::PreparationRequired);
 
         let drafted = resolve_raw_settings(
-            &custom(target, 0.4),
+            &custom(target),
             developed,
             RGB_CAM,
             developed,
@@ -1198,7 +1291,6 @@ mod tests {
             DraftPreview,
         )
         .unwrap();
-        assert_eq!(drafted.exposure_ev, 0.4);
         assert_eq!(
             drafted.white_balance,
             Some(crate::WhiteBalanceApproximation::between(camera, developed, target).unwrap()),
@@ -1213,7 +1305,7 @@ mod tests {
             0.0,
         ];
         let error = resolve_raw_settings(
-            &custom(target, 0.0),
+            &custom(target),
             developed,
             singular,
             developed,
@@ -1244,8 +1336,8 @@ mod tests {
         let committed = service.preview_job(&asset, None, None, None, None).unwrap();
         assert!(!committed.source.approximate_white_balance());
 
-        let mut draft = Draft::new("set-raw-temperature", asset.clone(), state.revision);
-        draft.merge(Map::from_iter([("kelvin".to_owned(), json!(3200.0))]));
+        let mut draft = Draft::new("set-raw", asset.clone(), state.revision);
+        draft.merge(Map::from_iter([("temperature".to_owned(), json!(3200.0))]));
         let drafted = service
             .preview_job(&asset, None, None, Some(&draft), None)
             .expect("a drafted white balance previews");
@@ -1304,9 +1396,9 @@ mod tests {
                 .analysis_plan(&asset, AnalysisSelection::Draft(&draft))
                 .unwrap_err()
         ));
-        // A drafted exposure over planes that hold the white balance is exact.
-        let mut exposure = Draft::new("set-raw-exposure", asset.clone(), state.revision);
-        exposure.merge(Map::from_iter([("ev".to_owned(), json!(0.5))]));
+        // A drafted exposure is Basic's, over planes that hold the white balance: exact.
+        let mut exposure = Draft::new("set-basic", asset.clone(), state.revision);
+        exposure.merge(Map::from_iter([("exposure".to_owned(), json!(0.5))]));
         assert!(
             !service
                 .preview_job(&asset, None, None, Some(&exposure), None)
@@ -1320,8 +1412,8 @@ mod tests {
             .apply_action(
                 &asset,
                 mutation(state.revision, "temperature"),
-                "set-raw-temperature",
-                json!({"kelvin": 3200.0}),
+                "set-raw",
+                json!({"temperature": 3200.0}),
             )
             .unwrap();
         let current = service.state(&asset).unwrap().current_entry.id;
@@ -1385,12 +1477,13 @@ mod tests {
         assert!(matches!(original.source, PreviewSource::Raw { .. }));
         let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
         assert_eq!(as_shot.as_shot_gains, as_shot.gains);
+        // Exposure is Basic's: it leaves the source development as it was.
         let exposure = service
             .apply_action(
                 &initial.asset.id,
                 mutation(0, "raw-exposure"),
-                "set-raw-exposure",
-                json!({"ev":1.5}),
+                "set-basic",
+                json!({"exposure":1.5}),
             )
             .unwrap();
         let exposed = service.state(&initial.asset.id).unwrap();
@@ -1399,10 +1492,8 @@ mod tests {
             source_layer
         );
         assert_eq!(
-            raw_payload(&exposed.current_entry.snapshot.recipe)
-                .unwrap()
-                .exposure_ev,
-            1.5
+            raw_payload(&exposed.current_entry.snapshot.recipe).unwrap(),
+            as_shot
         );
         let gain = (f64::from(as_shot.gains[0]) * 1.1).min(16.0);
         let changed = service

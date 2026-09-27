@@ -2007,7 +2007,6 @@ mod tests {
         let stack = recipe(vec![spatial_layer(&["shift"])]);
         let source = linear_source(40, 30);
         let approximate = LinearSettings {
-            exposure_ev: 0.0,
             white_balance: Some(
                 crate::WhiteBalanceApproximation::from_matrix([
                     [1.4, 0.0, 0.0],
@@ -2059,7 +2058,6 @@ mod tests {
         changed.layers[0].payload = json!({"dehaze": 61.0});
         let exact = LinearSettings::default();
         let approximate = |red, blue| LinearSettings {
-            exposure_ev: 0.0,
             white_balance: Some(
                 crate::WhiteBalanceApproximation::from_matrix([
                     [red, 0.0, 0.0],
@@ -2282,13 +2280,6 @@ mod tests {
             (first.with_view([0, 0, 24, 24], 1).unwrap(), default),
             (first.with_view([16, 0, 24, 24], 1).unwrap(), default),
             (first.with_view([0, 0, 24, 24], 2).unwrap(), default),
-            (
-                first.clone(),
-                LinearSettings {
-                    exposure_ev: 0.7,
-                    ..default
-                },
-            ),
         ];
         let expected: Vec<_> = cases
             .iter()

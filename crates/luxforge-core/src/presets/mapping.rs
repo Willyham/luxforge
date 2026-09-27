@@ -119,9 +119,13 @@ pub(super) enum Rule {
         field: &'static str,
         lightroom: (f64, f64),
     },
-    /// Lightroom's RAW Kelvin temperature or tint: refused until a calibrated conversion exists.
-    RawWhiteBalance(&'static str),
-    /// `WhiteBalance`: neutral when relative white balance carries it, otherwise refused.
+    /// Lightroom's absolute RAW `Temperature` (K) or `Tint`, converted together through the
+    /// illuminant chromaticity the pair names onto the RAW development's `field`
+    /// ([`crate::lightroom_to_luxforge`]), and refused together when that white is out of range.
+    RawWhiteBalance { field: &'static str },
+    /// `WhiteBalance`: `As Shot` is the RAW development's as-shot white balance, and Basic's
+    /// relative pair at 0 when the preset holds no incremental value; `Custom` is neutral when the
+    /// values it names are mapped and refused otherwise; `Auto` and named modes are refused.
     WhiteBalance,
     /// `CameraProfile` or a nested `Look`: neutral for Lightroom's default profile.
     Profile,
@@ -191,6 +195,8 @@ const fn metadata(name: &'static str) -> Row {
 const SIGNED: (f64, f64) = (-100.0, 100.0);
 const UNSIGNED: (f64, f64) = (0.0, 100.0);
 const BASIC: &str = "set-basic";
+/// The RAW development's white-balance patch, which Lightroom's absolute white balance maps onto.
+const RAW: &str = "set-raw";
 const PRESENCE: &str = "set-presence";
 const MIXER: &str = "set-mixer";
 const VIGNETTE: &str = "set-vignette";
@@ -415,14 +421,12 @@ pub(super) const ROWS: &[Row] = &[
     // White balance and profiles.
     row(
         "Temperature",
-        Rule::RawWhiteBalance("RAW Kelvin white balance has no calibrated conversion"),
+        Rule::RawWhiteBalance {
+            field: "temperature",
+        },
         None,
     ),
-    row(
-        "Tint",
-        Rule::RawWhiteBalance("RAW tint has no calibrated conversion"),
-        None,
-    ),
+    row("Tint", Rule::RawWhiteBalance { field: "tint" }, None),
     row("WhiteBalance", Rule::WhiteBalance, None),
     row("CameraProfile", Rule::Profile, None),
     row("Look", Rule::Profile, None),
@@ -1206,10 +1210,65 @@ fn transfer_value(
     Ok(applied)
 }
 
+/// Whether `action` is a registered, available field patch declaring `field`, which an import may
+/// write: the check [`transfer_value`] makes for a value it did not convert.
+fn writable(registry: &ModuleRegistry, action: &str, field: &str) -> Result<(), String> {
+    let Some((module, descriptor)) = registry.action(action) else {
+        return Err(format!("Luxforge has no {action} action"));
+    };
+    if !descriptor.patch || !module.descriptor().is_available() {
+        return Err(format!("{action} is not available"));
+    }
+    if descriptor.parameter(field).is_none() {
+        return Err(format!("{action} has no {field} field"));
+    }
+    Ok(())
+}
+
+/// Lightroom's `Temperature` and `Tint` converted together to the RAW development's temperature
+/// and tint, or why not. `None` when the preset holds neither.
+fn raw_white_balance(
+    registry: &ModuleRegistry,
+    by_name: &HashMap<&str, &RawValue>,
+) -> Option<Result<[f64; 2], String>> {
+    let (temperature, tint) = (by_name.get("Temperature"), by_name.get("Tint"));
+    if temperature.is_none() && tint.is_none() {
+        return None;
+    }
+    Some((|| {
+        let (Some(temperature), Some(tint)) = (temperature, tint) else {
+            return Err(
+                "Lightroom's Temperature and Tint convert together, and the preset holds only one"
+                    .to_owned(),
+            );
+        };
+        let number = |value: &RawValue| {
+            json_number(value)
+                .and_then(|value| value.as_f64())
+                .ok_or_else(|| "not a number".to_owned())
+        };
+        for field in ["temperature", "tint"] {
+            writable(registry, RAW, field)?;
+        }
+        crate::lightroom_to_luxforge(number(temperature)?, number(tint)?)
+            .map_err(|error| error.detail)
+    })())
+}
+
 /// The settings a file carries into Luxforge, and the report of every other setting.
 pub(super) struct Mapped {
     pub settings: Map<String, Value>,
     pub report: ImportReport,
+}
+
+/// Add one field to a settings set being built.
+fn insert(settings: &mut Map<String, Value>, action: &str, field: &str, value: Value) {
+    let fields = settings
+        .entry(action.to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Value::Object(fields) = fields {
+        fields.insert(field.to_owned(), value);
+    }
 }
 
 /// Map a Lightroom file's settings. A profile's `PresetType` fails the whole import, as does a
@@ -1250,6 +1309,12 @@ pub(super) fn map(
             (*panel, state)
         })
         .collect();
+    // Lightroom's absolute white balance, converted once for both of its settings.
+    let converted = raw_white_balance(registry, &by_name);
+    let white_balance = by_name
+        .get("WhiteBalance")
+        .and_then(|value| value.text())
+        .map(str::trim);
     let mut out = Map::new();
     let mut mapped = Vec::new();
     let mut neutral = Vec::new();
@@ -1303,12 +1368,7 @@ pub(super) fn map(
                 }
                 match transfer_value(registry, action, field, value) {
                     Ok(applied) => {
-                        let fields = out
-                            .entry(action.to_owned())
-                            .or_insert_with(|| Value::Object(Map::new()));
-                        if let Value::Object(fields) = fields {
-                            fields.insert(field.to_owned(), applied.clone());
-                        }
+                        insert(&mut out, action, field, applied.clone());
                         mapped.push(MappedSetting {
                             setting: setting.name.clone(),
                             value: report_text(value),
@@ -1320,20 +1380,93 @@ pub(super) fn map(
                     Err(reason) => refused.push(reported(setting, Some(&reason))),
                 }
             }
-            Rule::RawWhiteBalance(reason) => refused.push(reported(setting, Some(reason))),
-            Rule::WhiteBalance => {
-                let relative = by_name.contains_key("IncrementalTemperature")
-                    || by_name.contains_key("IncrementalTint");
-                let kelvin = by_name.contains_key("Temperature") || by_name.contains_key("Tint");
-                if relative && !kelvin {
+            Rule::RawWhiteBalance { field } => {
+                // Under As Shot the pair is the camera's own white, which As Shot applies.
+                if white_balance == Some("As Shot") {
                     neutral.push(reported(setting, None));
-                } else {
-                    refused.push(reported(
-                        setting,
-                        Some("sets RAW white balance, which no Luxforge field carries"),
-                    ));
+                    continue;
+                }
+                if let Era::Legacy(reason) = &era {
+                    refused.push(reported(setting, Some(reason)));
+                    continue;
+                }
+                match &converted {
+                    Some(Ok([temperature, tint])) => {
+                        let applied = Value::from(if field == "temperature" {
+                            *temperature
+                        } else {
+                            *tint
+                        });
+                        insert(&mut out, RAW, field, applied.clone());
+                        mapped.push(MappedSetting {
+                            setting: setting.name.clone(),
+                            value: report_text(value),
+                            action: RAW.to_owned(),
+                            field: field.to_owned(),
+                            applied,
+                        });
+                    }
+                    Some(Err(reason)) => refused.push(reported(setting, Some(reason))),
+                    None => unreachable!("the preset holds this setting"),
                 }
             }
+            Rule::WhiteBalance => match value.text().map(str::trim) {
+                Some("As Shot") if matches!(era, Era::Legacy(_)) => {
+                    let Era::Legacy(reason) = &era else {
+                        unreachable!("matched a legacy era")
+                    };
+                    refused.push(reported(setting, Some(reason)));
+                }
+                Some("As Shot") => {
+                    // The camera's own white balance on a RAW photo, and the file's own rendering
+                    // on a JPEG, unless the preset carries a relative correction of its own.
+                    let relative = by_name.contains_key("IncrementalTemperature")
+                        || by_name.contains_key("IncrementalTint");
+                    let mut fields = vec![(RAW, "white-balance", Value::from("as-shot"))];
+                    if !relative {
+                        fields.push((BASIC, "temperature", Value::from(0.0)));
+                        fields.push((BASIC, "tint", Value::from(0.0)));
+                    }
+                    match fields
+                        .iter()
+                        .try_for_each(|(action, field, _)| writable(registry, action, field))
+                    {
+                        Ok(()) => {
+                            for (action, field, applied) in fields {
+                                insert(&mut out, action, field, applied.clone());
+                                mapped.push(MappedSetting {
+                                    setting: setting.name.clone(),
+                                    value: report_text(value),
+                                    action: action.to_owned(),
+                                    field: field.to_owned(),
+                                    applied,
+                                });
+                            }
+                        }
+                        Err(reason) => refused.push(reported(setting, Some(&reason))),
+                    }
+                }
+                Some("Custom") => {
+                    let relative = by_name.contains_key("IncrementalTemperature")
+                        || by_name.contains_key("IncrementalTint");
+                    match &converted {
+                        Some(Ok(_)) => neutral.push(reported(setting, None)),
+                        None if relative => neutral.push(reported(setting, None)),
+                        Some(Err(_)) => refused.push(reported(
+                            setting,
+                            Some("a custom white balance whose Temperature and Tint are refused"),
+                        )),
+                        None => refused.push(reported(
+                            setting,
+                            Some("a custom white balance that names no temperature or tint"),
+                        )),
+                    }
+                }
+                _ => refused.push(reported(
+                    setting,
+                    Some("Luxforge has no Auto or named white balance"),
+                )),
+            },
             Rule::Profile => {
                 if is_default_profile(value) {
                     neutral.push(reported(setting, None));

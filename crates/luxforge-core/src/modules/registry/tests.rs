@@ -508,8 +508,8 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
     assert!(registry.action("set-mixer").is_some());
     assert!(registry.action("reset-mixer").is_some());
     assert!(registry.effect(crate::MIXER_EFFECT).is_some());
-    assert!(registry.action("set-raw-exposure").is_some());
-    assert!(registry.action("reset-raw").is_some());
+    assert!(registry.action("set-raw").is_some());
+    assert!(registry.action("pick-raw-neutral").is_some());
     assert!(registry.effect(RAW_EFFECT).is_some());
     assert!(registry.action("set-vignette").is_some());
     assert!(registry.action("reset-vignette").is_some());
@@ -726,6 +726,7 @@ fn shortcut_module(id: &str, effect: &str, action: &str, letter: &str) -> Arc<dy
     // A pick canvas is reached from the panel, so it declares its picker control.
     descriptor.controls = vec![crate::Control::Picker {
         label: "Test mode".into(),
+        variants: Vec::new(),
     }];
     TestModule::from_descriptor(descriptor)
 }

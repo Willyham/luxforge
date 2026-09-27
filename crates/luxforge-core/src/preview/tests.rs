@@ -1571,10 +1571,7 @@ fn raw_job(white_balance: Option<crate::WhiteBalanceApproximation>) -> PreviewJo
     job.recipe.layers.clear();
     job.source = PreviewSource::Raw {
         image,
-        settings: LinearSettings {
-            exposure_ev: 0.25,
-            white_balance,
-        },
+        settings: LinearSettings { white_balance },
     };
     job.proxy = Some(ProxyBounds {
         width: 60,
@@ -1724,8 +1721,8 @@ fn an_exact_raw_job_is_unlabelled_and_analysed() {
     );
 }
 
-/// A cached RAW proxy is pixels, not settings: a second job over the same developed planes
-/// with another exposure is a cache hit that renders at its own exposure.
+/// A cached RAW proxy is the developed planes, not an edit: a second job over the same planes
+/// with another Basic exposure is a cache hit that renders at its own exposure.
 #[test]
 fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
     use crate::{LinearImage, LinearSettings};
@@ -1741,15 +1738,20 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
     };
     let job_at = |ev: f64, analyse: bool| {
         let mut job = job(1, analyse);
-        // The stock test job carries a pixel-stage layer, which is not proxy-eligible; the
-        // development settings alone are the stack under test.
+        // The stock test job carries a pixel-stage layer, which is not proxy-eligible; one
+        // Basic exposure is the stack under test.
         job.recipe.layers.clear();
+        job.recipe.layers.push(crate::Layer {
+            id: crate::LayerId::new(),
+            effect_id: crate::BASIC_EFFECT.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload: json!({"exposure": ev}),
+            mask: None,
+            artifacts: Vec::new(),
+        });
         job.source = PreviewSource::Raw {
             image: image.clone(),
-            settings: LinearSettings {
-                exposure_ev: ev,
-                white_balance: None,
-            },
+            settings: LinearSettings::default(),
         };
         job.proxy = Some(bounds);
         job
@@ -1803,7 +1805,7 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
         .count();
     assert!(
         brighter > (dark.width * dark.height / 2) as usize,
-        "one stop more exposure brightens the cached proxy, not the cached settings"
+        "one stop more exposure brightens the cached proxy, not the cached planes"
     );
 }
 

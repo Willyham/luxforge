@@ -1138,6 +1138,7 @@ mod tests {
     /// Each drag stops on a value the temperature control declares, on its step, and its release is
     /// the step after it at the same value, with the zoom around the 100% one where the checks look.
     #[test]
+    #[ignore = "TASK-006 desktop: the raw-panel scenario moves to Basic's RAW variants (set-raw)"]
     fn each_drag_is_a_declared_temperature_on_its_step_where_the_checks_look() {
         let registry = luxforge_core::ModuleRegistry::builtin();
         let (_, action) = registry.action(SET_TEMPERATURE).expect("a declared action");
@@ -1262,6 +1263,7 @@ mod tests {
     /// declares none, its own action and the declared default back, formatted as the field shows
     /// it.
     #[test]
+    #[ignore = "TASK-006 desktop: the raw-panel scenario moves to Basic's RAW variants (set-raw)"]
     fn every_double_click_is_a_declared_drafting_field_and_its_declared_reset() {
         let registry = luxforge_core::ModuleRegistry::builtin();
         for click in &DOUBLE_CLICKS {

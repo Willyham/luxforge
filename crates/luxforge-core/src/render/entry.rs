@@ -159,11 +159,8 @@ pub fn render<'a>(
     context: &'a RenderContext,
 ) -> Result<Render<'a>, Error> {
     let source = source.into();
-    match source {
-        RenderSource::Byte(image) => check_source(image)?,
-        RenderSource::Linear { settings, .. } => {
-            settings.multiplier()?;
-        }
+    if let RenderSource::Byte(image) = source {
+        check_source(image)?;
     }
     let (width, height) = source.dimensions();
     #[cfg(test)]
@@ -351,11 +348,8 @@ impl<'a> Render<'a> {
         let Some(window) = plan.window else {
             return render(registry, source, recipe, options, context);
         };
-        match source {
-            RenderSource::Byte(image) => check_source(image)?,
-            RenderSource::Linear { settings, .. } => {
-                settings.multiplier()?;
-            }
+        if let RenderSource::Byte(image) = source {
+            check_source(image)?;
         }
         if source.dimensions() != (window.width, window.height) {
             return Err(Error::internal(format!(

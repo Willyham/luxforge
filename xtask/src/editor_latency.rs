@@ -1492,7 +1492,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "effect_scope":match (options.control, field.action.as_str(), field.parameter.as_str()) {
             (Control::Curve, ..) => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
-            (Control::Slider, "set-raw-temperature" | "set-raw-tint", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
+            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":if options.control == Control::Curve {
@@ -2280,18 +2280,16 @@ mod tests {
         assert_eq!(burst_interval_ms(), 8);
     }
 
-    /// Every field's burst is the same triangle, scaled about its own origin: exposure's is the
-    /// historical ±2 EV one value for value, and Custom temperature's and tint's stay inside their
-    /// declared ranges on their own steps, peaking at 40% of the smaller half of the range.
+    /// Every field's burst is the same triangle, scaled about its own origin: exposure's — Basic's,
+    /// on a JPEG and a RAW photo alike — is the historical ±2 EV one value for value, and the RAW
+    /// temperature's and tint's stay inside their declared ranges on their own steps, peaking at
+    /// 40% of the smaller half of the range.
     #[test]
     fn a_fields_burst_is_the_triangle_scaled_to_its_own_range() {
         assert_eq!(FieldTarget::basic_exposure().burst_values(), burst_values());
-        let raw_exposure =
-            resolve_field(Control::Slider, Some("set-raw-exposure"), Some("ev")).unwrap();
-        assert_eq!(raw_exposure.burst_values(), burst_values());
         for (action, parameter, peak) in [
-            ("set-raw-temperature", "kelvin", 1800.0),
-            ("set-raw-tint", "tint", 40.0),
+            ("set-raw", "temperature", 1800.0),
+            ("set-raw", "tint", 40.0),
         ] {
             let field = resolve_field(Control::Slider, Some(action), Some(parameter)).unwrap();
             let values = field.burst_values();
@@ -2410,17 +2408,10 @@ mod tests {
         assert!(resolve_field(Control::Slider, Some("set-mixer"), Some("hue")).is_err());
         assert!(resolve_field(Control::Slider, Some("reset-mixer"), Some("red-hue")).is_err());
 
-        // A RAW slider's action declares that one parameter alone, so its slider drafts too.
-        let exposure =
-            resolve_field(Control::Slider, Some("set-raw-exposure"), Some("ev")).unwrap();
-        assert_eq!(
-            (exposure.min, exposure.max, exposure.origin),
-            (-5.0, 5.0, 0.0)
-        );
-        // Custom temperature's range holds no zero, so its gesture starts at the declared 6504 K
-        // and every value stays inside 2000..12000 on its 10 K step.
-        let kelvin =
-            resolve_field(Control::Slider, Some("set-raw-temperature"), Some("kelvin")).unwrap();
+        // The RAW white balance is a field patch too. Its temperature's range holds no zero, so
+        // its gesture starts at the declared 6504 K and every value stays inside 2000..12000 on
+        // its 10 K step.
+        let kelvin = resolve_field(Control::Slider, Some("set-raw"), Some("temperature")).unwrap();
         assert_eq!(
             (kelvin.min, kelvin.max, kelvin.step),
             (2000.0, 12000.0, 10.0)
@@ -2444,7 +2435,7 @@ mod tests {
     /// the reason rather than timed.
     #[test]
     fn an_unpreviewed_draft_is_an_input_without_a_frame() {
-        let field = resolve_field(Control::Slider, Some("set-raw-tint"), Some("tint")).unwrap();
+        let field = resolve_field(Control::Slider, Some("set-raw"), Some("tint")).unwrap();
         let events = vec![
             json!({"event":"slider_draft_set","elapsed_ms":1.0,"detail":{"fields":{"tint":3.0}}}),
             json!({"event":"slider_draft_unpreviewed","elapsed_ms":2.0,"detail":{"value":3.0,"draft_revision":1,"error":"preparation-required: source-job-1"}}),

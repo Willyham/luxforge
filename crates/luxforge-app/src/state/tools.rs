@@ -1782,6 +1782,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             controls,
             reset,
             collapsed,
+            ..
         } => Rendered::Group {
             label,
             controls,
@@ -1795,6 +1796,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             style,
             rail,
             reset,
+            ..
         } => Rendered::Number {
             action,
             parameter,
@@ -1853,6 +1855,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             preset,
             style,
             icon,
+            ..
         } => Rendered::Action {
             action,
             label,
@@ -1860,7 +1863,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             style: *style,
             icon: icon.as_deref(),
         },
-        Control::Picker { label } => Rendered::Picker { label },
+        Control::Picker { label, .. } => Rendered::Picker { label },
         Control::Task { task, label } => Rendered::Task { task, label },
         Control::Presets { action } => Rendered::Presets { action },
         // A kind added to the descriptor later is reported, never dropped.
@@ -2412,12 +2415,8 @@ mod tests {
             .into_iter()
             .cloned()
             .collect();
-        // RAW declares one action per field: each one is a complete request on its own.
-        for (action, parameter) in [
-            ("set-raw-exposure", "ev"),
-            ("set-raw-temperature", "kelvin"),
-            ("set-raw-tint", "tint"),
-        ] {
+        // An action of one parameter is a complete request on its own: RAW's explicit gains.
+        for (action, parameter) in [("set-raw-red-gain", "gain"), ("set-raw-blue-gain", "gain")] {
             assert!(
                 drafts_alone(&modules, action, parameter),
                 "{action}.{parameter} declares no second parameter"
@@ -2425,6 +2424,9 @@ mod tests {
             assert!(!is_patch(&modules, action), "{action} is not a field patch");
             assert!(drafts(&modules, action, parameter));
         }
+        // RAW's white balance is a patch, which drafts for that reason.
+        assert!(is_patch(&modules, "set-raw"));
+        assert!(drafts(&modules, "set-raw", "temperature"));
         // Basic's fields are a patch: the module merges whichever ones it is sent.
         assert!(is_patch(&modules, "set-basic"));
         assert!(drafts(&modules, "set-basic", "temperature"));
@@ -2441,7 +2443,7 @@ mod tests {
             );
         }
         // A parameter no action declares, and an action no module declares, draft nothing.
-        assert!(!drafts(&modules, "set-raw-exposure", "kelvin"));
+        assert!(!drafts(&modules, "set-raw-red-gain", "kelvin"));
         assert!(!drafts(&modules, "no-such-action", "ev"));
     }
 
