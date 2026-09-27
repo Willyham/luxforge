@@ -916,6 +916,8 @@ pub(super) fn rasterize(
             index,
             segment,
             reader,
+            #[cfg(test)]
+            context,
         },
         segment,
         super::frame_mut(&mut frame),
@@ -938,7 +940,7 @@ const TAP_BLOCK_COLUMNS: u32 = 64;
 /// The most pixels of the segment before a resample one block holds. A block of up to 16 rows by
 /// 64 columns reads about 1,400 of them at a small angle and about 3,500 at the 45 degree limit;
 /// a mapping that would need more than this reads its taps one at a time instead.
-const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
+pub(super) const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
 
 /// The last segment's rows on the linear path. A segment with colour holds its rows as `f32`
 /// between its entry and the terminal boundary, exactly the value [`Linear::colour`] converts a
@@ -950,6 +952,8 @@ struct LinearRows<'e, 'x, 's> {
     segment: &'e Segment,
     /// The source's rows, when the segment reads the source through the identity.
     reader: Option<ViewReader<'e>>,
+    #[cfg(test)]
+    context: &'e RenderContext,
 }
 
 /// What one worker reuses for every chunk of linear rows it takes.
@@ -1081,6 +1085,9 @@ impl LinearRows<'_, '_, '_> {
             if let Some(region) = held {
                 self.evaluation
                     .region_in(self.index - 1, region, block, row)?;
+                #[cfg(test)]
+                self.context
+                    .note_resample_bytes(block.capacity() * std::mem::size_of::<[f64; 3]>());
             }
             for y in y0..y0 + rows {
                 for x in x0..x0 + columns {

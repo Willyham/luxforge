@@ -14,6 +14,162 @@ fn ticket(editor: &mut Editor, generation: u64, content: u64) {
     editor.pending_content.insert(generation, content);
 }
 
+#[test]
+fn a_deferred_or_blank_surface_marks_the_photo_updating_until_the_current_draw() {
+    let mut gpu = luxforge_ui::SurfaceDiagnostics::default();
+    assert!(!super::preview::surface_photo_needs_update(
+        &gpu, true, false
+    ));
+    gpu.drawn_stale_photo = true;
+    assert!(super::preview::surface_photo_needs_update(
+        &gpu, true, false
+    ));
+    assert!(!super::preview::surface_photo_needs_update(
+        &gpu, true, true
+    ));
+    gpu.drawn_stale_photo = false;
+    gpu.drawn_photo_blank = true;
+    assert!(super::preview::surface_photo_needs_update(
+        &gpu, true, false
+    ));
+    assert!(!super::preview::surface_photo_needs_update(
+        &gpu, false, false
+    ));
+    gpu.drawn_photo_blank = false;
+    assert!(!super::preview::surface_photo_needs_update(
+        &gpu, true, false
+    ));
+}
+
+/// The retirement can begin in the redraw's `prepare`, after update recomputes subscriptions.
+/// Keeping the blocked channel open while a photo is displayed delivers that later wake.
+#[test]
+fn the_retirement_wake_remains_subscribed_after_presenting_new_dimensions() {
+    let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+    let old = luxforge_core::Raster {
+        width: 2,
+        height: 2,
+        rgba: vec![12; 2 * 2 * 4].into(),
+        source_fingerprint: "old".into(),
+        snapshot_id: luxforge_core::SnapshotId::new(),
+    };
+    assert!(editor.presenter.show_full(&old, 1));
+    let new = luxforge_core::Raster {
+        width: 3,
+        height: 3,
+        rgba: vec![24; 3 * 3 * 4].into(),
+        source_fingerprint: "new".into(),
+        snapshot_id: luxforge_core::SnapshotId::new(),
+    };
+    editor.present(
+        Upload {
+            generation: 8,
+            draft_revision: None,
+            width: 3,
+            height: 3,
+            entry_id,
+            snapshot_id: new.snapshot_id.to_string(),
+            source_fingerprint: new.source_fingerprint.clone(),
+            proxy: false,
+            proxy_dimensions: None,
+            proxy_built: false,
+            proxy_approximation: luxforge_core::ProxyApproximation::default(),
+            approximate_white_balance: false,
+            reason: None,
+            render_ms: Some(1.0),
+        },
+        &new,
+    );
+    assert!(
+        editor.preview_wake_needed(),
+        "the surface still may owe the newly presented draw"
+    );
+    finish(editor, catalog);
+}
+
+/// A new draft starts at revision zero even if the previous draft reached a much higher revision.
+#[test]
+fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+    let asset = editor.state.as_ref().unwrap().asset.id.clone();
+    let draft_a = luxforge_core::Draft::new("basic.set", asset.clone(), 4);
+    editor.displayed_draft_id = Some(draft_a.draft_id);
+    editor.displayed_draft_revision = Some(10);
+    editor.presented_generation = 7;
+    let mut draft_b = luxforge_core::Draft::new("basic.set", asset, 4);
+    draft_b.draft_revision = 1;
+    editor.session.draft = Some(draft_b.clone());
+    let (analysis, raster) = drafted(&editor, 8, &draft_b.draft_id, 1, &[[40, 50, 60, 255]], 1, 1);
+    let rect = luxforge_core::Region {
+        x0: 0,
+        y0: 0,
+        width: 1,
+        height: 1,
+    };
+    let stage = luxforge_core::StageSize {
+        width: 1,
+        height: 1,
+    };
+    editor.preview_generation = 8;
+    ticket(&mut editor, 8, 2);
+    let (_, shown) = editor.region_ready(luxforge_core::PreviewResult {
+        generation: 8,
+        entry_id: analysis.identity.entry_id.clone(),
+        identity: analysis.identity,
+        draft_revision: Some(1),
+        intent: luxforge_core::PreviewIntent::Interactive,
+        viewport_declined: None,
+        outcome: luxforge_core::PhaseOutcome::Region(luxforge_core::RegionOutcome {
+            frame: luxforge_core::RegionFrame {
+                raster: raster.as_ref().clone(),
+                rect,
+                stage,
+                full_rect: rect,
+                full_stage: stage,
+                approximation: luxforge_core::ProxyApproximation::default(),
+            },
+            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
+        }),
+        approximate_white_balance: false,
+        render_ms: 1.0,
+        queue_wait_ms: None,
+    });
+    assert!(
+        shown,
+        "draft B's first region was dropped because draft A had reached revision 10"
+    );
+    assert_eq!(editor.displayed_draft_id, Some(draft_b.draft_id.clone()));
+    let (analysis, raster) = drafted(&editor, 9, &draft_b.draft_id, 0, &[[40, 50, 60, 255]], 1, 1);
+    let (_, shown) = editor.region_ready(luxforge_core::PreviewResult {
+        generation: 9,
+        entry_id: analysis.identity.entry_id.clone(),
+        identity: analysis.identity,
+        draft_revision: Some(0),
+        intent: luxforge_core::PreviewIntent::Interactive,
+        viewport_declined: None,
+        outcome: luxforge_core::PhaseOutcome::Region(luxforge_core::RegionOutcome {
+            frame: luxforge_core::RegionFrame {
+                raster: raster.as_ref().clone(),
+                rect,
+                stage,
+                full_rect: rect,
+                full_stage: stage,
+                approximation: luxforge_core::ProxyApproximation::default(),
+            },
+            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
+        }),
+        approximate_white_balance: false,
+        render_ms: 1.0,
+        queue_wait_ms: None,
+    });
+    assert!(
+        !shown,
+        "an older region of the same draft must remain fenced"
+    );
+    finish(editor, catalog);
+}
+
 /// A new viewport can arrive before its whole Fit frame. Switching to Fit at that point must
 /// leave the canvas pending instead of drawing the previous recipe's retained whole photograph.
 #[test]

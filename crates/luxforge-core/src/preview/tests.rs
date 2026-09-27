@@ -495,7 +495,13 @@ fn interactive_viewport_delivers_one_bounded_region_without_a_report() {
         (128, 96)
     );
     assert!(region.frame.full_rect.x0 <= 17 && region.frame.full_rect.x1() >= 48);
+    assert_eq!(
+        (region.frame.stage.width, region.frame.stage.height),
+        (64, 48)
+    );
     assert!(region.frame.raster.width <= 64 && region.frame.raster.height <= 48);
+    assert!(region.frame.approximation.reduced_detail);
+    assert!(result.viewport_declined.is_none());
     assert!(
         result.exact().is_none(),
         "no whole-image histogram during motion"
@@ -543,8 +549,53 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
             component: None,
             cells_w: 15,
             cells_h: 11,
+            whole_cells_w: 61,
+            whole_cells_h: 43,
         })
         .unwrap();
+    let transform = render(
+        &job.registry,
+        job.source.input(),
+        &job.recipe,
+        RenderOptions::default(),
+        &RenderContext::new(),
+    )
+    .unwrap()
+    .transform()
+    .unwrap();
+    let compiled = crate::mask::CompiledMask::new(
+        &mask,
+        crate::modules::Stage {
+            width: 128,
+            height: 96,
+        },
+        &job.recipe.strokes,
+    )
+    .unwrap();
+    let expected_grid = |region, cells_w, cells_h| {
+        crate::analysis::coverage_grid_region(
+            &compiled,
+            &transform,
+            region,
+            cells_w,
+            cells_h,
+            crate::analysis::MaskPixels::Unavailable("geometric mask"),
+            &Cancel::never(),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let expected_region = expected_grid(job.viewport.unwrap(), 15, 11);
+    let expected_whole = expected_grid(
+        crate::Region {
+            x0: 0,
+            y0: 0,
+            width: 128,
+            height: 96,
+        },
+        61,
+        43,
+    );
     let mut queue = PreviewQueue::default();
     queue.request(job);
     let results = drain_all(&mut queue);
@@ -560,7 +611,11 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
         .as_ref()
         .expect("whole-stage coverage");
     assert_eq!((region.cells_w, region.cells_h), (15, 11));
-    assert_eq!((whole.cells_w, whole.cells_h), (15, 11));
+    assert_eq!((whole.cells_w, whole.cells_h), (61, 43));
+    assert_eq!(region.coverage.len(), 15 * 11);
+    assert_eq!(whole.coverage.len(), 61 * 43);
+    assert_eq!(region.coverage, expected_region);
+    assert_eq!(whole.coverage, expected_whole);
     assert_ne!(
         region.coverage, whole.coverage,
         "the second grid samples the whole output stage for a settled pan"
@@ -688,6 +743,8 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         component: None,
         cells_w: 8,
         cells_h: 6,
+        whole_cells_w: 8,
+        whole_cells_h: 6,
     };
     let mut queue = PreviewQueue::default();
     for (proxy, phases, compiles) in [(Some(bounds(40, 40)), 2, 2), (None, 1, 1)] {
@@ -747,6 +804,8 @@ fn the_coverage_grid_arrives_with_the_first_frame_and_is_the_same_grid_on_either
             component: None,
             cells_w: 13,
             cells_h: 9,
+            whole_cells_w: 13,
+            whole_cells_h: 9,
         };
         let run = |proxy: Option<ProxyBounds>| {
             let job = stacked_with_masks(64, 48, layers.clone(), vec![mask.clone()], proxy)
@@ -1980,6 +2039,8 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
             component: None,
             cells_w: 8,
             cells_h: 6,
+            whole_cells_w: 8,
+            whole_cells_h: 6,
         };
         let frame = render(
             &job.registry,
@@ -2078,6 +2139,8 @@ fn the_cost_of_a_coverage_grid() {
                     component: None,
                     cells_w,
                     cells_h,
+                    whole_cells_w: cells_w,
+                    whole_cells_h: cells_h,
                 };
                 let context = crate::render::testing::context();
                 let frame = crate::render(

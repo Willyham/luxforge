@@ -14,6 +14,30 @@ use crate::state::fields;
 use luxforge_core::{AssetId, CropStage, RawPayload, WhiteBalanceMode};
 use serde_json::Map;
 
+#[test]
+fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
+    for cancel in [false, true] {
+        let (mut editor, catalog, _, asset, action, parameter) = drafting();
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
+            action: action.clone(),
+            parameter,
+            value: 1.0,
+        }));
+        begun(&mut editor, &asset, &action, 4);
+        let id = editor.session.draft.as_ref().unwrap().draft_id.clone();
+        editor.displayed_draft_id = Some(id);
+        editor.displayed_draft_revision = Some(1);
+        if cancel {
+            let _ = editor.discard();
+        } else {
+            let _ = editor.release();
+        }
+        assert_eq!(editor.displayed_draft_id, None);
+        assert_eq!(editor.displayed_draft_revision, None);
+        finish(editor, catalog);
+    }
+}
+
 /// A drag of a patch action's slider opens exactly one draft, sends exactly one `draft.set`
 /// for the newest value, and sends nothing at all while a round trip is in flight.
 #[test]

@@ -713,6 +713,11 @@ pub(super) fn mask_overlay_for(
             }
         }
     };
+    let (cells_w, cells_h) = if region.is_some() {
+        (request.cells_w, request.cells_h)
+    } else {
+        (request.whole_cells_w, request.whole_cells_h)
+    };
     let region = region.unwrap_or(Region {
         x0: 0,
         y0: 0,
@@ -720,13 +725,7 @@ pub(super) fn mask_overlay_for(
         height: transform.output.height,
     });
     let coverage = match crate::analysis::coverage_grid_region(
-        &compiled,
-        &transform,
-        region,
-        request.cells_w,
-        request.cells_h,
-        pixels,
-        cancel,
+        &compiled, &transform, region, cells_w, cells_h, pixels, cancel,
     ) {
         Ok(Some(coverage)) => coverage,
         Ok(None) => return MaskOverlayOutcome::default(),
@@ -736,8 +735,8 @@ pub(super) fn mask_overlay_for(
         grid: Some(MaskOverlay {
             mask: request.mask.clone(),
             component: request.component.clone(),
-            cells_w: request.cells_w,
-            cells_h: request.cells_h,
+            cells_w,
+            cells_h,
             coverage,
         }),
         absent: None,

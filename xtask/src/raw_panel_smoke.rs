@@ -3,7 +3,7 @@
 //! drag left open, whose drafted frame approximates the white balance on the developed planes and
 //! is labelled so, then released, which redevelops the mosaic and lands the exact frame, at Fit
 //! and again at 100%. At 100%, a held-draft pause checks the exact visible-region refinement and
-//! captures full-detail approximate pixels before release for the white-balance accuracy check.
+//! captures full-detail approximate pixels for a separately reported diagnostic.
 //! Both drags keep the tint in force (the first, from As shot, the camera's as-shot
 //! tint); and a double-click reset on each of the three sliders after the committed
 //! drag the first press makes: exposure back to 0 EV, and the custom temperature and tint back to
@@ -257,9 +257,9 @@ fn raw_payload(frame: &Value) -> Result<&Value> {
         .ok_or_else(|| "The stack has no RAW layer".into())
 }
 
-/// The most the released exact frame may differ from the drafted approximate one, as a share of the
+/// The most the released exact frame may differ from the moving drafted frame, as a share of the
 /// drag's own change from the frame before it (owner decision, 2026-09-26).
-const MAX_SETTLED_SHARE: f64 = 0.1;
+const MAX_MOVING_SHARE: f64 = 0.1;
 
 /// How far the photo surface of one capture is from another's: the mean absolute channel
 /// difference in codes over the surface columns the frame records, between its top and bottom
@@ -1221,25 +1221,29 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     )?;
     let (moving_mean, moving_over) = surface_difference(drafted, released)?;
     let (settled_mean, settled_over) = surface_difference(quality_draft, released)?;
-    // The approximation removes nearly all of the difference the drag is about: the exact frame is
-    // within a tenth of the drag's own change from the full-detail approximate one. The moving
-    // half-detail residual is reported separately at 100%: its spatial softness is allowed only
-    // while moving, never used as the WB accuracy pass. At Fit the proxy must also be within one
-    // code in absolute terms.
+    // The owner's accepted comparison is the frame during the moving drag against the exact
+    // release. The held full-detail frame is a useful, separately reported diagnostic, but does
+    // not replace that acceptance check. Fit also has an absolute one-code limit.
     let (change_mean, _) = surface_difference(before, released)?;
-    let ratio = settled_mean / change_mean;
     ensure(
-        ratio <= MAX_SETTLED_SHARE,
+        change_mean > 0.0,
+        "The temperature drag caused no photographed change",
+    )?;
+    let moving_ratio = moving_mean / change_mean;
+    let paused_ratio = settled_mean / change_mean;
+    ensure(
+        moving_ratio <= MAX_MOVING_SHARE,
         format!(
-            "The exact frame is {settled_mean:.3} codes from the full-detail approximate one on average, {:.1}% of the drag's own {change_mean:.3}",
-            ratio * 100.0
+            "Accepted moving-frame check failed: the exact frame is {moving_mean:.3} codes from the moving drafted one on average, {:.2}% of the drag's own {change_mean:.3}; the owner limit is 10%. Proposed paused-frame diagnostic: {settled_mean:.3} codes, {:.2}% of the same change",
+            moving_ratio * 100.0,
+            paused_ratio * 100.0
         ),
     )?;
     if drag.fit {
         ensure(
-            settled_mean < 1.0,
+            moving_mean <= 1.0,
             format!(
-                "The exact frame is {settled_mean:.3} codes from the approximate one on average"
+                "The exact frame is {moving_mean:.3} codes from the moving approximate one on average; the Fit limit is 1 code"
             ),
         )?;
     }
@@ -1260,7 +1264,8 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "released_histogram": histogram["status"],
         "released_against_full_detail_draft": {"mean_codes": settled_mean, "share_over_2": settled_over},
         "released_against_before": {"mean_codes": change_mean},
-        "settled_share_of_change": ratio,
+        "moving_share_of_change": moving_ratio,
+        "paused_full_detail_share_of_change_proposed_diagnostic": paused_ratio,
         "surface_versions": [versions.0, versions.1],
     }))
 }

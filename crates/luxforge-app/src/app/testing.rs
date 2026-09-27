@@ -274,6 +274,8 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         steps: Vec::new(),
         frames: Vec::new(),
         capture_pending: false,
+        view_idle: None,
+        allow_unready_capture: false,
         capture_overlay: false,
         saving: false,
         had_errors: false,

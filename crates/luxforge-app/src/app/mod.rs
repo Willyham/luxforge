@@ -355,6 +355,8 @@ pub(crate) struct Editor {
     pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
     pub(crate) displayed_draft_revision: Option<u64>,
+    /// Revisions are ordered only within this draft; a new draft starts at zero.
+    pub(crate) displayed_draft_id: Option<luxforge_core::DraftId>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: Tracked<BTreeMap<String, bool>>,
     /// The displayed entry's layers as the recipe panel reads them.
@@ -473,6 +475,8 @@ impl Editor {
                 steps: Vec::new(),
                 frames: Vec::new(),
                 capture_pending: false,
+                view_idle: None,
+                allow_unready_capture: false,
                 capture_overlay: false,
                 saving: false,
                 had_errors: false,
@@ -600,6 +604,7 @@ impl Editor {
             fake_sets: None,
             pending_reset: None,
             displayed_draft_revision: None,
+            displayed_draft_id: None,
             expanded: Tracked::default(),
             recipe: Tracked::default(),
             current_recipe: Tracked::default(),
@@ -884,7 +889,7 @@ impl Editor {
             dimensions: self.dimensions,
             photo: self.presenter.photo().is_some() || self.presenter.region().is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.preview_queue.is_busy(),
+            rendering: self.preview_queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
@@ -1026,17 +1031,22 @@ impl Editor {
         }
     }
 
-    fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![iced::event::listen_with(keymap::raw_event)];
-        // One channel serves both workers: each posts a signal when it has a result, and this
-        // carries it in as the `Poll` the 16 ms timer used to produce. Nothing wakes when nothing
-        // has finished, and the subscription itself exists only while one of them is busy, so an
-        // idle desktop runs no timer and holds no stream. A signal posted while it is being built
-        // or after it is gone is buffered by the channel, which outlives it.
-        if self.preview_queue.is_busy()
+    /// `prepare` can start a GPU retirement after this update recomputes subscriptions. Keep the
+    /// blocked wake stream installed for the whole time a photograph is open, so that later wake
+    /// can trigger the redraw that admits a deferred texture without another user event.
+    pub(crate) fn preview_wake_needed(&self) -> bool {
+        self.state.is_some()
+            || self.preview_queue.is_busy()
             || self.overlay_queue.is_busy()
             || luxforge_ui::surface_retirement_pending()
-        {
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        let mut subscriptions = vec![iced::event::listen_with(keymap::raw_event)];
+        // A blocked channel stream costs no idle work. It remains installed while a photograph is
+        // open because the surface may defer an upload in `prepare`, after this update's
+        // subscription set was computed. Its retirement wake must have a listener then.
+        if self.preview_wake_needed() {
             subscriptions.push(waker::subscription());
         }
         if self.quiet_since.is_some() && !self.quiet_settle_requested {
@@ -1063,11 +1073,18 @@ impl Editor {
             );
         }
         if let Some(evidence) = &self.evidence {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(250))
-                    .map(|_| Message::Evidence(EvidenceMessage::Tick)),
-            );
-            if evidence.capture_pending {
+            if let Some(idle) = &evidence.view_idle {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(idle.ms))
+                        .map(|_| Message::Evidence(EvidenceMessage::ViewIdleDeadline)),
+                );
+            } else {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(250))
+                        .map(|_| Message::Evidence(EvidenceMessage::Tick)),
+                );
+            }
+            if evidence.capture_pending && evidence.view_idle.is_none() {
                 subscriptions.push(
                     iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)),
                 );

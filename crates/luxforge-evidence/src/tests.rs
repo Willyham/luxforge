@@ -1,6 +1,21 @@
 //! Every step kind parses from the shape a script writes and writes itself back in that same shape,
 //! and a malformed step fails the whole script with an error that names it.
 use super::*;
+
+#[test]
+fn view_idle_step_round_trips_and_bounds_its_deadline() {
+    let script = r#"[{"view_idle":{"view":{"zoom":"fit"},"ms":1000}}]"#;
+    let steps = parse(script).expect("a valid native idle probe");
+    assert_eq!(
+        steps,
+        vec![Step::ViewIdle(ViewIdleStep {
+            view: ViewStep::Fit,
+            ms: 1000
+        })]
+    );
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+    assert!(parse(r#"[{"view_idle":{"view":{"zoom":"fit"},"ms":0}}]"#).is_err());
+}
 use serde_json::json;
 
 /// Parse `script`, and check every step writes itself back exactly as it was written.

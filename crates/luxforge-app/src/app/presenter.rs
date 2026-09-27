@@ -239,11 +239,12 @@ impl Presenter {
                 RegionOverlay::new(
                     frame,
                     [
-                        region.rect.x0,
-                        region.rect.y0,
-                        region.rect.x1(),
-                        region.rect.y1(),
+                        region.raster_rect.x0,
+                        region.raster_rect.y0,
+                        region.raster_rect.x1(),
+                        region.raster_rect.y1(),
                     ],
+                    (region.raster_stage.width, region.raster_stage.height),
                     (region.full_stage.width, region.full_stage.height),
                     region.quality,
                     region.content,
@@ -269,6 +270,7 @@ impl Presenter {
                         region.rect.x1(),
                         region.rect.y1(),
                     ],
+                    (region.full_stage.width, region.full_stage.height),
                     (region.full_stage.width, region.full_stage.height),
                     region.quality,
                     region.content,
@@ -297,7 +299,7 @@ fn of(overlay: &Option<(u64, Frame)>, generation: u64) -> Option<&Frame> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_core::{Raster, SnapshotId};
+    use luxforge_core::{Raster, Region, SnapshotId, StageSize};
     use std::sync::Arc;
 
     fn raster(width: u32, height: u32) -> Raster {
@@ -308,6 +310,48 @@ mod tests {
             source_fingerprint: "f".into(),
             snapshot_id: SnapshotId::new(),
         }
+    }
+
+    #[test]
+    fn half_detail_clipping_uses_the_rasters_odd_stage_footprint() {
+        let mut presenter = Presenter::default();
+        let region = super::super::preview::PresentedRegion {
+            generation: 7,
+            content: 3,
+            raster: Arc::new(raster(17, 17)),
+            rect: Region {
+                x0: 101,
+                y0: 1,
+                width: 32,
+                height: 32,
+            },
+            full_stage: StageSize {
+                width: 213,
+                height: 159,
+            },
+            raster_rect: Region {
+                x0: 50,
+                y0: 0,
+                width: 17,
+                height: 17,
+            },
+            raster_stage: StageSize {
+                width: 107,
+                height: 80,
+            },
+            quality: RegionQuality::Interactive,
+            approximate: true,
+        };
+        assert!(presenter.show_region_clipping(vec![0; 17 * 17 * 4], (17, 17), &region));
+        let overlay = presenter.region_clipping().unwrap();
+        assert_eq!(overlay.rect, [50, 0, 67, 17]);
+        assert_eq!(overlay.stage, (107, 80));
+        assert_eq!(overlay.full_stage, (213, 159));
+        let x0 = overlay.rect[0] as f32 * 213.0 / overlay.stage.0 as f32;
+        assert!(
+            (x0 - 99.53).abs() < 0.01,
+            "the overlay starts at the raster footprint"
+        );
     }
 
     /// A shown raster is the render's own buffer, and every one moves the photograph's version by

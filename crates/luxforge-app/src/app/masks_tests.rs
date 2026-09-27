@@ -1971,6 +1971,8 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
                     component: None,
                     cells_w: request.cells_w,
                     cells_h: request.cells_h,
+                    whole_cells_w: request.whole_cells_w,
+                    whole_cells_h: request.whole_cells_h,
                 },
             ),
         )
