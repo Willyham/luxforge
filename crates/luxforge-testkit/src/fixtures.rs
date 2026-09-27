@@ -96,6 +96,7 @@ pub fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
         fingerprint: content_fingerprint("byte", width, height, &rgba),
         rgba: rgba.into(),
         orientation: 1,
+        capture: Default::default(),
     }
 }
 

@@ -744,6 +744,7 @@ mod tests {
                 rgba: vec![255; 8 * 8 * 4].into(),
                 fingerprint: "test".into(),
                 orientation: 1,
+                capture: Default::default(),
             };
             let recipe = &read.snapshot.recipe;
             let expected = format!(

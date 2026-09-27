@@ -167,6 +167,7 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
         rgba: file.base_rgba.clone().into(),
         fingerprint: "sha256:mixed-order-fixture".into(),
         orientation: 1,
+        capture: Default::default(),
     };
     let registry = ModuleRegistry::builtin();
     assert_eq!(file.cases.len(), 4, "every committed case is exercised");

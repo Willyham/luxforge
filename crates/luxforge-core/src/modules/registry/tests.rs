@@ -485,6 +485,7 @@ pub(super) fn source() -> SourceImage {
         rgba: vec![1, 2, 3, 255, 4, 5, 6, 255].into(),
         fingerprint: "sha256:test".into(),
         orientation: 1,
+        capture: Default::default(),
     }
 }
 
