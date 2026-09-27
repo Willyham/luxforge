@@ -933,59 +933,50 @@
     },
     {
       "id": "TASK-015",
-      "description": "Remove the non-interleaved subsampled JPEG guard once a stable zune-jpeg ≥ 0.5.16 (with #421, #452, #453) is pinned.",
-      "status": "blocked",
+      "description": "Remove the non-interleaved subsampled JPEG guard, which kept originals away from a zune-jpeg 0.5.15 mis-decode.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Owner-decided fix, 2026-09-27, not a wave of this plan: `header` in `crates/luxforge-core/src/source.rs` refuses a sequential (SOF0/SOF1) JPEG that has a vertically subsampled component (V > 1) and a separate, non-interleaved scan, because zune-jpeg 0.5.15 (behind `image` 0.25.9, pinned in the workspace `Cargo.toml`) mis-decodes exactly that combination and returns success on silently garbled pixels.",
-        "The fix landed upstream as zune-image PR #421 (commit 0346b87), with follow-up fixes #452 and #453 still unreleased as of 2026-09-27; none has shipped in a zune-jpeg release, only in 0.5.16 release candidates.",
-        "Blocked until a released `zune-jpeg` carrying #421, #452 and #453 can be pinned through `image`'s own dependency; re-review at that point rather than on a fixed date.",
-        "The guard is exactly as wide as the bug: it does not touch interleaved scans, 4:4:4 or 4:2:2 (H2V1) non-interleaved files, or progressive (SOF2) frames, which use a different decode path."
+        "Completed 2026-09-27 by a different route than the pinned-release wait: the owner moved JPEG import onto libjpeg-turbo (the `mozjpeg` crate export already used), so zune-jpeg no longer decodes originals and the guard had nothing left to guard.",
+        "`header` in `crates/luxforge-core/src/source.rs` is back to its bounded frame walk; `image` keeps PNG only and zune-jpeg is gone from the shipped dependency graph."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "The guard",
+          "label": "Header walk",
           "target": "crates/luxforge-core/src/source.rs",
-          "relevance": "`header`'s scan walk and the module doc comment recording the bug this task removes.",
+          "relevance": "`header` without the scan walk, and the scan-layout test.",
           "locator": "header"
         },
         {
           "kind": "file",
-          "label": "Dependency pin",
-          "target": "Cargo.toml",
-          "relevance": "The workspace's exact `image` version, which brings in the affected zune-jpeg release."
+          "label": "JPEG adapter",
+          "target": "crates/luxforge-core/src/jpeg.rs",
+          "relevance": "The libjpeg-turbo decoder originals now go through."
         },
         {
           "kind": "file",
-          "label": "Refused-layout fixture",
+          "label": "Formerly refused fixture",
           "target": "fixtures/s0/jpeg-scan-420-noninterleaved.jpg",
-          "relevance": "The only fixture the guard refuses; must decode correctly once the guard is gone."
-        },
-        {
-          "kind": "file",
-          "label": "User guide's JPEG input limits",
-          "target": "docs/user-guide.md",
-          "relevance": "States the refusal in the Open section; the sentence is deleted with the guard."
+          "relevance": "Decodes to exactly the bytes of its interleaved twin."
         }
       ],
       "acceptance_criteria": [
-        "`image`/zune-jpeg is pinned to a release that includes zune-image PR #421 and the follow-up fixes #452 and #453.",
         "The guard in `header` (the scan walk, `sof_vmax`, `skip_entropy_coded_data` and the refusal) is deleted, along with its test and the module doc comment describing the bug.",
-        "`fixtures/s0/jpeg-scan-420-noninterleaved.jpg`, previously refused, now decodes and matches its interleaved counterpart within the same tolerance the other accepted layouts already use.",
+        "`fixtures/s0/jpeg-scan-420-noninterleaved.jpg`, previously refused, now decodes and matches its interleaved counterpart, as do the 4:4:4 and 4:2:2 pairs.",
         "The refusal sentence is removed from `docs/user-guide.md` and the caveat from `docs/features.md`'s JPEG open row."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Pin the fixed zune-jpeg release, delete the guard and its test, then decode every `jpeg-scan-*.jpg` fixture and compare the previously-refused one against the others."
+          "Decode every `jpeg-scan-*.jpg` fixture and compare each non-interleaved file with its interleaved twin."
         ],
         "commands": [
           "cargo test -p luxforge-core --lib source",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
-          "Every `jpeg-scan-*.jpg` fixture decodes, and the formerly refused one agrees with its interleaved counterpart within the existing tolerance."
+          "Every `jpeg-scan-*.jpg` fixture decodes, and each non-interleaved file equals its interleaved twin byte for byte."
         ]
       }
     },
@@ -995,7 +986,7 @@
       "status": "blocked",
       "dependencies": [],
       "extra_context": [
-        "Owner-decided follow-up, 2026-09-27, not a wave of this plan: `mozjpeg` 0.10.13's `write_icc_profile` numbers its APP2 chunks from 0, which ICC.1 Annex B.4 does not allow, so zune-jpeg ignores the profile; `encode_jpeg` writes the one chunk itself with `write_marker`.",
+        "Owner-decided follow-up, 2026-09-27, not a wave of this plan: `mozjpeg` 0.10.13's `write_icc_profile` numbers its APP2 chunks from 0, which ICC.1 Annex B.4 does not allow, so a decoder that follows it, Luxforge's own among them, refuses or ignores the profile; the export writes the one chunk itself with `write_marker` through the JPEG adapter.",
         "A fix (count from 1, with a test of the sequence numbers and the reassembled profile) is prepared for ImageOptim/mozjpeg-rust; blocked until a released `mozjpeg` carries it."
       ],
       "context_links": [
@@ -1003,7 +994,7 @@
           "kind": "file",
           "label": "Export encoder",
           "target": "crates/luxforge-core/src/export/encode.rs",
-          "relevance": "The hand-written ICC chunk and its byte test, which this task replaces with the crate's call."
+          "relevance": "The hand-written ICC chunk and its byte test, which this task replaces with the crate's call made inside `crates/luxforge-core/src/jpeg.rs`."
         },
         {
           "kind": "file",
@@ -1020,7 +1011,7 @@
       ],
       "acceptance_criteria": [
         "`mozjpeg` is pinned to a release whose `write_icc_profile` numbers chunks from 1.",
-        "`encode_jpeg` calls `write_icc_profile`; the hand-written chunk and the THIRD_PARTY.md sentence about it are gone.",
+        "The JPEG adapter writes the export's profile with `write_icc_profile`; the hand-written chunk and the THIRD_PARTY.md sentence about it are gone.",
         "The encoder's ICC tests still find sequence number 1 and the profile round-trips byte-exact through Luxforge's own decoder."
       ],
       "test_strategy": {
@@ -1032,7 +1023,7 @@
           "cargo test -p luxforge-core --lib export::encode"
         ],
         "expected_results": [
-          "The ICC profile round-trips through zune-jpeg from the crate's own writer."
+          "The ICC profile round-trips through Luxforge's own decoder from the crate's own writer."
         ]
       }
     }
