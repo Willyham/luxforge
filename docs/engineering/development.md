@@ -73,6 +73,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `state-layer`, `view-layer`, `widget-crate` | Iced and `app::` in the view model; the core, `OwnerHandle` and `.call(` in the view; the core in `luxforge-ui` | Those directories, tests included |
 | `jpeg-codec-name`, `jpeg-through-codec` | `mozjpeg` outside `luxforge-jpeg`; decoding JPEG through `image` | Shipped crates' production code |
 | `raw-identity` | `"luxforge.raw"` and `RAW_EFFECT` outside the RAW module | Production code under `crates/` |
+| `presettable-action` | The refusal `is not a field-patch action` outside `ModuleRegistry::patch_action`, the one answer to whether an action is presettable | Production code under `crates/` |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, capability job lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
 | `no-pixel-image-handle` | `Handle::from_rgba`, which uploads a new texture each time it is made | `crates/` and `xtask/`, tests included |
 | `project-name` | The old working name | Every text file under `crates/` and `xtask/` |

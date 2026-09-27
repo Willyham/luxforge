@@ -334,6 +334,19 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only the RAW module (crates/luxforge-core/src/modules/raw*) and tests may name \
                  its identity; decide applicability from the declared sources",
     },
+    // One answer to "is this a presettable action": `ModuleRegistry::patch_action` words the
+    // refusal, and every caller resolves through it, so a second copy of the check fails here.
+    SourceRule {
+        name: "presettable-action",
+        tokens: &["is not a field-patch action"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/modules/registry/lookups.rs"],
+        mode: Match::Whole,
+        tests: false,
+        reason: "only ModuleRegistry::patch_action decides whether an action is presettable; \
+                 resolve it there",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -995,51 +1008,6 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
-/// The presettable-action refusal and the one resolver that words it.
-const PATCH_REFUSAL: &str = "is not a field-patch action";
-const PATCH_RESOLVER: &str = "crates/luxforge-core/src/modules/registry/lookups.rs";
-
-/// Rule (scope: `crates/**/*.rs` product lines; allowed: [`PATCH_RESOLVER`]; match: whole token
-/// [`PATCH_REFUSAL`]; tests: not covered; reason: `ModuleRegistry::patch_action` is the one answer
-/// to "is this a presettable action", so a second copy of the check fails here). Fail on the first
-/// product line elsewhere that words the refusal; answer how many product files were read.
-fn one_patch_resolver(root: &Path) -> Result<usize> {
-    let resolver = root.join(PATCH_RESOLVER);
-    let sources: Vec<PathBuf> = files(&root.join("crates"))?
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect();
-    let texts = sources
-        .iter()
-        .map(fs::read_to_string)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
-    let mut test_only = BTreeSet::new();
-    for (path, (_, modules)) in sources.iter().zip(&scanned) {
-        for name in modules {
-            test_only.extend(module_files(path, name));
-        }
-    }
-    let mut checked = 0;
-    for (path, (lines, _)) in sources.iter().zip(&scanned) {
-        if *path == resolver || test_file(path) || test_only.contains(path) {
-            continue;
-        }
-        for (number, line) in lines {
-            ensure(
-                !holds_whole_token(line, PATCH_REFUSAL),
-                format!(
-                    "{}:{number}: only ModuleRegistry::patch_action ({PATCH_RESOLVER}) decides \
-                     whether an action is presettable; resolve it there",
-                    path.display()
-                ),
-            )?;
-        }
-        checked += 1;
-    }
-    Ok(checked)
-}
-
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1106,10 +1074,6 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
-    );
-    println!(
-        "PASS one presettable-action resolver ({} product files)",
-        one_patch_resolver(root)?
     );
     Ok(())
 }
@@ -1477,31 +1441,31 @@ mod tests {
         for dir in [core.join("modules/registry"), core.join("presets")] {
             fs::create_dir_all(dir).unwrap();
         }
-        let refusal = "format!(\"{id} is not a field-patch action\")\n";
+        let wording = "format!(\"{id} is not a field-patch action\")\n";
         // The resolver, a test file and a test item may word it; a comment names nothing.
         for (file, text) in [
-            (core.join("modules/registry/lookups.rs"), refusal.to_owned()),
-            (core.join("presets/library_tests.rs"), refusal.to_owned()),
+            (core.join("modules/registry/lookups.rs"), wording.to_owned()),
+            (core.join("presets/library_tests.rs"), wording.to_owned()),
             (
                 core.join("presets/mod.rs"),
                 format!(
-                    "#[cfg(test)]\nmod tests {{\n    {refusal}}}\n// X is not a field-patch action\n"
+                    "#[cfg(test)]\nmod tests {{\n    {wording}}}\n// X is not a field-patch action\n"
                 ),
             ),
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(one_patch_resolver(tmp.path()).unwrap(), 1);
+        assert_eq!(read(tmp.path(), &["presettable-action"]).unwrap(), (1, 0));
         // A second copy of the check anywhere else is refused.
         let copy = core.join("presets/library.rs");
-        fs::write(&copy, refusal).unwrap();
-        let error = one_patch_resolver(tmp.path()).unwrap_err().to_string();
+        fs::write(&copy, wording).unwrap();
+        let error = refusal(tmp.path(), &["presettable-action"], "a second copy");
         assert!(
-            error.contains("library.rs:1:") && error.contains("ModuleRegistry::patch_action"),
+            error.contains("library.rs:1") && error.contains("ModuleRegistry::patch_action"),
             "{error}"
         );
         fs::remove_file(copy).unwrap();
-        assert_eq!(one_patch_resolver(tmp.path()).unwrap(), 1);
+        assert_eq!(read(tmp.path(), &["presettable-action"]).unwrap(), (1, 0));
     }
 
     #[test]
