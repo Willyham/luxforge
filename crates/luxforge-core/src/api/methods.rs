@@ -951,8 +951,9 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "decimation_tolerance_of_radius": path::DECIMATION_TOLERANCE_OF_RADIUS,
             "decimation_tolerance_min": path::DECIMATION_TOLERANCE_MIN,
             "grid_rounding": path::GRID_ROUNDING,
+            "posted_points_per_stroke": path::POSTED_POINTS_PER_STROKE,
             "points_per_stroke": path::POINTS_PER_STROKE,
-            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at a tolerance relative to the radius it is drawn with: decimation_tolerance_of_radius times the radius as stored on the same grid, and never less than decimation_tolerance_min. A stored position is therefore at most that tolerance plus grid_rounding from the position that was posted, and at one radius the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates at its radius before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
+            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at a tolerance relative to the radius it is drawn with: decimation_tolerance_of_radius times the radius as stored on the same grid, and never less than decimation_tolerance_min. A stored position is therefore at most that tolerance plus grid_rounding from the position that was posted, and at one radius the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates at its radius before it posts, and a path posted undecimated arrives at the same stored bytes. A posted path holds at most posted_points_per_stroke positions, checked before decimation, and the stroke it decimates to at most points_per_stroke, checked after. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
         },
         // The one path bound that is the mask's own rather than the host path primitive's, so the
         // `paths` block above says nothing about masks and this one says what a mask adds. The mask
@@ -3268,6 +3269,11 @@ mod tests {
         );
         assert_eq!(paths["grid_rounding"], json!(path::GRID_ROUNDING));
         assert_eq!(paths["points_per_stroke"], json!(1024));
+        assert_eq!(
+            paths["posted_points_per_stroke"],
+            json!(16 * 1024),
+            "a raw path is bounded before decimation, and more generously than the stroke after it"
+        );
         for text in [&paths["coordinates"], &paths["notes"]] {
             let text = text.as_str().expect("prose a client can read");
             assert!(!text.to_lowercase().contains("mask"), "{text}");

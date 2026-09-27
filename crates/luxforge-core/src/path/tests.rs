@@ -101,22 +101,40 @@ fn the_generic_check_accepts_a_path_and_names_every_refusal() {
     check_value(&declared, &json!([[0, 1], [1, 0]])).expect("integers are numbers");
 }
 
+/// A posted path is bounded before decimation by the posted bound, which is its own number and
+/// its own sentence: generous, so a raw path past the stored bound is posted, and named as the
+/// posted bound rather than as the stored one when it is passed.
 #[test]
-fn a_path_over_the_declared_count_names_the_points_per_stroke_limit() {
-    let declared = points_parameter(1, POINTS_PER_STROKE);
+fn a_posted_path_over_its_declared_count_names_the_posted_bound() {
+    const { assert!(POSTED_POINTS_PER_STROKE > POINTS_PER_STROKE) };
+    let declared = points_parameter(1, POSTED_POINTS_PER_STROKE);
     let mut rng = Rng(7);
-    let legal = captured(&mut rng, POINTS_PER_STROKE);
+    let raw = captured(&mut rng, POINTS_PER_STROKE * 2);
+    check_value(&declared, &json!(raw)).expect("a raw path past the stored bound is posted");
+    let legal = captured(&mut rng, POSTED_POINTS_PER_STROKE);
     check_value(&declared, &json!(legal)).expect("exactly the bound is legal");
 
-    let one_more = captured(&mut rng, POINTS_PER_STROKE + 1);
+    let one_more = captured(&mut rng, POSTED_POINTS_PER_STROKE + 1);
     let error = check_value(&declared, &json!(one_more)).unwrap_err();
     assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
     assert_eq!(
         error.detail,
         format!(
-            "parameter path has {} positions; the limit is {POINTS_PER_STROKE} points per stroke",
-            POINTS_PER_STROKE + 1
+            "parameter path has {} positions; the limit is {POSTED_POINTS_PER_STROKE} positions \
+             posted per path",
+            POSTED_POINTS_PER_STROKE + 1
         )
+    );
+    // The one command that paints declares exactly this bound for its path.
+    let declared = crate::mask::commands::find(crate::mask::commands::ADD_STROKE)
+        .and_then(|command| command.action.parameter("points").cloned())
+        .expect("mask.add-stroke declares its path");
+    assert_eq!(
+        declared.kind,
+        crate::ParameterKind::Points {
+            points_min: 1,
+            points_max: POSTED_POINTS_PER_STROKE
+        }
     );
 }
 
@@ -609,4 +627,96 @@ fn cloning_a_recipe_shares_its_strokes_and_a_write_copies_only_pointers() {
         ),
         "the copy holds the same stroke, not a copy of its positions"
     );
+}
+
+/// A stroke's radius has one legal range, and every reader holds it: the declared `size` of the one
+/// command that paints, [`Stroke::capture`], the stored-stroke recheck and the brush's compile. A
+/// radius just outside it is refused by each of them, naming the range, and one just inside is taken
+/// by each.
+#[test]
+fn one_stroke_radius_range_is_read_by_capture_the_stored_recheck_and_compile() {
+    let range = format!("{SIZE_MIN}..={SIZE_MAX}");
+    let declared = crate::mask::commands::find(crate::mask::commands::ADD_STROKE)
+        .and_then(|command| command.action.parameter("size").cloned())
+        .expect("mask.add-stroke declares its size");
+    assert_eq!(
+        declared.kind,
+        crate::ParameterKind::Number {
+            min: SIZE_MIN,
+            max: SIZE_MAX
+        },
+        "the declared size is the one range"
+    );
+
+    // Capture, on the posted size.
+    let path = [[0.4, 0.5], [0.6, 0.5]];
+    for inside in [SIZE_MIN, SIZE_MAX] {
+        Stroke::capture(&path, inside, 50.0, 100.0, false).expect("the range is closed");
+    }
+    for outside in [SIZE_MIN * (1.0 - 1e-9), SIZE_MAX * (1.0 + 1e-9)] {
+        let error = Stroke::capture(&path, outside, 50.0, 100.0, false).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            format!("stroke size must be a number within {range}")
+        );
+    }
+
+    // The stored recheck and the compile, on the size as stored: whole grid steps, so the legal
+    // ones are the steps inside the range and the illegal ones the steps either side of it.
+    let lowest = (SIZE_MIN * COORDINATE_STEPS_PER_UNIT).ceil() as i32;
+    let highest = (SIZE_MAX * COORDINATE_STEPS_PER_UNIT).floor() as i32;
+    let stored = |size: i32| Stroke {
+        points: vec![[6554, 8192], [9830, 8192]],
+        size,
+        feather: 50,
+        flow: 100,
+        erase: false,
+        colour: None,
+    };
+    let compiled = |stroke: &Stroke| {
+        let mut table = StrokeTable::new("the range test");
+        let id = table.insert(stroke.clone());
+        let mut mask = crate::Mask::new("Mask 1");
+        mask.components.push(crate::Component::new(
+            "Brush 1",
+            crate::ComponentMode::Add,
+            crate::mask::BRUSH,
+            json!({ "strokes": [id.to_string()] }),
+        ));
+        crate::mask::CompiledMask::new(
+            &mask,
+            crate::modules::Stage {
+                width: 60,
+                height: 40,
+            },
+            &table,
+        )
+        .map(|_| ())
+    };
+    for inside in [lowest, highest] {
+        let stroke = stored(inside);
+        Stroke::from_stored(&stroke.id(), &stroke.canonical())
+            .unwrap_or_else(|error| panic!("{inside} steps is a legal stored size: {error}"));
+        compiled(&stroke)
+            .unwrap_or_else(|error| panic!("{inside} steps is a legal compiled size: {error}"));
+    }
+    for outside in [lowest - 1, highest + 1] {
+        let stroke = stored(outside);
+        let id = stroke.id();
+        let error = Stroke::from_stored(&id, &stroke.canonical()).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            format!("stored stroke {id} has an invalid size; a stroke size is within {range}"),
+            "{outside} steps"
+        );
+        let error = compiled(&stroke).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            format!("component Brush 1 stroke {id} size must be a number within {range}"),
+            "{outside} steps"
+        );
+    }
 }

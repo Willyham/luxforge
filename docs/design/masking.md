@@ -134,7 +134,7 @@ Stroke { points: [[x, y], …], size, feather, flow, erase }
 
 The stored payload is `{strokes: [address, …]}` — the reserved [`strokes` field](#stroke-storage), holding the component's strokes in order by content address. **No coordinate is ever written into a component payload**; the shape above is what one stored *stroke* holds.
 
-`size` and `feather` are the brush at the moment the stroke was made, in mask-space units and 0..100; `flow` is 0..100; `erase` marks a stroke that removes coverage. A `size` is a stored distance and takes the study's own `[1e-4, 64]` rule, refused by name rather than clamped. One stroke's coverage is the capsule profile at the distance to its nearest segment — for a segment `A→B`, `d` is the distance from the pixel to the segment, and a one-point stroke is the single degenerate segment `A→A`, so the distance to the point falls out of the same expression with no branch:
+`size` and `feather` are the brush at the moment the stroke was made, in mask-space units and 0..100; `flow` is 0..100; `erase` marks a stroke that removes coverage. A `size` is a stored distance, and a stroke's radius has one legal range, `1e-4` to `2` mask-space units, inside the study's own `[1e-4, 64]` rule: the declared `size` of `mask.add-stroke`, the capture of a posted stroke, the recheck of a stored one and the brush's compile all read that one range, and each refuses a radius outside it by name, naming the range, rather than clamping it. One stroke's coverage is the capsule profile at the distance to its nearest segment — for a segment `A→B`, `d` is the distance from the pixel to the segment, and a one-point stroke is the single degenerate segment `A→A`, so the distance to the point falls out of the same expression with no branch:
 
 ```text
 R = size,  f = feather / 100,  band = R · f
@@ -319,6 +319,7 @@ Declared limits, each with a `resource-limit` error naming it — the [limits ta
 | Masks per recipe | 16 |
 | Components per mask | 32 |
 | Strokes per brush component | 64 |
+| Positions per posted path | 16384 before decimation |
 | Points per stroke | 1024 after decimation |
 | Points per mask | 8192 |
 | Segments tested per pixel by a brush component | 64 (the grid index's cell occupancy, checked when a stroke is painted) |
@@ -404,7 +405,7 @@ The store's other half is what a path is before it is hashed, and it is a host p
 - **Why relative.** A brush component's grid index takes its cell side from the largest radius and lists a segment in every cell its radius-grown box reaches, so what a kept position costs grows with the radius: at a fixed two steps a pointer's whole-pixel positions are nearly all kept, and one cell of a scrub at the default size lists more than 300 of them. The share is sized from the scrub measurement under [the occupancy cap](#the-occupancy-cap): at 4% the densest cell of every measured workload at the default and smaller sizes is 47 or fewer, against up to 309 at two steps, and the default brush stores about a tenth of the positions two steps keep (29 to 35 per workload against 270 to 310). A small brush keeps more of its path than a large one, because its tolerance is smaller: 107 to 260 positions per workload at sizes 0.01 and 0.02.
 - **Deviation** from the captured path is therefore at most the tolerance plus the half diagonal of one grid cell, 0.707 steps; the two coordinates are rounded independently, so the second term is `sqrt(2)/2` of a step and not half a step. At the two-step floor that is 2.707 steps, 1.65e-4 of the content height and under 0.7 px on a 4096 px stage; at the default brush it is 66.2 steps, a twenty-fifth of the radius, which the brush's own edge does not show.
 - **Coverage** of a stored stroke is unchanged by any of this: the fold and the per-stroke equation read the stored positions, and every stroke stays bit-identical to its `f64` reference whatever tolerance kept them.
-- **Bounds.** 1024 positions per stroke after decimation and 8192 positions per mask, each refused with a `resource-limit` error naming it.
+- **Bounds.** Two checks, kept apart on purpose. A posted path holds at most **16384** positions, checked before decimation by the `points` parameter's declared bound — generous, because a path may be posted raw, and sixteen times the stored bound is a minute of continuous pointer at 240 Hz. The stroke it decimates to holds at most **1024** positions, checked after decimation, so a raw 2000-position drag that decimates to a handful is stored while a path still longer than 1024 once decimated is refused. Per mask, 8192 stored positions. Each is refused with a `resource-limit` error naming it; `schema.list` publishes the first two under `paths` as `posted_points_per_stroke` and `points_per_stroke`.
 
 ### Deleting the last component
 

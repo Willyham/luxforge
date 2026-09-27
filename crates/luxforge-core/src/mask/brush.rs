@@ -43,8 +43,12 @@ use super::{Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, range, s
 use crate::{
     Component, Error,
     modules::{Region, Stage},
-    path::{Stroke, StrokeId, StrokeTable},
+    path::{self, Stroke, StrokeId, StrokeTable},
 };
+
+// The one legal stroke radius is a stored distance, so it lies inside the study's own distance rule
+// and every divisor a stroke's falloff takes stays one the study allows.
+const _: () = assert!(path::SIZE_MIN >= DISTANCE_MIN && path::SIZE_MAX <= DISTANCE_MAX);
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -453,8 +457,8 @@ impl Compiled {
     /// from.
     ///
     /// Every refusal names what it refused: a reference the store cannot answer is the store's own
-    /// `incompatible` error unchanged, and a stroke whose radius is not a legal mask-space distance
-    /// is `validation` naming the component and the stroke. Both happen here, **before any pixel is
+    /// `incompatible` error unchanged, and a stroke whose radius is outside the one legal stroke
+    /// radius ([`path::size_range`]) is `validation` naming the component, the stroke and the range. Both happen here, **before any pixel is
     /// read**. Occupancy is not refused here: it is checked where each stroke is painted
     /// ([`densest_cell`]), so a component that committed is already within the cap, and a layer that
     /// first draws a mask long after its strokes were painted compiles it without a second check.
@@ -483,10 +487,10 @@ impl Compiled {
                 )
             })?;
             let r = stroke.size();
-            if !r.is_finite() || !(DISTANCE_MIN..=DISTANCE_MAX).contains(&r) {
+            if !path::size_is_legal(r) {
                 return Err(Error::validation(format!(
-                    "component {component} stroke {id} size must be a number within \
-                         {DISTANCE_MIN:e}..={DISTANCE_MAX:.0} mask-space units"
+                    "component {component} stroke {id} size must be a number within {}",
+                    path::size_range()
                 )));
             }
             let band = r * (stroke.feather() / 100.0);
