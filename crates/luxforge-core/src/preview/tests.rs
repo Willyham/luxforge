@@ -2324,3 +2324,188 @@ fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held(
         "the exact frame differs"
     );
 }
+
+/// A radial component off the stage centre, soft enough that a thumbnail's cells read a gradient.
+fn radial_mask() -> Mask {
+    let mut mask = Mask::new("Radial");
+    let name = mask.next_component_name("radial");
+    mask.components.push(Component::new(
+        name,
+        ComponentMode::Add,
+        "radial",
+        json!({"x": 0.4, "y": 0.55, "radius_x": 0.3, "radius_y": 0.2, "angle": 15.0, "feather": 0.5}),
+    ));
+    mask
+}
+
+/// The overlay's own whole-stage grid for `mask` over `job`, filled directly from the core's
+/// reduction: what a thumbnail must equal cell for cell.
+fn whole_grid(job: &PreviewJob, mask: &Mask, cells: (u32, u32)) -> Vec<u8> {
+    let transform = render(
+        job.evaluation.registry(),
+        job.evaluation.source().input(),
+        job.evaluation.recipe(),
+        RenderOptions::default(),
+        &RenderContext::new(),
+    )
+    .unwrap()
+    .transform()
+    .unwrap();
+    let compiled = crate::mask::CompiledMask::new(
+        mask,
+        crate::modules::Stage {
+            width: transform.content.width,
+            height: transform.content.height,
+        },
+        &job.evaluation.recipe().strokes,
+    )
+    .unwrap();
+    crate::analysis::coverage_grid(
+        &compiled,
+        &transform,
+        cells.0,
+        cells.1,
+        crate::analysis::MaskPixels::Unavailable("geometric mask"),
+        &Cancel::never(),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+/// A mask thumbnail is the overlay's grid at the thumbnail's cells — a linear, and a radial, behind
+/// a turned and straightened crop whose cells map back through the geometry tail — and it describes
+/// the whole mask rather than one component of it.
+#[test]
+fn a_mask_thumbnail_is_the_overlay_grid_at_its_cells() {
+    let linear = gradient_mask(0.6);
+    let radial = radial_mask();
+    let mut layers = eligible_layers(96, 64);
+    layers.extend(masked_basic(&radial));
+    layers.extend(masked_basic(&linear));
+    let job = stacked_with_masks(96, 64, layers, vec![linear.clone(), radial.clone()], None);
+    for mask in [&linear, &radial] {
+        let coverage = job
+            .evaluation
+            .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+            .unwrap();
+        let outcome = coverage.outcome.expect("nothing was cached");
+        assert_eq!(outcome.absent, None);
+        let grid = outcome.grid.expect("a geometric mask has a grid");
+        assert_eq!((grid.mask.clone(), grid.component), (mask.id.clone(), None));
+        assert_eq!((grid.cells_w, grid.cells_h), (28, 19));
+        assert_eq!(grid.coverage, whole_grid(&job, mask, (28, 19)));
+        assert!(
+            grid.coverage.iter().any(|cell| *cell > 0) && grid.coverage.contains(&0),
+            "the fixture covers part of the frame"
+        );
+    }
+}
+
+/// The key names everything the grid depends on and nothing else: the key already held fills no
+/// cell, an exposure a position-only mask cannot see keeps it, and a moved mask is a new key.
+#[test]
+fn a_mask_coverage_key_moves_only_with_what_its_grid_depends_on() {
+    let mask = gradient_mask(0.6);
+    let job = stacked_with_masks(64, 48, masked_basic(&mask), vec![mask.clone()], None);
+    let first = job
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+        .unwrap();
+    assert!(first.outcome.is_some());
+    let again = job
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), Some(first.key), &Cancel::never())
+        .unwrap();
+    assert_eq!(again.key, first.key);
+    assert_eq!(again.outcome, None, "an unchanged mask is not filled again");
+
+    // Another exposure on the masked layer changes the picture, not the mask.
+    let mut layers = masked_basic(&mask);
+    layers[0].payload = json!({"exposure": -1.5});
+    let edited = stacked_with_masks(64, 48, layers, vec![mask.clone()], None);
+    let kept = edited
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), Some(first.key), &Cancel::never())
+        .unwrap();
+    assert_eq!((kept.key, kept.outcome), (first.key, None));
+
+    // The same mask, lengthened, is a different grid.
+    let mut moved = gradient_mask(0.9);
+    moved.id = mask.id.clone();
+    let job = stacked_with_masks(64, 48, masked_basic(&moved), vec![moved.clone()], None);
+    let changed = job
+        .evaluation
+        .mask_coverage(&moved.id, (28, 19), Some(first.key), &Cancel::never())
+        .unwrap();
+    assert_ne!(changed.key, first.key);
+    assert_eq!(
+        changed.outcome.unwrap().grid.unwrap().coverage,
+        whole_grid(&job, &moved, (28, 19))
+    );
+}
+
+/// A mask that reads pixels is answered on its first bound layer's input, and has no thumbnail —
+/// with the host's own reason — while no layer is bound to it: the overlay's rule, not a grid read
+/// from anything else. A layer before the bound one is part of its key.
+#[test]
+fn a_value_based_thumbnail_needs_the_masked_operation_input() {
+    let mut mask = Mask::new("Shadows");
+    let name = mask.next_component_name("luminance-range");
+    mask.components.push(Component::new(
+        name,
+        ComponentMode::Add,
+        "luminance-range",
+        json!({"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}),
+    ));
+    let unbound = stacked_with_masks(32, 24, Vec::new(), vec![mask.clone()], None);
+    let outcome = unbound
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+        .unwrap()
+        .outcome
+        .unwrap();
+    assert_eq!(outcome.grid, None);
+    assert!(outcome.absent.is_some(), "the refusal is named");
+
+    let bound = stacked_with_masks(32, 24, masked_basic(&mask), vec![mask.clone()], None);
+    let coverage = bound
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+        .unwrap();
+    let grid = coverage
+        .outcome
+        .clone()
+        .unwrap()
+        .grid
+        .expect("the input is available");
+    assert_eq!(grid.coverage.len(), 28 * 19);
+    let mut before = vec![Layer {
+        id: LayerId::new(),
+        effect_id: BASIC_EFFECT.into(),
+        effect_format: EFFECT_FORMAT,
+        payload: json!({"exposure": 1.0}),
+        mask: None,
+        artifacts: Vec::new(),
+    }];
+    before.extend(masked_basic(&mask));
+    let brighter = stacked_with_masks(32, 24, before, vec![mask.clone()], None);
+    let moved = brighter
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), Some(coverage.key), &Cancel::never())
+        .unwrap();
+    assert_ne!(moved.key, coverage.key);
+}
+
+/// A cancelled grid is an error, never an absent grid a caller could keep as the answer.
+#[test]
+fn a_cancelled_mask_coverage_is_an_error() {
+    let mask = gradient_mask(0.6);
+    let job = stacked_with_masks(32, 24, masked_basic(&mask), vec![mask.clone()], None);
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let error = job
+        .evaluation
+        .mask_coverage(&mask.id, (28, 19), None, &cancel)
+        .unwrap_err();
+    assert_eq!(error.kind, crate::ErrorKind::Cancelled);
+}
