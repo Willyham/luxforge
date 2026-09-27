@@ -1250,7 +1250,9 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
         };
         let all_patch_fields = match control {
             // A field whose reset is an action of its own is at its neutral exactly when the
-            // layer it mirrors is: its text cannot say so.
+            // layer it mirrors is: its text cannot say so. While it is dragged, the draft has
+            // already left that layer's committed state, as a dragged field-patch slider's text
+            // has left its default.
             ControlModel::Slider(slider) if slider.reset.is_some() => {
                 let owner = inputs
                     .modules
@@ -1259,7 +1261,10 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
                 match owner {
                     Some(owner) => {
                         values += 1;
-                        custom |= edits(owner, inputs);
+                        custom |= edits(owner, inputs)
+                            || inputs.dragging.is_some_and(|(action, parameter)| {
+                                *action == slider.action && *parameter == slider.parameter
+                            });
                         true
                     }
                     None => false,
