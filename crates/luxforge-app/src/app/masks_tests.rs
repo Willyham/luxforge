@@ -1451,6 +1451,172 @@ fn a_typed_kind_is_created_by_its_button_with_no_gesture() {
     assert_eq!(component.payload["samples"], json!([]));
 }
 
+/// **A luminance band is one range over its own four fields.** The open row's generated controls
+/// model the host's `range` control as one band — its label, its black-to-white rail and the four
+/// number fields in their board order — and the band draws those fields, so the row shows each
+/// once. Dragging the high thumb is the slider's own gesture on that one field: the first move
+/// opens one draft of `mask.set-luminance-range` holding `high` alone on the open component, the
+/// release commits it as one entry, and what it commits is exactly the request a typed edit of the
+/// same field sends and copies.
+#[test]
+fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() {
+    use crate::state::tools::{ControlModel, RailStyle, drawn_by_range};
+    const BAND: &str = "mask.set-luminance-range";
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("luminance-range".to_owned()));
+    let listed = masking.listing();
+    let mask = listed.masks[0].id.clone();
+    let component = listed.masks[0].components[0].id.clone();
+    masking.message(MaskMessage::SelectComponent(component.as_str().to_owned()));
+
+    let fields = masking.editor.workspace.masks.components[0].fields.clone();
+    let bands: Vec<_> = fields
+        .iter()
+        .filter_map(|field| match field {
+            ControlModel::Range(band) => Some(band.as_ref().clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bands.len(), 1, "one band on the open row: {fields:?}");
+    let band = &bands[0];
+    assert_eq!((band.action.as_str(), band.label.as_str()), (BAND, "Range"));
+    assert_eq!(
+        band.rail,
+        RailStyle::Gradient(vec![[0, 0, 0], [255, 255, 255]])
+    );
+    let parameters: Vec<&str> = band
+        .fields()
+        .map(|field| field.parameter.as_str())
+        .collect();
+    assert_eq!(parameters, ["low", "low_feather", "high", "high_feather"]);
+    // A new band is the whole tonal range with soft shoulders, and each of its fields reads it.
+    assert_eq!(
+        band.fields().map(|field| field.value).collect::<Vec<_>>(),
+        [0.0, 5.0, 100.0, 5.0]
+    );
+    // Each field under the band is the number field the host declares for that parameter, under
+    // its declared label, and the row draws it there and nowhere else.
+    for field in &fields {
+        if let ControlModel::Slider(slider) = field {
+            assert!(
+                drawn_by_range(&fields, field),
+                "{} drawn twice",
+                slider.parameter
+            );
+            let under = band
+                .fields()
+                .find(|drawn| drawn.parameter == slider.parameter)
+                .expect("the band draws every field of its action");
+            assert_eq!(under.label, slider.label);
+            assert_eq!(under.spec, slider.spec);
+        }
+    }
+
+    // The band's own menu copies the band as shown, every field at once, on the open component.
+    let shown: serde_json::Map<String, Value> = band
+        .fields()
+        .map(|field| (field.parameter.clone(), Value::from(field.value)))
+        .collect();
+    let whole = masking
+        .editor
+        .request_for_preset(BAND, None, Some(&shown))
+        .expect("the band's request");
+    assert_eq!(whole["method"], json!(BAND));
+    for (name, value) in [
+        ("low", json!(0.0)),
+        ("low_feather", json!(5.0)),
+        ("high", json!(100.0)),
+        ("high_feather", json!(5.0)),
+        ("mask", json!(mask)),
+        ("component", json!(component)),
+    ] {
+        assert_eq!(whole["params"][name], value, "{name}");
+    }
+
+    // The request a typed edit of `high` sends, and the one its field copies.
+    masking
+        .editor
+        .set_control_field_value(BAND, "high", &json!(88.0));
+    let copied = masking
+        .editor
+        .request_for_preset(BAND, Some("high"), None)
+        .expect("a request");
+    assert_eq!(copied["method"], json!(BAND));
+    masking
+        .editor
+        .set_control_field_value(BAND, "high", &json!(100.0));
+
+    // The high thumb dragged to 88: exactly the message a slider's rail publishes for that field.
+    let before = masking.editor.history.entries.len();
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::Fraction {
+            action: BAND.into(),
+            parameter: "high".into(),
+            fraction: 0.88,
+        }));
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
+    let draft = masking
+        .editor
+        .session
+        .draft
+        .clone()
+        .unwrap_or_else(|| panic!("the thumb drafts: {}", masking.editor.status));
+    assert_eq!(draft.action, BAND);
+    assert_eq!(
+        Value::Object(draft.fields.clone()),
+        json!({"high": 88.0}),
+        "the drag drafts its one field and no other"
+    );
+    let target = draft.target.as_ref().expect("the open component");
+    assert_eq!(target.mask.as_ref(), Some(&mask));
+    assert_eq!(target.component.as_ref(), Some(&component));
+    // What the drag commits is the typed edit's own request, field for field.
+    let mut typed = copied["params"]
+        .as_object()
+        .expect("the copied params")
+        .clone();
+    typed.remove("asset_id");
+    typed.remove("mutation");
+    assert_eq!(draft.request(), typed);
+    // While it is held the band reads the dragged value and the thumb as the one dragged.
+    let dragged = masking.editor.workspace.masks.components[0]
+        .fields
+        .iter()
+        .find_map(|field| match field {
+            ControlModel::Range(band) => Some(band.high.clone()),
+            _ => None,
+        })
+        .expect("the band");
+    assert_eq!(dragged.value, 88.0);
+    assert!(dragged.dragging);
+
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::Released {
+            action: BAND.into(),
+            parameter: "high".into(),
+        }));
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Commit));
+    assert!(
+        masking.editor.gesture.is_none(),
+        "{}",
+        masking.editor.status
+    );
+    assert_eq!(
+        masking.editor.history.entries.len(),
+        before + 1,
+        "a thumb's gesture is one entry"
+    );
+    assert_eq!(
+        masking.listing().masks[0].components[0].payload,
+        json!({"low": 0.0, "low_feather": 5.0, "high": 88.0, "high_feather": 5.0}),
+        "only the dragged field moved"
+    );
+}
+
 /// **A create opens what it made**, for a typed kind exactly as for a drawn one.
 ///
 /// This is not a nicety. The generated sections under the component list are bound to the *open* mask,

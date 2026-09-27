@@ -344,6 +344,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
                 "curve".into()
             }
             ControlModel::Action(action) => format!("action:{:?}", action.style),
+            ControlModel::Range(_) => panic!("proof module declares no range"),
             ControlModel::Picker(_) => panic!("proof module declares no canvas picker"),
             ControlModel::Task(_) => panic!("proof module declares no task"),
             ControlModel::Unsupported(kind) => panic!("unsupported proof control {kind}"),
