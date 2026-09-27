@@ -1,4 +1,4 @@
-//! Independent f64 reference for the frozen mask coverage mathematics (TASK-001).
+//! Independent f64 reference for the frozen mask coverage mathematics.
 //!
 //! This module shares no code with production — there is no production mask
 //! code yet, and when there is, this file is the oracle it cannot influence,
@@ -386,7 +386,7 @@ pub fn coverage(mask: &Mask, algebra: Algebra, stage: &Stage, u: f64, v: f64) ->
 }
 
 // ---------------------------------------------------------------------------
-// The brush (TASK-018), frozen in `docs/design/mask-study.md#the-brush`.
+// The brush, frozen in `docs/design/mask-study.md#the-brush`.
 //
 // A brush component holds an ordered list of strokes. A stroke is a polyline in
 // stored normalized coordinates plus the brush settings it was drawn with; its

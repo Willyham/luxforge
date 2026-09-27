@@ -629,6 +629,7 @@ fn downscale_jpeg(
         rgba: frame,
         fingerprint: source.fingerprint.clone(),
         orientation: source.orientation,
+        capture: source.capture.clone(),
     })
 }
 
@@ -737,6 +738,7 @@ mod tests {
             rgba: rgba.into(),
             fingerprint: "sha256:proxy-fixture".into(),
             orientation: 1,
+            capture: Default::default(),
         })
     }
 
@@ -749,6 +751,7 @@ mod tests {
             rgba: Vec::new().into(),
             fingerprint: "sha256:dimensions-only".into(),
             orientation: 1,
+            capture: Default::default(),
         })
     }
 

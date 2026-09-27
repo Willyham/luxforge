@@ -1,13 +1,15 @@
-//! The capability worker: two lanes, `transfer` (resource installs and removals) and `module`
-//! (activation, deactivation and, later, tasks). Each lane is one thread, spawned on its first job,
+//! The lane runner: the capability host's two lanes, `transfer` (resource installs and removals)
+//! and `module` (activation, deactivation and tasks), and the catalog owner's `export` lane (JPEG
+//! export), each table holding the lanes its owner uses. Each lane is one thread, spawned on its first job,
 //! that blocks on its channel while idle, runs one job at a time and posts the result into the
 //! catalog owner's own channel; nothing polls. The owner keeps each lane's waiting jobs itself, at
 //! most [`LANE_QUEUE`] of them, so a queued job can be cancelled or superseded without touching the
 //! thread, and it keeps at most [`FINISHED_RECORDS`] finished records. Progress travels the other
 //! way through a [`JobControl`] the worker writes and the owner reads when a client asks.
 use crate::{
-    Error, ErrorKind, JobId,
+    Cancel, Error, ErrorKind, JobId,
     activity::{Activity, ActivityBoard, ActivitySpec, Outcome},
+    api::Origin,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,11 +36,15 @@ pub const JOB_CANCEL: &str = "module.job.cancel";
 /// The reason a job is cancelled when a grant it depends on is revoked.
 pub const PERMISSION_REVOKED: &str = "permission revoked";
 
+/// The subject an export job's record names in place of a module: export belongs to the host.
+pub const EXPORT_SUBJECT: &str = "luxforge.export";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Lane {
     Transfer,
     Module,
+    Export,
 }
 
 impl Lane {
@@ -46,6 +52,7 @@ impl Lane {
         match self {
             Self::Transfer => "transfer",
             Self::Module => "module",
+            Self::Export => "export",
         }
     }
 
@@ -53,6 +60,7 @@ impl Lane {
         match self {
             Self::Transfer => 0,
             Self::Module => 1,
+            Self::Export => 2,
         }
     }
 }
@@ -65,6 +73,8 @@ pub enum JobKind {
     Install,
     Remove,
     Task,
+    /// A JPEG export, run by the catalog owner's own table rather than the capability host's.
+    Export,
 }
 
 impl JobKind {
@@ -72,6 +82,7 @@ impl JobKind {
         match self {
             Self::Install | Self::Remove => Lane::Transfer,
             Self::Activate | Self::Deactivate | Self::Task => Lane::Module,
+            Self::Export => Lane::Export,
         }
     }
 }
@@ -106,7 +117,7 @@ impl From<&Error> for JobError {
     }
 }
 
-/// One job as `module.job.read` returns it.
+/// One job as `module.job.read` returns it. An export job's `module_id` is [`EXPORT_SUBJECT`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobRecord {
     pub job_id: JobId,
@@ -126,23 +137,6 @@ pub struct JobRecord {
     pub request_id: Option<String>,
 }
 
-/// The request a job, or a change it causes, is announced under: the method and request identity a
-/// client watching `events.since` sees.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Origin {
-    pub method: String,
-    pub request_id: String,
-}
-
-impl Origin {
-    pub fn new(method: &str, request_id: &str) -> Self {
-        Self {
-            method: method.to_owned(),
-            request_id: request_id.to_owned(),
-        }
-    }
-}
-
 /// The state a job's worker and the owner share: the cancel flag with its reason, set by the
 /// owner, and the activity it publishes to once its lane picks it up, which carries its progress.
 /// A job has no activity before that: nothing reports progress before it runs, and a queued job's
@@ -152,6 +146,9 @@ pub struct JobControl {
     cancelled: AtomicBool,
     reason: Mutex<Option<String>>,
     activity: Mutex<Option<Activity>>,
+    /// Cancelled with the job, so a render the job runs stops within one row or chunk without
+    /// the job polling for it: the render's passes read this token themselves.
+    render: Cancel,
 }
 
 impl JobControl {
@@ -170,6 +167,12 @@ impl JobControl {
             *held = Some(reason.to_owned());
         }
         self.cancelled.store(true, Ordering::Release);
+        self.render.cancel();
+    }
+
+    /// The render cancellation token this job's cancel also sets, for a job that renders.
+    pub fn render_cancel(&self) -> &Cancel {
+        &self.render
     }
 
     /// The `cancelled` error naming why the job was stopped.
@@ -203,6 +206,14 @@ impl JobControl {
     pub fn set_progress(&self, fraction: Option<f64>, message: &str) {
         if let Some(activity) = self.activity.lock().expect("job activity").as_ref() {
             activity.progress(fraction, message);
+        }
+    }
+
+    /// Report the phase the job has reached, on its activity. Called from the job's own worker
+    /// thread.
+    pub fn set_phase(&self, phase: &'static str) {
+        if let Some(activity) = self.activity.lock().expect("job activity").as_ref() {
+            activity.phase(phase);
         }
     }
 
@@ -253,6 +264,9 @@ pub(crate) struct NewJob {
     /// Grants the job runs under; revoking one cancels it.
     pub grants: Vec<String>,
     pub admission: Admission,
+    /// What the job publishes once its lane picks it up; its `job_id` is filled in then. `None`
+    /// derives it from the capability job's kind, module and resource.
+    pub activity: Option<ActivitySpec>,
 }
 
 struct Entry {
@@ -262,6 +276,7 @@ struct Entry {
     work: Option<Work>,
     grants: Vec<String>,
     origin: Option<Origin>,
+    activity: Option<ActivitySpec>,
 }
 
 impl Entry {
@@ -326,6 +341,7 @@ fn capability_activity(record: &JobRecord) -> ActivitySpec {
         JobKind::Install => ("module.resource.install", "Installing resource"),
         JobKind::Remove => ("module.resource.remove", "Removing resource"),
         JobKind::Task => ("module.task", "Running task"),
+        JobKind::Export => ("export", "Exporting JPEG"),
     };
     let detail = match &record.resource_id {
         Some(resource_id) => format!("{}/{resource_id}", record.module_id),
@@ -340,11 +356,12 @@ fn capability_activity(record: &JobRecord) -> ActivitySpec {
     }
 }
 
-/// The owner's job table and lanes.
+/// A job table and its lanes: the capability host's, and the catalog owner's for export. A lane
+/// only a job of its own kind can reach, so a table's other lanes never start a thread.
 pub(crate) struct Jobs {
     entries: HashMap<JobId, Entry>,
     finished: VecDeque<JobId>,
-    lanes: [LaneState; 2],
+    lanes: [LaneState; 3],
     deliver: Deliver,
     /// Where every job publishes from the moment its lane picks it up, so `activity.list` shows
     /// capability work beside source preparation and analysis.
@@ -356,7 +373,11 @@ impl Jobs {
         Self {
             entries: HashMap::new(),
             finished: VecDeque::new(),
-            lanes: [LaneState::new(Lane::Transfer), LaneState::new(Lane::Module)],
+            lanes: [
+                LaneState::new(Lane::Transfer),
+                LaneState::new(Lane::Module),
+                LaneState::new(Lane::Export),
+            ],
             deliver,
             board,
         }
@@ -417,6 +438,7 @@ impl Jobs {
                 work: Some(work),
                 grants: job.grants,
                 origin: job.origin,
+                activity: job.activity,
             },
         );
         self.lanes[lane.index()].waiting.push_back(job_id.clone());
@@ -463,9 +485,14 @@ impl Jobs {
             .expect("a waiting job has an entry");
         let work = entry.work.take().expect("a waiting job holds its work");
         entry.record.status = JobStatus::Running;
-        entry
-            .control
-            .begin_activity(self.board.begin(capability_activity(&entry.record)));
+        let spec = match entry.activity.take() {
+            Some(spec) => ActivitySpec {
+                job_id: Some(entry.record.job_id.to_string()),
+                ..spec
+            },
+            None => capability_activity(&entry.record),
+        };
+        entry.control.begin_activity(self.board.begin(spec));
         let dispatch = Dispatch {
             job_id: job_id.clone(),
             control: entry.control.clone(),
@@ -764,6 +791,7 @@ mod tests {
             origin: Some(Origin::new("module.activate", "request")),
             grants: vec!["grant-a".into()],
             admission,
+            activity: None,
         }
     }
 
@@ -957,6 +985,59 @@ mod tests {
             after.recent[0].entry.job_id.as_deref(),
             Some(running.job_id.as_str())
         );
+        jobs.shutdown();
+    }
+
+    /// An export job runs on its own lane, publishes the activity it was given with its phase,
+    /// and its cancel reaches the render token the job renders under.
+    #[test]
+    fn an_export_job_publishes_its_own_activity_and_cancels_its_render() {
+        let (mut jobs, completions) = jobs();
+        let control = JobControl::new();
+        let (work, _gate) = gated(&control);
+        let asset = crate::AssetId::new();
+        let running = jobs
+            .submit(
+                NewJob {
+                    job_id: JobId::new(),
+                    kind: JobKind::Export,
+                    module_id: EXPORT_SUBJECT.into(),
+                    resource_id: None,
+                    origin: Some(Origin::new("export.jpeg", "request")),
+                    grants: Vec::new(),
+                    admission: Admission::Bounded,
+                    activity: Some(ActivitySpec {
+                        kind: "export",
+                        label: "Exporting JPEG",
+                        detail: Some("photo-edited.jpg".into()),
+                        asset_id: Some(asset.clone()),
+                        job_id: None,
+                    }),
+                },
+                control.clone(),
+                work,
+            )
+            .unwrap();
+        assert_eq!(running.status, JobStatus::Running);
+        assert_eq!(jobs.lanes_started(), 1, "only the export lane started");
+        control.set_phase("encoding");
+        let snapshot = jobs.board().snapshot();
+        let entry = &snapshot.active[0].entry;
+        assert_eq!(
+            (entry.kind.as_ref(), entry.label.as_ref()),
+            ("export", "Exporting JPEG")
+        );
+        assert_eq!(entry.detail.as_deref(), Some("photo-edited.jpg"));
+        assert_eq!(entry.asset_id.as_ref(), Some(&asset));
+        assert_eq!(entry.job_id.as_deref(), Some(running.job_id.as_str()));
+        assert_eq!(entry.phase.as_deref(), Some("encoding"));
+        assert!(!control.render_cancel().is_cancelled());
+        jobs.cancel(&running.job_id, "stop");
+        assert!(control.render_cancel().is_cancelled());
+        let (id, result) = receive(&completions);
+        let finished = jobs.complete(&id, result).unwrap();
+        assert_eq!(finished.record.status, JobStatus::Cancelled);
+        assert_eq!(finished.record.kind, JobKind::Export);
         jobs.shutdown();
     }
 

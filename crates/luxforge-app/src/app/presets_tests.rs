@@ -104,6 +104,12 @@ impl Library {
         self.editor.owner.clone()
     }
 
+    /// The photograph on screen and the revision the editor holds of it, as the event sync polls.
+    fn held(&self) -> (AssetId, u64) {
+        let revision = self.editor.state.as_ref().expect("a photograph").revision;
+        (self.asset.clone(), revision)
+    }
+
     /// Read the asset back into the editor, as a command's completion does.
     fn refresh(&mut self) {
         let refreshed = tasks::refresh(
@@ -378,7 +384,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let caught_up = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.asset.clone(),
+        library.held(),
         library.editor.api_sequence,
         &[],
         None,
@@ -390,7 +396,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let quiet = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.asset.clone(),
+        library.held(),
         library.editor.api_sequence,
         &[],
         None,
@@ -412,7 +418,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let polled = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.asset.clone(),
+        library.held(),
         library.editor.api_sequence,
         &[],
         None,
@@ -441,7 +447,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let polled = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.asset.clone(),
+        library.held(),
         library.editor.api_sequence,
         &[],
         None,

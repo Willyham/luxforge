@@ -2937,6 +2937,23 @@ fn every_start_answers_to_the_one_refusal() {
     );
 }
 
+/// Undo, Redo and Restore commit at once, so a drawn mask gesture refuses them as it refuses every
+/// other discrete commit, and the gesture stays exactly as it was.
+#[test]
+fn history_navigation_is_refused_while_a_mask_gesture_is_open() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    let entry = luxforge_core::EntryId::new();
+    crate::app::history_tests::history_refused(
+        &mut masking.editor,
+        &entry,
+        "Apply or Cancel the mask gesture before undoing, redoing or restoring",
+    );
+}
+
 /// A scripted release that ends a sweep where the sweep left it asks for no frame, so the step
 /// captures the next redraw instead of waiting for pixels nothing will render.
 ///

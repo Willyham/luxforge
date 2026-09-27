@@ -2,17 +2,15 @@
 //! the check of its declared requirements, the activation job on the module lane and the release of
 //! what an active module loaded. See `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
-    CapabilityHost, Requirement, announce_once, effective_values, registered, secret_fields,
-    setting_requirement,
+    CapabilityHost, Requirement, effective_values, registered, secret_fields, setting_requirement,
 };
 use crate::{
     Availability, Error, JobId, ModuleRegistry,
-    api::params::host_params,
+    api::{Origin, announce_once, params::host_params},
     capabilities::{
         context::ModuleContext,
         jobs::{
-            Admission, Cancelled, JobControl, JobError, JobKind, JobRecord, JobStatus, NewJob,
-            Origin, Work,
+            Admission, Cancelled, JobControl, JobError, JobKind, JobRecord, JobStatus, NewJob, Work,
         },
         resources::ResourceState,
     },
@@ -247,6 +245,7 @@ impl CapabilityHost {
                 origin: Some(origin.clone()),
                 grants: Vec::new(),
                 admission: Admission::Bounded,
+                activity: None,
             },
             control,
             work,
@@ -368,6 +367,7 @@ impl CapabilityHost {
                 origin,
                 grants: Vec::new(),
                 admission: Admission::Always,
+                activity: None,
             },
             JobControl::new(),
             work,

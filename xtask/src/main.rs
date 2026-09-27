@@ -11,6 +11,7 @@ mod diagnostics;
 mod editor_acceptance;
 mod editor_latency;
 mod editor_performance;
+mod export_smoke;
 mod fixtures;
 mod gallery_smoke;
 mod histogram_smoke;
@@ -230,7 +231,14 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("FAIL: {e}");
-            ExitCode::FAILURE
+            // `verify` reporting a tier `incomplete` (a skip or a component that never ran, with
+            // nothing failed outright) gets its own exit code, distinct from a pass and from an
+            // ordinary failure.
+            if e.downcast_ref::<verify::Incomplete>().is_some() {
+                ExitCode::from(verify::INCOMPLETE_EXIT_CODE)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -358,6 +366,12 @@ fn main_result() -> Result {
                 .unwrap_or_else(|| binary(&root))?;
             let _gate = launch::TimingGate::acquire()?;
             raw_editor::run(&root, &manifest, &out, &bin, samples)?;
+        }
+        "raw-authentic" => {
+            let manifest = absolute(&root, &a.path("--manifest")?);
+            let out = absolute(&root, &a.path("--output")?);
+            a.done()?;
+            verify::authentic(&root, &manifest, &out)?;
         }
         "inventory" | "package" => {
             let out = absolute(&root, &a.path("--output")?);
@@ -571,7 +585,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

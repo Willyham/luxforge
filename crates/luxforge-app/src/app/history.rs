@@ -13,6 +13,17 @@ use serde_json::{Value, json};
 impl Editor {
     /// One history or versions message.
     pub(super) fn history_update(&mut self, message: HistoryMessage) -> Task<Message> {
+        // Undo, Redo and Restore move the current entry at once, so an open draft refuses them as
+        // it refuses every other commit, from the title bar, a shortcut, the palette and the panel
+        // alike: each of them sends one of these messages. Nothing is sent.
+        if matches!(
+            message,
+            HistoryMessage::Undo | HistoryMessage::Redo | HistoryMessage::Restore
+        ) && let Some(reason) = self.gesture_refusal(Starting::History)
+        {
+            self.status = reason;
+            return Task::none();
+        }
         match message {
             HistoryMessage::Selected(result) => {
                 // The selection's own answer ends the request that set `busy`, whether or not

@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Answer a retried draft.commit from its stored answer, by declaring in each method's table entry who answers its retries rather than inferring it from envelope and route.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A retried mutation must be safe to resend, and today one method breaks that rule.",
@@ -67,7 +67,7 @@
     {
       "id": "TASK-002",
       "description": "Contain panics on the source worker and in the catalog owner's message loop, so a failure answers internal instead of leaving waiters blocked or ending the owner for every client.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A single unhandled panic can currently take down the whole editor for every connected client, or leave one client waiting forever.",
@@ -127,7 +127,7 @@
     {
       "id": "TASK-003",
       "description": "Make every event name the asset and revision it changed, have the desktop refresh only for the photo it has open, and report a gap when a client's cursor is ahead of the log.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Today any other client's change to any asset makes the desktop treat its own open photo as changed, and a JSON client has no way to be told anything changed at all.",
@@ -177,7 +177,7 @@
       ],
       "acceptance_criteria": [
         "In a two-asset owner test, another client's commit to asset B causes no refresh and no preview job for the desktop's open asset A.",
-        "A cursor whose `after` is at or beyond the log's current sequence gets `gap: true` on its next `events.since`.",
+        "A cursor whose `after` is beyond the log's current sequence gets `gap: true` on its next `events.since`; a cursor at it is caught up.",
         "`ApiEvent`/`events.since` carries the asset id and revision an event changed, when the change is known (a `mutate`, an import completion, a version); the desktop skips an event whose revision it already holds.",
         "The user guide's description of `events.since` and the live session states the new fields."
       ],
@@ -185,7 +185,7 @@
         "approach": "mixed",
         "steps": [
           "Owner test: a second client's change to another asset causes no refresh or preview job for the first.",
-          "Owner test: a cursor at or beyond the log's sequence reports a gap.",
+          "Owner test: a cursor beyond the log's sequence reports a gap, and one at it does not.",
           "Desktop test: an event naming a revision the desktop already holds is skipped."
         ],
         "commands": [
@@ -201,7 +201,7 @@
     {
       "id": "TASK-004",
       "description": "Give source, analysis and capability jobs one job table and one read and cancel API, keeping their three schedulers and cancel semantics.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
@@ -209,7 +209,7 @@
         "Wave 2, finish the consolidation. One job status vocabulary landed already; this closes the second half, one job table, that the same plan called for.",
         "`SourceJobs` in `api/owner.rs` (a flight-key join, per-client interest, a completed ring of 64), `AnalysisStore` in `analysis/jobs.rs` (an identity join, per-client interest, a ring of 32) and `capabilities::jobs::Jobs` (lanes, `JobControl`, a ring of 32, panic containment) each re-implement id minting, interest with cancel-on-last-release, disconnect clean-up, a bounded finished ring and join-by-key. Three method families answer them, `job.status`/`job.adopt`/`job.cancel`, `analysis.read`/`analysis.cancel` and `module.job.read`/`module.job.cancel`, each with its own error shape, and the `activity.list` schema note has to tell a client which of the three reads a given job.",
         "`capabilities::jobs::Jobs` is already a generic lane runner over a boxed closure, with per-kind admission and containment; it is the natural table to promote for every kind, with source preparation and analysis registering into it while keeping their own scheduling: source joins by flight key, analysis is latest-wins, capability lanes are FIFO.",
-        "JPEG export and Locate would each need their own job kind; without one table, each becomes a fourth copy of the same bookkeeping.",
+        "JPEG export already runs on a second instance of the capability lane runner; Locate would need its own job kind too. Without one table, each is another copy of the same bookkeeping.",
         "Owner decision: one job API, `job.read` and `job.cancel`, serves every kind, replacing `analysis.read`, `analysis.cancel`, `module.job.read` and `module.job.cancel`.",
         "Keep exactly: a source or analysis cancel releases only the caller's interest, never the job itself; a capability cancel cancels the job for everyone; a deactivation already running cannot be cancelled while its activation exists; analysis supersede stays as it is."
       ],
@@ -278,7 +278,7 @@
     {
       "id": "TASK-005",
       "description": "Validate every mutation envelope once in the dispatcher, let service handlers say whether they changed anything, and replace the forwarding handlers and duplicated checks with table rows.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001",
         "TASK-003"
@@ -881,60 +881,158 @@
     },
     {
       "id": "TASK-014",
-      "description": "Prepare export on the one job table: an export job kind on a lane that is never superseded, progress through the activity board, and a full-resolution evaluation built off the owner.",
+      "description": "Move the export lane onto the one job table, so export jobs are read and cancelled through the shared job API like every other kind.",
       "status": "blocked",
       "dependencies": [
-        "TASK-004",
-        "TASK-006"
+        "TASK-004"
       ],
       "extra_context": [
-        "Wave 6, roadmap groundwork. Blocked: starts with the JPEG export milestone.",
-        "There is no lane for a long, uncancellable-by-supersede job today: the latest-wins preview and analysis workers replace their own pending job, and the FIFO source queue is what previews already wait behind, so an export cannot share either without starving or being starved.",
-        "The bound evaluation this plan introduces is exactly what export evaluates: a full-resolution render off the owner, driven from one `Evaluation` rather than a ninth prologue.",
-        "A 128 megapixel RAW render needs a row sink rather than one whole frame in memory; that shape is for the export milestone to design, once it has a lane and an evaluation to build on."
+        "Wave 6, roadmap groundwork, now follow-up: JPEG export is delivered on its own instance of the lane runner (`Lane::Export`, `JobKind::Export`), held by the owner and delivering `OwnerMessage::ExportFinished`, with `export.read` and `export.cancel` answering it.",
+        "Blocked until one job table exists. Then the export lane joins it as one more kind, `export.read` and `export.cancel` fold into the shared read and cancel pair, and the owner's second runner instance goes.",
+        "Keep exactly: one running and four waiting on the export lane, never superseded, a cancel that stops the job for every client, and a client's disconnect never cancelling its exports.",
+        "A 128 megapixel RAW export holds one exact RGBA frame inside the 512 MiB evaluated-frame limit; a row sink that avoids it is a separate measured change."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Post-consolidation design",
-          "target": "docs/design/post-consolidation.md",
-          "relevance": "Constraints, waves and the order across groups."
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "The delivered lane, methods and bounds this task moves onto the shared table."
+        },
+        {
+          "kind": "file",
+          "label": "Export methods",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "The export job and its four methods."
         },
         {
           "kind": "file",
           "label": "Job lanes",
           "target": "crates/luxforge-core/src/capabilities/jobs.rs",
-          "relevance": "The lane runner an export job kind is added to."
-        },
-        {
-          "kind": "file",
-          "label": "Activity board",
-          "target": "crates/luxforge-core/src/activity.rs",
-          "relevance": "Where export progress is reported, alongside every other long-running job."
-        },
-        {
-          "kind": "file",
-          "label": "Roadmap",
-          "target": "docs/plan.md",
-          "relevance": "Names the JPEG export milestone this task's job lane prepares for."
+          "relevance": "The lane runner whose export lane moves onto the one table."
         }
       ],
       "acceptance_criteria": [
-        "An export job kind exists on the shared job table, on a lane that runs to completion rather than being superseded by a newer request.",
-        "Export progress and cancellation are reported through the activity board and the shared job API, not a separate mechanism.",
-        "A fake encoder proves the lane, its progress reporting and its cancellation; no real exporter or export UI is built here."
+        "Export jobs live on the one job table with the other kinds; the owner holds no second runner instance.",
+        "The shared read and cancel methods answer export jobs, and `export.read` and `export.cancel` are gone from `schema.list`, the desktop and the user guide.",
+        "The export tests in `api/owner/export_tests.rs` pass unchanged in behavior through the shared methods."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Move the export lane onto the shared table and switch the methods, then rerun the export tests and the export smoke scenario."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib export",
+          "cargo xtask smoke --scenario export"
+        ],
+        "expected_results": [
+          "Export behaves exactly as before, through the shared job API."
+        ]
+      }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Remove the non-interleaved subsampled JPEG guard once a stable zune-jpeg ≥ 0.5.16 (with #421, #452, #453) is pinned.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Owner-decided fix, 2026-09-27, not a wave of this plan: `header` in `crates/luxforge-core/src/source.rs` refuses a sequential (SOF0/SOF1) JPEG that has a vertically subsampled component (V > 1) and a separate, non-interleaved scan, because zune-jpeg 0.5.15 (behind `image` 0.25.9, pinned in the workspace `Cargo.toml`) mis-decodes exactly that combination and returns success on silently garbled pixels.",
+        "The fix landed upstream as zune-image PR #421 (commit 0346b87), with follow-up fixes #452 and #453 still unreleased as of 2026-09-27; none has shipped in a zune-jpeg release, only in 0.5.16 release candidates.",
+        "Blocked until a released `zune-jpeg` carrying #421, #452 and #453 can be pinned through `image`'s own dependency; re-review at that point rather than on a fixed date.",
+        "The guard is exactly as wide as the bug: it does not touch interleaved scans, 4:4:4 or 4:2:2 (H2V1) non-interleaved files, or progressive (SOF2) frames, which use a different decode path."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "The guard",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "`header`'s scan walk and the module doc comment recording the bug this task removes.",
+          "locator": "header"
+        },
+        {
+          "kind": "file",
+          "label": "Dependency pin",
+          "target": "Cargo.toml",
+          "relevance": "The workspace's exact `image` version, which brings in the affected zune-jpeg release."
+        },
+        {
+          "kind": "file",
+          "label": "Refused-layout fixture",
+          "target": "fixtures/s0/jpeg-scan-420-noninterleaved.jpg",
+          "relevance": "The only fixture the guard refuses; must decode correctly once the guard is gone."
+        },
+        {
+          "kind": "file",
+          "label": "User guide's JPEG input limits",
+          "target": "docs/user-guide.md",
+          "relevance": "States the refusal in the Open section; the sentence is deleted with the guard."
+        }
+      ],
+      "acceptance_criteria": [
+        "`image`/zune-jpeg is pinned to a release that includes zune-image PR #421 and the follow-up fixes #452 and #453.",
+        "The guard in `header` (the scan walk, `sof_vmax`, `skip_entropy_coded_data` and the refusal) is deleted, along with its test and the module doc comment describing the bug.",
+        "`fixtures/s0/jpeg-scan-420-noninterleaved.jpg`, previously refused, now decodes and matches its interleaved counterpart within the same tolerance the other accepted layouts already use.",
+        "The refusal sentence is removed from `docs/user-guide.md` and the caveat from `docs/features.md`'s JPEG open row."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Add an export job kind to the shared table with a fake encoder.",
-          "Test progress reporting through the activity board and cancellation mid-encode."
+          "Pin the fixed zune-jpeg release, delete the guard and its test, then decode every `jpeg-scan-*.jpg` fixture and compare the previously-refused one against the others."
         ],
         "commands": [
-          "cargo test -p luxforge-core jobs"
+          "cargo test -p luxforge-core --lib source",
+          "cargo xtask verify --tier quick"
         ],
         "expected_results": [
-          "The export lane runs to completion under a newer request, reports progress, and cancels cleanly."
+          "Every `jpeg-scan-*.jpg` fixture decodes, and the formerly refused one agrees with its interleaved counterpart within the existing tolerance."
+        ]
+      }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Write the export's ICC profile through mozjpeg's own write_icc_profile once a release numbers its chunks from 1, deleting Luxforge's hand-written chunk.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Owner-decided follow-up, 2026-09-27, not a wave of this plan: `mozjpeg` 0.10.13's `write_icc_profile` numbers its APP2 chunks from 0, which ICC.1 Annex B.4 does not allow, so zune-jpeg ignores the profile; `encode_jpeg` writes the one chunk itself with `write_marker`.",
+        "A fix (count from 1, with a test of the sequence numbers and the reassembled profile) is prepared for ImageOptim/mozjpeg-rust; blocked until a released `mozjpeg` carries it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export encoder",
+          "target": "crates/luxforge-core/src/export/encode.rs",
+          "relevance": "The hand-written ICC chunk and its byte test, which this task replaces with the crate's call."
+        },
+        {
+          "kind": "file",
+          "label": "Notices",
+          "target": "crates/luxforge-core/THIRD_PARTY.md",
+          "relevance": "Records the workaround; the sentence goes with it."
+        },
+        {
+          "kind": "url",
+          "label": "mozjpeg-rust",
+          "target": "https://github.com/ImageOptim/mozjpeg-rust",
+          "relevance": "Where the fix is proposed and released."
+        }
+      ],
+      "acceptance_criteria": [
+        "`mozjpeg` is pinned to a release whose `write_icc_profile` numbers chunks from 1.",
+        "`encode_jpeg` calls `write_icc_profile`; the hand-written chunk and the THIRD_PARTY.md sentence about it are gone.",
+        "The encoder's ICC tests still find sequence number 1 and the profile round-trips byte-exact through Luxforge's own decoder."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Bump the pin, switch the call and rerun the encoder tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib export::encode"
+        ],
+        "expected_results": [
+          "The ICC profile round-trips through zune-jpeg from the crate's own writer."
         ]
       }
     }
@@ -947,7 +1045,9 @@
         "TASK-002",
         "TASK-003",
         "TASK-006",
-        "TASK-013"
+        "TASK-013",
+        "TASK-015",
+        "TASK-016"
       ]
     },
     {

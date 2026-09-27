@@ -42,9 +42,27 @@ struct Shared {
 impl RenderContext {
     /// A context with empty budgets at their default targets and an empty estimate store.
     pub fn new() -> Self {
+        Self::targeted(DEFAULT_SCRATCH_BYTES, SPATIAL_BUDGET_BYTES)
+    }
+
+    /// A context whose scratch budget has this target: how a test watches a colour pass meet a
+    /// target smaller than the default, in a context nothing else renders through.
+    #[cfg(test)]
+    pub(crate) fn with_scratch_target(bytes: u64) -> Self {
+        Self::targeted(bytes, SPATIAL_BUDGET_BYTES)
+    }
+
+    /// A context whose spatial budget has this target, for a test that narrows the tile batches of
+    /// the renders it makes through it.
+    #[cfg(test)]
+    pub(crate) fn with_spatial_target(bytes: u64) -> Self {
+        Self::targeted(DEFAULT_SCRATCH_BYTES, bytes)
+    }
+
+    fn targeted(scratch: u64, spatial: u64) -> Self {
         Self(Arc::new(Shared {
-            scratch: ScratchBudget::new(DEFAULT_SCRATCH_BYTES),
-            spatial: SpatialBudget::new(SPATIAL_BUDGET_BYTES),
+            scratch: ScratchBudget::new(scratch),
+            spatial: SpatialBudget::new(spatial),
             estimates: EstimateStore::default(),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
@@ -115,10 +133,10 @@ impl std::fmt::Debug for RenderContext {
 ///
 /// It is a target, not a limit. What keeps scratch inside it is the row chunk, sized so one chunk
 /// per pool worker stays well below the target; a chunk that finds the target taken — because more
-/// renders overlap than the sizing assumed, or the target was lowered — still runs, and
+/// renders overlap than the sizing assumed, or the target is small — still runs, and
 /// [`Self::peak`] shows the overshoot. Nothing here refuses work.
 pub struct ScratchBudget {
-    target: AtomicU64,
+    target: u64,
     used: AtomicU64,
     /// The largest `used` any reservation ever reached, so a context that is idle when it is asked
     /// can still report what the budget actually had to carry. It is only ever raised.
@@ -128,20 +146,15 @@ pub struct ScratchBudget {
 impl ScratchBudget {
     fn new(target: u64) -> Self {
         Self {
-            target: AtomicU64::new(target),
+            target,
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
     }
 
+    /// The figure the high-water mark is read against. It changes nothing a reservation does.
     pub fn target(&self) -> u64 {
-        self.target.load(Ordering::Relaxed)
-    }
-
-    /// Set the target and return the previous one. It changes nothing a reservation does; it is
-    /// the figure the high-water mark is read against.
-    pub fn set_target(&self, bytes: u64) -> u64 {
-        self.target.swap(bytes, Ordering::SeqCst)
+        self.target
     }
 
     pub fn in_use(&self) -> u64 {
@@ -200,7 +213,7 @@ impl Drop for ScratchReservation<'_> {
 /// A reservation covers one batch and is taken before any of its tiles allocates, so the next
 /// batch sees whatever other evaluations released in the meantime.
 pub struct SpatialBudget {
-    target: AtomicU64,
+    target: u64,
     used: AtomicU64,
     peak: AtomicU64,
 }
@@ -208,20 +221,14 @@ pub struct SpatialBudget {
 impl SpatialBudget {
     fn new(target: u64) -> Self {
         Self {
-            target: AtomicU64::new(target),
+            target,
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
     }
 
     pub fn target(&self) -> u64 {
-        self.target.load(Ordering::Relaxed)
-    }
-
-    /// Set the target and return the previous one. Lowering it below what is already reserved does
-    /// not free anything; the next batch is what runs fewer tiles.
-    pub fn set_target(&self, bytes: u64) -> u64 {
-        self.target.swap(bytes, Ordering::SeqCst)
+        self.target
     }
 
     pub fn in_use(&self) -> u64 {
@@ -236,9 +243,11 @@ impl SpatialBudget {
         self.peak.load(Ordering::Relaxed)
     }
 
-    /// Start the high-water mark again from what is reserved right now, so a measurement or a test
-    /// can report the peak of one render rather than of the whole context.
-    pub fn reset_peak(&self) {
+    /// Start the high-water mark again from what is reserved right now, so a release measurement
+    /// can report the peak of its measured renders rather than of the warm-up that filled the
+    /// context's estimate store.
+    #[cfg(test)]
+    pub(crate) fn reset_peak(&self) {
         self.peak.store(self.in_use(), Ordering::Relaxed);
     }
 
@@ -350,12 +359,6 @@ impl EstimateStore {
         while store.len() > ESTIMATE_STORE_ENTRIES {
             store.pop_front();
         }
-    }
-
-    /// Forget every cached estimate.
-    #[cfg(test)]
-    pub(crate) fn clear(&self) {
-        self.lock().clear();
     }
 
     /// How many estimates are held right now.

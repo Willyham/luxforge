@@ -13,9 +13,17 @@ publish = false
 [workspace.dependencies]
 image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png"] }
 moxcms = { version = "=0.7.11", default-features = false }
+# Export's JPEG encoder: libjpeg-turbo as bundled by `mozjpeg-sys`, built from its source with `cc`.
+# `with_simd` is NEON on aarch64 through the C compiler; x86_64 SIMD would need NASM, which
+# `nasm_simd` is not asked for, so x86_64 builds the portable C path. The crate itself turns on
+# `unwinding`, which lets libjpeg's errors unwind to Rust instead of aborting.
+mozjpeg = { version = "=0.10.13", default-features = false, features = ["with_simd"] }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
 rayon = "=1.12.0"
+# An independent EXIF reader and writer for the export metadata tests only. Already in the lockfile
+# through Iced, pinned to that version so the tests add no package.
+kamadak-exif = "=0.6.1"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 # Parses Lightroom XMP presets. Already in the lockfile through the Iced text stack, pinned to that
 # version so the importer adds no package.
@@ -33,7 +41,7 @@ ureq-proto = { version = "=0.6.4", default-features = false, features = ["client
 security-framework = { version = "=3.7.0", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 # `float_roundtrip` reads a stored `f64` back bit-exact: without it, some 17-digit doubles a RAW
-# tint or a recipe field stores parse one ulp off (tasks/known-bugs.json TASK-014).
+# tint or a recipe field stores parse one ulp off.
 serde_json = { version = "=1.0.149", features = ["float_roundtrip"] }
 sha2 = "=0.10.9"
 url = "=2.5.8"

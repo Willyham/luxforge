@@ -14,7 +14,7 @@ use luxforge_core::{
     capabilities::{
         consent::Disclosure,
         descriptor::{AdapterCost, SettingDescriptor},
-        grants::{Grant, GrantKind, GrantList},
+        grants::{Denial, Grant, GrantKind, GrantList, PermissionCounts},
         host::{ActivationRead, ActivationState, Requirement},
         jobs::{JobRecord, JobStatus},
         resources::{ResourceRow, ResourceState},
@@ -69,16 +69,17 @@ impl PartialEq for SecretText {
     }
 }
 
-/// `module.status` as the desktop reads it: the activation, every declared resource, the grants and
-/// denials, and the module's recent jobs. The settings summary it also carries is read in full
-/// through `module.settings.read` instead.
+/// `module.status` as the desktop reads it: the activation, every declared resource, how many grants
+/// and denials are recorded, and the module's recent jobs. The settings summary it also carries is
+/// read in full through `module.settings.read` instead, and the grants and denials themselves
+/// through `module.permission.list`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub(crate) struct ModuleStatus {
     pub(crate) activation: ActivationRead,
     #[serde(default)]
     pub(crate) resources: Vec<ResourceRow>,
     #[serde(default)]
-    pub(crate) permissions: GrantList,
+    pub(crate) permissions: PermissionCounts,
     #[serde(default)]
     pub(crate) jobs: Vec<JobRecord>,
 }
@@ -261,6 +262,9 @@ pub(crate) struct ModuleCapabilities {
     pub(crate) load_error: Option<String>,
     pub(crate) view: CapabilityView,
     pub(crate) permissions_open: bool,
+    /// The module's grants and denials from `module.permission.list`, read only while the
+    /// permissions list is open and dropped when it closes.
+    pub(crate) permission_list: Option<GrantList>,
     /// Text being typed into a field, until it is committed or abandoned.
     pub(crate) edits: BTreeMap<FieldKey, String>,
     /// The secret whose masked Replace field is open, with what has been typed into it.
@@ -331,15 +335,32 @@ impl ModuleCapabilities {
             .map(|profile| profile.id.clone())
     }
 
-    /// Every grant as the permissions list shows it, live ones first in the order they were made.
+    /// Every grant as the open permissions list shows it, live ones first in the order they were
+    /// made; none while the list is closed or not read yet.
     pub(crate) fn grants(&self) -> Vec<&Grant> {
         let mut grants: Vec<&Grant> = self
-            .status
+            .permission_list
             .iter()
-            .flat_map(|status| status.permissions.grants.iter())
+            .flat_map(|list| list.grants.iter())
             .collect();
         grants.sort_by_key(|grant| grant.revoked.is_some());
         grants
+    }
+
+    /// Every denial the open permissions list shows.
+    pub(crate) fn denials(&self) -> &[Denial] {
+        self.permission_list
+            .as_ref()
+            .map(|list| list.denials.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// The counts `module.status` reported.
+    pub(crate) fn permission_counts(&self) -> PermissionCounts {
+        self.status
+            .as_ref()
+            .map(|status| status.permissions)
+            .unwrap_or_default()
     }
 }
 
@@ -435,9 +456,11 @@ pub(crate) struct ResourceRowModel {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PermissionsModel {
-    /// `2 permissions · 1 declined`.
+    /// `2 permissions · 1 declined`, from the counts `module.status` reports.
     pub(crate) summary: String,
     pub(crate) open: bool,
+    /// The list is open and its `module.permission.list` read has not answered yet.
+    pub(crate) reading: bool,
     pub(crate) rows: Vec<PermissionRow>,
 }
 
@@ -710,21 +733,19 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 }
 
 fn permissions(module: &ModuleDescriptor, state: &ModuleCapabilities) -> PermissionsModel {
-    let grants = state.grants();
-    let live = grants.iter().filter(|grant| grant.is_live()).count();
-    let revoked = grants.len() - live;
-    let denials = state
-        .status
-        .as_ref()
-        .map(|status| status.permissions.denials.as_slice())
-        .unwrap_or_default();
+    let PermissionCounts {
+        live,
+        revoked,
+        denials,
+    } = state.permission_counts();
     let mut summary = format!("{live} permission{}", if live == 1 { "" } else { "s" });
     if revoked > 0 {
         summary.push_str(&format!(" · {revoked} revoked"));
     }
-    if !denials.is_empty() {
-        summary.push_str(&format!(" · {} declined", denials.len()));
+    if denials > 0 {
+        summary.push_str(&format!(" · {denials} declined"));
     }
+    let grants = state.grants();
     let mut rows: Vec<PermissionRow> = grants
         .iter()
         .map(|grant| PermissionRow {
@@ -744,7 +765,7 @@ fn permissions(module: &ModuleDescriptor, state: &ModuleCapabilities) -> Permiss
             revoke: grant.is_live().then(|| grant.grant_id.clone()),
         })
         .collect();
-    rows.extend(denials.iter().map(|denial| PermissionRow {
+    rows.extend(state.denials().iter().map(|denial| PermissionRow {
         text: scope_text(
             module,
             state,
@@ -758,6 +779,7 @@ fn permissions(module: &ModuleDescriptor, state: &ModuleCapabilities) -> Permiss
     PermissionsModel {
         summary,
         open: state.permissions_open,
+        reading: state.permissions_open && state.permission_list.is_none(),
         rows,
     }
 }
@@ -1422,9 +1444,8 @@ fn module_summary(
         })
         .collect();
     let grants = state.grants();
-    let denials = status
-        .map(|status| status.permissions.denials.as_slice())
-        .unwrap_or_default();
+    let denials = state.denials();
+    let counts = state.permission_counts();
     let consent = store
         .consent
         .as_ref()
@@ -1453,9 +1474,10 @@ fn module_summary(
         "tasks": tasks,
         "permissions": {
             "open": state.permissions_open,
-            "live": grants.iter().filter(|grant| grant.is_live()).count(),
-            "revoked": grants.iter().filter(|grant| !grant.is_live()).count(),
-            "denials": denials.len(),
+            "listed": state.permission_list.is_some(),
+            "live": counts.live,
+            "revoked": counts.revoked,
+            "denials": counts.denials,
             "grants": grants.iter().map(|grant| json!({
                 "grant_id": grant.grant_id,
                 "capability": grant.capability,

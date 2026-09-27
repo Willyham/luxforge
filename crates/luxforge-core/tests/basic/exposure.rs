@@ -8,7 +8,7 @@
 
 use super::{basic_layer, mutation};
 use luxforge_core::{
-    BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, LayerId, ModuleRegistry, MutationOutcome,
+    BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, ModuleRegistry, MutationOutcome,
     ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform,
 };
 use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
@@ -167,6 +167,7 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
         rgba: file.base_rgba.clone().into(),
         fingerprint: "sha256:mixed-order-fixture".into(),
         orientation: 1,
+        capture: Default::default(),
     };
     let registry = ModuleRegistry::builtin();
     assert_eq!(file.cases.len(), 4, "every committed case is exercised");
@@ -231,12 +232,12 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
             json!({"x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
         )
         .expect("a crop");
-    let before: Vec<String> = layers(&service, &asset)
-        .iter()
-        .map(|layer| layer.effect_id.clone())
-        .collect();
+    let before = layers(&service, &asset);
     assert_eq!(
-        before,
+        before
+            .iter()
+            .map(|layer| layer.effect_id.as_str())
+            .collect::<Vec<_>>(),
         [PIXEL_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT],
         "the stack under test holds a replacement and a geometry tail"
     );
@@ -275,7 +276,16 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
     assert_eq!(stack.len(), 4, "no second Basic layer was added");
     assert_eq!(stack[1].id, basic.id, "the layer keeps its identity");
     assert_eq!(stack[1].payload, json!({"exposure": -1.25}));
-    assert_eq!(stack[0].id, before_ids(&before, &stack)[0]);
+    let others: Vec<Layer> = stack
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 1)
+        .map(|(_, layer)| layer.clone())
+        .collect();
+    assert_eq!(
+        others, before,
+        "every other layer keeps its identity, its payload and its place"
+    );
 
     // The same value again is a no-op with no history row.
     let entries = service
@@ -340,9 +350,4 @@ fn layers(service: &EditorService, asset: &luxforge_core::AssetId) -> Vec<Layer>
         .snapshot
         .recipe
         .layers
-}
-
-fn before_ids(before: &[String], stack: &[Layer]) -> Vec<LayerId> {
-    assert_eq!(before[0], stack[0].effect_id);
-    vec![stack[0].id.clone()]
 }

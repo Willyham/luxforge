@@ -294,7 +294,11 @@ impl Drop for NativeHandle {
 
 fn c_text(chars: &[c_char]) -> String {
     let end = chars.iter().position(|&v| v == 0).unwrap_or(chars.len());
-    String::from_utf8_lossy(&chars[..end].iter().map(|&v| v as u8).collect::<Vec<_>>()).into_owned()
+    // c_char's signedness is platform-dependent (e.g. unsigned on aarch64 Linux,
+    // signed on Apple targets), so this cast is not a no-op everywhere clippy checks it.
+    #[allow(clippy::unnecessary_cast)]
+    let bytes: Vec<u8> = chars[..end].iter().map(|&v| v as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn native_error(code: c_int, buffer: &[c_char]) -> RawError {
@@ -902,13 +906,6 @@ impl RawSource {
 mod tests {
     use super::*;
 
-    /// Serializes executor use with the tests that count scratch slots.
-    fn slot_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        native_tiles::TEST_BUDGET_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     fn native_develop_for_test(
         samples: &[u16],
         meta: &NativeMetadata,
@@ -917,7 +914,6 @@ mod tests {
         parallel: bool,
         capture: &mut [f32],
     ) -> Vec<f32> {
-        let _slots = slot_test_lock();
         let n = samples.len();
         let mut output = vec![0.0_f32; n * 3];
         let (red, rest) = output.split_at_mut(n);
@@ -1038,7 +1034,6 @@ mod tests {
             c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) + 1 >= state.limit)
         }
 
-        let _slots = slot_test_lock();
         let width = 1040_usize;
         let height = 1030_usize;
         let count = width * height;
@@ -1244,7 +1239,6 @@ mod tests {
         cancel_context: *mut c_void,
         fault: u32,
     ) -> (c_int, Vec<f32>) {
-        let _slots = slot_test_lock();
         let n = samples.len();
         let mut output = vec![f32::NAN; n * 3];
         let (red, rest) = output.split_at_mut(n);
@@ -1374,8 +1368,7 @@ mod tests {
         );
     }
 
-    /// Known bug TASK-017 pins the current behaviour, not the documented
-    /// intent it replaced: the vendored RCD clamps its input with
+    /// This test pins the vendored RCD's current behaviour: it clamps its input with
     /// `LIM01(rawData / 65536)`, so a Bayer site's black-subtracted,
     /// white-normalised and gained value is clipped to [0, 65536/65535] of
     /// sensor white before the demosaic. Over-white and under-black latitude
@@ -1537,7 +1530,7 @@ mod tests {
                         // final job also carries the partial bottom row.
                         assert_eq!(jobs.len(), 16);
                     }
-                    // The process-wide scratch cap is eight callbacks.
+                    // One development runs at most eight callbacks at once.
                     assert!(trace.peak.load(Ordering::Relaxed) <= 8);
                     assert!(!trace.off_pool.load(Ordering::Relaxed));
                 }
@@ -1658,7 +1651,7 @@ mod tests {
             let (code, _) = run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 2);
             assert!(matches!(native_error(code, &[0; 1]), RawError::Native(_)));
             // A complete run after both faults proves every job joined and
-            // returned its scratch permit.
+            // the next development starts clean.
             let (code, recovered) =
                 run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 0);
             assert_eq!(code, 0);
@@ -2523,7 +2516,7 @@ mod tests {
         assert_eq!(code, 3);
         assert!(matches!(error, RawError::Native(_)));
         // A successful call after both failures proves all workers joined
-        // and returned their process-wide scratch permits.
+        // and the next development starts clean.
         let recovered = odd
             .develop_uncorrected_with_workers(adjusted, &cancel, 4)
             .unwrap();

@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     AssetId, Availability, EditorService, Error, JobId, ModuleDescriptor, MutationRequest,
-    api::params,
+    api::{Origin, params},
     capabilities::{
         consent::{consent_required, remote_disclosure},
         context::{GrantedSend, ModuleContext, ProfileView, TaskOutcome},
@@ -22,7 +22,7 @@ use crate::{
             AdapterAuth, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, DataClass,
         },
         grants::{GrantScope, RemoteScope},
-        jobs::{Admission, JobControl, JobKind, JobStatus, NewJob, Origin, Work},
+        jobs::{Admission, JobControl, JobKind, JobStatus, NewJob, Work},
         resources::ResourceState,
         settings::{FieldRead, ProfileRead, ProfileStatus},
         transport::Endpoint,
@@ -412,6 +412,7 @@ impl CapabilityHost {
                 origin: Some(origin.clone()),
                 grants: grant_ids,
                 admission: Admission::Bounded,
+                activity: None,
             },
             run.control.clone(),
             work,

@@ -31,8 +31,10 @@
 //! **Why a grid index.** A point query must be answerable in bounded time and must never rasterize
 //! ([performance rule 4](../../../docs/engineering/performance-rules.md)). The index over segments is
 //! what makes the cost of a pixel depend on the strokes *near it* rather than on how many strokes the
-//! component holds, and the occupancy cap is checked when the mask compiles — before any pixel is
-//! read.
+//! component holds. The occupancy cap that bounds a pixel's cost is checked **where a stroke is
+//! painted** ([`densest_cell`], called by `mask.add-stroke`), against the content stage the mask is
+//! drawn on: a stroke that would cross it is refused before it commits, so every committed
+//! component is already within it and compiling one never refuses for occupancy.
 //!
 //! Compiling uses the **stored position** spelling of mask space (`u = x · W/H`, `v = y`); the
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
@@ -41,8 +43,12 @@ use super::{Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, range, s
 use crate::{
     Component, Error,
     modules::{Region, Stage},
-    path::{Stroke, StrokeId, StrokeTable},
+    path::{self, Stroke, StrokeId, StrokeTable},
 };
+
+// The one legal stroke radius is a stored distance, so it lies inside the study's own distance rule
+// and every divisor a stroke's falloff takes stays one the study allows.
+const _: () = assert!(path::SIZE_MIN >= DISTANCE_MIN && path::SIZE_MAX <= DISTANCE_MAX);
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -57,8 +63,10 @@ pub const STROKES_PER_COMPONENT: usize = 64;
 
 /// Segments one pixel may be made to test, which is the grid index's cell occupancy. It is the
 /// declared limit of `docs/design/masking.md#resource-and-responsiveness-constraints` and it is
-/// checked **when the mask compiles, before any pixel is read**, so a mask that would make a point
-/// query unbounded is refused rather than rendered slowly.
+/// checked **where a stroke is painted**, against the component that stroke would leave behind at
+/// the content stage ([`crate::mask::rules::segments_per_pixel`]): the stroke that would cross it is
+/// refused and commits nothing, so the cap is paid for in full by that stroke and a mask whose
+/// strokes committed is never refused for it later, when a layer first draws it.
 pub const SEGMENTS_PER_PIXEL: usize = 64;
 
 /// Cells the index spans on each axis, at most. The cell side is the component's largest stroke
@@ -287,21 +295,24 @@ struct Index {
 }
 
 impl Index {
-    /// Build the index and check the occupancy cap while building it.
+    /// Build the index. It refuses nothing: the occupancy cap is checked where a stroke is painted,
+    /// through [`Self::densest`], so a committed component is already within it.
     ///
     /// **Memory, and the limit that bounds it** ([performance rule
     /// 6](../../../docs/engineering/performance-rules.md)). The grid is sized so its cell count
     /// never exceeds the component's own segment count — the side is `floor(sqrt(segments))`, capped
-    /// at [`GRID_SIDE_MAX`] — and no cell may hold more than [`SEGMENTS_PER_PIXEL`] entries. So an
-    /// index costs at most `SEGMENTS_PER_PIXEL · cells` pairs of `u32`, which is `O(segments)` and
-    /// never scales with the stage: a mask's whole index set is bounded by the declared
-    /// [`crate::POINTS_PER_MASK`], at 8 bytes a pair. Nothing here allocates a plane at any size.
+    /// at [`GRID_SIDE_MAX`] — and a painted stroke is refused where it would leave a cell holding more
+    /// than [`SEGMENTS_PER_PIXEL`] entries at the content stage. So an index costs about
+    /// `SEGMENTS_PER_PIXEL · cells` pairs of `u32`, which is `O(segments)` and never scales with the
+    /// stage: a mask's whole index set is bounded by the declared [`crate::POINTS_PER_MASK`], at 8
+    /// bytes a pair. A proxy or supersampled stage has the content stage's aspect to within a pixel's
+    /// rounding, so its cells hold the same segments to within that rounding. Nothing here allocates
+    /// a plane at any size.
     ///
-    /// **Build cost** is bounded by the same two numbers, because the loop stops at the first cell
-    /// that passes the cap rather than filling the grid and measuring afterwards. It reads no pixel,
-    /// and the insertion walks a segment's box row by row rather than filling its whole bounding
-    /// rectangle, so a long diagonal stroke costs the cells it reaches and not the cells it spans.
-    fn build(strokes: &[CompiledStroke], mask: &str, component: &str) -> Result<Self, Error> {
+    /// **Build cost** is `O(segments × cells each reaches)`. It reads no pixel, and the insertion
+    /// walks a segment's box row by row rather than filling its whole bounding rectangle, so a long
+    /// diagonal stroke costs the cells it reaches and not the cells it spans.
+    fn build(strokes: &[CompiledStroke]) -> Self {
         let mut extent: Option<[f64; 4]> = None;
         let mut largest = 0.0f64;
         let mut segments = 0usize;
@@ -322,7 +333,7 @@ impl Index {
             }
         }
         let Some([u0, v0, u1, v1]) = extent else {
-            return Ok(Self::empty());
+            return Self::empty();
         };
         // The cell side is the largest radius — the scale at which a segment stops mattering to a
         // pixel — widened if that would ask for more cells than the component has segments. A
@@ -334,7 +345,7 @@ impl Index {
         let span = (u1 - u0).max(v1 - v0);
         let cell = largest.max(span / side as f64);
         if !cell.is_finite() || cell <= 0.0 {
-            return Ok(Self::empty());
+            return Self::empty();
         }
         let cols = cell_span(u1 - u0, cell, side);
         let rows = cell_span(v1 - v0, cell, side);
@@ -348,10 +359,16 @@ impl Index {
         };
         for (s, stroke) in strokes.iter().enumerate() {
             for (g, segment) in stroke.segments.iter().enumerate() {
-                index.insert(s as u32, g as u32, segment, stroke.r, mask, component)?;
+                index.insert(s as u32, g as u32, segment, stroke.r);
             }
         }
-        Ok(index)
+        index
+    }
+
+    /// The most entries any one cell lists: the most segments a pixel of this component can be made
+    /// to test, which is the quantity the occupancy cap bounds. `O(cells)`.
+    fn densest(&self) -> usize {
+        self.cells.iter().map(Vec::len).max().unwrap_or(0)
     }
 
     fn empty() -> Self {
@@ -365,34 +382,16 @@ impl Index {
         }
     }
 
-    /// Record one segment in every cell its grown box reaches, refusing as soon as a cell passes the
-    /// occupancy cap.
-    fn insert(
-        &mut self,
-        stroke: u32,
-        segment_index: u32,
-        segment: &Segment,
-        r: f64,
-        mask: &str,
-        component: &str,
-    ) -> Result<(), Error> {
+    /// Record one segment in every cell its grown box reaches.
+    fn insert(&mut self, stroke: u32, segment_index: u32, segment: &Segment, r: f64) {
         let [bu0, bv0, bu1, bv1] = segment.grown_box(r);
         let (col0, col1) = self.cell_range(bu0 - self.u0, bu1 - self.u0, self.cols);
         let (row0, row1) = self.cell_range(bv0 - self.v0, bv1 - self.v0, self.rows);
         for row in row0..=row1 {
             for col in col0..=col1 {
-                let cell = &mut self.cells[row * self.cols + col];
-                cell.push((stroke, segment_index));
-                if cell.len() > SEGMENTS_PER_PIXEL {
-                    return Err(Error::resource_limit(format!(
-                        "mask {mask} component {component} puts more than \
-                             {SEGMENTS_PER_PIXEL} stroke segments over one pixel; the limit is \
-                             {SEGMENTS_PER_PIXEL} segments tested per pixel by a brush component"
-                    )));
-                }
+                self.cells[row * self.cols + col].push((stroke, segment_index));
             }
         }
-        Ok(())
     }
 
     /// The inclusive cell range a closed interval reaches, clamped to the grid. Inclusive because a
@@ -458,11 +457,11 @@ impl Compiled {
     /// from.
     ///
     /// Every refusal names what it refused: a reference the store cannot answer is the store's own
-    /// `incompatible` error unchanged, a stroke whose radius is not a legal mask-space distance is
-    /// `validation` naming the component and the stroke, and a component whose densest cell passes
-    /// the occupancy cap is `resource-limit` naming the mask and the component. All three happen
-    /// here, which is **before any pixel is read**: the host compiles a recipe before it persists
-    /// one, so a brush that could not be evaluated cannot be committed either.
+    /// `incompatible` error unchanged, and a stroke whose radius is outside the one legal stroke
+    /// radius ([`path::size_range`]) is `validation` naming the component, the stroke and the range. Both happen here, **before any pixel is
+    /// read**. Occupancy is not refused here: it is checked where each stroke is painted
+    /// ([`densest_cell`]), so a component that committed is already within the cap, and a layer that
+    /// first draws a mask long after its strokes were painted compiles it without a second check.
     pub(super) fn new(
         stored: &BrushStrokes,
         stage: Stage,
@@ -488,10 +487,10 @@ impl Compiled {
                 )
             })?;
             let r = stroke.size();
-            if !r.is_finite() || !(DISTANCE_MIN..=DISTANCE_MAX).contains(&r) {
+            if !path::size_is_legal(r) {
                 return Err(Error::validation(format!(
-                    "component {component} stroke {id} size must be a number within \
-                         {DISTANCE_MIN:e}..={DISTANCE_MAX:.0} mask-space units"
+                    "component {component} stroke {id} size must be a number within {}",
+                    path::size_range()
                 )));
             }
             let band = r * (stroke.feather() / 100.0);
@@ -538,7 +537,7 @@ impl Compiled {
                     .map(|limit| range::similarity(limit.seed(), limit.refine())),
             });
         }
-        let index = Index::build(&compiled, mask, component)?;
+        let index = Index::build(&compiled);
         Ok(Self {
             strokes: compiled,
             index,
@@ -637,6 +636,30 @@ impl Compiled {
     pub(super) fn feature_px(&self, stage: Stage) -> f64 {
         self.narrowest_band * f64::from(stage.height)
     }
+
+    /// The segments a pixel at this mask-space point tests: the length of the one cell list it falls
+    /// in, which is the whole of its per-pixel cost beyond one `sqrt` and one profile per stroke.
+    pub(super) fn segments_at(&self, u: f64, v: f64) -> usize {
+        self.index.at(u, v).len()
+    }
+}
+
+/// The densest cell of one brush component's index, bound to `binding`'s stage: the most segments
+/// any pixel of it can be made to test, which is what the occupancy cap bounds.
+///
+/// `mask.add-stroke` asks this of the component a stroke would leave behind, at the content stage,
+/// and refuses the stroke through [`super::rules::segments_per_pixel`] before anything commits. The
+/// strokes are resolved and their radii checked exactly as compiling does, because it *is* the
+/// compile the committed mask will get. `O(segments × cells each reaches)`; it reads no pixel.
+pub(super) fn densest_cell(component: &Component, binding: &Binding<'_>) -> Result<usize, Error> {
+    let compiled = Compiled::new(
+        &parse(component)?,
+        binding.stage,
+        binding.strokes,
+        binding.mask,
+        &component.name,
+    )?;
+    Ok(compiled.index.densest())
 }
 
 /// This kind's row of the kind table: a stored payload checked without a stage or a store.
@@ -646,7 +669,8 @@ pub(super) fn validate(component: &Component) -> Result<(), Error> {
 
 /// This kind's row of the kind table: a stored payload parsed, its stroke references resolved
 /// against the store the recipe was read from, each radius checked against the study's distance rule
-/// and its grid index built — every one of which can refuse, by name, before any pixel is read.
+/// and its grid index built. The first two can refuse, by name, before any pixel is read; the index
+/// cannot, because its occupancy was checked where each stroke was painted.
 pub(super) fn compile(component: &Component, binding: &Binding<'_>) -> Result<Field, Error> {
     Ok(Arc::new(Compiled::new(
         &parse(component)?,
@@ -675,6 +699,14 @@ impl ComponentField for Compiled {
 
     fn feature_px(&self, stage: Stage) -> f64 {
         Compiled::feature_px(self, stage)
+    }
+
+    fn densest_cell(&self) -> usize {
+        self.index.densest()
+    }
+
+    fn segments_at(&self, u: f64, v: f64) -> usize {
+        Compiled::segments_at(self, u, v)
     }
 }
 

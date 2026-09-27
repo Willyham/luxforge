@@ -1,6 +1,6 @@
 use super::{
     AnalysisPlan, AnalysisSelection, AssetRecord, DraftStamp, EditorService, EditorState,
-    PixelSample, SamplePlan,
+    ExportPlan, ExportTarget, PixelSample, SamplePlan,
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 #[cfg(test)]
@@ -9,9 +9,11 @@ use crate::{
     AssetId, ContentPoint, Draft, EntryId, Error, HistoryEntry, PreviewJob, PreviewSource,
     ProxyBounds, Raster, Recipe, Render, RenderContext, RenderOptions, SnapshotId, StageTransform,
     analysis::AnalysisIdentity,
+    export::CaptureMetadata,
     render::{Compiled, locate_dimensions, stage_transform},
     source::PreparedSource,
 };
+use std::sync::Arc;
 
 impl EditorService {
     pub fn render_current(&self, asset_id: &AssetId) -> Result<Raster, Error> {
@@ -178,7 +180,18 @@ impl EditorService {
         recipe: &Recipe,
         mode: RawSettingsMode,
     ) -> Result<PreviewSource, Error> {
-        match self.verified_prepared(asset)? {
+        self.source_of(asset, self.verified_prepared(asset)?, recipe, mode)
+    }
+
+    /// [`Self::preview_source`] from a prepared source the caller already verified.
+    fn source_of(
+        &self,
+        asset: &AssetRecord,
+        prepared: PreparedSource,
+        recipe: &Recipe,
+        mode: RawSettingsMode,
+    ) -> Result<PreviewSource, Error> {
+        match prepared {
             PreparedSource::Jpeg(image) => {
                 validate_source_recipe(asset, recipe)?;
                 Ok(PreviewSource::Jpeg(image))
@@ -204,6 +217,104 @@ impl EditorService {
         asset_id: &AssetId,
         selection: AnalysisSelection<'_>,
     ) -> Result<AnalysisPlan, Error> {
+        let Target {
+            state,
+            entry,
+            recipe,
+            identity,
+            failure,
+        } = self.target(asset_id, selection)?;
+        let stack = Evaluated::exactly(&state.asset, &entry.id, &recipe);
+        // An analysis is a number, so it is never taken from an approximate white balance.
+        let source = match failure {
+            Some(_) => None,
+            None => Some(self.needing(
+                stack,
+                self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict),
+            )?),
+        };
+        Ok(AnalysisPlan {
+            identity,
+            source,
+            registry: self.registry.clone(),
+            context: self.render.clone(),
+            recipe,
+            failure,
+        })
+    }
+
+    /// What `export.plan` answers about one saved entry, the current one unless `entry_id` names
+    /// another: its identity with the output stage, and where its original lives. The same
+    /// `O(layers)` planning an analysis does, without the prepared source: nothing is read but the
+    /// catalog, so an unprepared original is no reason to refuse. A stack the host cannot evaluate
+    /// is refused with the reason it has no output stage.
+    pub(crate) fn export_target(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<ExportTarget, Error> {
+        let Target {
+            state,
+            identity,
+            failure,
+            ..
+        } = self.target(asset_id, saved(entry_id))?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(ExportTarget {
+            identity,
+            original: state.asset.locator,
+        })
+    }
+
+    /// Everything one export job needs, frozen on the catalog owner: the saved entry's identity,
+    /// its recipe bound with the verified bytes of the artifacts it references, the verified
+    /// prepared source evaluated exactly (a RAW development must hold the entry's own white
+    /// balance), the shared registry and render context, and the original's capture metadata.
+    /// Costs what [`Self::analysis_plan`] costs; no frame is allocated here. A stack the host cannot
+    /// evaluate is refused with its reason, a missing or changed original with
+    /// `source-unavailable`, and an unprepared one with `preparation-required` naming its needs.
+    pub(crate) fn export_plan(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<ExportPlan, Error> {
+        let Target {
+            state,
+            entry,
+            recipe,
+            identity,
+            failure,
+        } = self.target(asset_id, saved(entry_id))?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let stack = Evaluated::exactly(&state.asset, &entry.id, &recipe);
+        let prepared = self.needing(stack, self.verified_prepared(&state.asset))?;
+        let capture = capture_of(&prepared);
+        let source = self.needing(
+            stack,
+            self.source_of(&state.asset, prepared, &recipe, RawSettingsMode::Strict),
+        )?;
+        Ok(ExportPlan {
+            identity,
+            source,
+            registry: self.registry.clone(),
+            context: self.render.clone(),
+            recipe,
+            capture,
+        })
+    }
+
+    /// The stack one analysis or export evaluates, bound, with its identity and the reason it has
+    /// no output stage when the host cannot compile it. A state read, the entry's or the draft's
+    /// recipe, its artifacts bound and one `O(layers)` compile; no pixel is read.
+    fn target(
+        &self,
+        asset_id: &AssetId,
+        selection: AnalysisSelection<'_>,
+    ) -> Result<Target, Error> {
         let state = self.state(asset_id)?;
         let (entry, mut recipe, draft) = match selection {
             AnalysisSelection::Current => {
@@ -245,20 +356,11 @@ impl EditorService {
             &recipe,
             draft,
         )?;
-        // An analysis is a number, so it is never taken from an approximate white balance.
-        let source = match failure {
-            Some(_) => None,
-            None => Some(self.needing(
-                stack,
-                self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict),
-            )?),
-        };
-        Ok(AnalysisPlan {
-            identity,
-            source,
-            registry: self.registry.clone(),
-            context: self.render.clone(),
+        Ok(Target {
+            state,
+            entry,
             recipe,
+            identity,
             failure,
         })
     }
@@ -530,6 +632,31 @@ impl PointPlan {
             rgba,
             draft,
         })
+    }
+}
+
+/// One planned stack: what [`EditorService::analysis_plan`] and the export plans share.
+struct Target {
+    state: EditorState,
+    entry: HistoryEntry,
+    recipe: Recipe,
+    identity: AnalysisIdentity,
+    failure: Option<Error>,
+}
+
+/// A saved entry of an asset: the named one, or its current entry.
+fn saved(entry_id: Option<&EntryId>) -> AnalysisSelection<'_> {
+    match entry_id {
+        Some(entry_id) => AnalysisSelection::Entry(entry_id),
+        None => AnalysisSelection::Current,
+    }
+}
+
+/// The capture metadata the source worker read from the original when it prepared it.
+fn capture_of(prepared: &PreparedSource) -> Arc<CaptureMetadata> {
+    match prepared {
+        PreparedSource::Jpeg(image) => image.capture.clone(),
+        PreparedSource::Raw(raw) => raw.capture.clone(),
     }
 }
 

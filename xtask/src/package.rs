@@ -36,6 +36,20 @@ fn native_raw_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the export JPEG encoder's native provenance beside the RAW notices. Its licence file is
+/// the `mozjpeg-sys` package's own, which the package loop in [`inventory`] already collects.
+fn native_jpeg_notices(root: &Path, out: &Path) -> Result {
+    let input = root.join("crates/luxforge-core/THIRD_PARTY.md");
+    ensure(
+        input.is_file(),
+        format!("Missing bundled JPEG notice: {}", input.display()),
+    )?;
+    let destination = out.join("native/luxforge-core/THIRD_PARTY.md");
+    fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+    fs::copy(input, destination)?;
+    Ok(())
+}
+
 /// Copies the bundled UI font's provenance and its SIL Open Font License beside the other notices.
 fn bundled_font_notices(root: &Path, out: &Path) -> Result {
     let source = root.join("crates/luxforge-ui");
@@ -108,6 +122,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
         }
     }
     native_raw_notices(root, out)?;
+    native_jpeg_notices(root, out)?;
     bundled_font_notices(root, out)?;
     write_json(
         &out.join("dependencies.json"),
@@ -130,6 +145,15 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "selected_license":"GPL-3.0-or-later",
                     "notices":"native/librtprocess-9a858270",
                     "build":"Bundled RCD, Markesteijn and border source; no OpenMP"
+                },
+                {
+                    "name":"libjpeg-turbo (mozjpeg-sys)",
+                    "version":"mozjpeg-sys 2.2.3",
+                    "revision":"93e9c78d0e9afb018a224e1105f06e48aec77766",
+                    "selected_license":"IJG AND BSD-3-Clause AND Zlib",
+                    "notices":"licenses/mozjpeg-sys-2.2.3",
+                    "provenance":"native/luxforge-core/THIRD_PARTY.md",
+                    "build":"Crate-bundled source built with cc; with_simd (NEON on aarch64, portable C on x86_64 without NASM) and unwinding only"
                 }
             ],
             "native_provenance":"native/luxforge-raw/THIRD_PARTY.md",
@@ -245,6 +269,15 @@ mod tests {
                 .join("native/luxforge-raw/THIRD_PARTY.md")
                 .is_file()
         );
+    }
+    #[test]
+    fn copies_the_bundled_jpeg_provenance() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        native_jpeg_notices(root, tmp.path()).unwrap();
+        let provenance =
+            fs::read_to_string(tmp.path().join("native/luxforge-core/THIRD_PARTY.md")).unwrap();
+        assert!(provenance.contains("based in part on the work of the Independent JPEG Group"));
     }
     #[test]
     fn copies_the_bundled_font_licence() {

@@ -30,7 +30,7 @@
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
 use super::{
-    BRUSH, DISTANCE_MIN, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn,
+    BRUSH, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn,
     component_parameters, component_sample_limit, component_sample_parameters,
     declared_geometry_kinds, knows_component_kind, sampling_kinds,
 };
@@ -42,7 +42,9 @@ use crate::{
     Control, Error, Layer, LayerId, Mask, MaskId, ModuleDescriptor, ModuleRegistry, NumberStyle,
     ParameterDescriptor, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
-    path::{self, POINTS_PER_STROKE, SIZE_MAX, Stroke, StrokeId},
+    path::{
+        self, POINTS_PER_STROKE, POSTED_POINTS_PER_STROKE, SIZE_MAX, SIZE_MIN, Stroke, StrokeId,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -1828,16 +1830,19 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             parameters: vec![
                 mask_parameter(false),
                 component_parameter(false),
-                ParameterDescriptor::points("points", 1, POINTS_PER_STROKE)
+                // The declared bound is the posted path's, checked before decimation; the stroke
+                // capture stores holds the decimated one to its own bound.
+                ParameterDescriptor::points("points", 1, POSTED_POINTS_PER_STROKE)
                     .required(true)
-                    .notes(
+                    .notes(format!(
                         "the stroke's path, in the content stage's normalized coordinates, in \
-                         drawn order; a one-position path is a single dab",
-                    ),
-                // A stroke's radius is a stored distance and takes the study's own floor; the
-                // ceiling is the path store's, which is the largest radius a stored stroke can
-                // hold.
-                ParameterDescriptor::number("size", DISTANCE_MIN, SIZE_MAX)
+                         drawn order, raw or already decimated; a one-position path is a single \
+                         dab. The stroke it decimates to holds at most {POINTS_PER_STROKE} \
+                         positions"
+                    )),
+                // The one legal stroke radius, which capture, the stored-stroke recheck and the
+                // brush's compile read too.
+                ParameterDescriptor::number("size", SIZE_MIN, SIZE_MAX)
                     .required(true)
                     .notes(
                         "the brush's radius in mask-space units, one unit being the content \
