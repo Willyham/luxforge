@@ -13,6 +13,11 @@ publish = false
 [workspace.dependencies]
 image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png"] }
 moxcms = { version = "=0.7.11", default-features = false }
+# Export's JPEG encoder: libjpeg-turbo as bundled by `mozjpeg-sys`, built from its source with `cc`.
+# `with_simd` is NEON on aarch64 through the C compiler; x86_64 SIMD would need NASM, which
+# `nasm_simd` is not asked for, so x86_64 builds the portable C path. The crate itself turns on
+# `unwinding`, which lets libjpeg's errors unwind to Rust instead of aborting.
+mozjpeg = { version = "=0.10.13", default-features = false, features = ["with_simd"] }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
 rayon = "=1.12.0"

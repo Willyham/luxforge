@@ -11,6 +11,7 @@ image.workspace = true
 luxforge-process = { path = "../luxforge-process" }
 luxforge-raw = { path = "../luxforge-raw" }
 moxcms.workspace = true
+mozjpeg.workspace = true
 rayon.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
