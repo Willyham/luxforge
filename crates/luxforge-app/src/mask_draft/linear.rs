@@ -4,7 +4,9 @@
 //! through `p1`, each perpendicular to the axis — and the axis itself, so the direction of the
 //! gradient is visible rather than inferred. The gesture is Lightroom's: a press away from every
 //! handle sets `p0` and the drag sets `p1`, from the untouched side towards the affected one.
-use super::editor::{DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, finite};
+use super::editor::{
+    DISTANCE_DECIMALS, DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, compact, finite,
+};
 use luxforge_core::mask::{LinearGradient, POSITION_MAX, POSITION_MIN};
 use serde_json::Value;
 
@@ -83,14 +85,15 @@ impl ShapeEditor for LinearEditor {
 
     /// `x0, y0 → x1, y1`: the axis from the end at coverage 0 to the end at coverage 1, which is
     /// the whole of a linear gradient.
-    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+    fn readout(&self) -> String {
         let linear = self.shape;
+        let at = |value: f64| compact(value, DISTANCE_DECIMALS);
         format!(
             "{}, {} \u{2192} {}, {}",
-            number("x0", linear.x0),
-            number("y0", linear.y0),
-            number("x1", linear.x1),
-            number("y1", linear.y1),
+            at(linear.x0),
+            at(linear.y0),
+            at(linear.x1),
+            at(linear.y1),
         )
     }
 
