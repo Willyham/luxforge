@@ -30,7 +30,8 @@ pub use xmp::{MAX_XMP_ATTRIBUTE_PAIRS, MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XM
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Error, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, ModuleRegistry, check_parameters, valid_name,
+    Error, ModuleRegistry, check_parameters,
+    modules::{PRESET_SETTINGS, check_settings},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -231,49 +232,19 @@ pub fn parse_preset(
     Ok(preset)
 }
 
-/// Check a settings set against the registry, without a stack: 1 to 16 actions of 1 to 64 fields
-/// each, every action registered, declared `patch: true` and provided by an available module,
-/// and every field passing that action's own parameter check. The library runs this when a set
-/// is created, updated or imported; the host checks again when one is applied.
+/// Check a settings set against the registry, without a stack: the `settings` parameter's own
+/// shape check, then every action presettable ([`ModuleRegistry::patch_action`]) and every field
+/// passing that action's parameter check. The library runs this when a set is created, updated,
+/// imported or captured; the host checks again when one is applied, through the same shape check
+/// and resolver.
 pub fn validate_settings(
     registry: &ModuleRegistry,
     settings: &Map<String, Value>,
 ) -> Result<(), Error> {
-    if settings.is_empty() || settings.len() > MAX_SETTINGS_ACTIONS {
-        return Err(Error::validation(format!(
-            "a settings set names 1 to {MAX_SETTINGS_ACTIONS} actions; this one names {}",
-            settings.len()
-        )));
-    }
+    check_settings(PRESET_SETTINGS, settings)?;
     for (action_id, fields) in settings {
-        if !valid_name(action_id) {
-            return Err(Error::validation(format!(
-                "invalid action identity {action_id}"
-            )));
-        }
-        let Some(fields) = fields
-            .as_object()
-            .filter(|fields| !fields.is_empty() && fields.len() <= MAX_SETTINGS_FIELDS)
-        else {
-            return Err(Error::validation(format!(
-                "the settings of {action_id} must be an object of 1 to {MAX_SETTINGS_FIELDS} fields"
-            )));
-        };
-        let (module, action) = registry
-            .action(action_id)
-            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
-        if !action.patch {
-            return Err(Error::validation(format!(
-                "{action_id} is not a field-patch action"
-            )));
-        }
-        if !module.descriptor().is_available() {
-            return Err(Error::incompatible(format!(
-                "unavailable module {}",
-                module.descriptor().id
-            )));
-        }
-        check_parameters(action, &Value::Object(fields.clone()))?;
+        let (_, action) = registry.patch_action(action_id)?;
+        check_parameters(action, fields)?;
     }
     Ok(())
 }

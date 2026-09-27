@@ -287,7 +287,11 @@ fn names_groups_actors_and_settings_are_validated_before_anything_is_stored() {
         );
     }
     for (settings, kind, detail) in [
-        (json!({}), ErrorKind::Validation, "names 1 to 16 actions"),
+        (
+            json!({}),
+            ErrorKind::Validation,
+            "parameter settings must name 1..=16 actions",
+        ),
         (
             json!({"set-nothing": {"a": 1}}),
             ErrorKind::Validation,
@@ -306,7 +310,7 @@ fn names_groups_actors_and_settings_are_validated_before_anything_is_stored() {
         (
             json!({"set-basic": {}}),
             ErrorKind::Validation,
-            "must be an object of 1 to 64 fields",
+            "parameter settings must give action set-basic a non-empty object of fields",
         ),
     ] {
         assert_error(

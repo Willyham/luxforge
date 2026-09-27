@@ -3,6 +3,7 @@
 //! lookup is a hash probe or a scan of a handful of modules; none reads a stack.
 use super::ModuleRegistry;
 use crate::{
+    Error,
     capabilities::descriptor::TaskDescriptor,
     modules::{
         ActionDescriptor, CapabilityModule, EffectDescriptor, EffectStage, ModuleDescriptor,
@@ -80,6 +81,32 @@ impl ModuleRegistry {
         let (module, position) = self.actions.get(id)?;
         let module = self.modules[*module].as_ref();
         Some((module, &module.descriptor().actions[*position]))
+    }
+
+    /// The one answer to "is this a presettable action": registered, declared `patch: true` and
+    /// provided by an available module. The preset library's validation and its `unavailable`
+    /// list, capture, a composite plan's steps and the Lightroom mapping all resolve through it.
+    /// It keys on the declaration, not on which module plans the action, so `set-raw` is
+    /// presettable like every other field patch.
+    ///
+    /// It is independent of the photo: whether the module applies to a source kind, and which
+    /// fields are superseded on it, are layered on by the callers that have one. An unknown action
+    /// is `validation: unknown action <id>`, a declared one that is not a field patch
+    /// `validation: <id> is not a field-patch action`, and one whose module is registered
+    /// unavailable `incompatible: unavailable module <module>` — the one refusal of the three a
+    /// composite plan defers until it knows the step applies to the photo. A hash probe; it
+    /// allocates only the refusal.
+    pub fn patch_action(&self, id: &str) -> Result<(&dyn ToolModule, &ActionDescriptor), Error> {
+        let (module, action) = self
+            .action(id)
+            .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
+        if !action.patch {
+            return Err(Error::validation(format!(
+                "{id} is not a field-patch action"
+            )));
+        }
+        module.descriptor().check_available()?;
+        Ok((module, action))
     }
 
     /// The one action lookup every caller resolves an action through: a registered module's

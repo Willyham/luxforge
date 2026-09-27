@@ -4,10 +4,8 @@ use super::{
     masks::{recipe_for_target, resolve_mask_target, take_mask_target, take_query_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
-#[cfg(test)]
-use crate::ErrorKind;
 use crate::{
-    AssetId, Draft, EntryId, Error, Layer, LayerId, LinearImage, LinearSettings, MaskId,
+    AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, LinearImage, LinearSettings, MaskId,
     ModuleRegistry, Mutation, Recipe, SkippedSetting, ToolModule, Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
@@ -55,7 +53,7 @@ impl<'r> Prepared<'r> {
             .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
         match action {
             ActionRef::Module(module, declared) => {
-                available(module)?;
+                module.descriptor().check_available()?;
                 let mut parameters = parameters;
                 let mask = take_mask_target(registry, action_id, &mut parameters)?;
                 let checked = check_parameters(declared, &parameters)?;
@@ -267,7 +265,7 @@ impl EditorService {
         view: TargetView,
         question: impl FnOnce(&StageContext<'_>, &Recipe) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        available(module)?;
+        module.descriptor().check_available()?;
         // A module that does not apply to the photo's kind is refused by its declaration, before
         // it sees anything of a stack it has nothing to say about.
         let kind = asset.source.tag();
@@ -439,9 +437,9 @@ impl EditorService {
     /// position, and a missing identity is refused before anything is written.
     ///
     /// `Compose` runs each step exactly as that action would run alone, against the stack the steps
-    /// before it produced: the registry finds the action, which must be a field patch; the generic
-    /// check and the module's `parse` take its fields; and the module is asked through the same
-    /// [`Self::ask`], which refuses an unavailable one. A step carries no mask target, so like an
+    /// before it produced: the action must be presettable ([`ModuleRegistry::patch_action`]); the
+    /// generic check and the module's `parse` take its fields; and the module is asked through the
+    /// same [`Self::ask`]. A step carries no mask target, so like an
     /// action sent without one it addresses the global layer: it plans against
     /// [`recipe_for_target`]'s view of the intermediate stack for no mask, and its plan is applied
     /// to the whole intermediate stack, so a masked layer of the step's effect is neither read nor
@@ -455,7 +453,9 @@ impl EditorService {
     /// a preset may carry settings for several kinds: a step whose module does not apply to the
     /// photo's kind, and a field superseded on the global target ([`check_superseded`]). A step left
     /// with no field is skipped whole. Each skip is reported with the refusal the setting would
-    /// have had alone, and a composite that applies nothing is a no-op.
+    /// have had alone, and a composite that applies nothing is a no-op. An unknown or non-patch
+    /// step is refused before this, but an unavailable module's only after it: a step that does
+    /// not apply to the photo is skipped whether or not its module is available.
     fn resolve_plan(
         &self,
         asset: &AssetRecord,
@@ -484,14 +484,18 @@ impl EditorService {
         let mut skipped = Vec::new();
         for step in steps {
             let action_id = step.action_id.as_str();
-            let (module, action) = registry
-                .action(action_id)
-                .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
-            if !action.patch {
-                return Err(Error::validation(format!(
-                    "{action_id} is not a field-patch action"
-                )));
-            }
+            // An unknown or non-patch step is refused outright, but an unavailable module's step is
+            // refused only once it is known to apply: one that does not is skipped like any other.
+            let (module, action, unavailable) = match registry.patch_action(action_id) {
+                Ok((module, action)) => (module, action, None),
+                Err(refusal) if refusal.kind == ErrorKind::Incompatible => {
+                    let (module, action) = registry
+                        .action(action_id)
+                        .expect("an unavailable action is a registered one");
+                    (module, action, Some(refusal))
+                }
+                Err(refusal) => return Err(refusal),
+            };
             if !module.descriptor().applies_to(kind) {
                 skipped.push(SkippedSetting {
                     action: action_id.to_owned(),
@@ -499,6 +503,9 @@ impl EditorService {
                     reason: not_applicable(&module.descriptor().title, kind),
                 });
                 continue;
+            }
+            if let Some(refusal) = unavailable {
+                return Err(refusal);
             }
             let mut fields = step.parameters;
             fields.retain(
@@ -641,19 +648,6 @@ pub(super) fn check_superseded(
         }
     }
     Ok(())
-}
-
-/// Refuse a provider registered unavailable: it keeps its descriptor so its stored layers stay
-/// readable, but the host never plans, queries or commits through it.
-fn available(module: &dyn ToolModule) -> Result<(), Error> {
-    let descriptor = module.descriptor();
-    if descriptor.is_available() {
-        return Ok(());
-    }
-    Err(Error::incompatible(format!(
-        "unavailable module {}",
-        descriptor.id
-    )))
 }
 
 /// The history label of a module edit: a masked edit always names its mask, where a `mask.*`

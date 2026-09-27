@@ -1036,7 +1036,11 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
     let registry = registry();
     assert!(validate_settings(&registry, &develop_settings()).is_ok());
     for (settings, kind, detail) in [
-        (json!({}), ErrorKind::Validation, "names 1 to 16 actions"),
+        (
+            json!({}),
+            ErrorKind::Validation,
+            "parameter settings must name 1..=16 actions",
+        ),
         (
             json!({"set-teleport": {"x": 1}}),
             ErrorKind::Validation,
@@ -1070,12 +1074,12 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
         (
             json!({"set-basic": {}}),
             ErrorKind::Validation,
-            "must be an object of 1 to 64 fields",
+            "parameter settings must give action set-basic a non-empty object of fields",
         ),
         (
             json!({"set-basic": 1}),
             ErrorKind::Validation,
-            "must be an object of 1 to 64 fields",
+            "parameter settings must give action set-basic a non-empty object of fields",
         ),
     ] {
         let error = validate_settings(&registry, &object(settings.clone())).unwrap_err();
@@ -1089,13 +1093,18 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
     assert!(
         error
             .detail
-            .contains("names 1 to 16 actions; this one names 17")
+            .contains("parameter settings must name 1..=16 actions")
     );
     let wide: Map<String, Value> = (0..65)
         .map(|index| (format!("f{index}"), json!(0)))
         .collect();
     let error = validate_settings(&registry, &object(json!({"set-basic": wide}))).unwrap_err();
-    assert!(error.detail.contains("1 to 64 fields"), "{error}");
+    assert!(
+        error
+            .detail
+            .contains("parameter settings gives action set-basic more than 64 fields"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -1134,6 +1143,44 @@ fn validate_settings_refuses_an_unavailable_provider() {
         validate_settings(&registry, &object(json!({"set-away": {"amount": 0.5}}))).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Incompatible);
     assert_eq!(error.detail, "unavailable module test.away");
+}
+
+/// A Lightroom setting whose target is not presettable in this registry is refused with the
+/// registry's own refusal, the words validation, capture and apply use; the rest still maps.
+#[test]
+fn an_import_refuses_a_setting_whose_target_is_not_presettable_with_the_registry_wording() {
+    for (disabled, reason) in [
+        (true, "unavailable module luxforge.presence"),
+        (false, "unknown action set-presence"),
+    ] {
+        let mut registry = ModuleRegistry::new();
+        for module in crate::builtin_modules() {
+            match module.descriptor().id.as_str() {
+                "luxforge.presence" if disabled => {
+                    registry.register_unavailable(module, "disabled by --disable-module")
+                }
+                "luxforge.presence" => continue,
+                _ => registry.register(module),
+            }
+            .unwrap();
+        }
+        let preset = inspect_preset(
+            &settings_template("ProcessVersion = \"11.0\", Clarity2012 = 10, Exposure2012 = 0.5"),
+            None,
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(
+            preset.settings,
+            object(json!({"set-basic": {"exposure": 0.5}})),
+            "disabled: {disabled}"
+        );
+        assert_eq!(
+            preset.report.refused,
+            [because("Clarity2012", "10", reason)],
+            "disabled: {disabled}"
+        );
+    }
 }
 
 #[test]
@@ -1176,7 +1223,7 @@ fn a_luxforge_document_is_strict_about_its_shape_and_version() {
         (
             document("\"version\": 1, \"name\": \"n\", \"settings\": {}"),
             ErrorKind::Validation,
-            "names 1 to 16 actions",
+            "parameter settings must name 1..=16 actions",
         ),
         (
             "{\"format\": \"lightroom.preset\", \"version\": 1}".to_owned(),
