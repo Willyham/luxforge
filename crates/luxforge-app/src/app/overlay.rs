@@ -46,6 +46,7 @@ pub(crate) struct OverlayRequest {
     /// replaces it. It is part of the request so that the arrival of the exact raster is a
     /// different request and re-derives the mask instead of leaving the approximate one on screen.
     pub(crate) approximate: bool,
+    pub(crate) region: Option<luxforge_core::Region>,
 }
 
 /// One derived overlay: an RGBA buffer of exactly `cells_w * cells_h` pixels, ready to show.
@@ -242,10 +243,18 @@ impl Editor {
         let approximate = done.request.approximate;
         match done.result {
             Ok(rgba) => {
-                if self
-                    .presenter
-                    .show_clipping(generation, rgba, (width, height))
-                {
+                let shown = match self.region_raster.as_ref().filter(|region| {
+                    region.generation == generation && done.request.region == Some(region.rect)
+                }) {
+                    Some(region) => {
+                        self.presenter
+                            .show_region_clipping(rgba, (width, height), region)
+                    }
+                    None => self
+                        .presenter
+                        .show_clipping(generation, rgba, (width, height)),
+                };
+                if shown {
                     self.event(
                         "clipping_overlay",
                         json!({"generation":generation,"cells":[width,height],"approximate":approximate}),
@@ -287,16 +296,33 @@ impl Editor {
             workspace.state_panel,
             workspace.tools_panel,
         );
-        let displayed = state::histogram::displayed_size(
-            match self.session.preview.view.zoom {
-                luxforge_core::Zoom::Fit => state::canvas::ZoomView::Fit,
-                luxforge_core::Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
-            },
-            source,
-            surface,
-            self.scale_factor,
-            view::canvas::FIT_INSET,
-        )?;
+        let region = self
+            .region_raster
+            .as_ref()
+            .filter(|region| region.generation == generation);
+        let displayed = if let Some(region) = region {
+            let scale = match self.session.preview.view.zoom {
+                luxforge_core::Zoom::Percent { value } => value / 100.0 / self.scale_factor,
+                luxforge_core::Zoom::Fit => 1.0,
+            };
+            Some((
+                region.rect.width as f32 * scale,
+                region.rect.height as f32 * scale,
+            ))
+        } else {
+            state::histogram::displayed_size(
+                match self.session.preview.view.zoom {
+                    luxforge_core::Zoom::Fit => state::canvas::ZoomView::Fit,
+                    luxforge_core::Zoom::Percent { value } => {
+                        state::canvas::ZoomView::Percent(value)
+                    }
+                },
+                source,
+                surface,
+                self.scale_factor,
+                view::canvas::FIT_INSET,
+            )
+        }?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
         Some(OverlayRequest {
             generation,
@@ -305,6 +331,7 @@ impl Editor {
             shadows,
             highlights,
             approximate,
+            region: region.map(|region| region.rect),
         })
     }
 
@@ -321,6 +348,16 @@ impl Editor {
                 .as_ref()
                 .map(|state| (state.asset.width, state.asset.height))
         })?;
+        if let luxforge_core::Zoom::Percent { value } = self.session.preview.view.zoom
+            && value >= 100.0
+            && let Some(region) = self.desired_view_for(source)
+        {
+            let displayed = (
+                region.width as f32 * value / 100.0 / self.scale_factor,
+                region.height as f32 * value / 100.0 / self.scale_factor,
+            );
+            return state::histogram::overlay_cells((region.width, region.height), displayed);
+        }
         let workspace = &self.session.workspace;
         let surface = state::histogram::photo_surface(
             self.window,
@@ -349,6 +386,13 @@ impl Editor {
     /// phase of an approximate white balance is still approximate, and says so.
     pub(super) fn overlay_source(&self) -> Option<(u64, &Arc<luxforge_core::Raster>, bool)> {
         let generation = self.presented_generation;
+        if let Some(region) = self
+            .region_raster
+            .as_ref()
+            .filter(|region| region.generation == generation)
+        {
+            return Some((generation, &region.raster, region.approximate));
+        }
         if let Some(raster) = self.presented_exact_raster() {
             return Some((generation, raster, self.raster_approximate_white_balance));
         }
@@ -361,9 +405,23 @@ impl Editor {
     /// than drawn over another image.
     pub(crate) fn overlay_surface(&self) -> Option<&luxforge_ui::Frame> {
         let request = self.overlay_request.as_ref()?;
-        (request.generation == self.presented_generation)
-            .then(|| self.presenter.clipping(request.generation))
-            .flatten()
+        if request.generation != self.presented_generation {
+            return None;
+        }
+        if let Some(region) = self.region_raster.as_ref().filter(|region| {
+            request.region == Some(region.rect) && region.generation == request.generation
+        }) {
+            return self
+                .presenter
+                .region_clipping()
+                .filter(|overlay| {
+                    overlay.content_id == region.content
+                        && overlay.generation == region.generation
+                        && overlay.quality == region.quality
+                })
+                .map(|overlay| &overlay.frame);
+        }
+        self.presenter.clipping(request.generation)
     }
 }
 
@@ -459,6 +517,7 @@ mod tests {
             shadows: true,
             highlights: true,
             approximate: false,
+            region: None,
         }
     }
 

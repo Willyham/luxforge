@@ -88,14 +88,18 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
 fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
     let content = match (&model.photo, surfaces.draft, surfaces.stage) {
         (PhotoView::Draft, Some(draft), Some(stage)) => crop_surface(model, draft, stage),
-        (PhotoView::Plain, _, _) => match (surfaces.photo, model.dimensions) {
-            (Some(raster), Some(dimensions)) => plain(model, raster, &surfaces, dimensions),
+        (PhotoView::Plain, _, _) => match model.dimensions {
+            Some(dimensions) if surfaces.photo.is_some() || surfaces.region.is_some() => {
+                plain(model, surfaces.photo, &surfaces, dimensions)
+            }
             _ => empty("Open a photograph"),
         },
         (PhotoView::Empty(message), _, _) => empty(message),
         // A draft without its own pixels is not drawn as a draft.
-        (PhotoView::Draft, _, _) => match (surfaces.photo, model.dimensions) {
-            (Some(raster), Some(dimensions)) => plain(model, raster, &surfaces, dimensions),
+        (PhotoView::Draft, _, _) => match model.dimensions {
+            Some(dimensions) if surfaces.photo.is_some() || surfaces.region.is_some() => {
+                plain(model, surfaces.photo, &surfaces, dimensions)
+            }
             _ => empty("Open a photograph"),
         },
     };
@@ -337,7 +341,7 @@ fn empty(message: &str) -> Element<'_, Message> {
 /// it. Only the open mask gesture's handles are a canvas of their own, stacked above.
 fn plain<'a>(
     model: &'a CanvasModel,
-    raster: &'a luxforge_ui::Frame,
+    raster: Option<&'a luxforge_ui::Frame>,
     surfaces: &Surfaces<'a>,
     (width, height): (u32, u32),
 ) -> Element<'a, Message> {
@@ -348,6 +352,9 @@ fn plain<'a>(
     let mask_map = surfaces.mask_map;
     match model.zoom {
         ZoomView::Fit => {
+            let Some(raster) = raster else {
+                return empty("Rendering photograph…");
+            };
             // Fit needs the available size to know where the toolkit draws the contained image.
             responsive(move |available| {
                 let photo: Element<'_, Message> = luxforge_ui::photo_surface(
@@ -414,14 +421,46 @@ fn plain<'a>(
             // may be the display proxy, which is smaller. Filling stretches it to exactly that box,
             // and the overlays with it, whichever texture is on screen. The box may be far larger
             // than the window; the surface hands the renderer only its visible part.
-            let photo: Element<'a, Message> = luxforge_ui::photo_surface(
-                raster,
-                luxforge_ui::Placement::Fill,
-                box_width,
-                box_height,
-            )
-            .overlays(clipping, coverage)
-            .into();
+            let photo: Element<'a, Message> =
+                if surfaces.region.is_none() && surfaces.photo_content.is_none() {
+                    // A whole-output proxy is still a valid percentage frame, including at 50% and
+                    // when a region request named a fallback. It is not an exact full texture slot.
+                    match raster {
+                        Some(raster) => luxforge_ui::photo_surface(
+                            raster,
+                            luxforge_ui::Placement::Fill,
+                            box_width,
+                            box_height,
+                        )
+                        .overlays(clipping, coverage)
+                        .into(),
+                        None => empty("Rendering photograph…"),
+                    }
+                } else {
+                    luxforge_ui::viewport_surface(
+                        raster.zip(surfaces.photo_content),
+                        surfaces.region,
+                        surfaces.current_content,
+                        (width, height),
+                        luxforge_ui::Placement::Fill,
+                        box_width,
+                        box_height,
+                    )
+                    .overlays(
+                        if surfaces.region.is_some() {
+                            None
+                        } else {
+                            clipping
+                        },
+                        if surfaces.region.is_some() {
+                            None
+                        } else {
+                            coverage
+                        },
+                    )
+                    .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
+                    .into()
+                };
             let handles = mask_draft
                 .zip(mask_map)
                 .zip(CanvasView::percent(value, model.scale_factor));

@@ -141,6 +141,7 @@ impl SliderStep {
             values: values.into(),
             end: SliderEnd::Open,
             interval_ms: None,
+            pan_path: Vec::new(),
         }
     }
 
@@ -164,6 +165,11 @@ impl SliderStep {
             interval_ms: Some(interval_ms),
             ..self
         }
+    }
+
+    /// Pair each paced value with a relative scrollable offset on the photograph.
+    pub fn pan_path(self, pan_path: Vec<[f32; 2]>) -> Self {
+        Self { pan_path, ..self }
     }
 }
 

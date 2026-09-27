@@ -3,7 +3,7 @@
 
 use crate::{
     Component, ComponentId, ComponentMode, Error, HistoryEntry, LinearImage, LinearSettings, Mask,
-    MaskId, ModuleRegistry, ProxyBounds, Recipe, RenderContext, RenderSource, SourceImage,
+    MaskId, ModuleRegistry, ProxyBounds, Recipe, Region, RenderContext, RenderSource, SourceImage,
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS},
 };
 #[cfg(doc)]
@@ -114,6 +114,18 @@ pub(super) fn one_component(mask: &Mask, component: &ComponentId) -> Option<Mask
     })
 }
 
+/// How much work the one preview lane may do for this request. An interactive request produces
+/// visible pixels only; the desktop asks for settlement once its shared quiet gate opens or the
+/// gesture commits. A normal request preserves the existing two-phase path for callers that need
+/// its full result immediately, including the crop input stage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreviewIntent {
+    #[default]
+    Immediate,
+    Interactive,
+    Settle,
+}
+
 #[derive(Clone, Debug)]
 pub struct PreviewJob {
     pub source: PreviewSource,
@@ -154,6 +166,16 @@ pub struct PreviewJob {
     /// or rendering the proxy declines it in [`ExactOutcome::proxy_declined`] and the exact phase
     /// runs unchanged.
     pub proxy: Option<ProxyBounds>,
+    /// The visible output-stage rectangle at a percentage zoom, in full-stage pixels. `None` is
+    /// the Fit path. The worker clips it against its uncut compilation and explicitly reports a
+    /// region decline rather than interpreting it as a recipe crop.
+    pub viewport: Option<Region>,
+    /// Whether to produce only the interactive frame, or refine it and finish whole-frame
+    /// analysis. The desktop sets this after the owner has planned the immutable stack.
+    pub intent: PreviewIntent,
+    /// Worker-only reason a region was declined before the existing proxy/exact fallback ran.
+    /// Owner-planned jobs start with `None`; the worker fills it in its own owned job.
+    pub viewport_declined: Option<String>,
     /// Fill one mask's coverage grid beside the frame and return it with it, exactly as
     /// [`PreviewJob::analyse`] returns a [`Report`]. Set through
     /// [`PreviewJob::with_mask_overlay`], which is what validates it against this job's own stack.

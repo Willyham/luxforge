@@ -314,7 +314,7 @@
       "dependencies": [],
       "extra_context": [
         "Temporary softness at 100% during motion, full detail restored on pause/release, an updating full-image histogram, and the documented viewport-bounded clipping behavior are accepted and must not be reopened.",
-        "The documented implementation baseline uses a viewport window on a half-scale proxy while moving, then exact visible-region refinement and whole-frame exact analysis under the shared quiet policy. Further quality levels, global-guide approximation, GPU preview arithmetic, and numerical error limits need representative measurements before acceptance.",
+        "The documented implementation baseline uses a viewport window on a half-scale proxy while moving, then exact visible-region refinement and whole-frame exact analysis under the shared quiet policy. Further quality levels, GPU preview arithmetic and numerical error limits need representative measurements before acceptance; the sampled global guide is rejected due to severe periodic aliasing and no approximate-global mode ships.",
         "Exact settled pixels, full-image reports and export retain their current contracts; product research does not imply an implementation latency result."
       ],
       "context_links": [
@@ -327,9 +327,9 @@
         },
         {
           "kind": "file",
-          "label": "Viewport clipping proposal",
+          "label": "Viewport clipping behavior",
           "target": "docs/design/instant-preview.md",
-          "locator": "Histogram and clipping proposal",
+          "locator": "Histogram and clipping",
           "relevance": "Concrete clipping recommendation and the supporting phase, coordinate and stale-texel contracts."
         },
         {

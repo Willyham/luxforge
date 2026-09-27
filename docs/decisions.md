@@ -153,7 +153,7 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 
 ## RAW white-balance drafts
 
-- The `raw-panel` scenario checks a drafted RAW white balance relative to the drag (owner, 2026-09-26): at Fit and at 100% the released exact frame is within a tenth of the drag's own change from the approximate frame, and at Fit within one code of it on average. The Air 2S's full-size error at a strong gain change is above a code, which the design's accuracy table already records; see [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
+- The RAW white-balance quality check keeps the Fit one-code mean-difference threshold and compares 100% only after the held draft has received full-detail refinement under the shared quiet policy. The moving half-scale image is checked separately for viewport identity and approximate-WB labelling. The unchanged unfiltered 100% mean-difference threshold is one tenth of the pre-drag-to-release change; native Z6, X100VI and Air 2S checks pass at 0.81%, 1.39% and 5.06%, respectively. Moving softness residuals are reported separately (2.42%, 3.69% and 17.33%) and are not WB error measurements. These checks do not establish a general photo-error bound. See [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
 
 ## Post-consolidation review
 
@@ -182,7 +182,7 @@ Not adopted: deferring the whole capabilities framework until the first Correcti
 
 ## Interactive previews at 100%
 
-Decided on 2026-09-27. The owner authorizes implementation of the reviewed [viewport proposal](design/instant-preview.md#viewport-rendering-at-100-proposal).
+Decided on 2026-09-27. The owner accepted the viewport behavior and authorized implementation; current behavior is described in [viewport rendering](design/instant-preview.md#viewport-rendering-at-100).
 
 - Immediate adjustment feedback takes priority while dragging. A briefly softer image at 100% is acceptable during motion, with full detail restored on pause or release and the full-image histogram marked updating meanwhile.
 - Clipping follows the displayed viewport while exact region pixels are outstanding: the overlay is marked approximate, uses the existing OR-of-clipped-pixels rule on a viewport-bounded grid with the existing 4096-cells-per-side cap, and is replaced by a matching exact-region overlay on refinement. Region, content and quality identity travel with the overlay; missing or stale tiles have no overlay. Viewport clipping never substitutes for whole-image counts.

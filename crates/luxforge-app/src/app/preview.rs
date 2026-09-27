@@ -11,9 +11,18 @@ use super::{
 };
 use crate::{state, state::histogram::Analysis, view};
 use iced::Task;
-use luxforge_core::{CropStage, PhaseOutcome, PreviewPhase, ProxyBounds, Zoom};
+use luxforge_core::{
+    CropStage, PhaseOutcome, PreviewIntent, PreviewPhase, ProxyBounds, Region, Zoom,
+};
 use serde_json::json;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+/// One policy for a paused input, whether its first frame was Fit or a visible region. The
+/// evidence run measures this interval against render/round-trip timing before acceptance.
+const QUIET_INTERVAL: Duration = Duration::from_millis(120);
 
 /// The display-proxy frame of one generation, retained beside the exact raster.
 ///
@@ -57,6 +66,18 @@ pub(crate) struct HeldByProxy {
     pub(crate) ready: bool,
 }
 
+/// The visible pixels the region slot owns, retained for a viewport-bounded clipping derivation.
+/// Its raster shares the worker's allocation and is never used as a whole-image analysis input.
+pub(crate) struct PresentedRegion {
+    pub(crate) generation: u64,
+    pub(crate) content: u64,
+    pub(crate) raster: Arc<luxforge_core::Raster>,
+    pub(crate) rect: Region,
+    pub(crate) full_stage: luxforge_core::StageSize,
+    pub(crate) quality: luxforge_ui::RegionQuality,
+    pub(crate) approximate: bool,
+}
+
 /// One rectangle of physical pixels as bounds the core will accept, or `None` when the surface has
 /// no room at all. The core clamps them to its own limits; rounding here is the only conversion.
 pub(super) fn bounds_of((width, height): (f32, f32)) -> Option<ProxyBounds> {
@@ -69,10 +90,164 @@ pub(super) fn bounds_of((width, height): (f32, f32)) -> Option<ProxyBounds> {
     })
 }
 
+/// The output pixels a percentage view can display now. The scrollable reports its offset in
+/// logical pixels, while percent zoom is defined in physical pixels; the widget's box uses the
+/// same division by display scale. One guard pixel covers snapped edges and linear sampling.
+pub(super) fn viewport_rect(
+    stage: (u32, u32),
+    zoom: &Zoom,
+    display_scale: f32,
+    surface: (f32, f32),
+    pan: (f32, f32),
+) -> Option<Region> {
+    let Zoom::Percent { value } = zoom else {
+        return None;
+    };
+    if *value < 100.0 {
+        return None;
+    }
+    let scale = *value / 100.0 / display_scale;
+    if !(scale.is_finite()
+        && scale > 0.0
+        && surface.0 >= 1.0
+        && surface.1 >= 1.0
+        && stage.0 > 0
+        && stage.1 > 0
+        && pan.0.is_finite()
+        && pan.1.is_finite())
+    {
+        return None;
+    }
+    let edge = |start: f32, length: f32, limit: u32| {
+        let first = ((start / scale).floor() as i64 - 1).clamp(0, i64::from(limit)) as u32;
+        let last = (((start + length) / scale).ceil() as i64 + 1)
+            .clamp(i64::from(first), i64::from(limit)) as u32;
+        (first, last)
+    };
+    let (x0, x1) = edge(pan.0, surface.0, stage.0);
+    let (y0, y1) = edge(pan.1, surface.1, stage.1);
+    (x1 > x0 && y1 > y0).then_some(Region {
+        x0,
+        y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    })
+}
+
+pub(super) fn contains_region(outer: Region, inner: Region) -> bool {
+    outer.x0 <= inner.x0
+        && outer.y0 <= inner.y0
+        && outer.x1() >= inner.x1()
+        && outer.y1() >= inner.y1()
+}
+
+pub(super) fn intersects_region(a: Region, b: Region) -> bool {
+    a.x0 < b.x1() && b.x0 < a.x1() && a.y0 < b.y1() && b.y0 < a.y1()
+}
+
 impl Editor {
+    pub(crate) fn visible_detail_updating(&self) -> bool {
+        let Some(stage) = self.dimensions else {
+            return false;
+        };
+        let Some(wanted) = self.desired_view_for(stage) else {
+            return false;
+        };
+        if self.presenter.full_content() == Some(self.presented_content)
+            && self.raster_content == Some(self.presented_content)
+        {
+            return false;
+        }
+        self.region_raster.as_ref().is_none_or(|region| {
+            region.content != self.presented_content
+                || region.quality != luxforge_ui::RegionQuality::Exact
+                || !contains_region(region.rect, wanted)
+        })
+    }
+    pub(super) fn cancel_preview_queue(&mut self) -> u64 {
+        let generation = self.preview_queue.cancel();
+        self.pending_bounds.clear();
+        self.pending_content.clear();
+        self.pending_intent.clear();
+        self.view_request_generation = None;
+        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
+        self.desired_view_dirty = true;
+        self.quiet_since = None;
+        generation
+    }
+    pub(super) fn desired_view_for(&self, stage: (u32, u32)) -> Option<Region> {
+        viewport_rect(
+            stage,
+            &self.session.preview.view.zoom,
+            self.scale_factor,
+            state::histogram::photo_surface(
+                self.window,
+                self.session.workspace.state_panel,
+                self.session.workspace.tools_panel,
+            ),
+            self.local_pan,
+        )
+    }
     /// One message about taking up or presenting a preview frame.
     pub(super) fn preview_update(&mut self, message: PreviewMessage) -> Task<Message> {
         match message {
+            PreviewMessage::ViewLoaded {
+                epoch,
+                intent,
+                result,
+            } => {
+                self.view_plan_in_flight = false;
+                if epoch != self.view_plan_epoch {
+                    self.desired_view_dirty = true;
+                    return Task::none();
+                }
+                match result {
+                    Ok(job) => {
+                        let mut job = *job;
+                        if self.state.as_ref().map(|state| &state.asset.id)
+                            != Some(&job.entry.asset_id)
+                            || self.displayed_entry().as_ref() != Some(&job.entry.id)
+                            || job.identity.draft.as_ref().map(|stamp| &stamp.draft_id)
+                                != self.session.draft.as_ref().map(|draft| &draft.draft_id)
+                            || job.draft_revision
+                                != self
+                                    .session
+                                    .draft
+                                    .as_ref()
+                                    .map(|draft| draft.draft_revision)
+                            || self.crop().is_some()
+                            || self.crop_pending().is_some()
+                            || self
+                                .core_gesture()
+                                .is_some_and(|gesture| !gesture.draft.drained())
+                            || self
+                                .preview_queue
+                                .pending_generation()
+                                .is_some_and(|generation| {
+                                    self.view_request_generation != Some(generation)
+                                })
+                        {
+                            self.desired_view_dirty = true;
+                            return Task::none();
+                        }
+                        job.intent = intent;
+                        let generation = self.request_preview(job);
+                        self.preview_generation = generation;
+                        self.view_request_generation = Some(generation);
+                        self.desired_view_dirty = false;
+                        self.event("preview_view_requested", json!({
+                            "generation":generation,
+                            "intent":if intent == PreviewIntent::Settle {"settle"} else {"interactive"},
+                        }));
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        self.desired_view_dirty = false;
+                        self.quiet_since = None;
+                    }
+                }
+            }
+            PreviewMessage::QuietTick => return self.quiet_refine(),
             PreviewMessage::Loaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
                     return Task::none();
@@ -119,6 +294,143 @@ impl Editor {
             }
         }
         Task::none()
+    }
+
+    pub(super) fn note_view_motion(&mut self) {
+        self.desired_view_dirty = true;
+        self.quiet_since = Some(Instant::now());
+        self.quiet_settle_requested = false;
+        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
+        if let (Some(stage), Some(region)) = (self.dimensions, self.region_raster.as_ref())
+            && self.presenter.full_content() != Some(self.presented_content)
+            && self
+                .desired_view_for(stage)
+                .is_some_and(|wanted| !contains_region(region.rect, wanted))
+            && let Some(render) = &mut self.activity.render
+        {
+            render.proxy = true;
+        }
+    }
+
+    fn view_plan(&mut self, intent: PreviewIntent) -> Task<Message> {
+        let Some(state) = &self.state else {
+            return Task::none();
+        };
+        let draft = match self.core_gesture() {
+            Some(gesture) if gesture.draft.drained() => {
+                let Some(draft) = gesture.draft.draft_id.clone() else {
+                    return Task::none();
+                };
+                Some(draft)
+            }
+            Some(_) => return Task::none(),
+            None => None,
+        };
+        self.view_plan_in_flight = true;
+        tasks::view_preview_task(
+            self.owner.clone(),
+            self.client,
+            state.asset.id.clone(),
+            self.displayed_entry(),
+            draft,
+            self.view_plan_epoch,
+            intent,
+        )
+    }
+
+    /// Admit a view-only pan only after gesture and crop-owned requests drain. The local scroll
+    /// offset is already updated; a delayed owner pan reply never chooses the rectangle.
+    pub(super) fn reconcile_view(&mut self) -> Task<Message> {
+        if !self.desired_view_dirty
+            || self.view_plan_in_flight
+            || self.crop().is_some()
+            || self.crop_pending().is_some()
+        {
+            return Task::none();
+        }
+        if self
+            .preview_queue
+            .pending_generation()
+            .is_some_and(|generation| self.view_request_generation != Some(generation))
+        {
+            // Only another standalone view may be replaced. A draft.set or crop input stage owns
+            // the single pending slot until its own frame or cancellation is delivered.
+            return Task::none();
+        }
+        let Some(stage) = self.dimensions else {
+            return Task::none();
+        };
+        let Some(wanted) = self.desired_view_for(stage) else {
+            self.desired_view_dirty = false;
+            if self.core_gesture().is_none() {
+                self.quiet_since = None;
+            }
+            return Task::none();
+        };
+        if self.presenter.full_content() == Some(self.content_serial)
+            && self.raster.as_ref().is_some_and(|(_, raster)| {
+                (raster.width, raster.height) == stage
+                    && self.raster_content == Some(self.content_serial)
+            })
+        {
+            self.desired_view_dirty = false;
+            if self.analysis_content == Some(self.content_serial) {
+                self.quiet_since = None;
+            }
+            return Task::none();
+        }
+        if self.region_raster.as_ref().is_some_and(|region| {
+            region.content == self.content_serial
+                && region.quality == luxforge_ui::RegionQuality::Exact
+                && contains_region(region.rect, wanted)
+        }) {
+            self.desired_view_dirty = false;
+            return Task::none();
+        }
+        // A cancelled gesture or a returned history selection has no motion to debounce.
+        // Its committed whole-frame settlement may already have been replaced by this view
+        // retry, so the replacement must itself produce the exact report and retained raster.
+        self.view_plan(
+            if self.core_gesture().is_none() && self.quiet_since.is_none() {
+                PreviewIntent::Settle
+            } else {
+                PreviewIntent::Interactive
+            },
+        )
+    }
+
+    fn quiet_refine(&mut self) -> Task<Message> {
+        let Some(since) = self.quiet_since else {
+            return Task::none();
+        };
+        if since.elapsed() < QUIET_INTERVAL
+            || self.quiet_settle_requested
+            || self.view_plan_in_flight
+            || self.desired_view_dirty
+            || self.preview_queue.is_busy()
+            || self.crop().is_some()
+            || self.crop_pending().is_some()
+            || self
+                .core_gesture()
+                .is_some_and(|gesture| !gesture.draft.drained())
+        {
+            return Task::none();
+        }
+        if self.analysis_content == Some(self.content_serial)
+            && self.raster_content == Some(self.content_serial)
+        {
+            self.quiet_since = None;
+            return Task::none();
+        }
+        self.quiet_settle_requested = true;
+        self.event(
+            "preview_quiet_refine",
+            json!({
+                "elapsed_ms":since.elapsed().as_secs_f64()*1000.0,
+                "interval_ms":QUIET_INTERVAL.as_millis(),
+            }),
+        );
+        self.view_plan(PreviewIntent::Settle)
     }
 
     /// The physical pixels the photo area can show a frame in, when the view means a display-size
@@ -189,7 +501,7 @@ impl Editor {
     /// never analysed, so queue business alone would mark a perfectly current histogram stale.
     pub(crate) fn analysis_updating(&self) -> bool {
         match &self.analysis {
-            Some(analysis) => analysis.generation != self.preview_generation,
+            Some(_) => self.analysis_content != Some(self.content_serial),
             None => false,
         }
     }
@@ -207,6 +519,13 @@ impl Editor {
                 return Some(result);
             }
             let draft = Some(result.generation) == self.draft_generation;
+            self.pending_bounds.remove(&result.generation);
+            self.pending_content.remove(&result.generation);
+            self.pending_intent.remove(&result.generation);
+            if self.view_request_generation == Some(result.generation) {
+                self.view_request_generation = None;
+                self.desired_view_dirty = true;
+            }
             self.event(
                 "preview_exact_cancelled",
                 json!({ "generation": result.generation, "draft": draft }),
@@ -225,7 +544,16 @@ impl Editor {
     pub(super) fn deliver_previews(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
         while let Some(result) = self.poll_preview() {
+            let generation = result.generation;
+            let terminal = result.phase() == PreviewPhase::Exact
+                || (result.intent == PreviewIntent::Interactive
+                    && result.phase() != PreviewPhase::Exact);
             let (task, presented) = self.preview_ready(result);
+            if terminal {
+                self.pending_bounds.remove(&generation);
+                self.pending_content.remove(&generation);
+                self.pending_intent.remove(&generation);
+            }
             tasks.push(task);
             if presented {
                 break;
@@ -258,9 +586,17 @@ impl Editor {
         // this: it renders the whole drafted stack into the ordinary photograph, and is adopted
         // like any other frame.
         let for_draft = Some(result.generation) == self.draft_generation;
+        if let Some(stamp) = &result.identity.draft
+            && (self.released_draft.as_ref() == Some(&stamp.draft_id)
+                || self.session.draft.as_ref().map(|draft| &draft.draft_id)
+                    != Some(&stamp.draft_id))
+        {
+            return (Task::none(), false);
+        }
         if let Some(queue_wait_ms) = result.queue_wait_ms {
             let phase = match result.phase() {
                 PreviewPhase::Proxy => "proxy",
+                PreviewPhase::Region => "region",
                 PreviewPhase::Exact => "exact",
             };
             self.event(
@@ -282,6 +618,18 @@ impl Editor {
         if !for_draft && result.generation < self.presented_generation {
             return (Task::none(), false);
         }
+        if result.region().is_some() {
+            return self.region_ready(result);
+        }
+        if let Some(reason) = &result.viewport_declined {
+            self.event(
+                "preview_view_fallback",
+                json!({
+                    "generation":result.generation,"reason":reason,
+                    "phase":if result.proxy().is_some() {"proxy"} else {"exact"},
+                }),
+            );
+        }
         // Taken apart before the frame is matched out of it, so the report and the
         // identity are still in hand on both paths below. What only one phase carries is
         // read from that phase's own outcome.
@@ -302,6 +650,7 @@ impl Editor {
                     outcome.mask_overlay,
                     None,
                 ),
+                PhaseOutcome::Region(_) => unreachable!("region handled above"),
                 PhaseOutcome::Exact(outcome) => (
                     false,
                     outcome.result,
@@ -347,10 +696,27 @@ impl Editor {
                 // the work this design exists to remove.
                 if !proxy
                     && !for_draft
-                    && generation == self.presented_generation
                     && self.presented_proxy
                     && self.proxy_bounds().is_some()
+                    // A layout refit can make a formerly useful proxy unnecessary (the source
+                    // now fits the physical Fit bounds). Its exact-only result must replace the
+                    // old, undersized proxy and clear `refit_pending`; adopting only the report
+                    // here would leave evidence and the visible view waiting forever. An older
+                    // exact phase may still be retained while the newer refit is in flight.
+                    && (self.presented_bounds == self.proxy_bounds()
+                        || generation < self.preview_generation
+                        || self.proxy_refit_deferred())
+                    && self.pending_content.get(&generation) == Some(&self.presented_content)
+                    && self.dimensions == Some((identity.width, identity.height))
                 {
+                    if generation != self.presented_generation {
+                        if let Some(proxy) = &mut self.proxy_frame
+                            && proxy.generation == self.presented_generation
+                        {
+                            proxy.generation = generation;
+                        }
+                        self.presented_generation = generation;
+                    }
                     self.adopt_exact(
                         generation,
                         identity,
@@ -359,6 +725,13 @@ impl Editor {
                         render_ms,
                         approximate_white_balance,
                     );
+                    self.settle_step(Settle::Preview);
+                    if self.activity.pending {
+                        self.activity.pending = false;
+                        self.activity.displayed = self.activity.requested;
+                        self.activity.phase = "ready";
+                        self.outcome_ready(false);
+                    }
                     return (Task::none(), false);
                 }
                 if for_draft {
@@ -476,6 +849,164 @@ impl Editor {
         }
     }
 
+    /// Publish visible pixels without treating them as a whole-image report or retained full
+    /// raster. The worker's region carries its own stage coordinates; the surface maps those
+    /// coordinates through the full output stage, including odd dimensions at half detail.
+    pub(super) fn region_ready(
+        &mut self,
+        result: luxforge_core::PreviewResult,
+    ) -> (Task<Message>, bool) {
+        let generation = result.generation;
+        let intent = result.intent;
+        let content = self
+            .pending_content
+            .get(&generation)
+            .copied()
+            .unwrap_or(self.presented_content);
+        let entry_id = result.entry_id.clone();
+        let expected_stage = (result.identity.width, result.identity.height);
+        let draft_revision = result.draft_revision;
+        let render_ms = result.render_ms;
+        let approximate_white_balance = result.approximate_white_balance;
+        let declined = result.viewport_declined.clone();
+        let PhaseOutcome::Region(region) = result.outcome else {
+            unreachable!()
+        };
+        let frame = region.frame;
+        let stage = (frame.full_stage.width, frame.full_stage.height);
+        let covered = self
+            .desired_view_for(stage)
+            .is_some_and(|wanted| contains_region(frame.full_rect, wanted));
+        if stage != expected_stage {
+            self.desired_view_dirty = true;
+            return (Task::none(), false);
+        }
+        if draft_revision.is_some()
+            && self.displayed_draft_revision.is_some()
+            && draft_revision < self.displayed_draft_revision
+        {
+            return (Task::none(), false);
+        }
+        if self
+            .desired_view_for(stage)
+            .is_some_and(|wanted| !intersects_region(frame.full_rect, wanted))
+        {
+            self.desired_view_dirty = true;
+            return (Task::none(), false);
+        }
+        if !luxforge_ui::region_texture_admissible((frame.raster.width, frame.raster.height), 8192)
+        {
+            self.event("preview_region_declined", json!({
+                "generation":generation,"reason":"region texture exceeds the surface allocation limit"
+            }));
+            self.viewport_disabled_content = Some(content);
+            self.desired_view_dirty = true;
+            return (Task::none(), false);
+        }
+        let quality = if frame.stage == frame.full_stage && !frame.approximation.is_approximate() {
+            luxforge_ui::RegionQuality::Exact
+        } else {
+            luxforge_ui::RegionQuality::Interactive
+        };
+        let retained = Arc::new(frame.raster.clone());
+        if !self
+            .presenter
+            .show_region(&frame, quality, content, generation)
+        {
+            self.status = "Could not show the visible photograph region".into();
+            return (Task::none(), false);
+        }
+        self.region_raster = Some(PresentedRegion {
+            generation,
+            content,
+            raster: retained,
+            rect: frame.full_rect,
+            full_stage: frame.full_stage,
+            quality,
+            approximate: quality == luxforge_ui::RegionQuality::Interactive
+                || approximate_white_balance,
+        });
+        self.dimensions = Some(stage);
+        self.presented_generation = generation;
+        self.presented_content = content;
+        self.presented_entry = Some(entry_id.clone());
+        self.displayed_draft_revision = draft_revision;
+        // `presented_proxy` means a whole-output display proxy for Fit/50% hand-over. A
+        // half-detail viewport is a different slot and must not enter that zoom rule.
+        self.presented_proxy = false;
+        self.presented_approximate_white_balance = approximate_white_balance;
+        self.refit_pending = false;
+        self.show_entry(entry_id.clone());
+        self.render_error = None;
+        self.activity.render = Some(state::status::RenderTime {
+            ms: render_ms,
+            proxy: quality == luxforge_ui::RegionQuality::Interactive || !covered,
+            approximate: approximate_white_balance,
+        });
+        let luxforge_core::MaskOverlayOutcome { grid, absent } = region.mask_overlay;
+        if let Some(grid) = grid {
+            self.mask_overlay_pending = Some((generation, grid));
+        } else if let Some(reason) = absent {
+            self.mask_overlay_unavailable(generation, &reason);
+        }
+        self.event("preview_displayed", json!({
+            "generation":generation,"entry_id":entry_id,
+            "draft_revision":draft_revision,"snapshot_id":frame.raster.snapshot_id.to_string(),
+            "source_fingerprint":frame.raster.source_fingerprint,
+            "dimensions":[stage.0,stage.1],"path":"region",
+            "region":[frame.full_rect.x0,frame.full_rect.y0,frame.full_rect.x1(),frame.full_rect.y1()],
+            "region_stage":[frame.stage.width,frame.stage.height],
+            "quality":if quality == luxforge_ui::RegionQuality::Exact {"exact"} else {"interactive"},
+            "proxy_approximate":frame.approximation.is_approximate(),
+            "proxy_approximate_reason":frame.approximation.reason(),
+            "approximate_white_balance":approximate_white_balance,
+            "viewport_declined":declined,"render_ms":render_ms,
+        }));
+        if let Some(wanted) = self.desired_view_for(stage) {
+            self.desired_view_dirty = !contains_region(frame.full_rect, wanted);
+        }
+        if self.view_request_generation == Some(generation) {
+            self.view_request_generation = None;
+        }
+        if intent == PreviewIntent::Interactive && self.activity.pending {
+            self.activity.pending = false;
+            self.activity.displayed = self.activity.requested;
+            self.activity.phase = "ready";
+            self.outcome_ready(false);
+        }
+        if intent == PreviewIntent::Interactive {
+            let settle = match self.core_gesture() {
+                Some(gesture)
+                    if !gesture.draft.drained() || generation < self.preview_generation =>
+                {
+                    None
+                }
+                Some(gesture) if gesture.slider().is_some() => Some(Settle::SliderDraft),
+                Some(_) => Some(Settle::Preview),
+                // History selection, Return to current and committed edits keep their Preview
+                // evidence step open until the whole-frame result updates the displayed stack
+                // and exact report. A region proves visible pixels, but cannot settle those
+                // correlated state fields; capturing here labelled current pixels as the old
+                // history entry until the following evidence tick.
+                None => None,
+            };
+            if let Some(settle) = settle {
+                self.settle_step(settle);
+            }
+            if self.core_gesture().is_none()
+                && (self.analysis_content != Some(content) || self.raster_content != Some(content))
+            {
+                // An interactive view can supersede a committed render, including after a
+                // cancelled draft. Leave a timer to replace it with a settled job when the view
+                // stops moving; otherwise the histogram can remain stale indefinitely.
+                self.quiet_since.get_or_insert_with(Instant::now);
+                self.quiet_settle_requested = false;
+            }
+        }
+        self.refresh_overlay();
+        (Task::none(), true)
+    }
+
     /// The exact phase of a job whose proxy is already on screen.
     ///
     /// Nothing is drawn: the frame the view wants is the proxy, and writing this raster's
@@ -539,6 +1070,7 @@ impl Editor {
             self.analysis = None;
         }
         self.raster = Some((generation, raster));
+        self.raster_content = self.pending_content.get(&generation).copied();
         self.raster_approximate_white_balance = approximate_white_balance;
     }
 
@@ -595,7 +1127,8 @@ impl Editor {
         );
         let shows_target = self.presented_entry.as_ref() == Some(entry)
             && self.displayed_draft_revision == draft_revision;
-        if !shows_target && self.presenter.photo().is_some() {
+        if !shows_target && (self.presenter.photo().is_some() || self.presenter.region().is_some())
+        {
             self.withdraw_photo(generation, entry, error);
         }
         // A scripted step waiting for the newest preview's pixels ends on its failure instead: the
@@ -638,12 +1171,15 @@ impl Editor {
             }),
         );
         self.presenter.withdraw_photo();
+        self.region_raster = None;
         self.proxy_frame = None;
         self.raster = None;
+        self.raster_content = None;
         self.raster_approximate_white_balance = false;
         self.exact_render_ms = None;
         self.incoming = None;
         self.analysis = None;
+        self.analysis_content = None;
         self.held_by_proxy = None;
         self.presented_proxy = false;
         self.presented_approximate_white_balance = false;
@@ -846,11 +1382,42 @@ impl Editor {
         mut job: luxforge_core::PreviewJob,
         timed: bool,
     ) -> (u64, Option<Instant>) {
-        job.proxy = if job.layer_count.is_some() {
+        if job.layer_count.is_none() {
+            job.viewport = match self.session.preview.view.zoom {
+                Zoom::Percent { value } if value >= 100.0 => {
+                    self.desired_view_for((job.identity.width, job.identity.height))
+                }
+                _ => None,
+            };
+            if job.intent == PreviewIntent::Immediate {
+                job.intent = if job.draft_revision.is_some() {
+                    PreviewIntent::Interactive
+                } else if job.viewport.is_some() {
+                    PreviewIntent::Settle
+                } else {
+                    PreviewIntent::Immediate
+                };
+            }
+        }
+        job.proxy = if job.layer_count.is_some() || job.viewport.is_some() {
             None
         } else {
             self.proxy_bounds()
         };
+        let content_key = (job.identity.clone(), job.source.identity());
+        let content = if self.content_key.as_ref() == Some(&content_key) {
+            self.content_serial
+        } else {
+            self.content_serial = self.content_serial.saturating_add(1);
+            self.content_key = Some(content_key);
+            self.content_serial
+        };
+        if self.viewport_disabled_content == Some(content) && job.viewport.is_some() {
+            job.viewport = None;
+            job.intent = PreviewIntent::Settle;
+            job.viewport_declined =
+                Some("region texture exceeds the surface allocation limit".into());
+        }
         // The mask overlay's coverage grid rides whichever frame is about to be rendered, so it is
         // attached here rather than by each task that builds a job: one rule, every preview path,
         // and no second render for the overlay. The core validates the request against the stack
@@ -866,6 +1433,9 @@ impl Editor {
             }
         }
         let bounds = job.proxy;
+        let intent = job.intent;
+        let requested_view = job.viewport;
+        let requested_stage = (job.identity.width, job.identity.height);
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
@@ -882,8 +1452,25 @@ impl Editor {
             replaced,
         } = queued;
         self.pending_bounds.insert(generation, bounds);
+        self.pending_content.insert(generation, content);
+        self.pending_intent.insert(generation, intent);
+        if replaced.is_some() && replaced == self.view_request_generation {
+            self.view_request_generation = None;
+            self.desired_view_dirty = true;
+        }
+        if let Some(replaced) = replaced {
+            self.pending_bounds.remove(&replaced);
+            self.pending_content.remove(&replaced);
+            self.pending_intent.remove(&replaced);
+        }
         if replaced.is_some() && replaced == self.draft_generation {
             self.draft_preview_superseded(replaced);
+        }
+        if requested_view.is_some_and(|rect| {
+            self.desired_view_for(requested_stage)
+                .is_some_and(|wanted| contains_region(rect, wanted))
+        }) {
+            self.desired_view_dirty = false;
         }
         (generation, requested_at)
     }
@@ -1027,11 +1614,25 @@ impl Editor {
     pub(super) fn present(&mut self, upload: Upload, raster: &luxforge_core::Raster) {
         // A new version, so the primitive writes the frame exactly once however often the same
         // raster is drawn. Nothing but a new frame moves it.
-        self.presenter.show_photo(raster);
+        let content = self
+            .pending_content
+            .get(&upload.generation)
+            .copied()
+            .unwrap_or(self.presented_content);
+        if upload.proxy {
+            self.presenter.clear_region();
+            self.region_raster = None;
+            self.presenter.show_proxy(raster, content);
+        } else {
+            self.presenter.clear_region();
+            self.region_raster = None;
+            self.presenter.show_full(raster, content);
+        }
         // The exact stage, whatever size the texture is: a proxy is drawn into this box, and every
         // pick, percent-zoom box and overlay cell keeps mapping to exact stage pixels.
         self.dimensions = Some((upload.width, upload.height));
         self.presented_generation = upload.generation;
+        self.presented_content = content;
         self.presented_proxy = upload.proxy;
         self.presented_approximate_white_balance = upload.approximate_white_balance;
         if let Some(bounds) = self.pending_bounds.remove(&upload.generation) {
@@ -1106,7 +1707,9 @@ impl Editor {
             Some(gesture) if gesture.slider().is_some() => Some(Settle::SliderDraft),
             _ => Some(Settle::Preview),
         };
-        if upload.proxy {
+        if upload.proxy
+            && self.pending_intent.get(&upload.generation) != Some(&PreviewIntent::Interactive)
+        {
             // The photograph is on screen, but every number a captured frame reports — the
             // histogram, the clipping counters, the overlay it is checked against — comes from the
             // exact render. So the step and the open request wait for this generation's exact phase.
@@ -1146,6 +1749,7 @@ impl Editor {
             return;
         }
         self.raster = Some((generation, raster));
+        self.raster_content = self.pending_content.get(&generation).copied();
         // A reduced frame is exact: an approximate one is never reduced.
         self.raster_approximate_white_balance = false;
         self.event(
@@ -1155,6 +1759,10 @@ impl Editor {
         self.owner
             .submit_analysis(analysis.identity.clone(), analysis.report.clone());
         self.analysis = Some(analysis);
+        self.analysis_content = self.pending_content.get(&generation).copied();
+        if self.analysis_content == Some(self.content_serial) {
+            self.quiet_since = None;
+        }
     }
 
     /// Point the canvas at another entry. A readout describes one pixel of one stack, so moving to

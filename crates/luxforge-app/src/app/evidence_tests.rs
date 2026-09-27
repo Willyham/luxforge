@@ -6,6 +6,15 @@ use super::{
 };
 use luxforge_core::{CropStage, Zoom};
 
+/// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame.
+#[test]
+fn empty_editor_capture_needs_no_photo_texture() {
+    let (mut editor, catalog) = boot();
+    editor.state = None;
+    assert!(editor.capture_photo_ready());
+    finish(editor, catalog);
+}
+
 #[test]
 fn failed_discovery_is_reported_and_never_blocks_evidence() {
     let (mut editor, catalog) = boot();

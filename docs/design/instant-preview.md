@@ -1,10 +1,10 @@
-# Instant previews: display-bounded proxy rendering
+# Instant previews: Fit proxies and viewport regions
 
-Status: implemented and verified on the M4 Mac; the measured figures against the targets below are in [performance](../specs/performance.md#instant-previews-proxy-phase-hop-rule-and-the-surface-primitive). It changes how the desktop previews a stack while a gesture is open and how the Fit view is produced; it changes no recipe, history, API mutation or export behaviour, and the exact full-resolution render remains the only source of the histogram, the clipping counters and the 100% view. The measurements that motivated it and the ones that qualify it are in [performance](../specs/performance.md).
+Status: implemented and verified. The full native suite, dedicated 60 MP viewport, 24 MP multi-mask and exact-fallback journeys pass. The provisional idle target misses at 1.42% of one core over 30.21 seconds with the Performance section open. Backend staging is unmeasured and no general numerical photo-error bound is qualified. Fit previews use the display-bounded proxy described below. At 100% and above, motion uses a half-scale viewport region, followed by exact visible-region refinement after the shared 120 ms quiet policy or after the released input drains. Whole-image counts come from the exact full render. This changes no recipe, history, API mutation or export behaviour. Evidence scope is in [performance](../specs/performance.md#native-viewport-region-qualification).
 
 ## The problem, measured
 
-Every slider input today costs one full-resolution render and one full-resolution GPU upload, bracketed by two 16 ms timers ([performance](../specs/performance.md#desktop-slider-to-presented-frame-and-settled-histogram)):
+The recorded pre-viewport baseline sent every slider input through a full-resolution render and GPU upload, bracketed by two 16 ms timers ([performance](../specs/performance.md#desktop-slider-to-presented-frame-and-settled-histogram)). Those figures describe the old path and motivate the viewport implementation:
 
 | Step, 24 MP JPEG at Fit | Cost |
 | --- | --- |
@@ -14,11 +14,11 @@ Every slider input today costs one full-resolution render and one full-resolutio
 | Wait for the 16 ms preview poll after the worker finishes | 0 to 16 ms |
 | GPU upload of the 24 MP RGBA raster | 32 ms (50 ms at 60 MP) |
 
-The presented frame lands 75 ms after the input at the median with one unit active, 150 ms under a crop and 125 ms at 60 MP, all before the pointer's own tick wait. A wild drag never sees the newest value on screen: the pipeline keeps at most one job active and one pending, so most inputs are coalesced away and the ones that survive are shown four to nine frames late. The screen shows at most 2880 × 1800 physical pixels, so at Fit at least four of every five rendered and uploaded pixels are discarded by the GPU's minification. RAW is worse: the linear path evaluates every pixel recursively in f64, so a Z6 exposure drag costs 133 ms per frame.
+In that baseline, the presented frame landed 75 ms after input at the median with one unit active, 150 ms under a crop and 125 ms at 60 MP, before the pointer's own tick wait. A wild drag rarely showed the newest value: with one active and one pending job, inputs were coalesced and surviving values appeared four to nine frames late. The screen shows at most 2880 × 1800 physical pixels, so at Fit most rendered and uploaded pixels were discarded by minification. The RAW baseline evaluated every pixel recursively in f64; a Z6 exposure drag cost 133 ms per frame.
 
 ## Goal
 
-A slider dragged back and forth wildly at Fit shows the value under the pointer within two display frames, on the owner's M4 Mac, with every Basic unit active, on 24 MP and 60 MP JPEGs, under a rotated crop, and on the qualified RAW sources for the RAW exposure slider. The slider, RAW exposure, burst and settled-histogram thresholds are the [performance plan's provisional budgets](../specs/performance.md#provisional-budgets), and a miss is reported with its figures; idle CPU and process memory keep their targets, and the proxy adds at most one bounded buffer.
+A slider dragged back and forth wildly at Fit should show the value under the pointer within two display frames on the owner's M4 Mac, with every Basic unit active, on 24 MP and 60 MP JPEGs, under a rotated crop, and on qualified RAW sources for RAW Exposure. The slider, RAW Exposure, burst and settled-histogram thresholds are the [performance plan's provisional budgets](../specs/performance.md#provisional-budgets); report misses with their figures. The separate viewport contract preserves exact detail after settlement and records its own photo-sized latency and residency qualification.
 
 "Presented" keeps its harness meaning: the desktop update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests. It is not scanout.
 
@@ -31,47 +31,48 @@ A **proxy source** is the prepared source downscaled once to the size the displa
 - `ProxyBounds { width, height }` are physical pixels: the photo area of the window at its scale factor. The desktop derives them from the window size and the open panels exactly as the clipping overlay's cell grid already does, and sends them with every preview request. The core clamps them to 4096 px per side and 8 megapixels.
 - The proxy scale is `s = min(bounds.width / stage.width, bounds.height / stage.height, 1)`, where `stage` is the full-resolution output stage of the recipe, read from the job's one compilation at the exact stage (`O(layers)`, no pixels), which the exact phase and the coverage grid reuse; the proxy phase compiles once more, at the proxy stage, for its frame and its approximation label. The proxy source is the content stage at `round(width × s) × round(height × s)`. When `s == 1` there is no proxy and the exact path runs as today.
 - Downscale is an area average (box filter) with fractional coverage, separable, on the shared Rayon pool. JPEG sources average in linear light through the existing decode table and re-quantize through the existing threshold table, so a uniform region is exactly its own code. RAW sources average the planar f32 planes through the image's view, so the proxy is a smaller `LinearImage` with the same fingerprint and an identity view. Without a crop the proxy of a JPEG is at most 64 MiB and of a RAW at most 96 MiB. Each is counted as a frame against the existing 512 MiB frame limit.
-- **A cropped stack's proxy holds only the window the crop reads.** A crop's output, not the source, is what is fitted into the bounds, so a tight crop raises the scale towards one: a 1801 × 1574 crop of the X100VI's 7728 × 5152 stage, in 1716 × 1576 bounds, has a 7363 × 4909 *proxy stage*. The recipe is still compiled against that whole proxy stage, so every normalized payload, mask and spatial radius resolves exactly as it would there, but the proxy source is only the rectangle of it the output reads, walked back through the compiled segments (`render::window`), and the compilation is cut to match: the first segment reads the window at its offset, a segment whose output a boundary reads keeps only what that boundary reads, and a resample reads that window with its coordinate translated by the window's integer origin, which is exact in `f64`. The window is built with the same coverage weights as the whole downscale over only the source rows and columns it covers, so its pixels are the whole downscale's, bit for bit. **The stated margin:** a straight crop's window is its output exactly; a straightened crop's is the axis-aligned box its output's bilinear taps read, plus 2 px on each side; and when a spatial layer precedes the crop, the window of the stage it runs over is what the next segment reads grown by the operation's summed halo (within the host's 512 px bound; at most 448 px for Presence) and clamped to the stage, with its origin moved down to the 512 px tile grid (at most 511 px more on the left and top), so the operation's own tiles are the stage's. The proxy source is therefore bounded by the display bounds and those margins whatever the crop's tightness: that X100VI crop's proxy is 1716 × 1500 (29 MiB of planes) alone and 2437 × 2530 (71 MiB) under Presence, against 414 MiB for the whole proxy stage. A proxy stage the output reads all of, or a stack that cannot be cut, keeps the whole-stage proxy: a finish-stage layer (whose units read the coordinates they are handed) or a point replacement in a segment that would be cut, a spatial layer with a global estimate behind another spatial layer, or a proxy-stage compilation whose segments differ from the exact one's.
+- **A cropped stack's proxy holds only the window the crop reads.** A crop's output, not the source, is what is fitted into the bounds, so a tight crop raises the scale towards one: a 1801 × 1574 crop of the X100VI's 7728 × 5152 stage, in 1716 × 1576 bounds, has a 7363 × 4909 *proxy stage*. The recipe is still compiled against that whole proxy stage, so every normalized payload, mask and spatial radius resolves exactly as it would there, but the proxy source is only the rectangle of it the output reads, walked back through the compiled segments (`render::window`), and the compilation is cut to match: the first segment reads the window at its offset, a segment whose output a boundary reads keeps only what that boundary reads, and a resample reads that window with its coordinate translated by the window's integer origin, which is exact in `f64`. The window is built with the same coverage weights as the whole downscale over only the source rows and columns it covers, so its pixels are the whole downscale's, bit for bit. **The stated margin:** a straight crop's window is its output exactly; a straightened crop's is the axis-aligned box its output's bilinear taps read, plus 2 px on each side; and when a spatial layer precedes the crop, the window of the stage it runs over is what the next segment reads grown by the operation's summed halo (within the host's 512 px bound; at most 448 px for Presence) and clamped to the stage, with its origin moved down to the 512 px tile grid (at most 511 px more on the left and top), so the operation's own tiles are the stage's. The proxy source is therefore bounded by the display bounds and those margins whatever the crop's tightness: that X100VI crop's proxy is 1716 × 1500 (29 MiB of planes) alone and 2437 × 2530 (71 MiB) under Presence, against 414 MiB for the whole proxy stage. A proxy stage whose output reads all of its area keeps the whole-stage proxy. A point replacement in a segment that would be cut, a spatial layer with a global estimate behind another spatial layer, or a proxy-stage compilation whose segments differ from the exact one also uses the named whole-stage fallback. Finish units preserve their whole-stage origin when the window is cut, so a finish layer alone does not force this fallback.
 - **A spatial layer under a window.** A spatial operation runs over its window as its own stage. Its units are tile invariant over tiles anchored at the stage origin, and the window's origin is on that grid, so every pixel the crop reads is the value the whole proxy stage gives it; its mask is compiled against the whole stage and read at the window's offset. What the window cannot hold is the whole-stage reduction a global estimate (Dehaze's atmosphere) is prepared from, so the operation is handed the estimate the **exact** phase of the same job resolves for the exact stage: prepared once per estimate identity on the proxy phase, kept in the store, and read from there by the exact phase, so the job reduces the stage once, as before. A windowed spatial proxy frame is thus byte for byte the whole proxy stage rendered with the exact stage's estimates, which is part of the approximation its `approximate` label already reports.
 - One proxy source is cached by the preview worker, keyed by the source identity (fingerprint, and for RAW the process-unique number of the developed planes, so a white-balance redevelopment invalidates it even when its planes reuse the old allocation's address), the proxy dimensions, the bounds and the window. A job that changes any other layer under the same crop therefore hits the window already built, and a crop that moves or changes size builds the window it now reads, once. A crop drag itself never builds one: its draft previews the crop layer's input stage, a truncated job with no proxy phase, and the window is built by the first full job after the drag. The cache holds pixels only: a RAW hit takes the developed planes from the cache and the development settings from the job that is rendering, so a drafted exposure renders against the cached planes. The worker owns the cache outright: it decides each job's proxy phase (eligibility and the `O(layers)` plan), builds the source on a miss and keeps it, so none of that runs on the desktop or the owner thread. The bounds are decided on the desktop thread at the moment a job is requested, so a job queued after the display scale is known is already at it; an open requested at launch, before the window reports its scale, renders at a scale of one and is refitted once when the scale arrives (20–40 ms later on the owner's Mac). A resize, a panel toggle or the display scale arriving re-renders the proxy on screen once, coalesced by the queue, and never during a gesture or a crop draft.
-- Eligibility is decided by the registry: a recipe is proxy-eligible when every layer's effect is at the source, colour, spatial, geometry or finish stage. A pixel-stage layer (the point-replacement proof module, whose coordinates are content pixels) makes the stack ineligible and the job takes the exact path, as does any compile failure at the proxy size. Ineligibility is reported in the result and the desktop's state summary, never silently. A spatial-stage layer (Presence) is eligible but approximate: its neighbourhoods scale with the stage they are rendered at, so its proxy frame is close to the exact render at display size rather than the same picture, and the result, the `preview_displayed` event and the state summary say `proxy_approximate` or `approximate` when a frame was rendered that way. The label is read from what the stack compiles to at the proxy size, not from the stages its effects declare: a neutral or reset Presence layer compiles to no spatial operation, so its frame is the exact recipe at proxy size and is not labelled. The exact phase still produces every number and the 100% view, so the trade is a Fit preview that follows the drag at display cost against one that costs a full-resolution neighbourhood pass per input. A **mask** changes neither answer: its geometry is normalized, so a masked layer is eligible at whatever stage it is compiled against and its proxy frame is the exact recipe at proxy size. The one exception is a mask drawing a feature narrower than two proxy pixels, which the proxy phase evaluates with a 2 × 2 supersample of the mask field — never the effect — and reports approximate through the same word, with a reason beside it that names which of the two made the frame approximate ([masking](masking.md#point-queries-and-proxies)).
+- Eligibility is decided by the registry: a recipe is proxy-eligible when every layer's effect is at the source, colour, spatial, geometry or finish stage. A pixel-stage layer (the point-replacement proof module, whose coordinates are content pixels) makes the stack ineligible and the job takes the exact path, as does any compile failure at the proxy size. Ineligibility is reported in the result and the desktop's state summary, never silently. A spatial-stage layer (Presence) is eligible but approximate: its neighbourhoods scale with the stage they are rendered at, so its proxy frame is close to the exact render at display size rather than the same picture, and the result, the `preview_displayed` event and the state summary say `proxy_approximate` or `approximate` when a frame was rendered that way. The label is read from what the stack compiles to at the proxy size, not from the stages its effects declare: a neutral or reset Presence layer compiles to no spatial operation, so its frame is the exact recipe at proxy size and is not labelled. For Fit, the exact phase supplies the whole-image numbers and retained full-resolution image after the interactive proxy, avoiding a full-resolution neighbourhood pass for every moving input. A **mask** changes neither answer: its geometry is normalized, so a masked layer is eligible at whatever stage it is compiled against and its proxy frame is the exact recipe at proxy size. The one exception is a mask drawing a feature narrower than two proxy pixels, which the proxy phase evaluates with a 2 × 2 supersample of the mask field — never the effect — and reports approximate through the same word, with a reason beside it that names which of the two made the frame approximate ([masking](masking.md#point-queries-and-proxies)).
 
 
-### Two phases per job
+### Fit proxy and exact phases
 
-A preview job at Fit produces two results under one generation:
+A Fit preview has a proxy phase and an exact phase under one generation, but the exact phase is deferred while the gesture is moving:
 
-1. **Proxy phase.** The worker takes the cached proxy source (or builds it), renders the recipe against it and sends the proxy raster, with the mask overlay's coverage grid when the job asked for one: that grid reads no pixel of the exact frame, so it does not wait for it ([masking](masking.md#the-develop-workspace)). The desktop uploads the raster and presents it. This is the frame the input-to-presented figure measures.
-2. **Exact phase.** The same worker then renders the full-resolution frame and, when the job asked, reduces it into the exact report. The desktop adopts the report and retains the raster, exactly as it does today, but uploads nothing at Fit. The retained exact raster is what the clipping overlay is derived from, what the 100% view uploads, and what the histogram describes.
+1. **Proxy phase.** The worker takes the cached proxy source (or builds it), renders the recipe against it and sends the proxy raster, with the mask overlay's coverage grid when the job asked for one: that grid reads no pixel of the exact frame, so it does not wait for it ([masking](masking.md#the-develop-workspace)). The desktop uploads and presents the raster. This is the frame the input-to-presented figure measures.
+2. **Exact phase.** Once the shared 120 ms quiet policy fires, or the release commits after draining the final input, the worker renders the full-resolution frame and, when requested, reduces it into the exact report. The desktop adopts the report and retains the raster; it uploads nothing while Fit remains selected. The exact full frame supplies whole-image counts and a settled 100% view.
 
-A job at a percentage zoom whose displayed size does not fit the bounds — 100% and above on any photo-sized source — has no proxy phase: the single exact result is uploaded and analysed as today, so the 100% view stays the exact render of the exact recipe.
+A zoomed-out view whose displayed size fits the bounds uses the Fit proxy path. At 100% and above, motion uses the half-scale viewport region and settlement uses the exact visible region followed by whole-frame analysis, as described below.
 
-The exact phase is cancellable. Every rasterizing pass, the resample, the row pass both render domains share and the reducer check a cancellation token at chunk granularity, so a newer request stops an exact phase within about a millisecond of asking and returns a `cancelled` error rather than a frame. The queue delivers that outcome under the job's own generation, carrying no frame, so whatever waits for one generation learns that it has ended; a job replaced in the pending slot never starts, and `PreviewQueue::request_replacing` names it in the same step as the request that replaces it. The one generation the desktop waits for is a crop draft's truncated input stage: when a newer request supersedes it, the draft ends explicitly as a failed one does, and is never shielded or re-requested, because every such request but a view change comes from a change to the stack or selection that job was planned from. Each job carries two tokens: a newer request raises its **superseded** token and `PreviewQueue::cancel` its **abandoned** one, which also supersedes it. The exact phase reads the superseded token, so a wild drag never has a full-resolution render competing for the Rayon pool with the proxy render of the newest value; the proxy phase reads only the abandoned token, so the proxy frame of a value the pointer has just left is still rendered and delivered, because it is newer than anything on screen. The exact phase of the last value completes once the gesture pauses or ends, and the histogram then reads the drafted population it describes today. Between a proxy frame and its exact phase the plot is marked updating, as it is between any input and its report. A drafted preview is therefore still analysed exactly, and the [histogram contract](basic-and-histogram.md#histogram-and-clipping-contract) is unchanged: no proxy raster is ever reduced into a report. The one drafted preview that is not analysed at all is a RAW white balance approximated on the developed planes ([below](#a-raw-white-balance-during-a-drag)): neither of its phases is reduced, and the plot stays marked updating until an exact frame's report arrives.
+The exact phase is cancellable. Every rasterizing pass, the resample, the row pass both render domains share and the reducer check a cancellation token at chunk granularity, so a newer request stops an exact phase within about a millisecond of asking and returns a `cancelled` error rather than a frame. The queue delivers that outcome under the job's own generation, carrying no frame, so whatever waits for one generation learns that it has ended; a job replaced in the pending slot never starts, and `PreviewQueue::request_replacing` names it in the same step as the request that replaces it. The one generation the desktop waits for is a crop draft's truncated input stage: when a newer request supersedes it, the draft ends explicitly as a failed one does, and is never shielded or re-requested, because every such request but a view change comes from a change to the stack or selection that job was planned from. Each job carries two tokens: a newer request raises its **superseded** token and `PreviewQueue::cancel` its **abandoned** one, which also supersedes it. The exact phase reads the superseded token, so a wild drag never has a full-resolution render competing for the Rayon pool with the proxy render of the newest value; the proxy phase reads only the abandoned token, so the proxy frame of a value the pointer has just left is still rendered and delivered, because it is newer than anything on screen. The exact phase of a Fit draft starts after the shared quiet interval or release; until then the histogram and whole-image counts remain marked updating. The [histogram contract](basic-and-histogram.md#histogram-and-clipping-contract) remains exact: no proxy raster is reduced into a report. A drafted RAW white balance remains the exception that is preview-only and not analysed. The one drafted preview that is not analysed at all is a RAW white balance approximated on the developed planes ([below](#a-raw-white-balance-during-a-drag)): neither of its phases is reduced, and the plot stays marked updating until an exact frame's report arrives.
 
-During a gesture, before the exact phase of the newest frame has landed, the clipping overlay is re-derived from the proxy raster on screen so it follows the drag; its event and the state summary say `approximate: true` in that case, and the exact overlay replaces it when the exact phase lands. A single clipped pixel is never lost in a settled frame.
+At Fit, while the exact phase of the newest frame has not landed, the clipping overlay is re-derived from the proxy raster on screen so it follows the drag; its event and state summary say `approximate: true`, and the exact overlay replaces it when exact pixels arrive. A single clipped pixel is never lost in a settled frame.
 
-### No waiting on timers
+### Event-driven previews with one shared quiet timer
 
 - A slider move sends `draft.set` immediately when no round trip is in flight, and records only the newest value otherwise; the answer sends the newest value, as today. The 16 ms slider tick is removed. The bound is unchanged in substance: at most one draft round trip in flight, at most one preview job per accepted value, intermediate values coalesced.
 - The preview and overlay workers wake the desktop when a result is ready, through one channel subscription that yields the same `Poll` message the timer used to. The 16 ms preview poll is removed; nothing wakes when nothing has finished, which is also the idle rule.
 - Each worker is one persistent thread, the latest-job primitive in `luxforge_core::latest` that the histogram analysis also runs on. It sleeps until a job is requested and takes the pending job itself the moment the active one has handed over its last result, so the next proxy render never waits for the desktop to poll, nor behind the crop draft's input stage while the toolkit uploads it. At most two finished results wait for the desktop; a worker with a third to hand over waits for the desktop to take one.
-- The `draft.set` round trip is not changed. Its measured cost is CPU contention with the full-resolution render, which the proxy removes.
+- The `draft.set` round trip is not changed. Its measured cost is CPU contention with the full-resolution render, which deferring exact Fit work during motion removes.
+- The shared quiet policy uses one 25 ms timer while a draft/view is unsettled and starts exact settlement after 120 ms without newer accepted input; no viewport-specific timer is added. The timer is disarmed once settlement finishes.
 
 ### One frame per hop
 
 Measured on the M4 Mac with per-leg timings: the owner answers `draft.set` and plans the preview job in under 0.2 ms, the desktop's own update, model derivation and view take under 0.15 ms together, and every message handed back into the update loop through the runtime — a task result, a worker's wake, an image allocation's answer — arrives about 8 ms later, one frame of the 120 Hz display. A redraw is always in flight during a drag, the main thread waits on its present, and a message that arrives meanwhile waits with it. The per-input path therefore has as few runtime hops as its work allows:
 
 - The gesture's `draft.set` and preview-job requests are made synchronously on the desktop thread. They are two `O(layers)` owner requests; the owner does no frame work by rule, so the wait is bounded by catalog work alone.
-- The photograph is drawn by a photo-surface primitive that owns its texture, at Fit and at every percentage: the raster handed to the view is written to that texture in the same frame that draws it, so no allocation round trip stands between the worker's result and the screen, and a redraw with no new raster writes nothing. The clipping overlay, the mask coverage and the crop draft's input stage are drawn by the same primitive from frames of their own, one holder in the desktop owning them all, so none of them waits for an allocation either. At a percentage the surface is the whole zoomed box inside a scrollable, far larger than the window, so it hands the renderer only the part on screen: the GPU viewport stays within the window, inside the device's 8192 px limit. An exact render wider or taller than that limit, such as a 60 MP photograph at 100%, is held in a grid of textures that meet without a seam.
+- The photograph is drawn by a photo-surface primitive that owns its full-image and viewport-region texture slots: a raster handed to the view is written to the matching slot in the frame that draws it, so no allocation round trip stands between the worker's result and the screen, and a redraw with no new raster writes nothing. The clipping overlay, the mask coverage and the crop draft's input stage are drawn by the same primitive from frames of their own, one holder in the desktop owning them all, so none of them waits for an allocation either. At a percentage the surface is the whole zoomed box inside a scrollable, far larger than the window, so it hands the renderer only the part on screen: the GPU viewport stays within the window, inside the device's 8192 px limit. An exact render wider or taller than that limit, such as a 60 MP photograph at 100%, is held in a grid of textures that meet without a seam.
 - The worker's wake is the one hop that remains, because the raster has to reach the thread that draws. It is only on the way out: the next job starts without it. One `Poll` takes up every finished result that presents nothing — a cancelled or stale outcome, an exact phase adopted behind its proxy — and at most one frame, so each presented frame is drawn; it asks for another `Poll` only while a result still waits.
 
 "Presented" in the harness is the update in which the raster became the surface's source; it is drawn by the redraw that update requests, which is the next frame.
 
 ### The Fit view is the proxy
 
-At Fit, and at any zoom whose displayed size fits the bounds, the presented texture is the proxy render, for drafted and committed frames alike. The photograph therefore never changes appearance between the last drafted frame and the committed one: both are the same recipe at the same size through the same filter. This replaces the GPU's bilinear minification of a full-resolution texture with a box-filtered display-size render, which is a visible improvement in aliasing at Fit and a change to what a Fit capture contains. The exact render is still produced for every committed frame and stays the source of every number.
+At Fit, and at any zoom whose displayed size fits the bounds, the presented texture is the proxy render. A draft can settle on that proxy during motion and run its exact full-frame phase after the shared quiet policy or release. A committed frame reaches the same recipe at the same size through the same filter. This replaces the GPU's bilinear minification of a full-resolution texture with a box-filtered display-size render, which is a visible improvement in aliasing at Fit and a change to what a Fit capture contains. Whole-image counts remain sourced from exact full-frame analysis.
 
-Zooming from Fit to 100% uploads the retained exact raster when the exact phase has landed and re-renders nothing; when it has not, the view waits for that phase with the existing loading state. Zooming back to Fit uploads the proxy again (a cache hit and a small upload). A view change still triggers no render. The proxy's 4096 px per side does not bound the exact texture, which is written whole for 100% inspection, in tiles of at most 8192 px a side when it is larger than that; the proxy is one texture by construction.
+At 100% and above, a view request renders the visible half-scale region, then exact detail for that region; a matching settled full-image texture can serve a pan without another upload. Fit and zoomed-out views use the cached proxy, and changing proxy bounds can require a source rebuild. Full-image and region textures remain in separate bounded slots; their residency and retirement rules are in [viewport rendering](#region-textures-and-stale-pixels).
 
 ### A RAW white balance during a drag
 
@@ -86,7 +87,7 @@ with `R⁻¹` computed in f64. `LinearSettings::white_balance` carries `W`, and 
 - **Where it applies.** Only `EditorService::preview_job` for an open draft, when the draft's effective gains differ from the development held in memory and that development exists. Equal gains need no approximation. A camera matrix with no usable inverse is refused as `preparation-required`, never rendered through a matrix that cannot describe it.
 - **Where it never applies.** A committed or historical preview, `render_entry` and so every export, `sample_entry` and `sample_draft` and so the pointer readout and `render.sample`, `analysis_plan`, and every pixel an action or query samples from its stage context all stay strict: a white balance the planes do not hold is `preparation-required` there, and the refusal names a development at that white balance. A drafted temperature's point sample is therefore refused while its preview approximates it.
 - **Labelled and never analysed.** Both phases of such a job carry `PreviewResult::approximate_white_balance`, and the job is never reduced into a report even when it asked for one. The desktop presents the frames as it presents any frame, keeps the last exact report plotted and marked updating until an exact frame's report replaces it, marks a clipping overlay derived from one `approximate: true`, and says so in `preview_displayed` (`approximate_white_balance`), the state summary and the status bar: "Rendered in 7 ms (proxy, approximate)" at Fit, "(approximate)" at 100%.
-- **The proxy and 100%.** The matrix is linear and the proxy's box filter is linear, so `W` applies to the proxy exactly as to the full frame (they commute to f32 rounding, which is a test), and the proxy phase is the approximate recipe rendered against the exact downscale, byte for byte. The proxy cache keys on the development and takes settings from the job, so a drag hits the proxy the committed frame built. At 100% the drag gets the approximate full-size frame with no proxy phase. The spatial estimate store keys an approximate evaluation apart from an exact one of the same recipe, so a committed Presence render never takes a global estimated from approximate pixels.
+- **The proxy and 100%.** The matrix is linear and the proxy's box filter is linear, so `W` applies to the proxy exactly as to the full frame (they commute to f32 rounding, which is a test), and the proxy phase is the approximate recipe rendered against the exact downscale, byte for byte. The proxy cache keys on the development and takes settings from the job, so a drag hits the proxy the committed frame built. At 100% and above, the drag gets an approximate half-scale visible region instead of a full-size raster; after the quiet interval it can receive full-detail region pixels while the drafted white-balance label remains. The spatial estimate store keys an approximate evaluation apart from an exact one of the same recipe, so a committed Presence render never takes a global estimated from approximate pixels.
 - **Release.** The commit redevelops the mosaic on the source worker exactly as before, and the last approximate frame stays on screen until the committed frame replaces it: the `raw-panel` smoke scenario checks that the committed frame is the first one handed to the surface after the commit, at Fit and at 100%. A drafted value whose development is not in memory at all — evicted while a redevelopment or source preparation of an earlier request is in flight — is still `preparation-required` and has no frame of its own; the status bar says it shows on release.
 
 **Accuracy.** Measured on the three supplied RAW files by the ignored `measure_the_white_balance_approximation_against_redevelopment` test: planes developed at the camera's as-shot gains, rendered through `W` for each Custom target, against an exact redevelopment at the same gains, both rendered to 8-bit sRGB at a display proxy (bounds 2400 × 1600) and at full size. Mean |Δ| is per channel (R/G/B) in codes; p99 and max are of each pixel's largest channel difference.
@@ -108,7 +109,9 @@ with `R⁻¹` computed in f64. `LinearSettings::white_balance` carries `W`, and 
 
 For scale, the as-shot frame itself is 24/6/24 codes from the 3200 K target on the Z6 and 26/6/18 on the X100VI, so the approximation removes nearly all of the difference a drag is about. The difference images place the rest where the demosaic couples the channels: on the Z6, thin high-contrast edges (bamboo slats, poles and wire against the sky, distant structures) and small specular glints, with flat and smoothly shaded areas within a code; on the X100VI at 3200 K, a fine per-pixel speckle across the saturated yellow petals and along their edges; on the Air 2S, the sparkling shallow water and sand at every target and, at 3200 K — the largest gain change measured, red × 0.68 and blue × 1.79 — the textured foliage and rock broadly. The approximation is shown only while the pointer is down and is replaced by the exact frame on release; the Air 2S's larger error at strong changes is visible during a drag and is not otherwise bounded.
 
-**The `raw-panel` check** (owner decision, 2026-09-26) asserts, at both zooms, that the released exact frame's mean distance from the drafted approximate frame, over the photo surface, is at most a tenth of its distance from the frame before the drag: the approximation removes at least 90% of the difference the drag is about. At Fit it also asserts that the released frame is within one code of the drafted one on average. A drafted frame that never moved scores about the whole change, so a stale or wrong frame still fails. The drags are as shot to 3500 K at Fit and 3500 K to 2500 K at 100%. Mean |Δ| over the surface, released against drafted and, for scale, released against the frame before the drag:
+The native `raw-panel` checks measure the white-balance approximation separately from the accepted motion softness. At Fit, all three cameras stay below the one-code mean-difference threshold. At 100%, the check captures full-detail draft pixels after the shared quiet policy; the pixels may be from the exact region or a later whole-frame draft result and remain labelled `approximate_white_balance`. A moving half-scale frame is not the WB quality reference. The unchanged unfiltered threshold is at most one tenth of the pre-drag-to-release change: the measured differences were 0.81% for the Z6, 1.39% for the X100VI and 5.06% for the Air 2S. Moving softness residuals were 2.42%, 3.69% and 17.33%, respectively, and are recorded separately, not counted as WB accuracy. The checks also verify region identity, approximate-WB labelling, stale histogram during motion, exact region then whole-frame release settlement, and a full exact histogram.
+
+These earlier 100% pixel-error observations compare the released frame with a full-detail draft; they predate half-scale viewport motion and do not include its softness. They remain diagnostic WB observations, not a general product error limit. The drags were as shot to 3500 K at Fit and 3500 K to 2500 K at 100%. The measured mean |Δ| over the surface, released against the full-detail draft and, for scale, against the frame before the drag:
 
 | Source | Fit, 3500 K | 100%, 2500 K |
 | --- | --- | --- |
@@ -135,16 +138,66 @@ The approximate proxy phase itself renders in 7.4 / 12.6 ms on the Z6 (1049 × 1
 
 - Originals, recipes, history, drafts, commits, the API and every mutation are untouched. The proxy is desktop preview state and appears in no history and no persisted data.
 - Exactness claims are about the exact phase: fixtures, reference tests and the histogram contract stand. The proxy is proven exact at its own scale: a proxy render equals the exact recipe rendered against the exact downscale of the source, byte for byte, which is the test; a windowed one equals it too, and with a spatial layer equals the whole proxy stage rendered with the exact stage's estimates.
-- The RAW retained mosaic and float development are unchanged; only their preview reads a smaller plane set. A committed RAW white balance still redevelops the mosaic on the source worker; a drafted one is approximated on the developed planes, labelled, and never analysed, as described above.
-- Bounds: one proxy source (≤ 96 MiB without a crop; under a crop, the window the crop reads within the display bounds plus the margins above, whatever the crop's tightness), one proxy raster per job, the cancellation token; no new timer, no private pool.
+- The RAW retained mosaic and float development are unchanged; viewport evaluation reads only its required source window through a shared plane view. A committed RAW white balance still redevelops the mosaic on the source worker; a drafted one is approximated on the developed planes, labelled, and never analysed, as described above.
+- Bounds: one cached proxy source (≤ 96 MiB without a crop; under a crop, the window the crop reads within the display bounds plus the margins above), one proxy raster per job, and the viewport texture bounds described below. The shared 25 ms timer implements the 120 ms quiet policy; there is no separate viewport timer or private pool.
 
 ## Evidence
 
-- Core: exactness of the downscale on synthetic fixtures (integer scales average exactly; fractional coverage weights sum to one; a uniform image is unchanged; RAW planes through a cropped, oriented view), eligibility, cache identity, the two-phase queue order, cancellation latency on a 24 MP synthetic frame, and the proxy-equals-exact-at-proxy-scale test. For a cropped stack: a windowed downscale is the whole downscale's pixels in its window for both source kinds; a windowed proxy frame is byte for byte the whole proxy stage's for straight and straightened tight crops behind an orientation, a masked colour layer and a vignette, on both pixel domains, and with Presence (masked and not) the whole stage rendered with the exact stage's estimates; the window is bounded by the display, not by the crop's tightness; and the worker's cache hits the window under the same crop and rebuilds it for a moved one (`render::window` and `preview::tests`).
-- Desktop: the existing `basic`, `basic-crop`, `histogram`, `large24`, `large60`, `crop` and `crop-draft` smoke scenarios keep passing with their correlated state, and their captured frames record `proxy` beside `dimensions`; a `Settle::SliderDraft` or `Settle::Preview` step settles only once the proxy is presented and, when the job asked for a report, its exact phase is adopted.
+- Core: exactness of the downscale on synthetic fixtures (integer scales average exactly; fractional coverage weights sum to one; a uniform image is unchanged; RAW planes through a cropped, oriented view), eligibility, cache identity, the Fit proxy/exact queue order, viewport phase order and cancellation latency, and proxy/region equivalence tests. For a cropped stack: a windowed downscale is the whole downscale's pixels in its window for both source kinds; a windowed proxy frame is byte for byte the whole proxy stage's for straight and straightened tight crops behind an orientation, a masked colour layer and a vignette, on both pixel domains, and with Presence (masked and not) the whole stage rendered with the exact stage's estimates; the window is bounded by the display, not by the crop's tightness; and the worker's cache hits the window under the same crop and rebuilds it for a moved one (`render::window` and `preview::tests`).
+- Desktop: Fit scenarios retain correlated proxy state; a Fit draft can settle on its proxy while moving, then the shared quiet/release policy schedules exact work and adopts analysis. Viewport scenarios correlate region, quality, content, revision and generation through motion, pan, refinement and release; the visible clipping overlay follows that region while whole-image counts remain exact and may be stale.
 - Timing: `editor-latency` in drag, commit and the new burst mode on 24 MP, 60 MP and the 24 MP crop stack, 30 samples, and `raw-editor` on the manifest sources; `editor-performance` gains the proxy build and proxy render rows. The `verify` timing tier reports the targets above beside the existing ones.
-- Events: `preview_displayed` carries `proxy: bool` and, when true, `proxy_dimensions`, and `render_ms`, the worker's own time for the phase on screen (`PreviewResult::render_ms`), which is also the status bar's "Rendered in N ms"; `analysis_adopted` is unchanged; a `preview_exact_cancelled` event names each superseded exact phase by its own generation, with `draft` when it was a crop draft's input stage; the state summary carries `proxy: {eligible, dimensions, bounds}`.
-- RAW white balance: core tests of `W` against independent references (applied before the exposure, identity with no approximation, the camera-space mapping, singular and non-finite refusals), the draft-only settings mode, both phases labelled and never reduced, the proxy against the exact downscale under `W`, the downscale commuting with `W`, a drafted job hitting the committed frame's proxy and the estimate store keeping approximate and exact apart; an ignored real-file test proving every strict path refuses while the draft's preview approximates, run on the Z6, X100VI and Air 2S; the desktop's own test of the labels and the histogram; and the `raw-panel` smoke scenario's drags at Fit and at 100%.
+- Events and state: Fit `preview_displayed` retains its proxy fields and render time. Viewport frames carry content, draft/entry revision, full-stage region, scale, quality and request generation; clipping overlays carry matching region/content/quality identity. Exact whole-image analysis remains separate and is adopted only for its matching recipe.
+- RAW white balance: core tests of `W` against independent references (applied before the exposure, identity with no approximation, the camera-space mapping, singular and non-finite refusals), the draft-only settings mode, both phases labelled and never reduced, the proxy against the exact downscale under `W`, the downscale commuting with `W`, a drafted job hitting the committed frame's proxy and the estimate store keeping approximate and exact apart; an ignored real-file test proving every strict path refuses while the draft's preview approximates, run on the Z6, X100VI and Air 2S; the desktop's own test of the labels and the histogram; and the `raw-panel` smoke scenario's Fit drags and held 100% full-detail draft check after quiet refinement.
+
+## Viewport rendering at 100%
+
+At 100% and larger zooms, the photo surface shows a viewport-sized part of the image. During slider, stroke or pan motion, the renderer produces only the visible region at half linear resolution. The frame carries its full-stage rectangle, scale, quality, content identity, recipe revision and request generation. Its quality flags preserve the reasons already used by Fit previews: reduced detail, spatial approximation and thin-mask supersampling. The recipe itself is unchanged.
+
+### Phase order, cancellation and pause
+
+| Phase | When it runs | Cancellation | Output |
+| --- | --- | --- | --- |
+| Interactive region | First for an admitted adjustment or view request; the only pixel phase during motion | `abandoned`, including source-window construction, exact estimate work and coverage calculation | Half-scale region; no whole-image report |
+| Exact visible-region refinement | After the shared quiet policy, or for released committed state | `superseded` | Exact visible region when supported; no whole-image report |
+| Whole-frame exact render and analysis | After refinement on the same idle/release opportunity | `superseded` | Full raster and exact histogram/clipping counts |
+
+Pause means the latest accepted input has drained, no draft round trip, pending input or commit is outstanding, and no newer gesture or view motion arrives for 120 ms. Release drains the final input and starts committed settlement immediately, without that interval. Resumed motion supersedes refinement and restarts interactive work. The worker has one active job and one replaceable pending job. A newer value supersedes the job but does not abandon its interactive phase, so it can make progress under sustained input. Selection changes, draft cancellation, shutdown or explicit abandonment stop it.
+
+Results carry asset/source development, entry or draft epoch and revision, region, scale, quality and request generation. A completed superseded draft frame may advance the display only within the same live draft, with a newer revision than the one already shown. Commit/release, cancel, history and asset changes fence out earlier draft frames. On delivery, a region must still match the current content and stage geometry and intersect the viewport; draw only that intersection at its original coordinates, and drop a region the view has left. Rejecting delivery does not cancel rendering midway.
+
+### Admission to the shared pending slot
+
+Viewport requests use the existing gesture/refit gate and pending slot. A standalone view request never replaces a gesture-owned pending preview or crop draft input-stage job. While gated, keep one replaceable desired view plus a dirty flag; each later gesture-owned preview snapshots that view. At an eligible pause the gesture driver can request a combined latest-draft/latest-view preview. A crop input-stage job keeps ownership until its draft releases it.
+
+If a draft replaces a pending standalone region request, clear that request's in-flight bookkeeping using the queue's replacement identity and mark the desired view dirty. Do not retry the displaced job. On gesture completion/cancellation and preview delivery, reconcile the current recipe and desired view: clear the dirty flag if current pixels cover it, otherwise issue one current request when the gate permits. While gated, the gesture driver keeps responsibility. View-only requests remain deferred across commit, and do not supersede a draft preview. Genuine recipe or selection supersession retains its refusal behavior.
+
+Fit source proxies stay in the worker's one-entry cache. A changed crop, pan or scale evicts the previous proxy before replacement work begins; no unbounded tile cache grows behind the viewport. Crop-draft input renders remain protected and do not trigger a proxy-window build.
+
+### Region textures and stale pixels
+
+The photo surface keeps its full-image texture slot and a separate region slot with front/back tile sets. Each region tile carries asset and source-development identity, entry/draft epoch and revision, request generation, full-stage rectangle, scale and quality; tile-edge padding counts toward the byte budget. The budget is one full-image allocation up to 512 MiB plus two region sets up to 32 MiB each, including allocations submitted to the GPU but not yet retired. Uploads use 8 MiB chunks; application staging borrows the raster and adds no copy. Native backend staging is outside this application-owned budget and remains unmeasured pending native GPU capture. One idle-blocked retirement worker waits for resource release and wakes the desktop; UI and catalog owner threads never wait for retirement.
+
+Before a new interactive region lands, the previous picture may stay visible with an updating label. Once a newer recipe revision is adopted, draw only matching region tiles or matching full-slot texels. Hide uncovered or older-revision pixels with the canvas background and an updating-detail state; never show an old full image behind a newer region while panning. A reduced-detail region and its exact refinement may share a recipe identity, but the display keeps the approximate label until the visible region is fully exact. Matching full-slot pixels serve a settled pan without another upload, even if the view request generation changed.
+
+### Global context and fallback
+
+The interactive region uses exact whole-stage spatial estimates from the shared eight-entry estimate cache. Estimates are keyed to their exact inputs; a viewport never estimates a spatial effect from only visible pixels. A cold global estimate can still require whole-stage work, for example Dehaze after its upstream recipe changes. The sampled reduced-guide experiment is rejected for production because periodic inputs can alias severely (reduction-cell mean 1.0 against the full-resolution cell mean 0.0625); there is no approximate-global estimate flag. Exact refinement and full-frame analysis use the same exact estimate identity.
+
+The rectangle walk preserves full-stage coordinates, resampling taps, spatial halo and tile alignment. It composes the RAW source window through `LinearImage`, sharing its planes; the byte domain makes only a bounded source-region copy from the immutable shared source. A separate uncut compilation remains authoritative for geometry, locate and mask coverage, including the first-bound-layer input for value-based masks. Mask and brush coordinates stay in full-stage space.
+
+Unsupported plans use explicit fallbacks. A point replacement in a cut segment or another proxy-ineligible layer uses the reported exact path. A global estimate after an earlier spatial stage falls back during motion to an eligible bounded whole-output proxy, then to the existing whole-frame exact path for settlement. An oversized viewport region also uses its reported whole-frame fallback. These cases do not silently lower settled detail, and their performance is outside the viewport timing scope.
+
+### Histogram and clipping
+
+Clipping during refinement follows the displayed viewport and is marked approximate. Its grid preserves the OR-of-clipped-pixels rule and 4096-cells-per-side cap, carrying region and content identity. An overlay may cover only pixels from the displayed top region with a matching content and quality identity. If a higher-priority region of another quality overlaps it, suppress the lower region's overlay until a matching grid arrives; a temporarily missing overlay is preferable to marking pixels from a different displayed frame. Missing or stale pixels have no overlay; a matching exact-region overlay replaces the approximate one. Full-image histogram and clipping counts remain stale until the matching whole-frame exact report arrives. Viewport data never replaces whole-image counts. `render.sample` remains an exact point query through the compiled recipe, and export behavior is unchanged.
+
+The mask-coverage overlay is separate from pixel-derived clipping. It samples the first bound layer's
+input through the uncut full-stage recipe, then maps that grid into the visible region. It uses
+full-stage coordinates rather than the half-scale displayed pixels; source-setting approximations,
+such as drafted RAW white balance, still apply to the source passed to the recipe.
+
+Region buffers are checked against the matching rectangle of the full render for byte and RAW pixels, including crops, masks, finish effects, spatial seams and estimates. Basic, vignette and mask coverage preserve their full-stage origins; RAW source windows share planes and byte source access remains a bounded copy. Critical native timing, functional, texture-reuse and region-identity scenarios pass; focused UI tests cover the source-selection and overlay-identity transitions. The full native suite and dedicated viewport, multi-mask and fallback journeys pass. The provisional idle target misses at 1.42% of one core over 30.21 seconds with Performance open. Backend staging is unmeasured. No general numerical photo-error bound or speedup claim is made here.
+
 
 ## Proposals and later work
 
@@ -152,171 +205,4 @@ Recorded here as proposals, not decisions.
 
 - **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is a substantial remaining cost per input (about 50 ms at 24 MP under a rotated crop in the recorded diagnostic). Half the linear display resolution has one quarter as many output pixels and gives a softer picture during motion; a fourfold latency improvement is not established. Measure the reduction, including proxy builds and global estimates. It can complement GPU execution; neither approach's gain is assumed.
 - **GPU colour stage.** If the proxy render of the full Basic layer still misses the two-frame target at Fit, the next step is to draw the proxy of the drafted layer's input stage through an `iced` shader primitive and apply the colour units as a fragment program with the coefficients as uniforms, so a tick costs a uniform write. That needs a WGSL transcription of each unit, a headless readback test against the CPU path within one code, and a fallback to the CPU proxy whenever a unit has no GPU program. The proxy source and the two-phase job are the foundation it needs and are built so that it changes only the presentation of the proxy phase.
-- **Viewport tiles at 100%.** A drag at 100% still renders the whole exact frame. The inverse rectangle walk already exists in `WindowPlan::of` / `apply` for cropped proxies; the proposal below extends it to the viewport.
 - **Reduced pool.** Leaving one or two cores out of the shared Rayon pool for the desktop and owner threads may lower jitter; it is a measurement, not a default.
-
-### Viewport rendering at 100% (proposal)
-
-The [interactive-adjustments investigation](../research/interactive-adjustments.md) finds that
-100% currently waits for both off-screen CPU rendering and whole-raster GPU upload. A viewport
-render can retain exact 1:1 detail while avoiding that work. This section is a proposal; it does
-not change the current two-phase contract or claim an implemented speedup.
-
-- **Plan the requested rectangle.** Add a proposed `WindowPlan::of_rect` entry point that starts
-  the existing reverse walk from a non-empty, clipped output rectangle instead of the whole final
-  stage. Compile against full stage dimensions, then retain each required intermediate region,
-  resampling taps, spatial halo and tile-grid alignment. Preserve explicit fallback for unsupported
-  operations; the existing window planner refuses some positional/pixel operations and global
-  estimates behind earlier spatial operations.
-- **Preserve coordinates.** Finish units such as vignette currently receive frame coordinates,
-  and a positional segment cannot be cut. Give a cut region its full-stage origin while retaining
-  the unit's original stage dimensions, so a pan does not recenter the vignette. Masks likewise
-  evaluate in their declared stage through the same geometry. Do not simulate a viewport by adding
-  a recipe crop, which could change subsequent effect semantics and history.
-- **Read a source region.** Compose the needed rectangle with RAW's existing `LinearImage` view,
-  sharing its planes. For the byte domain, design an immutable origin/stride view over the shared
-  source; a bounded region copy is an alternative to measure if a view complicates the evaluator.
-  Never make a full-source copy to obtain a small visible window. Validate composition with all
-  source orientations and existing views.
-- **Keep an uncut evaluation for coordinates and coverage.** Only the pixel producer receives the
-  cut compilation. The uncut full-stage compilation serves `transform`, `locate` and the mask
-  coverage grid, including the first-bound-layer input for value-based masks, as the proxy phase
-  does today. A viewport coverage request expresses its region in those full-stage coordinates;
-  it must not reinterpret its mask or brush coordinates in the cut frame.
-
-#### Phase order, cancellation and pause
-
-All names below describe proposed job behavior, not new implemented methods. Reuse the existing
-two cancellation tokens and one active/one pending worker bound:
-
-| Phase | When it runs | Cancellation token | Output |
-| --- | --- | --- | --- |
-| Interactive viewport, at the chosen scale, or the explicitly reported proxy fallback | First for an adjustment or admitted view request; during motion it is the only pixel phase | `abandoned`, including its source-window build, guide/estimate work and coverage calculation | A region/quality-tagged frame; no full-image report |
-| Full-detail viewport refinement | After the interactive phase when the shared idle policy permits it, or for the released committed state; skip if the first phase already produced exact detail | `superseded` | Exact current region when the stack supports it; no full-image report |
-| Whole-frame exact render and analysis | After viewport refinement, on the same idle/release opportunity | `superseded` | Retained full raster, exact histogram and counts |
-
-A newer slider value or pan supersedes the job but does not abandon its interactive phase.
-That phase can therefore make progress. Selection changes, draft cancellation, shutdown or an
-explicit abandonment stop it. A completed superseded draft frame can advance the display only
-within the same live draft, with a revision newer than the one already shown. Commit/release,
-cancel and history/asset changes fence out earlier draft frames. Region placement is checked on
-delivery: compatible full-stage geometry and scale, an intersection with the current viewport,
-and a valid content identity. Draw only that intersection at its original coordinates; discard
-a region the view has left. Rejecting its delivery is not a reason to cancel it mid-render.
-
-The whole-stage evaluation used by the interactive phase must also use `abandoned`; calling an
-estimate evaluator that retained `superseded` would reintroduce starvation. Refinement and exact
-analysis use separate evaluations with `superseded`, and share estimates only under matching keys.
-
-**Pause uses one shared policy with the Fit exact-phase-deferral work.** A pause means the latest
-accepted gesture input has drained, no draft round trip, pending input or commit is outstanding,
-and no newer slider/stroke/view motion has arrived for the policy's quiet interval. Release drains
-the final input and starts committed settlement without that interval. New motion cancels
-refinement and restarts interactive work. The Fit deferral experiment must select and measure the
-quiet interval and own this policy; it does not specify a numerical interval today. A viewport
-must not introduce a second timeout, and no idle timer remains armed after settlement. An idle
-draft can refine without being committed.
-
-#### Admission to the shared pending slot
-
-Use the existing gesture/refit gate, not another render lane. A standalone view request never
-replaces a gesture-owned pending preview or a crop draft's input-stage job. Keep one replaceable
-`desired_view` value plus a dirty flag on the desktop while gated. Every subsequent gesture-owned
-preview snapshots that latest view. On an eligible slider/stroke pause, the gesture driver itself
-may request a combined latest-draft/latest-view preview; a crop input-stage wait remains protected
-until its draft releases ownership. Pan without further slider movement therefore has an explicit
-owner, rather than relying on another `draft.set` to arrive.
-
-If a draft replaces a pending standalone region job, mark the desired view dirty and clear that
-job's in-flight bookkeeping using the queue's `replaced` identity. Do not retry the old job. On
-gesture completion/cancellation and on preview delivery, reconcile the latest recipe and desired
-view: clear the flag if current pixels cover it, otherwise issue one current region request when
-the gate permits. While the gate is closed, leave the responsibility with the gesture driver.
-View requests remain deferred across a commit round trip. A view-only request never calls
-`draft_preview_superseded`; genuine recipe/selection supersession retains that refusal behavior.
-
-#### Region textures and stale pixels
-
-Give the photo surface a **separate region slot**, retaining its existing full-image slot. Do not
-alternate viewport rasters and full rasters through the one dimension-keyed tile set. Each region
-tile records its content identity (asset, source development, entry/draft epoch and revision),
-request generation, full-stage rectangle, scale and quality. The region slot has front/back tile
-sets for publication; all allocations count against its byte budget, including edge-tile padding.
-
-Keep one coherent displayed recipe revision. Before a new interactive region lands, the previous
-picture may remain uniformly marked updating. On adoption of a newer revision, draw only matching
-region tiles or matching full-slot texels. **Hide uncovered or older-revision texels with the canvas
-background and an updating-detail state**; never expose an old full image behind a new-recipe region
-on pan. A low-quality tile and its exact refinement may share the same recipe identity, but the
-display keeps the approximate label until the visible region is fully refined. The full slot can
-serve settled pans without upload when its content identity matches, even if the view-request
-generation has changed.
-
-Proposed photo-texture admission: at most **one 512 MiB full-image allocation plus two 32 MiB region
-tile sets (576 MiB total)**. The full slot's actual size follows the existing frame limit; a 60 MP
-RGBA8 image is 228.9 MiB, giving at most 292.9 MiB with both region sets. These are proposed byte
-bounds, not measurements or a whole-app memory claim. Count submitted-but-not-retired textures in
-the bound; evict/release them before admitting replacements and wait asynchronously for GPU
-retirement where necessary, never blocking the UI or catalog owner. Admit uploads in bounded
-chunks with at most 32 MiB of application-owned staging in
-flight. Overlay textures, toolkit allocations and backend staging are accounted separately in
-native GPU measurements. A region exceeding admission takes the explicit full-frame fallback;
-never silently lower settled 100% detail. No region-sized frame replaces the full slot merely
-because the user pans, and an old full allocation is not retained beside its replacement for free.
-
-#### Global context, approximation and fallback
-
-An exact viewport uses exact whole-stage estimates keyed to their actual inputs. Dehaze must not
-estimate from only the visible rectangle, which would change its appearance on pan. The proposed
-reduced whole-image guide needs a distinct estimate-key namespace on **both** pixel domains, with
-the guide algorithm/version, quality level, guide dimensions, upstream recipe/mask state and
-source development/view. Compose this with the existing RAW white-balance approximation key;
-dimensions or a display label alone do not isolate approximate estimates. Exact evaluations never
-look up that namespace. Both classes share the existing eight-entry estimate-store cap, not eight
-entries per quality or per pan; eviction can rebuild an estimate but cannot change its meaning.
-
-The current `WindowPlan` refuses **any spatial segment needing a global estimate behind an earlier
-spatial segment**, for example a second Presence layer with active Dehaze. Such a stack receives
-no viewport path merely by adding `of_rect` or an approximate guide. Report this fallback class:
-use an eligible bounded whole-output proxy for motion, then the existing uncut full-frame exact
-path for settled detail. A pixel-stage or other proxy-ineligible stack takes the explicit exact
-fallback. Existing source/frame admission still applies to uncut proxies, including tight crops;
-do not claim a viewport latency bound for these stacks. Extending their window eligibility needs
-its own numerical and memory proof. Positional units not yet adapted to an origin and point
-replacements in cut segments likewise remain explicit region fallbacks.
-
-The first proposed softer level reuses **a viewport window on a half-scale proxy stage**, compiled
-against that whole scaled stage. Extend the current proxy plan/key with the window and scale;
-the queue's existing one-entry source-proxy cache is replaced on a different pan/scale, not grown
-into an unbounded tile cache. Measure pan rebuild costs and release the displaced source before
-replacement work. Preserve the existing spatial-approximation and thin-mask supersampling reasons;
-add a reduced-detail reason so a coarse 100% viewport is never labelled exact merely because its
-recipe is pointwise. Global-guide approximation carries its own reason as well.
-
-#### Histogram and clipping proposal
-
-The owner has [accepted temporary softness and an updating histogram](../decisions.md#interactive-previews-at-100).
-Keep previous exact full-image counts marked updating until the matching full report arrives;
-never substitute a viewport histogram. The remaining proposed clipping answer extends
-`overlay_source`: derive clipping from the displayed region while exact pixels are outstanding,
-mark it approximate, and replace it with the matching exact-region overlay on refinement.
-Carry region/content/quality identity into the overlay and hide it over missing or stale tiles.
-Mask coverage remains on the uncut coordinate evaluation described above.
-
-Apply the existing OR-of-clipped-pixels rule to a **viewport-bounded grid**, with the existing
-4096-cells-per-side cap. This can give finer 100% coverage than today's whole-photo grid, whose
-cells grow on photographs larger than 4096 pixels a side; it is not permission to lose isolated
-clipping. An exact visible overlay is distinct from whole-image counts, which may still be updating.
-This extension is the proposed answer for owner review, not a recorded acceptance. Its decision
-and the preview quality/error choices are tracked among the open product questions.
-
-Acceptance requires whole-buffer equality with the matching region of an exact full render,
-including fractional/rotated crops, masks, finish effects, spatial seams and estimates; bounded
-CPU/GPU residency; generation-correct pan/release behavior; and native input-to-present timings
-on photo-sized JPEG/RAW stacks. Include sustained-input forward progress, every pending-job
-replacement pairing, pause/resume and release fences, zero stale-texel exposure on pan, full-slot
-reuse without re-upload, estimate eviction without cross-quality reuse, and mask-grid/locate
-agreement with the uncut stage. Check the named fallback classes separately. Viewport-only output
-must not satisfy a full-frame analysis,
-sample, export or evidence request. Unsupported region plans retain an explicit existing-path
-fallback. Implementation and its task-plan extension follow the outstanding product choices.

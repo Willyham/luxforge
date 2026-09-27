@@ -51,23 +51,19 @@ rather than copy a mode that temporarily omits expensive modules.
 
 | Current behavior | Code evidence | Consequence |
 | --- | --- | --- |
-| At 100% and above, no proxy is requested. | `Editor::proxy_bounds` in [desktop preview](../../crates/luxforge-app/src/app/preview.rs). | Each accepted adjustment waits for a whole exact frame, even though most pixels are off screen. |
-| At Fit, the worker renders the complete recipe over a cached source proxy, then starts the exact frame and requested analysis. | [Preview worker](../../crates/luxforge-core/src/preview/worker.rs), [draft requests](../../crates/luxforge-app/src/app/tasks.rs). | The source downscale is reused; the edited image is still recomputed. Exact work can occupy the worker until cancellation before the next interactive frame starts. |
-| The surface uploads every texture tile of a changed raster; its fragment shader samples that raster. | `PhotoPipeline::write` in [photo surface](../../crates/luxforge-ui/src/photo_surface.rs), [shader](../../crates/luxforge-ui/src/photo_surface.wgsl). | GPU display and texture tiling do not constitute GPU adjustments or viewport-limited computation/upload. |
+| At 100% and above, motion uses a half-scale visible region; exact visible refinement and full-image analysis follow the shared quiet/release policy. | [Viewport preview](../../crates/luxforge-app/src/app/preview.rs), [preview worker](../../crates/luxforge-core/src/preview/worker.rs). | Critical native timing and texture-reuse cases pass; a cold global estimate remains visible work, estimate-after-spatial and other unsupported plans use explicit fallbacks, and source/overlay identity across zoom and quality transitions is covered by focused UI and surface tests. The full native suite and dedicated viewport, multi-mask and fallback journeys pass. The provisional idle target misses at 1.42% of one core over 30.21 seconds with Performance open. Backend staging and a general numerical photo-error bound remain unqualified. |
+| At Fit, the worker renders the complete recipe over a cached source proxy. At a viewport, the region job and exact/full-image phases use the shared one-active/one-pending worker. | [Preview worker](../../crates/luxforge-core/src/preview/worker.rs), [draft requests](../../crates/luxforge-app/src/app/tasks.rs). | Interactive work can progress under sustained input; exact settlement remains bounded by the shared quiet policy and cold global-estimate cost. |
+| The surface retains a full-image slot plus bounded viewport region tile sets; region upload is chunked and stale uncovered pixels are hidden. | `PhotoPipeline::write` in [photo surface](../../crates/luxforge-ui/src/photo_surface.rs), [shader](../../crates/luxforge-ui/src/photo_surface.wgsl). | GPU display remains separate from GPU adjustment arithmetic; backend staging and native residency still need measurement. |
 | Colour operations are fused and masks already restrict work to their bounds. The row engine snapshots each masked operation's input and evaluates its coverage. | `apply_units`, `apply_masked_operation` in [renderer](../../crates/luxforge-core/src/render.rs). | We do not render a separate full image for every Basic slider or blindly evaluate every small mask everywhere. Multiple overlapping operations still add work per affected pixel. |
 | Spatial operations need halos; estimates depend on upstream content. | [Spatial processing](../../crates/luxforge-core/src/render/spatial.rs), [pipeline](../../crates/luxforge-core/src/render/pipeline.rs). | Changing Exposure before Dehaze or a range mask can invalidate their inputs. A viewport alone cannot eliminate global dependencies. |
-| Region back-propagation already exists for cropped proxies. | `WindowPlan::of` / `apply` in [window planning](../../crates/luxforge-core/src/render/window.rs). | The old claim that we lack inverse rectangle geometry is obsolete. Extending this to a requested viewport is feasible, with remaining coordinate and eligibility work. |
+| Region back-propagation supports viewport output rectangles and cropped proxies. | `WindowPlan::of` / `apply` in [window planning](../../crates/luxforge-core/src/render/window.rs). | Full-stage origins, masks, spatial halos and explicit eligibility fallbacks remain part of exactness. |
 
 The prepared-source cache already avoids reopening and demosaicing a RAW for every Exposure
 change. RAW white-balance release is a separate case: it deliberately redevelops the retained
 mosaic, while its drag approximates on the existing development. More decoder work alone will
 not fix ordinary Exposure drags.
 
-Cancellation also matters: the Fit proxy phase is allowed to finish after a newer draft value
-arrives, while its exact phase is superseded. At 100% that supersedable exact phase is the only
-frame producer. If inputs arrive faster than it can finish, they can repeatedly cancel the only
-new picture. This is a consequence of the worker's token policy, not a measured starvation rate.
-A viewport/interactive path must preserve forward progress as well as reject obsolete view state.
+Cancellation also matters: interactive region work uses abandonment cancellation so it can finish useful work while newer inputs arrive; refinement and whole-frame analysis remain supersedable. Generation, draft and asset fences reject results that no longer match the displayed view.
 
 ### What the recorded measurements establish
 
@@ -91,92 +87,19 @@ interactive scale is the more useful approximation.
 
 ## Recommended approach
 
-### 1. Make the visible region the interactive unit of work
+### Implemented viewport path and remaining qualification
 
-Extend the existing rectangle walk to a requested output region, compiled against the full stage.
-Render and upload that region with its origin, preserving true 1:1 pixels, mask coordinates,
-spatial halos and whole-image estimates. Show the visible current result before computing the
-off-screen remainder and the full histogram. Reuse the current bounded worker and cancellation
-mechanism; pan/zoom supersedes obsolete region requests as well as obsolete recipe requests.
+The viewport path uses a half-scale visible region during motion, then exact visible-region refinement and whole-frame exact analysis after the shared quiet policy. It uses the existing one-active/one-pending worker and the shared 120 ms pause interval; release starts committed settlement as soon as the final input drains. Interactive rendering can progress under sustained input, while exact refinement remains supersedable.
 
-The proposed [phase and admission contract](../design/instant-preview.md#phase-order-cancellation-and-pause)
-uses `abandoned` for the interactive pixel/estimate/coverage phase, then `superseded` for idle/release
-viewport refinement and full-image analysis. Superseded interactive frames may advance a live
-draft, but delivery rejects obsolete content or regions outside the current view. Standalone view
-requests use the existing refit gate; the gesture driver carries the latest desired region and
-reconciles a displaced request on delivery or when ownership ends. There is still one active and
-one pending job. The uncut compilation supplies mask coverage, `transform` and `locate`; only the
-pixel producer receives the region cut.
+The uncut compilation continues to supply full-stage geometry, locate and mask coverage. Region results carry source/content, draft or entry revision, region, scale, quality and generation. A separate region texture slot retains the full-image slot; missing or stale areas are hidden. The [phase, admission and texture contracts](../design/instant-preview.md#viewport-rendering-at-100) document cancellation, replacement, stale-pixel and memory behavior.
 
-A separate region texture slot retains the full-image texture for settled pans. Per-tile content,
-region and quality identities prevent stale off-screen texels appearing beside a newer recipe;
-missing current pixels are hidden, not filled with an old revision. The
-[texture proposal](../design/instant-preview.md#region-textures-and-stale-pixels) bounds full and
-region allocations, including GPU retirement, instead of repeatedly replacing the full tile set.
+Interactive regions use exact whole-stage spatial estimates from the shared eight-entry cache. A cold estimate, such as Dehaze after an upstream edit, can still require whole-stage work. A sampled reduced guide was rejected because a period-16 synthetic input has a reduction-cell mean of 1.0 against a full-resolution cell mean of 0.0625. That counterexample rejects the guide approach; it does not set a production image-error bound.
 
-The [viewport proposal](../design/instant-preview.md#viewport-rendering-at-100-proposal) describes
-the remaining work. This is the strongest first step for 100% and can preserve exact pixels.
-It cannot by itself guarantee a frame budget for many expensive spatial layers.
+The estimate-bearing spatial-segment-after-spatial case falls back during motion to an eligible bounded whole-output proxy, then settles through the whole-frame exact path. Proxy-ineligible stacks and oversized regions use their named exact fallback. They have no viewport timing claim. Native measurement remains necessary for cache-miss cost, pan rebuilds, input-to-present latency, image quality and GPU residency, including backend staging.
 
-### 2. Budget interactive quality and defer non-visible completion work
+The accepted behavior shows every recipe effect at its selected scale. Reduced spatial neighborhoods, reduced detail and thin-mask supersampling retain explicit quality reasons. The current scale is a fixed baseline; numerical error limits and additional quality levels remain unqualified until representative measurements and owner review.
 
-For expensive stacks, the proposed first softer level is a viewport window on the existing
-half-scale proxy stage, compiled against its whole scaled dimensions. Its key includes region and
-scale; a new pan replaces the queue's one cached proxy source. Measure rebuild costs rather than
-assuming free pans. Reuse the spatial approximation and thin-mask supersampling rules, adding a
-reduced-detail reason for the enlarged 100% preview. Full viewport detail returns on pause/release.
-Half in each dimension is one quarter as many output pixels, not an assured fourfold speedup. Use measured frame cost,
-bounded quality levels and hysteresis to prevent visible oscillation. The first drag frame must
-also have a bounded path; do not wait for a slow exact frame to learn that approximation is needed.
-
-Pause uses the same gesture-idle policy as the Fit exact-phase-deferral work: accepted input
-drained, no pending input/round trip/commit, then a quiet interval without new gesture/view motion.
-That experiment must choose and measure the interval; there is no numerical definition today to
-reuse. Do not add a second viewport timer. Release bypasses the interval after draining its final
-input, and resumed motion cancels refinement.
-
-Keep all recipe effects present at the chosen scale. A reduced-resolution spatial effect or thin
-mask remains explicitly approximate; sharp mask edges and strong texture need comparison. Do not
-apply an exposure multiplier to the previous final 8-bit picture: clipped highlights and nonlinear
-downstream edits cannot be reconstructed from it.
-
-Global analysis needs an interactive path too. A cropped proxy currently can ask for an exact
-whole-stage Dehaze estimate, so reducing its displayed pixels alone may leave a full-image wait.
-For these expensive cases, investigate a bounded, reduced whole-image guide for the **current**
-draft that supplies approximate global estimates shared by every visible tile. Keep that guide
-independent of the pan rectangle and keyed by upstream state and quality; using only the viewport
-or an old estimate can make the picture change while panning or ignore the new adjustment. Measure
-the guide's own cost and image error, including multiple spatial layers. Replace it with exact
-estimates on refinement, and never use its estimates for exact analysis or export. This is an
-additional preview approximation to qualify, not an existing capability or accepted quality bound.
-
-Isolate guide estimates with a distinct key namespace on both byte and linear domains, including
-algorithm/version, guide dimensions and quality, composed with the existing RAW white-balance
-approximation key. Keep exact and approximate entries within the existing eight-entry store in
-total. Neither a displayed approximation label nor differing dimensions alone prevents an exact
-render from reading a poisoned cache entry.
-
-The current planner refuses an estimate-bearing spatial segment behind another spatial segment:
-for example, a second Presence layer with Dehaze. That class still has **no viewport path** under
-the initial extension. Use an eligible bounded whole-output proxy during motion and an uncut
-full render for settlement, with the fallback reason exposed. If a proxy is ineligible or exceeds
-existing resource admission, retain the explicit exact fallback. Positional/pixel operations that
-cannot be cut also fall back. The guide does not remove those restrictions without a separate
-window-equivalence proof, and these classes have no promised viewport latency.
-
-Avoid starting a full-image render/histogram after every moving input. There is already conditional
-owner authorization to test exact-phase deferral **at Fit** in the
-[post-consolidation decisions](../decisions.md#post-consolidation-review). The owner also accepts
-temporary softness and an updating histogram at 100%. On pause/release, the recommendation is to
-refine the viewport first, then finish full-image analysis; displayed numbers retain their last exact values
-and say updating until a matching full-image report arrives. Viewport clipping can follow current
-visible pixels, extending today's `overlay_source` rule: mark the displayed-region overlay
-approximate until exact region pixels replace it, and carry its region and quality identity.
-Keep OR reduction and the 4096-cells-per-side cap but bound the grid to the visible region, giving
-finer 100% coverage than the whole-photo grid. This is the proposed clipping answer awaiting the
-owner, not a whole-photo clipping count or an accepted policy change.
-
-### 3. Reuse work according to what actually changed
+### Reuse work according to what actually changed
 
 Start with a cache at an **existing materialized segment boundary**, storing that boundary's exact
 representation: bytes where the byte-domain boundary already quantizes, and the existing float
@@ -202,7 +125,7 @@ invalidate the whole downstream stage. Key reuse by source development/view, rel
 prefix, mask dependencies, stage/region, scale and quality. Existing source/proxy and estimate
 caches are useful foundations, not a general cache of intermediate recipe results.
 
-### 4. Accelerate eligible adjustment chains on the existing GPU backend
+### Accelerate eligible adjustment chains on the existing GPU backend
 
 Prototype high-precision source/input tiles resident on the existing `wgpu` backend (Metal on
 macOS), with Exposure, Basic colour and mask blending evaluated in recipe order. Parameter changes

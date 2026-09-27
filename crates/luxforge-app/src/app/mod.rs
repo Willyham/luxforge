@@ -192,6 +192,20 @@ pub(crate) struct Editor {
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) preview_queue: PreviewQueue,
     pub(crate) preview_generation: u64,
+    /// One opaque surface identity per evaluated content. A pan/zoom retains it; a new draft
+    /// revision, history entry, source development or recipe gets another id.
+    pub(crate) content_key: Option<(
+        luxforge_core::analysis::AnalysisIdentity,
+        luxforge_core::ProxyIdentity,
+    )>,
+    pub(crate) content_serial: u64,
+    pub(crate) pending_content: BTreeMap<u64, u64>,
+    pub(crate) pending_intent: BTreeMap<u64, luxforge_core::PreviewIntent>,
+    pub(crate) presented_content: u64,
+    pub(crate) analysis_content: Option<u64>,
+    pub(crate) raster_content: Option<u64>,
+    pub(crate) region_raster: Option<preview::PresentedRegion>,
+    pub(crate) viewport_disabled_content: Option<u64>,
     /// The displayed frame's own raster, with the preview generation it arrived under, retained
     /// beside the picture on screen so a clipping overlay can be re-derived from it on a zoom, a
     /// pan or a toggle without a second render. It shares the render's `Arc<[u8]>`: retaining it
@@ -273,6 +287,15 @@ pub(crate) struct Editor {
     pub(crate) sync_wanted: bool,
     pub(crate) pan_in_flight: bool,
     pub(crate) pending_pan: Option<(f32, f32)>,
+    /// The latest scrollable offset is local immediately; session pan can be one round trip old.
+    pub(crate) local_pan: (f32, f32),
+    pub(crate) desired_view_dirty: bool,
+    pub(crate) view_request_generation: Option<u64>,
+    pub(crate) view_plan_in_flight: bool,
+    pub(crate) view_plan_epoch: u64,
+    pub(crate) quiet_since: Option<Instant>,
+    pub(crate) quiet_settle_requested: bool,
+    pub(crate) released_draft: Option<luxforge_core::DraftId>,
     pub(crate) picker_open: bool,
     pub(crate) status: String,
     /// What Copy in the status bar copies instead of the line itself, while the status still reads
@@ -507,6 +530,15 @@ impl Editor {
             dimensions: None,
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
+            content_key: None,
+            content_serial: 0,
+            pending_content: BTreeMap::new(),
+            pending_intent: BTreeMap::new(),
+            presented_content: 0,
+            analysis_content: None,
+            raster_content: None,
+            region_raster: None,
+            viewport_disabled_content: None,
             raster: None,
             raster_approximate_white_balance: false,
             exact_render_ms: None,
@@ -533,6 +565,14 @@ impl Editor {
             sync_wanted: false,
             pan_in_flight: false,
             pending_pan: None,
+            local_pan: (0.0, 0.0),
+            desired_view_dirty: false,
+            view_request_generation: None,
+            view_plan_in_flight: false,
+            view_plan_epoch: 0,
+            quiet_since: None,
+            quiet_settle_requested: false,
+            released_draft: None,
             picker_open: false,
             status: "Open a photo to begin".into(),
             status_copy: None,
@@ -606,6 +646,7 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        luxforge_ui::set_surface_waker(waker::waker());
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
         editor
@@ -672,9 +713,29 @@ impl Editor {
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
+        let previous_geometry = (
+            self.window,
+            self.scale_factor,
+            self.session.workspace.state_panel,
+            self.session.workspace.tools_panel,
+            self.local_pan,
+        );
+        let previous_view_epoch = self.view_plan_epoch;
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        if (self.session.preview.view.zoom != zoom
+            || (
+                self.window,
+                self.scale_factor,
+                self.session.workspace.state_panel,
+                self.session.workspace.tools_panel,
+                self.local_pan,
+            ) != previous_geometry)
+            && self.view_plan_epoch == previous_view_epoch
+        {
+            self.note_view_motion();
+        }
         // Whatever route opened, closed, hid or showed the Performance section is answered in one
         // place: starting to sample reads at once, and stopping drops the read in flight.
         let task = Task::batch([task, self.performance_transition()]);
@@ -694,6 +755,7 @@ impl Editor {
             self.zoom_editing = false;
         }
         let refit = self.refit_proxy();
+        let view_request = self.reconcile_view();
         // The panel's selection follows the stack and the mode before anything is derived from it,
         // so a section is never bound to a mask the recipe no longer holds.
         if self.follow_mask_selection() {
@@ -725,7 +787,14 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, refit, woken, loads.unwrap_or_else(Task::none)])
+        Task::batch([
+            task,
+            zoomed,
+            refit,
+            view_request,
+            woken,
+            loads.unwrap_or_else(Task::none),
+        ])
     }
 
     /// Bring the screen up to date with the state this message left behind: every section whose
@@ -813,7 +882,7 @@ impl Editor {
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
             dimensions: self.dimensions,
-            photo: self.presenter.photo().is_some(),
+            photo: self.presenter.photo().is_some() || self.presenter.region().is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.preview_queue.is_busy(),
             render: self.activity.render,
@@ -901,7 +970,12 @@ impl Editor {
             None => view::workspace(
                 &self.workspace,
                 view::Surfaces {
-                    photo: self.presenter.photo(),
+                    photo: self.presenter.photo_for(self.presented_content),
+                    photo_content: self.presenter.full_content(),
+                    current_content: self.presented_content,
+                    region: self.presenter.region(),
+                    region_clipping: self.presenter.region_clipping(),
+                    region_coverage: self.presenter.region_coverage(),
                     stage: self.presenter.stage(),
                     clipping: self.overlay_surface(),
                     coverage: self.mask_overlay_surface(),
@@ -959,8 +1033,17 @@ impl Editor {
         // has finished, and the subscription itself exists only while one of them is busy, so an
         // idle desktop runs no timer and holds no stream. A signal posted while it is being built
         // or after it is gone is buffered by the channel, which outlives it.
-        if self.preview_queue.is_busy() || self.overlay_queue.is_busy() {
+        if self.preview_queue.is_busy()
+            || self.overlay_queue.is_busy()
+            || luxforge_ui::surface_retirement_pending()
+        {
             subscriptions.push(waker::subscription());
+        }
+        if self.quiet_since.is_some() && !self.quiet_settle_requested {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(25))
+                    .map(|_| Message::Preview(PreviewMessage::QuietTick)),
+            );
         }
         // The gesture needs no timer of its own: a slider move sends `draft.set` the moment
         // nothing is in flight, and records only the newest value while one is. The event sync

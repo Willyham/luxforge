@@ -29,6 +29,44 @@ pub struct SourceImage {
     pub orientation: u8,
 }
 
+impl SourceImage {
+    /// A bounded, upright rectangle of the decoded byte source. The original allocation remains
+    /// shared and untouched; only the requested rows are copied into a frame-limited buffer.
+    pub(crate) fn window(
+        &self,
+        region: crate::Region,
+        cancel: &crate::Cancel,
+    ) -> Result<Self, Error> {
+        if region.is_empty() || region.x1() > self.width || region.y1() > self.height {
+            return Err(Error::validation(
+                "byte source window lies outside the image",
+            ));
+        }
+        if self.rgba.len() != Raster::expected_len(self.width, self.height)? {
+            return Err(Error::validation(
+                "source pixel buffer has the wrong length",
+            ));
+        }
+        let len = Raster::expected_len(region.width, region.height)?;
+        let mut rgba = crate::render::zeroed_frame(len);
+        let stride = self.width as usize * 4;
+        let row_len = region.width as usize * 4;
+        for (row, y) in (region.y0..region.y1()).enumerate() {
+            cancel.check()?;
+            let offset = y as usize * stride + region.x0 as usize * 4;
+            crate::render::frame_mut(&mut rgba)[row * row_len..(row + 1) * row_len]
+                .copy_from_slice(&self.rgba[offset..offset + row_len]);
+        }
+        Ok(Self {
+            width: region.width,
+            height: region.height,
+            rgba,
+            fingerprint: self.fingerprint.clone(),
+            orientation: self.orientation,
+        })
+    }
+}
+
 // Walk JPEG header segments without decoding or allocating from declared dimensions.
 fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
     if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {

@@ -45,6 +45,11 @@ pub(crate) struct Surfaces<'a> {
     ///
     /// The photograph.
     pub(crate) photo: Option<&'a luxforge_ui::Frame>,
+    pub(crate) photo_content: Option<u64>,
+    pub(crate) current_content: u64,
+    pub(crate) region: Option<&'a luxforge_ui::RegionFrame>,
+    pub(crate) region_clipping: Option<&'a luxforge_ui::RegionOverlay>,
+    pub(crate) region_coverage: Option<&'a luxforge_ui::RegionOverlay>,
     /// The crop layer's input stage, drawn in place of the photograph while its draft is open.
     pub(crate) stage: Option<&'a luxforge_ui::Frame>,
     /// The clipping overlay's bounded cell grid, present only when it belongs to the photograph on
