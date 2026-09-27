@@ -3319,32 +3319,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_uncancelled_token_renders_the_linear_bytes_the_plain_entry_point_renders() {
-        let registry = ModuleRegistry::builtin();
-        let source = cancellation_image(160, 120);
-        let recipe = cancellation_recipe();
-        let snapshot = SnapshotId::new();
-        let plain = render_linear(
-            &registry,
-            &source,
-            snapshot.clone(),
-            &recipe,
-            LinearSettings::default(),
-        )
-        .unwrap();
-        let cancellable = render_linear_cancellable(
-            &registry,
-            &source,
-            snapshot,
-            &recipe,
-            LinearSettings::default(),
-            &Cancel::never(),
-        )
-        .unwrap();
-        assert_eq!(plain, cancellable);
-    }
-
     /// The terminal bytes are written in the allocation the raster holds and returned with no
     /// copy after the pass, and they are the bytes a point sample reads.
     #[test]

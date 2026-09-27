@@ -15,8 +15,8 @@
 //! reported count is compared with a second implementation.
 use crate::*;
 use luxforge_core::{
-    BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage, render as core_render,
+    BASIC_EFFECT, ClientId, JobStatus, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe,
+    SnapshotId, SourceImage, render as core_render,
 };
 use luxforge_reference as reference;
 use luxforge_testkit::client::{self, analyse, as_str, call};
@@ -1234,13 +1234,11 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 "analysis.read",
                 json!({"job_id": theirs["job_id"]}),
             )?;
-            match read["status"].as_str() {
-                Some("pending") => {
-                    ensure(Instant::now() < deadline, "The surviving job never settled")?;
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                _ => break read,
+            if !in_flight(&read)? {
+                break read;
             }
+            ensure(Instant::now() < deadline, "The surviving job never settled")?;
+            std::thread::sleep(Duration::from_millis(2));
         };
         ensure(
             survivor["status"] == json!("ready"),
@@ -1286,4 +1284,36 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         let _ = join.join();
     }
     outcome
+}
+
+/// Whether an `analysis.read` answer is a job still in flight, which a waiting client reads again.
+///
+/// The status is read as the core's own [`JobStatus`], so the wait follows the job vocabulary rather
+/// than a spelling of it kept here: queued and running are in flight and every other status ends
+/// the job. A status the vocabulary does not have is refused, never taken for a settled job.
+fn in_flight(read: &Value) -> Result<bool> {
+    let status: JobStatus = serde_json::from_value(read["status"].clone())
+        .map_err(|_| format!("analysis.read answered no job status the core has: {read}"))?;
+    Ok(!status.is_finished())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client waits while the job is queued or running and stops at every status that ends one,
+    /// read in the job vocabulary the core serializes; a status that vocabulary does not have is an
+    /// error rather than a job taken for settled.
+    #[test]
+    fn a_job_is_waited_on_exactly_while_it_is_queued_or_running() {
+        for status in ["queued", "running"] {
+            assert!(in_flight(&json!({"status": status})).unwrap(), "{status}");
+        }
+        for status in ["ready", "failed", "cancelled", "superseded"] {
+            assert!(!in_flight(&json!({"status": status})).unwrap(), "{status}");
+        }
+        for unknown in [json!({"status": "pending"}), json!({})] {
+            assert!(in_flight(&unknown).is_err(), "{unknown}");
+        }
+    }
 }

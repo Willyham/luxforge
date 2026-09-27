@@ -239,37 +239,115 @@ fn add_strokes_commute_and_an_erase_stroke_does_not() {
 }
 
 /// Deleting one stroke from the middle of a component is indistinguishable from one never made, bit
-/// for bit at every pixel, with an erase stroke in the list so the property is not tested only where
+/// for bit at every pixel, with an erase stroke after it so the property is not tested only where
 /// it is trivial.
+///
+/// The deletion is the real one: `mask.delete-stroke` through the action path, on a catalog that
+/// painted every stroke. Its component is compiled against a table that still holds the deleted
+/// stroke — the store keeps it, because earlier entries reference it — and compared with a second
+/// catalog that painted only the kept strokes. So the two sides are built from different stroke
+/// lists and differ unless the compiled mask folds exactly the strokes its component still lists.
 #[test]
 fn deleting_a_stroke_is_indistinguishable_from_one_never_made() {
+    use luxforge_core::mask::commands::{DELETE_STROKE, MaskTarget};
     let mut rng = SplitMix64(0x0018_DE1E);
-    let size = stage(56, 40);
-    for _ in 0..40 {
-        let count = 3 + rng.next_usize(4);
-        let strokes: Vec<Stroke> = (0..count)
-            .map(|index| random_stroke(&mut rng, index % 3 == 2))
-            .collect();
-        let removed = 1 + rng.next_usize(count - 1);
-        let kept: Vec<Stroke> = strokes
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != removed)
-            .map(|(_, stroke)| stroke.clone())
-            .collect();
-        let (with_gap, gap_table) = brush_mask(&kept);
-        let (never, never_table) = brush_mask(&kept);
-        let with_gap = CompiledMask::new(&with_gap, size, &gap_table).unwrap();
-        let never = CompiledMask::new(&never, size, &never_table).unwrap();
-        for y in 0..size.height {
-            for x in 0..size.width {
-                assert_eq!(
-                    with_gap.coverage(x, y, ANY_PIXEL).to_bits(),
-                    never.coverage(x, y, ANY_PIXEL).to_bits()
-                );
+    let paths: Vec<Vec<[f64; 2]>> = (0..5)
+        .map(|_| {
+            let mut at = [rng.next_range(0.3, 0.5), rng.next_range(0.3, 0.5)];
+            (0..6)
+                .map(|_| {
+                    let point = at;
+                    at = [
+                        at[0] + rng.next_range(-0.08, 0.12),
+                        at[1] + rng.next_range(-0.08, 0.12),
+                    ];
+                    point
+                })
+                .collect()
+        })
+        .collect();
+    let erase = |index: usize| index == 3;
+    let removed = 2;
+    let paint = |name: &str, which: &[usize]| -> Painting {
+        let mut painting = Painting::open(name);
+        let mut target = MaskTarget::default();
+        for &index in which {
+            let painted = painting
+                .paint_stroke(
+                    &target,
+                    &paths[index],
+                    0.08,
+                    erase(index),
+                    &format!("s{index}"),
+                )
+                .expect("a stroke under the cap");
+            target = MaskTarget {
+                mask: painted.mask,
+                component: painted.component,
+                ..MaskTarget::default()
+            };
+        }
+        painting
+    };
+
+    let mut deleting = paint("delete-stroke", &[0, 1, 2, 3, 4]);
+    let painted = deleting.recipe();
+    let mask = painted.masks[0].clone();
+    let listed = &mask.components[0].payload["strokes"];
+    let doomed = listed[removed]
+        .as_str()
+        .expect("a stroke address")
+        .to_owned();
+    let mutation = deleting.mutation("delete");
+    deleting
+        .service
+        .run_action(
+            &deleting.asset,
+            mutation,
+            DELETE_STROKE,
+            MaskTarget {
+                mask: Some(mask.id.clone()),
+                component: Some(mask.components[0].id.clone()),
+                stroke: Some(luxforge_core::path::StrokeId::parse(doomed.clone()).unwrap()),
+                ..MaskTarget::default()
+            }
+            .request(json!({})),
+        )
+        .expect("a stroke deleted");
+    let gapped = deleting.recipe();
+    // The store still holds what the entries before the deletion reference, the deleted stroke
+    // among them.
+    let store = &painted.strokes;
+    assert!(store.strokes().any(|(id, _)| id.as_str() == doomed));
+
+    let never = paint("never-made", &[0, 1, 3, 4]).recipe();
+    assert_eq!(
+        gapped.masks[0].components[0].payload, never.masks[0].components[0].payload,
+        "the component lists the kept strokes, in order"
+    );
+
+    let size = stage(64, 48);
+    let with_gap = CompiledMask::new(&gapped.masks[0], size, store).unwrap();
+    let never_made = CompiledMask::new(&never.masks[0], size, &never.strokes).unwrap();
+    let with_every = CompiledMask::new(&mask, size, store).unwrap();
+    let mut changed = 0usize;
+    for y in 0..size.height {
+        for x in 0..size.width {
+            let gap = with_gap.coverage(x, y, ANY_PIXEL);
+            assert_eq!(
+                gap.to_bits(),
+                never_made.coverage(x, y, ANY_PIXEL).to_bits(),
+                "at ({x}, {y})"
+            );
+            if gap != with_every.coverage(x, y, ANY_PIXEL) {
+                changed += 1;
             }
         }
     }
+    assert!(
+        changed > 0,
+        "the deleted stroke covered nothing, so its deletion proves nothing"
+    );
 }
 
 /// A stroke's density is its own, whatever the pointer's rate: painting the same path twice in one
@@ -517,6 +595,18 @@ impl Painting {
         size: f64,
         request: &str,
     ) -> Result<luxforge_core::ActionResult, luxforge_core::Error> {
+        self.paint_stroke(target, points, size, false, request)
+    }
+
+    /// [`Self::paint_at`], adding or erasing.
+    fn paint_stroke(
+        &mut self,
+        target: &luxforge_core::mask::commands::MaskTarget,
+        points: &[[f64; 2]],
+        size: f64,
+        erase: bool,
+        request: &str,
+    ) -> Result<luxforge_core::ActionResult, luxforge_core::Error> {
         let mutation = self.mutation(request);
         self.service.run_action(
             &self.asset,
@@ -524,9 +614,19 @@ impl Painting {
             luxforge_core::mask::commands::ADD_STROKE,
             target.request(json!({
                 "points": points, "size": size, "feather": 50.0, "flow": 100.0,
-                "erase": false, "colour_refine": 50.0,
+                "erase": erase, "colour_refine": 50.0,
             })),
         )
+    }
+
+    /// The current entry's stack, with the strokes it references resolved.
+    fn recipe(&self) -> luxforge_core::Recipe {
+        self.service
+            .state(&self.asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe
     }
 
     fn masks(&self) -> Value {
