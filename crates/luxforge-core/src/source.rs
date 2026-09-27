@@ -1506,4 +1506,107 @@ mod jpeg_tests {
     /// The largest channel difference between libjpeg's and zune-jpeg's decode of the committed
     /// fixtures, measured.
     const DECODER_TOLERANCE: u8 = 3;
+
+    /// The previous decode as the import ran it, for timing: `image` 0.25.9's reader with the same
+    /// limits, its ICC and orientation reads, the decode to RGB, `apply_orientation`, and the copy
+    /// to RGBA into the frame, after the same header walk.
+    fn previous_decode(bytes: &[u8]) -> Arc<[u8]> {
+        use image::{ImageDecoder, ImageReader, Limits};
+        header(bytes).unwrap();
+        let mut reader =
+            ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
+        let mut limits = Limits::default();
+        limits.max_image_width = Some(16384);
+        limits.max_image_height = Some(16384);
+        limits.max_alloc = Some(512 * 1024 * 1024);
+        reader.limits(limits);
+        let mut decoder = reader.into_decoder().unwrap();
+        std::hint::black_box(decoder.icc_profile().unwrap());
+        let orientation = decoder.orientation().unwrap();
+        let mut upright = image::DynamicImage::from_decoder(decoder).unwrap();
+        upright.apply_orientation(orientation);
+        let upright = upright.into_rgb8();
+        let mut frame = crate::render::zeroed_frame(
+            Raster::expected_len(upright.width(), upright.height()).unwrap(),
+        );
+        for (dst, src) in crate::render::frame_mut(&mut frame)
+            .chunks_exact_mut(4)
+            .zip(upright.as_raw().chunks_exact(3))
+        {
+            dst[..3].copy_from_slice(src);
+            dst[3] = 255;
+        }
+        frame
+    }
+
+    /// Decode-only wall time of the files named in `LUXFORGE_JPEG_TIMING` (colon-separated), the
+    /// previous `image`/zune-jpeg path against the libjpeg adapter's `decode_upright`, each the
+    /// median of `LUXFORGE_JPEG_SAMPLES` (default 7) after one warm-up, run twice: previous first
+    /// in each round, then the adapter first. The file is read once, outside the clock; hashing
+    /// and capture metadata are not timed. With `LUXFORGE_JPEG_ONLY=previous|adapter|none` it
+    /// decodes each file once through that path and nothing else, for a peak-memory reading of the
+    /// whole process (`/usr/bin/time -l`). A measurement, not a gate:
+    ///
+    /// ```text
+    /// LUXFORGE_JPEG_TIMING=/path/24mp.jpg:/path/60mp.jpg \
+    ///   cargo test --release -p luxforge-core --lib decode_timing -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate"]
+    fn decode_timing() {
+        let paths = std::env::var("LUXFORGE_JPEG_TIMING").expect("JPEG paths");
+        let samples: usize = std::env::var("LUXFORGE_JPEG_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(7);
+        let adapter = |bytes: &[u8]| decode_upright(bytes).unwrap().rgba;
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            values[values.len() / 2]
+        };
+        for path in paths.split(':') {
+            let bytes = std::fs::read(path).unwrap();
+            match std::env::var("LUXFORGE_JPEG_ONLY").as_deref() {
+                Ok("previous") => {
+                    std::hint::black_box(previous_decode(&bytes));
+                    continue;
+                }
+                Ok("adapter") => {
+                    std::hint::black_box(adapter(&bytes));
+                    continue;
+                }
+                Ok(_) => continue,
+                Err(_) => {}
+            }
+            let time = |decode: &dyn Fn(&[u8]) -> Arc<[u8]>| {
+                let start = std::time::Instant::now();
+                std::hint::black_box(decode(&bytes));
+                start.elapsed().as_secs_f64() * 1000.0
+            };
+            time(&previous_decode);
+            time(&adapter);
+            let mut rounds = Vec::new();
+            for previous_first in [true, false] {
+                let (mut previous, mut ours) = (Vec::new(), Vec::new());
+                for _ in 0..samples {
+                    if previous_first {
+                        previous.push(time(&previous_decode));
+                        ours.push(time(&adapter));
+                    } else {
+                        ours.push(time(&adapter));
+                        previous.push(time(&previous_decode));
+                    }
+                }
+                rounds.push(serde_json::json!({
+                    "order": if previous_first { "previous first" } else { "adapter first" },
+                    "previous_median_ms": median(previous),
+                    "adapter_median_ms": median(ours),
+                }));
+            }
+            println!(
+                "{}",
+                serde_json::json!({"file": path, "samples": samples, "rounds": rounds})
+            );
+        }
+    }
 }

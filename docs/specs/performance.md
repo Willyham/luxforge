@@ -1862,6 +1862,20 @@ Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cach
 
 Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
 
+### JPEG decode: libjpeg-turbo against zune-jpeg
+
+Import decodes JPEG with libjpeg-turbo, through the same adapter as export, instead of `image` 0.25.9's zune-jpeg 0.5.15. Decode only, on the owner's M4 Pro, 27 September 2026, release test build, warm file cache, the file read once outside the clock and neither hashing nor capture metadata timed: `source::jpeg_tests::decode_timing`. The previous path is replayed as the import ran it (the header walk, `image`'s reader with its limits, its ICC and orientation reads, the decode to RGB, `apply_orientation` and the copy into the RGBA frame); the adapter path is `decode_upright`. Median of 7 after one warm-up, run twice back to back, the previous path first in each pair and then the adapter first; the two orders agreed within 0.6 ms. The host was shared: one-minute load 16 to 18, five-minute 30, from other sessions, so the absolute figures are indicative and the ratio is the result.
+
+| Source | libjpeg-turbo (ms) | zune-jpeg path (ms) | Peak added, libjpeg-turbo | Peak added, zune-jpeg path | Dimensions |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 MP JPEG (generated) | 22.7 | 30.9 to 31.5 | 92 MiB | 162 MiB | 6000 × 4000 |
+| 60 MP JPEG (generated) | 55.2 to 55.3 | 74.7 to 74.9 | 230 MiB | 403 MiB | 10000 × 6000 |
+| Drone photo, 10 MB | 75.0 to 75.5 | 103.1 to 103.3 | 55 MiB | 107 MiB | 3389 × 4236 |
+
+Peak added is `/usr/bin/time -l`'s maximum resident set size of the test process decoding the file once through one path, less the same process decoding nothing. The adapter's is the RGBA frame itself (92, 229 and 55 MiB) plus libjpeg's working buffers, under 1 MiB: rows go straight into the frame, or through a 16-row strip when the EXIF orientation turns the image. The previous path also held the whole image as RGB before copying it. All three files are baseline with orientation 1; a progressive file adds libjpeg's coefficient buffer, 2 bytes per sample. x86_64 builds libjpeg-turbo's portable C path and is not measured.
+
+Decoded pixels differ from zune-jpeg's slightly (`jpeg::tests::measure_the_difference_from_the_previous_decoder`): at most 3 codes on every committed fixture, 0.3% of pixels on the orientation set; on the generated 24 and 60 MP files 0.0014% and 0.0006% of pixels by at most 2 codes; on the drone photo 1.4% of pixels, 0.45% by more than one code and 0.002% by more than two, mean 0.01 codes per channel. The one large difference is the 4:2:0 file with a separate scan per component, which zune-jpeg misread.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
