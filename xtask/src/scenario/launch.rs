@@ -173,6 +173,21 @@ impl Launch {
         self
     }
 
+    /// The editor's arguments, hidden-window flag included, as [`Run::launch`] passes them in a run
+    /// whose output directory is `out`, with a secret script shown at its kept copy: what the dump
+    /// tests write.
+    #[cfg(test)]
+    pub fn command(&self, out: &Path) -> Vec<String> {
+        let script = self.script.as_ref().map(|(_, file)| match file {
+            ScriptFile::Kept(name) => out.join(name),
+            ScriptFile::Secret(_) => out.join("script.json"),
+        });
+        editor_args(&self.arguments(&out.join(&self.evidence), script.as_deref()))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
     /// The editor's arguments for this launch, before the hidden-window flag every harness launch
     /// adds, with its evidence in `evidence` and its script, if it has one, at `script`.
     fn arguments(&self, evidence: &Path, script: Option<&Path>) -> Vec<OsString> {
@@ -423,9 +438,8 @@ impl Run {
             }
             None => None,
         };
-        let args = launch.arguments(&evidence, script.as_deref());
         // The recorded command is what actually runs, hidden-window flag included.
-        let args = editor_args(&args);
+        let args = editor_args(&launch.arguments(&evidence, script.as_deref()));
         let command = std::iter::once(bin.as_os_str())
             .chain(args.iter().map(OsString::as_os_str))
             .map(|s| s.to_string_lossy().into_owned())

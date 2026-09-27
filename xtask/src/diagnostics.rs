@@ -1,5 +1,37 @@
 use crate::*;
 use std::time::{Duration, Instant};
+/// Hardening's initialization launch: an evidence directory that cannot be created.
+fn initialization_args(obstacle: &Path) -> Vec<OsString> {
+    vec!["--evidence-dir".into(), obstacle.join("evidence").into()]
+}
+/// Hardening's degraded launch: a data root that is a plain file, and a catalog elsewhere.
+fn degraded_args(out: &Path, obstacle: &Path, fixture: &Path) -> Vec<OsString> {
+    vec![
+        "--data-root".into(),
+        obstacle.into(),
+        "--catalog".into(),
+        out.join("degraded.sqlite").into(),
+        "--open".into(),
+        fixture.into(),
+    ]
+}
+/// An ordinary launch of one photograph with its data under `data`.
+fn ordinary_args(data: &Path, source: &Path) -> Vec<OsString> {
+    vec![
+        "--data-root".into(),
+        data.into(),
+        "--open".into(),
+        source.into(),
+    ]
+}
+/// One measured launch: `source` opened `count` times into `evidence`.
+fn measured_args(evidence: &Path, source: &Path, count: usize) -> Vec<OsString> {
+    let mut args = vec!["--evidence-dir".into(), evidence.into()];
+    for _ in 0..count {
+        args.extend(["--open".into(), source.into()]);
+    }
+    args
+}
 fn await_log(
     child: &mut scenario::launch::Guard,
     path: &Path,
@@ -49,10 +81,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
             let mut child = scenario::launch::spawn_editor(
                 root,
                 bin,
-                &[
-                    "--evidence-dir".into(),
-                    obstacle.join("evidence").into_os_string(),
-                ],
+                &initialization_args(&obstacle),
                 &out.join("initialization.log"),
             )?;
             let status = scenario::launch::wait(&mut child, Duration::from_secs(5))?;
@@ -74,14 +103,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
             let mut child = scenario::launch::spawn_editor(
                 root,
                 bin,
-                &[
-                    "--data-root".into(),
-                    obstacle.into_os_string(),
-                    "--catalog".into(),
-                    out.join("degraded.sqlite").into_os_string(),
-                    "--open".into(),
-                    fixture.clone().into_os_string(),
-                ],
+                &degraded_args(out, &obstacle, &fixture),
                 &log,
             )?;
             let text = await_log(
@@ -101,12 +123,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
             let mut child = scenario::launch::spawn_editor(
                 root,
                 bin,
-                &[
-                    "--data-root".into(),
-                    isolated.clone().into_os_string(),
-                    "--open".into(),
-                    fixture.clone().into_os_string(),
-                ],
+                &ordinary_args(&isolated, &fixture),
                 &out.join("abrupt.log"),
             )?;
             await_log(
@@ -184,7 +201,6 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
         for name in ["empty", "24mp", "60mp", "repeated60mp"] {
             for index in 0..if name == "repeated60mp" { 1 } else { samples } {
                 let evidence = out.join(format!("{name}-{index:02}"));
-                let mut args = vec!["--evidence-dir".into(), evidence.clone().into_os_string()];
                 let source = root.join("fixtures/generated").join(if name == "24mp" {
                     "24mp.jpg"
                 } else {
@@ -202,14 +218,11 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                 } else {
                     1
                 };
-                for _ in 0..count {
-                    args.extend(["--open".into(), source.clone().into_os_string()]);
-                }
                 let start = Instant::now();
                 let mut child = scenario::launch::spawn_editor(
                     root,
                     bin,
-                    &args,
+                    &measured_args(&evidence, &source, count),
                     &out.join(format!("{name}-{index:02}.log")),
                 )?;
                 let mut rss = Vec::new();
@@ -317,12 +330,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
         let mut child = scenario::launch::spawn_editor(
             root,
             bin,
-            &[
-                "--data-root".into(),
-                data.clone().into_os_string(),
-                "--open".into(),
-                root.join("fixtures/generated/60mp.jpg").into_os_string(),
-            ],
+            &ordinary_args(&data, &root.join("fixtures/generated/60mp.jpg")),
             &out.join("idle.log"),
         )?;
         await_log(
@@ -377,4 +385,78 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
     }
     write_json(&out.join("measurements.json"), &report)?;
     checked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every launch `measure` and `hardening` make, as its argument list, into
+    /// `$SCRIPT_DUMP/measure/` and `$SCRIPT_DUMP/hardening/`, for runs written to `/out` from a
+    /// checkout at `/root`: the proof that a change to how launches are made leaves the arguments
+    /// they pass the same.
+    #[test]
+    #[ignore]
+    fn dump_scripts() {
+        let dir =
+            PathBuf::from(std::env::var("SCRIPT_DUMP").expect("SCRIPT_DUMP names a directory"));
+        let (root, out) = (Path::new("/root"), Path::new("/out"));
+        let put = |tool: &str, name: &str, args: Vec<OsString>| {
+            let dir = dir.join(tool);
+            fs::create_dir_all(&dir).unwrap();
+            let args: Vec<String> = launch::editor_args(&args)
+                .into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            write_json(&dir.join(format!("{name}-arguments.json")), &json!(args)).unwrap();
+        };
+        let (twenty_four, sixty) = (
+            root.join("fixtures/generated/24mp.jpg"),
+            root.join("fixtures/generated/60mp.jpg"),
+        );
+        put(
+            "measure",
+            "empty-00",
+            measured_args(&out.join("empty-00"), &sixty, 0),
+        );
+        put(
+            "measure",
+            "24mp-00",
+            measured_args(&out.join("24mp-00"), &twenty_four, 1),
+        );
+        put(
+            "measure",
+            "60mp-00",
+            measured_args(&out.join("60mp-00"), &sixty, 1),
+        );
+        put(
+            "measure",
+            "repeated60mp-00",
+            measured_args(&out.join("repeated60mp-00"), &sixty, 16),
+        );
+        put(
+            "measure",
+            "idle",
+            ordinary_args(&out.join("idle-data"), &sixty),
+        );
+        let (obstacle, fixture) = (
+            out.join("not-a-directory"),
+            root.join("fixtures/s0/orientation-6.jpg"),
+        );
+        put(
+            "hardening",
+            "initialization",
+            initialization_args(&obstacle),
+        );
+        put(
+            "hardening",
+            "diagnostics-unavailable",
+            degraded_args(out, &obstacle, &fixture),
+        );
+        put(
+            "hardening",
+            "abrupt",
+            ordinary_args(&out.join("abrupt"), &fixture),
+        );
+    }
 }
