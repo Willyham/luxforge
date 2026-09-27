@@ -188,6 +188,7 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The desktop exports the displayed entry, including a history preview, and never a draft.
 - The suggested name counts up (`-edited-2.jpg`) when `-edited.jpg` is taken.
 - Keep metadata carries exactly the design's EXIF field set, and no IPTC or XMP.
+- The encoder is libjpeg-turbo through the `mozjpeg` crate at its fastest profile: baseline, 4:4:4, one interleaved scan, standard Huffman tables. It is more than twice as fast as the `image` encoder at the same output; the comparison is in the [export design](design/export.md#decisions).
 - The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
 
@@ -201,7 +202,6 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
-- Which JPEG encoder should export use? The owner prefers a faster existing package than the pinned `image` encoder; the comparison and the decode discrepancy are recorded in the [export design](design/export.md#decisions).
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?

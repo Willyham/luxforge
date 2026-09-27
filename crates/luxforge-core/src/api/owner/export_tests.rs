@@ -289,7 +289,7 @@ fn difference(path: &Path, frame: &crate::Raster) -> ([f64; 3], [u8; 3], f64) {
 /// What quality 90 at full-resolution chroma may change: measured on the quadrant fixture, whose
 /// only detail is its hard quadrant edges. Away from them an export decodes within a code or two
 /// of the render (per-channel means 0.4 to 1.2); the blocks straddling an edge ring, which is
-/// where about 3.7% of the pixels differ by more than [`NEAR`] and the maximum of 67 is.
+/// where about 3.6% of the pixels differ by more than [`NEAR`] and the maximum of 65 is.
 fn assert_matches(path: &Path, frame: &crate::Raster, what: &str) {
     assert_encodes(path, frame, what);
     let (mean, max, far) = difference(path, frame);
