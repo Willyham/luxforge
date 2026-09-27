@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Remove the local-file source from `module.resource.install`, so a resource installs only from its pinned URL and no client can make the owner read a path.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. The agent contract says a live-session client can never grant itself access to files, networks or photos (docs/design/architecture.md); the file install source lets any client do exactly the first of those.",
@@ -86,7 +86,7 @@
     {
       "id": "TASK-002",
       "description": "At the grant cap, evict the oldest live remote-image-request grant instead of refusing a new one, and have `module.status` report grant and denial counts rather than every record.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Consent is per asset by decision (docs/decisions.md, Module capabilities), so work that sends many photos leaves one live grant per photo and nothing today ever retires one.",

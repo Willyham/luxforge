@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Make fixture generation idempotent and derive `verify`'s fixture requirement from one table, so a checkout whose `fixtures/generated/` predates the range fixture still passes `verify --tier rendered` instead of failing at setup.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A skip in fixture generation stops the tier the owner runs at integration points before its RAW and rendered components ever run.",
@@ -75,7 +75,7 @@
     {
       "id": "TASK-002",
       "description": "Report a `verify` tier with any skipped or unrun component as incomplete, with a distinct non-zero exit naming what was skipped, and run the authentic RAW tests and `hardening` where a manifest and the full tier make them possible.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. `verify` is the honesty check the owner runs before trusting a milestone claim, and today it can report success while proving less than it looks like.",
@@ -144,7 +144,7 @@
     {
       "id": "TASK-003",
       "description": "Delete or rewrite the tests that cannot fail because they compare a value with a copy of itself or wait on a status no job reaches, and add the stroke-deletion test that actually proves a removed stroke stops affecting coverage.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A test that cannot fail is counted as coverage; there are tautologies as well as a chapter step that fabricates its own outcome instead of asserting one.",
@@ -225,7 +225,7 @@
     {
       "id": "TASK-004",
       "description": "Correct the architecture, README, contributing and design-doc drift listed below, remove the crate-name leftovers from the Luxforge rename in the masking-workspace proposal, and replace stale numbered-task citations in docs and code comments with a plain statement of current behavior.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Every session reads at least `AGENTS.md`; drift in the files it points to is paid every time.",

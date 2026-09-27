@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Make a double-click on the crop angle's rail reset the angle to 0 and send the change, instead of only rewriting the text box.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix.",
@@ -62,7 +62,7 @@
     {
       "id": "TASK-002",
       "description": "Report a truncated diagnostics log: count events dropped past the cap, write one truncation record at finish, and fail an evidence run whose log was truncated.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix.",
@@ -112,7 +112,7 @@
     {
       "id": "TASK-003",
       "description": "Refuse Undo, Redo and Restore while a draft is open, through the one refusal rule, with the reason in the status bar.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix.",
@@ -264,7 +264,7 @@
     {
       "id": "TASK-005",
       "description": "Put the crop fully on the one draft driver: the shared commit, cancel and reapply messages, one refusal behind Apply, one conflict notice, a frame opened from the recipe rows with no change queue, and the crop's values and geometry taken from the core.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
