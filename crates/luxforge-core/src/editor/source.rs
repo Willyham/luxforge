@@ -120,8 +120,12 @@ pub(crate) struct FilePreparation {
 }
 
 impl FilePreparation {
-    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
-        validate_source_recipe(asset, recipe)?;
+    fn for_recipe(
+        registry: &crate::ModuleRegistry,
+        asset: &AssetRecord,
+        recipe: &crate::Recipe,
+    ) -> Result<Self, Error> {
+        validate_source_recipe(registry, asset, recipe)?;
         let raw = match &asset.source {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
@@ -262,7 +266,7 @@ impl EditorService {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
-        FilePreparation::for_recipe(&state.asset, &entry.snapshot.recipe)
+        FilePreparation::for_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
@@ -297,7 +301,7 @@ impl EditorService {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
         let cached = self.cached_state(asset_id)?.is_some();
         let needs_development = match development_gains(&state.asset, &entry.snapshot.recipe)? {
             Some(gains) => cached && self.raw_development(asset_id, gains)?.is_some(),
@@ -342,7 +346,7 @@ impl EditorService {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
         self.preparation_needs(Evaluated::exactly(
             &state.asset,
             &entry.id,
@@ -641,31 +645,35 @@ impl EditorService {
     }
 }
 
+/// Admit `recipe` as a stack of `asset`'s source kind.
+///
+/// Every layer's effect must list the asset's kind among its declared `sources`
+/// ([`crate::EffectDescriptor::applies_to`]); a layer of an effect no provider declares is left to
+/// the registry's own refusal, which reports it as an unavailable edit. A RAW stack also keeps the
+/// RAW source's own invariants, which are not a matter of declaration: exactly one development
+/// layer at index zero, whose calibration equals the original's. `O(layers)`, no allocation.
 pub(super) fn validate_source_recipe(
+    registry: &crate::ModuleRegistry,
     asset: &AssetRecord,
     recipe: &crate::Recipe,
 ) -> Result<(), Error> {
-    match asset.source {
-        SourceKind::Jpeg => {
-            if recipe
-                .layers
-                .iter()
-                .any(|layer| layer.effect_id == crate::RAW_EFFECT)
-            {
-                return Err(Error::incompatible(
-                    "JPEG recipe contains a RAW source layer",
-                ));
-            }
+    let kind = asset.source.tag();
+    for layer in &recipe.layers {
+        if let Some((module, effect)) = registry.effect(&layer.effect_id)
+            && !effect.applies_to(kind)
+        {
+            return Err(Error::incompatible(crate::modules::not_applicable(
+                &module.descriptor().title,
+                kind,
+            )));
         }
-        SourceKind::Raw { ref metadata } => {
-            let payload = raw_payload(recipe)?;
-            if payload.as_shot_gains != metadata.as_shot_gains
-                || payload.cam_xyz != metadata.cam_xyz
-            {
-                return Err(Error::incompatible(
-                    "RAW source layer calibration differs from original",
-                ));
-            }
+    }
+    if let SourceKind::Raw { ref metadata } = asset.source {
+        let payload = raw_payload(recipe)?;
+        if payload.as_shot_gains != metadata.as_shot_gains || payload.cam_xyz != metadata.cam_xyz {
+            return Err(Error::incompatible(
+                "RAW source layer calibration differs from original",
+            ));
         }
     }
     Ok(())
@@ -817,12 +825,12 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
             "RAW recipe is missing its required source layer",
         ));
     };
-    if layer.effect_id != crate::RAW_EFFECT
+    if !crate::modules::is_raw_development(layer)
         || recipe
             .layers
             .iter()
             .skip(1)
-            .any(|layer| layer.effect_id == crate::RAW_EFFECT)
+            .any(crate::modules::is_raw_development)
     {
         return Err(Error::incompatible(
             "RAW recipe needs exactly one source layer at index zero",
@@ -1063,7 +1071,26 @@ mod tests {
         let snapshot = Snapshot::original(asset.id.clone())
             .with_layer_inserted(0, payload.layer(layer_id.clone()))
             .unwrap();
-        validate_source_recipe(&asset, &snapshot.recipe).unwrap();
+        let registry = crate::ModuleRegistry::builtin();
+        validate_source_recipe(&registry, &asset, &snapshot.recipe).unwrap();
+        // The same stack on a JPEG is refused by the effect's declared sources, worded from its
+        // module's descriptor rather than from its identity.
+        let jpeg = AssetRecord {
+            source: SourceKind::Jpeg,
+            ..asset.clone()
+        };
+        let (module, _) = registry
+            .effect(&snapshot.recipe.layers[0].effect_id)
+            .expect("the development's provider");
+        let refused = validate_source_recipe(&registry, &jpeg, &snapshot.recipe).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            refused.detail,
+            format!(
+                "{} does not apply to a JPEG photo",
+                module.descriptor().title
+            )
+        );
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {
@@ -1074,7 +1101,9 @@ mod tests {
             let mut recipe = snapshot.recipe.clone();
             recipe.layers[0] = corrupted.layer(layer_id.clone());
             assert_eq!(
-                validate_source_recipe(&asset, &recipe).unwrap_err().kind,
+                validate_source_recipe(&registry, &asset, &recipe)
+                    .unwrap_err()
+                    .kind,
                 ErrorKind::Incompatible,
                 "{calibration}"
             );

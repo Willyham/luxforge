@@ -1,5 +1,9 @@
 //! The canvas model: the photograph, the mode strip, the draft bar and the notices over it.
-use crate::state::{Inputs, number::number_text, tools::canvas_pick};
+use crate::state::{
+    Inputs,
+    number::number_text,
+    tools::{applies, canvas_pick, module_of},
+};
 use luxforge_core::{
     Availability, CanvasInteraction, ErrorKind, MASK_MODE, ModuleDescriptor, POINTER_MODE, Zoom,
 };
@@ -178,7 +182,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         inputs
             .modules
             .iter()
-            .filter(|module| module.is_available())
+            .filter(|module| module.is_available() && applies(module, inputs.state))
             .filter(|module| !module.developer || inputs.developer)
             .filter_map(|module| match module.canvas.as_ref() {
                 Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
@@ -207,14 +211,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         draft_bar: draft_bar(inputs),
         notices: notices(inputs),
         // A click on the photograph belongs to the canvas mode that is on screen, so the surface
-        // takes picks only while a mode declaring one is active. A sensor pick also needs a RAW
-        // source behind it, which is the one thing the descriptor cannot say.
+        // takes picks only while a mode declaring one is active, and only while the module whose
+        // mode it is applies to the photo's source kind, as its effects declare. A host mode
+        // belongs to no module and applies to every photo.
         picking: editable
             && canvas_pick(inputs.modules, &inputs.session.workspace.mode).is_some()
-            && (inputs.session.workspace.mode != "luxforge.raw"
-                || inputs.state.is_some_and(|state| {
-                    matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                })),
+            && module_of(inputs.modules, &inputs.session.workspace.mode)
+                .is_none_or(|module| applies(module, inputs.state)),
         pointer: inputs.pointer,
         surface_mode: if inputs.crop_space {
             SurfaceMode::Pan

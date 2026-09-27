@@ -944,21 +944,7 @@ impl Editor {
             palette_open: self.palette_open,
             export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
-            modes: self
-                .modules
-                .iter()
-                .filter(|module| module.is_available())
-                .filter(|module| {
-                    module.id != "luxforge.raw"
-                        || self.state.as_ref().is_some_and(|state| {
-                            matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                        })
-                })
-                .filter_map(|module| {
-                    let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
-                    Some((letter, module.id.clone()))
-                })
-                .collect(),
+            modes: crate::state::tools::mode_shortcuts(&self.modules, self.state.as_ref()),
         }
     }
 

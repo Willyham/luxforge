@@ -174,6 +174,7 @@ impl Hold {
                         order: 0,
                         artifacts: false,
                         single: false,
+                        sources: Vec::new(),
                         maskable: false,
                     }],
                     availability: Availability::Available,

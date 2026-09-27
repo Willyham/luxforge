@@ -117,6 +117,7 @@ impl CropModule {
                     maskable: false,
                     artifacts: false,
                     single: true,
+                    sources: Vec::new(),
                 }],
                 actions: vec![
                     ActionDescriptor {

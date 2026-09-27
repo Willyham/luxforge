@@ -46,7 +46,7 @@ impl EditorService {
         target: &MaskTarget,
         parameters: &Map<String, Value>,
     ) -> Result<MaskOutcome, Error> {
-        validate_source_recipe(asset, recipe)?;
+        validate_source_recipe(&self.registry, asset, recipe)?;
         let seed = self.mask_colour_seed(asset, command, recipe, target, parameters)?;
         let outcome =
             crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)?;
@@ -183,7 +183,7 @@ impl EditorService {
         let entry = self.entry(asset_id, entry_id)?;
         let asset = &state.asset;
         let recipe = &entry.snapshot.recipe;
-        validate_source_recipe(asset, recipe)?;
+        validate_source_recipe(&self.registry, asset, recipe)?;
         let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
         let sampled = self
             .bound(recipe)

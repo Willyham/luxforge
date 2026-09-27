@@ -35,7 +35,6 @@ pub use crop::geometry::{
     guide_angle, largest_with_ratio_inside,
 };
 pub use crop::{CROP_EFFECT, CropModule};
-pub(crate) use descriptor::title_case;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, IdentityKind,
@@ -47,6 +46,7 @@ pub use descriptor::{
 pub(crate) use descriptor::{
     check_declaration, check_declared_values, check_parameter_declarations,
 };
+pub(crate) use descriptor::{not_applicable, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
 pub use pixel::{PIXEL_EFFECT, PixelModule};
 pub use presence::{PRESENCE_EFFECT, PresenceModule};
@@ -54,9 +54,10 @@ pub use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
+pub(crate) use raw::is_raw_development;
 pub use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
-pub use raw::{RAW_EFFECT, RawModule, RawPayload, WhiteBalanceMode};
+pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 #[cfg(test)]
 pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,

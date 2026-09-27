@@ -69,12 +69,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
     let applicable: Vec<_> = inputs
         .modules
         .iter()
-        .filter(|module| {
-            module.id != "luxforge.raw"
-                || inputs.state.is_some_and(|state| {
-                    matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                })
-        })
+        .filter(|module| crate::state::tools::applies(module, inputs.state))
         .cloned()
         .collect();
     let mut raw = palette_entries(&applicable, inputs.developer);

@@ -1625,7 +1625,7 @@ mod tests {
             .clone();
         let other = modules
             .iter()
-            .find(|module| module.id != pixel && module.id != "luxforge.raw")
+            .find(|module| module.id != pixel && module.applies_to(luxforge_core::SourceTag::Jpeg))
             .expect("a second module")
             .id
             .clone();
@@ -2948,5 +2948,133 @@ mod tests {
             !form(&scene).can_create,
             "capture reads the displayed photograph"
         );
+    }
+
+    /// What a photo offers follows the source kinds each module's effects declare, and nothing
+    /// here names a module: the kind-specific modules are found by their declarations. On a JPEG
+    /// and on a RAW photo, a module has a section, palette entries, its mode shortcut, a place in
+    /// the mode strip and a pick gate only when it applies to that kind, and every other module
+    /// offers the same on both.
+    #[test]
+    fn sections_palette_shortcuts_and_the_pick_gate_follow_the_declared_sources() {
+        use luxforge_core::SourceTag;
+        let modules = descriptors();
+        let every_kind = |module: &ModuleDescriptor| {
+            SourceTag::ALL
+                .into_iter()
+                .all(|kind| module.applies_to(kind))
+        };
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.applies_to(SourceTag::Raw)
+                    && !module.applies_to(SourceTag::Jpeg)),
+            "a registered module applies only to RAW photos"
+        );
+        // The module that owns a palette entry: the declarer of its action or reset, or its mode.
+        let owner = |action: &palette::PaletteAction| -> Option<String> {
+            match action {
+                palette::PaletteAction::Run { action, .. } => modules
+                    .iter()
+                    .find(|module| {
+                        module.action(action).is_some()
+                            || module
+                                .reset
+                                .as_ref()
+                                .is_some_and(|reset| &reset.action == action)
+                    })
+                    .map(|module| module.id.clone()),
+                palette::PaletteAction::Mode(mode) => Some(mode.clone()),
+                _ => None,
+            }
+        };
+        let mut offered = Vec::new();
+        for kind in SourceTag::ALL {
+            let label = kind.label();
+            let mut scene = Scene::new(modules.clone()).opened(Vec::new());
+            scene.developer = true;
+            if kind == SourceTag::Raw {
+                scene.state.as_mut().expect("an asset").asset.source =
+                    crate::state::testing::raw_source();
+            }
+            assert_eq!(
+                scene.state.as_ref().map(|state| state.asset.source.tag()),
+                Some(kind)
+            );
+            let workspace = scene.derive();
+            let sections: Vec<&str> = workspace
+                .tools
+                .all()
+                .map(|section| section.module_id.as_str())
+                .collect();
+            let listed: HashSet<String> = workspace
+                .palette
+                .entries
+                .iter()
+                .filter_map(|entry| owner(&entry.action))
+                .collect();
+            let shortcuts = tools::mode_shortcuts(&scene.modules, scene.state.as_ref());
+            for module in &modules {
+                let applies = module.applies_to(kind);
+                let id = &module.id;
+                assert_eq!(
+                    sections.contains(&id.as_str()),
+                    applies,
+                    "{id} has a section on a {label} photo exactly when it applies"
+                );
+                assert!(
+                    applies || !listed.contains(id),
+                    "{id} offers no palette entry on a {label} photo"
+                );
+                assert!(
+                    applies || !workspace.canvas.modes.iter().any(|mode| &mode.id == id),
+                    "{id} is in the mode strip only where it applies"
+                );
+                let letter = module
+                    .canvas
+                    .as_ref()
+                    .and_then(|canvas| canvas.shortcut())
+                    .and_then(|shortcut| shortcut.chars().next());
+                if let Some(letter) = letter.filter(|_| module.is_available()) {
+                    assert_eq!(
+                        shortcuts.contains(&(letter, id.clone())),
+                        applies,
+                        "{id}'s shortcut on a {label} photo"
+                    );
+                }
+                // The gate: a module's pick mode takes clicks only on a photo it applies to.
+                if tools::canvas_pick(&scene.modules, id).is_some() {
+                    scene.session.workspace.mode = id.clone();
+                    assert_eq!(
+                        scene.derive().canvas.picking,
+                        applies,
+                        "{id}'s pick on a {label} photo"
+                    );
+                    scene.session.workspace.mode = POINTER_MODE.into();
+                }
+            }
+            offered.push(listed);
+        }
+        // A kind-specific module is offered on its own kind, and every other module offers the
+        // same entries on both.
+        for module in modules.iter().filter(|module| !every_kind(module)) {
+            for (kind, listed) in SourceTag::ALL.into_iter().zip(&offered) {
+                assert_eq!(
+                    listed.contains(&module.id),
+                    module.applies_to(kind),
+                    "{} in the palette on a {} photo",
+                    module.id,
+                    kind.label()
+                );
+            }
+        }
+        let shared = |listed: &HashSet<String>| -> HashSet<String> {
+            listed
+                .iter()
+                .filter(|id| tools::module_of(&modules, id).is_none_or(&every_kind))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(shared(&offered[0]), shared(&offered[1]));
     }
 }

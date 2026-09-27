@@ -211,7 +211,8 @@ impl EditorService {
     /// names: the one path that plans an action for a commit, a draft or a composite's step, and
     /// answers a query.
     ///
-    /// The module must be available; the stack must be `asset`'s kind of stack; its artifacts are
+    /// The module must be available and apply to `asset`'s source kind
+    /// ([`crate::ModuleDescriptor::applies_to`]); the stack must be `asset`'s kind of stack; its artifacts are
     /// bound; a mask target must be one the stack holds; and the module sees the stack of that
     /// target ([`recipe_for_target`]) through a lazy [`StageContext`]
     /// ([`Self::with_stage_context`]). `question` receives the context and the whole bound stack,
@@ -225,7 +226,10 @@ impl EditorService {
         question: impl FnOnce(&StageContext<'_>, &Recipe) -> Result<T, Error>,
     ) -> Result<T, Error> {
         available(module)?;
-        validate_source_recipe(asset, recipe)?;
+        // A module that does not apply to the photo's kind is refused by its declaration, before
+        // it sees anything of a stack it has nothing to say about.
+        module.descriptor().check_applies_to(asset.source.tag())?;
+        validate_source_recipe(&self.registry, asset, recipe)?;
         // Planning compiles the stack, so its artifacts are bound first.
         let bound = self.bound(recipe)?;
         // A target the stack does not hold is refused here, before a module plans anything.

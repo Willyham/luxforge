@@ -6,7 +6,7 @@ use super::{
     EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor,
     ParameterDescriptor, Processing, ResetAction, Stage, StageContext, ToolModule,
 };
-use crate::{EFFECT_FORMAT, Error, Layer, LayerId};
+use crate::{EFFECT_FORMAT, Error, Layer, LayerId, SourceTag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -30,6 +30,12 @@ const MAX_EXPOSURE_EV: f64 = 5.0;
 /// tint in range.
 const CUSTOM_START_KELVIN: f64 = 6504.0;
 const CUSTOM_START_TINT: f64 = 0.0;
+
+/// Whether `layer` is a RAW development: what the host's RAW source reads its one source layer by,
+/// so no code outside this module names the effect.
+pub(crate) fn is_raw_development(layer: &Layer) -> bool {
+    layer.effect_id == RAW_EFFECT
+}
 
 /// Refuse anything but the RAW development's own effect and format.
 fn raw_effect(effect_id: &str, format: u32) -> Result<(), Error> {
@@ -248,6 +254,7 @@ impl RawModule {
                     maskable: false,
                     artifacts: false,
                     single: false,
+                    sources: vec![SourceTag::Raw],
                 }],
                 actions: vec![
                     action(

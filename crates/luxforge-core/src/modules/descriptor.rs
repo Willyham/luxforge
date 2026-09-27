@@ -3,7 +3,7 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Error,
+    Error, SourceTag,
     capabilities::{
         descriptor::{
             ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
@@ -139,6 +139,26 @@ pub struct EffectDescriptor {
     /// Serialized only when it is true, like every other flag here.
     #[serde(default, skip_serializing_if = "is_default")]
     pub single: bool,
+    /// The source kinds a layer of this effect may exist on, named by the `kind` tags `asset.state`
+    /// reports for a photo's source (`jpeg`, `raw`). Empty, the default, is every kind, and is not
+    /// serialized, so an effect that exists on every photo describes itself exactly as it did
+    /// before kinds were declared. A module applies to a photo when any of its effects does
+    /// ([`ModuleDescriptor::applies_to`]); the host refuses an action of a module that does not
+    /// apply, and admission refuses a layer on a kind its effect does not list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceTag>,
+}
+
+impl EffectDescriptor {
+    /// Whether a layer of this effect may exist on a photo of `kind`: `O(sources)`, no allocation.
+    pub fn applies_to(&self, kind: SourceTag) -> bool {
+        self.sources.is_empty() || self.sources.contains(&kind)
+    }
+}
+
+/// What a refusal says when `title`'s module or effect does not apply to a photo of `kind`.
+pub(crate) fn not_applicable(title: &str, kind: SourceTag) -> String {
+    format!("{title} does not apply to a {} photo", kind.label())
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -1137,6 +1157,24 @@ impl ModuleDescriptor {
         matches!(self.availability, Availability::Available)
     }
 
+    /// Whether this module applies to a photo of `kind`: when any of its effects may exist on that
+    /// kind ([`EffectDescriptor::applies_to`]), or when it declares no effect at all, since a module
+    /// that writes no layer has nothing a kind could refuse. The one answer to "does this module
+    /// apply to this photo" — the host's action refusal, `module.list` and every client surface read
+    /// it. `O(effects × sources)`, no allocation.
+    pub fn applies_to(&self, kind: SourceTag) -> bool {
+        self.effects.is_empty() || self.effects.iter().any(|effect| effect.applies_to(kind))
+    }
+
+    /// [`Self::applies_to`] as a refusal: `validation: RAW does not apply to a JPEG photo`, worded
+    /// from this module's title and the kind.
+    pub fn check_applies_to(&self, kind: SourceTag) -> Result<(), Error> {
+        if self.applies_to(kind) {
+            return Ok(());
+        }
+        Err(Error::validation(not_applicable(&self.title, kind)))
+    }
+
     /// Reject every descriptor a client could not render or validate against.
     pub fn validate(&self) -> Result<(), Error> {
         if !valid_identity(&self.id) {
@@ -1161,6 +1199,18 @@ impl ModuleDescriptor {
             }
             if !effects.insert(effect.id.as_str()) {
                 return Err(Error::validation(format!("duplicate effect {}", effect.id)));
+            }
+            if let Some(repeated) = effect
+                .sources
+                .iter()
+                .enumerate()
+                .find_map(|(at, kind)| effect.sources[..at].contains(kind).then_some(kind))
+            {
+                return Err(Error::validation(format!(
+                    "effect {} lists source kind {} twice",
+                    effect.id,
+                    repeated.label()
+                )));
             }
             // A mask is stored in content-stage coordinates, so an effect whose input is not that
             // content stage has nothing to read one in: a geometry effect changes the stage and a
@@ -2735,6 +2785,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -2883,6 +2934,7 @@ mod tests {
                         maskable: false,
                         artifacts: false,
                         single: false,
+                        sources: Vec::new(),
                     }],
                     ..descriptor()
                 },
@@ -4232,6 +4284,7 @@ mod tests {
                 maskable: false,
                 artifacts: false,
                 single: false,
+                sources: Vec::new(),
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
             // `order` is always serialized, so `module.list` reports it for every effect.

@@ -175,6 +175,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             maskable: false,
             artifacts: false,
             single: false,
+            sources: Vec::new(),
         }],
         actions: vec![
             ActionDescriptor {

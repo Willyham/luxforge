@@ -18,8 +18,9 @@ use crate::{
 };
 use luxforge_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CropStage, CurveBackground, EffectStage, EntryId, MAX_ANGLE, MIN_ANGLE, MaskId,
-    ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration, ResetAction,
+    CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, MAX_ANGLE,
+    MIN_ANGLE, MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind,
+    RailDecoration, ResetAction, SourceTag,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -515,11 +516,7 @@ impl ToolsModel {
             if masking && !module.effects.iter().any(|effect| effect.maskable) {
                 continue;
             }
-            if module.id == "luxforge.raw"
-                && !inputs.state.is_some_and(|state| {
-                    matches!(state.asset.source, luxforge_core::SourceKind::Raw { .. })
-                })
-            {
+            if !applies(module, inputs.state) {
                 continue;
             }
             if module.developer && !inputs.developer {
@@ -2062,6 +2059,37 @@ pub(crate) fn published_method(action: &str) -> String {
     } else {
         format!("edit.{action}")
     }
+}
+
+/// Whether `module` applies to the photo `state` holds, by the core's one rule
+/// ([`ModuleDescriptor::applies_to`]) for that photo's source kind: what the tools panel's
+/// sections, the palette, the mode strip, the mode shortcuts and the canvas pick gate all read, so
+/// none of them names a module. With no photo open, a module applies when it applies to every
+/// kind, so nothing kind-specific is offered before a photo says which kind it is. `O(effects)`,
+/// no allocation.
+pub(crate) fn applies(module: &ModuleDescriptor, state: Option<&EditorState>) -> bool {
+    match state {
+        Some(state) => module.applies_to(state.asset.source.tag()),
+        None => SourceTag::ALL
+            .into_iter()
+            .all(|kind| module.applies_to(kind)),
+    }
+}
+
+/// The mode shortcut letters the keyboard answers: one per available module that declares a canvas
+/// shortcut and applies to the photo `state` holds, with the mode it enters.
+pub(crate) fn mode_shortcuts(
+    modules: &[ModuleDescriptor],
+    state: Option<&EditorState>,
+) -> Vec<(char, String)> {
+    modules
+        .iter()
+        .filter(|module| module.is_available() && applies(module, state))
+        .filter_map(|module| {
+            let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
+            Some((letter, module.id.clone()))
+        })
+        .collect()
 }
 
 /// The module that declares this id, when it is registered.

@@ -280,6 +280,7 @@ fn a_maskable_effect_is_refused_at_the_geometry_and_finish_stages() {
             maskable: true,
             artifacts: false,
             single: false,
+            sources: Vec::new(),
         }],
         actions: Vec::new(),
         queries: Vec::new(),

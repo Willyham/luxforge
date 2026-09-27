@@ -74,7 +74,7 @@
     {
       "id": "TASK-002",
       "description": "Declare each effect's source-kind applicability on EffectDescriptor and resolve \"does this apply to this photo\" through one function used by action refusal, admission, module.list and the desktop.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. Declared source kinds remove the desktop's name checks in the same change.",
@@ -396,7 +396,7 @@
     {
       "id": "TASK-006",
       "description": "Implement the shared Exposure and White balance control set for JPEG and RAW photos per the source-controls design, on the owner's decisions of 2026-09-27.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],

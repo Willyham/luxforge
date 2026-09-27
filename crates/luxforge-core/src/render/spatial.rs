@@ -1443,6 +1443,7 @@ mod tests {
                     maskable: true,
                     artifacts: false,
                     single: false,
+                    sources: Vec::new(),
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),
