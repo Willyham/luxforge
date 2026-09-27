@@ -27,6 +27,7 @@ pub use widgets::*;
 
 mod gallery;
 mod gallery_components;
+mod gallery_masks;
 mod gallery_panels;
 mod gallery_performance;
 
@@ -44,7 +45,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// Names the exact gallery states in draw order for the real-app evidence board.
 #[doc(hidden)]
 pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)> {
-    const NAMES: [&str; 86] = [
+    const NAMES: [&str; 101] = [
         "Highlights · resting slider",
         "Exposure · dragging slider",
         "Contrast · editing slider value",
@@ -131,6 +132,21 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Crop and straighten · drafting",
         "Crop and straighten · idle",
         "Pixel · field rows",
+        "Mask rows · resting, open, hidden and neutral",
+        "Mask rows · menu open, disabled",
+        "Coverage thumbnails · grid, sampled down, pending",
+        "Component rows · fixed Add, inverted, Subtract, Intersect, each kind",
+        "Component rows · selected, hovered, menu open, disabled, a refusal",
+        "Mode control · each mode, fixed, disabled",
+        "Overlay · tint, selection on black, off",
+        "New mask · button, count and kind menu",
+        "Add row · Add component as Subtract, New mask at the limit",
+        "Group rules · open mask with menu, armed brush",
+        "Component fields · a radial's six in two columns",
+        "Component fields · typing and refused",
+        "Toggle rows · with hints, plain, disabled",
+        "Colour range swatches · three of five, picking, full",
+        "Brush strokes · deletable and refused",
     ];
     let states = gallery_states();
     assert_eq!(
@@ -146,6 +162,6 @@ mod tests {
     #[test]
     fn gallery_builds_every_widget_state_without_panicking() {
         let states = super::gallery_named_states();
-        assert_eq!(states.len(), 86);
+        assert_eq!(states.len(), 101);
     }
 }

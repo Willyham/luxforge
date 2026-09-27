@@ -9,9 +9,12 @@ mod button_row;
 mod chip;
 mod color_picker;
 mod color_swatch;
+mod coverage_thumbnail;
 mod curve_editor;
 mod disclosure_heading;
 mod double_click;
+mod dropdown;
+mod field_grid;
 mod floating_bar;
 mod focus_control;
 mod histogram;
@@ -19,11 +22,14 @@ mod icon_button;
 mod inline_menu;
 mod job_row;
 mod list_row;
+mod mask_row;
 mod menu_choice;
 mod metric_row;
+mod mode_control;
 mod mode_strip;
 mod notice_card;
 mod number_field;
+mod overlay_control;
 mod popover;
 mod readout_card;
 mod section_header;
@@ -33,6 +39,7 @@ mod slider_guard;
 mod sparkline;
 mod stepper;
 mod sub_group_header;
+mod swatch_slots;
 mod tab_row;
 mod text;
 mod toggle;
@@ -49,12 +56,19 @@ pub use color_picker::{
     plane_fraction, rgb_to_hex, rgb_to_hsv,
 };
 pub use color_swatch::{ColorSwatchModel, color_swatch};
+pub use coverage_thumbnail::{
+    CoverageThumbnailModel, THUMBNAIL_CELLS, coverage_thumbnail, row_runs, thumbnail_grid,
+};
 pub use curve_editor::{
     CurveEditorEvent, CurveEditorModel, CurvePointRow, POINT_HIT_RADIUS, curve_editor, hit_test,
     point_fraction, round_fraction,
 };
 pub use disclosure_heading::disclosure_heading;
 pub use double_click::double_click;
+pub use dropdown::{
+    DropdownButtonModel, MenuEntry, MenuItem, dropdown, dropdown_button, menu_list,
+};
+pub use field_grid::{GridField, field_grid, field_grid_height, field_grid_rows};
 pub use floating_bar::{DraftBarModel, draft_bar, floating_bar};
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
@@ -67,12 +81,20 @@ pub use icon_button::{
 pub use inline_menu::inline_menu;
 pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
+pub use mask_row::{
+    ComponentRowMessages, ComponentRowModel, MaskRowMessages, MaskRowModel, StrokeRowModel,
+    component_note, component_row, mask_row, stroke_row,
+};
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
+pub use mode_control::{CombineMode, ModeControlModel, mode_control, mode_control_width, mode_ink};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip, tooltip_text};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, label_line, number_field, value_input,
+};
+pub use overlay_control::{
+    OverlayControlModel, OverlayMode, OverlayTint, overlay_control, tints_enabled,
 };
 pub use popover::{POPOVER_GAP, popover};
 pub use readout_card::{readout_card, readout_card_height};
@@ -85,11 +107,13 @@ pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::{SparklineModel, sparkline, sparkline_points};
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper, stepper_rail_width};
 pub use sub_group_header::{
-    SubGroupHeaderModel, sub_group_header, sub_group_header_height, sub_group_header_with_actions,
+    GroupRuleModel, SubGroupHeaderModel, group_rule, sub_group_header, sub_group_header_height,
+    sub_group_header_with_actions,
 };
+pub use swatch_slots::{SwatchSlotsModel, empty_slots, swatch_slots};
 pub use tab_row::{Tab, TabRowModel, tab_row, tab_row_height};
 pub use text::{
     caption, control_label, error_caption, group_label, label, section_label, title, value_text,
 };
-pub use toggle::{ToggleModel, knob_center, toggle};
+pub use toggle::{ToggleModel, compact_toggle, knob_center, toggle};
 pub use truncated_text::{ELLIPSIS, Fit, TruncatedText, fit_one_line, truncated_text};

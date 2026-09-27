@@ -606,5 +606,6 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.extend(crate::gallery_components::gallery_components());
     states.extend(crate::gallery_panels::gallery_panels());
     states.extend(crate::gallery_panels::gallery_panel_rows());
+    states.extend(crate::gallery_masks::gallery_masks());
     states
 }
