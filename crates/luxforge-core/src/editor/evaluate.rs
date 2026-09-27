@@ -651,9 +651,10 @@ fn saved(entry_id: Option<&EntryId>) -> AnalysisSelection<'_> {
 
 /// The capture metadata the source worker read from the original when it prepared it.
 fn capture_of(prepared: &PreparedSource) -> Arc<CaptureMetadata> {
-    // TODO(export-metadata): read the prepared source's carried metadata once it lands.
-    let _ = prepared;
-    Arc::default()
+    match prepared {
+        PreparedSource::Jpeg(image) => image.capture.clone(),
+        PreparedSource::Raw(raw) => raw.capture.clone(),
+    }
 }
 
 #[cfg(test)]
