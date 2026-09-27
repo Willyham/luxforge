@@ -12,7 +12,7 @@ use super::number_field::{BoxSize, NumberFieldModel, invalid, outside_unit, size
 use super::text::error_caption;
 use crate::theme;
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, Row, Space, container, row, text};
+use iced::widget::{Column, Row, Space, container, mouse_area, row, text};
 use iced::{Alignment, Element, Length, Padding};
 
 /// One field of a grid, with the messages a number field publishes.
@@ -26,6 +26,8 @@ pub struct GridField<'a, M> {
     pub on_submit: M,
     /// A double-click on the label: reset.
     pub on_reset: M,
+    /// A right press on the field: the caller's context menu (Copy as JSON request).
+    pub on_menu: Option<M>,
 }
 
 /// How many rows `fields` fields take.
@@ -87,6 +89,7 @@ fn cell<'a, M: Clone + 'a>(field: GridField<'a, M>) -> Element<'a, M> {
         on_text,
         on_submit,
         on_reset,
+        on_menu,
     } = field;
     let label = double_click_when(
         text(model.label.clone())
@@ -112,11 +115,15 @@ fn cell<'a, M: Clone + 'a>(field: GridField<'a, M>) -> Element<'a, M> {
     if let Some(unit) = outside_unit(&model.unit) {
         line = line.push(unit);
     }
-    line.spacing(theme::GRID_LABEL_SPACING)
+    let line = line
+        .spacing(theme::GRID_LABEL_SPACING)
         .align_y(Alignment::Center)
         .height(Length::Fixed(theme::GRID_ROW_HEIGHT))
-        .width(Length::Fill)
-        .into()
+        .width(Length::Fill);
+    match on_menu {
+        Some(menu) => mouse_area(line).on_right_press(menu).into(),
+        None => line.into(),
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +163,7 @@ mod tests {
             on_text: Box::new(|_| 1),
             on_submit: 2,
             on_reset: 3,
+            on_menu: Some(4),
         };
         let _: Element<'_, u8> = field_grid(vec![
             field("x", ValueEdit::Display, None),

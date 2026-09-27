@@ -133,7 +133,7 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Crop and straighten · idle",
         "Pixel · field rows",
         "Mask rows · resting, open, hidden and neutral",
-        "Mask rows · menu open, disabled",
+        "Mask rows · menu open, renamed in place, disabled",
         "Coverage thumbnails · grid, sampled down, pending",
         "Component rows · fixed Add, inverted, Subtract, Intersect, each kind",
         "Component rows · selected, hovered, menu open, disabled, a refusal",

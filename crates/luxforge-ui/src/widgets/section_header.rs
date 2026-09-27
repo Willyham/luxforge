@@ -166,6 +166,65 @@ pub fn section_header<'a, M: Clone + 'a>(
         .into()
 }
 
+/// A panel's own band drawn as a module band, as the Masks panel draws its band: the border above,
+/// the disclosure, the title, the accent dot when `active`, and `hint` right-aligned whether the
+/// band is expanded or not. It has no reset, no scope and no unavailable state, because it is not
+/// a module; a press anywhere on it publishes `on_toggle`.
+pub fn band_header<'a, M: Clone + 'a>(
+    title: &str,
+    active: bool,
+    hint: Option<String>,
+    expanded: bool,
+    on_toggle: M,
+) -> Element<'a, M> {
+    let chevron = if expanded {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    let mut leading = row![
+        icon(chevron, theme::DISCLOSURE_SIZE, theme::TEXT_SECONDARY),
+        text(title.to_owned())
+            .size(theme::SIZE_TITLE)
+            .font(theme::FONT_SEMIBOLD)
+            .wrapping(Wrapping::None)
+            .color(theme::TEXT_PRIMARY),
+    ]
+    .spacing(theme::MODULE_HEADER_SPACING)
+    .align_y(Alignment::Center);
+    if active {
+        leading = leading.push(accent_dot());
+    }
+    let trailing: Element<'a, M> = match hint {
+        Some(hint) => container(
+            truncated_text(hint, theme::SIZE_CAPTION, theme::FONT, theme::TEXT_TERTIARY)
+                .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into())),
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Right)
+        .into(),
+        None => Space::new().width(Length::Fill).into(),
+    };
+    let header = row![container(leading).width(Length::Shrink), trailing]
+        .spacing(theme::MODULE_HEADER_SPACING)
+        .align_y(Alignment::Center)
+        .height(Length::Fill);
+    let band = button(header)
+        .padding(Padding {
+            top: 0.0,
+            right: theme::MODULE_HEADER_PADDING_RIGHT,
+            bottom: 0.0,
+            left: theme::MODULE_HEADER_PADDING_LEFT,
+        })
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::MODULE_HEADER_HEIGHT))
+        .style(theme::button_band)
+        .on_press(on_toggle);
+    column![hairline(theme::band_border_surface), band]
+        .width(Length::Fill)
+        .into()
+}
+
 /// Renders a whole module section: its band and, when `body` is given, the body under it with the
 /// section padding and the row spacing. The caller passes `None` for a collapsed or unavailable
 /// section.
@@ -277,6 +336,17 @@ mod tests {
             );
         }
         assert_eq!(collapsed_section_height(), 33.0);
+    }
+
+    /// The Masks band is a module band: every state builds, and its hint is drawn expanded too.
+    #[test]
+    fn the_masks_band_builds_expanded_and_collapsed() {
+        for (active, expanded, hint) in [
+            (true, true, Some("3 masks · Esc leaves Mask mode".to_owned())),
+            (false, false, None),
+        ] {
+            let _: Element<'_, ()> = band_header("Masks", active, hint, expanded, ());
+        }
     }
 
     /// The Module panels design's resulting heights at 300 pt: a collapsed section is 33 pt, and

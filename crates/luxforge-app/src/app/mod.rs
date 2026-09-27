@@ -37,6 +37,7 @@ pub(crate) mod keymap;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
+pub(crate) mod mask_panel;
 pub(crate) mod masks;
 #[cfg(test)]
 mod masks_tests;
@@ -425,8 +426,14 @@ pub(crate) struct Editor {
     /// The erase modifier is held down. It is read when a stroke starts and then frozen, so letting
     /// the key go mid-stroke does not turn an erase into an add halfway along the path.
     pub(crate) brush_erase_held: bool,
-    /// The open mask's name as it is being typed in the rename field.
-    pub(crate) mask_name: String,
+    /// The Masks panel's one text field while it is open: a row renamed in place, a field of the
+    /// open gesture or a brush number being typed. View state; nothing is sent until Enter.
+    pub(crate) mask_typing: Option<crate::state::masks::MaskTyping>,
+    /// The Masks band is collapsed, hiding everything down to the adjustments. View state.
+    pub(crate) masks_collapsed: bool,
+    /// A reorder by drag in progress in the Masks panel: the row picked up by its handle and the
+    /// row under the pointer. View state; the release sends one reorder.
+    pub(crate) mask_drag: Option<crate::state::masks::MaskDrag>,
     /// The method and parameters of the last `mask.*` command this desktop sent. Correlated
     /// evidence: a captured frame and a driven run can both say which request produced the stack on
     /// screen, without reconstructing it from the panel afterwards.
@@ -658,7 +665,9 @@ impl Editor {
             mask_mode: luxforge_core::ComponentMode::Add,
             brush: crate::mask_draft::NEUTRAL_BRUSH,
             brush_erase_held: false,
-            mask_name: String::new(),
+            mask_typing: None,
+            masks_collapsed: false,
+            mask_drag: None,
             last_mask_request: None,
             mask_command_in_flight: false,
             mask_overlay_pending: None,
@@ -903,7 +912,9 @@ impl Editor {
             mask_mode: self.mask_mode,
             brush: self.brush,
             brush_erase_held: self.brush_erase_held,
-            mask_name: &self.mask_name,
+            mask_typing: self.mask_typing.as_ref(),
+            masks_collapsed: self.masks_collapsed,
+            mask_drag: self.mask_drag.as_ref(),
             // The generated sections follow the open mask while Mask mode is active, and the global
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
@@ -1070,6 +1081,22 @@ impl Editor {
                 self.state.as_ref(),
                 self.section_target(),
             ),
+            mask_typing: self.mask_typing.is_some(),
+            mask_menu_open: self.mask_menu_open(),
+            kind_menu: self.kind_menu_open().map(|menu| {
+                let letters = self
+                    .workspace
+                    .masks
+                    .kinds
+                    .iter()
+                    .filter_map(|kind| Some((kind.letter?, kind.kind.clone())))
+                    .collect();
+                (menu, letters)
+            }),
+            mask_keys: self.mask_mode_active()
+                && self
+                    .mask_shape()
+                    .is_none_or(|shape| shape.brush().is_some()),
         }
     }
 
@@ -1086,6 +1113,11 @@ impl Editor {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![iced::event::listen_with(keymap::raw_event)];
+        // A reorder by drag ends wherever the button comes up, inside the panel or not, so its
+        // release is heard window-wide — and only while a row is being dragged.
+        if self.mask_drag.is_some() {
+            subscriptions.push(iced::event::listen_with(keymap::drag_release));
+        }
         // A blocked channel stream costs no idle work. It remains installed while a photograph is
         // open because the surface may defer an upload in `prepare`, after this update's
         // subscription set was computed. Its retirement wake must have a listener then.

@@ -238,7 +238,7 @@ pub(crate) fn sized_icon_button<'a, M: Clone + 'a>(
 }
 
 /// `content` with a caption-sized tooltip on the Bar surface, as every icon button draws one.
-pub(crate) fn with_tooltip<'a, M: 'a>(
+pub fn with_tooltip<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
     label: String,
     position: tooltip::Position,

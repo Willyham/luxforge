@@ -2,8 +2,9 @@
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
 use crate::app::message::{
-    BrushEdit, CropMessage, DraftMessage, ExportMessage, HistoryMessage, MaskMessage, Message,
-    OverlayMessage, PaletteMessage, Panel, SyncMessage, ViewMessage,
+    BrushEdit, CropMessage, DraftMessage, ExportMessage, HistoryMessage, KindMenu, MaskKey,
+    MaskMessage, Message, OverlayMessage, PaletteMessage, Panel, SyncMessage, TypingEdit,
+    ViewMessage,
 };
 use iced::{
     Event,
@@ -42,6 +43,17 @@ pub(crate) struct KeyContext {
     pub(crate) leave_to: Option<String>,
     /// The declared canvas-mode shortcut letters and the module each one selects.
     pub(crate) modes: Vec<(char, String)>,
+    /// The Masks panel's text field is open, so Escape closes it without sending anything,
+    /// whichever widget last saw the key.
+    pub(crate) mask_typing: bool,
+    /// One of the Masks panel's menus is open, so Escape closes it before anything else hears it.
+    pub(crate) mask_menu_open: bool,
+    /// The New mask or Add component menu is open, with the letter of each kind it lists: while it
+    /// is, a kind's letter starts that kind, ahead of any canvas-mode letter.
+    pub(crate) kind_menu: Option<(KindMenu, Vec<(char, String)>)>,
+    /// Mask mode is active with no shape gesture open, so the panel's keys act on its selection:
+    /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
+    pub(crate) mask_keys: bool,
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -161,6 +173,16 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if context.export_menu_open && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::View(ViewMessage::CloseMenu));
     }
+    // The Masks panel's text field answers Escape by closing with nothing sent. The field has
+    // focus and has already taken the key, so this acts whatever `status` says.
+    if context.mask_typing && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)));
+    }
+    // So does an open Masks panel menu: Escape puts the menu away before it reaches an armed brush
+    // or the mode.
+    if context.mask_menu_open && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::View(ViewMessage::CloseMenu));
+    }
     // Tab walks the generated fields; shift is the only modifier it tolerates.
     if matches!(key, Key::Named(Named::Tab))
         && !modifiers.alt()
@@ -181,6 +203,19 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     }
     if status != Status::Ignored {
         return None;
+    }
+    // While a kind menu is open its letters start its kinds. The menu is what the person is looking
+    // at, so its letters win over a canvas-mode letter that happens to be the same.
+    if let Some((menu, letters)) = &context.kind_menu
+        && !*repeat
+        && let Some((_, kind)) = letters
+            .iter()
+            .find(|(letter, _)| character(key, letter.to_string().as_str()))
+    {
+        return Some(Message::Mask(MaskMessage::Choose {
+            menu: *menu,
+            kind: kind.clone(),
+        }));
     }
     if context.crop && matches!(key, Key::Named(Named::Space)) {
         return Some(Message::Crop(CropMessage::Space(true)));
@@ -205,6 +240,30 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
                     name: if modifiers.shift() { "feather" } else { "size" }.to_owned(),
                     steps,
                 })));
+            }
+        }
+    }
+    // The Masks panel's keys, on its selection. The arrows move it, and with Option reorder it;
+    // they repeat while held, as walking a list does.
+    if context.mask_keys {
+        let step = match key {
+            Key::Named(Named::ArrowUp) => Some(-1),
+            Key::Named(Named::ArrowDown) => Some(1),
+            _ => None,
+        };
+        if let Some(step) = step {
+            return Some(Message::Mask(MaskMessage::Key(if modifiers.alt() {
+                MaskKey::Move(step)
+            } else {
+                MaskKey::Select(step)
+            })));
+        }
+        if !*repeat {
+            if matches!(key, Key::Named(Named::Backspace | Named::Delete)) {
+                return Some(Message::Mask(MaskMessage::Key(MaskKey::Delete)));
+            }
+            if character(key, "x") && !modifiers.shift() {
+                return Some(Message::Mask(MaskMessage::Key(MaskKey::Invert)));
             }
         }
     }
@@ -288,6 +347,24 @@ pub(super) fn raw_event(
     }
 }
 
+/// The left button coming up anywhere in the window: the end of a reorder by drag, which the
+/// subscription listens for only while one is in progress.
+pub(super) fn drag_release(
+    event: iced::Event,
+    _: iced::event::Status,
+    _: iced::window::Id,
+) -> Option<Message> {
+    matches!(
+        event,
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+            iced::mouse::Button::Left
+        ))
+    )
+    .then_some(Message::Mask(MaskMessage::Drag(
+        crate::app::message::DragEdit::End,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +417,10 @@ mod tests {
             mode_active: false,
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
+            mask_typing: false,
+            mask_menu_open: false,
+            kind_menu: None,
+            mask_keys: false,
         }
     }
 

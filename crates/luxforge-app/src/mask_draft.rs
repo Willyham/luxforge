@@ -118,7 +118,9 @@ mod linear;
 mod radial;
 
 pub(crate) use brush::{Brush, BrushStroke, NEUTRAL_BRUSH};
-pub(crate) use editor::{DrawnShape, Grip, MaskHandle, Pen, drawable, paintable, painted_kind};
+pub(crate) use editor::{
+    DrawnShape, Grip, MaskHandle, Pen, drawable, kind_letter, paintable, painted_kind,
+};
 #[cfg(test)]
 pub(crate) use {linear::NEUTRAL, radial::NEUTRAL_RADIAL};
 

@@ -1,780 +1,1223 @@
-//! The Masks panel: the mask list, the open mask's component list and the host controls that edit
-//! them, rendered straight from [`MasksModel`] with the widget library.
+//! The Masks panel, as the masking workspace design draws it (`docs/design/masking-workspace.md`,
+//! "The Masks panel"): the Masks band, the overlay row, the mask list with New mask under it, the
+//! open mask's group rule with its Amount and Invert, its component rows with the selected one's
+//! fields, the Add row and, while a brush is in hand or selected, the Brush section. Everything is
+//! rendered straight from [`MasksModel`] with the widget library's mask widgets.
 //!
-//! Nothing here decides what a row means, and nothing is reachable only by pointer: every list edit
-//! is a button with a label, every refusal the command family makes is shown as the reason on the
-//! control it would refuse, and every number a handle can be dragged to is also a field.
-use crate::app::message::ViewMessage;
+//! Nothing here decides what a row means, and nothing is reachable only by pointer. Every list edit
+//! is a [`RowEdit`] sent through the one builder its Copy as JSON request reads, reachable from a
+//! row's menu and its keys as well as from a drag; every refusal the command family makes is a
+//! disabled item or a tooltip on the control it would refuse; and every number a handle can be
+//! dragged to is also a field.
 use crate::{
-    app::message::{BrushEdit, MaskMessage, MenuTarget, Message, PaintTarget, RowEdit},
+    app::{
+        mask_panel::{brush_field_id, draft_field_id},
+        message::{
+            BrushEdit, ControlMessage, DragEdit, DragItem, KindMenu, MaskMessage, MenuTarget,
+            Message, PaintTarget, RowEdit, TypingEdit, TypingTarget, ViewMessage,
+        },
+    },
     state::{
         histogram::HistogramModel,
-        masks::{ComponentRow, KindOption, MaskDraftModel, MaskRow, MasksModel},
+        masks::{ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
+        tools::ControlModel,
     },
-    view::tools_panel::control_view,
+    view::tools_panel::{control_copy_menu, control_target, control_view, ui_edit},
 };
 use iced::{
-    Alignment, Element, Length,
-    widget::{column, mouse_area, row},
+    Alignment, Element, Length, Padding,
+    widget::{Column, Space, column, container, mouse_area, row},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, SegmentedModel, ToggleModel, boxed_input,
-    caption, icon_button, inline_menu, list_heading, section_label, segmented, text_button, theme,
-    toggle,
+    CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
+    DropdownButtonModel, GridField, GroupRuleModel, MaskRowMessages, MaskRowModel, MenuEntry,
+    MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
+    RenameMessages, SliderModel, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
+    band_header, caption, compact_toggle, component_note, component_row, dropdown_button,
+    field_grid, group_rule, mask_row, menu_list, mode_control, overlay_control, popover, slider,
+    stroke_row, swatch_slots, theme, with_tooltip,
 };
-
-/// Run one list edit. Every list edit in this panel goes out as a [`RowEdit`], and its Copy as JSON
-/// request carries the same one through the same builder, so what is copied is what is sent.
-fn run(edit: RowEdit) -> Message {
-    Message::Mask(MaskMessage::Row(edit))
-}
-
-/// A copy beside one control: a labelled button where there is room for one, because a row control's
-/// request is that control's documentation and it is reachable from the keyboard.
-fn copy_button<'a>(label: &str, edit: RowEdit) -> Element<'a, Message> {
-    text_button(
-        label,
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        Some(Message::Mask(MaskMessage::CopyRow(edit))),
-    )
-}
-
-/// One menu entry that copies the JSON request a row control sends.
-fn copy_item(label: &str, edit: RowEdit) -> (String, Message) {
-    (label.to_owned(), Message::Mask(MaskMessage::CopyRow(edit)))
-}
 
 /// The panel's own module key, for the generated controls' group and focus keys. The mask commands
 /// belong to the host rather than to a module, and this is the name the host goes by.
 const HOST: &str = "mask";
+
+fn mask(message: MaskMessage) -> Message {
+    Message::Mask(message)
+}
+
+/// Run one list edit. Every list edit in this panel goes out as a [`RowEdit`], and its Copy as JSON
+/// request carries the same one through the same builder, so what is copied is what is sent.
+fn run(edit: RowEdit) -> Message {
+    mask(MaskMessage::Row(edit))
+}
+
+fn copy(edit: RowEdit) -> Message {
+    mask(MaskMessage::CopyRow(edit))
+}
+
+fn close_menu() -> Message {
+    Message::View(ViewMessage::CloseMenu)
+}
+
+/// Open `target`'s menu, or close it when it is the one open: a second press on a menu button puts
+/// its menu away.
+fn toggle_menu(menu: Option<&MenuTarget>, target: MenuTarget) -> Message {
+    if menu == Some(&target) {
+        close_menu()
+    } else {
+        Message::View(ViewMessage::OpenMenu(target))
+    }
+}
+
+fn typing(edit: TypingEdit) -> Message {
+    mask(MaskMessage::Typing(edit))
+}
+
+fn rename_messages<'a>() -> RenameMessages<'a, Message> {
+    RenameMessages {
+        on_text: Box::new(|text| typing(TypingEdit::Text(text))),
+        on_submit: typing(TypingEdit::Submit),
+    }
+}
+
+/// One menu item, enabled with `message` or disabled with none.
+fn item(label: impl Into<String>, message: Option<Message>) -> MenuEntry<Message> {
+    MenuEntry::Item(MenuItem {
+        icon: None,
+        label: label.into(),
+        trailing: None,
+        on_press: message,
+    })
+}
+
+/// The menu item that opens a row's Copy as JSON request list in place of its menu.
+fn copy_item(target: MenuTarget, enabled: bool) -> MenuEntry<Message> {
+    MenuEntry::Item(MenuItem {
+        icon: None,
+        label: "Copy as JSON request".into(),
+        trailing: Some("\u{203a}".into()),
+        on_press: enabled.then(|| Message::View(ViewMessage::OpenMenu(target))),
+    })
+}
 
 pub(crate) fn masks_panel<'a>(
     model: &'a MasksModel,
     menu: Option<&'a MenuTarget>,
     plot: &'a HistogramModel,
 ) -> Element<'a, Message> {
-    let mut panel = column![list_heading("Masks")]
-        .spacing(theme::SPACING)
-        .padding(theme::SPACING)
-        .width(Length::Fill);
-    if let Some(reason) = &model.disabled_reason {
-        panel = panel.push(caption(reason.clone()));
+    let count = model.masks.len();
+    let hint = format!(
+        "{count} {} \u{b7} Esc leaves Mask mode",
+        if count == 1 { "mask" } else { "masks" }
+    );
+    let band = band_header(
+        "Masks",
+        count > 0,
+        Some(hint),
+        !model.collapsed,
+        mask(MaskMessage::ToggleBand),
+    );
+    if model.collapsed {
+        return band;
     }
+    let mut list = Column::new().spacing(theme::ROW_SPACING);
+    list = list.push(overlay_row(model));
     match &model.caption {
-        Some(message) => panel = panel.push(caption(message.clone())),
+        Some(message) => list = list.push(caption(message.clone())),
         None => {
-            for mask in &model.masks {
-                panel = panel.push(mask_row(mask, menu));
-            }
+            let rows = model
+                .masks
+                .iter()
+                .map(|row| mask_row_view(model, row, menu))
+                .collect::<Vec<_>>();
+            list = list.push(drop_zone(
+                Column::with_children(rows).spacing(theme::ROW_SPACING),
+                model,
+            ));
         }
     }
-    panel = panel.push(new_mask(model));
-    panel = panel.push(brush_section(model));
-    panel = panel.push(overlay_row(model));
-    // A painted gesture's numbers are the Brush section's, so its own block has nothing left to show
-    // unless it carries a reason the gesture cannot be applied.
-    if let Some(draft) = &model.draft
-        && !(draft.painted && draft.apply_reason.is_none())
+    list = list.push(new_mask_row(model, menu));
+    // A gesture that will create a mask has no row yet, so its fields sit under New mask.
+    if let Some(draft) = model.draft.as_ref().filter(|draft| !draft.painted)
+        && model.selected.is_none()
     {
-        panel = panel.push(draft_fields(draft));
+        list = list.push(draft_grid(draft, model.enabled));
     }
-    if let Some(selected) = &model.selected {
-        panel = panel.push(rename_row(model, selected.as_str()));
-        panel = panel.push(section_label("Components"));
-        for component in &model.components {
-            panel = panel.push(component_row(component, selected.as_str(), menu, plot));
+    let mut panel = column![
+        band,
+        container(list)
+            .padding(theme::MASKS_BODY_PADDING)
+            .width(Length::Fill)
+    ]
+    .width(Length::Fill);
+    match model
+        .selected
+        .as_ref()
+        .and_then(|id| model.masks.iter().find(|row| &row.id == id))
+    {
+        Some(open) => {
+            panel = panel.push(open_mask(model, open, menu, plot));
         }
-        panel = panel.push(add_component(model));
-        // The whole-mask controls: the amount and the inversion, generated from the host's own
-        // declarations exactly as a module's controls are.
-        for control in &model.controls {
-            panel = panel.push(control_view(HOST, model.enabled, control, menu, plot));
+        // With no mask open the brush can still be in hand, painting a new mask.
+        None if model.brush_visible => {
+            panel = panel.push(
+                container(brush_section(model))
+                    .padding(theme::OPEN_MASK_PADDING)
+                    .width(Length::Fill),
+            );
         }
+        None => {}
     }
     panel.into()
 }
 
-/// One mask's row: its name, its amount, the non-neutral dot, the eye and the row menu.
-fn mask_row<'a>(mask: &'a MaskRow, menu: Option<&'a MenuTarget>) -> Element<'a, Message> {
-    let id = mask.id.as_str().to_owned();
-    let mut line = row![
-        text_button(
-            &mask.name,
-            if mask.selected {
-                ButtonTone::Primary
-            } else {
-                ButtonTone::Quiet
-            },
-            ButtonSize::Compact,
-            Some(Message::Mask(MaskMessage::Select(id.clone()))),
-        ),
-        caption(mask.amount.clone()),
-    ]
-    .spacing(theme::SPACING)
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
-    if mask.non_neutral {
-        line = line.push(caption("•"));
+/// The list while a row is dragged: leaving it lets go of the row under the pointer, so a release
+/// outside the list reorders nothing.
+fn drop_zone<'a>(list: Column<'a, Message>, model: &MasksModel) -> Element<'a, Message> {
+    if model.drag.is_some() {
+        mouse_area(list)
+            .on_exit(mask(MaskMessage::Drag(DragEdit::Over(None))))
+            .into()
+    } else {
+        list.into()
     }
-    if mask.inverted {
-        line = line.push(caption("inverted"));
-    }
-    if let Some(reason) = &mask.unavailable {
-        line = line.push(caption(reason.clone()));
-    }
-    // The eye is view state: a hidden mask still applies to the picture, and only its overlay goes.
-    // The eye reads selected while the overlay is shown, so what is drawn is visible in the row.
-    line = line.push(icon_button(
-        &IconButtonModel {
-            icon: Icon::Target,
-            tooltip: if mask.visible {
-                format!("Hide the {} overlay", mask.name)
-            } else {
-                format!("Show the {} overlay", mask.name)
-            },
-            enabled: true,
-            selected: mask.visible,
-        },
-        Some(Message::Mask(MaskMessage::ToggleVisible(id.clone()))),
-    ));
-    line = line.push(icon_button(
-        &IconButtonModel {
-            icon: Icon::ChevronDown,
-            tooltip: format!("More actions for {}", mask.name),
-            enabled: true,
-            selected: false,
-        },
-        Some(Message::View(ViewMessage::OpenMenu(MenuTarget::Mask(
-            id.clone(),
-        )))),
-    ));
-    let mut block = column![line].spacing(theme::LIST_ROW_SPACING);
-    // Reorder is a pair of labelled buttons rather than a drag handle alone, because a drag is not
-    // reachable from the keyboard and the order a mask applies in is an edit like any other.
-    if mask.selected {
-        let up = RowEdit::MoveMask {
-            mask: id.clone(),
-            index: mask.index.saturating_sub(1),
-        };
-        let down = RowEdit::MoveMask {
-            mask: id.clone(),
-            index: mask.index + 1,
-        };
-        let mut moves = row![].spacing(theme::SPACING);
-        moves = moves.push(text_button(
-            "Move up",
-            ButtonTone::Quiet,
-            ButtonSize::Compact,
-            (mask.can_move_up && mask.index > 0).then(|| run(up.clone())),
-        ));
-        moves = moves.push(text_button(
-            "Move down",
-            ButtonTone::Quiet,
-            ButtonSize::Compact,
-            mask.can_move_down.then(|| run(down.clone())),
-        ));
-        moves = moves.push(copy_button("Copy move", down));
-        block = block.push(moves);
-        if !mask.layers.is_empty() {
-            block = block.push(caption(mask.layers.join(" · ")));
-        }
-    }
-    if menu == Some(&MenuTarget::Mask(id.clone())) {
-        block = block.push(inline_menu(vec![
-            (
-                "Duplicate".to_owned(),
-                run(RowEdit::DuplicateMask(id.clone())),
-            ),
-            (
-                if mask.inverted {
-                    "Not inverted".to_owned()
-                } else {
-                    "Invert".to_owned()
-                },
-                run(RowEdit::InvertMask {
-                    mask: id.clone(),
-                    invert: !mask.inverted,
-                }),
-            ),
-            ("Delete mask".to_owned(), run(RowEdit::DeleteMask(id))),
-        ]));
-    }
-    block.into()
 }
 
-/// The open gesture's own declared fields, each nudged by the step its parameter declares. Every
-/// handle therefore has a number beside it while the gesture is open, so nothing the pointer can do
-/// is out of reach of the keyboard.
-fn draft_fields(draft: &MaskDraftModel) -> Element<'_, Message> {
-    let mut block = column![section_label(format!("{} · {}", draft.title, draft.kind))]
-        .spacing(theme::LIST_ROW_SPACING);
-    // A painted gesture's numbers are the brush's own, and the Brush section above already offers
-    // every one of them with the same declared steps. Two identical field sets is one too many.
-    let fields: &[_] = if draft.painted { &[] } else { &draft.fields };
-    for field in fields {
-        let nudge = |direction: f64| {
-            let name = field.name.clone();
-            let value = field.value + direction * field.step;
-            Message::Mask(MaskMessage::Field { name, value })
-        };
-        block = block.push(
-            row![
-                caption(field.label.clone()),
-                caption(field.text.clone()),
-                text_button(
-                    "−",
-                    ButtonTone::Quiet,
-                    ButtonSize::Compact,
-                    Some(nudge(-1.0)),
-                ),
-                text_button(
-                    "+",
-                    ButtonTone::Quiet,
-                    ButtonSize::Compact,
-                    Some(nudge(1.0))
-                ),
-            ]
-            .spacing(theme::SPACING)
-            .align_y(Alignment::Center),
-        );
+/// `row` wrapped so the pointer entering it during a drag of its list names it as the drop target.
+fn drop_target<'a>(
+    row: Element<'a, Message>,
+    dragging: bool,
+    index: usize,
+) -> Element<'a, Message> {
+    if dragging {
+        mouse_area(row)
+            .on_enter(mask(MaskMessage::Drag(DragEdit::Over(Some(index)))))
+            .interaction(iced::mouse::Interaction::Grabbing)
+            .into()
+    } else {
+        row
     }
-    if let Some(reason) = &draft.apply_reason {
-        block = block.push(caption(reason.clone()));
-    }
-    block.into()
 }
 
-/// The brush, and what it can be put down on.
-///
-/// It is its own section rather than a button in the Add row: that row is built from the kinds whose
-/// geometry is declared as numbers, and a brush's geometry is drawn, so a Brush button there would
-/// be a button with no `mask.create-brush` behind it. Every setting is a field with a label and a
-/// pair of nudges as well as a key, so nothing here is reachable only by pointer.
-///
-/// **There is no Density.** Lightroom's Density needs a build-up model along a single stroke, which
-/// would make coverage depend on the stamp spacing and therefore on the resolution; the user guide
-/// says so where a person would look for it, rather than this panel implying a control that is not
-/// there.
-fn brush_section(model: &MasksModel) -> Element<'_, Message> {
-    let brush = &model.brush;
-    let mut block = column![section_label("Brush")].spacing(theme::LIST_ROW_SPACING);
-    for field in &brush.fields {
-        let nudge = |steps: f64| {
-            Message::Mask(MaskMessage::Brush(BrushEdit::Nudge {
-                name: field.name.clone(),
-                steps,
-            }))
-        };
-        block = block.push(
-            row![
-                caption(field.label.clone()),
-                caption(field.text.clone()),
-                text_button("−", ButtonTone::Quiet, ButtonSize::Compact, {
-                    (!brush.locked).then(|| nudge(-1.0))
-                }),
-                text_button("+", ButtonTone::Quiet, ButtonSize::Compact, {
-                    (!brush.locked).then(|| nudge(1.0))
-                }),
-            ]
-            .spacing(theme::SPACING)
-            .align_y(Alignment::Center),
-        );
-    }
-    block = block.push(toggle(
-        &ToggleModel {
-            label: brush.erase_label.clone(),
-            on: brush.erase || brush.erase_held,
-            enabled: brush.enabled && !brush.locked,
-        },
-        |on| Message::Mask(MaskMessage::Brush(BrushEdit::Erase(on))),
-    ));
-    // Limit to colour, and what it is not. It holds the stroke to the colour under the brush where
-    // the stroke begins — a per-pixel colour test with no notion of an edge or of connectivity — so
-    // it is **not** Lightroom's Auto Mask and is not labelled as if it were. The caption says the
-    // difference where a person would otherwise assume it, and the user guide says it in full.
-    block = block.push(toggle(
-        &ToggleModel {
-            label: brush.limit_label.clone(),
-            on: brush.limit,
-            enabled: brush.enabled && !brush.locked && brush.limit_reason.is_none(),
-        },
-        |on| Message::Mask(MaskMessage::Brush(BrushEdit::LimitToColour(on))),
-    ));
-    if let Some(reason) = &brush.limit_reason {
-        block = block.push(caption(reason.clone()));
-    } else if brush.limit {
-        block = block.push(caption(
-            "Holds the colour under the brush where the stroke starts · a colour test, not edge detection: it also paints that colour elsewhere the stroke reaches",
-        ));
-    }
-    let mut actions = row![].spacing(theme::SPACING).align_y(Alignment::Center);
-    actions = actions.push(text_button(
-        "Paint new mask",
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        (brush.enabled && model.create_reason.is_none())
-            .then(|| Message::Mask(MaskMessage::Paint(PaintTarget::NewMask))),
-    ));
-    actions = actions.push(text_button(
-        "Paint on this mask",
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        (brush.enabled && brush.can_add && model.add_reason.is_none())
-            .then(|| Message::Mask(MaskMessage::Paint(PaintTarget::NewBrush))),
-    ));
-    block = block.push(actions);
-    if brush.armed {
-        block = block.push(caption(
-            "Paint on the photograph · each stroke is one history entry · [ ] size · Shift+[ ] feather · Option erases",
-        ));
-    }
-    if brush.erase_held {
-        block = block.push(caption("Option held: the next stroke erases"));
-    }
-    block.into()
-}
+// ---- the overlay row -----------------------------------------------------------------------------
 
-/// One sampled colour, drawn as the colour it is so a swatch list reads as swatches. The codes come
-/// from the model, which encoded the stored linear triple through the delivered encode; nothing here
-/// converts a colour.
-fn swatch_chip(codes: [u8; 3]) -> Element<'static, Message> {
-    iced::widget::container(
-        iced::widget::Space::new()
-            .width(iced::Length::Fixed(14.0))
-            .height(iced::Length::Fixed(14.0)),
+/// What the canvas draws of the selected mask, and in which of the two tints: four icon segments,
+/// the two swatches and `⇧M`. The segments and swatches follow the host's own declared order, and
+/// their tooltips are the host's names. Red is deliberately not offered: the delivered clipping
+/// indicators own red, blue and the magenta between them.
+fn overlay_row(model: &MasksModel) -> Element<'_, Message> {
+    let names = &model.overlay.modes;
+    let colours = &model.overlay.colours;
+    let name = |index: usize, names: &[String]| names.get(index).cloned().unwrap_or_default();
+    overlay_control(
+        &OverlayControlModel {
+            label: "Overlay".into(),
+            mode: OverlayMode::ALL
+                .get(model.overlay.selected)
+                .copied()
+                .unwrap_or(OverlayMode::Off),
+            mode_names: [0, 1, 2, 3].map(|index| name(index, names)),
+            tint: OverlayTint::ALL
+                .get(model.overlay.colour_selected)
+                .copied()
+                .unwrap_or(OverlayTint::Green),
+            tint_names: [0, 1].map(|index| name(index, colours)),
+            hint: Some("\u{21e7}M".into()),
+            enabled: names.len() == OverlayMode::ALL.len(),
+        },
+        |mode| {
+            let index = OverlayMode::ALL
+                .iter()
+                .position(|known| *known == mode)
+                .unwrap_or(0);
+            mask(MaskMessage::Overlay(index))
+        },
+        |tint| {
+            let index = OverlayTint::ALL
+                .iter()
+                .position(|known| *known == tint)
+                .unwrap_or(0);
+            mask(MaskMessage::OverlayColour(index))
+        },
     )
-    .style(move |_: &iced::Theme| iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(
-            codes[0], codes[1], codes[2],
-        ))),
-        border: iced::Border {
-            radius: 3.0.into(),
-            ..iced::Border::default()
-        },
-        ..iced::widget::container::Style::default()
-    })
-    .into()
 }
 
-/// The open mask's rename field. A name is free text, which no declared parameter kind carries, so
-/// it travels in the request's envelope and is typed here rather than through a generated control.
-fn rename_row<'a>(model: &'a MasksModel, mask: &str) -> Element<'a, Message> {
-    let mask = mask.to_owned();
-    row![
-        boxed_input(
-            "Mask name",
-            &model.name,
-            140.0,
-            false,
-            model.enabled,
-            |text| Message::Mask(MaskMessage::Name(text)),
-            Message::Mask(MaskMessage::Rename(mask.clone())),
-        ),
-        text_button(
+// ---- the mask list -------------------------------------------------------------------------------
+
+fn thumbnail(row: &MaskRow) -> CoverageThumbnailModel {
+    match &row.thumbnail {
+        Some(thumbnail) => CoverageThumbnailModel {
+            cells: Some(thumbnail.cells.clone()),
+            width: thumbnail.width as usize,
+            height: thumbnail.height as usize,
+            // The cells are compared by identity, so their allocation is the grid's version.
+            version: std::sync::Arc::as_ptr(&thumbnail.cells).cast::<u8>() as usize as u64,
+        },
+        None => CoverageThumbnailModel::default(),
+    }
+}
+
+/// One mask's row, with its menu dropped under it while it is open.
+fn mask_row_view<'a>(
+    model: &'a MasksModel,
+    row: &'a MaskRow,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let id = row.id.as_str().to_owned();
+    let enabled = model.enabled;
+    let view = mask_row(
+        &MaskRowModel {
+            name: row.name.clone(),
+            coverage: thumbnail(row),
+            active: row.non_neutral,
+            amount: row.amount.clone(),
+            visible: row.visible,
+            visibility_tooltip: if row.visible {
+                format!("Hide the {} overlay", row.name)
+            } else {
+                format!("Show the {} overlay", row.name)
+            },
+            menu_tooltip: format!("{} actions", row.name),
+            selected: row.selected,
+            menu_open: row.menu_open,
+            renaming: row.renaming.clone(),
+            enabled: enabled || row.renaming.is_some(),
+        },
+        MaskRowMessages {
+            on_select: Some(mask(MaskMessage::Select(id.clone()))),
+            // The eye is view state: a hidden mask still applies to the picture, and only its
+            // overlay goes.
+            on_toggle_visibility: Some(mask(MaskMessage::ToggleVisible(id.clone()))),
+            on_menu: Some(toggle_menu(menu, MenuTarget::Mask(id.clone()))),
+            on_drag_start: (model.masks.len() > 1).then(|| {
+                mask(MaskMessage::Drag(DragEdit::Start(DragItem::Mask(
+                    id.clone(),
+                ))))
+            }),
+            rename: Some(rename_messages()),
+        },
+    );
+    let dragging = matches!(
+        model.drag.as_ref().map(|drag| &drag.item),
+        Some(DragItem::Mask(_))
+    );
+    let view = drop_target(view, dragging, row.index);
+    let entries = match menu {
+        Some(MenuTarget::Mask(open)) if open == &id => Some(mask_menu(model, row, false)),
+        Some(MenuTarget::MaskCopy(open)) if open == &id => Some(mask_copy_menu(row)),
+        _ => None,
+    };
+    popover(view, entries.map(menu_list), close_menu())
+}
+
+/// A mask's menu: Rename, Duplicate, Invert, Move up, Move down, Delete, and its requests.
+fn mask_menu(model: &MasksModel, row: &MaskRow, from_rule: bool) -> Vec<MenuEntry<Message>> {
+    let id = row.id.as_str().to_owned();
+    let enabled = model.enabled;
+    let live = |edit: RowEdit, allowed: bool| (enabled && allowed).then(|| run(edit));
+    let (up, down) = mask_moves(row);
+    vec![
+        item(
             "Rename",
-            ButtonTone::Quiet,
-            ButtonSize::Compact,
-            (model.enabled && !model.name.trim().is_empty())
-                .then(|| Message::Mask(MaskMessage::Rename(mask))),
+            enabled.then(|| typing(TypingEdit::Begin(TypingTarget::RenameMask(id.clone())))),
+        ),
+        item(
+            "Duplicate",
+            live(
+                RowEdit::DuplicateMask(id.clone()),
+                row.duplicate_reason.is_none(),
+            ),
+        ),
+        item(
+            if row.inverted {
+                "Not inverted"
+            } else {
+                "Invert"
+            },
+            live(
+                RowEdit::InvertMask {
+                    mask: id.clone(),
+                    invert: !row.inverted,
+                },
+                true,
+            ),
+        ),
+        item("Move up", live(up, row.can_move_up)),
+        item("Move down", live(down, row.can_move_down)),
+        item("Delete", live(RowEdit::DeleteMask(id.clone()), true)),
+        MenuEntry::Separator,
+        copy_item(
+            if from_rule {
+                MenuTarget::OpenMaskCopy(id)
+            } else {
+                MenuTarget::MaskCopy(id)
+            },
+            true,
         ),
     ]
-    .spacing(theme::SPACING)
+}
+
+/// The two reorders one mask's menu offers.
+fn mask_moves(row: &MaskRow) -> (RowEdit, RowEdit) {
+    let id = row.id.as_str().to_owned();
+    (
+        RowEdit::MoveMask {
+            mask: id.clone(),
+            index: row.index.saturating_sub(1),
+        },
+        RowEdit::MoveMask {
+            mask: id,
+            index: row.index + 1,
+        },
+    )
+}
+
+/// Every request a mask's row and menu send, each copyable as the JSON request it is.
+fn mask_copy_menu(row: &MaskRow) -> Vec<MenuEntry<Message>> {
+    let id = row.id.as_str().to_owned();
+    let (up, down) = mask_moves(row);
+    let mut entries = vec![
+        item(
+            "Copy rename request",
+            Some(copy(RowEdit::RenameMask {
+                mask: id.clone(),
+                name: row.renaming.clone().unwrap_or_else(|| row.name.clone()),
+            })),
+        ),
+        item(
+            "Copy duplicate request",
+            Some(copy(RowEdit::DuplicateMask(id.clone()))),
+        ),
+        item(
+            "Copy invert request",
+            Some(copy(RowEdit::InvertMask {
+                mask: id.clone(),
+                invert: !row.inverted,
+            })),
+        ),
+    ];
+    if row.can_move_up {
+        entries.push(item("Copy move up request", Some(copy(up))));
+    }
+    if row.can_move_down {
+        entries.push(item("Copy move down request", Some(copy(down))));
+    }
+    entries.push(item(
+        "Copy delete request",
+        Some(copy(RowEdit::DeleteMask(id))),
+    ));
+    entries
+}
+
+/// A kind menu: every kind the build can create, each with its icon and letter, the drawn kinds
+/// first and the typed ones after a rule, in the host's table order.
+fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Message>> {
+    let mut entries = Vec::new();
+    let mut drawn = true;
+    for kind in &model.kinds {
+        if drawn && kind.letter.is_none() && !entries.is_empty() {
+            entries.push(MenuEntry::Separator);
+        }
+        drawn = kind.letter.is_some();
+        entries.push(MenuEntry::Item(MenuItem {
+            icon: kind.icon,
+            label: kind.label.clone(),
+            trailing: kind.letter.map(|letter| letter.to_string()),
+            on_press: (model.enabled && kind.enabled).then(|| {
+                mask(MaskMessage::Choose {
+                    menu,
+                    kind: kind.kind.clone(),
+                })
+            }),
+        }));
+    }
+    entries
+}
+
+/// A dropdown button with its menu, or disabled with the reason as its tooltip.
+fn kind_dropdown<'a>(
+    label: &str,
+    compact: bool,
+    refusal: Option<&String>,
+    enabled: bool,
+    target: MenuTarget,
+    entries: Vec<MenuEntry<Message>>,
+    menu: Option<&MenuTarget>,
+) -> Element<'a, Message> {
+    let live = enabled && refusal.is_none();
+    let open = live && menu == Some(&target);
+    let button = dropdown_button(
+        &DropdownButtonModel {
+            label: label.to_owned(),
+            compact,
+            enabled: live,
+        },
+        Some(toggle_menu(menu, target)),
+    );
+    let button = match refusal {
+        Some(reason) => with_tooltip(button, reason.clone(), iced::widget::tooltip::Position::Top),
+        None => button,
+    };
+    popover(button, open.then(|| menu_list(entries)), close_menu())
+}
+
+/// New mask and the count under the list: `2 of 16`, which at the limit is the refusal itself.
+fn new_mask_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Element<'a, Message> {
+    row![
+        kind_dropdown(
+            "New mask",
+            false,
+            model.create_reason.as_ref(),
+            model.enabled,
+            MenuTarget::NewMask,
+            kind_menu(model, KindMenu::New),
+            menu,
+        ),
+        Space::new().width(Length::Fill),
+        caption(model.count.clone()),
+    ]
     .align_y(Alignment::Center)
+    .height(Length::Fixed(theme::NEW_MASK_ROW_HEIGHT))
+    .width(Length::Fill)
     .into()
 }
 
-/// New mask names the kinds it can create: registering a kind is what puts one here.
-/// What the list of kinds is **not**, said where a person reads that list looking for it.
-///
-/// Lightroom's Select Subject, Sky, People, Objects, Background and Depth are model-based, and this
-/// build has no model, no model asset and no inference job. The honest answer is the one thing no
-/// absent button can give: a person who does not find Sky here has to be told there is no Sky, rather
-/// than left to conclude it is behind a menu. The kinds that *are* here are named for what they do —
-/// brightness, colour and painted coverage — and the design records why a hand-written sky detector is
-/// not proposed at all (`docs/design/masking.md`, non-AI detection).
-const NO_MODEL: &str = "No Sky, Subject, People, Objects or Background: every selection here is brightness, colour or painted coverage, with no model behind it";
+// ---- the open mask -------------------------------------------------------------------------------
 
-fn new_mask(model: &MasksModel) -> Element<'_, Message> {
-    let mut block = column![section_label("New mask")].spacing(theme::LIST_ROW_SPACING);
-    if let Some(reason) = &model.create_reason {
-        return block.push(caption(reason.clone())).into();
-    }
-    block = block.push(kind_row(&model.kinds, model.enabled, |kind| {
-        Message::Mask(MaskMessage::New(kind))
-    }));
-    block = block.push(caption(NO_MODEL));
-    block.into()
-}
-
-/// The Add row under an open mask's component list, with the mode chosen before the gesture starts
-/// rather than guessed from a modifier key afterwards.
-fn add_component(model: &MasksModel) -> Element<'_, Message> {
-    let mut block = column![section_label("Add component")].spacing(theme::LIST_ROW_SPACING);
-    if let Some(reason) = &model.add_reason {
-        return block.push(caption(reason.clone())).into();
-    }
-    block = block.push(segmented(
-        &SegmentedModel {
-            options: model.modes.clone(),
-            selected: model.add_mode,
+/// The open mask: its group rule with its menu, Amount and Invert mask, its components, the Add row
+/// and, while a brush is in hand or selected, the Brush section.
+fn open_mask<'a>(
+    model: &'a MasksModel,
+    open: &'a MaskRow,
+    menu: Option<&'a MenuTarget>,
+    plot: &'a HistogramModel,
+) -> Element<'a, Message> {
+    let id = open.id.as_str().to_owned();
+    let components = model.components.len();
+    let rule = group_rule(
+        &GroupRuleModel {
+            label: open.name.clone(),
+            caption: Some(format!(
+                "{components} {}",
+                if components == 1 {
+                    "component"
+                } else {
+                    "components"
+                }
+            )),
+            caption_accent: false,
+            menu_tooltip: Some(format!("{} actions", open.name)),
+            menu_open: matches!(
+                menu,
+                Some(MenuTarget::OpenMask(open) | MenuTarget::OpenMaskCopy(open)) if open == &id
+            ),
             enabled: model.enabled,
         },
-        |index| Message::Mask(MaskMessage::SetAddMode(index)),
-    ));
-    block = block.push(kind_row(&model.kinds, model.enabled, |kind| {
-        Message::Mask(MaskMessage::Add(kind))
-    }));
-    block = block.push(caption(NO_MODEL));
-    block.into()
-}
+        Some(toggle_menu(menu, MenuTarget::OpenMask(id.clone()))),
+    );
+    let entries = match menu {
+        Some(MenuTarget::OpenMask(target)) if target == &id => Some(mask_menu(model, open, true)),
+        Some(MenuTarget::OpenMaskCopy(target)) if target == &id => Some(mask_copy_menu(open)),
+        _ => None,
+    };
+    let rule = popover(rule, entries.map(menu_list), close_menu());
 
-/// One button per registered kind, each acting the way that kind's own declarations say: a kind with
-/// handles starts a gesture, a **typed** kind — one whose geometry is entirely defaulted, as a range
-/// selection's is — is created straight away as the selection those defaults describe. A kind that is
-/// neither says so rather than being hidden: its components are still editable through their declared
-/// number fields.
-fn kind_row<'a>(
-    kinds: &'a [KindOption],
-    enabled: bool,
-    message: impl Fn(String) -> Message + 'a,
-) -> Element<'a, Message> {
-    let mut line = row![].spacing(theme::SPACING).align_y(Alignment::Center);
-    for kind in kinds {
-        line = line.push(text_button(
-            &kind.label,
-            ButtonTone::Quiet,
-            ButtonSize::Compact,
-            (enabled && kind.enabled && (kind.drawable || kind.typed))
-                .then(|| message(kind.kind.clone())),
-        ));
-        if !kind.drawable && !kind.typed {
-            line = line.push(caption("no handles in this build"));
-        }
+    let mut body = Column::new().spacing(theme::ROW_SPACING);
+    // The whole-mask controls: the amount slider and the inversion, generated from the host's own
+    // declarations exactly as a module's controls are.
+    for control in &model.controls {
+        body = body.push(control_view(HOST, model.enabled, control, menu, plot));
     }
-    line.into()
+    body = body.push(Space::new().height(Length::Fixed(theme::COMPONENTS_GAP)));
+    let rows = model
+        .components
+        .iter()
+        .map(|component| component_view(model, open, component, menu, plot))
+        .collect::<Vec<_>>();
+    body = body.push(drop_zone(
+        Column::with_children(rows).spacing(theme::ROW_SPACING),
+        model,
+    ));
+    body = body.push(add_row(model, menu));
+    // A gesture adding a component has no row yet, so its fields sit under the Add row.
+    if let Some(draft) = model.draft.as_ref().filter(|draft| !draft.painted)
+        && !model.components.iter().any(|component| component.drafting)
+    {
+        body = body.push(draft_grid(draft, model.enabled));
+    }
+    if model.brush_visible {
+        body = body.push(brush_section(model));
+    }
+    column![
+        container(rule).padding(Padding {
+            top: 0.0,
+            right: theme::OPEN_MASK_PADDING.right,
+            bottom: 0.0,
+            left: theme::OPEN_MASK_PADDING.left,
+        }),
+        container(body)
+            .padding(theme::OPEN_MASK_PADDING)
+            .width(Length::Fill),
+    ]
+    .width(Length::Fill)
+    .into()
 }
 
-/// One component's row: its name and kind, its own mode control, its own inversion, reorder, delete
-/// and, while it is selected, its own declared number fields.
+/// The next component's kind and mode, chosen before the gesture: `+ Add component ▾  as + − ∩`.
+fn add_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Element<'a, Message> {
+    let modes = model.modes.len();
+    let add = kind_dropdown(
+        "Add component",
+        true,
+        model.add_reason.as_ref(),
+        model.enabled,
+        MenuTarget::AddComponent,
+        kind_menu(model, KindMenu::Add),
+        menu,
+    );
+    let mode = mode_control(
+        &ModeControlModel {
+            selected: CombineMode::ALL
+                .get(model.add_mode)
+                .copied()
+                .unwrap_or(CombineMode::Add),
+            fixed: None,
+            tooltip: model.modes.join(" \u{b7} "),
+            enabled: model.enabled && modes == CombineMode::ALL.len(),
+        },
+        |mode| {
+            let index = CombineMode::ALL
+                .iter()
+                .position(|known| *known == mode)
+                .unwrap_or(0);
+            mask(MaskMessage::SetAddMode(index))
+        },
+    );
+    container(
+        row![add, Space::new().width(Length::Fill), caption("as"), mode]
+            .spacing(theme::OVERLAY_SPACING)
+            .align_y(Alignment::Center)
+            .height(Length::Fixed(theme::ADD_ROW_HEIGHT)),
+    )
+    .padding(Padding::default().top(theme::ADD_ROW_MARGIN))
+    .width(Length::Fill)
+    .into()
+}
+
+// ---- the components ------------------------------------------------------------------------------
+
+/// One component's row and, while it is selected, what sits under it: its fields, its strokes or
+/// swatches, and its kind's own lines.
 ///
-/// Every control here belongs to *this* component and not to whichever one happens to be selected,
-/// which is the whole point of an ordered component list: the mode is a property of a component,
-/// editable at any time, rather than a decision frozen by which button created it. Hovering the row
-/// shows this component's own contribution in the overlay, which is what makes a subtract on top of
-/// a gradient legible instead of guesswork.
-fn component_row<'a>(
+/// Every control here belongs to *this* component and not to whichever one happens to be selected:
+/// the mode is a property of a component, editable at any time. Hovering the row shows this
+/// component's own contribution in the overlay, which is what makes a subtract on top of a gradient
+/// legible instead of guesswork.
+fn component_view<'a>(
+    model: &'a MasksModel,
+    open: &'a MaskRow,
     component: &'a ComponentRow,
-    selected_mask: &str,
     menu: Option<&'a MenuTarget>,
     plot: &'a HistogramModel,
 ) -> Element<'a, Message> {
     let id = component.id.as_str().to_owned();
-    let target = MenuTarget::Component(id.clone());
-    let mut line = row![
-        text_button(
-            &component.name,
-            if component.selected {
-                ButtonTone::Primary
-            } else {
-                ButtonTone::Quiet
+    let enabled = model.enabled && component.available;
+    let declared = model.modes.clone();
+    let row_id = id.clone();
+    let view = component_row(
+        &ComponentRowModel {
+            name: component.name.clone(),
+            icon: component.icon,
+            mode: ModeControlModel {
+                selected: CombineMode::ALL
+                    .get(component.mode_selected)
+                    .copied()
+                    .unwrap_or(CombineMode::Add),
+                // The first component's mode is fixed by the composition: `+` alone, dimmed, with
+                // the host's own reason as its tooltip.
+                fixed: component.mode_reason.clone(),
+                tooltip: model.modes.join(" \u{b7} "),
+                enabled,
             },
-            ButtonSize::Compact,
-            Some(Message::Mask(MaskMessage::SelectComponent(id.clone()))),
-        ),
-        caption(component.kind_title.clone()),
-        caption(component.mode.clone()),
-    ]
-    .spacing(theme::SPACING)
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
-    if component.inverted {
-        line = line.push(caption("inverted"));
-    }
-    if component.hovered {
-        line = line.push(caption("overlay"));
-    }
-    if !component.available {
-        line = line.push(caption(format!("unknown kind {}", component.kind)));
-    }
-    // Every command this row's controls send, copyable as the JSON request it is. A menu rather than
-    // a button beside each control, so the row stays readable while nothing is hidden from a client.
-    line = line.push(icon_button(
-        &IconButtonModel {
-            icon: Icon::ChevronDown,
-            tooltip: format!("Copy the requests {} sends", component.name),
-            enabled: true,
-            selected: menu == Some(&target),
+            inverted: component.inverted,
+            invert_tooltip: if component.inverted {
+                format!("{} · on", component.invert_label)
+            } else {
+                component.invert_label.clone()
+            },
+            menu_tooltip: format!("{} actions", component.name),
+            selected: component.selected,
+            hovered: component.hovered,
+            menu_open: component.menu_open,
+            renaming: component.renaming.clone(),
+            enabled: enabled || component.renaming.is_some(),
         },
-        Some(Message::View(ViewMessage::OpenMenu(target.clone()))),
-    ));
-    let mut block = column![line].spacing(theme::LIST_ROW_SPACING);
-    let down = RowEdit::MoveComponent {
-        component: id.clone(),
-        index: component.index + 1,
-    };
-    let up = RowEdit::MoveComponent {
-        component: id.clone(),
-        index: component.index.saturating_sub(1),
-    };
-    let invert = RowEdit::ComponentInvert {
-        component: id.clone(),
-        invert: !component.inverted,
-    };
-    if menu == Some(&target) {
-        let mut items = Vec::new();
-        if let Some(mode) = component.mode_options.get(component.mode_selected) {
-            items.push(copy_item(
-                "Copy mode request",
-                RowEdit::ComponentMode {
-                    component: id.clone(),
-                    mode: mode.clone(),
-                },
-            ));
-        }
-        items.push(copy_item("Copy invert request", invert.clone()));
-        items.push(copy_item("Copy move request", down.clone()));
-        if component.delete_reason.is_none() {
-            items.push(copy_item(
-                "Copy delete request",
-                RowEdit::DeleteComponent(id.clone()),
-            ));
-        }
-        block = block.push(inline_menu(items));
-    }
-    // This row's own mode, as a three-way control over the options the host declares. The first
-    // component has none: its mode is fixed by the composition, and the reason is shown below.
-    if !component.mode_options.is_empty() {
-        let chosen = component.mode_options.clone();
-        let row_id = id.clone();
-        block = block.push(
-            row![
-                caption(component.mode_label.clone()),
-                segmented(
-                    &SegmentedModel {
-                        options: component.mode_options.clone(),
-                        selected: component.mode_selected,
-                        enabled: component.available,
-                    },
-                    move |index| match chosen.get(index) {
-                        Some(mode) => run(RowEdit::ComponentMode {
+        ComponentRowMessages {
+            on_select: Some(mask(MaskMessage::SelectComponent(id.clone()))),
+            on_mode: (!component.mode_options.is_empty()).then(|| {
+                Box::new(move |mode: CombineMode| {
+                    let index = CombineMode::ALL
+                        .iter()
+                        .position(|known| *known == mode)
+                        .unwrap_or(0);
+                    match declared.get(index) {
+                        Some(token) => run(RowEdit::ComponentMode {
                             component: row_id.clone(),
-                            mode: mode.clone(),
+                            mode: token.clone(),
                         }),
-                        None => Message::Mask(MaskMessage::SelectComponent(row_id.clone())),
-                    },
-                ),
-            ]
-            .spacing(theme::SPACING)
-            .align_y(Alignment::Center),
-        );
-    }
-    // This row's own inversion.
-    let toggled = invert.clone();
-    block = block.push(toggle(
-        &ToggleModel {
-            label: component.invert_label.clone(),
-            on: component.inverted,
-            enabled: component.available,
+                        None => mask(MaskMessage::SelectComponent(row_id.clone())),
+                    }
+                }) as Box<dyn Fn(CombineMode) -> Message + 'a>
+            }),
+            on_invert: Some(run(RowEdit::ComponentInvert {
+                component: id.clone(),
+                invert: !component.inverted,
+            })),
+            on_menu: Some(toggle_menu(menu, MenuTarget::Component(id.clone()))),
+            on_drag_start: (model.components.len() > 1).then(|| {
+                mask(MaskMessage::Drag(DragEdit::Start(DragItem::Component(
+                    id.clone(),
+                ))))
+            }),
+            // The pointer over the row asks the overlay for this component's own contribution, and
+            // leaving it restores the composed mask. It commits nothing and changes no selection.
+            on_hover_enter: Some(mask(MaskMessage::Hover(Some(id.clone())))),
+            on_hover_exit: Some(mask(MaskMessage::Hover(None))),
+            rename: Some(rename_messages()),
         },
-        move |_| run(toggled.clone()),
-    ));
-    // Reorder and delete, each with the reason the command family would refuse it in place of an
-    // offer it would reject.
-    let mut actions = row![].spacing(theme::SPACING);
-    actions = actions.push(text_button(
-        "Up",
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        component.can_move_up().then(|| run(up)),
-    ));
-    actions = actions.push(text_button(
-        "Down",
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        component.can_move_down().then(|| run(down)),
-    ));
-    match &component.delete_reason {
-        // A mask's only component cannot be deleted: the panel offers Delete mask instead rather
-        // than a button the host would refuse, and says why under the row.
-        Some(_) => {
-            actions = actions.push(text_button(
-                "Delete mask",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                Some(run(RowEdit::DeleteMask(selected_mask.to_owned()))),
-            ));
+    );
+    let dragging = matches!(
+        model.drag.as_ref().map(|drag| &drag.item),
+        Some(DragItem::Component(_))
+    );
+    let view = drop_target(view, dragging, component.index);
+    let entries = match menu {
+        Some(MenuTarget::Component(target)) if target == &id => {
+            Some(component_menu(model, open, component))
         }
+        Some(MenuTarget::ComponentCopy(target)) if target == &id => {
+            Some(component_copy_menu(open, component))
+        }
+        _ => None,
+    };
+    let view = popover(view, entries.map(menu_list), close_menu());
+    if !component.selected {
+        return view;
+    }
+    let mut block = Column::new().push(view);
+    // The component's own fields: the gesture's while one is open on it, its stored geometry's
+    // otherwise.
+    match model.draft.as_ref().filter(|_| component.drafting) {
+        Some(draft) => block = block.push(draft_grid(draft, model.enabled)),
         None => {
-            actions = actions.push(text_button(
-                "Delete",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                Some(run(RowEdit::DeleteComponent(id.clone()))),
-            ));
+            for part in component_fields(&component.fields, enabled, menu, plot) {
+                block = block.push(part);
+            }
         }
     }
+    if !component.strokes.is_empty() {
+        block = block.push(strokes(component, model.enabled, menu));
+    }
+    if component.can_pick {
+        block = block.push(swatches(component, model.enabled, menu));
+        if component.picking {
+            block = block.push(component_note("Click the photograph to sample a colour"));
+        }
+    }
+    // What this kind does not select and why a pick cannot be taken, in the host's own words, on
+    // the open row only, so a list of components stays a list rather than a page of prose.
+    let reasons = component
+        .limits
+        .iter()
+        .chain(component.pick_reason.iter().filter(|_| component.can_pick));
+    for line in reasons {
+        block = block.push(component_note(line.clone()));
+    }
+    block.into()
+}
+
+/// A component's menu: Rename, Edit shape or Paint more, Move up, Move down, Delete (Delete mask
+/// for a mask's only component), and its requests.
+fn component_menu(
+    model: &MasksModel,
+    open: &MaskRow,
+    component: &ComponentRow,
+) -> Vec<MenuEntry<Message>> {
+    let id = component.id.as_str().to_owned();
+    let enabled = model.enabled && component.available;
+    let (up, down) = component_moves(component);
+    let mut entries = vec![item(
+        "Rename",
+        enabled.then(|| typing(TypingEdit::Begin(TypingTarget::RenameComponent(id.clone())))),
+    )];
     if component.can_edit_shape {
         // A painted component has no shape to reopen: what it offers is the next stroke on it,
-        // which is one more history entry and not a patch, so the button says that instead.
-        actions = actions.push(if component.painted {
-            text_button(
+        // which is one more history entry and not a patch, so the item says that instead.
+        entries.push(if component.painted {
+            item(
                 "Paint more",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                Some(Message::Mask(MaskMessage::Paint(PaintTarget::Component(
-                    id.clone(),
-                )))),
+                Some(mask(MaskMessage::Paint(PaintTarget::Component(id.clone())))),
             )
         } else {
-            text_button(
-                "Edit shape",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                Some(Message::Mask(MaskMessage::EditShape(id.clone()))),
-            )
+            item("Edit shape", Some(mask(MaskMessage::EditShape(id.clone()))))
         });
     }
-    block = block.push(actions);
-    // The strokes this component holds, in the order they compose. Each has its own delete, and that
-    // delete is a **forward edit**: it appends an entry and removes only that stroke, leaving
-    // everything committed after it exactly where it is. Undo walks entries; this does not, and the
-    // row says so rather than leaving the two to look alike.
-    if !component.strokes.is_empty() {
-        block = block.push(caption("Strokes · Delete appends an entry; it is not undo"));
-        for stroke in &component.strokes {
-            let edit = RowEdit::DeleteStroke {
+    entries.push(item(
+        "Move up",
+        (enabled && component.can_move_up()).then(|| run(up)),
+    ));
+    entries.push(item(
+        "Move down",
+        (enabled && component.can_move_down()).then(|| run(down)),
+    ));
+    entries.push(match &component.delete_reason {
+        // A mask's only component is removed by removing the mask, which says what it removes.
+        Some(_) => item(
+            "Delete mask",
+            model
+                .enabled
+                .then(|| run(RowEdit::DeleteMask(open.id.as_str().to_owned()))),
+        ),
+        None => item(
+            "Delete",
+            enabled.then(|| run(RowEdit::DeleteComponent(id.clone()))),
+        ),
+    });
+    entries.push(MenuEntry::Separator);
+    entries.push(copy_item(MenuTarget::ComponentCopy(id), true));
+    entries
+}
+
+fn component_moves(component: &ComponentRow) -> (RowEdit, RowEdit) {
+    let id = component.id.as_str().to_owned();
+    (
+        RowEdit::MoveComponent {
+            component: id.clone(),
+            index: component.index.saturating_sub(1),
+        },
+        RowEdit::MoveComponent {
+            component: id,
+            index: component.index + 1,
+        },
+    )
+}
+
+/// Every request a component's row and menu send, each copyable as the JSON request it is: its
+/// modes, its inversion, its moves, its delete and its rename.
+fn component_copy_menu(open: &MaskRow, component: &ComponentRow) -> Vec<MenuEntry<Message>> {
+    let id = component.id.as_str().to_owned();
+    let (up, down) = component_moves(component);
+    let mut entries = Vec::new();
+    for mode in &component.mode_options {
+        entries.push(item(
+            format!("Copy {mode} request"),
+            Some(copy(RowEdit::ComponentMode {
                 component: id.clone(),
-                stroke: stroke.stroke.clone(),
-            };
-            let mut line = row![caption(stroke.label.clone())]
-                .spacing(theme::SPACING)
-                .align_y(Alignment::Center);
-            line = line.push(text_button(
-                "Delete",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                stroke.delete_reason.is_none().then(|| run(edit.clone())),
-            ));
-            line = line.push(copy_button("Copy request", edit));
-            if let Some(reason) = &stroke.delete_reason {
-                line = line.push(caption(reason.clone()));
+                mode: mode.clone(),
+            })),
+        ));
+    }
+    entries.push(item(
+        "Copy invert request",
+        Some(copy(RowEdit::ComponentInvert {
+            component: id.clone(),
+            invert: !component.inverted,
+        })),
+    ));
+    if component.can_move_up() {
+        entries.push(item("Copy move up request", Some(copy(up))));
+    }
+    if component.can_move_down() {
+        entries.push(item("Copy move down request", Some(copy(down))));
+    }
+    entries.push(match component.delete_reason {
+        Some(_) => item(
+            "Copy delete mask request",
+            Some(copy(RowEdit::DeleteMask(open.id.as_str().to_owned()))),
+        ),
+        None => item(
+            "Copy delete request",
+            Some(copy(RowEdit::DeleteComponent(id.clone()))),
+        ),
+    });
+    entries.push(item(
+        "Copy rename request",
+        Some(copy(RowEdit::RenameComponent {
+            component: id,
+            name: component
+                .renaming
+                .clone()
+                .unwrap_or_else(|| component.name.clone()),
+        })),
+    ));
+    entries
+}
+
+/// The selected component's generated geometry controls: its plain numbers as two columns of
+/// fields, each with the context menu a generated control carries, and any other control kind
+/// through the generated control view, so a kind whose declarations bring a richer control (a range)
+/// draws it here unchanged.
+fn component_fields<'a>(
+    fields: &'a [ControlModel],
+    enabled: bool,
+    menu: Option<&'a MenuTarget>,
+    plot: &'a HistogramModel,
+) -> Vec<Element<'a, Message>> {
+    let mut parts = Vec::new();
+    let mut grid = Vec::new();
+    let mut open_menu = None;
+    let flush = |grid: &mut Vec<GridField<'a, Message>>, parts: &mut Vec<Element<'a, Message>>| {
+        if !grid.is_empty() {
+            parts.push(luxforge_ui::field_grid(std::mem::take(grid)));
+        }
+    };
+    for field in fields {
+        match field {
+            ControlModel::Slider(number) => {
+                if open_menu.is_none() {
+                    open_menu = control_copy_menu(&number.action, &number.parameter, menu);
+                }
+                let (action, parameter) = (number.action.clone(), number.parameter.clone());
+                let text_action = action.clone();
+                let text_parameter = parameter.clone();
+                grid.push(GridField {
+                    model: NumberFieldModel {
+                        id: Some(number.id.clone()),
+                        label: number.label.clone(),
+                        display: number.display.clone(),
+                        edit: ui_edit(&number.edit, &number.display, &number.invalid),
+                        unit: number.unit.clone(),
+                        enabled,
+                    },
+                    on_edit_start: Message::Control(ControlMessage::EditValue {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                    }),
+                    on_text: Box::new(move |text| {
+                        Message::Control(ControlMessage::Field {
+                            action: text_action.clone(),
+                            parameter: text_parameter.clone(),
+                            text,
+                        })
+                    }),
+                    on_submit: Message::Control(ControlMessage::Submit {
+                        action: action.clone(),
+                        parameter: Some(parameter.clone()),
+                    }),
+                    on_reset: Message::Control(ControlMessage::ResetField {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                    }),
+                    on_menu: Some(Message::View(ViewMessage::OpenMenu(control_target(
+                        &action, &parameter,
+                    )))),
+                });
             }
-            block = block.push(line);
+            other => {
+                flush(&mut grid, &mut parts);
+                parts.push(
+                    container(control_view(HOST, enabled, other, menu, plot))
+                        .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
+                        .width(Length::Fill)
+                        .into(),
+                );
+            }
         }
     }
-    // The colours this component has sampled, and the canvas pick that adds one. The pick is the
-    // host's own declared interaction, so the button's name is the host's and the click that fills a
-    // swatch runs a host read into a host command — the colour is never read from the frame, because
-    // the frame holds the masked operation's output and the selection is evaluated on its input.
-    if component.can_pick {
-        let mut line = row![text_button(
-            &component.pick_label,
-            if component.picking {
-                ButtonTone::Selected
-            } else {
-                ButtonTone::Quiet
+    flush(&mut grid, &mut parts);
+    if let Some(open) = open_menu {
+        parts.push(
+            container(open)
+                .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
+                .into(),
+        );
+    }
+    parts
+}
+
+/// The open gesture's own declared fields as two columns, each typed into as a field and each
+/// moving the draft, so the canvas follows it exactly as it follows the pointer. A reason the
+/// gesture cannot be applied sits under them.
+fn draft_grid(draft: &MaskDraftModel, enabled: bool) -> Element<'_, Message> {
+    let fields = draft
+        .fields
+        .iter()
+        .map(|field| draft_field(field, enabled))
+        .collect();
+    let mut block = column![field_grid(fields)];
+    if let Some(reason) = &draft.apply_reason {
+        block = block.push(component_note(reason.clone()));
+    }
+    block.into()
+}
+
+fn draft_field(field: &DraftField, enabled: bool) -> GridField<'static, Message> {
+    let name = field.name.clone();
+    GridField {
+        model: NumberFieldModel {
+            id: Some(draft_field_id(&name)),
+            label: field.label.clone(),
+            display: field.text.clone(),
+            edit: typed_edit(field),
+            unit: None,
+            enabled,
+        },
+        on_edit_start: typing(TypingEdit::Begin(TypingTarget::DraftField(name.clone()))),
+        on_text: Box::new(|text| typing(TypingEdit::Text(text))),
+        on_submit: typing(TypingEdit::Submit),
+        // A gesture's field has no stored value to return to: the label's double-click leaves it
+        // where it is.
+        on_reset: mask(MaskMessage::Field {
+            name,
+            value: field.value,
+        }),
+        on_menu: None,
+    }
+}
+
+fn typed_edit(field: &DraftField) -> ValueEdit {
+    match &field.typing {
+        Some(text) => ValueEdit::Editing {
+            text: text.clone(),
+            invalid: field.invalid.clone(),
+        },
+        None => ValueEdit::Display,
+    }
+}
+
+/// A brush component's strokes, in the order they compose. Each has its own delete, and that
+/// delete is a **forward edit**: it appends an entry and removes only that stroke, leaving
+/// everything committed after it where it is. A right press on a stroke offers its request.
+fn strokes<'a>(
+    component: &'a ComponentRow,
+    enabled: bool,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let id = component.id.as_str().to_owned();
+    let rows = component.strokes.iter().map(|stroke| {
+        let edit = RowEdit::DeleteStroke {
+            component: id.clone(),
+            stroke: stroke.stroke.clone(),
+        };
+        let deletable = enabled && stroke.delete_reason.is_none();
+        let view = stroke_row(
+            &StrokeRowModel {
+                index: (stroke.index + 1).to_string(),
+                label: stroke.label.clone(),
+                delete_tooltip: stroke
+                    .delete_reason
+                    .clone()
+                    .unwrap_or_else(|| "Delete this stroke · a new entry, not an undo".to_owned()),
+                delete_enabled: deletable,
             },
-            ButtonSize::Compact,
+            deletable.then(|| run(edit.clone())),
+        );
+        let target = MenuTarget::Stroke {
+            component: id.clone(),
+            stroke: stroke.stroke.clone(),
+        };
+        let open = menu == Some(&target);
+        let view: Element<'a, Message> = mouse_area(view)
+            .on_right_press(toggle_menu(menu, target))
+            .into();
+        popover(
+            view,
+            open.then(|| {
+                menu_list(vec![
+                    item("Delete stroke", deletable.then(|| run(edit.clone()))),
+                    item("Copy delete request", Some(copy(edit))),
+                ])
+            }),
+            close_menu(),
+        )
+    });
+    Column::with_children(rows)
+        .spacing(theme::STROKE_LIST_SPACING)
+        .into()
+}
+
+/// A colour range's held swatches, its empty slots and its pick. A press on a swatch opens its
+/// menu: Remove, and the request Remove sends.
+fn swatches<'a>(
+    component: &'a ComponentRow,
+    enabled: bool,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let id = component.id.as_str().to_owned();
+    let chosen = match menu {
+        Some(MenuTarget::Swatch {
+            component: open,
+            index,
+        }) if open == &id => Some(*index),
+        _ => None,
+    };
+    let held = component.samples.len();
+    let slots = swatch_slots(
+        &SwatchSlotsModel {
+            swatches: component
+                .samples
+                .iter()
+                .map(|sample| sample.swatch)
+                .collect(),
+            limit: component.sample_limit,
+            selected: chosen,
+            picking: component.picking,
+            pick_label: component.pick_label.clone(),
+            count: format!("{held} of {}", component.sample_limit),
+            pick_enabled: component.pick_reason.is_none(),
+            enabled,
+        },
+        {
+            let id = id.clone();
+            move |index| {
+                toggle_menu(
+                    chosen
+                        .map(|open| MenuTarget::Swatch {
+                            component: id.clone(),
+                            index: open,
+                        })
+                        .as_ref(),
+                    MenuTarget::Swatch {
+                        component: id.clone(),
+                        index,
+                    },
+                )
+            }
+        },
+        mask(MaskMessage::Pick),
+    );
+    let entries = chosen
+        .and_then(|index| {
             component
-                .pick_reason
-                .is_none()
-                .then_some(Message::Mask(MaskMessage::Pick)),
-        )]
-        .spacing(theme::SPACING)
-        .align_y(Alignment::Center);
-        if component.picking {
-            line = line.push(caption("Click the photograph to sample a colour"));
-        }
-        block = block.push(line);
-        if let Some(reason) = &component.pick_reason {
-            block = block.push(caption(reason.clone()));
-        }
-        for sample in &component.samples {
+                .samples
+                .iter()
+                .find(|sample| sample.index == index)
+        })
+        .map(|sample| {
             let edit = RowEdit::DeleteSample {
                 component: id.clone(),
                 kind: component.kind.clone(),
                 index: sample.index,
             };
-            let mut line = row![
-                swatch_chip(sample.swatch),
-                caption(sample.label.clone()),
-                caption(sample.text.clone()),
+            vec![
+                item(
+                    format!("Remove {}", sample.label),
+                    (enabled && sample.delete_reason.is_none()).then(|| run(edit.clone())),
+                ),
+                item("Copy remove request", Some(copy(edit))),
             ]
-            .spacing(theme::SPACING)
-            .align_y(Alignment::Center);
-            line = line.push(text_button(
-                "Remove",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                sample.delete_reason.is_none().then(|| run(edit.clone())),
-            ));
-            line = line.push(copy_button("Copy request", edit));
-            block = block.push(line);
-        }
-    }
-    // The reasons the command family gives, on the row they apply to. They are shown on the open row
-    // rather than on every row, so a list of components stays a list rather than a page of prose;
-    // the row's own controls are beneath them either way.
-    if component.selected || component.delete_reason.is_some() {
-        for reason in [
-            &component.mode_reason,
-            &component.delete_reason,
-            &component.up_reason,
-            &component.down_reason,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            block = block.push(caption(reason.clone()));
-        }
-    }
-    // What this kind does not select, in the kind's own terms, on the open row and above the numbers
-    // it applies to. It is the host's own sentence from the kind table: a band's number means little
-    // to a person who does not know it cannot tell a sky from a grey card, and learning that from a
-    // rendered frame means having already made the edit.
-    for limit in &component.limits {
-        block = block.push(caption(limit.clone()));
-    }
-    // The component's own geometry fields, each carrying the context menu the whole-mask controls
-    // carry: a `mask.set-<kind>` field is one declared command like any other, so a person editing an
-    // endpoint by hand can copy the request it sends. Passing `None` here left those fields as the
-    // one generated mask control with no Copy as JSON request, which is a hole in UI/API parity
-    // rather than a cosmetic omission.
-    for field in &component.fields {
-        block = block.push(control_view(HOST, component.available, field, menu, plot));
-    }
-    // The pointer over the row is what asks the overlay for this component's own contribution, and
-    // leaving it restores the composed mask. It commits nothing and changes no selection.
-    mouse_area(block)
-        .on_enter(Message::Mask(MaskMessage::Hover(Some(id))))
-        .on_exit(Message::Mask(MaskMessage::Hover(None)))
-        .into()
+        });
+    popover(slots, entries.map(menu_list), close_menu())
 }
 
-/// What the canvas draws of the selected mask, and in which of the two tints. Red is deliberately
-/// not offered: the delivered clipping indicators own red, blue and the magenta between them, and an
-/// overlay a person cannot tell apart from a clipping indicator is worse than no overlay at all.
-fn overlay_row(model: &MasksModel) -> Element<'_, Message> {
-    column![
-        section_label("Overlay"),
-        segmented(
-            &SegmentedModel {
-                options: model.overlay.modes.clone(),
-                selected: model.overlay.selected,
-                enabled: true,
-            },
-            |index| Message::Mask(MaskMessage::Overlay(index)),
-        ),
-        segmented(
-            &SegmentedModel {
-                options: model.overlay.colours.clone(),
-                selected: model.overlay.colour_selected,
-                enabled: model.overlay.tinting,
-            },
-            |index| Message::Mask(MaskMessage::OverlayColour(index)),
-        ),
-    ]
-    .spacing(theme::LIST_ROW_SPACING)
-    .into()
+// ---- the brush -----------------------------------------------------------------------------------
+
+/// The brush, while it is in hand or a painted component is selected: Size, Feather and Flow as
+/// sliders on the panel's rail, each from `mask.add-stroke`'s own declarations, then Erase and
+/// Limit to colour.
+///
+/// **There is no Density.** Lightroom's Density needs a build-up model along a single stroke, which
+/// would make coverage depend on the stamp spacing and therefore on the resolution; the user guide
+/// says so where a person would look for it.
+fn brush_section(model: &MasksModel) -> Element<'_, Message> {
+    let brush = &model.brush;
+    let mut block = Column::new().spacing(theme::ROW_SPACING);
+    block = block.push(group_rule(
+        &GroupRuleModel {
+            label: "Brush".into(),
+            caption: brush
+                .armed
+                .then(|| "armed \u{b7} Esc puts it down".to_owned()),
+            caption_accent: true,
+            menu_tooltip: None,
+            menu_open: false,
+            enabled: brush.enabled,
+        },
+        None,
+    ));
+    let live = brush.enabled && !brush.locked;
+    for field in &brush.fields {
+        block = block.push(brush_slider(field, live));
+    }
+    block = block.push(compact_toggle(
+        &ToggleModel {
+            label: brush.erase_label.clone(),
+            on: brush.erase || brush.erase_held,
+            enabled: live,
+        },
+        Some("hold \u{2325}".into()),
+        |on| mask(MaskMessage::Brush(BrushEdit::Erase(on))),
+    ));
+    // Limit to colour holds the stroke to the colour under the brush where it begins — a per-pixel
+    // colour test with no notion of an edge — so it is **not** Lightroom's Auto Mask. The tooltip
+    // says the difference where a person would otherwise assume it.
+    let limit = compact_toggle(
+        &ToggleModel {
+            label: brush.limit_label.clone(),
+            on: brush.limit,
+            enabled: live && brush.limit_reason.is_none(),
+        },
+        Some(brush.refine.clone()),
+        |on| mask(MaskMessage::Brush(BrushEdit::LimitToColour(on))),
+    );
+    block = block.push(with_tooltip(
+        limit,
+        brush.limit_reason.clone().unwrap_or_else(|| {
+            "Holds the colour under the brush where the stroke starts · a colour test, not edge detection".to_owned()
+        }),
+        iced::widget::tooltip::Position::Top,
+    ));
+    if brush.erase_held {
+        block = block.push(component_note("Option held: the next stroke erases"));
+    }
+    block.into()
+}
+
+/// One brush number as a slider over its declared range. Its field is typed like any other; a
+/// double-click on its label returns it to the neutral brush's value.
+fn brush_slider(field: &DraftField, enabled: bool) -> Element<'_, Message> {
+    let Some(spec) = field.spec else {
+        return caption(format!("{} {}", field.label, field.text));
+    };
+    let name = field.name.clone();
+    let fraction_name = name.clone();
+    slider(
+        &SliderModel {
+            id: Some(brush_field_id(&name)),
+            label: field.label.clone(),
+            min: spec.min,
+            max: spec.max,
+            soft_min: spec.soft_min,
+            soft_max: spec.soft_max,
+            value: field.value,
+            step: spec.step,
+            shift_step: spec.step * 10.0,
+            fine_step: spec.fine_step,
+            zero: None,
+            rail: luxforge_ui::RailDecoration::Plain,
+            over_range: None,
+            unit: None,
+            display: field.text.clone(),
+            edit: typed_edit(field),
+            dragging: false,
+            enabled,
+        },
+        move |fraction| {
+            mask(MaskMessage::Brush(BrushEdit::Fraction {
+                name: fraction_name.clone(),
+                fraction,
+            }))
+        },
+        // A brush setting sends nothing until a stroke carries it, so a release has nothing to
+        // commit: it sets the value the drag left, which changes nothing.
+        mask(MaskMessage::Brush(BrushEdit::Set {
+            name: name.clone(),
+            value: field.value,
+        })),
+        typing(TypingEdit::Begin(TypingTarget::Brush(name.clone()))),
+        |text| typing(TypingEdit::Text(text)),
+        typing(TypingEdit::Submit),
+        mask(MaskMessage::Brush(BrushEdit::Reset(name))),
+    )
 }

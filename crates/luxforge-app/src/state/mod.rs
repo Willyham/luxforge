@@ -57,13 +57,28 @@ pub(crate) enum MenuTarget {
     /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
     /// import report.
     Preset(String),
-    /// A mask's row in the Masks panel, by its identity: Duplicate, Invert and Delete. Rename is the
-    /// row's own field rather than a menu item, because it needs one.
+    /// A mask's row in the Masks panel, by its identity: Rename, Duplicate, Invert, Move up, Move
+    /// down, Delete and Copy as JSON request.
     Mask(String),
-    /// A component's row in the open mask, by its identity: the Copy as JSON request of every
-    /// command that row's own controls send. They are a menu rather than four more buttons because
-    /// a copy is read once and a control is used often, and the row has to stay scannable.
+    /// The same menu, opened from the open mask's group rule and dropped under it.
+    OpenMask(String),
+    /// A mask's Copy as JSON request: the request of every edit its menu offers.
+    MaskCopy(String),
+    /// The same, opened from the open mask's group rule.
+    OpenMaskCopy(String),
+    /// A component's row in the open mask, by its identity: Rename, Edit shape or Paint more, Move
+    /// up, Move down, Delete and Copy as JSON request.
     Component(String),
+    /// A component's Copy as JSON request: the request of every control on its row and in its menu.
+    ComponentCopy(String),
+    /// The New mask kind menu.
+    NewMask,
+    /// The Add component kind menu.
+    AddComponent,
+    /// One sampled colour of a component, by its position: Remove and Copy as JSON request.
+    Swatch { component: String, index: usize },
+    /// One stroke of a brush component, by its content address: Delete and Copy as JSON request.
+    Stroke { component: String, stroke: String },
     /// The title bar's Export button: Export JPEG and Export JPEG, keep metadata.
     Export,
 }
@@ -196,8 +211,13 @@ pub(crate) struct Inputs<'a> {
     /// The brush the next stroke will be drawn with, and whether the erase modifier is held.
     pub(crate) brush: crate::mask_draft::Brush,
     pub(crate) brush_erase_held: bool,
-    /// The open mask's name as it is being typed in the panel's rename field.
-    pub(crate) mask_name: &'a str,
+    /// The Masks panel's one text field while it is open: a rename in place, a gesture field or a
+    /// brush number being typed.
+    pub(crate) mask_typing: Option<&'a masks::MaskTyping>,
+    /// The Masks band is collapsed.
+    pub(crate) masks_collapsed: bool,
+    /// A reorder by drag in progress in the Masks panel.
+    pub(crate) mask_drag: Option<&'a masks::MaskDrag>,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
@@ -428,7 +448,16 @@ impl Built {
             ),
             drafting_key(inputs.mask_draft.is_some()),
             std::mem::discriminant(&inputs.mask_mode),
-            inputs.mask_name,
+            (inputs.mask_typing, inputs.masks_collapsed, inputs.mask_drag),
+            // The open mask's generated controls and the selected component's fields read the
+            // field store, so a typed, dragged or committed value reaches them.
+            (
+                stamps.fields,
+                stamps.controls,
+                inputs.editing,
+                inputs.dragging,
+                inputs.slider_draft,
+            ),
             (
                 inputs.display_entry,
                 inputs.selected_mask,
@@ -915,7 +944,9 @@ mod tests {
                 mask_mode: ComponentMode::Add,
                 brush: crate::mask_draft::NEUTRAL_BRUSH,
                 brush_erase_held: false,
-                mask_name: "",
+                mask_typing: None,
+                masks_collapsed: false,
+                mask_drag: None,
                 target: self
                     .selected_mask
                     .as_ref()
