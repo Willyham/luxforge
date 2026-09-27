@@ -622,12 +622,6 @@ pub(crate) enum ControlMessage {
         action: String,
         parameter: Option<String>,
     },
-    /// A slider drag: the field text follows the pointer and no request is sent.
-    SliderMoved {
-        action: String,
-        parameter: String,
-        value: f64,
-    },
     /// A slider rail position in 0..=1; the host maps it through the descriptor's soft range.
     Fraction {
         action: String,
@@ -640,7 +634,8 @@ pub(crate) enum ControlMessage {
         parameter: String,
         value: Value,
     },
-    /// The end of a continuous control gesture.
+    /// The end of a continuous control gesture: it commits the open draft of the control drafting,
+    /// and a control that does not draft runs its action once, exactly as Enter in the field does.
     Released {
         action: String,
         parameter: String,
@@ -694,12 +689,6 @@ pub(crate) enum ControlMessage {
         identity: CurveSampleIdentity,
         result: Result<Value, String>,
     },
-    /// A slider drag ended: it commits the open draft of a patch action, and otherwise runs the
-    /// control's action once, exactly as Enter in the field does.
-    SliderReleased {
-        action: String,
-        parameter: String,
-    },
     /// Return one generated field to its declared default. On a patch action that is one action
     /// submitting that field alone; otherwise it only refills the text, as it always has.
     ResetField {
@@ -711,9 +700,6 @@ pub(crate) enum ControlMessage {
         action: String,
         parameter: String,
     },
-    /// Typing ended without committing.
-    #[allow(dead_code)]
-    CancelEdit,
     /// Collapse or expand one module's section.
     ToggleSection(String),
     /// Return one module to its neutral state through its declared reset action.

@@ -64,9 +64,7 @@ fn typing_waits_for_enter_and_invalid_text_commits_nothing() {
         parameter: "count".into(),
         text: "7".into(),
     }));
-    assert!(!editor.busy);
-    let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
-    assert!(!editor.busy, "leaving a field is not a commit");
+    assert!(!editor.busy, "typing is not a commit");
     let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),

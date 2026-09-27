@@ -182,11 +182,12 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
     }
     Ok(summaries)
 }
-// The repository rules: what source text may say where, and which crate may depend on what. Each
-// rule is one row of `SOURCE_RULES` or `DEPENDENCY_RULES`, served by one token matcher
-// (`holds_token`) and one test-exclusion parser (`production_lines`). A task that finishes a concept
-// adds the row that keeps it single; it never writes a bespoke check. To add a rule, copy the row
-// nearest in shape, give it a new `name`, and add a test with an allowed and a refused path.
+// The repository rules: what source text may say where, which crate may depend on what, and which
+// messages product code must send. Each rule is one row of `SOURCE_RULES`, `DEPENDENCY_RULES` or
+// `SENDER_RULES`, served by one token matcher (`holds_token`) and one test-exclusion parser
+// (`production_lines`). A task that finishes a concept adds the row that keeps it single; it never
+// writes a bespoke check. To add a rule, copy the row nearest in shape, give it a new `name`, and
+// add a test with an allowed and a refused path.
 
 /// The file holding the rule tables names every refused token in its rows and tests, so no source
 /// rule reads it.
@@ -750,6 +751,42 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
     },
 ];
 
+/// A rule that every variant of one message enum has a sender in product code: a production line,
+/// outside the scripted drivers, that constructs it. A variant only a driver or a test constructs
+/// proves a path no person can take, so evidence and tests drive the messages widgets send.
+struct SenderRule {
+    /// The rule's name, printed with each refusal and unique across every table.
+    name: &'static str,
+    /// The enum, as a sender names it: a variant is sent where a line holds `Enum::Variant`.
+    message: &'static str,
+    /// The file that declares the enum.
+    declared: &'static str,
+    /// The file whose `match` handles it: a line there that begins with a variant is that
+    /// variant's arm, not a sender. Everywhere else, rustfmt may begin a line with one that is.
+    handler: &'static str,
+    /// The directories whose production lines are read for senders, relative to the root.
+    scope: &'static [&'static str],
+    /// The scripted drivers, whose constructions are not senders.
+    drivers: &'static [&'static str],
+    /// Why the rule holds, printed with each refusal.
+    reason: &'static str,
+}
+
+const SENDER_RULES: &[SenderRule] = &[
+    // The widgets' own messages: evidence scripts and tests drive a slider through the `Fraction`
+    // and `Released` its widget publishes, never a message of their own that no widget sends.
+    SenderRule {
+        name: "widget-sent-controls",
+        message: "ControlMessage",
+        declared: "crates/luxforge-app/src/app/message.rs",
+        handler: "crates/luxforge-app/src/app/controls.rs",
+        scope: &["crates/luxforge-app/src"],
+        drivers: &["crates/luxforge-app/src/app/evidence.rs"],
+        reason: "every control message has a sender in desktop product code outside the evidence \
+                 driver; drive evidence and tests through the message the widget sends",
+    },
+];
+
 /// Whether `line` holds `token` under `mode`; see [`Match`].
 fn holds_token(line: &str, token: &str, mode: Match) -> bool {
     let identifier = |c: char| c.is_alphanumeric() || c == '_';
@@ -825,6 +862,45 @@ fn production_lines(text: &str) -> (Vec<(usize, &str)>, Vec<&str>) {
         }
     }
     (lines, test_modules)
+}
+
+/// The variants `text` declares for `enum name`, in order, or `None` when it declares no such
+/// enum. A variant is a line directly inside the enum's braces that begins with an identifier;
+/// attributes, comments and a struct variant's fields are not.
+fn enum_variants<'a>(text: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    let mut lines = text.lines().skip_while(|line| {
+        line.trim()
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub ")
+            .strip_prefix("enum ")
+            .is_none_or(|rest| rest.trim_end_matches('{').trim() != name)
+    });
+    lines.next()?;
+    let mut variants = Vec::new();
+    let mut depth = 1;
+    for line in lines {
+        let trimmed = line.trim();
+        if depth == 1 && trimmed.starts_with(|c: char| c.is_ascii_uppercase()) {
+            let end = trimmed
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(trimmed.len());
+            variants.push(&trimmed[..end]);
+        }
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        for c in trimmed.chars() {
+            match c {
+                '{' | '(' => depth += 1,
+                '}' | ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            return Some(variants);
+        }
+    }
+    Some(variants)
 }
 
 /// Where an out-of-line module `name` declared in `file` lives: its `name.rs`, and the directory
@@ -1082,34 +1158,54 @@ struct Applied {
     reads: BTreeMap<&'static str, usize>,
 }
 
+/// Every file of one of `types` under the directories of `scope`, except the rule tables' own.
+fn scoped(tree: &mut Tree, scope: &[&str], types: &[&str]) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    for dir in scope {
+        paths.extend(tree.under(dir)?.into_iter().filter(|path| {
+            path != RULES_FILE
+                && Path::new(path)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| types.contains(&extension))
+        }));
+    }
+    Ok(paths)
+}
+
+/// Which of `paths` are test code: a test by name ([`test_file`]), or a module one of them
+/// declares under `#[cfg(test)]`, with everything below its directory.
+fn test_paths(tree: &mut Tree, paths: &[String]) -> Result<BTreeSet<String>> {
+    let mut test_modules = Vec::new();
+    for path in paths {
+        for name in production_lines(tree.text(path)?).1 {
+            test_modules.push(module_files(path, name));
+        }
+    }
+    Ok(paths
+        .iter()
+        .filter(|path| {
+            test_file(Path::new(path))
+                || test_modules
+                    .iter()
+                    .any(|(file, dir)| *path == file || path.starts_with(dir.as_str()))
+        })
+        .cloned()
+        .collect())
+}
+
 impl SourceRule {
     fn apply(&self, tree: &mut Tree, applied: &mut Applied, refusals: &mut Vec<String>) -> Result {
-        let mut paths = Vec::new();
-        for dir in self.scope {
-            paths.extend(tree.under(dir)?.into_iter().filter(|path| {
-                path != RULES_FILE
-                    && Path::new(path)
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| self.types.contains(&extension))
-            }));
-        }
-        let mut test_modules = Vec::new();
-        if !self.tests {
-            for path in &paths {
-                for name in production_lines(tree.text(path)?).1 {
-                    test_modules.push(module_files(path, name));
-                }
-            }
-        }
+        let paths = scoped(tree, self.scope, self.types)?;
+        let tests = if self.tests {
+            BTreeSet::new()
+        } else {
+            test_paths(tree, &paths)?
+        };
         let mut read = 0;
         let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
         for path in &paths {
-            let test_only = !self.tests
-                && (test_file(Path::new(path))
-                    || test_modules
-                        .iter()
-                        .any(|(file, dir)| path == file || path.starts_with(dir.as_str())));
+            let test_only = tests.contains(path);
             let home = permitted(path, self.allowed);
             if test_only || (home && !self.once) {
                 continue;
@@ -1139,6 +1235,46 @@ impl SourceRule {
             }
             applied.sources.insert(path.clone());
             read += 1;
+        }
+        *applied.reads.entry(self.name).or_default() += read;
+        Ok(())
+    }
+}
+
+impl SenderRule {
+    fn apply(&self, tree: &mut Tree, applied: &mut Applied, refusals: &mut Vec<String>) -> Result {
+        let variants: Vec<String> = enum_variants(tree.text(self.declared)?, self.message)
+            .ok_or_else(|| format!("{} declares no enum {}", self.declared, self.message))?
+            .into_iter()
+            .map(|variant| format!("{}::{variant}", self.message))
+            .collect();
+        let paths = scoped(tree, self.scope, &["rs"])?;
+        let tests = test_paths(tree, &paths)?;
+        let mut sent = BTreeSet::new();
+        let mut read = 0;
+        for path in &paths {
+            if tests.contains(path) || permitted(path, self.drivers) {
+                continue;
+            }
+            for (_, line) in production_lines(tree.text(path)?).0 {
+                let arm = path == self.handler;
+                for token in &variants {
+                    if holds_token(line, token, Match::Whole)
+                        && !(arm && line.trim_start().starts_with(token.as_str()))
+                    {
+                        sent.insert(token.clone());
+                    }
+                }
+            }
+            applied.sources.insert(path.clone());
+            read += 1;
+        }
+        for token in variants.iter().filter(|token| !sent.contains(*token)) {
+            refusals.push(format!(
+                "{}: {} (sender rule `{}` found no sender of `{token}`; a deliberate new \
+                 driver is a change to that row of SENDER_RULES in {RULES_FILE}, not a new check)",
+                self.declared, self.reason, self.name
+            ));
         }
         *applied.reads.entry(self.name).or_default() += read;
         Ok(())
@@ -1203,7 +1339,7 @@ impl DependencyRule {
     }
 }
 
-/// Apply the named rules of both tables (every rule when `only` is empty) to the repository at
+/// Apply the named rules of every table (every rule when `only` is empty) to the repository at
 /// `root`, failing with every refusal.
 fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
     let selected = |name: &str| only.is_empty() || only.contains(&name);
@@ -1216,6 +1352,9 @@ fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
     for rule in DEPENDENCY_RULES.iter().filter(|rule| selected(rule.name)) {
         rule.apply(&mut tree, &mut applied, &mut refusals)?;
     }
+    for rule in SENDER_RULES.iter().filter(|rule| selected(rule.name)) {
+        rule.apply(&mut tree, &mut applied, &mut refusals)?;
+    }
     ensure(refusals.is_empty(), refusals.join("\n"))?;
     Ok(applied)
 }
@@ -1225,6 +1364,14 @@ fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
 fn rules(root: &Path) -> Result<Applied> {
     let applied = apply(root, &[])?;
     let mut names = BTreeSet::new();
+    let senders: Vec<(&str, Vec<&str>)> = SENDER_RULES
+        .iter()
+        .map(|rule| {
+            let mut paths = vec![rule.declared, rule.handler];
+            paths.extend(rule.drivers);
+            (rule.name, paths)
+        })
+        .collect();
     let rows = SOURCE_RULES
         .iter()
         .map(|rule| (rule.name, rule.allowed))
@@ -1232,6 +1379,11 @@ fn rules(root: &Path) -> Result<Applied> {
             DEPENDENCY_RULES
                 .iter()
                 .map(|rule| (rule.name, rule.allowed)),
+        )
+        .chain(
+            senders
+                .iter()
+                .map(|(name, paths)| (*name, paths.as_slice())),
         );
     for (name, allowed) in rows {
         ensure(
@@ -1313,8 +1465,10 @@ pub fn check(root: &Path) -> Result {
     );
     let applied = rules(root)?;
     println!(
-        "PASS {} source rules ({} files) and {} dependency rules ({} manifests)",
+        "PASS {} source rules and {} sender rules ({} files) and {} dependency rules ({} \
+         manifests)",
         SOURCE_RULES.len(),
+        SENDER_RULES.len(),
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
@@ -1359,7 +1513,8 @@ mod tests {
         for name in only {
             assert!(
                 SOURCE_RULES.iter().any(|rule| rule.name == *name)
-                    || DEPENDENCY_RULES.iter().any(|rule| rule.name == *name),
+                    || DEPENDENCY_RULES.iter().any(|rule| rule.name == *name)
+                    || SENDER_RULES.iter().any(|rule| rule.name == *name),
                 "no rule {name}"
             );
         }
@@ -1865,6 +2020,92 @@ mod tests {
             }
         }
         assert_eq!(read(tmp.path(), &["raw-identity"]).unwrap(), (2, 0));
+    }
+
+    /// Every control message needs a sender outside the evidence driver and tests: the view's
+    /// widgets, or product code in `app/` such as the handler's own dispatch. The handler's match
+    /// arms are not senders, and a sender split across lines by rustfmt still is one.
+    #[test]
+    fn every_control_message_has_a_sender_outside_evidence_and_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let app = "crates/luxforge-app/src/app";
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-app/src/app/message.rs",
+                    "pub(crate) enum ControlMessage {\n    /// A rail position.\n    Fraction {\n        \
+                     fraction: f64,\n    },\n    #[allow(dead_code)]\n    Scripted {\n        \
+                     value: f64,\n    },\n    ToggleSection(String),\n    Answered,\n}\n\
+                     pub(crate) enum Other {\n    Unsent,\n}\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/controls.rs",
+                    "match message {\n    ControlMessage::Fraction { fraction } => {}\n    \
+                     ControlMessage::Scripted { value } => {}\n    \
+                     ControlMessage::ToggleSection(id) => {}\n    ControlMessage::Answered => {}\n}\n\
+                     let task = Message::Control(ControlMessage::Answered);\n",
+                ),
+                (
+                    "crates/luxforge-app/src/view/tools_panel.rs",
+                    "slider(move |fraction| Message::Control(\n    ControlMessage::Fraction {\n        \
+                     fraction,\n    }\n));\n\
+                     button(Message::Control(ControlMessage::ToggleSection(id)));\n\
+                     // ControlMessage::Scripted is only a comment here.\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/evidence.rs",
+                    "self.update(Message::Control(ControlMessage::Scripted { value }));\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/slider_tests.rs",
+                    "editor.update(Message::Control(ControlMessage::Scripted { value: 1.0 }));\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/mod.rs",
+                    "#[cfg(test)]\nmod tests {\n    fn t() { let m = ControlMessage::Scripted { value: 1.0 }; }\n}\n",
+                ),
+            ],
+        );
+        // Scripted is constructed only by evidence, a test file and a test module, and named in
+        // the handler's arm and a comment: refused, by name, and the only refusal.
+        let error = refusal(root, &["widget-sent-controls"], "an evidence-only message");
+        assert!(
+            error.contains("sender rule `widget-sent-controls`")
+                && error.contains("`ControlMessage::Scripted`")
+                && error.lines().count() == 1,
+            "{error}"
+        );
+        // A widget sending it is enough.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/src/view/tools_panel.rs",
+                "slider(move |fraction| Message::Control(\n    ControlMessage::Fraction {\n        \
+                 fraction,\n    }\n));\n\
+                 button(Message::Control(ControlMessage::ToggleSection(id)));\n\
+                 field(Message::Control(ControlMessage::Scripted { value }));\n",
+            )],
+        );
+        // The declaration, the handler, the view and the production lines of `app/mod.rs`.
+        assert_eq!(read(root, &["widget-sent-controls"]).unwrap(), (4, 0));
+        // So a message only the handler's own arm names has no sender.
+        fs::write(
+            root.join(app).join("controls.rs"),
+            "match message {\n    ControlMessage::Fraction { fraction } => {}\n    \
+             ControlMessage::Answered => {}\n}\n",
+        )
+        .unwrap();
+        let error = refusal(root, &["widget-sent-controls"], "an unsent message");
+        assert!(error.contains("`ControlMessage::Answered`"), "{error}");
+        assert_eq!(
+            enum_variants(
+                &fs::read_to_string(root.join(app).join("message.rs")).unwrap(),
+                "ControlMessage"
+            ),
+            Some(vec!["Fraction", "Scripted", "ToggleSection", "Answered"])
+        );
     }
 
     /// Write each `(path, text)` under `root`, creating its directories.

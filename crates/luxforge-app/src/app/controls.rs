@@ -47,26 +47,6 @@ impl Editor {
                 // Typing is editing: the field shows what was typed until it is committed.
                 self.editing = Some((action, parameter));
             }
-            ControlMessage::SliderMoved {
-                action,
-                parameter,
-                value,
-            } => {
-                // A control whose one field is already a whole request drafts: a patch action's
-                // field, or the only parameter its action declares. The move updates the field and
-                // the draft's pending value, and the gated tick is the only thing that sends
-                // anything. Every other slider keeps its old behaviour, which is to change the text
-                // and nothing else until release.
-                if tools::drafts(&self.modules, &action, &parameter) {
-                    return self.slider_moved(action, parameter, value);
-                }
-                let text = fields::declared(&self.modules, &action, &parameter)
-                    .and_then(NumberSpec::of)
-                    .map_or_else(|| number_text(value), |spec| spec.format(value));
-                self.fields.set(&action, &parameter, text);
-                self.editing = None;
-                self.dragging = Some((action, parameter));
-            }
             ControlMessage::Fraction {
                 action,
                 parameter,
@@ -166,21 +146,6 @@ impl Editor {
                 self.editing = Some((action, parameter));
                 self.seed_idle_angle();
                 return operation::focus(iced::widget::Id::from(id));
-            }
-            ControlMessage::CancelEdit => self.editing = None,
-            ControlMessage::SliderReleased { action, parameter } => {
-                // Release ends the gesture: an open draft commits once, and a slider that never
-                // drafted submits its own field exactly as Enter in that field does.
-                if self.slider_gesture().is_some() {
-                    return self.release();
-                }
-                if tools::drafts(&self.modules, &action, &parameter) {
-                    return self.release_without_draft(&action, &parameter);
-                }
-                return self.dispatch(Message::Control(ControlMessage::Submit {
-                    action,
-                    parameter: Some(parameter),
-                }));
             }
             ControlMessage::Submit { action, parameter } => {
                 self.dragging = None;
