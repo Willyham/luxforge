@@ -298,7 +298,7 @@
     {
       "id": "TASK-005",
       "description": "Validate every mutation envelope once in the dispatcher, let service handlers say whether they changed anything, and replace the forwarding handlers and duplicated checks with table rows.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003"
@@ -326,9 +326,9 @@
         },
         {
           "kind": "file",
-          "label": "Capability forwarders",
-          "target": "crates/luxforge-core/src/api/owner/capability.rs",
-          "relevance": "The forwarding functions this task folds into table rows."
+          "label": "Capability methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The capability methods, now table rows with inline handlers."
         },
         {
           "kind": "file",
