@@ -941,4 +941,63 @@ mod tests {
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
+
+    /// `mask.rename-component` writes exactly one entry, exactly as any other mutation, and undo
+    /// restores the component's previous name — the ordinary history behaviour, proved on this
+    /// command rather than assumed of it because it shares the mask family's one commit path.
+    #[test]
+    fn a_component_rename_writes_one_entry_and_undo_restores_the_name() {
+        let catalog = temp("mask-rename-component.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let create = crate::mask::commands::find("mask.create-linear").unwrap();
+        let created = service
+            .run_action(
+                &asset,
+                mutation(0, "create"),
+                create.method,
+                (MaskTarget::default())
+                    .request(json!({"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0})),
+            )
+            .unwrap();
+        let mask = created.mask.clone().expect("a created mask");
+        let component = created.component.clone().expect("its first component");
+        let before = service.history(&asset, None, 10).unwrap().entries.len();
+
+        let renamed = service
+            .run_action(
+                &asset,
+                mutation(1, "rename-component"),
+                "mask.rename-component",
+                (MaskTarget {
+                    mask: Some(mask.clone()),
+                    component: Some(component.clone()),
+                    name: Some("Sky edge".into()),
+                    ..MaskTarget::default()
+                })
+                .request(Value::Null),
+            )
+            .unwrap();
+        assert_eq!(renamed.label.as_deref(), Some("Rename Linear 1 to Sky edge"));
+        assert_eq!(
+            service.history(&asset, None, 10).unwrap().entries.len(),
+            before + 1,
+            "one entry for the rename, exactly as any other mutation"
+        );
+        let after_rename = service.state(&asset).unwrap();
+        assert_eq!(
+            after_rename.current_entry.snapshot.recipe.masks[0].components[0].name,
+            "Sky edge"
+        );
+
+        service.undo(&asset, mutation(2, "undo")).unwrap();
+        let after_undo = service.state(&asset).unwrap();
+        assert_eq!(
+            after_undo.current_entry.snapshot.recipe.masks[0].components[0].name,
+            "Linear 1",
+            "undo restores the component's previous name"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
 }
