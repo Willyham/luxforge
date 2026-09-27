@@ -383,28 +383,39 @@ and are referenced rather than duplicated.
 
 ### The field-patch conformance chapter
 
-Basic, Presence, the colour mixer and the vignette are one declarative field-patch module each, and
-the host behaviour they share is proved once, for every module the built-in registry holds in that
-shape, by one suite in `crates/luxforge-core/tests/modules/conformance/`. The suite finds the
-modules from their descriptors — one effect, one `patch` action whose parameters are all numbers
-with defaults, and the parameterless action the module reset names — and derives every payload
-it sends from the declared field table, so a new field-patch module is checked the day it is
-registered. It refuses to run when it no longer recognises one of the four built-in ones. The
+Basic, Presence, the colour mixer, the vignette and the developer controls proof are one
+declarative field-patch module each, and the host behaviour they share is proved once, for every
+module the built-in registry and the controls proof hold in that shape, by one suite in
+`crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from their
+descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
+number, integer, boolean, enum, colour or curve), and the parameterless action the module reset
+names — and derives every payload it sends from the declared field table, so a new field-patch
+module is checked the day it is registered. It refuses to run when it no longer recognises one of
+the four built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
+proof's layer changes no pixel, so it is held to the in-process checks below and to compiling to
+nothing and sharing the source allocation whatever it holds, not to the pixel consequences and the
+journey through the method table. Every `patch: true` action of every registered module, `set-raw`
+included, keeps the generic patch check's rules: an empty patch is filled with nothing, a declared
+default alone is exactly that field, and a value its declaration refuses is refused by name. The
 same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev profile, and in release inside
 `editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
 Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
 a failure names the module, the step and the property that broke.
 
 For each module the suite checks, in process: every neutral spelling of the payload (`{}`, every
-field at its default, each field alone at its default, zero defaults written as `-0`) compiles to no
-units, is reported neutral and `Neutral`, renders the source's own allocation and changes no byte on
-the linear path; each field moved alone and each whole payload has exactly the consequences of the
-module's own neutrality rule; every field reads at both ends of its declared range and in an integer
-spelling, while a value just outside it, a string, a non-object payload, another effect's payload and
-an undeclared format are refused by name without being rewritten; a patch plans a commit only for a
-non-neutral layer holding the canonical payload, merges over the stored layer and updates it in
-place, is a no-op when it changes nothing however it is spelled, drops a field set back to its
-default, and a reset keeps the layer and stores `{}`; two layers for one target refuse planning,
+field at its default, each field alone at its default and in another spelling of it, zero number
+defaults written as `-0`) compiles to no units, is reported neutral and `Neutral`, renders the
+source's own allocation and changes no byte on the linear path; each field moved alone and each
+whole payload has exactly the consequences of the module's own neutrality rule; every field reads at
+the edges of its declaration (both ends of a range and a whole maximum as a JSON integer, both
+booleans, every option, black and white, a moved curve), while a value its declaration refuses (just
+outside a range, the wrong JSON type, an undeclared option, a channel past 255, too many curve
+points), a non-object payload, another effect's payload and an undeclared format are refused by name
+without being rewritten; a patch plans a commit only for a non-neutral layer holding the canonical
+payload, merges over the stored layer and updates it in place, is a no-op when it changes nothing
+however it is spelled, drops a field set back to its default, and a reset keeps the layer and stores
+`{}`; each field of every kind alone commits, is a no-op set again in any spelling, updates in place
+and clears to `{}` at its default; two layers for one target refuse planning,
 rendering and sampling by name; history labels follow the declared rules (one field by its value, a
 group's reset preset as `Reset <group>`, the module reset, a field count, none for an empty patch);
 and a layer reports every field with its defaults filled and describes its moved fields in declared

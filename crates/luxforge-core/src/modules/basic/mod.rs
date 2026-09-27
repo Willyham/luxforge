@@ -95,11 +95,7 @@ pub(crate) const AMBIGUOUS: &str = "ambiguous Basic layers";
 /// Temperature and Tint share a range, a step and a precision; only their name, label and the
 /// direction they describe differ.
 fn white_balance(name: &'static str, label: &str, notes: &str) -> Field {
-    Field {
-        min: -PARAMETER_RANGE,
-        max: PARAMETER_RANGE,
-        ..Field::slider(name, label, notes)
-    }
+    Field::slider(name, label, notes).range(-PARAMETER_RANGE, PARAMETER_RANGE)
 }
 
 /// The Basic module's table, compilation and neutral picker.
@@ -141,36 +137,29 @@ impl FieldPatch for Basic {
                 notes: "returns the stack's one Basic layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
             },
             fields: vec![
-                Field {
-                    rail: Some(crate::RailDecoration::Temperature),
-                    variants: vec![raw.temperature],
-                    ..white_balance(
+                white_balance(
                         TEMPERATURE,
                         "Temperature",
                         "a relative warm/cool correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
-                    )
-                },
-                Field {
-                    rail: Some(crate::RailDecoration::Tint),
-                    variants: vec![raw.tint],
-                    ..white_balance(
+                )
+                .rail(crate::RailDecoration::Temperature)
+                .variant(raw.temperature),
+                white_balance(
                         TINT,
                         "Tint",
                         "a relative green/magenta correction of the photo as rendered (a JPEG as decoded; on a RAW photo only through a mask, over the development, since a RAW photo's global white balance is the source development's), not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
-                    )
-                },
-                Field {
-                    min: -5.0,
-                    max: 5.0,
-                    step: 0.01,
-                    precision: 2,
-                    unit: Some("EV"),
-                    ..Field::slider(
+                )
+                .rail(crate::RailDecoration::Tint)
+                .variant(raw.tint),
+                Field::slider(
                         EXPOSURE,
                         "Exposure",
                         "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed scene-linear planes, which stay unclipped until the terminal boundary, before the tone curve. It is the one exposure on every kind: the RAW development carries none",
-                    )
-                },
+                )
+                .range(-5.0, 5.0)
+                .step(0.01)
+                .precision(2)
+                .unit("EV"),
                 tone(
                     CONTRAST,
                     "Contrast",
@@ -273,33 +262,34 @@ impl FieldPatch for Basic {
             }),
             collapsed: false,
             layout: crate::ModuleLayout::Stacked,
+            developer: false,
         }
     }
 
     fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
         // A neutral payload compiles to no units, which the host drops entirely: the identity byte
         // path and the shared source buffer are kept.
-        if values.all_default() {
+        if values.is_default() {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
         // The frozen internal order: white balance, then exposure, then the tonal curve, then
         // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
         // layer that moves one slider costs one unit.
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
-        let temperature = values.get(TEMPERATURE);
-        let tint = values.get(TINT);
+        let temperature = values.number(TEMPERATURE);
+        let tint = values.number(TINT);
         if temperature != NEUTRAL || tint != NEUTRAL {
             units.push(Arc::new(WhiteBalance::new(temperature, tint)));
         }
-        let exposure = values.get(EXPOSURE);
+        let exposure = values.number(EXPOSURE);
         if exposure != NEUTRAL {
             units.push(Arc::new(Exposure::new(exposure)));
         }
-        let contrast = values.get(CONTRAST);
-        let highlights = values.get(HIGHLIGHTS);
-        let shadows = values.get(SHADOWS);
-        let whites = values.get(WHITES);
-        let blacks = values.get(BLACKS);
+        let contrast = values.number(CONTRAST);
+        let highlights = values.number(HIGHLIGHTS);
+        let shadows = values.number(SHADOWS);
+        let whites = values.number(WHITES);
+        let blacks = values.number(BLACKS);
         if [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
             units.push(Arc::new(Tone::new(
                 contrast, highlights, shadows, whites, blacks,
@@ -309,8 +299,8 @@ impl FieldPatch for Basic {
         // (see `colour.rs`) whenever at least one of the two fields is non-neutral, so a layer
         // that moves either slider alone still costs exactly one unit, and moving both costs one
         // unit rather than two.
-        let vibrance = values.get(VIBRANCE);
-        let saturation = values.get(SATURATION);
+        let vibrance = values.number(VIBRANCE);
+        let saturation = values.number(SATURATION);
         if vibrance != NEUTRAL || saturation != NEUTRAL {
             units.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
         }

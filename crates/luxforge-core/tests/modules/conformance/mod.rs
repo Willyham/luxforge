@@ -1,13 +1,17 @@
 //! The field-patch conformance suite: one set of checks every registered field-patch module passes.
 //!
-//! Basic, the colour mixer, Presence and the vignette share one implementation of everything but
-//! their field tables and their compilation (`modules/field_patch.rs`), and the host behaviour they
-//! rely on — discovery, drafts, no-ops, request deduplication, resets that keep a layer's identity,
-//! one layer per target, history, sample-equals-render on both paths, unavailable providers and
-//! reopen — is the host's. So it is proved here once, for every module the registry holds in the
-//! field-patch shape ([`shape::field_patches`]), rather than once per module. A module's own
+//! Basic, the colour mixer, Presence, the vignette and the developer controls proof share one
+//! implementation of everything but their field tables and their compilation
+//! (`modules/field_patch.rs`), and the host behaviour they rely on — discovery, drafts, no-ops,
+//! request deduplication, resets that keep a layer's identity, one layer per target, history,
+//! sample-equals-render on both paths, unavailable providers and reopen — is the host's. So it is
+//! proved here once, for every module the built-in registry and the developer controls proof hold
+//! in the field-patch shape ([`shape::field_patches`]), over fields of every kind the field patch
+//! holds, rather than once per module. The controls proof's layer changes no pixel, so it is held
+//! to its payload rules and to rendering nothing, not to the editing journey. A module's own
 //! numerics against its frozen reference, its placement and its unique behaviour stay in its own
-//! tests.
+//! tests; every `patch: true` action, field patch or not, keeps the generic patch check's rules
+//! ([`rules::patch_actions`]).
 //!
 //! The suite is written against the public API only and returns its evidence instead of
 //! asserting, so the same code runs as the core's integration test
@@ -23,10 +27,10 @@ pub mod shape;
 
 pub use luxforge_testkit::client::{Checked, ensure, within};
 
-use luxforge_core::ModuleRegistry;
+use luxforge_core::{ControlsModule, ModuleRegistry};
 use luxforge_testkit::client::request_id;
 use serde_json::{Value, json};
-use std::{fs, path::Path, time::Instant};
+use std::{fs, path::Path, sync::Arc, time::Instant};
 
 /// Who the suite's mutations name.
 pub const ACTOR: &str = "field-patch-conformance";
@@ -49,24 +53,30 @@ impl Evidence {
     }
 }
 
-/// The built-in modules the suite must recognise. A new field-patch module needs no entry here to
+/// The modules the suite must recognise: the built-in field patches and the developer controls
+/// proof, whose fields are the non-numeric kinds. A new field-patch module needs no entry here to
 /// be checked; this list only makes sure a descriptor change can never drop one of these from the
 /// suite silently.
-pub const KNOWN: [&str; 4] = [
+pub const KNOWN: [&str; 5] = [
     "luxforge.basic",
     "luxforge.presence",
     "luxforge.mixer",
     "luxforge.vignette",
+    "luxforge.controls",
 ];
 
-/// Run the suite over every field-patch module of the built-in registry, each against its own new
-/// catalog in `out`, on the JPEG `fixture`. Every module is run even when one fails, and the error
-/// names each module that failed and the step and property that broke.
+/// Run the suite over every field-patch module of the built-in registry with the developer
+/// controls proof registered beside them, each against its own new catalog in `out`, on the JPEG
+/// `fixture`. Every module is run even when one fails, and the error names each module that failed
+/// and the step and property that broke.
 pub fn run(fixture: &Path, out: &Path) -> Checked<Value> {
     let started = Instant::now();
     let original = fs::read(fixture)
         .map_err(|error| format!("{} is unreadable: {error}", fixture.display()))?;
-    let registry = ModuleRegistry::builtin();
+    let mut registry = ModuleRegistry::builtin();
+    registry
+        .register(Arc::new(ControlsModule::new()))
+        .map_err(|error| format!("the controls proof did not register: {error}"))?;
     let modules = shape::field_patches(&registry);
     let found: Vec<&str> = modules.iter().map(|module| module.id.as_str()).collect();
     for known in KNOWN {
@@ -77,6 +87,7 @@ pub fn run(fixture: &Path, out: &Path) -> Checked<Value> {
             ),
         )?;
     }
+    let patch_actions = within("every patch action", || rules::patch_actions(&registry))?;
     let sources = pixels::Sources::open(fixture)?;
     // Each module has its own catalog and owner, so the modules run side by side; their results are
     // kept in registration order.
@@ -120,6 +131,7 @@ pub fn run(fixture: &Path, out: &Path) -> Checked<Value> {
     Ok(json!({
         "status": "passed",
         "modules": found,
+        "patch_actions": patch_actions,
         "results": results,
         "elapsed_ms": started.elapsed().as_secs_f64() * 1000.0,
     }))
@@ -138,21 +150,21 @@ fn check(
     let mut evidence = Evidence::default();
     let payloads = within("payloads", || pixels::payloads(registry, module, sources))?;
     evidence.record(
-        "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field alone and each whole payload has exactly the consequences of the module's own neutrality rule",
+        "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field alone and each whole payload has exactly the consequences of the module's own neutrality rule, and a developer proof's renders nothing",
         payloads,
     );
     let rules = within("the field-patch rules", || {
         rules::rules(registry, module, sources.stage())
     })?;
     evidence.record(
-        "every field reads at both ends of its range and in an integer spelling while a value just outside it, a string, a non-object, another effect and an undeclared format are refused by name; a patch commits only a non-neutral layer holding the canonical payload, merges over the stored layer in place, is a no-op when it changes nothing however spelled, drops a field set back to its default, and a reset keeps the layer and stores {}; two layers for one target refuse planning by name; labels and descriptions follow the declared rules and values fill every default",
+        "every field of every kind reads at the edges of its declaration while a value its declaration refuses, a non-object, another effect and an undeclared format are refused by name; a patch commits only a non-neutral layer holding the canonical payload, merges over the stored layer in place, is a no-op when it changes nothing however spelled, drops a field set back to its default, and a reset keeps the layer and stores {}; each field alone commits, updates and clears by value; two layers for one target refuse planning by name; labels and descriptions follow the declared rules and values fill every default",
         rules,
     );
     let refusals = within("stored payloads", || {
         pixels::stored_refusals(registry, module, sources)
     })?;
     evidence.record(
-        "a stored layer of an undeclared format is incompatible and is not rendered, an unknown field, an out-of-range value and a non-object payload are refused by name, and nothing is rewritten",
+        "a stored layer of an undeclared format is incompatible and is not rendered, an unknown field, a value its declaration refuses and a non-object payload are refused by name, and nothing is rewritten",
         refusals,
     );
     let ambiguous = within("two global layers", || {
@@ -169,6 +181,18 @@ fn check(
         "a stack holding two global layers of the effect is refused by rendering and sampling with ambiguous <title> layers and stays readable",
         ambiguous,
     );
+    if !module.renders {
+        return Ok(json!({
+            "module": module.id,
+            "effect": module.effect.id,
+            "set": module.set,
+            "reset": module.reset,
+            "fields": module.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>(),
+            "renders": false,
+            "checks": evidence.checks,
+            "elapsed_ms": started.elapsed().as_secs_f64() * 1000.0,
+        }));
+    }
 
     let catalog = out.join(format!("{}-conformance.sqlite", module.id));
     ensure(

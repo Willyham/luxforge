@@ -153,7 +153,7 @@ fn row<'r>(rows: &'r [Value], mask: Option<&Value>) -> Checked<&'r Value> {
     }
 }
 
-/// Every declared field's value in a row, compared numerically, with the moved fields named in
+/// Every declared field's value in a row, compared by value, with the moved fields named in
 /// `moved` and every other field at its default.
 fn expect_values(
     module: &FieldPatch,
@@ -173,12 +173,9 @@ fn expect_values(
         ),
     )?;
     for field in &module.fields {
-        let expected = moved
-            .get(&field.name)
-            .and_then(Value::as_f64)
-            .unwrap_or(field.default);
+        let expected = moved.get(&field.name).unwrap_or(&field.default);
         ensure(
-            values.get(&field.name).and_then(Value::as_f64) == Some(expected),
+            field.same(values.get(&field.name), expected),
             format!(
                 "{what}: {} reads {:?}, expected {expected}",
                 field.name,
@@ -251,9 +248,11 @@ fn expect_entry(
     let stored = object(&entry["parameters"])?;
     ensure(
         stored.len() == sent.len()
-            && sent
-                .iter()
-                .all(|(name, value)| stored.get(name).and_then(Value::as_f64) == value.as_f64()),
+            && sent.iter().all(|(name, value)| {
+                module
+                    .field(name)
+                    .is_some_and(|field| field.same(stored.get(name), value))
+            }),
         format!("the entry stores {stored:?}, not the patch as sent {sent:?}"),
     )?;
     Ok(label)
@@ -308,8 +307,8 @@ fn expect_current(
 }
 
 /// A value of `field` different from `current`.
-fn other_than(field: &Field, current: f64) -> f64 {
-    if current == field.high() {
+fn other_than(field: &Field, current: &Value) -> Value {
+    if field.same(Some(current), &field.high()) {
         field.low()
     } else {
         field.high()
@@ -360,10 +359,10 @@ pub fn journey(
         .find(|field| field.name != lead.name)
         .unwrap_or(&lead)
         .clone();
-    let patch = |pairs: &[(&Field, f64)]| -> Map<String, Value> {
+    let patch = |pairs: &[(&Field, Value)]| -> Map<String, Value> {
         pairs
             .iter()
-            .map(|(field, value)| (field.name.clone(), json!(value)))
+            .map(|(field, value)| (field.name.clone(), value.clone()))
             .collect()
     };
 
@@ -482,7 +481,7 @@ pub fn journey(
                     format!("the {} group resets an undeclared {name}", group.label)
                 })?;
                 ensure(
-                    value.as_f64() == Some(field.default),
+                    field.same(Some(value), &field.default),
                     format!("the {} group resets {name} to {value}", group.label),
                 )?;
             }
@@ -824,7 +823,7 @@ pub fn journey(
         let summary = layer["summary"].as_str().unwrap_or_default();
         for field in &module.fields {
             ensure(
-                summary.contains(&field.shown(field.high())),
+                summary.contains(&field.shown(&field.high())),
                 format!("the row summary {summary:?} does not show {}", field.name),
             )?;
         }
@@ -936,7 +935,7 @@ pub fn journey(
                 "a global set replaced the global layer",
             )?;
             ensure(
-                global_after["values"][lead.name.as_str()].as_f64() == Some(lead.low()),
+                lead.same(global_after["values"].get(&lead.name), &lead.low()),
                 format!("the global set left {}", global_after["values"]),
             )?;
             expect_values(
@@ -1025,7 +1024,7 @@ pub fn journey(
                 .filter(|(name, value)| {
                     module
                         .field(name)
-                        .is_some_and(|field| value.as_f64() != Some(field.default))
+                        .is_some_and(|field| !field.same(Some(value), &field.default))
                 })
                 .collect();
             expect_values(
@@ -1248,15 +1247,8 @@ pub fn journey(
     within("two clients", || {
         let revision = owner.revision(editor, &asset)?;
         let current = values_of(row(&rows(&owner, editor, &asset, module)?, None)?)?;
-        let value = |field: &Field| {
-            other_than(
-                field,
-                current
-                    .get(&field.name)
-                    .and_then(Value::as_f64)
-                    .unwrap_or(field.default),
-            )
-        };
+        let value =
+            |field: &Field| other_than(field, current.get(&field.name).unwrap_or(&field.default));
         let (mine, theirs) = (value(&lead), value(&second));
         let draft = owner.call(
             editor,
@@ -1317,9 +1309,8 @@ pub fn journey(
         )?;
         let after = values_of(row(&rows(&owner, editor, &asset, module)?, None)?)?;
         ensure(
-            after.get(&lead.name).and_then(Value::as_f64) == Some(mine)
-                && (second.name == lead.name
-                    || after.get(&second.name).and_then(Value::as_f64) == Some(theirs)),
+            lead.same(after.get(&lead.name), &mine)
+                && (second.name == lead.name || second.same(after.get(&second.name), &theirs)),
             format!("reapply lost a field: {after:?}"),
         )?;
 
@@ -1333,7 +1324,7 @@ pub fn journey(
             agent,
             &asset,
             set,
-            &json!({lead.name.clone(): other_than(&lead, mine)}),
+            &json!({lead.name.clone(): other_than(&lead, &mine)}),
             None,
         )?;
         applied(&later, "the agent's commit during a preview")?;
