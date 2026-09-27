@@ -39,7 +39,7 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 - Modules render as stacked collapsible sections in registry order. A build lists only registered modules; nothing is drawn for modules that do not exist.
 - A history row shows the action title plus a one-value summary supplied by the module; the host stores the rendered label with the entry. The module supplies it through `label()` since the [post-consolidation review](#post-consolidation-review), which replaced declared `summary` templates.
 - Test modules (pixel proof) live in a Developer section that is hidden unless the desktop is launched with `--developer`; the registry marks them `developer: true`, and since the [post-consolidation review](#post-consolidation-review) they register only in developer mode, so a normal build's API lists none of their methods.
-- Compare is hold-`\` for the Original entry, through `preview.select` and `preview.return-current`. Dark theme only; a light theme is not planned.
+- Compare is hold-`\` for the Original entry framed by the displayed entry's geometry (`preview.select` with `keep_geometry`), and Shift+`\` for the uncropped Original, released through `preview.return-current` or the previous selection. Dark theme only; a light theme is not planned.
 - Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
 
 Decided on 2026-09-21:

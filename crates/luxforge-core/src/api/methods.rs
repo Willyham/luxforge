@@ -15,10 +15,10 @@ use super::{
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    ActionRef, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error,
-    HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, ParameterDescriptor,
-    PixelSample, PresetId, Zoom, capabilities::host::TASK_PREFIX, editor::PointPlan,
-    mask::commands::MaskTarget, path,
+    ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, DraftId, EditorService,
+    EntryId, Error, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
+    ParameterDescriptor, PixelSample, PresetId, Zoom, capabilities::host::TASK_PREFIX,
+    editor::PointPlan, mask::commands::MaskTarget, path,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -471,9 +471,9 @@ pub(super) const METHODS: &[MethodSpec] = &[
     ),
     service!(
         "preview.select",
-        EntryParams,
+        PreviewSelect,
         preview_select,
-        "read-only session selection; the current entry selects current, not a historical preview; returns generation and session"
+        "read-only session selection; the current entry selects current, not a historical preview; keep_geometry frames the selected entry with the geometry layers of the entry the session displays now, recorded as session.preview.geometry_from, and the preview, render.sample, render.locate and render.transform of the selection follow it; returns generation and session"
     ),
     service!(
         "preview.return-current",
@@ -1032,6 +1032,14 @@ host_params! {
 }
 
 host_params! {
+    pub(super) struct PreviewSelect {
+        asset_id: AssetId,
+        entry_id: EntryId,
+        keep_geometry: Option<bool> = "bool; show the entry with the geometry layers (orientation, straighten, crop) of the entry the session displays now, so only the adjustments differ; default false, the entry's own geometry",
+    }
+}
+
+host_params! {
     pub(super) struct SourceInspect {
         asset_id: AssetId,
         entry_id: Option<EntryId> = "historical entry; default current",
@@ -1523,17 +1531,41 @@ fn preset_import(
 fn preview_select(
     service: &mut EditorService,
     session: &mut ClientSession,
-    p: EntryParams,
+    p: PreviewSelect,
 ) -> Result<Value, Error> {
     // The current entry is the live state, not a historical snapshot: selecting it is Return to
     // current, so the session keeps following later commits and editing stays enabled.
-    let selection = if service.current_entry_id(&p.asset_id)? == p.entry_id {
-        HistorySelection::Current
+    if service.current_entry_id(&p.asset_id)? == p.entry_id {
+        let generation = session.preview.select(HistorySelection::Current);
+        session.touch();
+        return Ok(json!({"generation": generation, "session": session_value(service, session)?}));
+    }
+    service.entry(&p.asset_id, &p.entry_id)?;
+    // The geometry the session displays now: the framing it already shows, or the displayed
+    // entry's own. A selection of another asset displays nothing of this one, so its current
+    // entry is what a client opening this asset would be looking at.
+    let geometry = if p.keep_geometry.unwrap_or(false) {
+        let displayed = match &session.preview.selection {
+            HistorySelection::Entry(entry_id) => session
+                .preview
+                .geometry_from
+                .clone()
+                .unwrap_or_else(|| entry_id.clone()),
+            HistorySelection::Current => service.current_entry_id(&p.asset_id)?,
+        };
+        let displayed = if service.entry(&p.asset_id, &displayed).is_ok() {
+            displayed
+        } else {
+            service.current_entry_id(&p.asset_id)?
+        };
+        // An entry framed by itself is just that entry.
+        Some(displayed).filter(|displayed| displayed != &p.entry_id)
     } else {
-        service.entry(&p.asset_id, &p.entry_id)?;
-        HistorySelection::Entry(p.entry_id)
+        None
     };
-    let generation = session.preview.select(selection);
+    let generation = session
+        .preview
+        .select_framed(HistorySelection::Entry(p.entry_id), geometry);
     session.touch();
     Ok(json!({"generation": generation, "session": session_value(service, session)?}))
 }
@@ -1703,7 +1735,13 @@ fn render_sample(
         }
         None => {
             let entry_id = selected_entry(service, session, &p.asset_id, None)?;
-            service.point_entry(&p.asset_id, &entry_id, p.x, p.y)?
+            let framing = session_framing(session, None);
+            service.point_selected(
+                &p.asset_id,
+                AnalysisSelection::framed(&entry_id, framing.as_ref()),
+                p.x,
+                p.y,
+            )?
         }
     };
     if plan.evaluates_spatial() {
@@ -1937,8 +1975,14 @@ fn render_locate(
     session: &mut ClientSession,
     p: RenderLocate,
 ) -> Result<Value, Error> {
+    let framing = session_framing(session, p.entry_id.as_ref());
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
-    value(service.locate_entry(&p.asset_id, &entry_id, p.x, p.y)?)
+    value(service.locate_selected(
+        &p.asset_id,
+        AnalysisSelection::framed(&entry_id, framing.as_ref()),
+        p.x,
+        p.y,
+    )?)
 }
 
 fn artifact_status(
@@ -1966,8 +2010,12 @@ fn render_transform(
     session: &mut ClientSession,
     p: RenderTransform,
 ) -> Result<Value, Error> {
+    let framing = session_framing(session, p.entry_id.as_ref());
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
-    value(service.transform_entry(&p.asset_id, &entry_id)?)
+    value(service.transform_selected(
+        &p.asset_id,
+        AnalysisSelection::framed(&entry_id, framing.as_ref()),
+    )?)
 }
 
 /// The entry a read-only question is answered against: the one the caller named, or the session's
@@ -1985,6 +2033,16 @@ fn selected_entry(
             HistorySelection::Current => service.current_entry_id(asset_id),
             HistorySelection::Entry(id) => Ok(id.clone()),
         },
+    }
+}
+
+/// The geometry that frames the session's selection when the caller names no entry: a client
+/// comparing a framed selection asks about the stack it is looking at. A named entry answers for
+/// its own stack.
+fn session_framing(session: &ClientSession, named: Option<&EntryId>) -> Option<EntryId> {
+    match named {
+        Some(_) => None,
+        None => session.preview.geometry_from.clone(),
     }
 }
 
@@ -2861,6 +2919,123 @@ mod tests {
         .error
         .expect("an unknown entry");
         assert_eq!(error.code, "validation");
+
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `preview.select` with `keep_geometry` frames the Original with the crop of the entry the
+    /// session displays, and every question about the selection answers for that framing; without
+    /// it the whole Original is selected, and selecting current carries no framing.
+    #[test]
+    fn preview_select_can_keep_the_displayed_geometry() {
+        let catalog =
+            std::env::temp_dir().join(format!("luxforge-framed-{}.sqlite", std::process::id()));
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let mut session = ClientSession::default();
+        let original = service.state(&asset).unwrap().current_entry.id;
+
+        let schema = ok(&mut service, &mut session, "schema.list", json!({}));
+        let listed = &schema["methods"]["preview.select"];
+        assert_eq!(listed["mutates"], json!(false));
+        assert!(
+            listed["optional"]["keep_geometry"]
+                .as_str()
+                .expect("the optional flag")
+                .contains("geometry"),
+            "{listed}"
+        );
+
+        ok(
+            &mut service,
+            &mut session,
+            "edit.crop",
+            json!({"asset_id": asset, "mutation": mutation(0, "crop"), "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
+        );
+        let cropped = service.state(&asset).unwrap().current_entry.id;
+        let output = |service: &mut EditorService, session: &mut ClientSession, params: Value| {
+            ok(service, session, "render.transform", params)["output"].clone()
+        };
+        let revision = session.revision;
+        let framed = ok(
+            &mut service,
+            &mut session,
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original, "keep_geometry": true}),
+        );
+        assert_eq!(
+            framed["session"]["preview"]["selection"],
+            json!({"entry": original})
+        );
+        assert_eq!(
+            framed["session"]["preview"]["geometry_from"],
+            json!(cropped),
+            "the framing is the entry that was displayed"
+        );
+        assert_eq!(
+            output(&mut service, &mut session, json!({"asset_id": asset})),
+            json!({"width": 240, "height": 160}),
+            "the selection answers at the cropped size"
+        );
+        assert_eq!(
+            output(
+                &mut service,
+                &mut session,
+                json!({"asset_id": asset, "entry_id": original})
+            ),
+            json!({"width": 480, "height": 320}),
+            "a named entry answers for its own stack"
+        );
+        assert!(
+            call(
+                &mut service,
+                &mut session,
+                "render.sample",
+                json!({"asset_id": asset, "x": 300, "y": 0}),
+            )
+            .error
+            .is_some(),
+            "a point outside the framed Original is outside the image"
+        );
+        assert_eq!(
+            service.revision(&asset).unwrap(),
+            1,
+            "nothing was committed"
+        );
+        assert!(session.revision > revision);
+
+        // Selecting again while framed keeps the framing the session shows.
+        let again = ok(
+            &mut service,
+            &mut session,
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original, "keep_geometry": true}),
+        );
+        assert_eq!(again["session"]["preview"]["geometry_from"], json!(cropped));
+
+        // Without the flag the whole Original is shown.
+        let whole = ok(
+            &mut service,
+            &mut session,
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original}),
+        );
+        assert_eq!(whole["session"]["preview"]["geometry_from"], Value::Null);
+        assert_eq!(
+            output(&mut service, &mut session, json!({"asset_id": asset})),
+            json!({"width": 480, "height": 320})
+        );
+
+        // The current entry is the live state, never framed.
+        let current = ok(
+            &mut service,
+            &mut session,
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": cropped, "keep_geometry": true}),
+        );
+        assert_eq!(current["session"]["preview"]["selection"], json!("current"));
+        assert_eq!(current["session"]["preview"]["geometry_from"], Value::Null);
 
         drop(service);
         std::fs::remove_file(catalog).unwrap();

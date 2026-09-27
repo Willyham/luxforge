@@ -525,8 +525,11 @@ pub(crate) enum HistoryMessage {
     /// A history selection or a return to current answered. It set `busy`, and this answer is what
     /// clears it.
     Selected(Result<Box<PreviewPayload>, String>),
-    /// Hold the Original entry's preview.
+    /// Hold the Original entry's preview, framed by the displayed entry's geometry (orientation,
+    /// straighten and crop) so only the adjustments differ.
     CompareBegin,
+    /// Hold the Original entry's preview with its own geometry: the whole, uncropped original.
+    CompareUncropped,
     /// Release the compare hold and restore the previous selection.
     CompareEnd,
     LoadOlder,
@@ -590,6 +593,8 @@ pub(crate) enum ViewMessage {
     Resized(f32, f32),
     /// The window's display scale factor.
     ScaleFactor(f32),
+    /// Whether the window fills the screen, asked after every resize.
+    Fullscreen(bool),
 }
 
 /// The command palette. Handled in `app/palette.rs`.

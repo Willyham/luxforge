@@ -73,9 +73,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         };
     }
     // Compare is a hold, so its release must arrive whatever has focus: a field that swallowed the
-    // press would otherwise leave the original preview on screen with nothing to end it.
+    // press would otherwise leave the original preview on screen with nothing to end it. Shift+\
+    // arrives as `|` on a layout that shifts the backslash to it, so either key ends either hold,
+    // whichever of the two keys is let go first.
     if let Keys::KeyReleased { key, .. } = keyboard
-        && character(key, "\\")
+        && (character(key, "\\") || character(key, "|"))
     {
         return Some(Message::History(HistoryMessage::CompareEnd));
     }
@@ -243,6 +245,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         } else {
             Message::View(ViewMessage::SetMode(MASK_MODE.into()))
         });
+    }
+    // Compare holds the Original framed as the displayed entry is framed; Shift holds the whole,
+    // uncropped Original. A layout that shifts the backslash to `|` reports that character.
+    if character(key, "|") || (character(key, "\\") && modifiers.shift()) {
+        return Some(Message::History(HistoryMessage::CompareUncropped));
     }
     if character(key, "\\") {
         return Some(Message::History(HistoryMessage::CompareBegin));
@@ -566,6 +573,27 @@ mod tests {
                 Some("History(CompareBegin)"),
             ),
             (
+                "shift and backslash hold the whole original",
+                pressed(letter("\\"), Modifiers::SHIFT),
+                Status::Ignored,
+                &plain,
+                Some("History(CompareUncropped)"),
+            ),
+            (
+                "the shifted backslash as a US layout reports it",
+                pressed(letter("|"), Modifiers::SHIFT),
+                Status::Ignored,
+                &plain,
+                Some("History(CompareUncropped)"),
+            ),
+            (
+                "a repeated shifted backslash press",
+                held(letter("|"), Modifiers::SHIFT, true),
+                Status::Ignored,
+                &plain,
+                None,
+            ),
+            (
                 "a repeated backslash press",
                 held(letter("\\"), Modifiers::empty(), true),
                 Status::Ignored,
@@ -730,13 +758,16 @@ mod tests {
             ("a field has focus", Status::Captured, &plain),
             ("a draft is open", Status::Ignored, &drafting),
         ] {
-            let mapped = keymap(&released(letter("\\")), status, context);
-            assert!(
-                mapped.as_ref().is_some_and(
-                    |message| format!("{message:?}").starts_with("History(CompareEnd)")
-                ),
-                "{case}: {mapped:?}"
-            );
+            // Either key of either hold ends it: `\`, or `|` when Shift is still down.
+            for key in ["\\", "|"] {
+                let mapped = keymap(&released(letter(key)), status, context);
+                assert!(
+                    mapped.as_ref().is_some_and(
+                        |message| format!("{message:?}").starts_with("History(CompareEnd)")
+                    ),
+                    "{case}, {key}: {mapped:?}"
+                );
+            }
         }
         assert!(
             keymap(&released(letter("f")), Status::Ignored, &plain).is_none(),

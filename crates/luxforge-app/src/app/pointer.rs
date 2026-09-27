@@ -4,7 +4,7 @@ use super::{
     Editor,
     evidence::Settle,
     gesture::Starting,
-    message::{Message, PointerMessage},
+    message::{Message, PointerMessage, ViewMessage},
     tasks::{locate_task, query_task, sample_task},
 };
 use crate::state::tools;
@@ -205,7 +205,8 @@ impl Editor {
                                     // This pick commits, so its evidence is the render that
                                     // follows rather than the status it leaves.
                                     self.await_step(Settle::Preview);
-                                    self.command(method, request)
+                                    let command = self.command(method, request);
+                                    self.leave_pick(command)
                                 }
                                 Err(message) => {
                                     self.status = message;
@@ -396,10 +397,27 @@ impl Editor {
                 // status it leaves.
                 self.await_step(Settle::Preview);
                 // One command for the whole pick: one history entry, labelled by its own family.
-                return self.command(method, request);
+                let command = self.command(method, request);
+                // A host pick fills a swatch list a person may go on adding to, so it stays.
+                return if host.is_some() {
+                    command
+                } else {
+                    self.leave_pick(command)
+                };
             }
         }
         Task::none()
+    }
+
+    /// A module's pick is a one-shot tool: once it has sent the commit it made, the canvas leaves
+    /// the pick mode exactly as Escape would — to the Masks panel for a pick made on a mask, to the
+    /// pointer otherwise.
+    fn leave_pick(&mut self, command: Task<Message>) -> Task<Message> {
+        let leave = self
+            .leave_to()
+            .unwrap_or_else(|| luxforge_core::POINTER_MODE.to_owned());
+        let leave = self.view_update(ViewMessage::SetMode(leave));
+        Task::batch([command, leave])
     }
 
     /// Ask for the pixel under the pointer, throttled to one request in flight with only the newest
