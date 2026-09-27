@@ -546,6 +546,9 @@ mod tests {
             reopened.current_entry.snapshot.recipe.layers.len()
         );
         // A later mutation writes the mask table on in its own snapshot: one persistence path.
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let next = service
             .apply_pixel(
                 &asset,
@@ -742,6 +745,9 @@ mod tests {
             "the global layer, then the masks in their own order"
         );
         // The stack renders and samples: a masked layer is evaluable the moment it is creatable.
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         service.render_current(&asset).unwrap();
 
         // A target the stack does not hold is refused, and nothing is written.
@@ -831,6 +837,9 @@ mod tests {
         let before = stored_entry_json(&catalog, &dangling.id);
 
         let mut service = EditorService::open(&catalog).unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let revision = service.state(&asset).unwrap().revision;
         let expected = format!(
             "layer {} references mask {}, which this recipe does not carry",

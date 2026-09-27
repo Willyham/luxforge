@@ -238,11 +238,15 @@ fn has_app1(bytes: &[u8]) -> bool {
 }
 
 /// The exact render of one saved entry, from a service of its own over the stopped owner's
-/// catalog: the independent reference the exported file is compared against.
+/// catalog, prepared by the blocking helper: the independent reference the exported file is
+/// compared against.
 fn reference(catalog: &Path, asset: &Value, entry: &Value) -> crate::Raster {
-    let service = EditorService::open(catalog).unwrap();
+    let mut service = EditorService::open(catalog).unwrap();
     let asset: AssetId = serde_json::from_value(asset.clone()).unwrap();
     let entry: EntryId = serde_json::from_value(entry.clone()).unwrap();
+    service
+        .prepare(&service.entry_needs(&asset, Some(&entry)).unwrap())
+        .unwrap();
     service.render_entry(&asset, &entry).unwrap()
 }
 

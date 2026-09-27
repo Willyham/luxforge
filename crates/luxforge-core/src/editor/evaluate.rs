@@ -875,7 +875,6 @@ mod tests {
             asset
         };
         let mut service = EditorService::open(&catalog).unwrap();
-        service.disable_sync_source();
         let state = service.state(&asset).unwrap();
         let original = service.history(&asset, None, 10).unwrap().entries[1].clone();
         assert_eq!(original.action_id, "original");

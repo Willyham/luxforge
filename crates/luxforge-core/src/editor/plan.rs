@@ -1821,6 +1821,9 @@ mod tests {
 
         let mut service =
             EditorService::open_with(&catalog, registry(EffectStage::Finish)).unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let before = service.state(&asset).unwrap();
         let (entries, requests) = (rows(&service, "entries"), rows(&service, "requests"));
         let error = service
@@ -2225,7 +2228,10 @@ mod tests {
             );
         }
 
-        let service = EditorService::open(&catalog).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let stack = service
             .state(&asset)
             .unwrap()

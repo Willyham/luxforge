@@ -337,7 +337,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
         drop(service);
 
         let reopen_started = Instant::now();
-        let service = EditorService::open(&catalog)?;
+        let mut service = EditorService::open(&catalog)?;
         let reopened = service.state(&asset)?;
         let reopen_ms = reopen_started.elapsed().as_secs_f64() * 1000.0;
         ensure(reopened.revision == 214, "Revision did not survive reopen")?;
@@ -350,6 +350,9 @@ pub fn run(root: &Path, out: &Path) -> Result {
                 .is_empty(),
             "Original snapshot did not survive reopen",
         )?;
+        // A reopened catalog has nothing prepared: the source job's own work and the owner's own
+        // completion, run blocking.
+        service.prepare(&service.entry_needs(&asset, Some(&a_entry))?)?;
         ensure(
             service.render_entry(&asset, &a_entry)?.pixel(0, 0) == Some([1, 2, 3, 255]),
             "Historical pixel did not survive reopen",

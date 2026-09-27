@@ -506,6 +506,36 @@ const SOURCE_RULES: &[SourceRule] = &[
                  (Envelope::check in crates/luxforge-core/src/api/params.rs); a handler never \
                  checks its own",
     },
+    // One source preparation path: an original is read only by the source work's file preparation
+    // and an artifact only by its verified read, both run by `SourceWork::run` in
+    // `editor/source.rs`, which the catalog owner's source worker and the blocking helpers
+    // (`EditorService::import`, `EditorService::prepare`) share. No service mode reads inline on a
+    // cache miss, test code included: a test prepares through the helpers, never by hand. The
+    // bounded read and the verified read are defined in `source.rs` and `artifacts/`, and `lib.rs`
+    // re-exports the first.
+    SourceRule {
+        name: "one-source-preparation",
+        tokens: &[
+            "allow_sync_source",
+            "prepare_file",
+            "read_bounded_file",
+            "read_verified",
+        ],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/editor/source.rs",
+            "crates/luxforge-core/src/source.rs",
+            "crates/luxforge-core/src/artifacts",
+            "crates/luxforge-core/src/lib.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "only the source work (SourceWork::run in crates/luxforge-core/src/editor/source.rs) \
+                 reads an original or an artifact, for the source worker and the blocking helpers \
+                 alike; prepare through EditorService::prepare or import, never inline",
+    },
     // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
     // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
     // the crop nor the orientation effect and deserializes neither payload. Tests may, to check
@@ -3236,6 +3266,97 @@ mod tests {
                 "{what}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_source_work_reads_an_original_or_an_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        fs::create_dir_all(core.join("editor")).unwrap();
+        fs::create_dir_all(core.join("artifacts")).unwrap();
+        fs::create_dir_all(core.join("api")).unwrap();
+        // The source work reads both; the reads are defined, re-exported and tested at home, where
+        // the rule does not look, and the owner's worker runs the source work.
+        for (file, text) in [
+            (
+                core.join("editor/source.rs"),
+                "let bytes = read_bounded_file(&mut file)?;
+                 let prepared = EditorService::prepare_file(&path, target, cancel)?;
+                 .map(|read| artifacts::read_verified(read, cancel))
+",
+            ),
+            (
+                core.join("source.rs"),
+                "pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
+",
+            ),
+            (
+                core.join("artifacts/store.rs"),
+                "pub(crate) fn read_verified(read: &ArtifactRead) {}
+                 #[cfg(test)]
+mod tests {
+    fn t() { read_verified(&read, &never).unwrap(); }
+}
+",
+            ),
+            (
+                core.join("lib.rs"),
+                "pub(crate) use source::{open_source_bytes, read_bounded_file};
+",
+            ),
+            (
+                core.join("api/owner.rs"),
+                "let mut prepared = work.run(reads, cancel)?;
+",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(
+            read(tmp.path(), &["one-source-preparation"]).unwrap(),
+            (1, 0)
+        );
+        // A synchronous service mode, a read on the worker beside the source work, and a test that
+        // reads and adopts by hand are all refused.
+        for (file, text) in [
+            (
+                core.join("editor.rs"),
+                "    allow_sync_source: bool,
+",
+            ),
+            (
+                core.join("api/owner.rs"),
+                "EditorService::prepare_file(&key.path, target, cancel)
+",
+            ),
+            (
+                core.join("editor/artifact_store.rs"),
+                "let verified = artifacts::read_verified(read, &never)?;
+",
+            ),
+            (
+                core.join("editor/artifact_tests.rs"),
+                "let verified = crate::artifacts::read_verified(&reads[0], &never).unwrap();
+",
+            ),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = refusal(
+                tmp.path(),
+                &["one-source-preparation"],
+                &file.display().to_string(),
+            );
+            assert!(error.contains("only the source work"), "{error}");
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(
+            read(tmp.path(), &["one-source-preparation"]).unwrap(),
+            (1, 0)
+        );
     }
 
     fn minimal_plan(id: &str) -> Value {

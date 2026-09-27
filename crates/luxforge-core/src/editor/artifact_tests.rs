@@ -159,8 +159,9 @@ fn a_published_artifact_commits_renders_and_survives_reopen() {
             "recipe.describe lists the layer's artifacts"
         );
     }
-    // A new service has nothing prepared, so the render reads and verifies the object again.
-    let service = open(&catalog);
+    // A new service has nothing prepared: the render names the object, and its preparation
+    // reads and verifies it again.
+    let mut service = open(&catalog);
     assert_eq!(service.prepared_artifacts.borrow().len(), 0);
     let state = service.state(&asset).unwrap();
     assert_eq!(state.current_entry.id, entry);
@@ -170,6 +171,14 @@ fn a_published_artifact_commits_renders_and_survives_reopen() {
     );
     assert_eq!(count(&service, "artifacts"), 1);
     assert_eq!(references(&service, &entry), [artifact.as_str()]);
+    let refused = service.render_current(&asset).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::PreparationRequired);
+    assert_eq!(
+        refused.needs().unwrap().artifacts,
+        std::slice::from_ref(&artifact)
+    );
+    assert_eq!(service.prepared_artifacts.borrow().len(), 0);
+    service.prepare(refused.needs().unwrap()).unwrap();
     assert_eq!(service.render_current(&asset).unwrap().rgba, rendered.rgba);
     assert_eq!(service.prepared_artifacts.borrow().len(), 1);
     assert_eq!(fs::read(source()).unwrap(), source_bytes);
@@ -341,6 +350,9 @@ fn collection_removes_only_unreferenced_rows_orphans_and_stale_staging() {
         assert_eq!(inspected["live"], json!(false));
     }
     for entry in service.history(&asset, None, 10).unwrap().entries {
+        service
+            .prepare(&service.entry_needs(&asset, Some(&entry.id)).unwrap())
+            .unwrap();
         service.render_entry(&asset, &entry.id).unwrap();
     }
     drop(service);
@@ -459,12 +471,17 @@ fn a_corrupt_artifact_is_refused_when_read_and_is_not_rewritten() {
     let artifact = publish(&mut service, [0.6, 0.6, 1.0]);
     tint(&mut service, &asset, 0, "tint", &artifact).unwrap();
     let stored = stored_entries(&service);
-    // The same length with other bytes: the changed file signature is a cache miss, and the read
-    // that follows finds the hash wrong.
+    // The same length with other bytes: the changed file signature is a cache miss, and the
+    // preparation that reads it finds the hash wrong.
     let object = object_path(&root, &artifact);
     let damaged = TintModule::bytes([9.0, 9.0, 9.0]);
     fs::write(&object, &damaged).unwrap();
-    let error = service.render_current(&asset).unwrap_err();
+    let refused = service.render_current(&asset).unwrap_err();
+    assert_eq!(
+        refused.needs().unwrap().artifacts,
+        std::slice::from_ref(&artifact)
+    );
+    let error = service.prepare(refused.needs().unwrap()).unwrap_err();
     assert_eq!(error.kind, ErrorKind::SourceUnavailable);
     assert_eq!(error.detail, format!("artifact {artifact} is corrupt"));
     assert_eq!(
@@ -584,6 +601,9 @@ fn crash_points_between_publish_and_commit_leave_only_collectable_artifacts() {
     assert!(!object_path(&root, &unrecorded).exists());
     assert!(!object_path(&root, &recorded).exists());
     assert_eq!(count(&service, "artifacts"), 0);
+    service
+        .prepare(&service.entry_needs(&asset, None).unwrap())
+        .unwrap();
     service.render_current(&asset).unwrap();
     drop(service);
     fs::remove_dir_all(directory).unwrap();
@@ -604,10 +624,13 @@ fn moving_the_catalog_with_its_artifact_directory_keeps_rendering() {
     };
     let after = parent.join("after");
     fs::rename(&before, &after).unwrap();
-    let service = open(&after.join("catalog.sqlite"));
+    let mut service = open(&after.join("catalog.sqlite"));
     let status = service.artifact_status().unwrap();
     assert_eq!(status["root"], json!(after.join("catalog.artifacts")));
     assert_eq!(status["state"], json!("ready"));
+    service
+        .prepare(&service.entry_needs(&asset, None).unwrap())
+        .unwrap();
     assert_eq!(service.render_current(&asset).unwrap().rgba, rendered.rgba);
     drop(service);
     fs::remove_dir_all(parent).unwrap();
@@ -704,8 +727,7 @@ fn jobs_pin_their_artifacts_and_an_unprepared_one_needs_preparation() {
     assert_eq!(rendered.rgba, expected.rgba);
     drop(job);
     assert!(held.upgrade().is_none(), "nothing else held it");
-    // The catalog owner never reads on a miss: it names what a source job must prepare.
-    service.disable_sync_source();
+    // Nothing reads on a miss: the refusal names what a source job must prepare.
     let error = service.render_current(&asset).unwrap_err();
     assert_eq!(error.kind, ErrorKind::PreparationRequired);
     let current = service.state(&asset).unwrap().current_entry.id;
@@ -718,12 +740,15 @@ fn jobs_pin_their_artifacts_and_an_unprepared_one_needs_preparation() {
             artifacts: vec![artifact.clone()],
         })
     );
-    let reads = service
-        .artifact_reads(&error.needs().unwrap().artifacts)
-        .unwrap();
-    assert_eq!(reads.len(), 1);
-    let verified = crate::artifacts::read_verified(&reads[0], &AtomicBool::new(false)).unwrap();
-    service.adopt_artifacts(vec![verified]);
+    assert_eq!(
+        service
+            .artifact_reads(&error.needs().unwrap().artifacts)
+            .unwrap()
+            .len(),
+        1
+    );
+    // The source job's own work and the owner's own completion, run blocking.
+    service.prepare(error.needs().unwrap()).unwrap();
     assert_eq!(service.render_current(&asset).unwrap().rgba, expected.rgba);
     assert!(
         service

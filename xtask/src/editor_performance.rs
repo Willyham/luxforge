@@ -441,8 +441,11 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let vibrance_saturation_render = distribution(vibrance_saturation_samples);
     drop(service);
 
-    let service = EditorService::open(&catalog)?;
+    // The cold path is the catalog owner's own: the source job's read, hash and decode and the
+    // owner's completion, run blocking on this thread, then the preview job.
+    let mut service = EditorService::open(&catalog)?;
     let started = Instant::now();
+    service.prepare(&service.entry_needs(&asset, Some(&original))?)?;
     let cold_job = service.preview_job(&asset, Some(&original), None, None, None)?;
     let cold_source_and_job_ms = milliseconds(started);
     let started = Instant::now();

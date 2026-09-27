@@ -723,7 +723,7 @@ mod tests {
                 .unwrap();
             assert_eq!(service.history(&asset, None, 20).unwrap().entries.len(), 5);
         }
-        let service = EditorService::open(&catalog).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
         let state = service.state(&asset).unwrap();
         assert_eq!(state.revision, 6);
         assert!(
@@ -735,6 +735,9 @@ mod tests {
                 .layers
                 .is_empty()
         );
+        service
+            .prepare(&service.entry_needs(&asset, Some(&b)).unwrap())
+            .unwrap();
         assert_eq!(
             service.render_entry(&asset, &b).unwrap().pixel(0, 0),
             Some([4, 5, 6, 255])
@@ -912,6 +915,9 @@ mod tests {
         assert_eq!(versions[1].entry_id, original);
         service
             .restore(&asset, mutation(2, "restore-keeper"), &versions[0].entry_id)
+            .unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
             .unwrap();
         assert_eq!(
             service.render_current(&asset).unwrap().pixel(0, 0),

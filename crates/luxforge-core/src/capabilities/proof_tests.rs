@@ -479,8 +479,14 @@ fn assert_tint_renders(
     untinted: &EntryId,
     gains: [f32; 3],
 ) -> usize {
-    let service = EditorService::open_with(&fixture.catalog(), fixture.registry()).unwrap();
+    let mut service = EditorService::open_with(&fixture.catalog(), fixture.registry()).unwrap();
+    service
+        .prepare(&service.entry_needs(asset, Some(untinted)).unwrap())
+        .unwrap();
     let source = service.render_entry(asset, untinted).unwrap();
+    service
+        .prepare(&service.entry_needs(asset, None).unwrap())
+        .unwrap();
     let rendered = service.render_current(asset).unwrap();
     assert_eq!(
         (rendered.width, rendered.height),
@@ -734,7 +740,10 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     let mut observed = owner.stop();
     let untinted = EntryId::parse(untinted.as_str().unwrap()).unwrap();
     assert!(assert_tint_renders(&fixture, asset, &untinted, gains) > 0);
-    let service = EditorService::open_with(&fixture.catalog(), fixture.registry()).unwrap();
+    let mut service = EditorService::open_with(&fixture.catalog(), fixture.registry()).unwrap();
+    service
+        .prepare(&service.entry_needs(asset, Some(&untinted)).unwrap())
+        .unwrap();
     let source = service.render_entry(asset, &untinted).unwrap();
     let index = (7 * source.width as usize + 5) * 4;
     let source_pixel: [u8; 4] = source.rgba[index..index + 4].try_into().unwrap();
