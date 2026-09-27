@@ -1,0 +1,261 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "export",
+  "title": "JPEG export",
+  "objective": "Write a saved entry's exact render to a new JPEG without touching the original, from the desktop and the API.",
+  "context_summary": "Implements the accepted export contract (quality 90, native picker, never overwrite, metadata stripped by default with Keep metadata) as designed in docs/design/export.md. The export lane uses the existing lane runner; folding it into one job table stays with that work.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Read the original's supported EXIF fields once at source preparation and write the export's own EXIF segment.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The reader runs on the source worker over bytes it already read; it never fails a preparation.",
+        "An independent parser (kamadak-exif, already in the lockfile) reads back what the writer writes, in tests only."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "Behavior, destination rules, metadata table, API and proposals."
+        },
+        {
+          "kind": "file",
+          "label": "Source preparation",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "JPEG and RAW preparation, where the capture metadata is read and carried."
+        }
+      ],
+      "acceptance_criteria": [
+        "`CaptureMetadata::from_jpeg` and `from_raw` read exactly the design's field table from JPEG APP1, NEF/DNG TIFF and a RAF's embedded JPEG, bounded, dropping fields of the wrong type or count.",
+        "`exif_payload` writes the kept fields plus Orientation 1, ColorSpace sRGB, pixel dimensions, ExifVersion and Software, and no thumbnail, maker note or serial number.",
+        "The prepared JPEG and RAW sources carry their capture metadata without a second read of the original."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Round-trip synthetic EXIF written by an independent writer through the reader and the export writer, and read the result back independently.",
+          "Malformed, truncated, looping and oversized IFDs yield empty or partial metadata without panicking."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core export::metadata"
+        ],
+        "expected_results": [
+          "Every kept field round-trips; every excluded field is absent; malformed input never panics."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Encode a rendered frame as a baseline quality-90 JPEG with an sRGB profile, and stage and publish it without replacing anything.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The encoder streams into the staged file; no whole encoded buffer exists.",
+        "Publishing uses a hard link, which fails if the name exists, and falls back to an exclusive create and copy."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "Behavior, destination rules, metadata table, API and proposals."
+        },
+        {
+          "kind": "file",
+          "label": "Durable file writes",
+          "target": "crates/luxforge-core/src/atomic_file.rs",
+          "relevance": "The crate's existing sync helpers; its publish replaces, which export must not."
+        }
+      ],
+      "acceptance_criteria": [
+        "`encode_jpeg` writes quality 90, the ICC profile `profile::check` accepts, the optional EXIF segment, reports progress and stops on cancel.",
+        "`Destination::check` refuses every existing path, symlink and wrong extension or parent; `publish` never replaces a file that appeared after the check.",
+        "Failure, cancellation and dropping a staged file leave no temporary file behind."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Decode encoded fixtures independently and compare within a stated tolerance; inspect markers, profile and EXIF.",
+          "Exercise every destination refusal and a race where the destination appears before publish."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core export::"
+        ],
+        "expected_results": [
+          "Output decodes at the frame's size within tolerance; no existing file is ever modified."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Run export as a job: freeze the target on the owner, render and write it on an export lane, and expose export.plan, export.jpeg, export.read and export.cancel.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Plan on the owner in O(layers), as analysis.request does; render on the lane with the exact phase.",
+        "The lane never supersedes a job; one running and four waiting per lane."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "Behavior, destination rules, metadata table, API and proposals."
+        },
+        {
+          "kind": "file",
+          "label": "Lane runner",
+          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "relevance": "The lane runner, progress and panic containment the export lane uses."
+        },
+        {
+          "kind": "file",
+          "label": "Method table",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "Where the four methods and their schemas are declared."
+        }
+      ],
+      "acceptance_criteria": [
+        "A later commit never changes an accepted export; a retried request id writes one file.",
+        "Progress and cancellation reach the activity board and export.read; a finished export records an event.",
+        "Unavailable providers, missing originals and unprepared sources refuse explicitly; exported bytes equal an independent render_entry of the same entry after decoding within tolerance."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Drive the owner through the in-process client over JPEG and RAW fixtures, both metadata modes, concurrent commits, cancellation and every refusal."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core export"
+        ],
+        "expected_results": [
+          "Every behavior in the design's API table holds through the JSON method table."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Export from the desktop: the title bar's Export menu, Cmd+E and Shift+Cmd+E, palette entries, the native save dialog and status, with an export smoke scenario.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "The desktop holds no export logic: it asks export.plan, opens the dialog and sends export.jpeg.",
+        "Evidence runs bypass the native dialog with a scripted destination."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "Behavior, destination rules, metadata table, API and proposals."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Title bar, keyboard and palette conventions."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke scenarios",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Where the export scenario is registered."
+        }
+      ],
+      "acceptance_criteria": [
+        "The menu, shortcuts and palette send the same export.jpeg the API documents, for the displayed entry.",
+        "The status bar shows exporting, exported and refused states; the Performance section shows the running job.",
+        "An `export` smoke scenario captures the menu and the exported state and verifies the written file independently."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the export smoke scenario against a current release build and inspect its captures, state and logs."
+        ],
+        "commands": [
+          "cargo xtask smoke export"
+        ],
+        "expected_results": [
+          "Captures, state and the written JPEG agree."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Verify export end to end on the M4 Mac, measure it, and update the specs, feature status and user guide.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Timing runs happen once, after the feature is complete, per performance rule 13."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "Behavior, destination rules, metadata table, API and proposals."
+        },
+        {
+          "kind": "file",
+          "label": "Performance plan",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where the export measurements are recorded with their scope."
+        }
+      ],
+      "acceptance_criteria": [
+        "Wall time and peak memory for 24 and 60 MP JPEG and one RAW per camera are recorded with scope.",
+        "RAW exports from NEF and RAF verified independently in both metadata modes with originals unchanged.",
+        "Specs, feature status, user guide and roadmap describe the delivered behavior."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run verify rendered once on the integrated branch, then the export measurement."
+        ],
+        "commands": [
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "A passing rendered tier and recorded measurements."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-005"
+      ]
+    }
+  ]
+}
