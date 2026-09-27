@@ -28,15 +28,13 @@ pub const JOBS: usize = 3;
 /// normal outcome.
 const DEADLINE: Duration = Duration::from_secs(20 * 60);
 
-/// The JPEG workloads the rendered and timing tiers need before they can run. The hue wheel is the
-/// `mixer` scenario's own fixture and the last is `presence`'s; timing components still read
-/// `GENERATED[0]`, the 24 MP workload.
-const GENERATED: [&str; 4] = [
-    "fixtures/generated/24mp.jpg",
-    "fixtures/generated/60mp.jpg",
-    "fixtures/generated/hue-wheel.jpg",
-    "fixtures/generated/presence.jpg",
-];
+/// The 24 MP generated workload's path, relative to the repository root, that the timing
+/// components read as their `--source`. `fixtures::TABLE` is the one table of what `generate`
+/// writes and what a directory needs to hold; this just names its first entry's location so the
+/// path is built from the same table rather than repeated as a second literal.
+fn twenty_four_mp() -> String {
+    format!("fixtures/generated/{}", fixtures::TABLE[0].file)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
@@ -274,38 +272,33 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
     }
     if tier.timing() {
         specs.push(Spec {
+            args: vec![
+                "editor-performance".into(),
+                "--source".into(),
+                twenty_four_mp(),
+            ],
             result: Some("result.json"),
-            ..spec(
-                "editor-performance",
-                "timing",
-                &["editor-performance", "--source", GENERATED[0]],
-            )
+            ..spec("editor-performance", "timing", &[])
         });
         specs.push(Spec {
+            args: vec!["editor-latency".into(), "--source".into(), twenty_four_mp()],
             result: Some("latency.json"),
             launches: Launches::Latency,
             binary: true,
-            ..spec(
-                "editor-latency",
-                "timing",
-                &["editor-latency", "--source", GENERATED[0]],
-            )
+            ..spec("editor-latency", "timing", &[])
         });
         specs.push(Spec {
+            args: vec![
+                "editor-latency".into(),
+                "--source".into(),
+                twenty_four_mp(),
+                "--mode".into(),
+                "burst".into(),
+            ],
             result: Some("latency.json"),
             launches: Launches::Latency,
             binary: true,
-            ..spec(
-                "editor-latency-burst",
-                "timing",
-                &[
-                    "editor-latency",
-                    "--source",
-                    GENERATED[0],
-                    "--mode",
-                    "burst",
-                ],
-            )
+            ..spec("editor-latency-burst", "timing", &[])
         });
         specs.push(Spec {
             result: Some("measurements.json"),
@@ -1248,7 +1241,7 @@ pub fn run(
     fs::create_dir_all(out)?;
     let started = Instant::now();
 
-    let fixtures = GENERATED.iter().all(|p| root.join(p).is_file());
+    let fixtures = fixtures::present(&root.join("fixtures/generated"));
     let manifest = manifest.map(|path| absolute(root, &path));
     let raw_sources = manifest
         .as_deref()
