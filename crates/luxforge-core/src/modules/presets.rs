@@ -63,9 +63,11 @@ impl PresetsModule {
                              each against the stack the ones before it produced, exactly as it \
                              would run that action alone, and commits the result once. Fields the \
                              set does not name keep their values, and a set that changes nothing \
-                             is a reported no-op. An unknown, non-patch or unavailable action, or \
-                             a field its action refuses, refuses the whole preset and writes \
-                             nothing."
+                             is a reported no-op. A step whose module does not apply to the \
+                             photo's kind, and a field another control supersedes on the photo's \
+                             global target, are skipped and listed under skipped in the result. \
+                             An unknown, non-patch or unavailable action, or a field its action \
+                             refuses, refuses the whole preset and writes nothing."
                         .into(),
                     summary: None,
                     patch: false,

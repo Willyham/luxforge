@@ -2910,6 +2910,19 @@ mod tests {
         );
         let after = current(&service);
         assert_eq!(after.label, "Reset Basic");
+        let again = service
+            .run_action(
+                &asset,
+                mutation(revision(&service), "reset-again"),
+                "reset-basic",
+                json!({}),
+            )
+            .unwrap();
+        assert_eq!(
+            again.mutation.outcome,
+            MutationOutcome::NoOp,
+            "Basic at its defaults and the development at As shot"
+        );
         assert_eq!(after.snapshot.recipe.layers[0].payload, original.payload);
         assert_eq!(
             Value::Object(

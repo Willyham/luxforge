@@ -18,7 +18,7 @@ The presented frame lands 75 ms after the input at the median with one unit acti
 
 ## Goal
 
-A slider dragged back and forth wildly at Fit shows the value under the pointer within two display frames, on the owner's M4 Mac, with every Basic unit active, on 24 MP and 60 MP JPEGs, under a rotated crop, and on the qualified RAW sources for the RAW exposure slider. The slider, RAW exposure, burst and settled-histogram thresholds are the [performance plan's provisional budgets](../specs/performance.md#provisional-budgets), and a miss is reported with its figures; idle CPU and process memory keep their targets, and the proxy adds at most one bounded buffer.
+A slider dragged back and forth wildly at Fit shows the value under the pointer within two display frames, on the owner's M4 Mac, with every Basic unit active, on 24 MP and 60 MP JPEGs, under a rotated crop, and on the qualified RAW sources for the Exposure slider. The slider, RAW exposure, burst and settled-histogram thresholds are the [performance plan's provisional budgets](../specs/performance.md#provisional-budgets), and a miss is reported with its figures; idle CPU and process memory keep their targets, and the proxy adds at most one bounded buffer.
 
 "Presented" keeps its harness meaning: the desktop update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests. It is not scanout.
 
@@ -75,13 +75,13 @@ Zooming from Fit to 100% uploads the retained exact raster when the exact phase 
 
 ### A RAW white balance during a drag
 
-A RAW white balance is applied to the sensor mosaic before the nonlinear demosaic, so an exact frame at a new temperature or tint needs the mosaic redeveloped on the source worker: about half a second on the Z6 and one and a half on the X100VI. A drag therefore previews its drafted value **approximately**, on the planes already developed, and redevelops only for the value it commits.
+A RAW white balance — `set-raw`'s `temperature` or `tint`, which Basic's White balance group reaches through its RAW variants — is applied to the sensor mosaic before the nonlinear demosaic, so an exact frame at a new temperature or tint needs the mosaic redeveloped on the source worker: about half a second on the Z6 and one and a half on the X100VI. A drag therefore previews its drafted value **approximately**, on the planes already developed, and redevelops only for the value it commits.
 
 The retained planes are `R · D(g)` per pixel, where `D(g)` is the native demosaic of the mosaic after the sensor gains `g`, in camera RGB (the Air 2S's gain map and optical warp run per channel inside it), and `R` is LibRaw's `rgb_cam`, the camera-to-linear-sRGB matrix. To first order `D(g') ≈ diag(g'/g) · D(g)`, so planes developed at `g` approximate the planes at the drafted gains `g'` by
 
 `W = R · diag(g'_c / g_c) · R⁻¹`
 
-with `R⁻¹` computed in f64. `LinearSettings::white_balance` carries `W`, and the linear evaluator applies it to each source pixel before the exposure multiply, `2^EV · (W · p)`, at the one point where settings touch source pixels. Without it the evaluation is bit for bit the exact one.
+with `R⁻¹` computed in f64. `LinearSettings::white_balance` carries `W`, and the linear evaluator applies it to each source pixel, `W · p`, at the one point where settings touch source pixels; exposure is Basic's colour unit after it, as on a JPEG, so an Exposure drag on RAW is exact and needs no redevelopment. Without `W` the evaluation is bit for bit the exact one. The path compares the effective gains of the drafted recipe with the developed ones, so it does not depend on which action changed them.
 
 - **Where it applies.** Only `EditorService::preview_job` for an open draft, when the draft's effective gains differ from the development held in memory and that development exists. Equal gains need no approximation. A camera matrix with no usable inverse is refused as `preparation-required`, never rendered through a matrix that cannot describe it.
 - **Where it never applies.** A committed or historical preview, `render_entry` and so every export, `sample_entry` and `sample_draft` and so the pointer readout and `render.sample`, `analysis_plan`, and every pixel an action or query samples from its stage context all stay strict: a white balance the planes do not hold is `preparation-required` there, and the refusal names a development at that white balance. A drafted temperature's point sample is therefore refused while its preview approximates it.
@@ -118,7 +118,7 @@ For scale, the as-shot frame itself is 24/6/24 codes from the 3200 K target on t
 
 The Air 2S's error at 100% is broad, not specular: per channel 2.28/0.52/0.87, red biased low by 1.21; 27% of pixels over two codes, p90 of the largest channel 6 and p99 29; the pixels with a channel at 250 or above in the exact frame are 3% of the surface and carry 17% of the error, and without them the mean is still 1.05. On the full sensor, pixels within 3% of a channel's clip ceiling (the RCD input clamp, times the gain map) and their 2-pixel neighbourhood are 3% of the frame and 19% of the error; the rest averages 0.95 codes. It is the demosaic's colour-difference interpolation, which is not equivariant under a gain change (its error goes as `(1 − k) · (G − local mean of G)` at interpolated sites), on a low-exposure sensor whose gain map reaches 4.1–4.7. Two candidate improvements were measured on the full sensor and rejected: clamping at the clip ceiling with clipped channels taken as sensor-saturated lowers the 100% case from 1.13 to 1.06 codes and would need the gain map inside the evaluator; adding a green high-pass correction lowers it to 1.00 and is a neighbourhood operation, which the per-pixel `W` and its commuting with the proxy downscale rule out.
 
-**Latency.** `editor-latency`, drained drag of 30 inputs at Fit, release build, M4 Pro, macOS 26.5.2, warm cache, input to presented frame p50 / p95, with the one-minute load average at the start and end of each run (none above 8.0):
+**Latency.** Measured when the RAW development still carried its own exposure and the white balance had one action per field (`Custom temperature`, `Custom tint` and the RAW `Exposure`); the white-balance path it measures is unchanged. `editor-latency`, drained drag of 30 inputs at Fit, release build, M4 Pro, macOS 26.5.2, warm cache, input to presented frame p50 / p95, with the one-minute load average at the start and end of each run (none above 8.0):
 
 | Source | Slider | Input to presented frame | Release to committed frame | Load average |
 | --- | --- | --- | --- | --- |
