@@ -546,11 +546,10 @@ impl<'a> Render<'a> {
     }
 
     /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
-    /// through one evaluation, so each equals the rendered byte there: `O(side² × layers)`, with
-    /// each spatial segment answered as the domain's [`PixelDomain::GRID`] says — the byte path's
-    /// points share one tile cache and allocate no frame, and the linear path materializes each
-    /// spatial output once for all of them, since the points spread over the whole stage.
-    /// `checkpoint` is asked before each point.
+    /// through one point evaluation, so each equals the rendered byte there: `O(side² × layers)`,
+    /// with each spatial segment answered through one tile cache on both pixel domains, so the
+    /// points evaluate only the tiles they fall in and allocate no frame. `checkpoint` is asked
+    /// before each point.
     pub(crate) fn grid(
         &self,
         side: u32,
@@ -756,7 +755,7 @@ impl<'a> Render<'a> {
     ) -> Result<Vec<[u8; 4]>, Error> {
         let (width, height) = self.stage();
         domain.check_output(width, height)?;
-        let evaluation = self.evaluation(domain, D::GRID)?;
+        let evaluation = self.evaluation(domain, SpatialMode::Point)?;
         let outside = || Error::internal("a grid centre lies outside the stage");
         grid_centres(side, width, height)
             .into_iter()

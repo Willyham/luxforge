@@ -37,6 +37,9 @@ struct Shared {
     /// Tests use a fresh context to guard against silently computing a whole virtual crop stage.
     #[cfg(test)]
     resample_peak_bytes: AtomicU64,
+    /// How many spatial operations' whole-stage outputs were materialized in this context.
+    #[cfg(test)]
+    spatial_frames: AtomicU64,
 }
 
 impl RenderContext {
@@ -68,6 +71,8 @@ impl RenderContext {
             compiles: AtomicU64::new(0),
             #[cfg(test)]
             resample_peak_bytes: AtomicU64::new(0),
+            #[cfg(test)]
+            spatial_frames: AtomicU64::new(0),
         }))
     }
 
@@ -107,6 +112,17 @@ impl RenderContext {
     #[cfg(test)]
     pub(crate) fn resample_peak_bytes(&self) -> u64 {
         self.0.resample_peak_bytes.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_spatial_frame(&self) {
+        self.0.spatial_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many spatial frames renders in this context have materialized.
+    #[cfg(test)]
+    pub(crate) fn spatial_frames(&self) -> u64 {
+        self.0.spatial_frames.load(Ordering::Relaxed)
     }
 }
 

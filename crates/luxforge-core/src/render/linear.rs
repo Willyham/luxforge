@@ -8,7 +8,7 @@
 
 use super::{
     Cancel, ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext, RowScratch,
-    Segment, SegmentRows, SpatialMode, Taps, apply_units, segment_pass, spatial,
+    Segment, SegmentRows, Taps, apply_units, segment_pass, spatial,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -615,14 +615,15 @@ impl<'a> Linear<'a> {
 
     /// The one point where the settings touch a source pixel: the pixel itself, or `W · p` under
     /// an approximate white balance. Shared by the point evaluation and the rendered rows, so both
-    /// keep the same f64 arithmetic and the same finite-result failure.
+    /// keep the same f64 arithmetic and the same failure. The developed planes are finite by
+    /// construction, so only a product can fail: a finite matrix may still overflow.
     #[inline(always)]
     fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
-        let output = match &self.white_balance {
-            // The developed planes exactly, as every exact evaluation reads them.
-            None => pixel,
-            Some(balance) => balance.apply(pixel),
+        // The developed planes exactly, as every exact evaluation reads them.
+        let Some(balance) = &self.white_balance else {
+            return Ok(pixel);
         };
+        let output = balance.apply(pixel);
         if output.iter().all(|value| value.is_finite()) {
             Ok(output)
         } else {
@@ -636,8 +637,6 @@ impl PixelDomain for Linear<'_> {
     /// Three `f32` planes inside the RAW planar limit.
     type SpatialFrame = Vec<f32>;
     type TileOutput = (Region, Vec<f32>);
-
-    const GRID: SpatialMode = SpatialMode::Frames;
 
     fn fingerprint(&self) -> &str {
         self.source.fingerprint()
@@ -790,11 +789,6 @@ impl PixelDomain for Linear<'_> {
         terminal_pixel(pixel)
     }
 
-    #[inline]
-    fn mask_input(pixel: [f64; 3]) -> [f64; 3] {
-        pixel
-    }
-
     /// The RAW planar limit applies to this float frame exactly as it does to the source's.
     fn spatial_frame(stage: Stage) -> Result<Vec<f32>, Error> {
         let (values, _) = layout(stage.width, stage.height)?;
@@ -906,8 +900,9 @@ pub(super) fn rasterize(
 const TAP_BLOCK_COLUMNS: u32 = 64;
 
 /// The most pixels of the segment before a resample one block holds. A block of up to 16 rows by
-/// 64 columns reads about 1,400 of them at a small angle and about 3,500 at the 45 degree limit;
-/// a mapping that would need more than this reads its taps one at a time instead.
+/// 64 columns reads about 1,500 of them at a small angle and about 4,000 at the 45 degree limit,
+/// with [`super::TAP_MARGIN`] on every side; a mapping that would need more than this reads its
+/// taps one at a time instead.
 pub(super) const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
 
 /// The last segment's rows on the linear path. A segment with colour holds its rows as `f32`
@@ -971,58 +966,9 @@ impl LinearRows<'_, '_, '_> {
         Ok(())
     }
 
-    /// The rectangle of the segment before `resample` whose pixels the taps of output columns
-    /// `x0..x0 + columns` of rows `y0..y0 + rows` read, with a pixel to spare on each side, or
-    /// `None` when it is not finite or holds more than [`TAP_BLOCK_PIXELS`]. The segment's exact
-    /// geometry maps the block onto a rectangle and the resample is affine, so its corners bound
-    /// every tap.
-    fn tap_region(
-        &self,
-        resample: Resample,
-        previous: Stage,
-        (x0, y0): (u32, u32),
-        (columns, rows): (u32, u32),
-    ) -> Option<Region> {
-        let mut low = [f64::INFINITY; 2];
-        let mut high = [f64::NEG_INFINITY; 2];
-        for (x, y) in [
-            (x0, y0),
-            (x0 + columns - 1, y0),
-            (x0, y0 + rows - 1),
-            (x0 + columns - 1, y0 + rows - 1),
-        ] {
-            let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-            let (full_x, full_y) = self.segment.resample_output_at(input_x, input_y);
-            let (u, v) = resample.input_from(self.segment.entry_origin, full_x, full_y);
-            for (axis, value) in [u, v].into_iter().enumerate() {
-                let index = (value - 0.5).floor();
-                if !index.is_finite() {
-                    return None;
-                }
-                low[axis] = low[axis].min(index - 1.0);
-                high[axis] = high[axis].max(index + 2.0);
-            }
-        }
-        let clamp = |value: f64, limit: u32| value.max(0.0).min(f64::from(limit - 1)) as u32;
-        let (left, right) = (
-            clamp(low[0], previous.width),
-            clamp(high[0], previous.width),
-        );
-        let (top, bottom) = (
-            clamp(low[1], previous.height),
-            clamp(high[1], previous.height),
-        );
-        let region = Region {
-            x0: left,
-            y0: top,
-            width: right - left + 1,
-            height: bottom - top + 1,
-        };
-        (region.pixels() <= TAP_BLOCK_PIXELS).then_some(region)
-    }
-
     /// A resampled segment's rows, in blocks of [`TAP_BLOCK_COLUMNS`] columns: each block reads
-    /// the rectangle of the segment before the resample its taps need once, through
+    /// the rectangle of the segment before the resample its taps need ([`Resample::reads`]), unless
+    /// it holds more than [`TAP_BLOCK_PIXELS`], once, through
     /// [`Evaluation::region_in`], and blends every output pixel from it with the resample's own
     /// [`Linear::blend`]. Every tap is the value [`Evaluation::pixel_in`] answers there, so the
     /// result is [`Evaluation::entry_pixel`]'s, while each pixel before the resample is evaluated
@@ -1049,7 +995,23 @@ impl LinearRows<'_, '_, '_> {
         } = scratch;
         for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
             let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
-            let held = self.tap_region(resample, stage, (x0, y0), (columns, rows));
+            // The block's rectangle of the resample's full output: the segment's exact geometry
+            // maps the block onto one, placed at the entry window's origin.
+            let local = self.segment.geometry.unmap_region(Region {
+                x0,
+                y0,
+                width: columns,
+                height: rows,
+            });
+            let (full_x, full_y) = self.segment.resample_output_at(local.x0, local.y0);
+            let window = Region {
+                x0: full_x,
+                y0: full_y,
+                ..local
+            };
+            let held = resample
+                .reads(self.segment.entry_origin, window, stage)
+                .filter(|region| region.pixels() <= TAP_BLOCK_PIXELS);
             if let Some(region) = held {
                 self.evaluation
                     .region_in(self.index - 1, region, block, row)?;
@@ -1192,6 +1154,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
 mod tests {
     use super::*;
     use crate::render::{
+        SpatialMode,
         spatial::PRODUCTION_TILE,
         testing::{
             frame_in, linear, linear_evaluation, render_linear, render_linear_cancellable,
@@ -3487,6 +3450,38 @@ mod tests {
 
     /// A sample from one `Compiled` shared by several points equals a sample that compiles for
     /// itself, at every point of a small stack with a colour layer: the split
+    /// A capability sample grid over a RAW stage with spatial layers answers its points through one
+    /// tile cache, as the byte path's does: it materializes no spatial frame where the render of
+    /// the same stack builds one per spatial layer, and every point is the rendered byte there.
+    #[test]
+    fn a_linear_grid_reads_tiles_and_materializes_no_spatial_frame() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_image(300, 200);
+        let stack = four_spatial_segments();
+        let context = RenderContext::new();
+        let render = crate::render::render(
+            &registry,
+            crate::RenderSource::Linear {
+                image: &source,
+                settings: LinearSettings::default(),
+            },
+            &stack,
+            RenderOptions::default(),
+            &context,
+        )
+        .unwrap();
+        let grid = render.grid(8, &|| Ok(())).unwrap();
+        assert_eq!(context.spatial_frames(), 0, "a grid materializes no frame");
+        let frame = render.frame(SnapshotId::new()).unwrap();
+        assert_eq!(context.spatial_frames(), 4, "a render builds one per layer");
+        for ((x, y), sampled) in super::super::grid_centres(8, frame.width, frame.height)
+            .into_iter()
+            .zip(grid)
+        {
+            assert_eq!(frame.pixel(x, y), Some(sampled), "grid point ({x}, {y})");
+        }
+    }
+
     /// `HostStage::sample_before`'s RAW path takes to compile a prefix once and reuse it across the
     /// points it samples reads the same values as compiling fresh for each point.
     #[test]
