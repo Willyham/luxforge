@@ -30,6 +30,8 @@ pub(crate) mod export;
 #[cfg(test)]
 mod export_tests;
 pub(crate) mod gesture;
+#[cfg(test)]
+mod gesture_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -956,12 +958,6 @@ impl Editor {
             Message::Evidence(message) => self.evidence_update(message),
             Message::Close => self.close(),
         }
-    }
-
-    /// An edit is possible when an asset is open, the session shows the current state and no
-    /// request is in flight.
-    pub(crate) fn editable(&self) -> bool {
-        self.state.is_some() && self.session.preview.can_edit() && !self.busy
     }
 
     /// The entry whose stack the canvas is showing: the uploaded preview's entry, or the current

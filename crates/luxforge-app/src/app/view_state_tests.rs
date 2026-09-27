@@ -47,7 +47,15 @@ fn gallery_is_desktop_view_state_without_a_photo_and_respects_developer_mode() {
     assert!(!editor.workspace.title.can_open_gallery);
     let _ = editor.update(Message::View(ViewMessage::Gallery(Some(0))));
     assert_eq!(editor.session, before);
-    assert!(editor.status.contains("Finish the current operation"));
+    // The gallery's one refusal is written as it is, not replaced by a generic line.
+    assert_eq!(editor.status, crate::app::gesture::IN_FLIGHT);
+    editor.busy = false;
+    editor.compare_return = Some(luxforge_core::HistorySelection::Current);
+    editor.rederive();
+    assert!(!editor.workspace.title.can_open_gallery);
+    let _ = editor.update(Message::View(ViewMessage::Gallery(Some(0))));
+    assert_eq!(editor.status, "Release Compare before opening Components");
+    editor.compare_return = None;
     finish(editor, catalog);
 }
 

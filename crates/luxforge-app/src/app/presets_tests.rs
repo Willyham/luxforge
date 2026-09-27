@@ -91,7 +91,14 @@ impl Library {
         let _ = library
             .editor
             .update(Message::Preset(PresetMessage::Listed(listed)));
-        assert!(library.editor.editable(), "{}", library.editor.status);
+        assert_eq!(
+            library
+                .editor
+                .gesture_refusal(crate::app::gesture::Starting::Action),
+            None,
+            "{}",
+            library.editor.status
+        );
         library
     }
 

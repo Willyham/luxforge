@@ -13,9 +13,9 @@ use serde_json::{Value, json};
 impl Editor {
     /// One history or versions message.
     pub(super) fn history_update(&mut self, message: HistoryMessage) -> Task<Message> {
-        // Undo, Redo and Restore move the current entry at once, so an open draft refuses them as
-        // it refuses every other commit, from the title bar, a shortcut, the palette and the panel
-        // alike: each of them sends one of these messages. Nothing is sent.
+        // Undo, Redo and Restore move the current entry at once, so an open draft or a request in
+        // flight refuses them as it refuses every other commit, from the title bar, a shortcut, the
+        // palette and the panel alike: each of them sends one of these messages. Nothing is sent.
         if matches!(
             message,
             HistoryMessage::Undo | HistoryMessage::Redo | HistoryMessage::Restore

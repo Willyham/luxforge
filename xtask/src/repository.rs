@@ -544,6 +544,24 @@ const SOURCE_RULES: &[SourceRule] = &[
                  through NumberSpec; only the frame's geometry (crop_draft.rs) clamps to the core's \
                  constants",
     },
+    // One start refusal: whether anything may start on the desktop is answered by
+    // `Editor::gesture_refusal` in app/gesture.rs, whose busy and editable halves are worded
+    // there once. A start site writes the reason it returns rather than a sentence of its own.
+    SourceRule {
+        name: "desktop-start-refusal",
+        tokens: &[
+            "\"Return to the current state",
+            "\"Waiting for the last request",
+        ],
+        scope: &["crates/luxforge-app/src/app"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/app/gesture.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "a start's refusal is worded once, by Editor::gesture_refusal in \
+                 crates/luxforge-app/src/app/gesture.rs; a start site writes the reason it returns",
+    },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
     // luxforge-raw, not the reverse, so that module is the one home both crates can import from.
@@ -2804,6 +2822,52 @@ mod tests {
             fs::remove_file(&file).unwrap();
         }
         assert_eq!(read(tmp.path(), &["one-envelope-check"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_desktop_words_a_start_refusal_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("crates/luxforge-app/src/app");
+        fs::create_dir_all(&app).unwrap();
+        // The refusal's home words it; tests may assert the words.
+        for (file, text) in [
+            (
+                app.join("gesture.rs"),
+                "const NOT_CURRENT: &str = \"Return to the current state before editing\";\n\
+                 const IN_FLIGHT: &str = \"Waiting for the last request\";\n",
+            ),
+            (
+                app.join("slider_tests.rs"),
+                "assert_eq!(status, \"Waiting for the last request\");\n",
+            ),
+            (
+                app.join("preset.rs"),
+                "let busy = \"Waiting for the last preset request\";\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(
+            read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
+            (1, 0)
+        );
+        for text in [
+            "self.status = \"Return to the current state before picking\".into();\n",
+            "self.busy.then(|| \"Waiting for the last request\".to_owned())\n",
+        ] {
+            let file = app.join("pointer.rs");
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["desktop-start-refusal"], text);
+            assert!(
+                error.contains("pointer.rs:1") && error.contains("worded once"),
+                "{error}"
+            );
+            fs::remove_file(&file).unwrap();
+        }
+        assert_eq!(
+            read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
+            (1, 0)
+        );
     }
 
     #[test]

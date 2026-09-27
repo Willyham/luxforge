@@ -347,10 +347,11 @@ impl Editor {
     /// the core draft's `draft.begin` and the input stage's truncated preview go out together: the
     /// section is live at once, and the canvas draws the frame when the stage's pixels arrive.
     pub(crate) fn crop_start(&mut self) -> Task<Message> {
-        if self.busy || !self.session.preview.can_edit() || self.crop().is_some() {
+        // The crop draft already open is what was asked for: nothing starts and nothing is refused.
+        if self.crop().is_some() {
             return Task::none();
         }
-        // One draft per client: another gesture is finished deliberately, never displaced.
+        // One draft per client, the current state and no request in flight, in one refusal.
         if let Some(reason) = self.gesture_refusal(Starting::Crop) {
             self.status = reason;
             return Task::none();

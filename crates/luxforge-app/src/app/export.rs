@@ -10,14 +10,12 @@
 //!
 //! An evidence run bypasses only the dialog: its `export` step names the file, written into the
 //! run's evidence directory, and the rest of the chain is the same.
-use crate::{
-    app::{
-        Editor,
-        evidence::Settle,
-        message::{ExportMessage, MenuTarget, Message},
-        tasks::{CallError, call, call_detailed, owner_task, owner_work, request, wait_source_job},
-    },
-    state::title,
+use crate::app::{
+    Editor,
+    evidence::Settle,
+    gesture::Starting,
+    message::{ExportMessage, MenuTarget, Message},
+    tasks::{CallError, call, call_detailed, owner_task, owner_work, request, wait_source_job},
 };
 use iced::{Subscription, Task};
 use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle, jobs::JOB_READ};
@@ -99,14 +97,29 @@ impl Editor {
         }
     }
 
-    /// Whether an export can start now, by the rule the title bar's button follows.
+    /// Whether an export can start now: the one answer [`Editor::export_refusal`] gives the press,
+    /// which the title bar's Export button reads as its enabled state.
     pub(crate) fn can_export(&self) -> bool {
-        title::can_export(
-            self.state.is_some(),
-            self.busy,
-            self.picker_open,
-            self.export.active(),
-        )
+        self.export_refusal().is_none()
+    }
+
+    /// Why an export cannot start now, in the words the status bar uses: a photograph is open,
+    /// this window is not already exporting (one export per window is all the desktop runs; the
+    /// core would queue more), no request is in flight — the one refusal's busy half
+    /// ([`Starting::Export`]), with no one-draft rule, since an open draft does not change the
+    /// displayed entry an export writes — and no file dialog is open.
+    pub(crate) fn export_refusal(&self) -> Option<String> {
+        if self.state.is_none() {
+            return Some("Open a photograph to export it".into());
+        }
+        if self.export.active() {
+            return Some("An export is already running".into());
+        }
+        if let Some(reason) = self.gesture_refusal(Starting::Export) {
+            return Some(reason);
+        }
+        self.picker_open
+            .then(|| "A file dialog is already open".to_owned())
     }
 
     fn close_export_menu(&mut self) {
@@ -123,15 +136,8 @@ impl Editor {
         destination: Option<PathBuf>,
     ) -> Task<Message> {
         self.close_export_menu();
-        let refusal = match &self.state {
-            None => Some("Open a photograph to export it"),
-            Some(_) if self.export.active() => Some("An export is already running"),
-            Some(_) if self.busy => Some("Waiting for the last request"),
-            Some(_) if self.picker_open => Some("A file dialog is already open"),
-            Some(_) => None,
-        };
-        if let Some(refusal) = refusal {
-            self.status = refusal.into();
+        if let Some(refusal) = self.export_refusal() {
+            self.status = refusal;
             return Task::none();
         }
         let Some(entry) = self.displayed_entry() else {

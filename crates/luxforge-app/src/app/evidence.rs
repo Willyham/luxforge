@@ -4,6 +4,7 @@
 use crate::{
     app::{
         Editor,
+        gesture::Starting,
         message::{
             ActionMessage, BrushEdit, ControlMessage, CropMessage, CropPointer, DraftMessage,
             EvidenceMessage, HistoryMessage, MaskMessage, MenuTarget, Message, PaintTarget,
@@ -765,12 +766,7 @@ impl Editor {
     /// into the evidence directory through the chain the menu starts, with the step's file name in
     /// place of the save dialog's answer, and capture once the job has ended.
     fn export_step(&mut self, step: ExportStep) -> Task<Message> {
-        if !self.can_export() {
-            let reason = if self.state.is_none() {
-                "no photograph is open"
-            } else {
-                "Export is disabled"
-            };
+        if let Some(reason) = self.export_refusal() {
             return self.fail_step(reason);
         }
         match step {
@@ -2292,7 +2288,7 @@ impl Editor {
         if crate::state::tools::canvas_pick(&self.modules, &mode).is_none() {
             return self.fail_step(format!("the {mode} canvas mode declares no pick"));
         }
-        if let Some(reason) = self.pick_refusal() {
+        if let Some(reason) = self.gesture_refusal(Starting::Pick) {
             return self.fail_step(reason);
         }
         self.await_step(Settle::Pick);

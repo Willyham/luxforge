@@ -2869,7 +2869,7 @@ fn every_start_answers_to_the_one_refusal() {
         "Apply or Cancel the mask gesture before cropping"
     );
     assert_eq!(
-        masking.editor.pick_refusal().as_deref(),
+        masking.editor.gesture_refusal(Starting::Pick).as_deref(),
         Some("Apply or Cancel the mask gesture before picking from the photograph")
     );
     assert_eq!(

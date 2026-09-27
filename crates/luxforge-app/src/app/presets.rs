@@ -12,6 +12,7 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
+        gesture,
         message::{MenuTarget, Message, PresetMessage},
         tasks::{
             PresetChange, preset_create_task, preset_delete_task, preset_export_task,
@@ -197,7 +198,7 @@ impl Editor {
             .displayed_entry()
             .ok_or("No history entry is displayed")?;
         if self.busy {
-            return Err("Waiting for the last request".into());
+            return Err(gesture::IN_FLIGHT.into());
         }
         let form = &self.preset_form;
         if form.name.trim().is_empty() {

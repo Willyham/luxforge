@@ -235,6 +235,37 @@ fn history_navigation_is_refused_while_a_slider_draft_is_open() {
     finish(editor, catalog);
 }
 
+/// Undo, Redo and Restore also wait for a request in flight, and say so rather than being dropped
+/// without a word; Restore still runs from the previewed entry it restores, since History never
+/// takes the editable half.
+#[test]
+fn history_navigation_is_refused_while_a_request_is_in_flight() {
+    let (mut editor, catalog, _, original) = navigable();
+    editor.busy = true;
+    let sequence = editor.api_sequence;
+    for message in [
+        HistoryMessage::Undo,
+        HistoryMessage::Redo,
+        HistoryMessage::Restore,
+    ] {
+        editor.session.preview.selection = HistorySelection::Entry(original.clone());
+        editor.status.clear();
+        let task = editor.update(Message::History(message.clone()));
+        assert_eq!(task.units(), 0, "{message:?}: nothing is sent");
+        assert_eq!(editor.status, crate::app::gesture::IN_FLIGHT, "{message:?}");
+    }
+    assert_eq!(editor.api_sequence, sequence);
+
+    editor.busy = false;
+    let _ = editor.update(Message::History(HistoryMessage::Restore));
+    assert!(
+        editor.busy,
+        "Restore runs from the previewed entry: {}",
+        editor.status
+    );
+    finish(editor, catalog);
+}
+
 /// The same for a crop draft; once it is cancelled, Redo goes out as before.
 #[test]
 fn history_navigation_is_refused_while_a_crop_draft_is_open() {

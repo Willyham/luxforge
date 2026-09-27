@@ -33,18 +33,25 @@ pub(crate) struct PendingReset {
 }
 
 impl Editor {
-    /// Why a slider gesture cannot start right now, in the words the status bar uses.
-    fn slider_refusal(&self) -> Option<String> {
-        if let Some(reason) = self.gesture_refusal(Starting::Slider) {
-            return Some(reason);
+    /// Why a change to a generated control may not start now, in the words the status bar uses:
+    /// the one refusal ([`Editor::gesture_refusal`]) for the start the change is. A continuous
+    /// change of a drafting control is a slider gesture ([`Starting::Slider`]), which the same
+    /// control's open gesture continues; every other change commits at once as a discrete action
+    /// ([`Editor::action_refusal`]). A rail move, a step, a picker or curve change and a field's
+    /// value all ask here before the control shows a value that was never sent.
+    pub(crate) fn control_refusal(
+        &self,
+        action: &str,
+        parameter: &str,
+        continuous: bool,
+    ) -> Option<String> {
+        if continuous && tools::drafts(&self.modules, action, parameter) {
+            if self.drafting_control() == Some((action, parameter)) {
+                return None;
+            }
+            return self.gesture_refusal(Starting::Slider);
         }
-        if !self.session.preview.can_edit() {
-            return Some("Return to the current state before editing".into());
-        }
-        if self.state.is_none() {
-            return Some("No photograph is open".into());
-        }
-        None
+        self.action_refusal(action)
     }
 
     /// A drafting control moved: the widget's value, already mapped from its rail fraction or
@@ -56,12 +63,12 @@ impl Editor {
         parameter: String,
         value: Value,
     ) -> Task<Message> {
+        if let Some(reason) = self.control_refusal(&action, &parameter, true) {
+            self.status = reason;
+            return Task::none();
+        }
         let fields = json!({ parameter.clone(): value.clone() });
-        if let Some((open_action, open_parameter)) = self.drafting_control() {
-            if open_action != action || open_parameter != parameter {
-                self.status = "Finish the open slider gesture before starting another".into();
-                return Task::none();
-            }
+        if self.drafting_control().is_some() {
             self.set_control_field_value(&action, &parameter, &value);
             self.editing = None;
             self.dragging = Some((action, parameter));
@@ -69,10 +76,6 @@ impl Editor {
             // answer to that round trip sends the newest value. No timer stands between the input
             // and the request it produces.
             return self.drive(Event::Offer(fields));
-        }
-        if let Some(reason) = self.slider_refusal() {
-            self.status = reason;
-            return Task::none();
         }
         // An armed brush holds the one core draft this gesture needs and has nothing painted to
         // lose by giving it up; the `draft.begin` below cancels it first.
@@ -166,6 +169,14 @@ impl Editor {
             });
             return Task::none();
         }
+        // A reset that is one action is refused before the field shows a value that was never
+        // sent.
+        if let Some((reset, _)) = &reset
+            && let Some(reason) = self.action_refusal(reset)
+        {
+            self.status = reason;
+            return Task::none();
+        }
         self.editing = None;
         if declared_reset {
             // What the declared action leaves is known only from its answer, so until then the
@@ -174,7 +185,7 @@ impl Editor {
         } else {
             self.fields.set(&action, &parameter, default);
         }
-        match reset.filter(|_| self.editable()) {
+        match reset {
             Some((reset, preset)) => self.send_reset((action, parameter), reset, preset),
             None => Task::none(),
         }

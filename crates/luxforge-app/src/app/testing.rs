@@ -126,7 +126,12 @@ pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforg
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
         refreshed,
     )))));
-    assert!(editor.editable(), "{}", editor.status);
+    assert_eq!(
+        editor.gesture_refusal(crate::app::gesture::Starting::Action),
+        None,
+        "{}",
+        editor.status
+    );
     (editor, asset, agent)
 }
 
@@ -272,7 +277,12 @@ pub(crate) fn opened(
     let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
     refresh.recipe = described_at(&current, CROP_SOURCE);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
-    assert!(editor.editable(), "{}", editor.status);
+    assert_eq!(
+        editor.gesture_refusal(crate::app::gesture::Starting::Action),
+        None,
+        "{}",
+        editor.status
+    );
     (editor, catalog, asset, entry_id)
 }
 
@@ -768,7 +778,12 @@ pub(crate) fn opened_with_modules(
     let current = entry(&asset, revision, None);
     let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
-    assert!(editor.editable(), "{}", editor.status);
+    assert_eq!(
+        editor.gesture_refusal(crate::app::gesture::Starting::Action),
+        None,
+        "{}",
+        editor.status
+    );
     (editor, catalog)
 }
 
