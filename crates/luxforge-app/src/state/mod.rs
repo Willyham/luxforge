@@ -64,6 +64,8 @@ pub(crate) enum MenuTarget {
     /// command that row's own controls send. They are a menu rather than four more buttons because
     /// a copy is read once and a control is used often, and the row has to stay scannable.
     Component(String),
+    /// The title bar's Export button: Export JPEG and Export JPEG, keep metadata.
+    Export,
 }
 
 /// The open slider gesture as the models read it: the control it drafts and whether its core draft
@@ -201,6 +203,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) status: &'a str,
     pub(crate) busy: bool,
     pub(crate) can_open: bool,
+    /// An export can start: a photograph is open, no request or dialog is in flight and this window
+    /// is not already exporting.
+    pub(crate) can_export: bool,
     /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
     pub(crate) compare_held: bool,
@@ -350,6 +355,10 @@ impl Built {
                 inputs.can_open,
                 inputs.compare_held,
                 inputs.developer,
+            ),
+            (
+                inputs.can_export,
+                matches!(inputs.menu, Some(MenuTarget::Export)),
             ),
             inputs.dimensions,
             &inputs.gallery_refusal,
@@ -832,6 +841,7 @@ mod tests {
                 status: &self.status,
                 busy: self.busy,
                 can_open: true,
+                can_export: true,
                 developer: self.developer,
                 compare_held: false,
                 scale_factor: 2.0,

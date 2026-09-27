@@ -2,8 +2,8 @@
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
 use crate::app::message::{
-    BrushEdit, CropMessage, DraftMessage, HistoryMessage, MaskMessage, Message, OverlayMessage,
-    PaletteMessage, Panel, SyncMessage, ViewMessage,
+    BrushEdit, CropMessage, DraftMessage, ExportMessage, HistoryMessage, MaskMessage, Message,
+    OverlayMessage, PaletteMessage, Panel, SyncMessage, ViewMessage,
 };
 use iced::{
     Event,
@@ -31,6 +31,8 @@ pub(crate) struct KeyContext {
     pub(crate) mask_brush: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
+    /// The title bar's Export menu is open, so Escape closes it.
+    pub(crate) export_menu_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
     /// Escape with its own cancel first; a mode without one has nothing to discard.
     pub(crate) mode_active: bool,
@@ -121,6 +123,12 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         if character(key, "k") {
             return Some(Message::Palette(PaletteMessage::Open));
         }
+        // Export the displayed entry; Shift keeps its metadata.
+        if character(key, "e") {
+            return Some(Message::Export(ExportMessage::Start {
+                keep_metadata: modifiers.shift(),
+            }));
+        }
         // The panel toggles are the one pair that also needs Option, so they cannot collide with a
         // bracket a field might want.
         if modifiers.alt() {
@@ -142,6 +150,10 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             Key::Named(Named::ArrowDown) => return Some(Message::Palette(PaletteMessage::Move(1))),
             _ => {}
         }
+    }
+    // An open Export menu closes on Escape before anything else hears it, as a native menu does.
+    if context.export_menu_open && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::View(ViewMessage::CloseMenu));
     }
     // Tab walks the generated fields; shift is the only modifier it tolerates.
     if matches!(key, Key::Named(Named::Tab))
@@ -320,6 +332,7 @@ mod tests {
             mask_drafting: false,
             mask_brush: false,
             palette_open: false,
+            export_menu_open: false,
             mode_active: false,
             modes: vec![('R', "luxforge.crop".into())],
         }
@@ -364,6 +377,15 @@ mod tests {
         let drafting_palette = KeyContext {
             drafting: true,
             palette_open: true,
+            ..context()
+        };
+        let export_menu = KeyContext {
+            export_menu_open: true,
+            ..context()
+        };
+        let drafting_export_menu = KeyContext {
+            drafting: true,
+            export_menu_open: true,
             ..context()
         };
         let command = Modifiers::COMMAND;
@@ -411,6 +433,41 @@ mod tests {
                 Status::Ignored,
                 &plain,
                 Some("Palette(Open)"),
+            ),
+            (
+                "export",
+                pressed(letter("e"), command),
+                Status::Ignored,
+                &plain,
+                Some("Export(Start { keep_metadata: false })"),
+            ),
+            (
+                "export keeping metadata",
+                pressed(letter("E"), shift_command),
+                Status::Ignored,
+                &plain,
+                Some("Export(Start { keep_metadata: true })"),
+            ),
+            (
+                "a plain e is no shortcut",
+                pressed(letter("e"), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                None,
+            ),
+            (
+                "Escape closes the Export menu",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &export_menu,
+                Some("View(CloseMenu)"),
+            ),
+            (
+                "the Export menu's Escape beats a draft's",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &drafting_export_menu,
+                Some("View(CloseMenu)"),
             ),
             (
                 "close the palette",

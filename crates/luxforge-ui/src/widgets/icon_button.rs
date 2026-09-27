@@ -41,13 +41,14 @@ pub enum Icon {
     Thirds,
     // The shell's title bar and status bar.
     Folder,
+    Export,
     Compare,
     Copy,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 33] = [
+    pub const NAMED: [(&'static str, Icon); 34] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -80,6 +81,7 @@ impl Icon {
         ("thirds", Self::Thirds),
         // The shell's title bar and status bar.
         ("folder", Self::Folder),
+        ("export", Self::Export),
         ("compare", Self::Compare),
         ("copy", Self::Copy),
     ];
@@ -522,6 +524,12 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
                 (2.2, 12.6),
             ],
         ),
+        // Export: an open tray with an arrow rising out of it, in the Folder's weight.
+        Icon::Export => {
+            poly(frame, &[(2.2, 9.4), (2.2, 13.2), (13.8, 13.2), (13.8, 9.4)]);
+            line(frame, (8.0, 2.6), (8.0, 10.2));
+            poly(frame, &[(5.0, 5.6), (8.0, 2.6), (11.0, 5.6)]);
+        }
         // Before and after in one: a ring whose right half is filled.
         Icon::Compare => {
             frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 5.6 * s), stroke);

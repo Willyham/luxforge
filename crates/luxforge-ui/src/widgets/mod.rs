@@ -24,6 +24,7 @@ mod metric_row;
 mod mode_strip;
 mod notice_card;
 mod number_field;
+mod popover;
 mod readout_card;
 mod section_header;
 mod segmented;
@@ -71,6 +72,7 @@ pub use notice_card::{NoticeCardModel, Tone, notice_card};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, label_line, number_field, value_input,
 };
+pub use popover::{POPOVER_GAP, popover};
 pub use readout_card::{readout_card, readout_card_height};
 pub use section_header::{
     SectionHeaderModel, collapsed_section_height, expanded_section_height, module_section,

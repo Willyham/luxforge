@@ -11,6 +11,7 @@ mod diagnostics;
 mod editor_acceptance;
 mod editor_latency;
 mod editor_performance;
+mod export_smoke;
 mod fixtures;
 mod gallery_smoke;
 mod histogram_smoke;

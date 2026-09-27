@@ -1,6 +1,6 @@
 # Luxforge user guide
 
-The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
+The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and MCP are planned; see [feature status](features.md).
 
 JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md). [Presets](design/presets.md) save and apply those settings, and import Lightroom Classic presets.
 
@@ -192,7 +192,7 @@ The neutral rendition uses camera calibration without film simulations, Picture 
 
 ### Keyboard
 
-Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, `M` enters Mask mode and `Shift+M` turns its overlay on and off, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
+Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, `M` enters Mask mode and `Shift+M` turns its overlay on and off, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+E / Ctrl+E exports it and Shift+Cmd+E / Shift+Ctrl+E exports it keeping metadata, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
 
 ### Crop and straighten
 
@@ -348,6 +348,16 @@ Amount 0 is the identity whatever the other three hold, so a layer with the amou
 A module that needs settings, a download, a loaded model or a network service shows a small block at the top of its section. Status shows whether it is active and each resource it can download, with its size; Settings shows its fields and provider profiles. A secret such as an API key is only ever shown as Set or Not set: Replace takes a new one in a masked field and Clear removes it, and it is kept in the macOS Keychain, never in the catalog or a settings file.
 
 Nothing downloads, loads or leaves your machine until you ask. When a module first needs to download a resource or send part of a photo somewhere, a notice over the photo says exactly what, where to, how much, where it is stored and whether it may cost money, with Allow and Don't allow. Allowing a send covers this photo only. The permissions line in Status lists what you allowed, and Revoke withdraws it at once, cancelling any work that depended on it without touching your edits. Today the only module with this block is the developer capability proof, shown with `--developer --proof-endpoint URL`.
+
+## Exporting
+
+The Export button beside Open in the title bar opens a small menu with **Export JPEG…** and **Export JPEG, keep metadata…**; Escape or a click elsewhere closes it. Cmd+E runs the first and Shift+Cmd+E the second, and Cmd+K lists both. Either exports the entry on screen: the current state, or the history entry you are previewing. A draft is never exported; the export is the saved entry behind it.
+
+A save dialog opens in the original's folder with `<name>-edited.jpg` suggested, or `<name>-edited-2.jpg` and so on when that name is taken; any other name or folder can be chosen there. The file is a quality-90 JPEG in sRGB with its colour profile embedded, at the photograph's own size after orientation and crop: nothing is resized. While it is written the status bar reads "Exporting <name>…", then "Exported <name> · width × height · size", or why it failed, and the Performance section lists the running export with its phase.
+
+Without Keep metadata the file carries no EXIF, IPTC or XMP. Keep metadata copies the original's description, artist and copyright, camera and lens, capture settings and times, and GPS position, and writes the new file's own orientation, colour space and size; maker notes, serial numbers, thumbnails, IPTC and XMP are never copied.
+
+Luxforge never replaces a file, and never touches the original. Exporting to a name that already exists is refused, even after the save dialog asked whether to replace it, and the status bar reads "Not exported: <name> already exists; Luxforge never replaces a file".
 
 ## History
 
