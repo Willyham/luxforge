@@ -396,7 +396,7 @@
     {
       "id": "TASK-006",
       "description": "Implement the shared Exposure and White balance control set for JPEG and RAW photos per the source-controls design, on the owner's decisions of 2026-09-27.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
