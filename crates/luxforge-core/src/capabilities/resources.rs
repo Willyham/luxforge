@@ -5,8 +5,8 @@
 //! matches the declaration, beside a file of the declared length, is installed, so an interrupted,
 //! short, corrupt, oversized, redirected or disk-full transfer never looks installed.
 //!
-//! The owner answers from stats and small marker files; every byte of a resource is read, hashed,
-//! copied or downloaded on the transfer lane. A transfer streams into
+//! The owner answers from stats and small marker files; every byte of a resource is downloaded,
+//! hashed and checked on the transfer lane. A download streams into
 //! `<resources>/.staging/<job_id>/` and is moved into place only once its length, SHA-256, format
 //! check and the storage quota pass. A crash leaves at worst a staging directory, which the next
 //! install removes. Downloaded bytes are never executed or deserialized by the host; the hash
@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{self, BufWriter, Read, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -44,8 +44,8 @@ pub const STAGING_DIR: &str = ".staging";
 pub const DEFAULT_RESOURCE_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// The largest `installed.json` read.
 const MAX_MARKER_BYTES: u64 = 64 * 1024;
-/// Bytes copied from a local file at a time.
-const COPY_BUFFER: usize = 64 * 1024;
+/// The staged file's write buffer.
+const STAGE_BUFFER: usize = 64 * 1024;
 
 /// The resource methods.
 pub const RESOURCE_LIST: &str = "module.resource.list";
@@ -58,14 +58,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_BASE: Duration = Duration::from_secs(120);
 const DOWNLOAD_MIN_RATE: u64 = 64 * 1024;
-
-/// Where an installed resource came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InstalledFrom {
-    Download,
-    File,
-}
 
 /// `installed.json`: what was installed, from where, by whom and when, in a [`JsonDocument`] with
 /// its own `format: 1` marker.
@@ -80,7 +72,6 @@ pub struct InstalledMarker {
     pub bytes: u64,
     pub license: String,
     pub provenance: String,
-    pub source: InstalledFrom,
     pub actor: String,
     pub installed_ms: u64,
 }
@@ -110,15 +101,13 @@ impl InstalledMarker {
     }
 }
 
-/// `source` of `module.resource.install`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+/// `source` of `module.resource.install`: the declared URL, under a `download-artifact` grant, is
+/// the one source. No client names a path the host reads.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InstallSource {
-    /// The declared URL, under a `download-artifact` grant.
-    #[default]
-    Download,
-    /// A local copy; only bytes matching the pinned hash are accepted, so it needs no grant.
-    File { path: PathBuf },
+    /// A struct variant, so any other field, a path included, is refused rather than ignored.
+    Download {},
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,19 +274,14 @@ impl SharedTransport {
     }
 }
 
-/// Where an install's bytes come from, on the worker.
-pub(crate) enum Fetch {
-    Download(Arc<SharedTransport>),
-    File(PathBuf),
-}
-
 /// Everything an install job needs on the transfer lane.
 pub(crate) struct InstallJob {
     pub store: ResourceStore,
     pub job_id: JobId,
     pub module_id: String,
     pub resource: ResourceDescriptor,
-    pub fetch: Fetch,
+    /// The transport the declared URL is downloaded through.
+    pub transport: Arc<SharedTransport>,
     /// Asked to check the staged file's format.
     pub registry: Arc<ModuleRegistry>,
     pub quota: u64,
@@ -321,7 +305,7 @@ struct Staged {
 impl Staged {
     fn create(path: &Path, limit: u64) -> io::Result<Self> {
         Ok(Self {
-            file: BufWriter::with_capacity(COPY_BUFFER, File::create(path)?),
+            file: BufWriter::with_capacity(STAGE_BUFFER, File::create(path)?),
             hasher: Sha256::new(),
             written: 0,
             limit,
@@ -439,16 +423,7 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
         fault: faults::find(job.store.root()),
         ..staged
     };
-    let (length, sha256, from) = match &job.fetch {
-        Fetch::Download(transport) => {
-            let (length, sha256) = download(job, transport, staged, &staged_path)?;
-            (length, sha256, InstalledFrom::Download)
-        }
-        Fetch::File(path) => {
-            let (length, sha256) = copy_local(job, path, staged, &staged_path)?;
-            (length, sha256, InstalledFrom::File)
-        }
-    };
+    let (length, sha256) = download(job, staged, &staged_path)?;
     job.control.checkpoint()?;
     if length != resource.bytes {
         return Err(Error::validation(format!(
@@ -470,7 +445,7 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
     module.validate_resource(&resource.id, &staged_path)?;
     job.control.checkpoint()?;
     check_quota(&job.store, resource, job.quota)?;
-    publish(job, staging, from)?;
+    publish(job, staging)?;
     Ok(json!({
         "resource_id": resource.id,
         "version": resource.version,
@@ -484,7 +459,6 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
 /// redirect origins and the job's cancel flag.
 fn download(
     job: &InstallJob,
-    transport: &SharedTransport,
     mut staged: Staged,
     staged_path: &Path,
 ) -> Result<(u64, String), Error> {
@@ -493,7 +467,7 @@ fn download(
         &resource.url,
         &[EndpointClass::Remote, EndpointClass::Loopback],
     )?;
-    let transport = transport.get()?;
+    let transport = job.transport.get()?;
     let request = TransportRequest {
         method: Method::Get,
         endpoint,
@@ -546,58 +520,10 @@ fn download(
         .map_err(|kind| write_failure(staged_path, kind))
 }
 
-/// Copy a local file into the staged file through the same hashing sink, reading at most one byte
-/// more than the declared length.
-fn copy_local(
-    job: &InstallJob,
-    path: &Path,
-    mut staged: Staged,
-    staged_path: &Path,
-) -> Result<(u64, String), Error> {
-    let unreadable = |error: io::Error| {
-        Error::file_access(format!("cannot read {}: {}", path.display(), error.kind()))
-    };
-    let file = File::open(path).map_err(unreadable)?;
-    if !file.metadata().map_err(unreadable)?.is_file() {
-        return Err(Error::validation(format!(
-            "{} is not a file",
-            path.display()
-        )));
-    }
-    let total = job.resource.bytes;
-    let mut reader = file.take(total.saturating_add(1));
-    let mut buffer = vec![0; COPY_BUFFER];
-    let mut copied = 0u64;
-    job.control.set_progress(Some(0.0), "copying");
-    loop {
-        job.control.checkpoint()?;
-        let read = reader.read(&mut buffer).map_err(unreadable)?;
-        if read == 0 {
-            break;
-        }
-        if copied + read as u64 > total {
-            return Err(Error::resource_limit(format!(
-                "{} is longer than the {total} bytes {} is pinned at",
-                path.display(),
-                job.resource.id
-            )));
-        }
-        staged
-            .write_all(&buffer[..read])
-            .map_err(|error| write_failure(staged_path, error.kind()))?;
-        copied += read as u64;
-        job.control
-            .set_progress(Some(copied as f64 / total as f64), "copying");
-    }
-    staged
-        .finish()
-        .map_err(|kind| write_failure(staged_path, kind))
-}
-
 /// Move the verified staging directory into place and write `installed.json` last. A version
 /// directory without a matching marker, left by a crash or an older interrupted install, is
 /// replaced. A failure after the move removes the version directory again.
-fn publish(job: &InstallJob, staging: &Path, from: InstalledFrom) -> Result<(), Error> {
+fn publish(job: &InstallJob, staging: &Path) -> Result<(), Error> {
     let resource = &job.resource;
     let target = job.store.version_dir(&job.module_id, resource);
     let parent = target
@@ -621,7 +547,6 @@ fn publish(job: &InstallJob, staging: &Path, from: InstalledFrom) -> Result<(), 
         bytes: resource.bytes,
         license: resource.license.clone(),
         provenance: resource.provenance.clone(),
-        source: from,
         actor: job.actor.clone(),
         installed_ms: now_ms(),
     };

@@ -1,4 +1,4 @@
-//! TASK-024: the colour-constrained brush, against the frozen study and end to end through the
+//! The colour-constrained brush, against the frozen study and end to end through the
 //! service every client reaches.
 //!
 //! The mathematics is `docs/design/mask-study.md#the-colour-constraint` and the oracle is the

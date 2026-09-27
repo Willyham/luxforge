@@ -322,6 +322,8 @@ pub(crate) enum CropMessage {
     /// The drag on the angle's rail ended.
     AngleRailReleased,
     NudgeAngle(f64),
+    /// The angle back to 0: a double-click on its rail.
+    ResetAngle,
     /// The index of one generated ratio preset.
     Preset(usize),
     CustomWidth(String),

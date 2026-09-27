@@ -490,7 +490,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // the only way an end-to-end figure for a paint gesture exists at all: `editor-latency`
         // drives field-patch sliders, and a stroke is a different gesture.
         //
-        // `settle_between` is what TASK-018 added: on a heavily loaded host `STROKE_INTERVAL_MS`
+        // `settle_between` exists because, on a heavily loaded host, `STROKE_INTERVAL_MS`
         // alone is not enough — the render can take longer than the interval to reach the screen, so
         // every later position supersedes the frame before it and the stroke has nothing to pair a
         // latency to. Setting it holds each tick after the first until the position before it has
@@ -743,12 +743,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 /// that generation. A gesture holds one round trip at a time, so a set with no answer between it and
 /// the next one is a fault and not a measurement.
 ///
-/// **TASK-018.** The stroke this pairs is painted with `settle_between: true` (see `verify`'s
+/// The stroke this pairs is painted with `settle_between: true` (see `verify`'s
 /// `paced-stroke` step), so the desktop itself holds every position after the first until the one
 /// before it has reached the screen: a heavily loaded host stretches the stroke's real time rather
 /// than superseding every drafted frame before it can be paired. That leaves the emptiness check
 /// below to catch a genuine fault — a stroke that never puts a single frame on screen at all — rather
-/// than the load-only flakiness it used to catch, so it stays an `ensure` and not a provisional
+/// than load-only flakiness, so it stays an `ensure` and not a provisional
 /// reading: an empty pairing is a broken stroke, not a busy host.
 ///
 /// **What this figure is not.** It is one stroke on one 1.4 MP fixture during a smoke run, not an
@@ -764,9 +764,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value> {
     // The pairing itself lives in `editor_latency`, beside the `--mode paint` run that takes the same
     // measurement on a bare recipe at 24 and 60 MP, so the two figures are one definition and not
-    // two implementations that could drift apart. Neither this call nor that function changed for
-    // TASK-018: what changed is that the paced stroke itself no longer races the render pipeline, so
-    // there is always at least one pair to find here unless the stroke is genuinely broken.
+    // two implementations that could drift apart. The paced stroke no longer races the render
+    // pipeline, so there is always at least one pair to find here unless the stroke is genuinely
+    // broken.
     let (queued, mut latencies) = editor_latency::paced_stroke_latencies(events)?;
     ensure(
         !latencies.is_empty(),
@@ -1417,10 +1417,10 @@ fn verify_launch2(launch: &Checked, launch1: &Value) -> Result<Value> {
     }))
 }
 
-/// TASK-018's own regression coverage over synthetic events: `stroke_latency` must still pass a
+/// Regression coverage over synthetic events: `stroke_latency` must still pass a
 /// stroke every one of whose positions reached the screen, and must still fail one that reached it
 /// for none of them, which is the "broken stroke" the acceptance criteria keep as a real failure
-/// rather than the load-only flakiness the `settle_between` fix removed.
+/// rather than the load-only flakiness `settle_between` removes.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1438,7 +1438,7 @@ mod tests {
 
     /// A `mask_draft_set`/`mask_draft_preview` pair with no `preview_displayed` at all: the
     /// generation queued a preview job that never reached the screen, exactly what a heavily loaded
-    /// host used to do to every position before TASK-018.
+    /// host does to a position without `settle_between`.
     fn superseded(set_ms: f64, preview_ms: f64, generation: u64) -> Vec<Value> {
         vec![
             json!({"event":"mask_draft_set","elapsed_ms":set_ms}),

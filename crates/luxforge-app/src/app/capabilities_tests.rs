@@ -142,7 +142,14 @@ impl Proof {
                 return sent;
             }
             for (module, op) in started {
-                let answer = run(&self.editor.owner, self.editor.client, module, op);
+                // The list is read while it is open, as `capability_op` decides.
+                let list = self
+                    .editor
+                    .capabilities
+                    .modules
+                    .get(&module)
+                    .is_some_and(|state| state.permissions_open);
+                let answer = run(&self.editor.owner, self.editor.client, module, op, list);
                 sent.extend(answer.sent.clone());
                 self.send(CapabilityMessage::Answered(Box::new(answer)));
             }
@@ -659,15 +666,62 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
         proof.editor.snapshot()["capabilities"][MODULE]["tasks"][TASK]["applied"],
         true
     );
-    // A revocation is shown in the permissions list.
+    // The permissions line shows the counts the status carries; the rows are read only once the
+    // list is opened.
+    assert!(proof.state().grants().is_empty());
+    assert_eq!(
+        proof
+            .section()
+            .capability
+            .as_ref()
+            .map(|model| model.permissions.summary.clone()),
+        Some("2 permissions".into())
+    );
+    proof.send(CapabilityMessage::TogglePermissions(MODULE.into()));
+    assert!(
+        proof
+            .section()
+            .capability
+            .as_ref()
+            .is_some_and(|model| model.permissions.open && model.permissions.reading)
+    );
+    let sent = proof.answer();
+    let methods: Vec<&str> = sent
+        .iter()
+        .map(|request| request["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["module.status", "module.permission.list"]);
+    assert_eq!(proof.state().grants().len(), 2);
+    // A revocation is shown in the open permissions list, read again with the status.
     let grant = proof.state().grants()[1].grant_id.clone();
     proof.send(CapabilityMessage::Revoke {
         module_id: MODULE.into(),
-        grant,
+        grant: grant.clone(),
     });
-    proof.answer();
+    let sent = proof.answer();
+    assert!(
+        sent.iter()
+            .any(|request| request["method"] == "module.permission.list")
+    );
     let summary = proof.editor.snapshot()["capabilities"][MODULE].clone();
     assert_eq!(summary["permissions"]["revoked"], 1);
+    assert_eq!(summary["permissions"]["live"], 1);
+    assert!(
+        summary["permissions"]["grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|listed| listed["grant_id"] == grant.as_str() && !listed["revoked"].is_null()),
+        "{summary}"
+    );
+    // Closing the list drops its rows and reads nothing.
+    proof.send(CapabilityMessage::TogglePermissions(MODULE.into()));
+    assert!(proof.editor.capability_started.is_empty());
+    assert!(proof.state().grants().is_empty());
+    assert_eq!(
+        proof.editor.snapshot()["capabilities"][MODULE]["permissions"]["revoked"],
+        1
+    );
     // Nothing the desktop recorded holds the key.
     let events = logged(&mut proof.editor, &log);
     let recorded = serde_json::to_string(&events).unwrap();
@@ -792,13 +846,14 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
             {"capability": {"module": MODULE, "consent": "allow", "wait": false}},
             {"capability": {"module": MODULE, "apply": true}},
             {"capability": {"module": MODULE, "cancel": true}},
+            {"capability": {"module": MODULE, "permissions": true}},
             {"capability": {"module": MODULE, "revoke": 2}},
             {"capability": {"module": MODULE, "settle": true}}
         ])
         .to_string(),
     )
     .expect("a valid script");
-    assert_eq!(steps.len(), 15);
+    assert_eq!(steps.len(), 16);
     let Step::Capability(secret) = &steps[3] else {
         panic!("a capability step");
     };

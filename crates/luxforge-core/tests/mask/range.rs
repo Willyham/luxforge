@@ -1,4 +1,4 @@
-//! TASK-023: the production luminance-range and colour-range components against the frozen `f64`
+//! The production luminance-range and colour-range components against the frozen `f64`
 //! reference, and the contract change that made a value-based component possible at all.
 //!
 //! `crates/luxforge-reference/src/range.rs` shares no code with `luxforge-core`'s sources, and

@@ -192,7 +192,9 @@ fn permissions_view<'a>(
     )));
     let mut body = Column::new().spacing(2.0).push(line);
     if permissions.open {
-        if permissions.rows.is_empty() {
+        if permissions.reading {
+            body = body.push(caption("Reading permissions…"));
+        } else if permissions.rows.is_empty() {
             body = body.push(caption("Nothing is allowed or declined"));
         }
         for permission in &permissions.rows {

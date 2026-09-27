@@ -1,5 +1,5 @@
-//! TASK-011: independent proofs for the frozen global Tone algorithm, and the
-//! oracle fixture a later production implementation is checked against.
+//! Independent proofs for the frozen global Tone algorithm, and the
+//! oracle fixture production is checked against.
 //!
 //! This study shares no code with `luxforge-core`'s production sources. The
 //! frozen equations live in `crates/luxforge-reference/src/tone.rs`; the maths and every
@@ -197,7 +197,7 @@ fn combined_extremes_stay_finite_and_monotone_on_an_extended_ramp() {
     }
 }
 
-/// The TASK-011 revision's required dense monotonicity proof: forward
+/// The required dense monotonicity proof: forward
 /// differences of `tone_curve` on a 4001-point grid over `[-0.5, 2.0]`, for
 /// all 32 cube corners, all 80 edge midpoints and 200 fixed-seed random
 /// combinations (312 total, matching `all_cube_samples`).
@@ -551,7 +551,7 @@ fn bounded_second_differences_for_each_single_parameter_at_plus_minus_50_and_100
 // design actually places them (curve-domain 0.5, the same pivot Contrast
 // uses). Splitting by encoded value is what "above/below midtone" means here.
 
-/// Quantitative Highlights/Shadows targets (TASK-011 revision): shadows +100
+/// Quantitative Highlights/Shadows targets: shadows +100
 /// must lift encoded 0.10 by at least 0.12, and by the mirror symmetry,
 /// highlights -100 must lower encoded 0.90 by at least 0.12. Measured with the
 /// frozen K_HS = 1.5: shadows +100 lifts 0.10 to ~0.288 (delta ~0.188);
@@ -1115,7 +1115,7 @@ fn regenerate_committed_tone_case_fixture() {
 }
 
 // ---------------------------------------------------------------------------
-// Visual review (TASK-011 deliverable 3): writes PNGs to a temp directory for
+// Visual review: writes PNGs to a temp directory for
 // manual inspection. Ignored by default; never part of `cargo test` or
 // `cargo xtask check`. No image is committed; delete the temp directory after
 // looking at its contents.

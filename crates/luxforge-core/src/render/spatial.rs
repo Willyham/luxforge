@@ -522,8 +522,13 @@ fn blend(
 /// coverage. A test chooses [`TileCopy::Never`] to render the same stack with every masked tile run
 /// through the chain and blended at every pixel, which is what a copy is compared against byte for
 /// byte, and a measurement chooses [`TileCopy::OutsideBounds`] for the rule before the proof
-/// existed. Choosing either changes no other test's output, only how much work that output costs —
-/// which is the claim the comparison proves.
+/// existed. Choosing either changes no output, only how much work that output costs — which is the
+/// claim the comparison proves.
+///
+/// The choice belongs to the thread that runs the tile, so one test's rule never reaches the tiles
+/// another test runs at the same time. A stage below the parallel threshold runs every tile on the
+/// thread that asked for the frame; a measurement at photo size sets the rule on every pool thread
+/// as well.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum TileCopy {
@@ -539,24 +544,18 @@ const fn tile_copy() -> TileCopy {
 
 #[cfg(test)]
 fn tile_copy() -> TileCopy {
-    match TILE_COPY.load(Ordering::Relaxed) {
-        0 => TileCopy::Never,
-        1 => TileCopy::OutsideBounds,
-        _ => TileCopy::Proved,
-    }
+    TILE_COPY.get()
 }
 
 #[cfg(test)]
-static TILE_COPY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+thread_local! {
+    static TILE_COPY: std::cell::Cell<TileCopy> = const { std::cell::Cell::new(TileCopy::Proved) };
+}
 
-/// Set which masked tiles are copied, for a test; returns the previous rule.
+/// Set which masked tiles this thread copies, for a test; returns the previous rule.
 #[cfg(test)]
 pub(crate) fn set_tile_copy(copy: TileCopy) -> TileCopy {
-    match TILE_COPY.swap(copy as u8, Ordering::Relaxed) {
-        0 => TileCopy::Never,
-        1 => TileCopy::OutsideBounds,
-        _ => TileCopy::Proved,
-    }
+    TILE_COPY.replace(copy)
 }
 
 /// How many tiles of a masked operation were copied because their coverage was proved zero, and how
@@ -1140,11 +1139,11 @@ pub(crate) fn plane_pixel(region: Region, values: &[f32], x: u32, y: u32) -> [f3
 pub(crate) const PRODUCTION_TILE: u32 = SPATIAL_TILE;
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::{
         EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
-        SnapshotId, SourceImage, Transform,
+        RenderContext, RenderOptions, SnapshotId, SourceImage, Transform,
         modules::ESTIMATE_STORE_ENTRIES,
         modules::{
             ActionInput, ActionPlan, Availability, EffectDescriptor, EffectStage, ModuleDescriptor,
@@ -1152,8 +1151,8 @@ pub(crate) mod tests {
         },
         render::{
             testing::{
-                cached_estimates, clear_estimates, context, evaluation, linear_evaluation,
-                render_linear_tiled, render_tiled, sample_linear_tiled,
+                evaluation, frame_in, linear_evaluation, render_linear_tiled, render_tiled,
+                sample_in,
             },
             tests::{CropReference, crop_layer, fitted_crop, geometry_registry, gradient, turn},
         },
@@ -1167,23 +1166,22 @@ pub(crate) mod tests {
         },
     };
 
-    /// The unit tests share one render context (`testing::context`), so every test that reads its
-    /// spatial budget or its estimate store holds this lock instead of racing. That is every test that renders a spatial layer: each one
-    /// takes working sets from the budget, and a unit that declares an estimate key reads and writes
-    /// the store.
-    static SPATIAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// A count one test's own units keep: how many times its [`MeanShift`] units prepared a global
+    /// estimate, which the store is what should keep small, or how many tiles its [`Counted`] units
+    /// ran. Each registry and each unit a test builds holds its own, so nothing another test
+    /// renders at the same time moves it.
+    #[derive(Clone, Debug, Default)]
+    struct Tally(Arc<AtomicUsize>);
 
-    /// Held by every test that reads or writes either piece of that shared state, including the
-    /// Presence module's own tests in `modules::presence::oracle`.
-    pub(crate) fn spatial_guard() -> std::sync::MutexGuard<'static, ()> {
-        SPATIAL_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    impl Tally {
+        fn add(&self) {
+            self.0.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+
+        fn get(&self) -> usize {
+            self.0.load(AtomicOrdering::SeqCst)
+        }
     }
-
-    /// How many times any [`MeanShift`] has prepared a global estimate. The store is what should
-    /// keep this small, so the tests count it.
-    static PREPARED: AtomicUsize = AtomicUsize::new(0);
 
     // -----------------------------------------------------------------------------------------
     // Test units.
@@ -1274,8 +1272,10 @@ pub(crate) mod tests {
     /// input − mean + 0.5, where the mean is the mean of the host's reduction of the operation's
     /// input stage. A wrong or missing global changes every byte, which is what makes the estimate
     /// store observable in a rendered frame.
-    #[derive(Debug)]
-    struct MeanShift;
+    #[derive(Debug, Default)]
+    struct MeanShift {
+        prepared: Tally,
+    }
 
     impl SpatialUnit for MeanShift {
         fn halo(&self, _: Stage) -> u32 {
@@ -1291,7 +1291,7 @@ pub(crate) mod tests {
         }
 
         fn prepare(&self, reduction: &Reduction) -> Option<Global> {
-            PREPARED.fetch_add(1, AtomicOrdering::SeqCst);
+            self.prepared.add();
             let mut sum = [0.0_f64; 3];
             let mut count = 0.0;
             for y in 0..reduction.height() {
@@ -1341,15 +1341,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// How many times any [`Counted`] unit has been applied, which is once per tile its operation
-    /// evaluated. Only `a_tile_the_mask_cannot_reach_evaluates_no_unit` compiles one, so no other
-    /// test moves it, whatever else renders a masked spatial layer at the same time.
-    static APPLIED: AtomicUsize = AtomicUsize::new(0);
-
     /// A unit with no neighbourhood that lifts every value by a quarter and counts its own
-    /// evaluations, so what a mask saves is counted by the unit that would have done the work.
-    #[derive(Debug)]
-    struct Counted;
+    /// evaluations, once per tile its operation evaluated, so what a mask saves is counted by the
+    /// unit that would have done the work.
+    #[derive(Debug, Default)]
+    struct Counted {
+        applied: Tally,
+    }
 
     impl SpatialUnit for Counted {
         fn halo(&self, _: Stage) -> u32 {
@@ -1368,7 +1366,7 @@ pub(crate) mod tests {
             _: &mut [f32],
             _: Parallelism,
         ) -> Result<(), Error> {
-            APPLIED.fetch_add(1, AtomicOrdering::SeqCst);
+            self.applied.add();
             let out = output.region();
             for y in out.y0..out.y1() {
                 for x in out.x0..out.x1() {
@@ -1423,11 +1421,17 @@ pub(crate) mod tests {
 
     const TEST_SPATIAL_EFFECT: &str = "test.spatial";
 
-    struct SpatialTestModule(ModuleDescriptor);
+    /// Compiles the test units, each `shift` counting into `prepared` and each `count` into
+    /// `applied`.
+    struct SpatialTestModule {
+        descriptor: ModuleDescriptor,
+        prepared: Tally,
+        applied: Tally,
+    }
 
     impl SpatialTestModule {
-        fn shared() -> Arc<dyn ToolModule> {
-            Arc::new(Self(ModuleDescriptor {
+        fn shared(prepared: Tally, applied: Tally) -> Arc<dyn ToolModule> {
+            let descriptor = ModuleDescriptor {
                 id: "test.spatial".into(),
                 title: "Test spatial".into(),
                 hint: None,
@@ -1450,13 +1454,18 @@ pub(crate) mod tests {
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
                 ..ModuleDescriptor::default()
-            }))
+            };
+            Arc::new(Self {
+                descriptor,
+                prepared,
+                applied,
+            })
         }
     }
 
     impl ToolModule for SpatialTestModule {
         fn descriptor(&self) -> &ModuleDescriptor {
-            &self.0
+            &self.descriptor
         }
         fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
             Err(Error::internal("no actions"))
@@ -1478,8 +1487,12 @@ pub(crate) mod tests {
                     Some(("blur", radius)) => Arc::new(BoxBlur {
                         radius: radius.parse().expect("a radius"),
                     }),
-                    None if unit == "shift" => Arc::new(MeanShift),
-                    None if unit == "count" => Arc::new(Counted),
+                    None if unit == "shift" => Arc::new(MeanShift {
+                        prepared: self.prepared.clone(),
+                    }),
+                    None if unit == "count" => Arc::new(Counted {
+                        applied: self.applied.clone(),
+                    }),
                     None if unit == "infinite" => Arc::new(NonFinite),
                     _ => panic!("unknown test unit {unit}"),
                 });
@@ -1489,9 +1502,18 @@ pub(crate) mod tests {
     }
 
     fn spatial_registry() -> ModuleRegistry {
+        counting_registry().0
+    }
+
+    /// A spatial registry with the tallies its `shift` units prepare into and its `count` units
+    /// run into.
+    fn counting_registry() -> (ModuleRegistry, Tally, Tally) {
+        let (prepared, applied) = (Tally::default(), Tally::default());
         let mut registry = geometry_registry();
-        registry.register(SpatialTestModule::shared()).unwrap();
         registry
+            .register(SpatialTestModule::shared(prepared.clone(), applied.clone()))
+            .unwrap();
+        (registry, prepared, applied)
     }
 
     fn spatial_layer(units: &[&str]) -> Layer {
@@ -1512,6 +1534,62 @@ pub(crate) mod tests {
             masks: Vec::new(),
             ..Recipe::default()
         }
+    }
+
+    /// `stack` over `source` rendered through `context`, for a test that reads its estimate store
+    /// or its budget, or renders again in it.
+    fn byte_in(
+        context: &RenderContext,
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        stack: &Recipe,
+    ) -> Raster {
+        frame_in(
+            context,
+            registry,
+            source,
+            SnapshotId::new(),
+            stack,
+            RenderOptions::default(),
+        )
+        .unwrap()
+    }
+
+    /// `stack` over `source` rendered through `context` in tiles of `tile` pixels.
+    fn tiled_in<'a>(
+        context: &'a RenderContext,
+        registry: &ModuleRegistry,
+        source: impl Into<crate::RenderSource<'a>>,
+        stack: &Recipe,
+        tile: u32,
+    ) -> Result<Raster, Error> {
+        frame_in(
+            context,
+            registry,
+            source,
+            SnapshotId::new(),
+            stack,
+            RenderOptions::default().with_tile(tile),
+        )
+    }
+
+    /// The linear counterpart of [`byte_in`].
+    fn linear_in(
+        context: &RenderContext,
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        stack: &Recipe,
+        settings: LinearSettings,
+    ) -> Raster {
+        frame_in(
+            context,
+            registry,
+            crate::render::testing::linear(source, settings),
+            SnapshotId::new(),
+            stack,
+            RenderOptions::default(),
+        )
+        .unwrap()
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1722,8 +1800,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_tiled_render_matches_the_whole_frame_reference_at_every_tile_size() {
-        let _guard = spatial_guard();
-        clear_estimates();
         // Larger than one production tile on both sides of the 512 grid, so both tile sizes
         // exercise partial edge tiles and more than one batch.
         let source = gradient(600, 400);
@@ -1765,8 +1841,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_tiled_linear_render_matches_the_whole_frame_reference_at_every_tile_size() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let source = linear_source(200, 150);
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["blur:3"])]);
@@ -1791,8 +1865,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_rotate_before_a_spatial_layer_blurs_the_rotated_stage() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let source = gradient(90, 60);
         let registry = spatial_registry();
         let stack = recipe(vec![
@@ -1826,8 +1898,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_replacement_before_a_spatial_layer_is_blurred_and_one_after_it_is_not() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let source = gradient(80, 60);
         let registry = spatial_registry();
         let before = [10_u8, 200, 30];
@@ -1863,8 +1933,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_crop_resample_after_a_spatial_layer_resamples_the_blurred_frame() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let source = gradient(80, 60);
         let registry = spatial_registry();
         let crop = fitted_crop(80, 60, 8.0, [0.15, 0.15, 0.6, 0.6]);
@@ -1934,7 +2002,6 @@ pub(crate) mod tests {
     /// approximate one takes nothing estimated from exact ones.
     #[test]
     fn an_approximate_white_balance_never_shares_a_global_estimate_with_the_exact_evaluation() {
-        let _guard = spatial_guard();
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["shift"])]);
         let source = linear_source(40, 30);
@@ -1949,37 +2016,27 @@ pub(crate) mod tests {
                 .unwrap(),
             ),
         };
-        let render = |settings: LinearSettings| {
-            crate::render::testing::render_linear(
-                &registry,
-                &source,
-                SnapshotId::new(),
-                &stack,
-                settings,
-            )
-            .unwrap()
-            .rgba
+        let render = |context: &RenderContext, settings: LinearSettings| {
+            linear_in(context, &registry, &source, &stack, settings).rgba
         };
-        clear_estimates();
-        let exact_alone = render(LinearSettings::default());
-        clear_estimates();
-        let approximate_alone = render(approximate);
+        let exact_alone = render(&RenderContext::new(), LinearSettings::default());
+        let approximate_alone = render(&RenderContext::new(), approximate);
         assert_ne!(
             exact_alone, approximate_alone,
             "the mean shift moves with the approximated scene"
         );
 
-        clear_estimates();
-        let _ = render(approximate);
+        let context = RenderContext::new();
+        let _ = render(&context, approximate);
         assert_eq!(
-            render(LinearSettings::default()),
+            render(&context, LinearSettings::default()),
             exact_alone,
             "an exact render after an approximate one estimated from exact pixels"
         );
-        clear_estimates();
-        let _ = render(LinearSettings::default());
+        let context = RenderContext::new();
+        let _ = render(&context, LinearSettings::default());
         assert_eq!(
-            render(approximate),
+            render(&context, approximate),
             approximate_alone,
             "an approximate render after an exact one estimated from its own pixels"
         );
@@ -1987,7 +2044,6 @@ pub(crate) mod tests {
 
     #[test]
     fn strength_independent_dehaze_estimates_keep_white_balance_inputs_distinct() {
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let source = linear_source(40, 30);
         let seed = recipe(vec![Layer {
@@ -2013,34 +2069,23 @@ pub(crate) mod tests {
             ),
         };
         let settings = [exact, approximate(1.4, 0.6), approximate(0.7, 1.3)];
-        let render = |recipe: &Recipe, settings| {
-            crate::render::testing::render_linear(
-                &registry,
-                &source,
-                SnapshotId::new(),
-                recipe,
-                settings,
-            )
-            .unwrap()
-            .rgba
+        let render = |context: &RenderContext, recipe: &Recipe, settings| {
+            linear_in(context, &registry, &source, recipe, settings).rgba
         };
-        let expected = settings.map(|settings| {
-            clear_estimates();
-            render(&changed, settings)
-        });
-        clear_estimates();
+        let expected = settings.map(|settings| render(&RenderContext::new(), &changed, settings));
+        let context = RenderContext::new();
         for settings in settings {
-            render(&seed, settings);
+            render(&context, &seed, settings);
         }
         assert_eq!(
-            cached_estimates(),
+            context.estimates().len(),
             3,
             "each white balance owns its estimate"
         );
         for (settings, expected) in settings.into_iter().zip(expected) {
-            assert_eq!(render(&changed, settings), expected);
+            assert_eq!(render(&context, &changed, settings), expected);
             assert_eq!(
-                cached_estimates(),
+                context.estimates().len(),
                 3,
                 "only amount changed: reuse the matching input"
             );
@@ -2079,7 +2124,6 @@ pub(crate) mod tests {
 
     #[test]
     fn estimate_identity_tracks_upstream_mask_values_on_both_paths() {
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let byte = gradient(40, 30);
         let linear = linear_source(40, 30);
@@ -2089,32 +2133,35 @@ pub(crate) mod tests {
         variants[1].masks[0].invert = true;
         variants[2].masks[0].components[0].payload["radius_x"] = json!(0.12);
         for linear_path in [false, true] {
-            let render = |stack: &Recipe| {
+            let source = || {
                 if linear_path {
-                    crate::render::testing::render_linear(
-                        &registry,
-                        &linear,
-                        SnapshotId::new(),
-                        stack,
-                        LinearSettings::default(),
-                    )
-                    .unwrap()
+                    crate::render::testing::linear(&linear, LinearSettings::default())
                 } else {
-                    crate::render::testing::render(&registry, &byte, SnapshotId::new(), stack)
-                        .unwrap()
+                    crate::RenderSource::Byte(&byte)
                 }
             };
+            let render = |context: &RenderContext, stack: &Recipe| {
+                frame_in(
+                    context,
+                    &registry,
+                    source(),
+                    SnapshotId::new(),
+                    stack,
+                    RenderOptions::default(),
+                )
+                .unwrap()
+            };
             for changed in &variants {
-                clear_estimates();
-                let seed_frame = render(&seed);
-                let cached = render(changed);
+                let context = RenderContext::new();
+                let seed_frame = render(&context, &seed);
+                let cached = render(&context, changed);
                 assert_eq!(
-                    cached_estimates(),
+                    context.estimates().len(),
                     2,
                     "same mask ID with different pixels must miss"
                 );
-                clear_estimates();
-                let fresh = render(changed);
+                let context = RenderContext::new();
+                let fresh = render(&context, changed);
                 assert_eq!(
                     cached.rgba, fresh.rgba,
                     "no old atmosphere after a mask edit"
@@ -2123,19 +2170,16 @@ pub(crate) mod tests {
                     seed_frame.rgba, fresh.rgba,
                     "the fixture makes this mask edit visible"
                 );
-                let sample = if linear_path {
-                    crate::render::testing::sample_linear(
-                        &registry,
-                        &linear,
-                        changed,
-                        LinearSettings::default(),
-                        17,
-                        13,
-                    )
-                    .unwrap()
-                } else {
-                    crate::render::testing::sample(&registry, &byte, changed, 17, 13).unwrap()
-                };
+                let sample = sample_in(
+                    &context,
+                    &registry,
+                    source(),
+                    changed,
+                    RenderOptions::default(),
+                    17,
+                    13,
+                )
+                .unwrap();
                 assert_eq!(sample.rgba, cached.pixel(17, 13));
             }
         }
@@ -2158,7 +2202,6 @@ pub(crate) mod tests {
 
     #[test]
     fn estimate_identity_separates_point_and_thin_feature_mask_sampling() {
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let byte = gradient(40, 30);
         let linear = linear_source(40, 30);
@@ -2170,48 +2213,41 @@ pub(crate) mod tests {
                 .supersampled_masks()
         );
         for linear_path in [false, true] {
-            let render = |proxy| {
-                let id = SnapshotId::new();
+            let render = |context: &RenderContext, proxy| {
                 let cancel = Cancel::new();
-                match (linear_path, proxy) {
-                    (false, false) => crate::render::testing::render(&registry, &byte, id, &stack),
-                    (false, true) => crate::render::testing::render_proxy_cancellable(
-                        &registry, &byte, id, &stack, &cancel,
-                    ),
-                    (true, false) => crate::render::testing::render_linear(
-                        &registry,
-                        &linear,
-                        id,
-                        &stack,
-                        LinearSettings::default(),
-                    ),
-                    (true, true) => crate::render::testing::render_linear_proxy_cancellable(
-                        &registry,
-                        &linear,
-                        id,
-                        &stack,
-                        LinearSettings::default(),
-                        &cancel,
-                    ),
-                }
+                let options = if proxy {
+                    RenderOptions::proxy(&cancel)
+                } else {
+                    RenderOptions::exact(&cancel)
+                };
+                let source = if linear_path {
+                    crate::render::testing::linear(&linear, LinearSettings::default())
+                } else {
+                    crate::RenderSource::Byte(&byte)
+                };
+                frame_in(
+                    context,
+                    &registry,
+                    source,
+                    SnapshotId::new(),
+                    &stack,
+                    options,
+                )
                 .unwrap()
                 .rgba
             };
-            let expected = [false, true].map(|proxy| {
-                clear_estimates();
-                render(proxy)
-            });
+            let expected = [false, true].map(|proxy| render(&RenderContext::new(), proxy));
             assert_ne!(
                 expected[0], expected[1],
                 "thin-feature sampling changes this fixture"
             );
             for order in [[false, true], [true, false]] {
-                clear_estimates();
+                let context = RenderContext::new();
                 for proxy in order {
-                    assert_eq!(render(proxy), expected[usize::from(proxy)]);
+                    assert_eq!(render(&context, proxy), expected[usize::from(proxy)]);
                 }
                 assert_eq!(
-                    cached_estimates(),
+                    context.estimates().len(),
                     2,
                     "sampling modes own distinct atmospheres"
                 );
@@ -2221,7 +2257,6 @@ pub(crate) mod tests {
 
     #[test]
     fn linear_estimate_identity_tracks_development_view_and_direct_exposure() {
-        let _guard = spatial_guard();
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["shift"])]);
         let planes: Vec<f32> = (0..3)
@@ -2254,40 +2289,41 @@ pub(crate) mod tests {
                 },
             ),
         ];
-        let render = |source: &LinearImage, settings| {
-            crate::render::testing::render_linear(
-                &registry,
-                source,
-                SnapshotId::new(),
-                &stack,
-                settings,
-            )
-            .unwrap()
-        };
         let expected: Vec<_> = cases
             .iter()
             .map(|(source, settings)| {
-                clear_estimates();
-                render(source, *settings).rgba
+                linear_in(&RenderContext::new(), &registry, source, &stack, *settings).rgba
             })
             .collect();
-        clear_estimates();
-        PREPARED.store(0, AtomicOrdering::SeqCst);
+        // The same stack through a registry whose units count their own preparations, in one
+        // context.
+        let (registry, prepared, _) = counting_registry();
+        let context = RenderContext::new();
         for (index, ((source, settings), expected)) in cases.iter().zip(expected).enumerate() {
-            let cached = render(source, *settings);
+            let cached = linear_in(&context, &registry, source, &stack, *settings);
             assert_eq!(
                 cached.rgba, expected,
                 "input case {index} must not reuse another input"
             );
-            assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), index + 1);
-            assert_eq!(cached_estimates(), index + 1);
-            assert_eq!(render(&source.clone(), *settings).rgba, expected);
-            let sampled =
-                crate::render::testing::sample_linear(&registry, source, &stack, *settings, 7, 11)
-                    .unwrap();
+            assert_eq!(prepared.get(), index + 1);
+            assert_eq!(context.estimates().len(), index + 1);
+            assert_eq!(
+                linear_in(&context, &registry, &source.clone(), &stack, *settings).rgba,
+                expected
+            );
+            let sampled = sample_in(
+                &context,
+                &registry,
+                crate::render::testing::linear(source, *settings),
+                &stack,
+                RenderOptions::default(),
+                7,
+                11,
+            )
+            .unwrap();
             assert_eq!(sampled.rgba, cached.pixel(7, 11));
             assert_eq!(
-                PREPARED.load(AtomicOrdering::SeqCst),
+                prepared.get(),
                 index + 1,
                 "clones and samples reuse the matching estimate"
             );
@@ -2296,17 +2332,25 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sample_equals_every_rendered_byte_on_both_paths() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["blur:3", "shift"])]);
         let source = gradient(48, 36);
-        let raster =
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        // The samples read the estimate the render stored, as a pointer readout does beside the
+        // preview.
+        let context = RenderContext::new();
+        let raster = byte_in(&context, &registry, &source, &stack);
         for y in 0..raster.height {
             for x in 0..raster.width {
-                let sampled =
-                    crate::render::testing::sample(&registry, &source, &stack, x, y).unwrap();
+                let sampled = sample_in(
+                    &context,
+                    &registry,
+                    &source,
+                    &stack,
+                    RenderOptions::default(),
+                    x,
+                    y,
+                )
+                .unwrap();
                 assert_eq!(
                     sampled.rgba,
                     raster.pixel(x, y),
@@ -2315,21 +2359,21 @@ pub(crate) mod tests {
             }
         }
         let linear = linear_source(40, 30);
-        let rendered = crate::render::testing::render_linear(
+        let rendered = linear_in(
+            &context,
             &registry,
             &linear,
-            SnapshotId::new(),
             &stack,
             LinearSettings::default(),
-        )
-        .unwrap();
+        );
         for y in 0..rendered.height {
             for x in 0..rendered.width {
-                let sampled = crate::render::testing::sample_linear(
+                let sampled = sample_in(
+                    &context,
                     &registry,
-                    &linear,
+                    crate::render::testing::linear(&linear, LinearSettings::default()),
                     &stack,
-                    LinearSettings::default(),
+                    RenderOptions::default(),
                     x,
                     y,
                 )
@@ -2345,28 +2389,27 @@ pub(crate) mod tests {
 
     #[test]
     fn the_linear_path_agrees_with_itself_through_a_spatial_layer_and_a_crop() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = linear_source(60, 44);
         let crop = fitted_crop(60, 44, 6.0, [0.2, 0.2, 0.55, 0.55]);
         let stack = recipe(vec![spatial_layer(&["blur:2", "shift"]), crop_layer(crop)]);
-        let rendered = crate::render::testing::render_linear(
+        let context = RenderContext::new();
+        let rendered = linear_in(
+            &context,
             &registry,
             &source,
-            SnapshotId::new(),
             &stack,
             LinearSettings::default(),
-        )
-        .unwrap();
+        );
         assert!(rendered.width > 1 && rendered.height > 1);
         for y in 0..rendered.height {
             for x in 0..rendered.width {
-                let sampled = crate::render::testing::sample_linear(
+                let sampled = sample_in(
+                    &context,
                     &registry,
-                    &source,
+                    crate::render::testing::linear(&source, LinearSettings::default()),
                     &stack,
-                    LinearSettings::default(),
+                    RenderOptions::default(),
                     x,
                     y,
                 )
@@ -2382,23 +2425,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sample_uses_the_same_tile_grid_the_render_used() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = gradient(50, 40);
         let stack = recipe(vec![spatial_layer(&["blur:2", "shift"])]);
         // A tile smaller than the frame, so the sampled pixel's tile is one of several and its
         // halo is clamped differently from the whole frame's.
-        let raster = render_tiled(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &Cancel::new(),
-            16,
-        )
-        .unwrap();
-        let evaluation = evaluation(&registry, &source, &stack)
+        let context = RenderContext::new();
+        let raster = tiled_in(&context, &registry, &source, &stack, 16).unwrap();
+        let evaluation = evaluation(&context, &registry, &source, &stack)
             .unwrap()
             .with_tile(16);
         for y in 0..raster.height {
@@ -2419,8 +2453,6 @@ pub(crate) mod tests {
     /// reduces.
     #[test]
     fn a_linear_sample_evaluates_its_tile_and_equals_the_tiled_render() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = linear_source(70, 52);
         let crop = fitted_crop(70, 52, 6.0, [0.15, 0.2, 0.6, 0.55]);
@@ -2439,26 +2471,20 @@ pub(crate) mod tests {
                 ]),
             ),
         ] {
-            let rendered = render_linear_tiled(
-                &registry,
-                &source,
-                SnapshotId::new(),
-                &stack,
-                LinearSettings::default(),
-                &Cancel::new(),
-                16,
-            )
-            .unwrap();
+            // The samples read the estimates the render stored.
+            let context = RenderContext::new();
+            let input = || crate::render::testing::linear(&source, LinearSettings::default());
+            let rendered = tiled_in(&context, &registry, input(), &stack, 16).unwrap();
             for y in 0..rendered.height {
                 for x in 0..rendered.width {
-                    let sampled = sample_linear_tiled(
+                    let sampled = sample_in(
+                        &context,
                         &registry,
-                        &source,
+                        input(),
                         &stack,
-                        LinearSettings::default(),
+                        RenderOptions::default().with_tile(16),
                         x,
                         y,
-                        16,
                     )
                     .unwrap();
                     assert_eq!(
@@ -2473,8 +2499,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_linear_sample_through_a_spatial_layer_reserves_one_working_set() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = linear_source(600, 400);
         let stack = recipe(vec![spatial_layer(&["blur:4"])]);
@@ -2488,14 +2512,14 @@ pub(crate) mod tests {
             SPATIAL_TILE,
         )
         .unwrap();
-        let budget = context().spatial();
-        assert_eq!(budget.in_use(), 0, "nothing is held between evaluations");
-        budget.reset_peak();
-        let sampled = crate::render::testing::sample_linear(
+        let context = RenderContext::new();
+        let budget = context.spatial();
+        let sampled = sample_in(
+            &context,
             &registry,
-            &source,
+            crate::render::testing::linear(&source, LinearSettings::default()),
             &stack,
-            LinearSettings::default(),
+            RenderOptions::default(),
             300,
             200,
         )
@@ -2511,8 +2535,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sample_through_a_spatial_layer_reserves_one_working_set() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = gradient(600, 400);
         let stack = recipe(vec![spatial_layer(&["blur:4"])]);
@@ -2526,10 +2548,18 @@ pub(crate) mod tests {
             SPATIAL_TILE,
         )
         .unwrap();
-        let budget = context().spatial();
-        assert_eq!(budget.in_use(), 0, "nothing is held between renders");
-        budget.reset_peak();
-        let sampled = crate::render::testing::sample(&registry, &source, &stack, 300, 200).unwrap();
+        let context = RenderContext::new();
+        let budget = context.spatial();
+        let sampled = sample_in(
+            &context,
+            &registry,
+            &source,
+            &stack,
+            RenderOptions::default(),
+            300,
+            200,
+        )
+        .unwrap();
         assert!(sampled.rgba.is_some());
         assert_eq!(
             budget.peak(),
@@ -2541,8 +2571,6 @@ pub(crate) mod tests {
 
     #[test]
     fn two_chained_units_match_the_reference_chain_and_sum_their_halos() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let source = gradient(120, 90);
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["blur:3", "shift"])]);
@@ -2567,7 +2595,7 @@ pub(crate) mod tests {
         // Three units of different halos add up, and the chain's rectangles still cover the tile.
         let operation = SpatialOperation::new(vec![
             Arc::new(BoxBlur { radius: 3 }),
-            Arc::new(MeanShift),
+            Arc::new(MeanShift::default()),
             Arc::new(BoxBlur { radius: 5 }),
         ])
         .unwrap();
@@ -2607,7 +2635,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_tile_grid_is_anchored_at_the_stage_origin() {
-        let _guard = spatial_guard();
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 1 })]).unwrap();
         let stage = Stage {
             width: 1100,
@@ -2630,18 +2657,18 @@ pub(crate) mod tests {
 
     #[test]
     fn an_operation_the_host_cannot_run_is_refused_before_any_pixel_work() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = gradient(64, 48);
-        let budget = context().spatial();
-        budget.reset_peak();
+        let context = RenderContext::new();
+        let budget = context.spatial();
         let refuse = |layers: Vec<Layer>| -> Error {
-            let error = crate::render::testing::render(
+            let error = frame_in(
+                &context,
                 &registry,
                 &source,
                 SnapshotId::new(),
                 &recipe(layers),
+                RenderOptions::default(),
             )
             .expect_err("the host refuses this operation");
             assert_eq!(error.kind, ErrorKind::ResourceLimit, "{error}");
@@ -2675,10 +2702,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_reservation_takes_what_fits_and_never_less_than_one_tile() {
-        let _guard = spatial_guard();
-        let budget = context().spatial();
-        assert_eq!(budget.in_use(), 0, "nothing is held between tests");
-        let previous = budget.set_target(1000);
+        let context = RenderContext::with_spatial_target(1000);
+        let budget = context.spatial();
         {
             let all = budget.reserve(100, 4);
             assert_eq!(all.tiles(), 4, "everything asked for fits");
@@ -2692,7 +2717,6 @@ pub(crate) mod tests {
             assert_eq!(budget.in_use(), 6100);
         }
         assert_eq!(budget.in_use(), 0, "every reservation is released");
-        budget.set_target(previous);
     }
 
     /// The reported failure: the histogram's analysis and the preview's exact phase rendering the
@@ -2701,31 +2725,22 @@ pub(crate) mod tests {
     /// target stands in for the other evaluation, deterministically.
     #[test]
     fn a_render_and_a_sample_complete_when_another_evaluation_holds_the_target() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let (width, height, tile) = (200_u32, 150_u32, 32_u32);
         let stack = recipe(vec![spatial_layer(&["blur:3"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 3 })]).unwrap();
         let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
+        let context = RenderContext::new();
+        let budget = context.spatial();
         assert!(
-            context().spatial().concurrency(plan.working_set()) > 1,
+            budget.concurrency(plan.working_set()) > 1,
             "alone, the operation runs tiles together"
         );
-        let budget = context().spatial();
         let held = budget.reserve(budget.target(), 1);
-        budget.reset_peak();
 
         let source = gradient(width, height);
-        let raster = render_tiled(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &Cancel::new(),
-            tile,
-        )
-        .expect("the byte render completes past the target");
+        let raster = tiled_in(&context, &registry, &source, &stack, tile)
+            .expect("the byte render completes past the target");
         let expected = reference_chain(
             width,
             height,
@@ -2740,23 +2755,28 @@ pub(crate) mod tests {
         );
 
         let linear = linear_source(width, height);
-        let raster = render_linear_tiled(
+        let raster = tiled_in(
+            &context,
             &registry,
-            &linear,
-            SnapshotId::new(),
+            crate::render::testing::linear(&linear, LinearSettings::default()),
             &stack,
-            LinearSettings::default(),
-            &Cancel::new(),
             tile,
         )
         .expect("the RAW render completes past the target");
         let expected = reference_chain(width, height, linear_frame(&linear), &[RefUnit::Blur(3)]);
         assert_frame(&raster, &expected, "linear render beside a taken target");
 
-        let rendered =
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-        let sampled = crate::render::testing::sample(&registry, &source, &stack, 100, 75)
-            .expect("the sample completes past the target");
+        let rendered = byte_in(&context, &registry, &source, &stack);
+        let sampled = sample_in(
+            &context,
+            &registry,
+            &source,
+            &stack,
+            RenderOptions::default(),
+            100,
+            75,
+        )
+        .expect("the sample completes past the target");
         assert_eq!(sampled.rgba, rendered.pixel(100, 75), "the rendered byte");
 
         drop(held);
@@ -2765,30 +2785,19 @@ pub(crate) mod tests {
 
     #[test]
     fn a_tile_larger_than_the_target_renders_alone() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let (width, height, tile) = (64_u32, 48_u32, 16_u32);
         let source = gradient(width, height);
         let stack = recipe(vec![spatial_layer(&["blur:2"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 })]).unwrap();
-        let budget = context().spatial();
-        let previous = budget.set_target(1024);
+        let context = RenderContext::with_spatial_target(1024);
+        let budget = context.spatial();
         let plan = SpatialPlan::new(&operation, Stage { width, height }, tile)
             .expect("what a tile costs never refuses a plan");
         assert!(plan.working_set() > budget.target());
-        assert_eq!(context().spatial().concurrency(plan.working_set()), 1);
-        budget.reset_peak();
-        let raster = render_tiled(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &Cancel::new(),
-            tile,
-        );
-        budget.set_target(previous);
-        let raster = raster.expect("the render completes");
+        assert_eq!(budget.concurrency(plan.working_set()), 1);
+        let raster =
+            tiled_in(&context, &registry, &source, &stack, tile).expect("the render completes");
         let expected = reference_chain(
             width,
             height,
@@ -2806,48 +2815,36 @@ pub(crate) mod tests {
 
     #[test]
     fn a_prepared_estimate_is_reused_and_the_store_evicts_the_oldest() {
-        let _guard = spatial_guard();
-        clear_estimates();
-        PREPARED.store(0, AtomicOrdering::SeqCst);
-        let registry = spatial_registry();
+        let (registry, prepared, _) = counting_registry();
+        let context = RenderContext::new();
         let source = gradient(64, 48);
         let stack = recipe(vec![spatial_layer(&["shift"])]);
-        let first =
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-        assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 1, "one preparation");
-        let second =
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-        assert_eq!(
-            PREPARED.load(AtomicOrdering::SeqCst),
-            1,
-            "the second render hits the store"
-        );
+        let first = byte_in(&context, &registry, &source, &stack);
+        assert_eq!(prepared.get(), 1, "one preparation");
+        let second = byte_in(&context, &registry, &source, &stack);
+        assert_eq!(prepared.get(), 1, "the second render hits the store");
         assert_eq!(first.rgba, second.rgba, "and produces the same frame");
         // A different prefix is a different key, so it misses.
         let prefixed = recipe(vec![
             Layer::pixel(1, 1, [3, 4, 5]),
             spatial_layer(&["shift"]),
         ]);
-        crate::render::testing::render(&registry, &source, SnapshotId::new(), &prefixed).unwrap();
-        assert_eq!(
-            PREPARED.load(AtomicOrdering::SeqCst),
-            2,
-            "a different prefix misses"
-        );
-        assert_eq!(cached_estimates(), 2);
+        byte_in(&context, &registry, &source, &prefixed);
+        assert_eq!(prepared.get(), 2, "a different prefix misses");
+        assert_eq!(context.estimates().len(), 2);
         // Nine distinct keys evict the oldest one, which then has to be prepared again.
         for index in 0..ESTIMATE_STORE_ENTRIES {
             let stack = recipe(vec![
                 Layer::pixel(2, 2, [index as u8, 0, 0]),
                 spatial_layer(&["shift"]),
             ]);
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+            byte_in(&context, &registry, &source, &stack);
         }
-        assert_eq!(cached_estimates(), ESTIMATE_STORE_ENTRIES);
-        let before = PREPARED.load(AtomicOrdering::SeqCst);
-        crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        assert_eq!(context.estimates().len(), ESTIMATE_STORE_ENTRIES);
+        let before = prepared.get();
+        byte_in(&context, &registry, &source, &stack);
         assert_eq!(
-            PREPARED.load(AtomicOrdering::SeqCst),
+            prepared.get(),
             before + 1,
             "the oldest entry was evicted and is prepared again"
         );
@@ -2860,27 +2857,24 @@ pub(crate) mod tests {
     /// position was given must not be handed to another that wants an estimate.
     #[test]
     fn an_estimate_belongs_to_its_key_and_not_to_its_position() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         let source = gradient(64, 48);
+        let context = RenderContext::new();
         // A unit that declares no estimate at position 0, given none.
-        crate::render::testing::render(
+        byte_in(
+            &context,
             &registry,
             &source,
-            SnapshotId::new(),
             &recipe(vec![spatial_layer(&["blur:2"])]),
-        )
-        .unwrap();
-        // The same source, the same (empty) prefix and the same stage, with a unit that does want
-        // one at that position.
-        let shifted = crate::render::testing::render(
+        );
+        // The same source, the same (empty) prefix and the same stage in the same context, with a
+        // unit that does want one at that position.
+        let shifted = byte_in(
+            &context,
             &registry,
             &source,
-            SnapshotId::new(),
             &recipe(vec![spatial_layer(&["shift"])]),
-        )
-        .unwrap();
+        );
         let expected = reference_chain(
             64,
             48,
@@ -2894,20 +2888,20 @@ pub(crate) mod tests {
     /// the store, on its first evaluation or any other, and hands every unit no global.
     #[test]
     fn an_operation_whose_units_declare_no_key_never_reduces() {
-        let _guard = spatial_guard();
         let stage = Stage {
             width: 64,
             height: 48,
         };
         let operation = SpatialOperation::new(vec![
             Arc::new(BoxBlur { radius: 2 }),
-            Arc::new(Counted),
+            Arc::new(Counted::default()),
             Arc::new(BoxBlur { radius: 5 }),
         ])
         .unwrap();
+        let context = RenderContext::new();
         for _ in 0..2 {
             let globals = resolve_globals(
-                context().estimates(),
+                context.estimates(),
                 &operation,
                 stage,
                 "sha256:no-estimate-key",
@@ -2920,25 +2914,19 @@ pub(crate) mod tests {
             assert_eq!(globals, vec![None, None, None]);
         }
         assert!(
-            context()
-                .estimates()
-                .keys()
-                .iter()
-                .all(|key| key.fingerprint != "sha256:no-estimate-key"),
+            context.estimates().keys().is_empty(),
             "and it stored nothing"
         );
 
         // Through a render as well: a blur-only layer prepares nothing and renders exactly.
-        PREPARED.store(0, AtomicOrdering::SeqCst);
-        let registry = spatial_registry();
+        let (registry, prepared, _) = counting_registry();
         let source = gradient(64, 48);
-        let raster = crate::render::testing::render(
+        let raster = byte_in(
+            &context,
             &registry,
             &source,
-            SnapshotId::new(),
             &recipe(vec![spatial_layer(&["blur:2"])]),
-        )
-        .unwrap();
+        );
         let expected = reference_chain(
             64,
             48,
@@ -2946,15 +2934,14 @@ pub(crate) mod tests {
             &[RefUnit::Blur(2)],
         );
         assert_frame(&raster, &expected, "a blur that needs no estimate");
-        assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(prepared.get(), 0);
+        assert!(context.estimates().keys().is_empty());
     }
 
     /// Two units of one operation that declare the same key over the same stage share one
     /// preparation, whatever their positions.
     #[test]
     fn units_that_declare_one_key_share_one_preparation() {
-        let _guard = spatial_guard();
-        PREPARED.store(0, AtomicOrdering::SeqCst);
         let stage = Stage {
             width: 64,
             height: 48,
@@ -2968,20 +2955,22 @@ pub(crate) mod tests {
                 source.rgba[offset + 2],
             ]))
         };
-        let operation = SpatialOperation::new(vec![
-            Arc::new(MeanShift),
-            Arc::new(BoxBlur { radius: 1 }),
-            Arc::new(MeanShift),
-        ])
-        .unwrap();
-        // A fingerprint no other test uses, so the first resolve is a miss.
-        let fingerprint = format!("sha256:one-key-{}", SnapshotId::new());
+        let prepared = Tally::default();
+        let shift = || -> Arc<dyn SpatialUnit> {
+            Arc::new(MeanShift {
+                prepared: prepared.clone(),
+            })
+        };
+        let operation =
+            SpatialOperation::new(vec![shift(), Arc::new(BoxBlur { radius: 1 }), shift()]).unwrap();
+        // The context is this test's own, so the first resolve is a miss.
+        let context = RenderContext::new();
         let mut reductions = 0;
         let globals = resolve_globals(
-            context().estimates(),
+            context.estimates(),
             &operation,
             stage,
-            &fingerprint,
+            "sha256:one-key",
             "prefix",
             || {
                 reductions += 1;
@@ -2990,7 +2979,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(reductions, 1);
-        assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 1, "one preparation");
+        assert_eq!(prepared.get(), 1, "one preparation");
         assert!(globals[0].is_some());
         assert_eq!(globals[0], globals[2], "both units hold the one estimate");
         assert_eq!(globals[1], None);
@@ -3002,7 +2991,6 @@ pub(crate) mod tests {
     /// Texture and Clarity, which declare no estimate, never reduce at all.
     #[test]
     fn changing_only_a_presence_amount_prepares_nothing_new() {
-        let _guard = spatial_guard();
         let (width, height) = (96_u32, 64_u32);
         let stage = Stage { width, height };
         let source = gradient(width, height);
@@ -3024,15 +3012,15 @@ pub(crate) mod tests {
                 other => panic!("a spatial operation, not {other:?}"),
             }
         };
-        // A fingerprint no other test uses, so the first Dehaze resolve is a miss.
-        let fingerprint = format!("sha256:presence-amounts-{}", SnapshotId::new());
+        // The context is this test's own, so the first Dehaze resolve is a miss.
+        let context = RenderContext::new();
         let reductions = AtomicUsize::new(0);
         let resolve = |payload: &Value| {
             resolve_globals(
-                context().estimates(),
+                context.estimates(),
                 &compile(payload),
                 stage,
-                &fingerprint,
+                "sha256:presence-amounts",
                 "prefix",
                 || {
                     reductions.fetch_add(1, AtomicOrdering::SeqCst);
@@ -3079,10 +3067,9 @@ pub(crate) mod tests {
     /// it after another amount's render is byte for byte the frame rendered from a cold store.
     #[test]
     fn a_stored_atmospheric_light_renders_every_dehaze_amount_as_a_cold_store_does() {
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let source = gradient(96, 64);
-        let render = |dehaze: f64| {
+        let render = |context: &RenderContext, dehaze: f64| {
             let stack = recipe(vec![Layer {
                 id: LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
@@ -3091,15 +3078,12 @@ pub(crate) mod tests {
                 mask: None,
                 artifacts: Vec::new(),
             }]);
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
-                .unwrap()
-                .rgba
+            byte_in(context, &registry, &source, &stack).rgba
         };
-        clear_estimates();
-        let cold = render(35.0);
-        clear_estimates();
-        let other = render(-60.0);
-        let warm = render(35.0);
+        let cold = render(&RenderContext::new(), 35.0);
+        let context = RenderContext::new();
+        let other = render(&context, -60.0);
+        let warm = render(&context, 35.0);
         assert_ne!(cold, other, "the amount changes the frame");
         assert_eq!(cold, warm, "the stored estimate renders the cold frame");
     }
@@ -3285,7 +3269,6 @@ pub(crate) mod tests {
     #[test]
     fn a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
         use crate::render::{SpatialMode, linear::terminal_pixel};
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
         let source = gradient(width, height);
@@ -3300,19 +3283,13 @@ pub(crate) mod tests {
         for (case, stack) in point_stacks() {
             let bounds = point_bounds(&registry.compile(width, height, &stack).unwrap());
             assert_eq!(Some(&bounds), expected_bounds.next().as_ref(), "{case}");
-            clear_estimates();
-            let rendered = render_tiled(
-                &registry,
-                &source,
-                SnapshotId::new(),
-                &stack,
-                &Cancel::new(),
-                POINT_TILE,
-            )
-            .unwrap();
+            // Each query reads the estimates the render stored in the same context, so its tiles
+            // are the ones its halos reach and not a reduction of the whole stage.
+            let context = RenderContext::new();
+            let rendered = tiled_in(&context, &registry, &source, &stack, POINT_TILE).unwrap();
             for (x, y) in point_query_points(rendered.width, rendered.height) {
                 let case = format!("{case}, byte path at ({x}, {y})");
-                let evaluation = evaluation(&registry, &source, &stack)
+                let evaluation = evaluation(&context, &registry, &source, &stack)
                     .unwrap()
                     .with_tile(POINT_TILE);
                 assert_eq!(
@@ -3323,25 +3300,23 @@ pub(crate) mod tests {
                 let counts = evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case);
                 assert_within(&counts, &bounds, &case);
             }
-            clear_estimates();
-            let rendered = render_linear_tiled(
+            let context = RenderContext::new();
+            let rendered = tiled_in(
+                &context,
                 &registry,
-                &linear,
-                SnapshotId::new(),
+                crate::render::testing::linear(&linear, LinearSettings::default()),
                 &stack,
-                LinearSettings::default(),
-                &Cancel::new(),
                 POINT_TILE,
             )
             .unwrap();
             for (x, y) in point_query_points(rendered.width, rendered.height) {
                 let case = format!("{case}, linear path at ({x}, {y})");
                 let evaluation = linear_evaluation(
+                    &context,
                     &registry,
                     &linear,
                     &stack,
                     LinearSettings::default(),
-                    &Cancel::new(),
                     POINT_TILE,
                     SpatialMode::Point,
                 )
@@ -3359,7 +3334,6 @@ pub(crate) mod tests {
     /// more — through the second mask's copy path, one tile of the segment below.
     #[test]
     fn a_point_query_evaluates_exactly_the_tiles_its_halos_reach() {
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
         let source = gradient(width, height);
@@ -3374,17 +3348,10 @@ pub(crate) mod tests {
             // under it; that tile's region covers columns 4..=5 and rows 0..=2 of the first.
             (&three, (352, 64), vec![(1, 6), (2, 1), (3, 1)]),
         ] {
-            clear_estimates();
-            render_tiled(
-                &registry,
-                &source,
-                SnapshotId::new(),
-                stack,
-                &Cancel::new(),
-                POINT_TILE,
-            )
-            .unwrap();
-            let evaluation = evaluation(&registry, &source, stack)
+            // The query reads the estimates the render stored in the same context.
+            let context = RenderContext::new();
+            tiled_in(&context, &registry, &source, stack, POINT_TILE).unwrap();
+            let evaluation = evaluation(&context, &registry, &source, stack)
                 .unwrap()
                 .with_tile(POINT_TILE);
             evaluation.pixel(x, y).unwrap();
@@ -3404,16 +3371,16 @@ pub(crate) mod tests {
     #[test]
     fn a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
         use crate::render::{SpatialMode, linear::terminal_pixel};
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
         let [(_, stack), ..] = point_stacks();
         let every_tile = (width.div_ceil(POINT_TILE) * height.div_ceil(POINT_TILE)) as usize;
         let (x, y) = (192, 160);
 
+        // Each evaluation and each render has a context of its own, so every one of them misses.
         let source = gradient(width, height);
-        clear_estimates();
-        let evaluation = evaluation(&registry, &source, &stack)
+        let context = RenderContext::new();
+        let evaluation = evaluation(&context, &registry, &source, &stack)
             .unwrap()
             .with_tile(POINT_TILE);
         let sampled = evaluation.pixel(x, y).unwrap();
@@ -3421,7 +3388,6 @@ pub(crate) mod tests {
             evaluations_per_segment(&evaluation.point_tiles().evaluated(), "byte path"),
             [(1, every_tile), (2, 1)]
         );
-        clear_estimates();
         let rendered = render_tiled(
             &registry,
             &source,
@@ -3434,13 +3400,13 @@ pub(crate) mod tests {
         assert_eq!(sampled, rendered.pixel(x, y), "byte path");
 
         let linear = linear_source(width, height);
-        clear_estimates();
+        let context = RenderContext::new();
         let evaluation = linear_evaluation(
+            &context,
             &registry,
             &linear,
             &stack,
             LinearSettings::default(),
-            &Cancel::new(),
             POINT_TILE,
             SpatialMode::Point,
         )
@@ -3450,7 +3416,6 @@ pub(crate) mod tests {
             evaluations_per_segment(&evaluation.point_tiles().evaluated(), "linear path"),
             [(1, every_tile), (2, 1)]
         );
-        clear_estimates();
         let rendered = render_linear_tiled(
             &registry,
             &linear,
@@ -3499,28 +3464,19 @@ pub(crate) mod tests {
     /// still the rendered byte. A target too small for any tile still leaves the floor.
     #[test]
     fn a_point_query_holds_no_more_tiles_than_its_capacity() {
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
         let source = gradient(width, height);
         let [_, (_, stack), _] = point_stacks();
-        clear_estimates();
-        let rendered = render_tiled(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &Cancel::new(),
-            POINT_TILE,
-        )
-        .unwrap();
-        let budget = context().spatial();
+        // A target too small for any tile; the render runs one tile at a time in it and leaves the
+        // estimates the query then reads.
+        let context = RenderContext::with_spatial_target(0);
+        let rendered = tiled_in(&context, &registry, &source, &stack, POINT_TILE).unwrap();
+        let budget = context.spatial();
         assert_eq!(budget.in_use(), 0);
-        let previous = budget.set_target(0);
-        let evaluation = evaluation(&registry, &source, &stack)
+        let evaluation = evaluation(&context, &registry, &source, &stack)
             .unwrap()
             .with_tile(POINT_TILE);
-        budget.set_target(previous);
         let (x, y) = (64, 64);
         assert_eq!(evaluation.pixel(x, y).unwrap(), rendered.pixel(x, y));
         let evaluated = evaluation.point_tiles().evaluated().len();
@@ -3556,8 +3512,7 @@ pub(crate) mod tests {
     /// operation's input.
     #[test]
     fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {
-        let _guard = spatial_guard();
-        let registry = spatial_registry();
+        let (registry, _, tally) = counting_registry();
         // Two tile columns and two tile rows (512 + 88 by 512 + 38): the smallest frame that can
         // show a tile being copied while another is evaluated.
         let (width, height) = (600, 550);
@@ -3584,7 +3539,7 @@ pub(crate) mod tests {
         };
         let unmasked = recipe(vec![spatial_layer(&["count"])]);
         let applied = |stack: &Recipe, linear_path: bool| {
-            APPLIED.store(0, AtomicOrdering::SeqCst);
+            let before = tally.get();
             if linear_path {
                 crate::render::testing::render_linear(
                     &registry,
@@ -3598,7 +3553,7 @@ pub(crate) mod tests {
                 crate::render::testing::render(&registry, &source, SnapshotId::new(), stack)
                     .unwrap();
             }
-            APPLIED.load(AtomicOrdering::SeqCst)
+            tally.get() - before
         };
         for (path, linear_path) in [("byte", false), ("linear", true)] {
             assert_eq!(
@@ -3700,7 +3655,6 @@ pub(crate) mod tests {
     fn a_tile_whose_coverage_is_zero_is_copied_bit_for_bit() {
         use crate::{mask_field::MaskSampling, path::StrokeTable};
 
-        let _guard = spatial_guard();
         let stage = Stage {
             width: 96,
             height: 64,
@@ -3728,9 +3682,12 @@ pub(crate) mod tests {
             let field =
                 MaskField::compile(&mask, stage, &StrokeTable::default(), MaskSampling::Point)
                     .unwrap();
+            let applied = Tally::default();
             let operation = SpatialOperation::new(vec![
                 Arc::new(BoxBlur { radius: 5 }) as Arc<dyn SpatialUnit>,
-                Arc::new(Counted),
+                Arc::new(Counted {
+                    applied: applied.clone(),
+                }),
             ])
             .unwrap()
             .with_mask(field.clone());
@@ -3768,7 +3725,7 @@ pub(crate) mod tests {
                         .map(|tile| {
                             // `Counted` runs once per tile whose chain completed; a chain that
                             // refused a value stopped before it, and only a chain refuses here.
-                            let before = APPLIED.load(AtomicOrdering::SeqCst);
+                            let before = applied.get();
                             let result =
                                 run_tile(&plan, &operation, &[], tile, Parallelism::Serial, fill)
                                     .map(|(region, values)| {
@@ -3777,8 +3734,7 @@ pub(crate) mod tests {
                                             .map(f32::to_bits)
                                             .collect::<Vec<_>>()
                                     });
-                            let ran =
-                                APPLIED.load(AtomicOrdering::SeqCst) > before || result.is_err();
+                            let ran = applied.get() > before || result.is_err();
                             (tile, result, ran)
                         })
                         .collect::<Vec<_>>();
@@ -3834,8 +3790,7 @@ pub(crate) mod tests {
     /// crosses copied tiles, run tiles and the edges between them.
     #[test]
     fn a_render_that_copies_uncovered_tiles_is_byte_identical_and_samples_equal_it() {
-        let _guard = spatial_guard();
-        let registry = spatial_registry();
+        let (registry, _, tally) = counting_registry();
         let (width, height, tile) = (240, 160, 32);
         let source = gradient(width, height);
         let linear = linear_source(width, height);
@@ -3858,7 +3813,7 @@ pub(crate) mod tests {
                     } else {
                         TileCopy::Never
                     });
-                    APPLIED.store(0, AtomicOrdering::SeqCst);
+                    let before = tally.get();
                     let raster = if linear_path {
                         render_linear_tiled(
                             &registry,
@@ -3880,7 +3835,7 @@ pub(crate) mod tests {
                         )
                     };
                     set_tile_copy(TileCopy::Proved);
-                    (raster.unwrap(), APPLIED.load(AtomicOrdering::SeqCst))
+                    (raster.unwrap(), tally.get() - before)
                 };
                 let (copied, ran) = frame(true);
                 let (processed, ran_all) = frame(false);
@@ -3896,28 +3851,21 @@ pub(crate) mod tests {
                     "{name}, {path} path: {ran} of {ran_all} tiles ran, so nothing was copied"
                 );
                 let sampled = |x: u32, y: u32| {
-                    let options = crate::RenderOptions::default().with_tile(tile);
-                    let entered = if linear_path {
-                        crate::render(
-                            &registry,
-                            crate::RenderSource::Linear {
-                                image: &linear,
-                                settings,
-                            },
-                            &stack,
-                            options,
-                            context(),
-                        )
+                    let input = if linear_path {
+                        crate::render::testing::linear(&linear, settings)
                     } else {
-                        crate::render(
-                            &registry,
-                            crate::RenderSource::Byte(&source),
-                            &stack,
-                            options,
-                            context(),
-                        )
+                        crate::RenderSource::Byte(&source)
                     };
-                    entered.and_then(|entered| entered.sample(x, y)).unwrap()
+                    sample_in(
+                        &RenderContext::new(),
+                        &registry,
+                        input,
+                        &stack,
+                        RenderOptions::default().with_tile(tile),
+                        x,
+                        y,
+                    )
+                    .unwrap()
                 };
                 for y in (0..height).step_by(13).chain([31, 32, height - 1]) {
                     for x in (0..width).step_by(11).chain([31, 32, width - 1]) {
@@ -3938,15 +3886,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_cancelled_render_stops_between_tile_batches_and_releases_its_reservation() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
-        // Many tiles, one at a time: the target is lowered to exactly one working set so the
-        // operation runs a batch of one tile, which is where the token is checked.
+        // Many tiles, one at a time: the target is exactly one working set so the operation runs a
+        // batch of one tile, which is where the token is checked.
         let source = gradient(2000, 1500);
         let stack = recipe(vec![spatial_layer(&["blur:24"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 24 })]).unwrap();
-        let budget = context().spatial();
         let plan = SpatialPlan::new(
             &operation,
             Stage {
@@ -3957,7 +3902,8 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(plan.tiles().len() > 4, "several batches of one tile");
-        let previous = budget.set_target(plan.working_set());
+        let context = RenderContext::with_spatial_target(plan.working_set());
+        let budget = context.spatial();
         let cancel = Cancel::new();
         let handle = {
             let cancel = cancel.clone();
@@ -3966,14 +3912,18 @@ pub(crate) mod tests {
                 cancel.cancel();
             })
         };
+        let render = || {
+            frame_in(
+                &context,
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &stack,
+                RenderOptions::exact(&cancel),
+            )
+        };
         let started = std::time::Instant::now();
-        let result = crate::render::testing::render_cancellable(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &cancel,
-        );
+        let result = render();
         let elapsed = started.elapsed();
         handle.join().unwrap();
         let error = match result {
@@ -3987,18 +3937,11 @@ pub(crate) mod tests {
         );
         assert_eq!(budget.in_use(), 0, "the batch reservation is released");
         // An already cancelled token refuses before any tile runs.
-        let error = match crate::render::testing::render_cancellable(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &cancel,
-        ) {
+        let error = match render() {
             Ok(_) => panic!("still cancelled"),
             Err(error) => error,
         };
         assert_eq!(error.kind, ErrorKind::Cancelled);
-        budget.set_target(previous);
     }
 
     #[test]
@@ -4023,8 +3966,6 @@ pub(crate) mod tests {
     /// give the same frame to the byte.
     #[test]
     fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
-        let _guard = spatial_guard();
-        clear_estimates();
         let registry = spatial_registry();
         // At the one-megapixel threshold, in 64 px tiles so that a batch as wide as the pool
         // exists whatever the pool's size.
@@ -4033,34 +3974,25 @@ pub(crate) mod tests {
         let source = gradient(width, height);
         let linear = linear_source(width, height);
         let stack = recipe(vec![spatial_layer(&["blur:2", "shift"])]);
-        let operation =
-            SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 }), Arc::new(MeanShift)])
-                .unwrap();
+        let operation = SpatialOperation::new(vec![
+            Arc::new(BoxBlur { radius: 2 }),
+            Arc::new(MeanShift::default()),
+        ])
+        .unwrap();
         let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
-        let budget = context().spatial();
         let mut frames = Vec::new();
         // One working set: batches of one tile, pooled. Unbounded: batches as wide as the pool,
         // serial.
         for target in [plan.working_set(), u64::MAX / 2] {
-            let previous = budget.set_target(target);
-            let bytes = render_tiled(
+            let context = RenderContext::with_spatial_target(target);
+            let bytes = tiled_in(&context, &registry, &source, &stack, tile);
+            let floats = tiled_in(
+                &context,
                 &registry,
-                &source,
-                SnapshotId::new(),
+                crate::render::testing::linear(&linear, LinearSettings::default()),
                 &stack,
-                &Cancel::new(),
                 tile,
             );
-            let floats = render_linear_tiled(
-                &registry,
-                &linear,
-                SnapshotId::new(),
-                &stack,
-                LinearSettings::default(),
-                &Cancel::new(),
-                tile,
-            );
-            budget.set_target(previous);
             frames.push((
                 bytes.unwrap().rgba.as_ref().to_vec(),
                 floats.unwrap().rgba.as_ref().to_vec(),
@@ -4080,6 +4012,13 @@ pub(crate) mod tests {
     // Measurement.
     // -----------------------------------------------------------------------------------------
 
+    /// Set the tile-copy rule on this thread and on every thread of the pool, for a measurement at
+    /// photo size, whose tiles run on the pool.
+    fn set_tile_copy_everywhere(copy: TileCopy) {
+        set_tile_copy(copy);
+        rayon::broadcast(|_| set_tile_copy(copy));
+    }
+
     #[test]
     #[ignore = "measurement, run explicitly in release"]
     fn spatial_timing() {
@@ -4090,14 +4029,13 @@ pub(crate) mod tests {
             let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius })]).unwrap();
             let plan = SpatialPlan::new(&operation, Stage { width, height }, SPATIAL_TILE).unwrap();
             // Warm the source and the estimate store, then measure.
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-            context().spatial().reset_peak();
+            let context = RenderContext::new();
+            byte_in(&context, &registry, &source, &stack);
+            context.spatial().reset_peak();
             let mut samples = Vec::new();
             for _ in 0..10 {
                 let started = std::time::Instant::now();
-                let raster =
-                    crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
-                        .unwrap();
+                let raster = byte_in(&context, &registry, &source, &stack);
                 samples.push(started.elapsed().as_secs_f64() * 1000.0);
                 assert_eq!((raster.width, raster.height), (width, height));
             }
@@ -4110,9 +4048,9 @@ pub(crate) mod tests {
                  target {:.1} MiB",
                 samples.len(),
                 plan.working_set() as f64 / MIB,
-                context().spatial().concurrency(plan.working_set()),
-                context().spatial().peak() as f64 / MIB,
-                context().spatial().target() as f64 / MIB,
+                context.spatial().concurrency(plan.working_set()),
+                context.spatial().peak() as f64 / MIB,
+                context.spatial().target() as f64 / MIB,
             );
         }
     }
@@ -4136,7 +4074,6 @@ pub(crate) mod tests {
             Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask, PRESENCE_EFFECT,
         };
 
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         // One `add` linear gradient between two normalized points, as the host stores one.
         let mask = |name: &str, x0: f64, x1: f64| -> Mask {
@@ -4189,25 +4126,14 @@ pub(crate) mod tests {
                             continue;
                         }
                         // Warm the source and the estimate store, then measure.
-                        crate::render::testing::render(
-                            &registry,
-                            &source,
-                            SnapshotId::new(),
-                            &stack,
-                        )
-                        .unwrap();
-                        context().spatial().reset_peak();
+                        let context = RenderContext::new();
+                        byte_in(&context, &registry, &source, &stack);
+                        context.spatial().reset_peak();
                         reset_masked_tile_counts();
                         let mut samples = Vec::new();
                         for _ in 0..5 {
                             let started = std::time::Instant::now();
-                            let raster = crate::render::testing::render(
-                                &registry,
-                                &source,
-                                SnapshotId::new(),
-                                &stack,
-                            )
-                            .unwrap();
+                            let raster = byte_in(&context, &registry, &source, &stack);
                             samples.push(started.elapsed().as_secs_f64() * 1000.0);
                             assert_eq!((raster.width, raster.height), (width, height));
                         }
@@ -4223,8 +4149,8 @@ pub(crate) mod tests {
                             if masked { "masked" } else { "unmasked" },
                             copied / runs,
                             evaluated / runs,
-                            context().spatial().peak() as f64 / MIB,
-                            context().spatial().target() as f64 / MIB,
+                            context.spatial().peak() as f64 / MIB,
+                            context.spatial().target() as f64 / MIB,
                         );
                     }
                 }
@@ -4258,7 +4184,6 @@ pub(crate) mod tests {
             Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask, PRESENCE_EFFECT,
         };
 
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = (6000_u32, 4000_u32);
         let source = gradient(width, height);
@@ -4313,7 +4238,8 @@ pub(crate) mod tests {
                 ..Recipe::default()
             };
             // Warm the source and the estimate store, then measure.
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+            let context = RenderContext::new();
+            byte_in(&context, &registry, &source, &stack);
             let rules = [
                 ("outside bounds", TileCopy::OutsideBounds),
                 ("proved", TileCopy::Proved),
@@ -4325,21 +4251,15 @@ pub(crate) mod tests {
                 let mut frames = Vec::new();
                 for step in 0..2 {
                     let which = (run + step) % 2;
-                    set_tile_copy(rules[which].1);
+                    set_tile_copy_everywhere(rules[which].1);
                     reset_masked_tile_counts();
                     let started = std::time::Instant::now();
-                    let raster = crate::render::testing::render(
-                        &registry,
-                        &source,
-                        SnapshotId::new(),
-                        &stack,
-                    )
-                    .unwrap();
+                    let raster = byte_in(&context, &registry, &source, &stack);
                     samples[which].push(started.elapsed().as_secs_f64() * 1000.0);
                     counts[which] = masked_tile_counts();
                     frames.push(raster);
                 }
-                set_tile_copy(TileCopy::Proved);
+                set_tile_copy_everywhere(TileCopy::Proved);
                 assert_eq!(
                     frames[0].rgba.as_ref(),
                     frames[1].rgba.as_ref(),
@@ -4382,7 +4302,6 @@ pub(crate) mod tests {
             PRESENCE_EFFECT,
         };
 
-        let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         // A mask of `count` whole-frame linear gradients, the first an add and the rest cycling
         // through the three modes, each offset so no two are the same field.
@@ -4427,20 +4346,14 @@ pub(crate) mod tests {
                     ..Recipe::default()
                 };
                 // Warm the source and the estimate store, then measure.
-                crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
-                    .unwrap();
-                context().spatial().reset_peak();
+                let context = RenderContext::new();
+                byte_in(&context, &registry, &source, &stack);
+                context.spatial().reset_peak();
                 reset_masked_tile_counts();
                 let mut samples = Vec::new();
                 for _ in 0..5 {
                     let started = std::time::Instant::now();
-                    let raster = crate::render::testing::render(
-                        &registry,
-                        &source,
-                        SnapshotId::new(),
-                        &stack,
-                    )
-                    .unwrap();
+                    let raster = byte_in(&context, &registry, &source, &stack);
                     samples.push(started.elapsed().as_secs_f64() * 1000.0);
                     assert_eq!((raster.width, raster.height), (width, height));
                 }
@@ -4455,8 +4368,8 @@ pub(crate) mod tests {
                      copied {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
                     copied / runs,
                     evaluated / runs,
-                    context().spatial().peak() as f64 / MIB,
-                    context().spatial().target() as f64 / MIB,
+                    context.spatial().peak() as f64 / MIB,
+                    context.spatial().target() as f64 / MIB,
                 );
             }
         }

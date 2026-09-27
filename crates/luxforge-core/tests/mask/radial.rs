@@ -1,4 +1,4 @@
-//! TASK-012: the production `radial` component kind against the frozen `f64` reference.
+//! The production `radial` component kind against the frozen `f64` reference.
 //!
 //! `crates/luxforge-reference/src/mask.rs` shares no code with `luxforge-core`'s sources, and
 //! `docs/design/mask-study.md` freezes the mathematics both write. The bar here is the same as the

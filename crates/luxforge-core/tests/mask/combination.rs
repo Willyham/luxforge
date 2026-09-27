@@ -1,4 +1,4 @@
-//! TASK-013: the combination vocabulary, proved where it matters — in **pixels**.
+//! The combination vocabulary, proved where it matters — in **pixels**.
 //!
 //! Two questions this file answers that no earlier mask test could:
 //!
@@ -695,7 +695,7 @@ fn a_components_mode_and_inversion_are_editable_after_it_exists() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// A brush over a gradient, rendered (TASK-021)
+// A brush over a gradient, rendered
 // ---------------------------------------------------------------------------------------------
 
 /// The reference's view of a **stored** stroke, which is what production evaluates: the positions

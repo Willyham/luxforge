@@ -1,8 +1,10 @@
-//! The owner's request table: the first answer of every mutation the catalog does not deduplicate
-//! itself. That is every method with the `request` envelope, which changes nothing with a revision —
-//! the preset library, versions, the catalog's import and artifact collection, and module
-//! permissions, activation, resources and capability jobs — and a module's settings writes, whose
-//! revision the settings file holds without a request log.
+//! The owner's request table: the first answer of every mutation whose method table entry declares
+//! that the owner answers its retries (`Retries::Owner`). That is every method with the `request`
+//! envelope, which changes nothing with a revision — the preset library, versions, the catalog's
+//! import and artifact collection, module permissions, activation, resources and capability jobs —
+//! a module's settings writes, whose revision the settings file holds without a request log, and
+//! `draft.commit`, whose first answer ends the draft its retry names, so the retry cannot reach the
+//! catalog's log for the asset that draft edited.
 //!
 //! A retry, the same `request_id` in the same scope with the same method and parameters, is
 //! answered with the first answer marked `deduplicated: true`, and its handler does not run, so it
@@ -11,8 +13,9 @@
 //! write as the change, because a retry after a restart must be answered rather than refused as
 //! stale. Every method here is safe to run again after a restart: it is a no-op, joins the work
 //! already done, fails visibly on the uniqueness it would break, or, for a settings write, which
-//! sets values rather than changing them, conflicts on the revision it was made against. So the
-//! table lives with the owner, holds only successful answers, and is bounded.
+//! sets values rather than changing them, conflicts on the revision it was made against; a draft
+//! does not outlive the owner, so a commit's retry after a restart is refused as naming no draft.
+//! So the table lives with the owner, holds only successful answers, and is bounded.
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{Error, Mutation, MutationRequest, capabilities::redact::redacted};
@@ -80,7 +83,7 @@ pub(super) struct RequestTable {
 
 impl RequestTable {
     /// The first answer to this request, marked `deduplicated`, when it was answered before.
-    /// `O(REQUESTS)`, on the owner thread, once per revision-less mutation.
+    /// `O(REQUESTS)`, on the owner thread, once per mutation whose retries the owner answers.
     pub(super) fn answered(&self, key: &RequestKey) -> Result<Option<Value>, Error> {
         let Some(first) = self.answered.iter().find(|entry| entry.key.names(key)) else {
             return Ok(None);

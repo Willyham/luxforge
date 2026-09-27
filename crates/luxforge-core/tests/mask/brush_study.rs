@@ -1,4 +1,4 @@
-//! TASK-018: independent proofs for the frozen brush coverage mathematics — the
+//! Independent proofs for the frozen brush coverage mathematics — the
 //! capsule profile, the per-stroke maximum, the screen union across add strokes
 //! and the multiply-complement for erase strokes.
 //!
@@ -22,7 +22,7 @@ use luxforge_reference::mask::{
     colour_similarity_as_range, segment_distance2, smooth, stroke_coverage,
     stroke_coverage_max_form,
 };
-use luxforge_reference::range::{PLATEAU, RADIUS_MIN, refine_radius};
+use luxforge_reference::range::{PLATEAU, RADIUS_MAX, RADIUS_MIN, refine_radius};
 
 // ---------------------------------------------------------------------------
 // The study's own inputs.
@@ -462,43 +462,6 @@ fn an_erase_stroke_does_not_commute_with_an_add() {
     println!("reordering across an erase stroke changes coverage by up to {worst:.9}");
 }
 
-/// Deleting one stroke leaves the rest exactly as they were. This is what makes
-/// `mask.delete-stroke` a forward edit rather than an approximation: the fold is
-/// over the stored order, so removing an entry from the middle produces, bit for
-/// bit, the field the remaining strokes would have produced had the deleted one
-/// never been made.
-#[test]
-fn deleting_a_stroke_leaves_the_others_bit_identical() {
-    let stage = PORTRAIT;
-    let mut rng = SplitMix64(0x0001_8DE1);
-    for _ in 0..200 {
-        let count = 2 + rng.next_usize(6);
-        let strokes: Vec<BrushStroke> = (0..count)
-            .map(|index| random_stroke(&mut rng, index % 3 == 2))
-            .collect();
-        let removed = rng.next_usize(count);
-        let with_gap = Brush {
-            strokes: strokes
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != removed)
-                .map(|(_, stroke)| stroke.clone())
-                .collect(),
-        };
-        let never_made = Brush {
-            strokes: with_gap.strokes.clone(),
-        };
-        for _ in 0..80 {
-            let u = rng.next_range(0.0, 1.0);
-            let v = rng.next_range(0.0, 1.0);
-            assert_eq!(
-                brush_coverage(&with_gap, &stage, u, v, ANY_PIXEL).to_bits(),
-                brush_coverage(&never_made, &stage, u, v, ANY_PIXEL).to_bits()
-            );
-        }
-    }
-}
-
 /// The property a grid index rests on, stated as a fact about the frozen
 /// accumulation rather than about any index: dropping every stroke whose
 /// coverage at a point is exactly zero leaves that point's coverage
@@ -638,7 +601,7 @@ fn the_brush_shares_the_studys_easing() {
 }
 
 // ---------------------------------------------------------------------------
-// The colour constraint (TASK-024), frozen in
+// The colour constraint, frozen in
 // `docs/design/mask-study.md#the-colour-constraint`
 // ---------------------------------------------------------------------------
 
@@ -851,7 +814,7 @@ fn shifted(seed: [f64; 3], distance: f64) -> [f64; 3] {
 /// ends.
 #[test]
 fn a_constrained_stroke_takes_the_colour_ranges_own_refine_mapping() {
-    assert_eq!(refine_radius(100.0), refine_radius(100.0));
+    assert_eq!(refine_radius(0.0), RADIUS_MAX);
     assert!((refine_radius(100.0) - RADIUS_MIN).abs() < 1e-15);
     // Strictly tighter with refine, so a higher number is always a narrower hold
     // — the one meaning the editor has for refine.

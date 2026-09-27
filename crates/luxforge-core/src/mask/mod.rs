@@ -42,7 +42,7 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Component, ComponentMode, Error, Mask, ParameterDescriptor,
+    Component, ComponentId, ComponentMode, Error, Mask, ParameterDescriptor,
     modules::{Region, Stage},
     path::StrokeTable,
 };
@@ -431,6 +431,17 @@ trait ComponentField: std::fmt::Debug + Send + Sync {
 
     /// The smallest feature this component draws at `stage`, in that stage's pixels.
     fn feature_px(&self, stage: Stage) -> f64;
+
+    /// The most stroke segments any pixel of this component tests: a drawn kind's densest index
+    /// cell, and nothing for a kind that tests no segment.
+    fn densest_cell(&self) -> usize {
+        0
+    }
+
+    /// The stroke segments a pixel at this mask-space point tests.
+    fn segments_at(&self, _u: f64, _v: f64) -> usize {
+        0
+    }
 }
 
 /// One compiled component: its mode, its own inversion and its stage-bound geometry.
@@ -628,6 +639,59 @@ impl CompiledMask {
     pub fn components(&self) -> usize {
         self.components.len()
     }
+
+    /// The most stroke segments any one pixel of one brush component tests: the densest cell of any
+    /// component's grid index, which is the quantity [`SEGMENTS_PER_PIXEL`] bounds where a stroke is
+    /// painted. `0` for a mask with no brush. `O(cells)`.
+    pub fn densest_cell(&self) -> usize {
+        self.components
+            .iter()
+            .map(|component| component.geometry.densest_cell())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The stroke segments evaluating stage pixel `(x, y)` tests, summed over the mask's components:
+    /// the per-pixel cost the occupancy cap bounds, read at the pixel-centre spelling
+    /// [`Self::coverage`] uses. `O(components)`.
+    pub fn segments_at(&self, x: u32, y: u32) -> usize {
+        let u = (f64::from(x) + 0.5) / self.height;
+        let v = (f64::from(y) + 0.5) / self.height;
+        self.components
+            .iter()
+            .map(|component| component.geometry.segments_at(u, v))
+            .sum()
+    }
+}
+
+/// The occupancy cap, checked where a stroke is painted: brush component `component` of `mask`, as
+/// the stroke that is being painted would leave it, compiled against the content stage `stage` the
+/// mask is drawn on, with its strokes resolved through `strokes`.
+///
+/// A densest cell over [`SEGMENTS_PER_PIXEL`] is the refusal [`rules::segments_per_pixel`] words,
+/// naming the mask and the component, and the stroke commits nothing — it does not spill into a new
+/// component either, because components combine by maximum and painting there would stop building
+/// up. The stroke pays the cap in full, so a mask whose strokes all committed is never refused for
+/// occupancy when a layer later draws it. `O(segments × cells each reaches)`; it reads no pixel.
+pub(crate) fn check_painted_occupancy(
+    mask: &Mask,
+    component: &ComponentId,
+    stage: Stage,
+    strokes: &StrokeTable,
+) -> Result<(), Error> {
+    let Some(held) = mask
+        .components
+        .iter()
+        .find(|held| &held.id == component && held.kind == BRUSH)
+    else {
+        return Ok(());
+    };
+    let binding = Binding {
+        stage,
+        strokes,
+        mask: &mask.name,
+    };
+    rules::segments_per_pixel(&mask.name, &held.name, brush::densest_cell(held, &binding)?)
 }
 
 /// The kind table's row for one stored component: the one dispatch on a component's kind.

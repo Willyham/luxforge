@@ -784,6 +784,7 @@ impl Editor {
             gesture_conflicted: self.gesture_conflicted(),
             preset_refusal: self.gesture_refusal(Starting::Preset),
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
+            history_refusal: self.gesture_refusal(Starting::History),
             draft: self.crop(),
             masks: self.masks.as_ref(),
             selected_mask: self.selected_mask.as_ref(),

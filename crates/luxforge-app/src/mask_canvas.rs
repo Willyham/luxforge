@@ -527,7 +527,8 @@ mod tests {
         // same drawn path always the same stored stroke.
         assert_eq!(
             stroke.points(),
-            luxforge_core::path::decimate(stroke.captured()).expect("a decimated path")
+            luxforge_core::path::decimate(stroke.captured(), stroke.brush.size)
+                .expect("a decimated path")
         );
         draft.paint_end();
         assert!(!draft.dragging());

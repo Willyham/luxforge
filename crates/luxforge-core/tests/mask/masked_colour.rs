@@ -1,4 +1,4 @@
-//! TASK-005: the masked colour primitive through the public pipeline, on the JPEG byte path and on
+//! The masked colour primitive through the public pipeline, on the JPEG byte path and on
 //! the RAW linear path, against the independent `f64` reference.
 //!
 //! The oracle is `crates/luxforge-reference/src/mask.rs` — the frozen coverage mathematics, which shares no code

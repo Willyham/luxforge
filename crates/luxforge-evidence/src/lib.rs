@@ -1101,6 +1101,9 @@ pub enum CapabilityAction {
     Apply,
     /// Cancel the module's newest live job.
     Cancel,
+    /// Open or close the permissions list, which reads its rows when it opens.
+    Permissions,
+    /// Revoke a grant by its index in the open permissions list.
     Revoke(usize),
     /// Capture once every job the desktop tracks for the module has finished.
     Settle,
@@ -1141,6 +1144,8 @@ struct CapabilityWire {
     apply: Option<True>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cancel: Option<True>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permissions: Option<True>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     revoke: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1183,7 +1188,7 @@ enum Consent {
 }
 
 /// The gesture keys of a capability step, of which a step takes exactly one.
-const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, activate, task, consent, apply, cancel, revoke or settle";
+const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, activate, task, consent, apply, cancel, permissions, revoke or settle";
 
 impl TryFrom<CapabilityWire> for CapabilityStep {
     type Error = String;
@@ -1237,6 +1242,9 @@ impl TryFrom<CapabilityWire> for CapabilityStep {
         if wire.cancel.is_some() {
             actions.push(CapabilityAction::Cancel);
         }
+        if wire.permissions.is_some() {
+            actions.push(CapabilityAction::Permissions);
+        }
         if let Some(index) = wire.revoke {
             actions.push(CapabilityAction::Revoke(index));
         }
@@ -1272,6 +1280,7 @@ impl From<CapabilityStep> for CapabilityWire {
             consent: None,
             apply: None,
             cancel: None,
+            permissions: None,
             revoke: None,
             settle: None,
         };
@@ -1314,6 +1323,7 @@ impl From<CapabilityStep> for CapabilityWire {
             }
             CapabilityAction::Apply => wire.apply = Some(True),
             CapabilityAction::Cancel => wire.cancel = Some(True),
+            CapabilityAction::Permissions => wire.permissions = Some(True),
             CapabilityAction::Revoke(index) => wire.revoke = Some(index),
             CapabilityAction::Settle => wire.settle = Some(True),
         }

@@ -248,42 +248,123 @@ fn encode_range(path: &Path) -> Result {
     Ok(())
 }
 
-pub fn generate(out: &Path) -> Result {
-    ensure(
-        !out.exists(),
-        "Generated fixture output must be new; choose --output or remove only disposable prior outputs",
-    )?;
+/// One JPEG the rendered and timing tiers need before they can run: its file name inside a
+/// fixtures directory, the function that writes it, and the manifest fields it needs beyond `file`
+/// and `sha256` (both of which `generate` fills in from what it actually wrote, once it has hashed
+/// the bytes). `generate` and `verify` both read this one table, so a fixture can never be listed
+/// for one and forgotten by the other.
+pub struct Fixture {
+    pub file: &'static str,
+    write: fn(&Path) -> Result,
+    manifest: fn() -> Value,
+}
+
+pub const TABLE: [Fixture; 5] = [
+    Fixture {
+        file: "24mp.jpg",
+        write: |p| encode(p, 6000, 4000),
+        manifest: || json!({"width":6000,"height":4000}),
+    },
+    Fixture {
+        file: "60mp.jpg",
+        write: |p| encode(p, 10000, 6000),
+        manifest: || json!({"width":10000,"height":6000}),
+    },
+    Fixture {
+        file: "hue-wheel.jpg",
+        write: encode_wheel,
+        manifest: || json!({"width":HUE_WHEEL_SIZE,"height":HUE_WHEEL_SIZE}),
+    },
+    Fixture {
+        file: "presence.jpg",
+        write: encode_presence,
+        manifest: || {
+            let (w, h) = PRESENCE_FIXTURE;
+            json!({"width":w,"height":h})
+        },
+    },
+    Fixture {
+        file: "range.jpg",
+        write: encode_range,
+        manifest: || {
+            let (w, h) = RANGE_FIXTURE;
+            json!({
+                "width":w,"height":h,
+                "patches":RANGE_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes})),
+            })
+        },
+    },
+];
+
+/// Whether every fixture in `table` already exists inside `dir`. `verify` reads this over
+/// [`TABLE`] to decide whether a tier needs to schedule `generate-fixtures` at all, rather than
+/// keeping its own second list of the same file names.
+pub fn present(dir: &Path) -> bool {
+    TABLE.iter().all(|f| dir.join(f.file).is_file())
+}
+
+/// Write every fixture in `table` into `out` that is not already there with a hash matching its
+/// recorded manifest entry. An existing, correctly-hashed file is left untouched; a file whose
+/// bytes no longer match its own recorded hash, or that exists with no recorded entry at all, is
+/// refused rather than silently overwritten, so a caller never loses evidence of what changed it.
+/// Safe to call repeatedly against the same directory: a second call with nothing missing writes
+/// nothing new and leaves every file exactly as it was.
+fn generate_table(table: &[Fixture], out: &Path) -> Result {
     fs::create_dir_all(out)?;
-    let mut entries = Vec::new();
-    for (w, h) in [(6000, 4000), (10000, 6000)] {
-        let file = format!("{}mp.jpg", w * h / 1_000_000);
-        let path = out.join(&file);
-        encode(&path, w, h)?;
-        entries.push(json!({"file":file,"width":w,"height":h,"sha256":hash(&path)?}));
+    let manifest_path = out.join("manifest.json");
+    let mut entries: Vec<Value> = if manifest_path.is_file() {
+        read_json(&manifest_path)?["entries"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    for fixture in table {
+        let path = out.join(fixture.file);
+        let recorded = entries.iter().position(|e| e["file"] == fixture.file);
+        if let Some(index) = recorded {
+            if path.is_file() {
+                let actual = hash(&path)?;
+                ensure(
+                    json!(actual) == entries[index]["sha256"],
+                    format!(
+                        "{} does not match its recorded manifest hash; remove it and its manifest entry to regenerate it rather than overwrite it in place",
+                        fixture.file
+                    ),
+                )?;
+                continue;
+            }
+        } else {
+            ensure(
+                !path.exists(),
+                format!(
+                    "{} exists with no matching manifest entry; remove the stray file or the manifest before regenerating",
+                    fixture.file
+                ),
+            )?;
+        }
+        (fixture.write)(&path)?;
+        let mut entry = (fixture.manifest)();
+        entry["file"] = json!(fixture.file);
+        entry["sha256"] = json!(hash(&path)?);
+        match recorded {
+            Some(index) => entries[index] = entry,
+            None => entries.push(entry),
+        }
     }
-    let wheel_path = out.join("hue-wheel.jpg");
-    encode_wheel(&wheel_path)?;
-    entries.push(
-        json!({"file":"hue-wheel.jpg","width":HUE_WHEEL_SIZE,"height":HUE_WHEEL_SIZE,"sha256":hash(&wheel_path)?}),
-    );
-    let presence_path = out.join("presence.jpg");
-    encode_presence(&presence_path)?;
-    let (pw, ph) = PRESENCE_FIXTURE;
-    entries
-        .push(json!({"file":"presence.jpg","width":pw,"height":ph,"sha256":hash(&presence_path)?}));
-    let range_path = out.join("range.jpg");
-    encode_range(&range_path)?;
-    let (rw, rh) = RANGE_FIXTURE;
-    entries.push(
-        json!({"file":"range.jpg","width":rw,"height":rh,"sha256":hash(&range_path)?,
-               "patches":RANGE_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes}))}),
-    );
     write_json(
-        &out.join("manifest.json"),
+        &manifest_path,
         &json!({"generator":"Rust image 0.25.9 / xtask pattern-v1","entries":entries}),
     )?;
+    Ok(())
+}
+
+pub fn generate(out: &Path) -> Result {
+    generate_table(&TABLE, out)?;
     println!(
-        "Generated 24/60 MP, hue-wheel, presence and range fixtures in {}",
+        "Fixtures ready ({}) in {}",
+        TABLE.iter().map(|f| f.file).collect::<Vec<_>>().join(", "),
         out.display()
     );
     Ok(())
@@ -378,14 +459,110 @@ mod tests {
     fn golden_corpus() {
         check(&root().unwrap()).unwrap();
     }
+
+    /// A stand-in for [`TABLE`] built from the same generator the real 24/60 MP entries use, at
+    /// sizes small enough for the mechanism tests below to run in milliseconds. `generate`'s own
+    /// logic lives in `generate_table`, which both this table and the real one go through, so
+    /// exercising it here proves the same idempotency and refusal behaviour `generate` gives the
+    /// real fixtures without ever encoding a 24 or 60 MP image in a test.
+    fn tiny_table() -> [Fixture; 2] {
+        [
+            Fixture {
+                file: "a.jpg",
+                // `pattern` draws its centre mark down to y = 54, so this stays the smallest size
+                // that clears it rather than a size chosen only for speed.
+                write: |p| encode(p, 200, 120),
+                manifest: || json!({"width":200,"height":120}),
+            },
+            Fixture {
+                file: "b.jpg",
+                write: |p| encode(p, 160, 100),
+                manifest: || json!({"width":160,"height":100}),
+            },
+        ]
+    }
+
     #[test]
-    fn generation_preserves_existing_directory() {
+    fn generation_is_safe_to_run_twice_and_produces_byte_identical_files() {
         let t = tempfile::tempdir().unwrap();
-        fs::write(t.path().join("sentinel"), "keep").unwrap();
-        assert!(generate(t.path()).is_err());
+        let table = tiny_table();
+        generate_table(&table, t.path()).unwrap();
+        let before: Vec<Vec<u8>> = table
+            .iter()
+            .map(|f| fs::read(t.path().join(f.file)).unwrap())
+            .collect();
+        let manifest_before = fs::read(t.path().join("manifest.json")).unwrap();
+        generate_table(&table, t.path()).unwrap();
+        for (f, expected) in table.iter().zip(&before) {
+            assert_eq!(
+                &fs::read(t.path().join(f.file)).unwrap(),
+                expected,
+                "{} rewritten on a second, unchanged run",
+                f.file
+            );
+        }
         assert_eq!(
-            fs::read_to_string(t.path().join("sentinel")).unwrap(),
-            "keep"
+            fs::read(t.path().join("manifest.json")).unwrap(),
+            manifest_before,
+            "manifest rewritten on a second, unchanged run"
         );
+    }
+
+    #[test]
+    fn generation_fills_only_what_is_missing() {
+        let t = tempfile::tempdir().unwrap();
+        let table = tiny_table();
+        generate_table(&table, t.path()).unwrap();
+        let kept = fs::read(t.path().join("a.jpg")).unwrap();
+        fs::remove_file(t.path().join("b.jpg")).unwrap();
+        assert!(!present_in(&table, t.path()));
+        generate_table(&table, t.path()).unwrap();
+        assert!(t.path().join("b.jpg").is_file());
+        assert_eq!(
+            fs::read(t.path().join("a.jpg")).unwrap(),
+            kept,
+            "untouched fixture rewritten while filling in a missing one"
+        );
+        let manifest: Value = read_json(&t.path().join("manifest.json")).unwrap();
+        let entry = manifest["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["file"] == "b.jpg")
+            .unwrap();
+        assert_eq!(
+            entry["sha256"],
+            json!(hash(&t.path().join("b.jpg")).unwrap())
+        );
+    }
+
+    fn present_in(table: &[Fixture], dir: &Path) -> bool {
+        table.iter().all(|f| dir.join(f.file).is_file())
+    }
+
+    #[test]
+    fn generation_refuses_a_hash_mismatch_rather_than_overwriting_it() {
+        let t = tempfile::tempdir().unwrap();
+        let table = tiny_table();
+        generate_table(&table, t.path()).unwrap();
+        fs::write(t.path().join("a.jpg"), b"corrupted").unwrap();
+        let error = generate_table(&table, t.path()).unwrap_err().to_string();
+        assert!(error.contains("a.jpg"), "{error}");
+        assert_eq!(
+            fs::read(t.path().join("a.jpg")).unwrap(),
+            b"corrupted",
+            "a hash mismatch must not be silently overwritten"
+        );
+    }
+
+    #[test]
+    fn a_directory_missing_only_range_jpg_is_not_present() {
+        let t = tempfile::tempdir().unwrap();
+        for f in TABLE.iter().filter(|f| f.file != "range.jpg") {
+            fs::write(t.path().join(f.file), b"stub").unwrap();
+        }
+        assert!(!present(t.path()), "missing range.jpg still reads present");
+        fs::write(t.path().join("range.jpg"), b"stub").unwrap();
+        assert!(present(t.path()));
     }
 }

@@ -1707,11 +1707,11 @@ fn band(compiled: &Compiled, index: usize) -> std::ops::Range<usize> {
     }
 }
 
-/// What the crate's unit tests render through: [`render`] with one context they all share, as they
-/// shared the budgets and the estimate store when those were process-wide. A test that reads the
-/// budgets or the store serializes on the guard it always did (`tests::scratch_guard`,
-/// `spatial::tests::spatial_guard`). Every helper is one call to the entry point; none is a
-/// second way to render.
+/// What the crate's unit tests render through: [`render`], through a context the test constructs
+/// when it reads that context's budgets or estimate store ([`frame_in`], [`sample_in`] and the
+/// evaluations), and through a new context per call otherwise. No two tests share a context, so no
+/// test's budget, high-water mark or estimate store moves with what another test renders. Every
+/// helper is one call to the entry point; none is a second way to render.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::render as enter;
@@ -1720,11 +1720,32 @@ pub(crate) mod testing {
         RenderOptions, RenderSource, Sample, SourceImage, SpatialMode, linear::Linear,
     };
     use crate::{Error, ModuleRegistry, Recipe, SnapshotId};
-    use std::{borrow::Cow, sync::OnceLock};
+    use std::borrow::Cow;
 
-    pub(crate) fn context() -> &'static RenderContext {
-        static CONTEXT: OnceLock<RenderContext> = OnceLock::new();
-        CONTEXT.get_or_init(RenderContext::new)
+    /// A frame of `recipe` rendered through `context`, for a test that reads what the render left
+    /// in it.
+    pub(crate) fn frame_in<'a>(
+        context: &'a RenderContext,
+        registry: &ModuleRegistry,
+        source: impl Into<RenderSource<'a>>,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        options: RenderOptions,
+    ) -> Result<Raster, Error> {
+        enter(registry, source, recipe, options, context)?.frame(snapshot_id)
+    }
+
+    /// The sample at (`x`, `y`) of `recipe` evaluated through `context`.
+    pub(crate) fn sample_in<'a>(
+        context: &'a RenderContext,
+        registry: &ModuleRegistry,
+        source: impl Into<RenderSource<'a>>,
+        recipe: &Recipe,
+        options: RenderOptions,
+        x: u32,
+        y: u32,
+    ) -> Result<Sample, Error> {
+        enter(registry, source, recipe, options, context)?.sample(x, y)
     }
 
     fn frame<'a>(
@@ -1734,10 +1755,18 @@ pub(crate) mod testing {
         recipe: &Recipe,
         options: RenderOptions,
     ) -> Result<Raster, Error> {
-        enter(registry, source, recipe, options, context())?.frame(snapshot_id)
+        let source: RenderSource<'_> = source.into();
+        frame_in(
+            &RenderContext::new(),
+            registry,
+            source,
+            snapshot_id,
+            recipe,
+            options,
+        )
     }
 
-    fn linear(source: &LinearImage, settings: LinearSettings) -> RenderSource<'_> {
+    pub(crate) fn linear(source: &LinearImage, settings: LinearSettings) -> RenderSource<'_> {
         RenderSource::Linear {
             image: source,
             settings,
@@ -1784,22 +1813,6 @@ pub(crate) mod testing {
             snapshot_id,
             recipe,
             RenderOptions::default(),
-        )
-    }
-
-    pub(crate) fn render_proxy_cancellable(
-        registry: &ModuleRegistry,
-        source: &SourceImage,
-        snapshot_id: SnapshotId,
-        recipe: &Recipe,
-        cancel: &Cancel,
-    ) -> Result<Raster, Error> {
-        frame(
-            registry,
-            source,
-            snapshot_id,
-            recipe,
-            RenderOptions::proxy(cancel),
         )
     }
 
@@ -1880,14 +1893,15 @@ pub(crate) mod testing {
         x: u32,
         y: u32,
     ) -> Result<Sample, Error> {
-        enter(
+        sample_in(
+            &RenderContext::new(),
             registry,
             source,
             recipe,
             RenderOptions::default(),
-            context(),
-        )?
-        .sample(x, y)
+            x,
+            y,
+        )
     }
 
     pub(crate) fn sample_linear_tiled(
@@ -1899,15 +1913,15 @@ pub(crate) mod testing {
         y: u32,
         tile: u32,
     ) -> Result<Sample, Error> {
-        let options = RenderOptions::default().with_tile(tile);
-        enter(
+        sample_in(
+            &RenderContext::new(),
             registry,
             linear(source, settings),
             recipe,
-            options,
-            context(),
-        )?
-        .sample(x, y)
+            RenderOptions::default().with_tile(tile),
+            x,
+            y,
+        )
     }
 
     pub(crate) fn sample_linear(
@@ -1939,14 +1953,15 @@ pub(crate) mod testing {
             source,
             recipe,
             RenderOptions::default(),
-            context(),
+            &RenderContext::new(),
         )?
         .stage())
     }
 
-    /// A byte point evaluation of `recipe`, compiled once, for a test that asks it many pixels or
-    /// inspects its tile cache.
+    /// A byte point evaluation of `recipe` through `context`, compiled once, for a test that asks
+    /// it many pixels or inspects its tile cache.
     pub(crate) fn evaluation<'a>(
+        context: &'a RenderContext,
         registry: &ModuleRegistry,
         source: &'a SourceImage,
         recipe: &Recipe,
@@ -1959,28 +1974,35 @@ pub(crate) mod testing {
             super::spatial::PRODUCTION_TILE,
             SpatialMode::Point,
             &Cancel::never(),
-            context(),
+            context,
         )
     }
 
-    /// A linear evaluation of `recipe` in either spatial mode, for a test that inspects the frames
-    /// or the tiles it holds.
+    /// A linear evaluation of `recipe` through `context` in either spatial mode, for a test that
+    /// inspects the frames or the tiles it holds.
     pub(crate) fn linear_evaluation<'a>(
+        context: &'a RenderContext,
         registry: &ModuleRegistry,
         source: &'a LinearImage,
         recipe: &Recipe,
         settings: LinearSettings,
-        cancel: &Cancel,
         tile: u32,
         mode: SpatialMode,
     ) -> Result<Evaluation<'a, Linear<'a>>, Error> {
         let domain = Linear::new(source, settings)?;
         let compiled = registry.compile(source.width(), source.height(), recipe)?;
-        Evaluation::new(domain, Cow::Owned(compiled), tile, mode, cancel, context())
+        Evaluation::new(
+            domain,
+            Cow::Owned(compiled),
+            tile,
+            mode,
+            &Cancel::never(),
+            context,
+        )
     }
 
     /// The unit tests' own reading of a preview source: each method is one call to the entry point
-    /// with [`context`], so a test compares a worker's frame against the same code.
+    /// through a new context, so a test compares a worker's frame against the same code.
     impl crate::PreviewSource {
         pub(crate) fn render(
             &self,
@@ -2036,7 +2058,15 @@ pub(crate) mod testing {
             x: u32,
             y: u32,
         ) -> Result<Sample, Error> {
-            enter(registry, self, recipe, RenderOptions::default(), context())?.sample(x, y)
+            sample_in(
+                &RenderContext::new(),
+                registry,
+                self,
+                recipe,
+                RenderOptions::default(),
+                x,
+                y,
+            )
         }
     }
 
@@ -2078,19 +2108,11 @@ pub(crate) mod testing {
             .unwrap_or_default()
         }
     }
-
-    pub(crate) fn clear_estimates() {
-        context().estimates().clear();
-    }
-
-    pub(crate) fn cached_estimates() -> usize {
-        context().estimates().len()
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{context, extents, render, render_cancellable, sample};
+    use super::testing::{extents, frame_in, render, render_cancellable, sample, sample_in};
     use super::*;
     use crate::{
         AssetId, EFFECT_FORMAT, Layer, LayerId, MAX_COLOR_UNITS, ORIENTATION_EFFECT, Orientation,
@@ -2118,8 +2140,6 @@ mod tests {
     /// strict subset of the stage for a crop that discards rows.
     #[test]
     fn colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
-        // This colours real chunks, so it takes the guard the scratch-budget tests serialize on.
-        let _scratch = scratch_guard();
         let registry = registry();
         let source = source(240, 320);
         let stage = CropStage {
@@ -3797,16 +3817,6 @@ mod tests {
     // The pointwise colour stage.
     // ---------------------------------------------------------------------------------------
 
-    /// The unit tests share one render context (`testing::context`), so the test that lowers its
-    /// scratch target and every test that reserves from it hold this lock instead of racing.
-    static SCRATCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn scratch_guard() -> std::sync::MutexGuard<'static, ()> {
-        SCRATCH_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// A test-only colour unit: multiply linear light by `2^EV`. The coefficient is computed in f64
     /// and applied in f32, which is the working precision the contract declares.
     #[derive(Debug)]
@@ -4156,7 +4166,6 @@ mod tests {
 
     #[test]
     fn indexed_quantizer_preserves_complete_serial_and_parallel_colour_buffers() {
-        let _scratch = scratch_guard();
         let thresholds = quantizer_reference_thresholds();
         let registry = colour_registry();
         let evs = [0.7_f64, -0.2];
@@ -4269,7 +4278,6 @@ mod tests {
 
     #[test]
     fn zero_exposure_round_trips_every_grey_and_a_neutral_layer_shares_the_source() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = greys();
         let raster = render(
@@ -4316,7 +4324,6 @@ mod tests {
     /// still returns the source allocation itself.
     #[test]
     fn a_render_returns_the_frame_its_last_pass_wrote() {
-        let _guard = spatial::tests::spatial_guard();
         let registry = registry();
         let (width, height) = (48, 36);
         let source = gradient(width, height);
@@ -4369,7 +4376,7 @@ mod tests {
                 &source,
                 &recipe,
                 RenderOptions::default(),
-                context(),
+                &RenderContext::new(),
             )
             .unwrap()
             .grid(6, &|| Ok(()))
@@ -4396,7 +4403,6 @@ mod tests {
 
     #[test]
     fn exposure_matches_an_independent_f64_reference_within_one_code() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         for ev in [1.0, -1.0, 2.0, -2.0, 0.5, -3.0, 5.0] {
             for source in [greys(), gradient(37, 23)] {
@@ -4429,7 +4435,6 @@ mod tests {
 
     #[test]
     fn a_colour_pass_over_a_megapixel_frame_matches_the_reference_on_the_parallel_path() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(1200, 900);
         assert!(
@@ -4463,7 +4468,6 @@ mod tests {
 
     #[test]
     fn an_inverse_pair_in_one_operation_returns_the_exact_input_bytes() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         for source in [greys(), gradient(29, 17)] {
             let raster = render(
@@ -4483,7 +4487,6 @@ mod tests {
 
     #[test]
     fn two_consecutive_colour_operations_keep_values_outside_the_range_between_them() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(29, 17);
         let recipe = colour_recipe(vec![exposure_layer(&[3.0]), exposure_layer(&[-3.0])]);
@@ -4517,7 +4520,6 @@ mod tests {
 
     #[test]
     fn a_replacement_before_a_colour_operation_is_exposed_and_one_after_it_is_not() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(8, 6);
         let rgb = [10, 120, 200];
@@ -4554,7 +4556,6 @@ mod tests {
 
     #[test]
     fn exact_geometry_commutes_with_pointwise_colour() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(13, 9);
         for transform in [
@@ -4583,7 +4584,6 @@ mod tests {
 
     #[test]
     fn a_colour_operation_before_a_rotated_crop_quantizes_then_resamples() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let (width, height) = (40_u32, 24_u32);
         let source = gradient(width, height);
@@ -4635,7 +4635,6 @@ mod tests {
 
     #[test]
     fn samples_match_rendered_pixels_for_a_mixed_colour_stack() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(32, 20);
         let recipe = colour_recipe(vec![
@@ -4681,7 +4680,6 @@ mod tests {
     /// segment and after a crop resample, where the coordinates are the output stage's.
     #[test]
     fn a_positional_colour_unit_samples_exactly_what_it_renders() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(11, 7);
         for (case, layers) in [
@@ -4733,7 +4731,6 @@ mod tests {
     /// taller than one chunk is processed at the same coordinates as a frame that fits in one.
     #[test]
     fn a_positional_unit_sees_its_own_row_in_every_chunk() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let recipe = colour_recipe(vec![positional_layer()]);
         let tall = gradient(3, COLOR_CHUNK_ROWS as u32 * 2 + 5);
@@ -4751,7 +4748,6 @@ mod tests {
 
     #[test]
     fn an_over_long_or_non_finite_colour_operation_is_refused_by_compilation() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(8, 6);
         assert!(
@@ -4789,7 +4785,6 @@ mod tests {
 
     #[test]
     fn a_colour_unit_that_overflows_fails_the_render_and_the_sample() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(8, 6);
         let recipe = colour_recipe(vec![colour_layer(json!({"overflow": 2}))]);
@@ -4804,43 +4799,59 @@ mod tests {
 
     #[test]
     fn a_colour_pass_reserves_its_row_chunks_from_the_scratch_budget() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(64, 48);
         let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
-        let budget = context().scratch();
+        // Below the parallel threshold the pass runs its chunks one after another, so the
+        // high-water mark of a context only this render reserves from is exactly one chunk.
+        let chunk = (color_chunk_rows(source.width) * source.width as usize * 12) as u64;
+        let context = RenderContext::new();
+        let budget = context.scratch();
         assert_eq!(budget.target(), 64 * 1024 * 1024, "the declared default");
-        // The budget is process-wide and other tests' preview workers reserve from it on their
-        // own threads, so "nothing is held between renders" is read once those renders have
-        // finished, not at an arbitrary instant.
-        let idle = || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while budget.in_use() != 0 {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "scratch stayed held: {} bytes",
-                    budget.in_use()
-                );
-                std::thread::yield_now();
-            }
-        };
-        idle();
-        let expected = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-        idle();
+        let expected = frame_in(
+            &context,
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe,
+            RenderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(budget.in_use(), 0, "nothing is held after the render");
+        assert_eq!(budget.peak(), chunk, "one row chunk at a time");
         // The target is a target: a render whose row chunk is larger than all of it still
         // completes, with the same bytes, and the high-water mark shows it went past.
-        let previous = budget.set_target(16);
-        let rendered = render(&registry, &source, SnapshotId::new(), &recipe);
-        budget.set_target(previous);
-        let rendered = rendered.expect("a chunk past the target still runs");
+        let small = RenderContext::with_scratch_target(16);
+        let rendered = frame_in(
+            &small,
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe,
+            RenderOptions::default(),
+        )
+        .expect("a chunk past the target still runs");
         assert_eq!(rendered.rgba, expected.rgba);
-        assert!(budget.peak() > 16, "the chunk was reserved and counted");
-        idle();
+        assert_eq!(
+            small.scratch().peak(),
+            chunk,
+            "the chunk was reserved and counted"
+        );
+        assert_eq!(small.scratch().in_use(), 0);
         // A point sample streams nothing, so it reserves nothing whatever the target is.
-        let previous = budget.set_target(0);
-        let sampled = sample(&registry, &source, &recipe, 1, 1).unwrap();
-        budget.set_target(previous);
+        let empty = RenderContext::with_scratch_target(0);
+        let sampled = sample_in(
+            &empty,
+            &registry,
+            &source,
+            &recipe,
+            RenderOptions::default(),
+            1,
+            1,
+        )
+        .unwrap();
         assert!(sampled.rgba.is_some());
+        assert_eq!(empty.scratch().peak(), 0, "a sample reserves no scratch");
     }
 
     #[test]
@@ -4923,7 +4934,6 @@ mod tests {
     /// whose frame lies entirely behind `p0` is evaluated and blended with `M = 0`.
     #[test]
     fn the_endpoints_of_the_mask_are_byte_identical_to_the_unmasked_frames() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(37, 23);
         let identity = render(
@@ -4981,7 +4991,6 @@ mod tests {
     /// is blended against the value it was handed.
     #[test]
     fn a_masked_operation_blends_against_its_own_input_inside_the_run() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         // Every byte once at exactly half coverage — the 256×1 strip's one row sits at `v = 0.5` of a
         // gradient from `v = 0` to `v = 1`, where `smooth(0.5)` is exactly `0.5` — and then a frame
@@ -5059,7 +5068,6 @@ mod tests {
     /// than the rows whose coverage is non-zero.
     #[test]
     fn a_masked_operation_evaluates_no_unit_outside_its_bounds() {
-        let _scratch = scratch_guard();
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let registry = counting_registry(counter.clone());
         let source = gradient(200, 100);
@@ -5132,7 +5140,6 @@ mod tests {
     /// mask would be read at the turned frame's coordinates.
     #[test]
     fn a_mask_lands_on_the_same_content_pixels_through_the_geometry_tail() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(24, 16);
         let mask = linear_mask(0.25, 0.25, 0.75, 0.75);
@@ -5190,7 +5197,6 @@ mod tests {
     /// pointwise, so the same row blended in blocks of 1, 3 and the whole row is the same row.
     #[test]
     fn the_masked_blend_does_not_depend_on_the_snapshot_block_size() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(64, 5);
         let mask = linear_mask(0.1, 0.2, 0.9, 0.8);
@@ -5225,7 +5231,6 @@ mod tests {
     /// the identity byte path and the shared source buffer: masking nothing is nothing.
     #[test]
     fn a_neutral_masked_layer_keeps_the_identity_byte_path() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(16, 9);
         let mask = linear_mask(0.5, 0.0, 0.5, 1.0);
@@ -5245,7 +5250,6 @@ mod tests {
     /// an unmasked pass reserves what it always reserved.
     #[test]
     fn a_masked_run_reserves_its_row_snapshot_from_the_existing_budget() {
-        let _scratch = scratch_guard();
         let registry = colour_registry();
         let source = gradient(64, 48);
         let mask = linear_mask(0.5, 0.0, 0.5, 1.0);
@@ -5253,58 +5257,61 @@ mod tests {
             vec![masked(exposure_layer(&[1.0]), &mask)],
             vec![mask.clone()],
         );
-        let budget = context().scratch();
-        let idle = || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while budget.in_use() != 0 {
-                assert!(std::time::Instant::now() < deadline, "scratch stayed held");
-                std::thread::yield_now();
-            }
-        };
-        idle();
         // One row chunk plus one row of snapshot. The budget is a **target and not a limit**, so a
         // target that fits the chunk but not the snapshot renders anyway rather than refusing: what
-        // the snapshot costs is visible in the high-water mark, never in an error.
-        let chunk = color_chunk_rows(source.width) * source.width as usize * 12;
-        let snapshot = source.width as usize * 12;
-        let previous = budget.set_target(chunk as u64);
-        let rendered = render(&registry, &source, SnapshotId::new(), &recipe);
-        budget.set_target(previous);
+        // the snapshot costs is visible in the high-water mark, never in an error. Below the
+        // parallel threshold the chunks run one after another, so each context's high-water mark
+        // is exactly what one chunk of its render carried.
+        let chunk = (color_chunk_rows(source.width) * source.width as usize * 12) as u64;
+        let snapshot = source.width as u64 * 12;
+        let render_at = |context: &RenderContext, recipe: &Recipe| {
+            frame_in(
+                context,
+                &registry,
+                &source,
+                SnapshotId::new(),
+                recipe,
+                RenderOptions::default(),
+            )
+        };
+        let masked = RenderContext::with_scratch_target(chunk);
+        let rendered = render_at(&masked, &recipe);
         assert!(
             rendered.is_ok(),
             "a masked run past the target still renders: {:?}",
             rendered.err()
         );
-        idle();
-        assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
+        assert_eq!(
+            masked.scratch().peak(),
+            chunk + snapshot,
+            "a masked pass carries one chunk and one row of snapshot at once"
+        );
+        assert_eq!(masked.scratch().in_use(), 0, "and releases both");
         // The unmasked stack renders inside a target that holds only the chunk without ever
         // overshooting it, so the snapshot is charged to masked runs alone.
         let unmasked = colour_recipe(vec![exposure_layer(&[1.0])]);
-        let previous = budget.set_target(chunk as u64);
-        let before = budget.peak();
-        let rendered = render(&registry, &source, SnapshotId::new(), &unmasked);
-        budget.set_target(previous);
+        let plain = RenderContext::with_scratch_target(chunk);
+        let rendered = render_at(&plain, &unmasked);
         assert!(rendered.is_ok(), "{:?}", rendered.err());
-        idle();
-        // A point sample streams nothing and allocates no snapshot, so it answers at any target.
-        let previous = budget.set_target(0);
-        let sampled = sample(&registry, &source, &recipe, 3, 3).unwrap();
-        budget.set_target(previous);
-        assert!(sampled.rgba.is_some());
-        // The high-water mark is what makes the aggregate observable after the fact: a masked pass
-        // has to have carried at least one chunk and one row of snapshot at once. `peak` is the
-        // shared test context's and only ever raised, so this reads "at least"; the unmasked and sampled runs
-        // above raised it by nothing, which is the other half of the claim.
-        assert!(
-            budget.peak() >= (chunk + snapshot) as u64,
-            "the peak {} never reached one chunk plus one row of snapshot",
-            budget.peak()
-        );
         assert_eq!(
-            budget.peak(),
-            before,
-            "an unmasked run or a point sample raised the peak the masked run had already set"
+            plain.scratch().peak(),
+            chunk,
+            "an unmasked pass takes no snapshot"
         );
+        // A point sample streams nothing and allocates no snapshot, so it answers at any target.
+        let empty = RenderContext::with_scratch_target(0);
+        let sampled = sample_in(
+            &empty,
+            &registry,
+            &source,
+            &recipe,
+            RenderOptions::default(),
+            3,
+            3,
+        )
+        .unwrap();
+        assert!(sampled.rgba.is_some());
+        assert_eq!(empty.scratch().peak(), 0, "a sample reserves no scratch");
     }
 
     /// What a masked colour layer costs on a photo-sized frame, and what the bounds rectangle saves.
@@ -5457,8 +5464,7 @@ mod tests {
             for count in [1usize, 8, 32, 64] {
                 let strokes = painted_strokes(count);
                 let (mask, table) = brush_mask(&strokes);
-                // The compile is where the grid index is built and the occupancy cap is checked,
-                // before a pixel is read. It is charged to the gesture, not to the frame, so it is
+                // The compile is where the grid index is built, before a pixel is read. It is charged to the gesture, not to the frame, so it is
                 // measured on its own.
                 let started = std::time::Instant::now();
                 let rounds = 20;
@@ -5548,25 +5554,6 @@ mod tests {
     }
 
     #[test]
-    fn an_uncancelled_token_renders_the_bytes_the_plain_entry_point_renders() {
-        let registry = ModuleRegistry::builtin();
-        let source = cancellation_source(512, 384);
-        let recipe = cancellation_stack(512, 384);
-        let snapshot = SnapshotId::new();
-        let plain = render(&registry, &source, snapshot.clone(), &recipe).unwrap();
-        let cancellable =
-            render_cancellable(&registry, &source, snapshot, &recipe, &Cancel::never()).unwrap();
-        // Dimensions, fingerprint, snapshot identity and every byte.
-        assert_eq!(plain, cancellable);
-        assert!(
-            plain.width > 1 && plain.height > 1,
-            "the stack renders a frame"
-        );
-        // The stack really exercises all three passes: a turn, a colour run and a resample.
-        assert_ne!(plain.rgba.as_ref(), source.rgba.as_ref());
-    }
-
-    #[test]
     fn a_pre_cancelled_token_stops_a_render_before_it_allocates_a_frame() {
         let registry = ModuleRegistry::builtin();
         let source = cancellation_source(512, 384);
@@ -5580,8 +5567,7 @@ mod tests {
         assert_eq!(error.kind.code(), "cancelled");
     }
 
-    // The photo-sized latency case and the scratch-budget observation live in
-    // `tests/cancellation.rs`: the budget is process-wide, and the lib test binary runs 250 other
-    // tests beside this one, several of which legitimately hold reservations while it reads the
-    // counter. Its own test binary is a process where nothing else reserves.
+    // The photo-sized latency case and the scratch-budget observation of a cancelled colour pass
+    // live in `tests/cancellation.rs`, whose 24 MP renders and latency bound would otherwise run
+    // beside every other unit test.
 }

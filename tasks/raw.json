@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Delete the process-wide native scratch semaphore and its timed waits from `luxforge-raw`, keeping each development's own lane cap, and remove the semaphore's test lock and permit tests with it.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. The semaphore is dead weight production cannot contend, and it is also a load-dependent test's only reason to exist; deleting it removes the failure class instead of patching one instance of it.",
@@ -71,7 +71,7 @@
     {
       "id": "TASK-002",
       "description": "Replace the native tile executor's joined batches with one refill scope, also used by the Rust development passes, so no job waits for a batch's slowest one and at most eight tiles of work are ever open to stealing.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],

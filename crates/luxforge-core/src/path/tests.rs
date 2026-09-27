@@ -101,39 +101,62 @@ fn the_generic_check_accepts_a_path_and_names_every_refusal() {
     check_value(&declared, &json!([[0, 1], [1, 0]])).expect("integers are numbers");
 }
 
+/// A posted path is bounded before decimation by the posted bound, which is its own number and
+/// its own sentence: generous, so a raw path past the stored bound is posted, and named as the
+/// posted bound rather than as the stored one when it is passed.
 #[test]
-fn a_path_over_the_declared_count_names_the_points_per_stroke_limit() {
-    let declared = points_parameter(1, POINTS_PER_STROKE);
+fn a_posted_path_over_its_declared_count_names_the_posted_bound() {
+    const { assert!(POSTED_POINTS_PER_STROKE > POINTS_PER_STROKE) };
+    let declared = points_parameter(1, POSTED_POINTS_PER_STROKE);
     let mut rng = Rng(7);
-    let legal = captured(&mut rng, POINTS_PER_STROKE);
+    let raw = captured(&mut rng, POINTS_PER_STROKE * 2);
+    check_value(&declared, &json!(raw)).expect("a raw path past the stored bound is posted");
+    let legal = captured(&mut rng, POSTED_POINTS_PER_STROKE);
     check_value(&declared, &json!(legal)).expect("exactly the bound is legal");
 
-    let one_more = captured(&mut rng, POINTS_PER_STROKE + 1);
+    let one_more = captured(&mut rng, POSTED_POINTS_PER_STROKE + 1);
     let error = check_value(&declared, &json!(one_more)).unwrap_err();
     assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
     assert_eq!(
         error.detail,
         format!(
-            "parameter path has {} positions; the limit is {POINTS_PER_STROKE} points per stroke",
-            POINTS_PER_STROKE + 1
+            "parameter path has {} positions; the limit is {POSTED_POINTS_PER_STROKE} positions \
+             posted per path",
+            POSTED_POINTS_PER_STROKE + 1
         )
     );
+    // The one command that paints declares exactly this bound for its path.
+    let declared = crate::mask::commands::find(crate::mask::commands::ADD_STROKE)
+        .and_then(|command| command.action.parameter("points").cloned())
+        .expect("mask.add-stroke declares its path");
+    assert_eq!(
+        declared.kind,
+        crate::ParameterKind::Points {
+            points_min: 1,
+            points_max: POSTED_POINTS_PER_STROKE
+        }
+    );
 }
+
+/// The brush sizes decimation is held to: the declared minimum, the desktop's default brush and the
+/// declared maximum.
+const SIZES: [f64; 3] = [SIZE_MIN, 0.1, SIZE_MAX];
 
 #[test]
 fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
     let mut rng = Rng(0xd1ce);
-    for _ in 0..200 {
+    for index in 0..300 {
+        let size = SIZES[index % SIZES.len()];
         let count = 2 + (rng.next() % 600) as usize;
         let path = captured(&mut rng, count);
-        let once = decimate(&path).expect("a legal path");
-        let twice = decimate(&path).expect("a legal path");
+        let once = decimate(&path, size).expect("a legal path");
+        let twice = decimate(&path, size).expect("a legal path");
         assert_eq!(once, twice, "decimation reads nothing but its input");
         // Idempotent: the desktop decimates before it posts, and the host decimates what it was
         // posted, so the two must agree or a stored stroke would depend on who prepared it.
         assert_eq!(
             once,
-            decimate(&once).expect("a decimated path is a legal path"),
+            decimate(&once, size).expect("a decimated path is a legal path"),
             "decimating a decimated path changes nothing"
         );
         assert!(
@@ -154,11 +177,12 @@ fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
         // Every captured position is within the stated deviation of the stored polyline. That is
         // the whole claim a tolerance makes, and it is checked against the positions that were
         // captured rather than against the ones that were kept.
+        let bound = stored_deviation(size);
         for point in &path {
             let distance = distance_to_polyline(*point, &once);
             assert!(
-                distance <= STORED_DEVIATION,
-                "a captured position moved {distance:e}, past the stated {STORED_DEVIATION:e}",
+                distance <= bound,
+                "a captured position moved {distance:e}, past the stated {bound:e} at size {size}",
             );
         }
         // And every stored position is on the stored grid, at the declared precision and no finer.
@@ -172,6 +196,80 @@ fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
                 );
             }
         }
+    }
+}
+
+/// The tolerance is a share of the stroke's radius as stored, and never under two grid steps: at the
+/// declared minimum it is the floor, at the default and the maximum it is four per cent of the radius.
+/// So one jagged path keeps fewer positions the larger the brush it is drawn with, and a bump a
+/// small brush keeps is one a large brush drops.
+#[test]
+fn the_tolerance_is_a_share_of_the_radius_and_never_under_two_grid_steps() {
+    let stored = |size: f64| (size * COORDINATE_STEPS_PER_UNIT).round() / COORDINATE_STEPS_PER_UNIT;
+    assert_eq!(decimation_tolerance(SIZE_MIN), DECIMATION_TOLERANCE_MIN);
+    assert_eq!(DECIMATION_TOLERANCE_MIN * COORDINATE_STEPS_PER_UNIT, 2.0);
+    for size in [0.1, SIZE_MAX] {
+        assert_eq!(
+            decimation_tolerance(size),
+            DECIMATION_TOLERANCE_OF_RADIUS * stored(size),
+            "size {size}"
+        );
+    }
+    assert_eq!(
+        stored_deviation(0.1),
+        decimation_tolerance(0.1) + GRID_ROUNDING
+    );
+
+    // A bump of ten grid steps across a straight run: past the floor and past four per cent of a
+    // small brush, inside four per cent of the default one.
+    let bump = 10.0 / COORDINATE_STEPS_PER_UNIT;
+    let path = [[0.1, 0.5], [0.3, 0.5 + bump], [0.5, 0.5]];
+    assert_eq!(
+        decimate(&path, SIZE_MIN).unwrap().len(),
+        3,
+        "the floor keeps it"
+    );
+    assert_eq!(
+        decimate(&path, 0.01).unwrap().len(),
+        3,
+        "a small brush keeps it"
+    );
+    assert_eq!(
+        decimate(&path, 0.1).unwrap().len(),
+        2,
+        "the default brush drops it"
+    );
+
+    // A pointer's whole-pixel staircase stores fewer positions the larger the brush.
+    let mut rng = Rng(0x57a1);
+    let jagged: Vec<[f64; 2]> = (0..400)
+        .map(|index| {
+            let t = index as f64 / 400.0;
+            let wobble = rng.range(-1.0, 1.0);
+            [
+                ((0.2 + 0.6 * t) * 1000.0 + wobble).round() / 1000.0,
+                ((0.5 + 0.1 * (t * 6.0).sin()) * 1000.0 + wobble).round() / 1000.0,
+            ]
+        })
+        .collect();
+    let kept: Vec<usize> = SIZES
+        .iter()
+        .map(|size| decimate(&jagged, *size).unwrap().len())
+        .collect();
+    assert!(
+        kept[0] > kept[1] && kept[1] > kept[2],
+        "stored positions at the minimum, default and maximum sizes: {kept:?}"
+    );
+
+    // A size no stroke can be captured at is refused by name here too.
+    for size in [0.0, f64::NAN, SIZE_MAX * 2.0] {
+        assert!(
+            decimate(&path, size)
+                .unwrap_err()
+                .detail
+                .starts_with("stroke size must be a number within"),
+            "{size}"
+        );
     }
 }
 
@@ -212,7 +310,7 @@ fn one_captured_path_has_one_content_address() {
 
         // Posting an already-decimated path reaches the same stored bytes as posting the raw one,
         // which is what lets the desktop decimate before it sends without changing what is stored.
-        let predecimated = decimate(&path).expect("a legal path");
+        let predecimated = decimate(&path, 0.05).expect("a legal path");
         let posted =
             Stroke::capture(&predecimated, 0.05, 50.0, 100.0, false).expect("a legal stroke");
         assert_eq!(once.id(), posted.id());
@@ -333,9 +431,10 @@ fn a_stroke_is_refused_by_name_outside_its_declared_bounds() {
     );
 }
 
-/// A path that survives decimation at full length — every third position far enough off the line
-/// between its neighbours to be kept — so the per-stroke bound is reached rather than decimated
-/// away, and `Stroke::capture` refuses it one past the bound by name.
+/// A path that survives decimation at full length for a brush small enough to take the two-step
+/// floor — every other position eight steps off the line between its neighbours — so the per-stroke
+/// bound is reached rather than decimated away, and `Stroke::capture` refuses it one past the bound
+/// by name.
 fn incompressible(count: usize) -> Vec<[f64; 2]> {
     (0..count)
         .map(|index| {
@@ -349,12 +448,12 @@ fn incompressible(count: usize) -> Vec<[f64; 2]> {
 #[test]
 fn a_captured_stroke_over_the_bound_names_the_points_per_stroke_limit() {
     let at_bound = incompressible(POINTS_PER_STROKE);
-    let stroke = Stroke::capture(&at_bound, 0.05, 50.0, 100.0, false).expect("the bound is legal");
+    let stroke = Stroke::capture(&at_bound, 0.001, 50.0, 100.0, false).expect("the bound is legal");
     assert_eq!(stroke.point_count(), POINTS_PER_STROKE);
 
     let error = Stroke::capture(
         &incompressible(POINTS_PER_STROKE + 1),
-        0.05,
+        0.001,
         50.0,
         100.0,
         false,
@@ -528,4 +627,96 @@ fn cloning_a_recipe_shares_its_strokes_and_a_write_copies_only_pointers() {
         ),
         "the copy holds the same stroke, not a copy of its positions"
     );
+}
+
+/// A stroke's radius has one legal range, and every reader holds it: the declared `size` of the one
+/// command that paints, [`Stroke::capture`], the stored-stroke recheck and the brush's compile. A
+/// radius just outside it is refused by each of them, naming the range, and one just inside is taken
+/// by each.
+#[test]
+fn one_stroke_radius_range_is_read_by_capture_the_stored_recheck_and_compile() {
+    let range = format!("{SIZE_MIN}..={SIZE_MAX}");
+    let declared = crate::mask::commands::find(crate::mask::commands::ADD_STROKE)
+        .and_then(|command| command.action.parameter("size").cloned())
+        .expect("mask.add-stroke declares its size");
+    assert_eq!(
+        declared.kind,
+        crate::ParameterKind::Number {
+            min: SIZE_MIN,
+            max: SIZE_MAX
+        },
+        "the declared size is the one range"
+    );
+
+    // Capture, on the posted size.
+    let path = [[0.4, 0.5], [0.6, 0.5]];
+    for inside in [SIZE_MIN, SIZE_MAX] {
+        Stroke::capture(&path, inside, 50.0, 100.0, false).expect("the range is closed");
+    }
+    for outside in [SIZE_MIN * (1.0 - 1e-9), SIZE_MAX * (1.0 + 1e-9)] {
+        let error = Stroke::capture(&path, outside, 50.0, 100.0, false).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            format!("stroke size must be a number within {range}")
+        );
+    }
+
+    // The stored recheck and the compile, on the size as stored: whole grid steps, so the legal
+    // ones are the steps inside the range and the illegal ones the steps either side of it.
+    let lowest = (SIZE_MIN * COORDINATE_STEPS_PER_UNIT).ceil() as i32;
+    let highest = (SIZE_MAX * COORDINATE_STEPS_PER_UNIT).floor() as i32;
+    let stored = |size: i32| Stroke {
+        points: vec![[6554, 8192], [9830, 8192]],
+        size,
+        feather: 50,
+        flow: 100,
+        erase: false,
+        colour: None,
+    };
+    let compiled = |stroke: &Stroke| {
+        let mut table = StrokeTable::new("the range test");
+        let id = table.insert(stroke.clone());
+        let mut mask = crate::Mask::new("Mask 1");
+        mask.components.push(crate::Component::new(
+            "Brush 1",
+            crate::ComponentMode::Add,
+            crate::mask::BRUSH,
+            json!({ "strokes": [id.to_string()] }),
+        ));
+        crate::mask::CompiledMask::new(
+            &mask,
+            crate::modules::Stage {
+                width: 60,
+                height: 40,
+            },
+            &table,
+        )
+        .map(|_| ())
+    };
+    for inside in [lowest, highest] {
+        let stroke = stored(inside);
+        Stroke::from_stored(&stroke.id(), &stroke.canonical())
+            .unwrap_or_else(|error| panic!("{inside} steps is a legal stored size: {error}"));
+        compiled(&stroke)
+            .unwrap_or_else(|error| panic!("{inside} steps is a legal compiled size: {error}"));
+    }
+    for outside in [lowest - 1, highest + 1] {
+        let stroke = stored(outside);
+        let id = stroke.id();
+        let error = Stroke::from_stored(&id, &stroke.canonical()).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            format!("stored stroke {id} has an invalid size; a stroke size is within {range}"),
+            "{outside} steps"
+        );
+        let error = compiled(&stroke).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            format!("component Brush 1 stroke {id} size must be a number within {range}"),
+            "{outside} steps"
+        );
+    }
 }

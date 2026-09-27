@@ -1,4 +1,4 @@
-//! Independent f64 reference for the frozen post-crop vignette (TASK-004).
+//! Independent f64 reference for the frozen post-crop vignette.
 //!
 //! This module shares no code with production, matching the convention set by
 //! `crates/luxforge-reference/src/tone.rs`: it exists so a later production implementation of
