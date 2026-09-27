@@ -291,3 +291,63 @@ impl ToolModule for ShrinkModule {
 pub(super) fn shrink(width: u32, height: u32) -> Value {
     json!({"width": width, "height": height})
 }
+
+/// A small RAW interpretation no decoder produced, valid for [`super::RawInterpretation::new`]:
+/// what a test of the stored spelling, or of a rule decided by the photo's source kind, needs
+/// without a private RAW fixture.
+pub(crate) fn synthetic_raw_metadata() -> luxforge_raw::RawMetadata {
+    use luxforge_raw::{RawMetadata, RawMode, RawRect};
+    let rect = RawRect {
+        x: 0,
+        y: 0,
+        width: 32,
+        height: 32,
+    };
+    RawMetadata {
+        make: "Test".into(),
+        model: "Camera".into(),
+        mode: RawMode::NikonZ6Lossless14,
+        sensor_width: 32,
+        sensor_height: 32,
+        active_area: rect,
+        default_crop: rect,
+        cfa_width: 2,
+        cfa_height: 2,
+        cfa: vec![0, 1, 1, 2],
+        black_cfa: vec![0, 1, 3, 2],
+        black_base: 12.125,
+        black_channels: [0.1, 0.2, 0.3, 0.4],
+        black_repeat_width: 1,
+        black_repeat_height: 1,
+        black_repeat: vec![0.12345678],
+        sensor_white: 16383.0,
+        as_shot_gains: [1.2345678, 1.0, 1.8765432],
+        libraw_flip: 0,
+        rgb_cam: [[0.12345678; 4]; 3],
+        cam_xyz: [[0.12345678; 3]; 4],
+        backend: "pinned backend".into(),
+        exif_orientation: 1,
+        libraw_inset: Some(rect),
+        format_identity: "test-format".into(),
+        warnings: vec![],
+        dng_corrections: None,
+    }
+}
+
+/// Rewrite `asset`'s catalog row to say it is a RAW photo ([`synthetic_raw_metadata`]), for a
+/// test of a rule the host decides from the source kind alone, before it reads a stack or a pixel.
+/// Its stack stays the JPEG's and its file stays a JPEG, so nothing that plans, renders or prepares
+/// may run against it. A service caches heads: open a fresh one on `catalog` afterwards.
+pub(crate) fn recast_as_raw(catalog: &Path, asset: &crate::AssetId) {
+    let kind = crate::SourceKind::Raw {
+        metadata: super::RawInterpretation::new(synthetic_raw_metadata()).unwrap(),
+    };
+    let changed = Connection::open(catalog)
+        .unwrap()
+        .execute(
+            "UPDATE assets SET source_json=?1 WHERE id=?2",
+            params![super::encode(&kind).unwrap(), asset.as_str()],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "one asset row");
+}

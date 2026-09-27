@@ -521,13 +521,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "draft.begin",
         DraftBegin,
         draft_begin,
-        "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed"
+        "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed, and, in its commit's words, for an action whose module does not apply to the asset's source kind"
     ),
     service!(
         "draft.set",
         DraftSet,
         draft_set,
-        "validates the named fields against the action's parameters and merges them into the draft; an invalid field changes nothing"
+        "validates the named fields against the action's parameters and merges them into the draft; an invalid field, or one superseded on the draft's target (refused in its commit's words), changes nothing"
     ),
     service!(
         "draft.read",
@@ -1856,6 +1856,10 @@ fn draft_begin(
         }
     };
     let revision = service.revision(&p.asset_id)?;
+    // A draft its commit would refuse for what the photo is — a RAW development on a JPEG — is
+    // refused here, in the commit's words, rather than at its first preview.
+    let mask = target.as_ref().and_then(|target| target.mask.as_ref());
+    service.check_draft(&p.asset_id, &p.action, mask, &Map::new())?;
     let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
     draft.target = target;
     session.draft = Some(draft);
@@ -1872,6 +1876,13 @@ fn draft_set(
     // Validate every field before merging any, so a rejected request leaves the draft as it was.
     let action = draft_action(service, &draft.action)?;
     draft.checked_fields(&action.descriptor().parameters, &p.fields)?;
+    // So is a field its commit would refuse on this photo's target: Basic's Temperature on a RAW
+    // photo's global target, whose one path is the source development's.
+    let mask = draft
+        .target
+        .as_ref()
+        .and_then(|target| target.mask.as_ref());
+    service.check_draft(&draft.asset_id, &draft.action, mask, &p.fields)?;
     let draft = session.draft.as_mut().expect("the draft was just found");
     draft.merge(p.fields);
     session.touch();
@@ -4035,6 +4046,141 @@ mod tests {
         .expect("the draft has ended");
         assert_eq!(error.code, "validation");
         assert!(error.message.contains("unknown draft"), "{}", error.message);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A draft is refused up front wherever its commit would be for what the photo is, in the
+    /// commit's words: a RAW development at `draft.begin` on a JPEG, and Basic's Temperature at the
+    /// `draft.set` that sets it on a RAW photo's global target, which leaves the draft as it was.
+    /// The same field through a mask is Basic's relative white balance, and drafts.
+    #[test]
+    fn a_draft_is_refused_where_its_commit_would_be_for_the_photos_kind() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-methods-draft-kind-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let refusal = |response: ApiResponse| {
+            let error = response.error.expect("refused");
+            (error.code, error.message)
+        };
+
+        let committed = refusal(call(
+            &mut service,
+            &mut session,
+            "edit.set-raw",
+            json!({"asset_id": asset, "mutation": mutation(0, "raw"), "temperature": 5000.0}),
+        ));
+        assert_eq!(
+            committed,
+            (
+                "validation".to_owned(),
+                "RAW does not apply to a JPEG photo".to_owned()
+            )
+        );
+        let begun = call(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-raw"}),
+        );
+        assert_eq!(refusal(begun), committed);
+        assert!(session.draft.is_none(), "no draft opened");
+
+        // A mask made while the photo is a JPEG, then the row recast as a RAW photo's.
+        ok(
+            &mut service,
+            &mut session,
+            "mask.create-linear",
+            json!({"asset_id": asset, "mutation": mutation(0, "mask"),
+                   "x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0}),
+        );
+        let state = service.state(&asset).unwrap();
+        let mask = state.current_entry.snapshot.recipe.masks[0].id.clone();
+        drop(service);
+        crate::editor::recast_as_raw(&catalog, &asset);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+
+        let committed = refusal(call(
+            &mut service,
+            &mut session,
+            "edit.set-basic",
+            json!({"asset_id": asset, "mutation": mutation(state.revision, "wb"),
+                   "temperature": 20.0}),
+        ));
+        assert_eq!(
+            committed,
+            (
+                "validation".to_owned(),
+                "on a RAW photo, Temperature is the source development's: set-raw temperature (K)"
+                    .to_owned()
+            )
+        );
+        let begun = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-basic"}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"exposure": 0.5}}),
+        );
+        let set = call(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"exposure": 1.0, "temperature": 20.0}}),
+        );
+        assert_eq!(refusal(set), committed);
+        let read = ok(
+            &mut service,
+            &mut session,
+            "draft.read",
+            json!({"draft_id": draft_id}),
+        );
+        assert_eq!(read["fields"], json!({"exposure": 0.5}), "nothing merged");
+        assert_eq!(read["draft_revision"], json!(1));
+        ok(
+            &mut service,
+            &mut session,
+            "draft.cancel",
+            json!({"draft_id": draft_id}),
+        );
+
+        let masked = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-basic", "mask": mask}),
+        );
+        let set = ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": masked["draft_id"], "fields": {"temperature": 20.0}}),
+        );
+        assert_eq!(set["fields"], json!({"temperature": 20.0}));
+        ok(
+            &mut service,
+            &mut session,
+            "draft.cancel",
+            json!({"draft_id": masked["draft_id"]}),
+        );
+        ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-raw"}),
+        );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
