@@ -830,12 +830,46 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
     crate::RawPayload::from_layer(layer)
 }
 
+#[cfg(not(windows))]
 pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
     SourceSignature {
         byte_len: metadata.len(),
         modified: metadata.modified().ok(),
         file_identity: file_identity(metadata, path),
         change_marker: metadata_change_marker(metadata),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
+    let file = File::open(path).ok();
+    windows_source_signature(path, metadata, file.as_ref())
+}
+
+#[cfg(windows)]
+fn windows_source_signature(
+    path: &Path,
+    metadata: &Metadata,
+    file: Option<&File>,
+) -> SourceSignature {
+    use std::os::windows::fs::MetadataExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // If the filesystem cannot provide change time, no two reads may compare equal: a cached
+    // decoded source must not survive a same-length, same-timestamp overwrite.
+    static MISSING_CHANGE_TIME: AtomicU64 = AtomicU64::new(0);
+    let change_time = file
+        .and_then(|file| luxforge_process::file_change_time(file).ok())
+        .map_or_else(
+            || -1 - i128::from(MISSING_CHANGE_TIME.fetch_add(1, Ordering::Relaxed)),
+            i128::from,
+        );
+    SourceSignature {
+        byte_len: metadata.len(),
+        modified: metadata.modified().ok(),
+        file_identity: file
+            .and_then(windows_file_identity)
+            .unwrap_or_else(|| format!("path:{}", path.to_string_lossy().to_lowercase())),
+        change_marker: Some((i128::from(metadata.last_write_time()), change_time)),
     }
 }
 
@@ -847,13 +881,7 @@ pub(crate) fn source_signature_for_handle(
     file: &File,
     metadata: &Metadata,
 ) -> SourceSignature {
-    SourceSignature {
-        byte_len: metadata.len(),
-        modified: metadata.modified().ok(),
-        file_identity: windows_file_identity(file)
-            .unwrap_or_else(|| format!("path:{}", path.to_string_lossy().to_lowercase())),
-        change_marker: metadata_change_marker(metadata),
-    }
+    windows_source_signature(path, metadata, Some(file))
 }
 
 #[cfg(not(windows))]
@@ -872,12 +900,6 @@ fn metadata_change_marker(metadata: &Metadata) -> Option<(i128, i128)> {
         i128::from(metadata.ctime()),
         i128::from(metadata.ctime_nsec()),
     ))
-}
-
-#[cfg(windows)]
-fn metadata_change_marker(metadata: &Metadata) -> Option<(i128, i128)> {
-    use std::os::windows::fs::MetadataExt;
-    Some((i128::from(metadata.last_write_time()), 0))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -899,14 +921,6 @@ fn windows_file_identity(file: &File) -> Option<String> {
         info.volume_serial_number(),
         info.file_index()
     ))
-}
-
-#[cfg(windows)]
-fn file_identity(_: &Metadata, canonical: &Path) -> String {
-    File::open(canonical)
-        .ok()
-        .and_then(|file| windows_file_identity(&file))
-        .unwrap_or_else(|| format!("path:{}", canonical.to_string_lossy().to_lowercase()))
 }
 
 #[cfg(not(any(unix, windows)))]
