@@ -1852,17 +1852,17 @@ frame owner, and no additional savings are assigned to it.
 
 ### JPEG export
 
-Release `luxforge-json` at `4bb339b`, native M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.jpeg` to `export.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. One-minute load 3.9 to 5.2 at each start, with other sessions' recent work on the host (5- and 15-minute loads 9.0 to 9.8 and 16.6 to 17.2). No RAW export needed a preparation: the committed edit had already developed the entry's settings.
+Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.jpeg` to `export.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. No RAW export needed a preparation: the committed edit had already developed the entry's settings. The `image` column is the first build, which encoded with the `image` crate, at one-minute load 3.9 to 5.2; the libjpeg-turbo column is the current build, which encodes through `mozjpeg`, at one-minute load 2.8 after waiting for the host to settle (5- and 15-minute loads 10.8 and 13.7 from other sessions). The two runs were not back to back, so the comparison is indicative; the encoder alone, measured back to back, is 48 against 111 ms at 24 MP and 121 against 274 ms at 60 MP ([export design](../design/export.md#decisions)).
 
-| Source | Export wall p50 / max of 5 (ms) | Output | Dimensions | Process peak RSS, prepare only → prepare and one export |
-| --- | ---: | ---: | --- | ---: |
-| 24 MP JPEG (generated) | 158 / 176 | 688 KiB | 6000 × 4000 | 173 → 285 MiB (+112) |
-| 60 MP JPEG (generated) | 363 / 386 | 1.63 MiB | 10000 × 6000 | 416 → 661 MiB (+245) |
-| Nikon Z6 NEF | 220 / 230 | 2.21 MiB | 4024 × 6048 | 524 → 525 MiB (+1) |
-| Fujifilm X100VI RAF | 331 / 338 | 3.92 MiB | 7728 × 5152 | 889 → 897 MiB (+8) |
-| DJI Air 2S DNG | 243 / 251 | 6.08 MiB | 5464 × 3640 | 450 → 458 MiB (+8) |
+| Source | Export wall p50 / max of 5, libjpeg-turbo (ms) | Same, `image` (ms) | Output, libjpeg-turbo | Dimensions |
+| --- | ---: | ---: | ---: | --- |
+| 24 MP JPEG (generated) | 90 / 110 | 158 / 176 | 688 KiB | 6000 × 4000 |
+| 60 MP JPEG (generated) | 170 / 175 | 363 / 386 | 1.63 MiB | 10000 × 6000 |
+| Nikon Z6 NEF | 118 / 127 | 220 / 230 | 2.35 MiB | 4024 × 6048 |
+| Fujifilm X100VI RAF | 185 / 193 | 331 / 338 | 4.36 MiB | 7728 × 5152 |
+| DJI Air 2S DNG | 120 / 131 | 243 / 251 | 6.29 MiB | 5464 × 3640 |
 
-Encoding alone, measured separately with the pinned `image` encoder, is 119 ms at 24 MP and 293 ms at 60 MP ([export design](../design/export.md#decisions)), so it is most of an export's time. The peak figures are `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once, so each difference is how far one export raises the process's peak, not the export's own allocation: a JPEG export's exact frame lands above the decoded source's peak, while a RAW export's frame fits under the peak RAW development already reached.
+Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
 
 ## Method
 
