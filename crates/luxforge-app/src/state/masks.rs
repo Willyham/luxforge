@@ -418,6 +418,19 @@ impl MasksModel {
     }
 }
 
+/// The icon one component kind is drawn with wherever it is named: its row, the New mask and Add
+/// menus, and the draft bar. The icons are the widget library's, looked up by name, so a kind the
+/// library draws no icon for shows none rather than another kind's.
+#[allow(dead_code)]
+pub(crate) fn kind_icon(kind: &str) -> Option<luxforge_ui::Icon> {
+    let name = match kind {
+        "luminance-range" => "luminance",
+        "colour-range" => "colour",
+        other => other,
+    };
+    luxforge_ui::Icon::from_name(name)
+}
+
 /// One mode's position in the host's own list of modes, which is the list the Add row offers and the
 /// controller resolves a chosen index against.
 pub(crate) fn mode_index(mode: ComponentMode) -> usize {
