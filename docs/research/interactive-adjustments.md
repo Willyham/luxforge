@@ -99,17 +99,41 @@ spatial halos and whole-image estimates. Show the visible current result before 
 off-screen remainder and the full histogram. Reuse the current bounded worker and cancellation
 mechanism; pan/zoom supersedes obsolete region requests as well as obsolete recipe requests.
 
+The proposed [phase and admission contract](../design/instant-preview.md#phase-order-cancellation-and-pause)
+uses `abandoned` for the interactive pixel/estimate/coverage phase, then `superseded` for idle/release
+viewport refinement and full-image analysis. Superseded interactive frames may advance a live
+draft, but delivery rejects obsolete content or regions outside the current view. Standalone view
+requests use the existing refit gate; the gesture driver carries the latest desired region and
+reconciles a displaced request on delivery or when ownership ends. There is still one active and
+one pending job. The uncut compilation supplies mask coverage, `transform` and `locate`; only the
+pixel producer receives the region cut.
+
+A separate region texture slot retains the full-image texture for settled pans. Per-tile content,
+region and quality identities prevent stale off-screen texels appearing beside a newer recipe;
+missing current pixels are hidden, not filled with an old revision. The
+[texture proposal](../design/instant-preview.md#region-textures-and-stale-pixels) bounds full and
+region allocations, including GPU retirement, instead of repeatedly replacing the full tile set.
+
 The [viewport proposal](../design/instant-preview.md#viewport-rendering-at-100-proposal) describes
 the remaining work. This is the strongest first step for 100% and can preserve exact pixels.
 It cannot by itself guarantee a frame budget for many expensive spatial layers.
 
 ### 2. Budget interactive quality and defer non-visible completion work
 
-For expensive stacks, the proposed first quality level renders the visible region at half its
-linear resolution while inputs arrive, then restores full viewport detail on pause/release. Half in each dimension is
-one quarter as many output pixels, not an assured fourfold speedup. Use measured frame cost,
+For expensive stacks, the proposed first softer level is a viewport window on the existing
+half-scale proxy stage, compiled against its whole scaled dimensions. Its key includes region and
+scale; a new pan replaces the queue's one cached proxy source. Measure rebuild costs rather than
+assuming free pans. Reuse the spatial approximation and thin-mask supersampling rules, adding a
+reduced-detail reason for the enlarged 100% preview. Full viewport detail returns on pause/release.
+Half in each dimension is one quarter as many output pixels, not an assured fourfold speedup. Use measured frame cost,
 bounded quality levels and hysteresis to prevent visible oscillation. The first drag frame must
 also have a bounded path; do not wait for a slow exact frame to learn that approximation is needed.
+
+Pause uses the same gesture-idle policy as the Fit exact-phase-deferral work: accepted input
+drained, no pending input/round trip/commit, then a quiet interval without new gesture/view motion.
+That experiment must choose and measure the interval; there is no numerical definition today to
+reuse. Do not add a second viewport timer. Release bypasses the interval after draining its final
+input, and resumed motion cancels refinement.
 
 Keep all recipe effects present at the chosen scale. A reduced-resolution spatial effect or thin
 mask remains explicitly approximate; sharp mask edges and strong texture need comparison. Do not
@@ -126,20 +150,49 @@ the guide's own cost and image error, including multiple spatial layers. Replace
 estimates on refinement, and never use its estimates for exact analysis or export. This is an
 additional preview approximation to qualify, not an existing capability or accepted quality bound.
 
+Isolate guide estimates with a distinct key namespace on both byte and linear domains, including
+algorithm/version, guide dimensions and quality, composed with the existing RAW white-balance
+approximation key. Keep exact and approximate entries within the existing eight-entry store in
+total. Neither a displayed approximation label nor differing dimensions alone prevents an exact
+render from reading a poisoned cache entry.
+
+The current planner refuses an estimate-bearing spatial segment behind another spatial segment:
+for example, a second Presence layer with Dehaze. That class still has **no viewport path** under
+the initial extension. Use an eligible bounded whole-output proxy during motion and an uncut
+full render for settlement, with the fallback reason exposed. If a proxy is ineligible or exceeds
+existing resource admission, retain the explicit exact fallback. Positional/pixel operations that
+cannot be cut also fall back. The guide does not remove those restrictions without a separate
+window-equivalence proof, and these classes have no promised viewport latency.
+
 Avoid starting a full-image render/histogram after every moving input. There is already conditional
 owner authorization to test exact-phase deferral **at Fit** in the
 [post-consolidation decisions](../decisions.md#post-consolidation-review). The owner also accepts
 temporary softness and an updating histogram at 100%. On pause/release, the recommendation is to
 refine the viewport first, then finish full-image analysis; displayed numbers retain their last exact values
 and say updating until a matching full-image report arrives. Viewport clipping can follow current
-visible pixels, with its quality identified, but is not a whole-photo clipping count.
+visible pixels, extending today's `overlay_source` rule: mark the displayed-region overlay
+approximate until exact region pixels replace it, and carry its region and quality identity.
+Keep OR reduction and the 4096-cells-per-side cap but bound the grid to the visible region, giving
+finer 100% coverage than the whole-photo grid. This is the proposed clipping answer awaiting the
+owner, not a whole-photo clipping count or an accepted policy change.
 
 ### 3. Reuse work according to what actually changed
 
-Evaluate one bounded cache of the stage immediately before the active adjustment, using the
-renderer’s existing numerical representation without introducing quantization. Recompute that
-adjustment and its dependent suffix. Start with the currently edited viewport/scale, not one
-full-resolution buffer per layer. Record hit rate, rebuild cost and memory before retaining it.
+Start with a cache at an **existing materialized segment boundary**, storing that boundary's exact
+representation: bytes where the byte-domain boundary already quantizes, and the existing float
+planes where a spatial boundary materializes them. Recompute the changed segment and dependent
+suffix. Do not split a fused colour run by inventing an 8-bit intermediate. Begin with one cached
+viewport/scale region under a proposed 64 MiB retained-byte cap; evict before replacement, charge
+construction scratch separately, and skip caching if the boundary representation does not fit.
+Record hit rate, rebuild cost and memory before adopting it.
+
+A cache immediately before an individual Basic unit would require a new persistent intermediate:
+today its units run in a fixed white-balance → Exposure → Tone → Colour order within one layer,
+and the byte colour run uses f32 row scratch. An RGB f32 frame is 62.2 MB (59.3 MiB) for
+2880 × 1800 or 720 MB (686.6 MiB) at 60 MP, excluding masks and halos. RAW per-pixel evaluation
+also has f64 values, so a new f32 checkpoint is not automatically exact there. Such an intra-segment
+cache is deferred pending a numerical contract and byte budget; an Exposure edit invalidates
+the units after white balance, so it cannot reuse their results.
 
 Changing a late masked adjustment can benefit substantially; changing RAW Exposure near the start
 still changes most downstream pixels. Cache mask coverage only while its dependencies are stable:
@@ -167,7 +220,10 @@ reference. A fast Exposure shader alone does not solve arbitrary masked spatial 
 ## How to qualify the result
 
 The existing [rendering plan](../../tasks/rendering.json) already includes exact-phase deferral,
-viewport design, row reads for estimates and other byte-identical optimizations. Extend that work
+viewport design, row reads for estimates and other byte-identical optimizations. The viewport
+design and histogram answer are recorded; its remaining owner gate is the proposed clipping
+answer, tracked with the outstanding quality/error choices in the
+[product decisions plan](../../tasks/product-decisions.json). Extend implementation planning
 with the accepted interaction priority and explicit quality/overlay contracts, rather than start a
 competing renderer or duplicate plan. This research does not mark any implementation task complete.
 

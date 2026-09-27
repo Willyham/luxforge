@@ -150,7 +150,7 @@ The approximate proxy phase itself renders in 7.4 / 12.6 ms on the Z6 (1049 × 1
 
 Recorded here as proposals, not decisions.
 
-- **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is the largest remaining cost per input (about 50 ms at 24 MP under a rotated crop on this host). Rendering at half the display size while inputs keep arriving, then at display size once they pause, would cut that fourfold at the cost of a softer picture during the movement itself; it is a measured proposal, taken only if the GPU stage below is not.
+- **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is a substantial remaining cost per input (about 50 ms at 24 MP under a rotated crop in the recorded diagnostic). Half the linear display resolution has one quarter as many output pixels and gives a softer picture during motion; a fourfold latency improvement is not established. Measure the reduction, including proxy builds and global estimates. It can complement GPU execution; neither approach's gain is assumed.
 - **GPU colour stage.** If the proxy render of the full Basic layer still misses the two-frame target at Fit, the next step is to draw the proxy of the drafted layer's input stage through an `iced` shader primitive and apply the colour units as a fragment program with the coefficients as uniforms, so a tick costs a uniform write. That needs a WGSL transcription of each unit, a headless readback test against the CPU path within one code, and a fallback to the CPU proxy whenever a unit has no GPU program. The proxy source and the two-phase job are the foundation it needs and are built so that it changes only the presentation of the proxy phase.
 - **Viewport tiles at 100%.** A drag at 100% still renders the whole exact frame. The inverse rectangle walk already exists in `WindowPlan::of` / `apply` for cropped proxies; the proposal below extends it to the viewport.
 - **Reduced pool.** Leaving one or two cores out of the shared Rayon pool for the desktop and owner threads may lower jitter; it is a measurement, not a default.
@@ -178,29 +178,145 @@ not change the current two-phase contract or claim an implemented speedup.
   source; a bounded region copy is an alternative to measure if a view complicates the evaluator.
   Never make a full-source copy to obtain a small visible window. Validate composition with all
   source orientations and existing views.
-- **Preserve global context.** Use exact whole-stage estimates keyed to their actual inputs for an
-  exact viewport. Dehaze's global estimate must not be recomputed from only the visible rectangle,
-  which would change appearance when panning. An upstream edit can invalidate that estimate; this
-  is remaining full-image work, not a viewport speedup. Approximate estimates would require their
-  own measured preview contract.
-- **Present a region.** Carry full output dimensions, region origin, recipe/draft generation,
-  view identity and quality with the raster. Upload only the new region and position it in the
-  full canvas. Bound retained regions and pending work; reject obsolete results after pan, zoom,
-  resize or another input. Current texture tiling only handles device dimension limits and still
-  uploads the entire frame. Reuse the current full raster on settled pans when available; a pan
-  into unavailable current detail may request region work. That would be an explicit exception to
-  the current rule that view changes never render.
-- **Separate visible detail from full-image analysis.** Recommend prioritizing the visible result
-  while moving and on release, then completing the whole frame and histogram on pause/release.
-  Keep the previous exact histogram/counters marked updating; never substitute a viewport-only
-  histogram. Clipping over the visible current region can reflect its pixels with an appropriate
-  quality label, separately from whole-image counts. This extension beyond the accepted Fit
-  experiment has the owner's [acceptance of temporary softness and an updating histogram](../decisions.md#interactive-previews-at-100).
-  The proposed clipping-overlay policy and measured quality levels remain outstanding.
+- **Keep an uncut evaluation for coordinates and coverage.** Only the pixel producer receives the
+  cut compilation. The uncut full-stage compilation serves `transform`, `locate` and the mask
+  coverage grid, including the first-bound-layer input for value-based masks, as the proxy phase
+  does today. A viewport coverage request expresses its region in those full-stage coordinates;
+  it must not reinterpret its mask or brush coordinates in the cut frame.
+
+#### Phase order, cancellation and pause
+
+All names below describe proposed job behavior, not new implemented methods. Reuse the existing
+two cancellation tokens and one active/one pending worker bound:
+
+| Phase | When it runs | Cancellation token | Output |
+| --- | --- | --- | --- |
+| Interactive viewport, at the chosen scale, or the explicitly reported proxy fallback | First for an adjustment or admitted view request; during motion it is the only pixel phase | `abandoned`, including its source-window build, guide/estimate work and coverage calculation | A region/quality-tagged frame; no full-image report |
+| Full-detail viewport refinement | After the interactive phase when the shared idle policy permits it, or for the released committed state; skip if the first phase already produced exact detail | `superseded` | Exact current region when the stack supports it; no full-image report |
+| Whole-frame exact render and analysis | After viewport refinement, on the same idle/release opportunity | `superseded` | Retained full raster, exact histogram and counts |
+
+A newer slider value or pan supersedes the job but does not abandon its interactive phase.
+That phase can therefore make progress. Selection changes, draft cancellation, shutdown or an
+explicit abandonment stop it. A completed superseded draft frame can advance the display only
+within the same live draft, with a revision newer than the one already shown. Commit/release,
+cancel and history/asset changes fence out earlier draft frames. Region placement is checked on
+delivery: compatible full-stage geometry and scale, an intersection with the current viewport,
+and a valid content identity. Draw only that intersection at its original coordinates; discard
+a region the view has left. Rejecting its delivery is not a reason to cancel it mid-render.
+
+The whole-stage evaluation used by the interactive phase must also use `abandoned`; calling an
+estimate evaluator that retained `superseded` would reintroduce starvation. Refinement and exact
+analysis use separate evaluations with `superseded`, and share estimates only under matching keys.
+
+**Pause uses one shared policy with the Fit exact-phase-deferral work.** A pause means the latest
+accepted gesture input has drained, no draft round trip, pending input or commit is outstanding,
+and no newer slider/stroke/view motion has arrived for the policy's quiet interval. Release drains
+the final input and starts committed settlement without that interval. New motion cancels
+refinement and restarts interactive work. The Fit deferral experiment must select and measure the
+quiet interval and own this policy; it does not specify a numerical interval today. A viewport
+must not introduce a second timeout, and no idle timer remains armed after settlement. An idle
+draft can refine without being committed.
+
+#### Admission to the shared pending slot
+
+Use the existing gesture/refit gate, not another render lane. A standalone view request never
+replaces a gesture-owned pending preview or a crop draft's input-stage job. Keep one replaceable
+`desired_view` value plus a dirty flag on the desktop while gated. Every subsequent gesture-owned
+preview snapshots that latest view. On an eligible slider/stroke pause, the gesture driver itself
+may request a combined latest-draft/latest-view preview; a crop input-stage wait remains protected
+until its draft releases ownership. Pan without further slider movement therefore has an explicit
+owner, rather than relying on another `draft.set` to arrive.
+
+If a draft replaces a pending standalone region job, mark the desired view dirty and clear that
+job's in-flight bookkeeping using the queue's `replaced` identity. Do not retry the old job. On
+gesture completion/cancellation and on preview delivery, reconcile the latest recipe and desired
+view: clear the flag if current pixels cover it, otherwise issue one current region request when
+the gate permits. While the gate is closed, leave the responsibility with the gesture driver.
+View requests remain deferred across a commit round trip. A view-only request never calls
+`draft_preview_superseded`; genuine recipe/selection supersession retains that refusal behavior.
+
+#### Region textures and stale pixels
+
+Give the photo surface a **separate region slot**, retaining its existing full-image slot. Do not
+alternate viewport rasters and full rasters through the one dimension-keyed tile set. Each region
+tile records its content identity (asset, source development, entry/draft epoch and revision),
+request generation, full-stage rectangle, scale and quality. The region slot has front/back tile
+sets for publication; all allocations count against its byte budget, including edge-tile padding.
+
+Keep one coherent displayed recipe revision. Before a new interactive region lands, the previous
+picture may remain uniformly marked updating. On adoption of a newer revision, draw only matching
+region tiles or matching full-slot texels. **Hide uncovered or older-revision texels with the canvas
+background and an updating-detail state**; never expose an old full image behind a new-recipe region
+on pan. A low-quality tile and its exact refinement may share the same recipe identity, but the
+display keeps the approximate label until the visible region is fully refined. The full slot can
+serve settled pans without upload when its content identity matches, even if the view-request
+generation has changed.
+
+Proposed photo-texture admission: at most **one 512 MiB full-image allocation plus two 32 MiB region
+tile sets (576 MiB total)**. The full slot's actual size follows the existing frame limit; a 60 MP
+RGBA8 image is 228.9 MiB, giving at most 292.9 MiB with both region sets. These are proposed byte
+bounds, not measurements or a whole-app memory claim. Count submitted-but-not-retired textures in
+the bound; evict/release them before admitting replacements and wait asynchronously for GPU
+retirement where necessary, never blocking the UI or catalog owner. Admit uploads in bounded
+chunks with at most 32 MiB of application-owned staging in
+flight. Overlay textures, toolkit allocations and backend staging are accounted separately in
+native GPU measurements. A region exceeding admission takes the explicit full-frame fallback;
+never silently lower settled 100% detail. No region-sized frame replaces the full slot merely
+because the user pans, and an old full allocation is not retained beside its replacement for free.
+
+#### Global context, approximation and fallback
+
+An exact viewport uses exact whole-stage estimates keyed to their actual inputs. Dehaze must not
+estimate from only the visible rectangle, which would change its appearance on pan. The proposed
+reduced whole-image guide needs a distinct estimate-key namespace on **both** pixel domains, with
+the guide algorithm/version, quality level, guide dimensions, upstream recipe/mask state and
+source development/view. Compose this with the existing RAW white-balance approximation key;
+dimensions or a display label alone do not isolate approximate estimates. Exact evaluations never
+look up that namespace. Both classes share the existing eight-entry estimate-store cap, not eight
+entries per quality or per pan; eviction can rebuild an estimate but cannot change its meaning.
+
+The current `WindowPlan` refuses **any spatial segment needing a global estimate behind an earlier
+spatial segment**, for example a second Presence layer with active Dehaze. Such a stack receives
+no viewport path merely by adding `of_rect` or an approximate guide. Report this fallback class:
+use an eligible bounded whole-output proxy for motion, then the existing uncut full-frame exact
+path for settled detail. A pixel-stage or other proxy-ineligible stack takes the explicit exact
+fallback. Existing source/frame admission still applies to uncut proxies, including tight crops;
+do not claim a viewport latency bound for these stacks. Extending their window eligibility needs
+its own numerical and memory proof. Positional units not yet adapted to an origin and point
+replacements in cut segments likewise remain explicit region fallbacks.
+
+The first proposed softer level reuses **a viewport window on a half-scale proxy stage**, compiled
+against that whole scaled stage. Extend the current proxy plan/key with the window and scale;
+the queue's existing one-entry source-proxy cache is replaced on a different pan/scale, not grown
+into an unbounded tile cache. Measure pan rebuild costs and release the displaced source before
+replacement work. Preserve the existing spatial-approximation and thin-mask supersampling reasons;
+add a reduced-detail reason so a coarse 100% viewport is never labelled exact merely because its
+recipe is pointwise. Global-guide approximation carries its own reason as well.
+
+#### Histogram and clipping proposal
+
+The owner has [accepted temporary softness and an updating histogram](../decisions.md#interactive-previews-at-100).
+Keep previous exact full-image counts marked updating until the matching full report arrives;
+never substitute a viewport histogram. The remaining proposed clipping answer extends
+`overlay_source`: derive clipping from the displayed region while exact pixels are outstanding,
+mark it approximate, and replace it with the matching exact-region overlay on refinement.
+Carry region/content/quality identity into the overlay and hide it over missing or stale tiles.
+Mask coverage remains on the uncut coordinate evaluation described above.
+
+Apply the existing OR-of-clipped-pixels rule to a **viewport-bounded grid**, with the existing
+4096-cells-per-side cap. This can give finer 100% coverage than today's whole-photo grid, whose
+cells grow on photographs larger than 4096 pixels a side; it is not permission to lose isolated
+clipping. An exact visible overlay is distinct from whole-image counts, which may still be updating.
+This extension is the proposed answer for owner review, not a recorded acceptance. Its decision
+and the preview quality/error choices are tracked among the open product questions.
 
 Acceptance requires whole-buffer equality with the matching region of an exact full render,
 including fractional/rotated crops, masks, finish effects, spatial seams and estimates; bounded
 CPU/GPU residency; generation-correct pan/release behavior; and native input-to-present timings
-on photo-sized JPEG/RAW stacks. Viewport-only output must not satisfy a full-frame analysis,
+on photo-sized JPEG/RAW stacks. Include sustained-input forward progress, every pending-job
+replacement pairing, pause/resume and release fences, zero stale-texel exposure on pan, full-slot
+reuse without re-upload, estimate eviction without cross-quality reuse, and mask-grid/locate
+agreement with the uncut stage. Check the named fallback classes separately. Viewport-only output
+must not satisfy a full-frame analysis,
 sample, export or evidence request. Unsupported region plans retain an explicit existing-path
 fallback. Implementation and its task-plan extension follow the outstanding product choices.

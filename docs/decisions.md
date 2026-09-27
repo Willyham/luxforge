@@ -187,8 +187,11 @@ Not adopted: deferring the whole capabilities framework until the first Correcti
   pause or release and the histogram is marked updating meanwhile. This accepts the interaction
   tradeoff in the [responsive-adjustments research](research/interactive-adjustments.md), not an
   implemented latency result. Exact settled pixels, full-image analysis and export remain the
-  reference. The implementation, quality levels, numerical bounds and clipping-overlay policy
-  remain to be designed and verified.
+  reference. The remaining clipping and quality/error choices are tracked in
+  [product decisions](../tasks/product-decisions.json); the
+  [viewport proposal](design/instant-preview.md#histogram-and-clipping-proposal) recommends extending
+  the existing displayed-frame clipping rule to a viewport-bounded grid. That recommendation is
+  not an owner decision. Renderer implementation remains outstanding.
 
 ## Open product questions
 
@@ -201,6 +204,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
+- For interactive previews, should clipping extend the existing displayed-frame rule to a viewport-bounded grid, and which measured quality levels and approximation error bounds are acceptable? Temporary softness while moving and an updating histogram are already accepted above.
 - Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
