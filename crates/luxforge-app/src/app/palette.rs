@@ -3,8 +3,8 @@
 use super::{
     Editor,
     message::{
-        ActionMessage, HistoryMessage, Message, PaletteAction, PaletteMessage, PerformanceMessage,
-        ViewMessage,
+        ActionMessage, ExportMessage, HistoryMessage, Message, PaletteAction, PaletteMessage,
+        PerformanceMessage, ViewMessage,
     },
 };
 use crate::view;
@@ -69,6 +69,9 @@ impl Editor {
                     }
                     Some(PaletteAction::Restore) => {
                         self.dispatch(Message::History(HistoryMessage::Restore))
+                    }
+                    Some(PaletteAction::Export { keep_metadata }) => {
+                        self.dispatch(Message::Export(ExportMessage::Start { keep_metadata }))
                     }
                     None => Task::none(),
                 };
