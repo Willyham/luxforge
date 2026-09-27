@@ -365,7 +365,7 @@
     {
       "id": "TASK-006",
       "description": "State one rule for tests that must not depend on host load, no shared state, ordering from gates not sleeps, a deadline that only bounds a hang, and give every crate, the widget crate included, one core-free gate and wait helper, fixing the load-dependent tests found.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
