@@ -109,7 +109,7 @@ fn greys(width: i64, height: i64) -> Vec<[f64; 3]> {
     let mut pixels = vec![[0.0; 3]; (width * height) as usize];
     for y in 0..height {
         for x in 0..width {
-            let value = reference::srgb_to_linear(((x * 7 + y * 3) % 256) as u8);
+            let value = reference::srgb::decode(((x * 7 + y * 3) % 256) as u8);
             pixels[(y * width + x) as usize] = [value; 3];
         }
     }
@@ -121,11 +121,11 @@ fn greys(width: i64, height: i64) -> Vec<[f64; 3]> {
 fn byte_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (SourceImage, Vec<[f64; 3]>) {
     let codes: Vec<[u8; 3]> = pixels
         .iter()
-        .map(|pixel| pixel.map(reference::linear_to_srgb_code))
+        .map(|pixel| pixel.map(reference::srgb::code))
         .collect();
     let decoded = codes
         .iter()
-        .map(|code| code.map(reference::srgb_to_linear))
+        .map(|code| code.map(reference::srgb::decode))
         .collect();
     (source_of(width as u32, height as u32, &codes), decoded)
 }
@@ -230,7 +230,7 @@ fn production_matches_the_reference_through_both_render_paths() {
                     let reference = expected.get(x, y);
                     for channel in 0..3 {
                         let linear = reference[channel];
-                        let code = reference::linear_to_srgb_code(linear);
+                        let code = reference::srgb::code(linear);
                         fixtures::assert_code_near_threshold(
                             pixel[channel],
                             code,
@@ -272,7 +272,7 @@ fn production_matches_the_reference_through_both_render_paths() {
                     let reference = expected.get(x, y);
                     for channel in 0..3 {
                         let linear = reference[channel];
-                        let code = reference::linear_to_srgb_code(linear);
+                        let code = reference::srgb::code(linear);
                         fixtures::assert_code_near_threshold(
                             pixel[channel],
                             code,

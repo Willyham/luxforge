@@ -107,22 +107,14 @@ pub const ATMOSPHERE_MIN_COUNT: usize = 16;
 // ---------------------------------------------------------------------------
 
 /// The sRGB OETF, analytically continued to every finite real value, exactly as the
-/// tone study defines the encoded working domain. No clamping.
+/// tone study defines the encoded working domain: [`crate::srgb::encode_extended`].
 pub fn encode_srgb_extended(l: f64) -> f64 {
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    }
+    crate::srgb::encode_extended(l)
 }
 
-/// The inverse of [`encode_srgb_extended`], equally continued. No clamping.
+/// The inverse of [`encode_srgb_extended`], equally continued: [`crate::srgb::decode_encoded`].
 pub fn decode_srgb_extended(e: f64) -> f64 {
-    if e <= 0.040_45 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
+    crate::srgb::decode_encoded(e)
 }
 
 /// Rec. 709 relative luminance of a linear-sRGB triple. Not gamut-clamped.

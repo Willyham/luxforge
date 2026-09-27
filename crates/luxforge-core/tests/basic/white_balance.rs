@@ -13,7 +13,7 @@ use super::basic_layer;
 use luxforge_core::{
     ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, ModuleRegistry, OwnerHandle, SnapshotId,
 };
-use luxforge_reference::srgb_to_linear;
+use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{self, RejectReason};
 use luxforge_testkit::client::{call, import, refused};
 use luxforge_testkit::fixtures::{self, recipe, source_of};
@@ -104,7 +104,7 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
             for (channel, linear) in case.expected_linear_f64.into_iter().enumerate() {
-                let expected = luxforge_reference::linear_to_code(linear);
+                let expected = luxforge_reference::srgb::code(linear);
                 fixtures::assert_code_near_threshold(
                     pixel[channel],
                     expected,
@@ -205,13 +205,13 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
     )
     .expect("a rendered mixed layer");
     for (index, input) in inputs.iter().enumerate() {
-        let linear = input.map(srgb_to_linear);
+        let linear = input.map(srgb::decode);
         let balanced = white_balance::apply(60.0, -25.0, linear);
         let exposed = balanced.map(|value| value * 4.0);
         for (channel, value) in exposed.into_iter().enumerate() {
             fixtures::assert_code_near_threshold(
                 rendered.pixel(index as u32, 0).expect("a pixel")[channel],
-                luxforge_reference::linear_to_code(value),
+                luxforge_reference::srgb::code(value),
                 value,
                 CODE_BAND,
                 &format!("{input:?} channel {channel}"),

@@ -95,9 +95,9 @@ impl Basic {
     /// clamps between units, matching the design's "preserve finite values outside [0,1]" rule.
     fn pixel(&self, rgb: [u8; 3]) -> [u8; 3] {
         let mut channels = [
-            reference::srgb_to_linear(rgb[0]),
-            reference::srgb_to_linear(rgb[1]),
-            reference::srgb_to_linear(rgb[2]),
+            reference::srgb::decode(rgb[0]),
+            reference::srgb::decode(rgb[1]),
+            reference::srgb::decode(rgb[2]),
         ];
         channels = reference::white_balance::apply(self.temperature, self.tint, channels);
         for channel in &mut channels {
@@ -115,9 +115,9 @@ impl Basic {
         );
         channels = reference::colour::apply_basic_colour(channels, self.vibrance, self.saturation);
         [
-            reference::linear_to_srgb_code(channels[0]),
-            reference::linear_to_srgb_code(channels[1]),
-            reference::linear_to_srgb_code(channels[2]),
+            reference::srgb::code(channels[0]),
+            reference::srgb::code(channels[1]),
+            reference::srgb::code(channels[2]),
         ]
     }
 
@@ -232,9 +232,9 @@ fn resample(stage: &[u8], width: u32, height: u32, payload: &Value) -> Result<(u
                 let mut linear = 0.0;
                 for (x, y, weight) in weights {
                     linear +=
-                        weight * reference::srgb_to_linear(at(stage, width, height, x, y, channel));
+                        weight * reference::srgb::decode(at(stage, width, height, x, y, channel));
                 }
-                out[base + channel] = reference::linear_to_srgb_code(linear);
+                out[base + channel] = reference::srgb::code(linear);
             }
             let mut alpha = 0.0;
             for (x, y, weight) in weights {

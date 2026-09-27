@@ -15,7 +15,7 @@
 use super::*;
 use luxforge_core::{Layer, LinearSettings, ModuleRegistry, SnapshotId};
 use luxforge_reference::mask::{Algebra, Mask as RefMask, Stage as RefStage, blend, coverage};
-use luxforge_reference::{linear_to_srgb_code, srgb_to_linear};
+use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::json;
 
@@ -140,10 +140,10 @@ fn a_half_covered_frame_matches_the_stepwise_reference_on_both_paths() {
             }
             let offset = ((y * WIDTH + x) * 4) as usize;
             for channel in 0..3 {
-                let input = srgb_to_linear(source.rgba[offset + channel]) * 2.0_f64.powf(0.5);
+                let input = srgb::decode(source.rgba[offset + channel]) * 2.0_f64.powf(0.5);
                 let effect = input * 2.0_f64.powf(2.0);
                 let blended = blend(input, effect, m);
-                let expected = linear_to_srgb_code(blended);
+                let expected = srgb::code(blended);
                 for (path, pixel) in [
                     ("jpeg", rendered.pixel(x, y).unwrap()),
                     ("linear", rendered_linear.pixel(x, y).unwrap()),

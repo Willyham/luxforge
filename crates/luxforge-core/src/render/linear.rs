@@ -1163,6 +1163,7 @@ mod tests {
         Layer, Recipe, RenderContext, RenderOptions, SnapshotId,
         modules::{CropPayload, ModuleRegistry},
     };
+    use luxforge_reference::srgb as srgb_ref;
     use rayon::prelude::*;
     use sha2::{Digest, Sha256};
     use std::time::Instant;
@@ -2518,13 +2519,7 @@ mod tests {
     }
 
     fn reference_srgb(value: f64) -> u8 {
-        let value = value.clamp(0.0, 1.0);
-        let encoded = if value <= 0.003_130_8 {
-            value * 12.92
-        } else {
-            1.055 * value.powf(1.0 / 2.4) - 0.055
-        };
-        (encoded * 255.0).round() as u8
+        (srgb_ref::encode_clamped(value) * 255.0).round() as u8
     }
 
     #[test]
@@ -2533,11 +2528,7 @@ mod tests {
         // code boundary. Some of these values intentionally disagree with inverse-only lookup.
         for code in 1..=255_u32 {
             let encoded = (f64::from(code) - 0.5) / 255.0;
-            let boundary = if encoded <= 0.040_45 {
-                encoded / 12.92
-            } else {
-                ((encoded + 0.055) / 1.055).powf(2.4)
-            };
+            let boundary = srgb_ref::decode_encoded(encoded);
             let bits = boundary.to_bits();
             for bits in bits - 128..=bits + 128 {
                 let value = f64::from_bits(bits);

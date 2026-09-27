@@ -11,7 +11,7 @@ use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, ModuleRegistry, MutationOutcome,
     ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform,
 };
-use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
+use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use luxforge_testkit::fixtures::{render, sample};
 use serde::Deserialize;
@@ -81,7 +81,7 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
                 case.input
             );
             for (channel, input) in case.input.iter().enumerate() {
-                let linear = exposure(srgb_to_linear(*input), ev);
+                let linear = exposure(srgb::decode(*input), ev);
                 fixtures::assert_code_near_threshold(
                     pixel[channel],
                     case.expected[channel],

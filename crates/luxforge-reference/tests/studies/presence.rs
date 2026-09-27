@@ -26,6 +26,7 @@ use luxforge_reference::presence::{
     self as presence, Atmosphere, PresenceParams, Rect, Rgb, T_FLOOR, decode_srgb_extended,
     encode_srgb_extended, luminance,
 };
+use luxforge_reference::srgb;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -133,22 +134,11 @@ const HAZE_PALETTE: [[f64; 3]; 6] = [
 ];
 
 fn code_to_linear(code: u32) -> f64 {
-    let encoded = f64::from(code) / 255.0;
-    if encoded <= 0.040_45 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
+    srgb::decode(code as u8)
 }
 
 fn linear_to_code(linear: f64) -> u32 {
-    let clamped = linear.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.003_130_8 {
-        12.92 * clamped
-    } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
-    };
-    (255.0 * encoded + 0.5).floor() as u32
+    u32::from(srgb::code(linear))
 }
 
 impl ImageSpec {

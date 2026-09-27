@@ -528,6 +528,28 @@ const SOURCE_RULES: &[SourceRule] = &[
                  mode, and only the RAW settings resolver (editor/source.rs) applies it; build the \
                  evaluation through EditorService::evaluation",
     },
+    // One sRGB reference: `12.92` is the linear-branch slope of both the encode and the decode
+    // branch, in every spelling of the transfer function this rule has found (the threshold is
+    // written as both `0.04045`/`0.0031308` and `0.040_45`/`0.003_130_8`, but the slope is always
+    // `12.92`), so it alone is enough to catch a transcription without also matching every doc
+    // comment that merely names the encode or decode threshold.
+    SourceRule {
+        name: "srgb-transfer-function",
+        tokens: &["12.92"],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/colour.rs",
+            "crates/luxforge-reference/src/srgb.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "only the core's production transfer function (crates/luxforge-core/src/colour.rs) \
+                 and the one shared test reference (luxforge_reference::srgb) may write the sRGB \
+                 transfer function's constants; every other caller, test code included, computes \
+                 through one of them",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -2387,6 +2409,53 @@ mod tests {
             }
         }
         assert_eq!(read(tmp.path(), RULE).unwrap(), clean);
+    }
+
+    #[test]
+    fn only_the_shared_srgb_reference_and_production_colour_write_the_transfer_function() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The one production copy, the one shared test reference, and a threshold literal with no
+        // slope beside it (not a transcription) may.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-core/src/colour.rs",
+                    "if encoded <= 0.040_45 {\n    encoded / 12.92\n}\n",
+                ),
+                (
+                    "crates/luxforge-reference/src/srgb.rs",
+                    "if linear <= 0.003_130_8 {\n    12.92 * linear\n}\n",
+                ),
+                (
+                    "crates/luxforge-core/tests/render/linear.rs",
+                    "0.003_130_8_f64.next_up()\n",
+                ),
+            ],
+        );
+        // The two allowed files are skipped outright; only the threshold-only file is read.
+        assert_eq!(read(root, &["srgb-transfer-function"]).unwrap(), (1, 0));
+        // Everywhere else, test code included, and in the underscore-free spelling too.
+        refuses_each(
+            root,
+            "srgb-transfer-function",
+            &[
+                (
+                    "crates/luxforge-core/src/render.rs",
+                    "if encoded <= 0.04045 {\n    encoded / 12.92\n}\n",
+                ),
+                (
+                    "crates/luxforge-core/tests/mask/overlay.rs",
+                    "fn linear_grey(e: f64) -> f64 {\n    e / 12.92\n}\n",
+                ),
+                (
+                    "crates/luxforge-reference/tests/studies/tone.rs",
+                    "12.92 * clamped\n",
+                ),
+            ],
+            "one shared test reference",
+        );
     }
 
     fn minimal_plan(id: &str) -> Value {

@@ -12,25 +12,15 @@
 
 use image::{ImageBuffer, Rgb, RgbImage};
 use luxforge_reference::colour::{self, Oklab};
+use luxforge_reference::srgb;
 use std::path::{Path, PathBuf};
 
 fn code_to_linear(code: u8) -> f64 {
-    let encoded = f64::from(code) / 255.0;
-    if encoded <= 0.04045 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
+    srgb::decode(code)
 }
 
 fn linear_to_code(linear: f64) -> u8 {
-    let clamped = linear.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.0031308 {
-        clamped * 12.92
-    } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
-    };
-    (255.0 * encoded + 0.5).floor().clamp(0.0, 255.0) as u8
+    srgb::code(linear)
 }
 
 /// The seven review points: saturation at -100, -50, +50,

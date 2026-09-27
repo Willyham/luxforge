@@ -8,13 +8,15 @@
 
 use super::approximately_equal;
 use luxforge_reference::SplitMix64;
+use luxforge_reference::srgb;
 use luxforge_reference::tone::{ToneParams, luminance, tone_curve, tone_pixel};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// The study's own sRGB conversions, independent of `luxforge_reference::tone`'s
-// private helpers on purpose, so the conversions that build the inputs are not
-// the ones under test.
+// The study's own sRGB conversions, used only to quantize a finished linear value into an
+// output code and to decode a fixture's raw byte input. The curve stages under test
+// (`tone_curve`/`tone_pixel`) read and return plain floats and never call through these two
+// helpers, so a defect there cannot hide inside them.
 // ---------------------------------------------------------------------------
 
 /// The standard, clamped sRGB OETF, used only to quantize a *finished* linear
@@ -22,22 +24,11 @@ use std::path::{Path, PathBuf};
 /// `floor(255 * encode(clamp(v, 0, 1)) + 0.5)`. This is not the extended,
 /// unclamped encode the curve's working domain uses internally.
 fn encode_srgb_u8(linear: f64) -> u8 {
-    let clamped = linear.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.003_130_8 {
-        12.92 * clamped
-    } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
-    };
-    (255.0 * encoded + 0.5).floor().clamp(0.0, 255.0) as u8
+    srgb::code(linear)
 }
 
 fn decode_srgb_u8(code: u8) -> f64 {
-    let encoded = f64::from(code) / 255.0;
-    if encoded <= 0.040_45 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
+    srgb::decode(code)
 }
 
 fn to_params(c: [f64; 5]) -> ToneParams {
@@ -426,13 +417,7 @@ fn negative_contrast_alone_has_a_slope_between_its_pivot_slope_and_one_plus_kapp
 
 /// The output code (before rounding) a finished linear value lands on.
 fn unrounded_code(linear: f64) -> f64 {
-    let clamped = linear.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.003_130_8 {
-        12.92 * clamped
-    } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
-    };
-    255.0 * encoded
+    255.0 * srgb::encode_clamped(linear)
 }
 
 fn standard_deviation(values: &[f64]) -> f64 {

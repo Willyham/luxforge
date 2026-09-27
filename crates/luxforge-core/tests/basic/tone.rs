@@ -230,9 +230,9 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     let actual = rendered.pixel(0, 0).expect("the pixel");
 
     let linear_in = [
-        luxforge_reference::srgb_to_linear(input[0]),
-        luxforge_reference::srgb_to_linear(input[1]),
-        luxforge_reference::srgb_to_linear(input[2]),
+        luxforge_reference::srgb::decode(input[0]),
+        luxforge_reference::srgb::decode(input[1]),
+        luxforge_reference::srgb::decode(input[2]),
     ];
 
     // The declared order: exposure, then tone.
@@ -243,7 +243,7 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     ];
     let expected_in_order = luxforge_reference::tone::tone_pixel(exposed, params);
     for (channel, expected_linear) in expected_in_order.iter().enumerate() {
-        let expected_code = luxforge_reference::linear_to_srgb_code(*expected_linear);
+        let expected_code = luxforge_reference::srgb::code(*expected_linear);
         let difference = i32::from(actual[channel]) - i32::from(expected_code);
         assert!(
             difference.abs() <= 1,
@@ -256,9 +256,9 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     // above would hold vacuously (either order giving the same answer).
     let toned_first = luxforge_reference::tone::tone_pixel(linear_in, params);
     let reverse_order = [
-        luxforge_reference::linear_to_srgb_code(luxforge_reference::exposure(toned_first[0], ev)),
-        luxforge_reference::linear_to_srgb_code(luxforge_reference::exposure(toned_first[1], ev)),
-        luxforge_reference::linear_to_srgb_code(luxforge_reference::exposure(toned_first[2], ev)),
+        luxforge_reference::srgb::code(luxforge_reference::exposure(toned_first[0], ev)),
+        luxforge_reference::srgb::code(luxforge_reference::exposure(toned_first[1], ev)),
+        luxforge_reference::srgb::code(luxforge_reference::exposure(toned_first[2], ev)),
     ];
     assert_ne!(
         [actual[0], actual[1], actual[2]],

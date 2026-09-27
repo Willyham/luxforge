@@ -168,8 +168,8 @@ fn settings_mutation(client: &mut JsonProcess, request: &str) -> Value {
 /// One sRGB code tinted by a linear gain, computed independently of the editor by the f64
 /// reference.
 fn tinted_code(code: u64, gain: f64) -> f64 {
-    let linear = luxforge_reference::srgb_to_linear(code as u8) * gain;
-    (luxforge_reference::srgb_encode(linear.clamp(0.0, 1.0)) * 255.0).round()
+    let linear = luxforge_reference::srgb::decode(code as u8) * gain;
+    (luxforge_reference::srgb::encode_nonnegative(linear.clamp(0.0, 1.0)) * 255.0).round()
 }
 
 #[test]

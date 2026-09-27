@@ -395,6 +395,7 @@ mod tests {
     use crate::modules::{ActionInput, ActionPlan, ParameterKind, ResetAction, ToolModule};
     use crate::{Layer, LayerId};
     use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
+    use luxforge_reference::srgb;
     use serde_json::json;
 
     const STAGE: Stage = Stage {
@@ -1393,15 +1394,7 @@ mod tests {
             for unit in operation.units() {
                 unit.apply_row(0, 0, &mut row);
             }
-            let codes = row[0].map(|value| {
-                let clamped = f64::from(value).clamp(0.0, 1.0);
-                let encoded = if clamped <= 0.003_130_8 {
-                    12.92 * clamped
-                } else {
-                    1.055 * clamped.powf(1.0 / 2.4) - 0.055
-                };
-                (255.0 * encoded + 0.5).floor() as i32
-            });
+            let codes = row[0].map(|value| i32::from(srgb::code(f64::from(value))));
             let spread = codes.iter().max().unwrap() - codes.iter().min().unwrap();
             assert!(
                 spread <= 1,

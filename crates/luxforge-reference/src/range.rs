@@ -431,7 +431,7 @@ mod internal_tests {
         // channels, and encodes back to exactly the encoded value the byte came
         // from: the axis and the histogram bin the same number.
         for code in [0u8, 1, 64, 128, 200, 255] {
-            let linear = super::super::srgb_to_linear(code);
+            let linear = crate::srgb::decode(code);
             let e = luminance_axis([linear, linear, linear]);
             let quantized = (255.0 * e + 0.5).floor() as u8;
             assert_eq!(quantized, code, "code {code} did not return to its own bin");

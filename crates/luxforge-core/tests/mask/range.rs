@@ -42,7 +42,7 @@ use luxforge_reference::range::{
     ColourRange as RefColourRange, LuminanceRange as RefLuminanceRange, colour_coverage,
     compile_colour_range, compile_luminance_range, luminance_coverage,
 };
-use luxforge_reference::{linear_to_srgb_code, srgb_to_linear};
+use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::{Value, json};
 
@@ -580,9 +580,9 @@ fn a_range_selection_reads_the_operations_input_and_renders_as_the_reference_com
             // picture rather than an empty one.
             let offset = rng.next_usize((WIDTH * HEIGHT) as usize) * 4;
             let picked = [
-                srgb_to_linear(source.rgba[offset]),
-                srgb_to_linear(source.rgba[offset + 1]),
-                srgb_to_linear(source.rgba[offset + 2]),
+                srgb::decode(source.rgba[offset]),
+                srgb::decode(source.rgba[offset + 1]),
+                srgb::decode(source.rgba[offset + 2]),
             ];
             let range = RefColourRange {
                 samples: vec![picked],
@@ -603,9 +603,9 @@ fn a_range_selection_reads_the_operations_input_and_renders_as_the_reference_com
             for x in 0..WIDTH {
                 let offset = ((y * WIDTH + x) * 4) as usize;
                 let input = [
-                    srgb_to_linear(source.rgba[offset]),
-                    srgb_to_linear(source.rgba[offset + 1]),
-                    srgb_to_linear(source.rgba[offset + 2]),
+                    srgb::decode(source.rgba[offset]),
+                    srgb::decode(source.rgba[offset + 1]),
+                    srgb::decode(source.rgba[offset + 2]),
                 ];
                 let m = evaluate(input);
                 if m > 0.0 && m < 1.0 {
@@ -617,7 +617,7 @@ fn a_range_selection_reads_the_operations_input_and_renders_as_the_reference_com
                     let blended = (1.0 - m) * input[channel] + m * effect;
                     assert_code(
                         code,
-                        linear_to_srgb_code(blended),
+                        srgb::code(blended),
                         blended,
                         &format!("round {round} ({kind}), ({x}, {y}) channel {channel}"),
                     );
@@ -681,9 +681,9 @@ fn a_sampled_byte_equals_the_rendered_byte_across_a_range_boundary() {
             let m = luminance_coverage(
                 &oracle,
                 [
-                    srgb_to_linear(source.rgba[offset]),
-                    srgb_to_linear(source.rgba[offset + 1]),
-                    srgb_to_linear(source.rgba[offset + 2]),
+                    srgb::decode(source.rgba[offset]),
+                    srgb::decode(source.rgba[offset + 1]),
+                    srgb::decode(source.rgba[offset + 2]),
                 ],
             );
             if m > 0.0 && m < 1.0 {
@@ -810,7 +810,7 @@ fn a_range_selection_reads_the_operations_input_on_the_raw_linear_path() {
                     let blended = (1.0 - m) * input[channel] + m * effect;
                     assert_code(
                         code,
-                        linear_to_srgb_code(blended),
+                        srgb::code(blended),
                         blended,
                         &format!("{kind} ({x}, {y}) channel {channel}"),
                     );
@@ -918,9 +918,9 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
             let (u, v) = reference_stage.pixel_uv(x, y);
             let offset = ((y * WIDTH + x) * 4) as usize;
             let input = [
-                srgb_to_linear(source.rgba[offset]),
-                srgb_to_linear(source.rgba[offset + 1]),
-                srgb_to_linear(source.rgba[offset + 2]),
+                srgb::decode(source.rgba[offset]),
+                srgb::decode(source.rgba[offset + 1]),
+                srgb::decode(source.rgba[offset + 2]),
             ];
             // The frozen Zadeh fold, transcribed from `docs/design/mask-study.md#composition`: add
             // takes the maximum, intersect and subtract the minimum, and the whole-mask amount is
@@ -939,7 +939,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
                 let blended = (1.0 - m) * input[channel] + m * effect;
                 assert_code(
                     code,
-                    linear_to_srgb_code(blended),
+                    srgb::code(blended),
                     blended,
                     &format!("({x}, {y}) channel {channel}"),
                 );

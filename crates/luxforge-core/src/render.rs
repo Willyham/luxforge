@@ -2182,6 +2182,7 @@ mod tests {
             EffectDescriptor, EffectStage, ModuleDescriptor, StageContext, ToolModule,
         },
     };
+    use luxforge_reference::srgb;
     use serde_json::{Map, Value, json};
 
     /// The pixel value a geometric component is handed and ignores (proposal P12 of
@@ -2813,23 +2814,9 @@ mod tests {
         }
 
         pub(crate) fn pixel(&self, source: &SourceImage, i: u32, j: u32) -> [u8; 4] {
-            let decode = |value: u8| -> f64 {
-                let encoded = f64::from(value) / 255.0;
-                if encoded <= 0.04045 {
-                    encoded / 12.92
-                } else {
-                    ((encoded + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            let encode = |linear: f64| -> u8 {
-                let linear = linear.clamp(0.0, 1.0);
-                let encoded = if linear <= 0.0031308 {
-                    12.92 * linear
-                } else {
-                    1.055 * linear.powf(1.0 / 2.4) - 0.055
-                };
-                (encoded * 255.0).round() as u8
-            };
+            let decode = |value: u8| -> f64 { srgb::decode(value) };
+            let encode =
+                |linear: f64| -> u8 { (srgb::encode_clamped(linear) * 255.0).round() as u8 };
             let (u, v) = self.position(source, i, j);
             let (left, top) = (u.floor(), v.floor());
             let (fraction_x, fraction_y) = (u - left, v - top);
@@ -4244,22 +4231,14 @@ mod tests {
         }
     }
 
-    /// The sRGB transfer function forwards in f64, written from the contract and used only by the
-    /// references below; the renderer's own encoder rounds to a byte and is not consulted here.
+    /// The sRGB transfer function forwards in f64, from the one shared reference, unclamped; the
+    /// renderer's own encoder rounds to a byte and is not consulted here.
     fn encode_reference(linear: f64) -> f64 {
-        if linear <= 0.003_130_8 {
-            12.92 * linear
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        }
+        srgb::encode_extended(linear)
     }
 
     fn decode_reference(encoded: f64) -> f64 {
-        if encoded <= 0.040_45 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }
+        srgb::decode_encoded(encoded)
     }
 
     fn quantizer_reference_thresholds() -> [f64; 255] {

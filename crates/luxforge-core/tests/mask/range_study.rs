@@ -26,7 +26,7 @@ use luxforge_reference::range::{
     luminance_coverage, luminance_coverage_at, luminance_coverage_branch_form,
     luminance_range_is_legal, oklab_distance, refine_is_legal, refine_radius, refine_radius_linear,
 };
-use luxforge_reference::{linear_to_code, srgb_to_linear};
+use luxforge_reference::srgb;
 
 // ---------------------------------------------------------------------------
 // The study's own inputs.
@@ -73,9 +73,9 @@ fn patch(name: &str) -> [f64; 3] {
         .unwrap_or_else(|| panic!("no chart patch named {name}"))
         .1;
     [
-        srgb_to_linear(codes[0]),
-        srgb_to_linear(codes[1]),
-        srgb_to_linear(codes[2]),
+        srgb::decode(codes[0]),
+        srgb::decode(codes[1]),
+        srgb::decode(codes[2]),
     ]
 }
 
@@ -87,9 +87,9 @@ const TERRACOTTA: [u8; 3] = [180, 100, 70];
 
 fn codes_to_linear(codes: [u8; 3]) -> [f64; 3] {
     [
-        srgb_to_linear(codes[0]),
-        srgb_to_linear(codes[1]),
-        srgb_to_linear(codes[2]),
+        srgb::decode(codes[0]),
+        srgb::decode(codes[1]),
+        srgb::decode(codes[2]),
     ]
 }
 
@@ -161,7 +161,7 @@ fn sample_colour_range(rng: &mut SplitMix64) -> ColourRange {
 /// `+1 EV` on the input, the study's standard yardstick.
 fn code_after_masked_exposure(input_linear: f64, coverage: f64) -> u8 {
     let effect = input_linear * 2.0;
-    linear_to_code((1.0 - coverage) * input_linear + coverage * effect)
+    srgb::code((1.0 - coverage) * input_linear + coverage * effect)
 }
 
 // ---------------------------------------------------------------------------
@@ -174,13 +174,13 @@ fn the_luminance_axis_is_the_domain_the_histogram_bins() {
     // byte quantizes, so the slider's number and the histogram's horizontal
     // position are the same number. Checked on every one of the 256 codes.
     for code in 0u8..=255 {
-        let linear = srgb_to_linear(code);
+        let linear = srgb::decode(code);
         let e = luminance_axis([linear, linear, linear]);
         let quantized = (255.0 * e.clamp(0.0, 1.0) + 0.5).floor() as u8;
         assert_eq!(quantized, code, "grey code {code} did not bin to itself");
         assert_eq!(
             quantized,
-            linear_to_code(linear),
+            srgb::code(linear),
             "grey code {code}: the axis and the output quantizer disagree"
         );
     }
@@ -805,7 +805,7 @@ fn a_hard_band_speckles_on_a_noisy_shadow_and_a_soft_one_does_not() {
         let total = 200_000u32;
         for _ in 0..total {
             let code = 40.0 + 2.0 * rng.next_noise();
-            let linear = luxforge_reference::srgb_decode(code.clamp(0.0, 255.0).round() as u8);
+            let linear = srgb::decode(code.clamp(0.0, 255.0).round() as u8);
             let c = luminance_coverage(&band, [linear, linear, linear]);
             if let Some(p) = previous
                 && (c - p).abs() > 0.5
@@ -874,7 +874,7 @@ fn no_refine_setting_holds_a_face_and_drops_the_oak_floor() {
         (wood_coverage - 0.2955).abs() < 0.01,
         "oak floor coverage moved: {wood_coverage}"
     );
-    let before = linear_to_code(codes_to_linear(WOOD)[0]);
+    let before = srgb::code(codes_to_linear(WOOD)[0]);
     let after = code_after_masked_exposure(codes_to_linear(WOOD)[0], wood_coverage);
     assert!(
         i32::from(after) - i32::from(before) >= 20,
@@ -1021,10 +1021,9 @@ fn the_frozen_tolerance_is_under_one_output_code_at_every_legal_payload() {
     let worst_fraction = |coverage_error: f64| -> f64 {
         let mut worst = 0.0f64;
         for code in 0u8..=255 {
-            let input = srgb_to_linear(code);
-            let blend = |c: f64| {
-                255.0 * luxforge_reference::srgb_encode((1.0 - c) * input + c * 2.0 * input)
-            };
+            let input = srgb::decode(code);
+            let blend =
+                |c: f64| 255.0 * srgb::encode_nonnegative((1.0 - c) * input + c * 2.0 * input);
             worst = worst.max((blend(0.5 + coverage_error) - blend(0.5)).abs());
         }
         worst
@@ -1044,7 +1043,7 @@ fn the_frozen_tolerance_is_under_one_output_code_at_every_legal_payload() {
     let worst_coverage = worst_luminance.max(worst_colour);
     let mut worst_codes = 0i32;
     for code in 0u8..=255 {
-        let input = srgb_to_linear(code);
+        let input = srgb::decode(code);
         let a = code_after_masked_exposure(input, 0.5);
         let b = code_after_masked_exposure(input, 0.5 + worst_coverage);
         worst_codes = worst_codes.max(i32::from(a).abs_diff(i32::from(b)) as i32);
@@ -1288,7 +1287,7 @@ fn range_study_figures() {
         let mut previous: Option<f64> = None;
         for _ in 0..total {
             let code = (40.0 + 2.0 * rng.next_noise()).clamp(0.0, 255.0).round() as u8;
-            let linear = srgb_to_linear(code);
+            let linear = srgb::decode(code);
             let c = luminance_coverage(&band, [linear, linear, linear]);
             sum += c;
             sum2 += c * c;

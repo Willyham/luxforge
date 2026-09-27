@@ -7,6 +7,7 @@ use luxforge_core::{
     ErrorKind, Layer, LinearImage, LinearSettings, ModuleRegistry, Processing, RECIPE_FORMAT,
     Raster, Recipe, SnapshotId, SourceImage, Stage, open_source,
 };
+use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
@@ -54,15 +55,9 @@ impl Sources {
     }
 }
 
-/// The sRGB transfer function, written from the standard's formula.
+/// The sRGB transfer function, from the one shared reference.
 fn decode(code: u8) -> f32 {
-    let value = f64::from(code) / 255.0;
-    let linear = if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    };
-    linear as f32
+    srgb::decode(code) as f32
 }
 
 /// The pixels every sample-against-render comparison reads on an output stage: the four corners,

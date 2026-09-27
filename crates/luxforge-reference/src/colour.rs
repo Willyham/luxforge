@@ -7,7 +7,7 @@
 //! design document alongside this file; every constant and formula here has
 //! its justification there, not here.
 
-use super::{code_to_linear, linear_to_code};
+use super::srgb;
 
 /// Linear sRGB (D65) to LMS, Björn Ottosson's published Oklab matrix.
 const M1: [[f64; 3]; 3] = [
@@ -247,16 +247,12 @@ pub fn apply_basic_colour(rgb: [f64; 3], vibrance: f64, saturation: f64) -> [f64
 /// use.
 pub fn apply_basic_colour_srgb8(rgb: [u8; 3], vibrance: f64, saturation: f64) -> [u8; 3] {
     let linear = [
-        code_to_linear(rgb[0]),
-        code_to_linear(rgb[1]),
-        code_to_linear(rgb[2]),
+        srgb::decode(rgb[0]),
+        srgb::decode(rgb[1]),
+        srgb::decode(rgb[2]),
     ];
     let out = apply_basic_colour(linear, vibrance, saturation);
-    [
-        linear_to_code(out[0]),
-        linear_to_code(out[1]),
-        linear_to_code(out[2]),
-    ]
+    [srgb::code(out[0]), srgb::code(out[1]), srgb::code(out[2])]
 }
 
 #[cfg(test)]
@@ -264,7 +260,7 @@ mod tests {
     use super::*;
 
     fn grey_linear(code: u8) -> [f64; 3] {
-        let l = code_to_linear(code);
+        let l = srgb::decode(code);
         [l, l, l]
     }
 
@@ -325,7 +321,7 @@ mod tests {
             [10, 200, 30],
         ];
         for [r, g, b] in samples {
-            let rgb = [code_to_linear(r), code_to_linear(g), code_to_linear(b)];
+            let rgb = [srgb::decode(r), srgb::decode(g), srgb::decode(b)];
             let lab = to_oklab(rgb);
             let k = 1.0 + (-100.0_f64) / 100.0;
             assert_eq!(k, 0.0);
@@ -347,7 +343,7 @@ mod tests {
                     let r = (ri * 255 / 63) as u8;
                     let g = (gi * 255 / 63) as u8;
                     let b = (bi * 255 / 63) as u8;
-                    let rgb = [code_to_linear(r), code_to_linear(g), code_to_linear(b)];
+                    let rgb = [srgb::decode(r), srgb::decode(g), srgb::decode(b)];
                     let out = apply_saturation(rgb, -100.0);
                     let spread = (out[0] - out[1])
                         .abs()
@@ -375,7 +371,7 @@ mod tests {
             [200, 50, 200],
         ];
         for [r, g, b] in colours {
-            let rgb = [code_to_linear(r), code_to_linear(g), code_to_linear(b)];
+            let rgb = [srgb::decode(r), srgb::decode(g), srgb::decode(b)];
             let lab = to_oklab(rgb);
             let mut previous = -1.0_f64;
             for s in -100..=100 {
@@ -471,7 +467,7 @@ mod tests {
     fn saturation_preserves_hue_for_in_gamut_results() {
         let colours: [[u8; 3]; 4] = [[255, 0, 0], [10, 200, 30], [224, 172, 140], [80, 80, 200]];
         for [r, g, b] in colours {
-            let rgb = [code_to_linear(r), code_to_linear(g), code_to_linear(b)];
+            let rgb = [srgb::decode(r), srgb::decode(g), srgb::decode(b)];
             let lab = to_oklab(rgb);
             let h0 = hue_degrees(lab);
             for s in [-90.0, -50.0, 25.0, 50.0, 100.0] {
@@ -495,7 +491,7 @@ mod tests {
     fn combined_extremes_stay_finite() {
         let colours: [[u8; 3]; 4] = [[255, 0, 0], [224, 172, 140], [0, 0, 0], [255, 255, 255]];
         for [r, g, b] in colours {
-            let rgb = [code_to_linear(r), code_to_linear(g), code_to_linear(b)];
+            let rgb = [srgb::decode(r), srgb::decode(g), srgb::decode(b)];
             for v in [-100.0, 100.0] {
                 for s in [-100.0, 100.0] {
                     let out = apply_basic_colour(rgb, v, s);

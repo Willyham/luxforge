@@ -36,7 +36,7 @@ use luxforge_reference::mask::{
     Brush as RefBrush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage,
     brush_coverage, colour_similarity,
 };
-use luxforge_reference::srgb_to_linear;
+use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::{render, sample};
 use serde_json::{Value, json};
 
@@ -141,9 +141,9 @@ fn two_colour_source() -> SourceImage {
 fn source_pixel(source: &SourceImage, x: u32, y: u32) -> [f64; 3] {
     let offset = ((y * WIDTH + x) * 4) as usize;
     [
-        srgb_to_linear(source.rgba[offset]),
-        srgb_to_linear(source.rgba[offset + 1]),
-        srgb_to_linear(source.rgba[offset + 2]),
+        srgb::decode(source.rgba[offset]),
+        srgb::decode(source.rgba[offset + 1]),
+        srgb::decode(source.rgba[offset + 2]),
     ]
 }
 

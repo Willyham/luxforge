@@ -27,21 +27,14 @@ use luxforge_reference::mixer::{
     self, CENTRE_HUES_DEG, CHROMA_RAMP_EDGE, HUE_REACH, HueWarp, MixerParams, RANGE_COUNT,
     RANGE_NAMES, RANGE_REFERENCE_CODES,
 };
+use luxforge_reference::srgb;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fs;
 use std::path::PathBuf;
 
-/// Decoded from the published sRGB constants directly, matching
-/// `luxforge_reference::srgb_decode`, so the study's inputs do not go through the reference it
-/// checks.
 fn code_to_linear(code: u8) -> f64 {
-    let encoded = f64::from(code) / 255.0;
-    if encoded <= 0.04045 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
+    srgb::decode(code)
 }
 
 fn srgb8_linear(rgb: [u8; 3]) -> [f64; 3] {
@@ -1229,7 +1222,7 @@ fn mixer_study_figures() {
             out[0],
             out[1],
             out[2],
-            out.map(luxforge_reference::linear_to_srgb_code)
+            out.map(srgb::code)
         );
     }
 }
