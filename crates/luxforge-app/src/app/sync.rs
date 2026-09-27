@@ -251,7 +251,7 @@ impl Editor {
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
         // the image for this newer open request.
-        self.preview_generation = self.preview_queue.cancel();
+        self.preview_generation = self.cancel_preview_queue();
         self.busy = true;
         self.status = "Importing photograph…".into();
         let file = path

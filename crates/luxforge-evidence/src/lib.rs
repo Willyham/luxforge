@@ -108,6 +108,9 @@ pub enum Step {
     /// The decision an open slider draft's Changed elsewhere notice offers.
     SliderDraft(SliderDraftStep),
     View(ViewStep),
+    /// Change zoom, then inspect the already drawn photo after an idle interval with evidence
+    /// ticks and frame-capture subscriptions suspended for that interval.
+    ViewIdle(ViewIdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     Palette(PaletteStep),
@@ -223,6 +226,7 @@ impl Step {
                 optional_text(step.group.as_deref(), "reset group")
             }
             Self::View(step) => step.validate(),
+            Self::ViewIdle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
@@ -417,6 +421,8 @@ pub struct SliderStep {
     pub values: Vec<f64>,
     pub end: SliderEnd,
     pub interval_ms: Option<u64>,
+    /// Optional scroll offsets paired one-for-one with paced values.
+    pub pan_path: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -431,6 +437,8 @@ struct SliderWire {
     cancel: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pan_path: Vec<[f32; 2]>,
 }
 
 impl TryFrom<SliderWire> for SliderStep {
@@ -451,6 +459,7 @@ impl TryFrom<SliderWire> for SliderStep {
             values: wire.values,
             end,
             interval_ms: wire.interval_ms,
+            pan_path: wire.pan_path,
         })
     }
 }
@@ -464,6 +473,7 @@ impl From<SliderStep> for SliderWire {
             release: step.end == SliderEnd::Release,
             cancel: step.end == SliderEnd::Cancel,
             interval_ms: step.interval_ms,
+            pan_path: step.pan_path,
         }
     }
 }
@@ -475,7 +485,21 @@ impl SliderStep {
         if self.values.is_empty() {
             return Err("slider needs at least one value".into());
         }
-        positive(self.interval_ms, "slider interval_ms")
+        positive(self.interval_ms, "slider interval_ms")?;
+        if !self.pan_path.is_empty() {
+            if self.interval_ms.is_none() || self.pan_path.len() != self.values.len() {
+                return Err("slider pan_path needs interval_ms and one offset per value".into());
+            }
+            if self.pan_path.iter().any(|[x, y]| {
+                !x.is_finite()
+                    || !y.is_finite()
+                    || !(0.0..=1.0).contains(x)
+                    || !(0.0..=1.0).contains(y)
+            }) {
+                return Err("slider pan_path offsets must be finite fractions from 0 to 1".into());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -874,6 +898,28 @@ impl ViewStep {
     fn validate(&self) -> Result<(), String> {
         // The range is checked as the step is read; a step built in code is checked here.
         ViewStep::try_from(ViewWire::from(*self)).map(|_| ())
+    }
+}
+
+/// A native idle check after an ordinary view change. The duration starts before the view
+/// message is sent, so evidence cannot mask a missed retirement wake with its own redraw.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewIdleStep {
+    pub view: ViewStep,
+    pub ms: u64,
+}
+
+impl ViewIdleStep {
+    fn validate(&self) -> Result<(), String> {
+        self.view.validate()?;
+        if (1..=MAX_WAIT_MS).contains(&self.ms) {
+            Ok(())
+        } else {
+            Err(format!(
+                "view_idle ms takes an integer from 1 to {MAX_WAIT_MS}"
+            ))
+        }
     }
 }
 

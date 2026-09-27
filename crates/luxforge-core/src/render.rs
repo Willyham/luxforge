@@ -27,14 +27,20 @@ pub mod spatial;
 mod window;
 pub use context::{RenderContext, ScratchBudget, SpatialBudget};
 pub(crate) use entry::layer_input;
-pub use entry::{Render, RenderOptions, RenderPhase, RenderSource, render};
+pub use entry::{
+    ProxyRegionPlan, RegionFrame, RegionRenderOutcome, Render, RenderOptions, RenderPhase,
+    RenderSource, render,
+};
 pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
 pub(crate) use pipeline::{Evaluation, PixelDomain, RowScratch, SpatialMode};
 use pipeline::{SegmentRows, Taps, segment_pass, spatial_output};
-use spatial::{build_reduction, fill_planes, resolve_globals};
+use spatial::{build_reduction_cancellable, fill_planes, resolve_globals};
+pub use window::RegionFallback;
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
-
+/// A sub-megapixel pass with several colour units has enough independent row chunks to pay for
+/// using the existing Rayon pool. Below this size, dispatch costs can outweigh the colour work.
+const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = 256 * 1024;
 /// The detail every cancelled pass carries. The kind is the meaning; nothing about the work itself
 /// went wrong, so there is nothing image-specific to say.
 pub(crate) const CANCELLED: &str = "superseded by a newer request";
@@ -123,6 +129,9 @@ pub(crate) struct ColorRun<'a> {
     operations: &'a [Processing],
     /// The segment's output stage: the frame this run is applied to.
     stage: Stage,
+    /// This segment's cut output lies here in its original, uncut stage. Masks still read local
+    /// coordinates through their geometry suffix; only pointwise units receive this origin.
+    origin: (u32, u32),
 }
 
 impl<'a> ColorRun<'a> {
@@ -152,6 +161,7 @@ impl<'a> ColorRun<'a> {
 struct ColorRuns<'a> {
     operations: &'a [Processing],
     stage: Stage,
+    origin: (u32, u32),
     position: usize,
 }
 
@@ -182,6 +192,7 @@ impl<'a> Iterator for ColorRuns<'a> {
                 end: last,
                 operations: self.operations,
                 stage: self.stage,
+                origin: self.origin,
             });
         }
         None
@@ -196,6 +207,7 @@ fn color_runs(segment: &Segment) -> ColorRuns<'_> {
             width: segment.width,
             height: segment.height,
         },
+        origin: segment.output_origin,
         position: 0,
     }
 }
@@ -288,10 +300,10 @@ fn apply_units(
 ) -> Result<(), Error> {
     for (index, operation) in run.colour_operations() {
         match operation.mask() {
-            None => apply_operation(operation, y, x0, pixels)?,
+            None => apply_operation(operation, y, x0, run.origin, pixels)?,
             Some(mask) => {
                 let placement = MaskPlacement::new(run, index, mask);
-                apply_masked_operation(operation, &placement, y, x0, pixels, scratch)?;
+                apply_masked_operation(operation, &placement, y, x0, run.origin, pixels, scratch)?;
             }
         }
     }
@@ -304,10 +316,11 @@ fn apply_operation(
     operation: &ColorOperation,
     y: u32,
     x0: u32,
+    origin: (u32, u32),
     pixels: &mut [[f32; 3]],
 ) -> Result<(), Error> {
     for unit in operation.units() {
-        unit.apply_row(y, x0, pixels);
+        unit.apply_row(y + origin.1, x0 + origin.0, pixels);
         if !pixels.iter().flatten().all(|channel| channel.is_finite()) {
             return Err(Error::resource_limit(NON_FINITE_COLOR));
         }
@@ -334,6 +347,7 @@ fn apply_masked_operation(
     placement: &MaskPlacement<'_>,
     y: u32,
     x0: u32,
+    origin: (u32, u32),
     pixels: &mut [[f32; 3]],
     scratch: &mut [[f32; 3]],
 ) -> Result<(), Error> {
@@ -348,7 +362,7 @@ fn apply_masked_operation(
         let span = &mut pixels[at..end];
         let (snapshot, _) = scratch.split_at_mut(span.len());
         snapshot.copy_from_slice(span);
-        apply_operation(operation, y, x0 + at as u32, span)?;
+        apply_operation(operation, y, x0 + at as u32, origin, span)?;
         for (offset, (output, input)) in span.iter_mut().zip(snapshot.iter()).enumerate() {
             let coverage = placement.coverage(x0 + (at + offset) as u32, y, *input);
             for channel in 0..3 {
@@ -727,10 +741,24 @@ fn resample_frame(
     input_height: u32,
     resample: Resample,
     origin: (u32, u32),
+    output_window: Option<Region>,
     cancel: &Cancel,
 ) -> Result<Arc<[u8]>, Error> {
-    let width = resample.output_width;
-    let height = resample.output_height;
+    let window = output_window.unwrap_or(Region {
+        x0: 0,
+        y0: 0,
+        width: resample.output_width,
+        height: resample.output_height,
+    });
+    if window.is_empty()
+        || window.x1() > resample.output_width
+        || window.y1() > resample.output_height
+    {
+        return Err(Error::internal(
+            "resample window lies outside its output stage",
+        ));
+    }
+    let (width, height) = (window.width, window.height);
     cancel.check()?;
     let mut frame = zeroed_frame(Raster::expected_len(width, height)?);
     let output = frame_mut(&mut frame);
@@ -746,7 +774,7 @@ fn resample_frame(
     let sample_row = |out_y: usize, row: &mut [u8]| -> Result<(), Error> {
         cancel.check()?;
         for out_x in 0..width {
-            let (u, v) = resample.input_from(origin, out_x, out_y as u32);
+            let (u, v) = resample.input_from(origin, window.x0 + out_x, window.y0 + out_y as u32);
             let pixel = bilinear(u, v, input_width, input_height, fetch)?;
             let to = out_x as usize * 4;
             row[to..to + 4].copy_from_slice(&pixel);
@@ -811,12 +839,15 @@ pub(crate) struct Segment {
     pub(crate) height: u32,
     pub(crate) has_pixels: bool,
     pub(crate) has_color: bool,
-    /// Whether a colour operation of this segment reads the coordinates it is handed, which only a
-    /// finish-stage layer's units do: such a segment's output is never cut by a proxy window.
-    pub(crate) positional: bool,
     /// Where the frame this segment's resample entry reads lies in the stage the resample was
     /// compiled against: `(0, 0)`, except behind a windowed proxy's cut ([`window`]).
     pub(crate) entry_origin: (u32, u32),
+    /// The rectangle of the resample's full output stage held by a cut entry frame. Its integer
+    /// origin is added before the resample's floating-point inverse map, preserving exact taps.
+    pub(crate) entry_window: Option<Region>,
+    /// The segment output's first pixel in its original uncut output stage. Pointwise finish
+    /// units read these original coordinates even when a viewport keeps only a rectangle.
+    pub(crate) output_origin: (u32, u32),
 }
 
 impl Segment {
@@ -829,8 +860,17 @@ impl Segment {
             height,
             has_pixels: false,
             has_color: false,
-            positional: false,
             entry_origin: (0, 0),
+            entry_window: None,
+            output_origin: (0, 0),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn resample_output_at(&self, x: u32, y: u32) -> (u32, u32) {
+        match self.entry_window {
+            Some(window) => (window.x0 + x, window.y0 + y),
+            None => (x, y),
         }
     }
 
@@ -893,6 +933,7 @@ impl Compiled {
         crate::ProxyApproximation {
             spatial: self.evaluates_spatial(),
             mask: self.supersampled_masks(),
+            reduced_detail: false,
         }
     }
 
@@ -1149,7 +1190,10 @@ impl PixelDomain for Byte<'_> {
     }
 
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Borrowed(prefix_hash)
+        Cow::Owned(format!(
+            "{prefix_hash}+byte:{}x{}:orientation:{}",
+            self.0.width, self.0.height, self.0.orientation,
+        ))
     }
 
     fn check(&self, _: &Compiled) -> Result<(), Error> {
@@ -1470,7 +1514,8 @@ pub(crate) fn locate_dimensions(
             return walk(compiled, index - 1, input_x, input_y);
         };
         let previous = &compiled.segments[index - 1];
-        let (u, v) = resample.input_from(segment.entry_origin, input_x, input_y);
+        let (full_x, full_y) = segment.resample_output_at(input_x, input_y);
+        let (u, v) = resample.input_from(segment.entry_origin, full_x, full_y);
         walk(
             compiled,
             index - 1,
@@ -1540,6 +1585,18 @@ pub(super) fn transform_of(
             forward = forward
                 .then(Affine([1.0, 0.0, f64::from(x), 0.0, 1.0, f64::from(y)]))
                 .then(Affine(resample.inverse).invert()?);
+            // The boundary now holds only this rectangle of the full resample output. Its
+            // segment geometry reads local entry coordinates, not full-stage coordinates.
+            if let Some(window) = segment.entry_window {
+                forward = forward.then(Affine([
+                    1.0,
+                    0.0,
+                    -f64::from(window.x0),
+                    0.0,
+                    1.0,
+                    -f64::from(window.y0),
+                ]));
+            }
         }
         forward = forward.then(Affine::from_exact(segment.geometry));
     }
@@ -1592,6 +1649,7 @@ pub(super) fn rasterize(
                     height,
                     *resample,
                     segment.entry_origin,
+                    segment.entry_window,
                     cancel,
                 )?,
                 Entry::Spatial {
@@ -1620,7 +1678,7 @@ pub(super) fn rasterize(
                                 stage,
                                 domain.fingerprint(),
                                 &domain.estimate_prefix(prefix_hash),
-                                || build_reduction(stage, read),
+                                || build_reduction_cancellable(stage, cancel, read),
                             ),
                         },
                         tile,
@@ -1637,8 +1695,15 @@ pub(super) fn rasterize(
                     )?
                 }
             };
+            #[cfg(test)]
+            if matches!(entry, Entry::Resample(_)) {
+                context.note_resample_bytes(next.len());
+            }
             if let Some(resample) = entry.resample() {
-                (width, height) = (resample.output_width, resample.output_height);
+                (width, height) = segment
+                    .entry_window
+                    .map(|window| (window.width, window.height))
+                    .unwrap_or((resample.output_width, resample.output_height));
             }
             // The frame the boundary read is released before the next pass, so two frames is the
             // peak.

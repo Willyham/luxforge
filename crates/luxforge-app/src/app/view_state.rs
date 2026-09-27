@@ -179,6 +179,10 @@ impl Editor {
     /// Pan is session state like zoom, but scroll events arrive faster than round trips complete:
     /// keep one request in flight and only the newest pending position.
     pub(super) fn pan(&mut self, x: f32, y: f32) -> Task<Message> {
+        if (x, y) != self.local_pan {
+            self.local_pan = (x, y);
+            self.note_view_motion();
+        }
         if self.pan_in_flight {
             self.pending_pan = Some((x, y));
             return Task::none();

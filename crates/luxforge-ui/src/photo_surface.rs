@@ -61,13 +61,12 @@
 //!   limit — every display proxy, every overlay, and every exact render up to 8192 pixels a side,
 //!   about 45 MP at 3:2 — is one tile, which is the single texture it would otherwise be.
 //!
-//! Memory: one set of tiles per [`Layer`] per pipeline — that is, for the whole application, because
-//! one photograph is on screen at a time — recreated only when a frame's dimensions change, plus a
-//! 96-byte uniform buffer per tile. The photograph's tiles are kept while a crop draft shows its
-//! stage, so returning to the photograph writes nothing; the stage's and the overlays' tiles are
-//! released by the first draw that does not show them. The pixels themselves are borrowed from the
-//! frames the desktop already holds; this crate copies none of them, and the one copy per changed
-//! frame is the write into the textures, which reads each tile straight out of the shared buffer.
+//! Memory: one full photograph slot and two region sets per pipeline. They reserve bounded size
+//! buckets so a refit, half-to-exact refinement or one-pixel pan change can reuse their textures;
+//! only the active rectangle is written and sampled. A full replacement may overlap one retiring
+//! full allocation, each capped at 512 MiB; each region set is capped at 32 MiB. The crop stage
+//! and overlays have separate textures. The pixels are borrowed from desktop frames, and uploads
+//! read their rows directly from those buffers.
 
 use iced::{
     ContentFit, Element, Length, Point, Rectangle, Size, Vector,
@@ -75,7 +74,7 @@ use iced::{
     widget::shader::{self, Viewport},
 };
 use std::sync::{
-    Arc,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -84,6 +83,98 @@ use std::sync::{
 /// proves that redrawing an unchanged photograph — at any zoom, however often the view is rebuilt —
 /// writes nothing. The crop stage and the overlays have textures of their own and are not counted.
 static TEXTURE_WRITES: AtomicU64 = AtomicU64::new(0);
+static TEXTURE_UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+static RETIREMENT_PENDING: AtomicU64 = AtomicU64::new(0);
+type SurfaceWaker = Arc<dyn Fn() + Send + Sync>;
+
+static RETIREMENT_WAKER: OnceLock<Mutex<Option<SurfaceWaker>>> = OnceLock::new();
+
+const FULL_BUDGET: u64 = 512 * 1024 * 1024;
+const REGION_SET_BUDGET: u64 = 32 * 1024 * 1024;
+
+/// Register the desktop's existing buffered wake channel for deferred GPU texture admission.
+/// The callback may run on any thread; it should only enqueue a wake, never touch UI state.
+pub fn set_surface_waker(waker: Arc<dyn Fn() + Send + Sync>) {
+    *RETIREMENT_WAKER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("surface waker lock") = Some(waker);
+}
+
+/// Whether a redraw must remain subscribed to the surface's GPU retirement wake.
+pub fn surface_retirement_pending() -> bool {
+    RETIREMENT_PENDING.load(Ordering::Acquire) != 0
+}
+
+/// Actual RGBA bytes handed to `wgpu::Queue::write_texture` by photograph uploads.
+pub fn texture_upload_bytes() -> u64 {
+    TEXTURE_UPLOAD_BYTES.load(Ordering::Relaxed)
+}
+
+/// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
+/// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
+/// backend-owned upload staging are outside these photograph-slot byte counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawnRegion {
+    pub version: u64,
+    pub content_id: u64,
+    pub generation: u64,
+    pub quality: RegionQuality,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceDiagnostics {
+    pub photo_writes: u64,
+    pub upload_bytes: u64,
+    pub full_resident_bytes: u64,
+    pub region_resident_bytes: u64,
+    pub retiring_bytes: u64,
+    pub deferred_uploads: u64,
+    pub rejected_full_uploads: u64,
+    pub rejected_region_uploads: u64,
+    pub gpu_retirement_failures: u64,
+    /// A photo primitive was encoded with no drawable photograph.
+    pub blank_photo_draws: u64,
+    /// A previous coherent photograph was encoded while the requested one awaits admission.
+    pub stale_photo_draws: u64,
+    pub drawn_frames: u64,
+    pub drawn_photo_blank: bool,
+    pub drawn_stale_photo: bool,
+    /// Actual previous content when `drawn_stale_photo` is true. `drawn_content` then stays None,
+    /// so a consumer cannot mistake a fallback picture for the requested version.
+    pub drawn_fallback_content: Option<u64>,
+    pub drawn_content: Option<u64>,
+    pub drawn_full_version: Option<u64>,
+    pub drawn_region_version: Option<u64>,
+    pub drawn_region_generation: Option<u64>,
+    pub drawn_region_quality: Option<RegionQuality>,
+    /// Each region slot actually encoded in the last photo draw, including a region partly
+    /// covered by a higher-priority one. The single fields above describe the topmost region.
+    pub drawn_regions: [Option<DrawnRegion>; 2],
+    /// Clipping frame whose draw call was encoded with the photograph, if any.
+    pub drawn_clipping_version: Option<u64>,
+}
+
+static DIAGNOSTICS: OnceLock<Mutex<SurfaceDiagnostics>> = OnceLock::new();
+
+fn diagnostics() -> &'static Mutex<SurfaceDiagnostics> {
+    DIAGNOSTICS.get_or_init(|| Mutex::new(SurfaceDiagnostics::default()))
+}
+
+pub fn surface_diagnostics() -> SurfaceDiagnostics {
+    *diagnostics().lock().expect("surface diagnostics lock")
+}
+
+/// Check a region before requesting it from the renderer. This accounts for each tile's linear
+/// filtering apron at the device texture limit. An inadmissible region needs the explicit full
+/// frame fallback; it cannot ever become ready through a retirement wake.
+pub fn region_texture_admissible(size: (u32, u32), texture_limit: u32) -> bool {
+    size.0 > 0
+        && size.1 > 0
+        && texture_limit > 2
+        && u64::from(size.0) * u64::from(size.1) * 4 <= REGION_SET_BUDGET
+        && allocated_bytes(&tile_layout(size, texture_limit)) <= REGION_SET_BUDGET
+}
 
 /// The number of photograph texture writes so far; see [`TEXTURE_WRITES`].
 pub fn texture_writes() -> u64 {
@@ -180,6 +271,156 @@ impl Frame {
     }
 }
 
+/// The detail of a region published to the surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionQuality {
+    Interactive,
+    Exact,
+}
+
+/// A viewport raster or overlay in its rendered stage's coordinates. `rect` is end-exclusive;
+/// `full_stage` is the exact output size used to place the whole photograph. The stage ratio, not
+/// a nominal half-scale factor, maps odd-sized stages without right or bottom edge drift.
+#[derive(Clone, Debug)]
+pub struct RegionFrame {
+    pub frame: Frame,
+    pub rect: [u32; 4],
+    pub stage: (u32, u32),
+    pub full_stage: (u32, u32),
+    pub scale: f32,
+    pub quality: RegionQuality,
+    pub content_id: u64,
+    pub generation: u64,
+}
+
+/// A viewport overlay grid painted over `rect` in `stage` coordinates. Its frame may be a much
+/// smaller OR grid, so its raster dimensions deliberately differ from the rectangle's size.
+#[derive(Clone, Debug)]
+pub struct RegionOverlay {
+    pub frame: Frame,
+    /// End-exclusive rectangle in `stage` coordinates.
+    pub rect: [u32; 4],
+    pub stage: (u32, u32),
+    pub full_stage: (u32, u32),
+    pub quality: RegionQuality,
+    pub content_id: u64,
+    pub generation: u64,
+}
+
+impl RegionOverlay {
+    pub fn new(
+        frame: Frame,
+        rect: [u32; 4],
+        stage: (u32, u32),
+        full_stage: (u32, u32),
+        quality: RegionQuality,
+        content_id: u64,
+        generation: u64,
+    ) -> Option<Self> {
+        RegionKey::valid(rect, stage, full_stage).then_some(Self {
+            frame,
+            rect,
+            stage,
+            full_stage,
+            quality,
+            content_id,
+            generation,
+        })
+    }
+
+    fn key(&self) -> RegionKey {
+        RegionKey {
+            rect: self.rect,
+            stage: self.stage,
+            full_stage: self.full_stage,
+            quality: self.quality,
+            content_id: self.content_id,
+            generation: self.generation,
+        }
+    }
+
+    fn matches_region(&self, key: RegionKey) -> bool {
+        self.content_id == key.content_id
+            && self.generation == key.generation
+            && self.quality == key.quality
+            && self.full_stage == key.full_stage
+    }
+}
+
+impl RegionFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        frame: Frame,
+        rect: [u32; 4],
+        stage: (u32, u32),
+        full_stage: (u32, u32),
+        scale: f32,
+        quality: RegionQuality,
+        content_id: u64,
+        generation: u64,
+    ) -> Option<Self> {
+        (RegionKey::valid(rect, stage, full_stage)
+            && frame.size() == (rect[2] - rect[0], rect[3] - rect[1])
+            && scale.is_finite()
+            && scale > 0.0)
+            .then_some(Self {
+                frame,
+                rect,
+                stage,
+                full_stage,
+                scale,
+                quality,
+                content_id,
+                generation,
+            })
+    }
+
+    fn key(&self) -> RegionKey {
+        RegionKey {
+            rect: self.rect,
+            stage: self.stage,
+            full_stage: self.full_stage,
+            quality: self.quality,
+            content_id: self.content_id,
+            generation: self.generation,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RegionKey {
+    rect: [u32; 4],
+    stage: (u32, u32),
+    full_stage: (u32, u32),
+    quality: RegionQuality,
+    content_id: u64,
+    generation: u64,
+}
+
+impl RegionKey {
+    fn valid(rect: [u32; 4], stage: (u32, u32), full_stage: (u32, u32)) -> bool {
+        rect[0] < rect[2]
+            && rect[1] < rect[3]
+            && rect[2] <= stage.0
+            && rect[3] <= stage.1
+            && full_stage.0 > 0
+            && full_stage.1 > 0
+    }
+
+    fn placement(self, tile: TileLayout, raster: (u32, u32)) -> [f32; 4] {
+        let [x0, y0, x1, y1] = tile.content;
+        let [rx, ry, right, bottom] = self.rect;
+        let width = (right - rx) as f32;
+        let height = (bottom - ry) as f32;
+        [
+            (rx as f32 + x0 as f32 * width / raster.0 as f32) / self.stage.0 as f32,
+            (ry as f32 + y0 as f32 * height / raster.1 as f32) / self.stage.1 as f32,
+            (rx as f32 + x1 as f32 * width / raster.0 as f32) / self.stage.0 as f32,
+            (ry as f32 + y1 as f32 * height / raster.1 as f32) / self.stage.1 as f32,
+        ]
+    }
+}
+
 /// The textures one pipeline holds, one set per layer, in the order a primitive draws them: the
 /// displayed frame (the photograph or the crop stage), then the clipping overlay, then the mask
 /// coverage.
@@ -219,8 +460,18 @@ pub struct PhotoSurface {
     base: Base,
     /// The displayed frame first, then each overlay present, in draw order.
     layers: Vec<(Layer, Frame)>,
+    viewport: Option<ViewportFrames>,
+    region_overlays: [Option<RegionOverlay>; 2],
     width: Length,
     height: Length,
+}
+
+#[derive(Clone, Debug)]
+struct ViewportFrames {
+    full: Option<(Frame, u64)>,
+    region: Option<RegionFrame>,
+    current_content: u64,
+    full_stage: (u32, u32),
 }
 
 /// The photograph, placed by `placement`.
@@ -233,6 +484,37 @@ pub fn photo_surface(
     PhotoSurface {
         base: Base::Photo(placement),
         layers: vec![(Layer::Photo, frame.clone())],
+        viewport: None,
+        region_overlays: [None, None],
+        width,
+        height,
+    }
+}
+
+/// A percentage-zoom photograph with independently retained full and viewport rasters. Matching
+/// content is preferred; a coherent previous picture stays visible while admission is deferred.
+pub fn viewport_surface(
+    full: Option<(&Frame, u64)>,
+    region: Option<&RegionFrame>,
+    current_content: u64,
+    full_stage: (u32, u32),
+    placement: Placement,
+    width: Length,
+    height: Length,
+) -> PhotoSurface {
+    let region = region
+        .filter(|region| region.full_stage == full_stage)
+        .cloned();
+    PhotoSurface {
+        base: Base::Photo(placement),
+        layers: Vec::new(),
+        viewport: Some(ViewportFrames {
+            full: full.map(|(frame, content)| (frame.clone(), content)),
+            region,
+            current_content,
+            full_stage,
+        }),
+        region_overlays: [None, None],
         width,
         height,
     }
@@ -244,6 +526,8 @@ pub fn stage_surface(frame: &Frame, turn: Turn, width: Length, height: Length) -
     PhotoSurface {
         base: Base::Stage(turn),
         layers: vec![(Layer::Stage, frame.clone())],
+        viewport: None,
+        region_overlays: [None, None],
         width,
         height,
     }
@@ -258,6 +542,17 @@ impl PhotoSurface {
                 self.layers.push((layer, frame.clone()));
             }
         }
+        self
+    }
+
+    /// A viewport-bounded clipping grid and mask coverage, each tied to the exact region pixels
+    /// it describes. A stale identity, quality or generation cannot cover a newer region.
+    pub fn region_overlays(
+        mut self,
+        clipping: Option<&RegionOverlay>,
+        coverage: Option<&RegionOverlay>,
+    ) -> Self {
+        self.region_overlays = [clipping.cloned(), coverage.cloned()];
         self
     }
 }
@@ -392,14 +687,17 @@ where
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let Some((_, frame)) = self.layers.first() else {
-            return;
+        let raster = match &self.viewport {
+            Some(viewport) => viewport.full_stage,
+            None => match self.layers.first() {
+                Some((_, frame)) => frame.size(),
+                None => return,
+            },
         };
         // Inside a scrollable, `viewport` is already in the content's own coordinates — the
         // scrollable shifts it by the scroll offset before handing it down — so it and the layout
         // bounds are in one frame and their intersection is the part on screen.
-        let Some(visible) = visible_placement(self.base, frame.size(), layout.bounds(), *viewport)
-        else {
+        let Some(visible) = visible_placement(self.base, raster, layout.bounds(), *viewport) else {
             return;
         };
         let (angle, snap) = match self.base {
@@ -413,8 +711,11 @@ where
             visible.clip,
             PhotoPrimitive {
                 layers: self.layers.clone(),
+                viewport: self.viewport.clone(),
+                region_overlays: self.region_overlays.clone(),
                 offset: visible.offset,
                 size: visible.size,
+                clip_size: visible.clip.size(),
                 bright: visible.bright,
                 angle,
                 snap,
@@ -442,8 +743,11 @@ where
 #[derive(Debug)]
 pub struct PhotoPrimitive {
     layers: Vec<(Layer, Frame)>,
+    viewport: Option<ViewportFrames>,
+    region_overlays: [Option<RegionOverlay>; 2],
     offset: Vector,
     size: Size,
+    clip_size: Size,
     bright: Option<(Rectangle, f32)>,
     angle: f32,
     snap: bool,
@@ -491,6 +795,22 @@ fn physical_bright(bounds: Rectangle, bright: Option<(Rectangle, f32)>, scale: f
     }
 }
 
+/// The physical bounds of a region after the same endpoint snap the vertex shader applies to
+/// the whole photo. Used as an alpha clip for a full-stage overlay whose rounded rectangle can
+/// extend fractionally beyond its matching half-stage pixels.
+fn region_physical_rect(destination: [f32; 4], key: RegionKey) -> [f32; 4] {
+    let left = destination[0].round_ties_even();
+    let top = destination[1].round_ties_even();
+    let right = (destination[0] + destination[2]).round_ties_even();
+    let bottom = (destination[1] + destination[3]).round_ties_even();
+    [
+        left + (right - left) * key.rect[0] as f32 / key.stage.0 as f32,
+        top + (bottom - top) * key.rect[1] as f32 / key.stage.1 as f32,
+        left + (right - left) * key.rect[2] as f32 / key.stage.0 as f32,
+        top + (bottom - top) * key.rect[3] as f32 / key.stage.1 as f32,
+    ]
+}
+
 /// One texture of a frame and the part of the frame it draws, in frame pixels.
 ///
 /// A frame wider or taller than the device's largest texture is held in several textures, each
@@ -530,8 +850,11 @@ impl TileLayout {
 
     /// The uniform's third and fourth rectangles: the part of the picture this tile draws as
     /// fractions of the whole, and the same part in the tile texture's own coordinates.
-    fn placement(&self, (width, height): (u32, u32)) -> ([f32; 4], [f32; 4]) {
-        let (texture_width, texture_height) = self.texture_size();
+    fn placement(
+        &self,
+        (width, height): (u32, u32),
+        (texture_width, texture_height): (u32, u32),
+    ) -> ([f32; 4], [f32; 4]) {
         let [x0, y0, x1, y1] = self.content;
         let [tx, ty, ..] = self.texels;
         (
@@ -553,15 +876,12 @@ impl TileLayout {
 
 /// Split a frame into tiles whose textures are at most `limit` pixels a side, as evenly as the
 /// count allows. Each axis is split on its own, so the tiles form a grid, listed row by row.
-fn tile_layout((width, height): (u32, u32), limit: u32) -> Vec<TileLayout> {
+fn tile_layout_for_grid(
+    (width, height): (u32, u32),
+    (columns, rows): (u32, u32),
+) -> Vec<TileLayout> {
     // `[content start, content end, texels start, texels end]` along one axis.
-    let spans = |extent: u32| -> Vec<[u32; 4]> {
-        if extent <= limit {
-            return vec![[0, extent, 0, extent]];
-        }
-        // Two pixels of every texture may be apron, so each span's content is at most this.
-        let usable = limit.saturating_sub(2).max(1);
-        let count = extent.div_ceil(usable);
+    let spans = |extent: u32, count: u32| -> Vec<[u32; 4]> {
         let edge = |index: u32| (u64::from(extent) * u64::from(index) / u64::from(count)) as u32;
         (0..count)
             .map(|index| {
@@ -570,8 +890,8 @@ fn tile_layout((width, height): (u32, u32), limit: u32) -> Vec<TileLayout> {
             })
             .collect()
     };
-    let columns = spans(width);
-    spans(height)
+    let columns = spans(width, columns);
+    spans(height, rows)
         .iter()
         .flat_map(|row| {
             columns.iter().map(move |column| TileLayout {
@@ -580,6 +900,23 @@ fn tile_layout((width, height): (u32, u32), limit: u32) -> Vec<TileLayout> {
             })
         })
         .collect()
+}
+
+fn tile_grid((width, height): (u32, u32), limit: u32) -> (u32, u32) {
+    // Two pixels of each interior tile may be filtering apron.
+    let usable = limit.saturating_sub(2).max(1);
+    let count = |extent: u32| {
+        if extent <= limit {
+            1
+        } else {
+            extent.div_ceil(usable)
+        }
+    };
+    (count(width), count(height))
+}
+
+fn tile_layout(size: (u32, u32), limit: u32) -> Vec<TileLayout> {
+    tile_layout_for_grid(size, tile_grid(size, limit))
 }
 
 /// Six `vec4<f32>`.
@@ -622,18 +959,60 @@ impl shader::Primitive for PhotoPrimitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        // Every layer but the photograph is released as soon as a draw does not show it: the
-        // stage when its draft ends, an overlay when it is turned off. The photograph is kept
-        // while the stage stands in for it, so going back to it writes nothing.
         for layer in [Layer::Stage, Layer::Clipping, Layer::Coverage] {
-            if !self.layers.iter().any(|(drawn, _)| *drawn == layer) {
+            let region_overlay = match layer {
+                Layer::Clipping => self.region_overlays[0].is_some(),
+                Layer::Coverage => self.region_overlays[1].is_some(),
+                _ => false,
+            };
+            if !region_overlay && !self.layers.iter().any(|(drawn, _)| *drawn == layer) {
                 pipeline.slots[layer.index()] = None;
             }
         }
-        // One write per changed frame, never per redraw: the textures are recreated only when a
-        // frame's dimensions change, and written only when its version does.
         for (layer, frame) in &self.layers {
-            pipeline.write(device, queue, *layer, frame);
+            let content_id = self.viewport.as_ref().and_then(|viewport| {
+                (viewport.current_content
+                    == viewport
+                        .full
+                        .as_ref()
+                        .map_or(u64::MAX, |(_, content)| *content))
+                .then_some(viewport.current_content)
+            });
+            if self.viewport.is_none() || *layer != Layer::Photo {
+                pipeline.write(device, queue, *layer, frame, content_id, None);
+            }
+        }
+        if let Some(view) = &self.viewport {
+            if let Some((frame, content)) = &view.full
+                && *content == view.current_content
+            {
+                pipeline.write(device, queue, Layer::Photo, frame, Some(*content), None);
+            }
+            let full_ready = pipeline.slots[Layer::Photo.index()]
+                .as_ref()
+                .is_some_and(|picture| picture.content_id == Some(view.current_content));
+            if !full_ready
+                && let Some(region) = &view.region
+                && region.content_id == view.current_content
+            {
+                pipeline.write_region(device, queue, region);
+            }
+            for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
+                if let Some(overlay) = &self.region_overlays[index]
+                    && let key = overlay.key()
+                    && key.content_id == view.current_content
+                    && key.full_stage == view.full_stage
+                {
+                    pipeline.write(
+                        device,
+                        queue,
+                        layer,
+                        &overlay.frame,
+                        Some(key.content_id),
+                        Some(key),
+                    );
+                }
+            }
         }
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
@@ -643,25 +1022,77 @@ impl shader::Primitive for PhotoPrimitive {
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
         for (layer, _) in &self.layers {
-            let Some(picture) = &pipeline.slots[layer.index()] else {
-                continue;
-            };
-            for tile in &picture.tiles {
-                let (region, texels) = tile.layout.placement((picture.width, picture.height));
-                queue.write_buffer(
-                    &tile.uniform,
-                    0,
-                    &uniform_bytes([
-                        viewport,
-                        destination,
-                        region,
-                        texels,
-                        [x0, y0, x1, y1],
-                        turn,
-                    ]),
+            if let Some(picture) = &pipeline.slots[layer.index()] {
+                write_uniforms(
+                    queue,
+                    picture,
+                    viewport,
+                    destination,
+                    [x0, y0, x1, y1],
+                    turn,
                 );
             }
         }
+        if self.viewport.is_some() {
+            if let Some(picture) = &pipeline.slots[Layer::Photo.index()] {
+                write_uniforms(
+                    queue,
+                    picture,
+                    viewport,
+                    destination,
+                    [x0, y0, x1, y1],
+                    turn,
+                );
+            }
+            for picture in pipeline.regions.iter().flatten() {
+                write_uniforms(
+                    queue,
+                    picture,
+                    viewport,
+                    destination,
+                    [x0, y0, x1, y1],
+                    turn,
+                );
+            }
+            for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
+                if let Some(overlay) = &self.region_overlays[index]
+                    && let Some(picture) = &pipeline.slots[layer.index()]
+                {
+                    let matched =
+                        if pipeline.slots[Layer::Photo.index()]
+                            .as_ref()
+                            .is_some_and(|full| {
+                                full.content_id == Some(overlay.content_id)
+                                    && full.region_key.is_none()
+                            })
+                            && overlay.quality == RegionQuality::Exact
+                        {
+                            None
+                        } else {
+                            pipeline
+                                .regions
+                                .iter()
+                                .flatten()
+                                .filter_map(|picture| picture.region_key)
+                                .find(|key| overlay.matches_region(*key))
+                        };
+                    let mut overlay_turn = turn;
+                    let overlay_bright = matched.map_or([x0, y0, x1, y1], |key| {
+                        overlay_turn[2] = 0.0;
+                        region_physical_rect(destination, key)
+                    });
+                    write_uniforms(
+                        queue,
+                        picture,
+                        viewport,
+                        destination,
+                        overlay_bright,
+                        overlay_turn,
+                    );
+                }
+            }
+        }
+        pipeline.publish_diagnostics();
     }
 
     fn draw(&self, pipeline: &PhotoPipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
@@ -670,14 +1101,222 @@ impl shader::Primitive for PhotoPrimitive {
         // its uniform alone and whatever of it falls outside is clipped. The layers are drawn in
         // order, each blended over the one before.
         render_pass.set_pipeline(&pipeline.pipeline);
-        for (layer, _) in &self.layers {
-            let Some(picture) = &pipeline.slots[layer.index()] else {
-                continue;
+        let mut drawn_clipping_version = None;
+        let mut drawn_full_version = None;
+        let mut drawn_region_version = None;
+        let mut drawn_region_generation = None;
+        let mut drawn_region_quality = None;
+        let mut drawn_regions = [None; 2];
+        let mut drawn_content = None;
+        let mut drawn_fallback_content = None;
+        let mut drew_photo = false;
+        let mut stale_photo = false;
+        if let Some(view) = &self.viewport {
+            let matching_full = pipeline.slots[Layer::Photo.index()]
+                .as_ref()
+                .filter(|picture| {
+                    picture.content_id == Some(view.current_content)
+                        && picture.region_key.is_none()
+                        && (picture.width, picture.height) == view.full_stage
+                });
+            let matching_regions = if matching_full.is_some() {
+                Vec::new()
+            } else {
+                region_draw_order(&pipeline.regions, view.current_content, view.full_stage)
+                    .into_iter()
+                    .filter(|&index| {
+                        pipeline.regions[index]
+                            .as_ref()
+                            .and_then(|picture| picture.region_key)
+                            .is_some_and(|key| {
+                                region_intersects_clip(key, self.offset, self.size, self.clip_size)
+                            })
+                    })
+                    .collect()
             };
-            for tile in &picture.tiles {
-                render_pass.set_bind_group(0, &tile.bindings, &[]);
-                render_pass.draw(0..6, 0..1);
+            // A deferred upload must leave a coherent previous photograph on screen. Prefer a
+            // whole picture, then one previous region content; never composite different contents.
+            let full = matching_full.or_else(|| {
+                matching_regions.is_empty().then(|| {
+                    pipeline.slots[Layer::Photo.index()]
+                        .as_ref()
+                        .filter(|picture| picture.region_key.is_none())
+                })?
+            });
+            let region_order = if full.is_some() {
+                Vec::new()
+            } else if !matching_regions.is_empty() {
+                matching_regions
+            } else {
+                pipeline
+                    .regions
+                    .iter()
+                    .flatten()
+                    .filter_map(|picture| picture.region_key)
+                    .filter(|key| {
+                        key.full_stage == view.full_stage
+                            && region_intersects_clip(*key, self.offset, self.size, self.clip_size)
+                    })
+                    .max_by_key(|key| key.generation)
+                    .map_or_else(Vec::new, |key| {
+                        region_draw_order(&pipeline.regions, key.content_id, view.full_stage)
+                            .into_iter()
+                            .filter(|&index| {
+                                pipeline.regions[index]
+                                    .as_ref()
+                                    .and_then(|picture| picture.region_key)
+                                    .is_some_and(|key| {
+                                        region_intersects_clip(
+                                            key,
+                                            self.offset,
+                                            self.size,
+                                            self.clip_size,
+                                        )
+                                    })
+                            })
+                            .collect()
+                    })
+            };
+            let region_keys: [Option<RegionKey>; 2] = std::array::from_fn(|index| {
+                pipeline.regions[index]
+                    .as_ref()
+                    .and_then(|picture| picture.region_key)
+            });
+            if let Some(picture) = full {
+                draw_picture(render_pass, picture);
+                drew_photo = true;
+                drawn_full_version = Some(picture.version);
+                stale_photo = matching_full.is_none();
+                if stale_photo {
+                    drawn_fallback_content = picture.content_id;
+                } else {
+                    drawn_content = Some(view.current_content);
+                }
+            } else {
+                for &index in &region_order {
+                    let picture = pipeline.regions[index].as_ref().expect("selected region");
+                    draw_picture(render_pass, picture);
+                    drew_photo = true;
+                    if let Some(key) = picture.region_key {
+                        drawn_region_version = Some(picture.version);
+                        drawn_region_generation = Some(key.generation);
+                        drawn_region_quality = Some(key.quality);
+                        stale_photo = key.content_id != view.current_content;
+                        if stale_photo {
+                            drawn_fallback_content = Some(key.content_id);
+                        } else {
+                            drawn_content = Some(view.current_content);
+                        }
+                        drawn_regions[index] = Some(DrawnRegion {
+                            version: picture.version,
+                            content_id: key.content_id,
+                            generation: key.generation,
+                            quality: key.quality,
+                        });
+                    }
+                }
             }
+            for (layer, _) in &self.layers {
+                if *layer != Layer::Photo
+                    && let Some(picture) = &pipeline.slots[layer.index()]
+                    && matching_full.is_some()
+                    && picture.content_id == Some(view.current_content)
+                {
+                    draw_picture(render_pass, picture);
+                    if *layer == Layer::Clipping {
+                        drawn_clipping_version = Some(picture.version);
+                    }
+                }
+            }
+            for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
+                let Some(overlay) = &self.region_overlays[index] else {
+                    continue;
+                };
+                let key = overlay.key();
+                let matching_region = !stale_photo
+                    && full.is_none()
+                    && overlay_matches_draw_order(overlay, region_keys, &region_order);
+                let matching_full = !stale_photo
+                    && matching_full.is_some()
+                    && key.content_id == view.current_content
+                    && key.quality == RegionQuality::Exact;
+                if (matching_region || matching_full)
+                    && let Some(picture) = &pipeline.slots[layer.index()]
+                    && picture.region_key == Some(key)
+                {
+                    draw_picture(render_pass, picture);
+                    if layer == Layer::Clipping {
+                        drawn_clipping_version = Some(picture.version);
+                    }
+                }
+            }
+        } else {
+            let photo_ready = self
+                .layers
+                .iter()
+                .find(|(layer, _)| *layer == Layer::Photo)
+                .is_none_or(|(_, frame)| {
+                    pipeline.slots[Layer::Photo.index()]
+                        .as_ref()
+                        .is_some_and(|picture| {
+                            picture.matching_frame(frame, None, None)
+                                && picture.width == frame.width
+                                && picture.height == frame.height
+                        })
+                });
+            for (layer, frame) in &self.layers {
+                if matches!(*layer, Layer::Clipping | Layer::Coverage) && !photo_ready {
+                    continue;
+                }
+                if let Some(picture) = &pipeline.slots[layer.index()] {
+                    draw_picture(render_pass, picture);
+                    if *layer == Layer::Photo {
+                        drew_photo = true;
+                        drawn_full_version = Some(picture.version);
+                        stale_photo = !picture.matching_frame(frame, None, None)
+                            || picture.width != frame.width
+                            || picture.height != frame.height;
+                        if stale_photo {
+                            drawn_fallback_content = picture.content_id;
+                        }
+                    }
+                    if *layer == Layer::Clipping {
+                        drawn_clipping_version = Some(picture.version);
+                    }
+                }
+            }
+        }
+        // Every attempted photo draw writes a complete identity snapshot, including blanks. A
+        // stale previous photo reports its actual content separately from the requested content.
+        let expects_photo =
+            self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
+        let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+        let blank_photo = expects_photo && !drew_photo;
+        let status_changed = diagnostic.drawn_photo_blank != blank_photo
+            || diagnostic.drawn_stale_photo != stale_photo;
+        diagnostic.drawn_content = drawn_content;
+        diagnostic.drawn_full_version = drawn_full_version;
+        diagnostic.drawn_region_version = drawn_region_version;
+        diagnostic.drawn_region_generation = drawn_region_generation;
+        diagnostic.drawn_region_quality = drawn_region_quality;
+        diagnostic.drawn_regions = drawn_regions;
+        diagnostic.drawn_clipping_version = drawn_clipping_version;
+        diagnostic.drawn_photo_blank = blank_photo;
+        diagnostic.drawn_stale_photo = stale_photo;
+        diagnostic.drawn_fallback_content = drawn_fallback_content;
+        if drew_photo {
+            diagnostic.drawn_frames += 1;
+            if stale_photo {
+                diagnostic.stale_photo_draws += 1;
+            }
+        } else if expects_photo {
+            diagnostic.blank_photo_draws += 1;
+        }
+        drop(diagnostic);
+        if status_changed {
+            // A draw can discover staleness after the app has built its status bar. One buffered
+            // wake refreshes that label on the next update, and another clears it after recovery.
+            wake_surface();
         }
         // Drawn either way: with no texture there is nothing to show, and the encoder fallback
         // would only begin a render pass to draw the same nothing.
@@ -685,9 +1324,126 @@ impl shader::Primitive for PhotoPrimitive {
     }
 }
 
+fn write_uniforms(
+    queue: &wgpu::Queue,
+    picture: &Picture,
+    viewport: [f32; 4],
+    destination: [f32; 4],
+    bright: [f32; 4],
+    turn: [f32; 4],
+) {
+    for tile in &picture.tiles {
+        let (whole_region, texels) = tile
+            .layout
+            .placement((picture.width, picture.height), tile.capacity);
+        let region = picture.region_key.map_or(whole_region, |key| {
+            key.placement(tile.layout, (picture.width, picture.height))
+        });
+        queue.write_buffer(
+            &tile.uniform,
+            0,
+            &uniform_bytes([viewport, destination, region, texels, bright, turn]),
+        );
+    }
+}
+
+fn draw_picture(render_pass: &mut wgpu::RenderPass<'_>, picture: &Picture) {
+    for tile in &picture.tiles {
+        render_pass.set_bind_group(0, &tile.bindings, &[]);
+        render_pass.draw(0..6, 0..1);
+    }
+}
+
+fn region_key_order(
+    keys: [Option<RegionKey>; 2],
+    current_content: u64,
+    full_stage: (u32, u32),
+) -> Vec<usize> {
+    let mut ordered: Vec<_> = keys
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, key)| {
+            let key = key?;
+            (key.content_id == current_content && key.full_stage == full_stage)
+                .then_some((index, key))
+        })
+        .collect();
+    ordered.sort_by_key(|(index, key)| {
+        (
+            matches!(key.quality, RegionQuality::Exact),
+            key.generation,
+            *index,
+        )
+    });
+    ordered.into_iter().map(|(index, _)| index).collect()
+}
+
+/// Test overlap in the common full-stage coordinate frame without rounding half-stage edges.
+/// Both keys already name the same full stage when they are selected for one draw.
+fn regions_overlap(a: RegionKey, b: RegionKey) -> bool {
+    let axis = |a0: u32, a1: u32, a_stage: u32, b0: u32, b1: u32, b_stage: u32| {
+        u64::from(a0) * u64::from(b_stage) < u64::from(b1) * u64::from(a_stage)
+            && u64::from(b0) * u64::from(a_stage) < u64::from(a1) * u64::from(b_stage)
+    };
+    axis(
+        a.rect[0], a.rect[2], a.stage.0, b.rect[0], b.rect[2], b.stage.0,
+    ) && axis(
+        a.rect[1], a.rect[3], a.stage.1, b.rect[1], b.rect[3], b.stage.1,
+    )
+}
+
+/// A region's grid describes only its own pixels. When a later, higher-priority region with a
+/// different identity covers even part of that grid, omit the grid until a matching one arrives;
+/// drawing it over the newer pixels could falsely mark or miss clipping or mask coverage.
+fn overlay_matches_draw_order(
+    overlay: &RegionOverlay,
+    keys: [Option<RegionKey>; 2],
+    order: &[usize],
+) -> bool {
+    let Some(position) = order
+        .iter()
+        .rposition(|&index| keys[index].is_some_and(|key| overlay.matches_region(key)))
+    else {
+        return false;
+    };
+    let overlay_key = overlay.key();
+    !order[position + 1..].iter().any(|&index| {
+        keys[index]
+            .is_some_and(|key| !overlay.matches_region(key) && regions_overlap(key, overlay_key))
+    })
+}
+
+fn region_draw_order(
+    regions: &[Option<Picture>; 2],
+    current_content: u64,
+    full_stage: (u32, u32),
+) -> Vec<usize> {
+    region_key_order(
+        std::array::from_fn(|index| {
+            regions[index]
+                .as_ref()
+                .and_then(|picture| picture.region_key)
+        }),
+        current_content,
+        full_stage,
+    )
+}
+
+/// Whether a region's actual stage rectangle can put any photograph pixels in this primitive's
+/// visible clip. A pan can leave a retained region wholly off screen; encoding that quad does not
+/// count as drawing a photograph.
+fn region_intersects_clip(key: RegionKey, offset: Vector, size: Size, clip: Size) -> bool {
+    let left = offset.x + size.width * key.rect[0] as f32 / key.stage.0 as f32;
+    let top = offset.y + size.height * key.rect[1] as f32 / key.stage.1 as f32;
+    let right = offset.x + size.width * key.rect[2] as f32 / key.stage.0 as f32;
+    let bottom = offset.y + size.height * key.rect[3] as f32 / key.stage.1 as f32;
+    left < clip.width && right > 0.0 && top < clip.height && bottom > 0.0
+}
+
 /// One tile on the GPU: its texture, its own uniform and the bindings that join them.
 struct Tile {
     layout: TileLayout,
+    capacity: (u32, u32),
     texture: wgpu::Texture,
     uniform: wgpu::Buffer,
     bindings: wgpu::BindGroup,
@@ -698,10 +1454,109 @@ struct Picture {
     tiles: Vec<Tile>,
     width: u32,
     height: u32,
+    capacity: (u32, u32),
+    grid: (u32, u32),
     /// The texture limit the tiles were cut for.
     limit: u32,
     /// The version of the frame last written into it.
     version: u64,
+    content_id: Option<u64>,
+    region_key: Option<RegionKey>,
+    allocated_bytes: u64,
+}
+
+struct RetiredPicture {
+    picture: Picture,
+    full: bool,
+}
+
+impl Picture {
+    fn matching_frame(
+        &self,
+        frame: &Frame,
+        content_id: Option<u64>,
+        key: Option<RegionKey>,
+    ) -> bool {
+        self.version == frame.version && self.content_id == content_id && self.region_key == key
+    }
+
+    fn layouts_for(&self, size: (u32, u32), limit: u32) -> Option<Vec<TileLayout>> {
+        if limit != self.limit
+            || size.0 > self.capacity.0
+            || size.1 > self.capacity.1
+            || size.0 < self.grid.0
+            || size.1 < self.grid.1
+        {
+            return None;
+        }
+        let layouts = tile_layout_for_grid(size, self.grid);
+        layouts
+            .iter()
+            .zip(&self.tiles)
+            .all(|(layout, tile)| {
+                let (width, height) = layout.texture_size();
+                width <= tile.capacity.0 && height <= tile.capacity.1
+            })
+            .then_some(layouts)
+    }
+
+    fn set_layouts(&mut self, size: (u32, u32), layouts: Vec<TileLayout>) {
+        self.width = size.0;
+        self.height = size.1;
+        for (tile, layout) in self.tiles.iter_mut().zip(layouts) {
+            tile.layout = layout;
+        }
+    }
+}
+
+fn allocated_bytes(tiles: &[TileLayout]) -> u64 {
+    tiles
+        .iter()
+        .map(|tile| {
+            let (width, height) = tile.texture_size();
+            u64::from(width) * u64::from(height) * 4
+        })
+        .sum()
+}
+
+/// A full-slot proxy commonly changes orientation or grows a little on a refit. Reserve a square
+/// bucket while it fits the slot's own byte cap, so those changes only rewrite used texels.
+fn full_capacity((width, height): (u32, u32), limit: u32) -> (u32, u32) {
+    let longer = width.max(height);
+    let edge = if longer <= 2048 {
+        longer.next_power_of_two()
+    } else {
+        longer.next_multiple_of(512)
+    };
+    let square = (edge, edge);
+    if edge <= limit && allocated_bytes(&tile_layout(square, limit)) <= FULL_BUDGET {
+        square
+    } else {
+        (width, height)
+    }
+}
+
+/// A half-detail region reserves its exact-stage footprint, plus a small bucket for the one-pixel
+/// floor/ceil changes of moving pans. The reservation itself must fit one 32 MiB region set.
+fn region_capacity(region: &RegionFrame, limit: u32) -> (u32, u32) {
+    let (width, height) = region.frame.size();
+    let projected = |used: u32, stage: u32, full: u32| {
+        let exact = u64::from(used)
+            .saturating_mul(u64::from(full))
+            .div_ceil(u64::from(stage))
+            .saturating_add(2)
+            .min(u64::from(u32::MAX)) as u32;
+        exact.max(used).next_multiple_of(64)
+    };
+    let reserved = (
+        projected(width, region.stage.0, region.full_stage.0),
+        projected(height, region.stage.1, region.full_stage.1),
+    );
+    if allocated_bytes(&tile_layout(reserved, limit)) <= REGION_SET_BUDGET {
+        reserved
+    } else {
+        (width, height)
+    }
 }
 
 /// The render pipeline, the samplers and every layer's textures, shared by every instance of
@@ -714,21 +1569,130 @@ pub struct PhotoPipeline {
     nearest: wgpu::Sampler,
     texture_format: wgpu::TextureFormat,
     slots: [Option<Picture>; 4],
+    regions: [Option<Picture>; 2],
+    region_front: usize,
+    retiring_bytes: Arc<AtomicU64>,
+    retiring_full: Arc<AtomicU64>,
+    retiring_regions: Arc<AtomicU64>,
+    retiring_region_bytes: Arc<AtomicU64>,
+    retirement_sender: std::sync::mpsc::Sender<RetiredPicture>,
+    deferred_photo: bool,
+    deferred_region: bool,
 }
 
 impl PhotoPipeline {
+    fn retire(&self, picture: Picture, full: bool) {
+        let bytes = picture.allocated_bytes;
+        self.retiring_bytes.fetch_add(bytes, Ordering::AcqRel);
+        if full {
+            self.retiring_full.fetch_add(1, Ordering::AcqRel);
+        } else {
+            self.retiring_regions.fetch_add(1, Ordering::AcqRel);
+            self.retiring_region_bytes
+                .fetch_add(bytes, Ordering::AcqRel);
+        }
+        RETIREMENT_PENDING.fetch_add(1, Ordering::AcqRel);
+        {
+            let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+            diagnostic.retiring_bytes += bytes;
+        }
+        // The worker receives each retirement once. At most the one full slot and two region
+        // sets can be charged at once, so this queue is bounded by admission rather than a timer.
+        if let Err(error) = self
+            .retirement_sender
+            .send(RetiredPicture { picture, full })
+        {
+            // Device loss or pipeline teardown can end the worker. Its GPU allocations are then
+            // invalid; release their charge and wake the desktop instead of waiting forever.
+            finish_retirement(
+                error.0,
+                &self.retiring_bytes,
+                &self.retiring_full,
+                &self.retiring_regions,
+                &self.retiring_region_bytes,
+                true,
+            );
+        }
+    }
+
+    fn resident_region_bytes(&self) -> u64 {
+        self.regions
+            .iter()
+            .flatten()
+            .map(|picture| picture.allocated_bytes)
+            .sum()
+    }
+
+    fn publish_diagnostics(&self) {
+        let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+        diagnostic.full_resident_bytes = self.slots[Layer::Photo.index()]
+            .as_ref()
+            .map_or(0, |picture| picture.allocated_bytes);
+        diagnostic.region_resident_bytes = self.resident_region_bytes();
+        diagnostic.photo_writes = texture_writes();
+        diagnostic.upload_bytes = texture_upload_bytes();
+    }
+
+    fn defer(&mut self, region: bool) {
+        diagnostics()
+            .lock()
+            .expect("surface diagnostics lock")
+            .deferred_uploads += 1;
+        if region {
+            self.deferred_region = true;
+        } else {
+            self.deferred_photo = true;
+        }
+    }
+
     /// Make `layer`'s textures hold `frame`, creating them when the dimensions changed and writing
     /// the pixels when the version did.
-    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, layer: Layer, frame: &Frame) {
+    fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: Layer,
+        frame: &Frame,
+        content_id: Option<u64>,
+        region_key: Option<RegionKey>,
+    ) -> bool {
         let (width, height) = frame.size();
         // The device's limit, not the GPU's: Iced asks wgpu for its default limits, so this is
         // 8192 on the owner's Mac although the GPU could hold larger textures.
         let limit = device.limits().max_texture_dimension_2d;
-        let fresh = !self.slots[layer.index()].as_ref().is_some_and(|picture| {
-            picture.width == width && picture.height == height && picture.limit == limit
-        });
+        let reusable = self.slots[layer.index()]
+            .as_ref()
+            .and_then(|picture| picture.layouts_for((width, height), limit));
+        let fresh = reusable.is_none();
         if fresh {
-            let tiles = tile_layout((width, height), limit)
+            let capacity = if layer == Layer::Photo {
+                full_capacity((width, height), limit)
+            } else {
+                (width, height)
+            };
+            let layouts = tile_layout(capacity, limit);
+            let bytes = allocated_bytes(&layouts);
+            if layer == Layer::Photo {
+                if bytes > FULL_BUDGET {
+                    diagnostics()
+                        .lock()
+                        .expect("surface diagnostics lock")
+                        .rejected_full_uploads += 1;
+                    return false;
+                }
+                // At most the current and one retiring full allocation may exist. If an older
+                // retirement is still in flight, keep the current texture drawable until it ends.
+                if self.retiring_full.load(Ordering::Acquire) > 0 {
+                    self.defer(false);
+                    self.publish_diagnostics();
+                    return false;
+                }
+                if let Some(old) = self.slots[layer.index()].take() {
+                    self.retire(old, true);
+                }
+            }
+            let grid = tile_grid(capacity, limit);
+            let tiles = layouts
                 .into_iter()
                 .map(|tile| self.tile(device, layer, tile))
                 .collect();
@@ -736,33 +1700,125 @@ impl PhotoPipeline {
                 tiles,
                 width,
                 height,
+                capacity,
+                grid,
                 limit,
                 // No version can match until the pixels are written below.
                 version: frame.version.wrapping_sub(1),
+                content_id: None,
+                region_key: None,
+                allocated_bytes: bytes,
             });
         }
         let Some(picture) = &mut self.slots[layer.index()] else {
-            return;
+            return false;
         };
-        if picture.version == frame.version {
-            return;
+        if let Some(layouts) = reusable {
+            picture.set_layouts((width, height), layouts);
+        } else if let Some(layouts) = picture.layouts_for((width, height), limit) {
+            picture.set_layouts((width, height), layouts);
         }
-        for tile in &picture.tiles {
-            let (tile_width, tile_height) = tile.layout.texture_size();
-            queue.write_texture(
-                tile.texture.as_image_copy(),
-                (*frame.pixels).as_ref(),
-                tile.layout.copy_layout(width),
-                wgpu::Extent3d {
-                    width: tile_width,
-                    height: tile_height,
-                    depth_or_array_layers: 1,
-                },
-            );
+        if picture.matching_frame(frame, content_id, region_key) {
+            if layer == Layer::Photo && std::mem::take(&mut self.deferred_photo) {
+                wake_surface();
+            }
+            return true;
         }
+        upload_picture(queue, picture, frame, layer == Layer::Photo);
         picture.version = frame.version;
+        picture.content_id = content_id;
+        picture.region_key = region_key;
         if layer == Layer::Photo {
             TEXTURE_WRITES.fetch_add(1, Ordering::Relaxed);
+        }
+        self.publish_diagnostics();
+        if layer == Layer::Photo && std::mem::take(&mut self.deferred_photo) {
+            // The prior retirement wake scheduled this prepare; one more app update observes the
+            // newly drawn identity and removes the temporary updating label.
+            wake_surface();
+        }
+        true
+    }
+
+    fn write_region(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, region: &RegionFrame) {
+        let key = region.key();
+        if self
+            .regions
+            .iter()
+            .flatten()
+            .any(|picture| picture.matching_frame(&region.frame, Some(key.content_id), Some(key)))
+        {
+            if std::mem::take(&mut self.deferred_region) {
+                wake_surface();
+            }
+            return;
+        }
+        let index = 1 - self.region_front;
+        let (width, height) = region.frame.size();
+        let limit = device.limits().max_texture_dimension_2d;
+        let reusable = self.regions[index]
+            .as_ref()
+            .and_then(|picture| picture.layouts_for((width, height), limit));
+        let fresh = reusable.is_none();
+        if fresh {
+            let capacity = region_capacity(region, limit);
+            let layouts = tile_layout(capacity, limit);
+            let bytes = allocated_bytes(&layouts);
+            if bytes > REGION_SET_BUDGET {
+                diagnostics()
+                    .lock()
+                    .expect("surface diagnostics lock")
+                    .rejected_region_uploads += 1;
+                return;
+            }
+            if let Some(old) = self.regions[index].take() {
+                self.retire(old, false);
+            }
+            // A retired region remains charged. The two sets together, including aprons, stay
+            // within 64 MiB and there are never more than two live or retiring allocations.
+            let region_count = self.regions.iter().flatten().count() as u64
+                + self.retiring_regions.load(Ordering::Acquire);
+            let total = self.resident_region_bytes()
+                + self.retiring_region_bytes.load(Ordering::Acquire)
+                + bytes;
+            if region_count >= 2 || total > 2 * REGION_SET_BUDGET {
+                self.defer(true);
+                self.publish_diagnostics();
+                return;
+            }
+            let grid = tile_grid(capacity, limit);
+            let tiles = layouts
+                .into_iter()
+                .map(|tile| self.tile(device, Layer::Photo, tile))
+                .collect();
+            self.regions[index] = Some(Picture {
+                tiles,
+                width,
+                height,
+                capacity,
+                grid,
+                limit,
+                version: region.frame.version.wrapping_sub(1),
+                content_id: None,
+                region_key: None,
+                allocated_bytes: bytes,
+            });
+        }
+        let picture = self.regions[index].as_mut().expect("admitted region");
+        if let Some(layouts) = reusable {
+            picture.set_layouts((width, height), layouts);
+        } else if let Some(layouts) = picture.layouts_for((width, height), limit) {
+            picture.set_layouts((width, height), layouts);
+        }
+        upload_picture(queue, picture, &region.frame, true);
+        picture.version = region.frame.version;
+        picture.content_id = Some(key.content_id);
+        picture.region_key = Some(key);
+        self.region_front = index;
+        TEXTURE_WRITES.fetch_add(1, Ordering::Relaxed);
+        self.publish_diagnostics();
+        if std::mem::take(&mut self.deferred_region) {
+            wake_surface();
         }
     }
 
@@ -815,9 +1871,265 @@ impl PhotoPipeline {
         });
         Tile {
             layout,
+            capacity: (width, height),
             texture,
             uniform,
             bindings,
+        }
+    }
+}
+
+impl Drop for PhotoPipeline {
+    fn drop(&mut self) {
+        if let Some(picture) = self.slots[Layer::Photo.index()].take() {
+            self.retire(picture, true);
+        }
+        for index in 0..self.regions.len() {
+            if let Some(picture) = self.regions[index].take() {
+                self.retire(picture, false);
+            }
+        }
+        self.publish_diagnostics();
+    }
+}
+
+/// Queue directly from the borrowed frame, in bounded chunks. The surface owns no pixel staging;
+/// wgpu's backend staging is separate and measured in native GPU evidence. A tile's apron bytes
+/// are included in the write count and allocated-byte admission.
+fn upload_picture(queue: &wgpu::Queue, picture: &Picture, frame: &Frame, count_photo: bool) {
+    const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
+    for tile in &picture.tiles {
+        let (tile_width, tile_height) = tile.layout.texture_size();
+        let rows_per_chunk = (UPLOAD_CHUNK / (u64::from(tile_width) * 4)).max(1) as u32;
+        let mut row = 0;
+        while row < tile_height {
+            let rows = rows_per_chunk.min(tile_height - row);
+            let mut destination = tile.texture.as_image_copy();
+            destination.origin.y = row;
+            let mut source = tile.layout.copy_layout(frame.width);
+            source.offset += u64::from(row) * u64::from(frame.width) * 4;
+            source.rows_per_image = Some(rows);
+            queue.write_texture(
+                destination,
+                (*frame.pixels).as_ref(),
+                source,
+                wgpu::Extent3d {
+                    width: tile_width,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if count_photo {
+                TEXTURE_UPLOAD_BYTES.fetch_add(
+                    u64::from(tile_width) * u64::from(rows) * 4,
+                    Ordering::Relaxed,
+                );
+            }
+            row += rows;
+        }
+        // The active raster may use only the upper-left part of a reusable bucket. The linear
+        // sampler must see the active edge texel on both sides of that edge, just as it would in
+        // an exactly sized texture. Copy one borrowed edge column/row into the unused border.
+        let (capacity_width, capacity_height) = tile.capacity;
+        if tile_width < capacity_width {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tile.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: tile_width,
+                        y: 0,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                (*frame.pixels).as_ref(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: (u64::from(tile.layout.texels[1]) * u64::from(frame.width)
+                        + u64::from(tile.layout.texels[2] - 1))
+                        * 4,
+                    bytes_per_row: Some(frame.width * 4),
+                    rows_per_image: Some(tile_height),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: tile_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if count_photo {
+                TEXTURE_UPLOAD_BYTES.fetch_add(u64::from(tile_height) * 4, Ordering::Relaxed);
+            }
+        }
+        if tile_height < capacity_height {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tile.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: tile_height,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                (*frame.pixels).as_ref(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: (u64::from(tile.layout.texels[3] - 1) * u64::from(frame.width)
+                        + u64::from(tile.layout.texels[0]))
+                        * 4,
+                    bytes_per_row: Some(frame.width * 4),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: tile_width,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if count_photo {
+                TEXTURE_UPLOAD_BYTES.fetch_add(u64::from(tile_width) * 4, Ordering::Relaxed);
+            }
+        }
+        if tile_width < capacity_width && tile_height < capacity_height {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tile.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: tile_width,
+                        y: tile_height,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                (*frame.pixels).as_ref(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: (u64::from(tile.layout.texels[3] - 1) * u64::from(frame.width)
+                        + u64::from(tile.layout.texels[2] - 1))
+                        * 4,
+                    bytes_per_row: Some(4),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if count_photo {
+                TEXTURE_UPLOAD_BYTES.fetch_add(4, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+fn finish_retirement(
+    retired: RetiredPicture,
+    retiring_bytes: &AtomicU64,
+    retiring_full: &AtomicU64,
+    retiring_regions: &AtomicU64,
+    retiring_region_bytes: &AtomicU64,
+    failed: bool,
+) {
+    let bytes = retired.picture.allocated_bytes;
+    drop(retired.picture);
+    retiring_bytes.fetch_sub(bytes, Ordering::AcqRel);
+    if retired.full {
+        retiring_full.fetch_sub(1, Ordering::AcqRel);
+    } else {
+        retiring_regions.fetch_sub(1, Ordering::AcqRel);
+        retiring_region_bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
+    RETIREMENT_PENDING.fetch_sub(1, Ordering::AcqRel);
+    {
+        let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+        diagnostic.retiring_bytes = diagnostic.retiring_bytes.saturating_sub(bytes);
+        if failed {
+            diagnostic.gpu_retirement_failures += 1;
+        }
+    }
+    wake_surface();
+}
+
+fn wake_surface() {
+    if let Some(waker) = RETIREMENT_WAKER
+        .get()
+        .and_then(|slot| slot.lock().ok().and_then(|guard| guard.clone()))
+    {
+        waker();
+    }
+}
+
+fn retirement_worker(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    receiver: std::sync::mpsc::Receiver<RetiredPicture>,
+    retiring_bytes: Arc<AtomicU64>,
+    retiring_full: Arc<AtomicU64>,
+    retiring_regions: Arc<AtomicU64>,
+    retiring_region_bytes: Arc<AtomicU64>,
+) {
+    let mut pending: Vec<Arc<Mutex<Option<RetiredPicture>>>> = Vec::new();
+    loop {
+        // Sleep indefinitely when idle. While one or two resources retire, poll maintenance at
+        // bounded intervals; wgpu invokes completion callbacks only during submit or poll.
+        let incoming = if pending.is_empty() {
+            match receiver.recv() {
+                Ok(retired) => Some(retired),
+                Err(_) => break,
+            }
+        } else {
+            match receiver.recv_timeout(std::time::Duration::from_millis(2)) {
+                Ok(retired) => Some(retired),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    None
+                }
+            }
+        };
+        if let Some(retired) = incoming {
+            // `prepare` removed this picture before the current draw is encoded. A previous draw
+            // was already submitted; this empty submit also flushes any pending write_texture
+            // staging before the completion callback's fence is registered.
+            queue.submit(None);
+            let slot = Arc::new(Mutex::new(Some(retired)));
+            let callback_slot = Arc::clone(&slot);
+            let callback_bytes = Arc::clone(&retiring_bytes);
+            let callback_full = Arc::clone(&retiring_full);
+            let callback_regions = Arc::clone(&retiring_regions);
+            let callback_region_bytes = Arc::clone(&retiring_region_bytes);
+            queue.on_submitted_work_done(move || {
+                if let Some(retired) = callback_slot.lock().expect("retirement slot lock").take() {
+                    finish_retirement(
+                        retired,
+                        &callback_bytes,
+                        &callback_full,
+                        &callback_regions,
+                        &callback_region_bytes,
+                        false,
+                    );
+                }
+            });
+            pending.push(slot);
+        }
+        if !pending.is_empty() {
+            if device.poll(wgpu::PollType::Poll).is_err() {
+                for slot in &pending {
+                    if let Some(retired) = slot.lock().expect("retirement slot lock").take() {
+                        finish_retirement(
+                            retired,
+                            &retiring_bytes,
+                            &retiring_full,
+                            &retiring_regions,
+                            &retiring_region_bytes,
+                            true,
+                        );
+                    }
+                }
+            }
+            pending.retain(|slot| slot.lock().expect("retirement slot lock").is_some());
         }
     }
 }
@@ -838,7 +2150,7 @@ fn sampler(device: &wgpu::Device, label: &str, filter: wgpu::FilterMode) -> wgpu
 }
 
 impl shader::Pipeline for PhotoPipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         // The toolkit gamma corrects exactly when it chose an sRGB target, and stores image pixels
         // in an sRGB-typed texture when it does. Matching that is what makes a frame's byte land
         // on the surface as the image widget lands it.
@@ -945,6 +2257,28 @@ impl shader::Pipeline for PhotoPipeline {
             multiview: None,
             cache: None,
         });
+        let retiring_bytes = Arc::new(AtomicU64::new(0));
+        let retiring_full = Arc::new(AtomicU64::new(0));
+        let retiring_regions = Arc::new(AtomicU64::new(0));
+        let retiring_region_bytes = Arc::new(AtomicU64::new(0));
+        let (retirement_sender, retirement_receiver) = std::sync::mpsc::channel();
+        let waiter_device = device.clone();
+        let waiter_queue = queue.clone();
+        let waiter_bytes = retiring_bytes.clone();
+        let waiter_full = retiring_full.clone();
+        let waiter_regions = retiring_regions.clone();
+        let waiter_region_bytes = retiring_region_bytes.clone();
+        std::thread::spawn(move || {
+            retirement_worker(
+                waiter_device,
+                waiter_queue,
+                retirement_receiver,
+                waiter_bytes,
+                waiter_full,
+                waiter_regions,
+                waiter_region_bytes,
+            );
+        });
         Self {
             pipeline,
             layout,
@@ -952,6 +2286,15 @@ impl shader::Pipeline for PhotoPipeline {
             nearest,
             texture_format,
             slots: [None, None, None, None],
+            regions: [None, None],
+            region_front: 0,
+            retiring_bytes,
+            retiring_full,
+            retiring_regions,
+            retiring_region_bytes,
+            retirement_sender,
+            deferred_photo: false,
+            deferred_region: false,
         }
     }
 }
@@ -963,6 +2306,237 @@ mod tests {
     fn raster(width: u32, height: u32, version: u64) -> Frame {
         let pixels: Arc<[u8]> = vec![0u8; (width * height * 4) as usize].into();
         Frame::new(pixels, width, height, version).expect("a whole raster")
+    }
+
+    #[test]
+    fn region_frames_validate_bounds_and_overlay_grids_can_be_smaller() {
+        let region = RegionFrame::new(
+            raster(20, 10, 7),
+            [10, 5, 30, 15],
+            (50, 30),
+            (100, 60),
+            0.5,
+            RegionQuality::Interactive,
+            4,
+            9,
+        )
+        .expect("bounded region");
+        assert_eq!(region.key().rect, [10, 5, 30, 15]);
+        assert!(
+            RegionFrame::new(
+                raster(20, 10, 7),
+                [10, 5, 31, 15],
+                (50, 30),
+                (100, 60),
+                0.5,
+                RegionQuality::Interactive,
+                4,
+                9,
+            )
+            .is_none()
+        );
+        assert!(
+            RegionOverlay::new(
+                raster(4, 2, 8),
+                [20, 10, 60, 30],
+                (100, 60),
+                (100, 60),
+                RegionQuality::Interactive,
+                4,
+                9,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn odd_sized_half_stage_places_regions_by_stage_ratio() {
+        let key = RegionKey {
+            rect: [250, 100, 501, 333],
+            stage: (501, 333),
+            full_stage: (1001, 665),
+            quality: RegionQuality::Interactive,
+            content_id: 3,
+            generation: 8,
+        };
+        let tile = tile_layout((251, 233), 8192)[0];
+        let placement = key.placement(tile, (251, 233));
+        assert_eq!(placement[0], 250.0 / 501.0);
+        assert_eq!(placement[1], 100.0 / 333.0);
+        assert_eq!(placement[2..], [1.0, 1.0]);
+        assert_ne!(placement[0], 500.0 / 1001.0);
+        let overlay = RegionOverlay::new(
+            raster(10, 10, 11),
+            [500, 200, 1001, 665],
+            (1001, 665),
+            (1001, 665),
+            RegionQuality::Interactive,
+            3,
+            8,
+        )
+        .expect("full-stage overlay grid");
+        assert!(overlay.matches_region(key));
+        let grid_tile = tile_layout((10, 10), 8192)[0];
+        assert_eq!(
+            overlay.key().placement(grid_tile, (10, 10)),
+            [500.0 / 1001.0, 200.0 / 665.0, 1.0, 1.0],
+        );
+        let clip = region_physical_rect([0.0, 0.0, 1001.0, 665.0], key);
+        assert_eq!(clip[0], 1001.0 * 250.0 / 501.0);
+        assert_ne!(clip[0], 500.0);
+    }
+
+    #[test]
+    fn padded_region_tiles_count_toward_admission() {
+        assert!(region_texture_admissible((8198, 1023), 8192));
+        assert!(!region_texture_admissible((8199, 1023), 8192));
+        assert!(!region_texture_admissible((8192, 1025), 8192));
+    }
+
+    #[test]
+    fn stale_content_is_hidden_and_exact_regions_cover_interactive_ones() {
+        let key = |content_id, generation, quality| RegionKey {
+            rect: [0, 0, 100, 80],
+            stage: (100, 80),
+            full_stage: (100, 80),
+            quality,
+            content_id,
+            generation,
+        };
+        assert_eq!(
+            region_key_order(
+                [
+                    Some(key(7, 10, RegionQuality::Interactive)),
+                    Some(key(7, 9, RegionQuality::Exact)),
+                ],
+                7,
+                (100, 80),
+            ),
+            vec![0, 1],
+            "older exact pixels should override same-recipe coarse pixels"
+        );
+        assert_eq!(
+            region_key_order(
+                [
+                    Some(key(6, 10, RegionQuality::Exact)),
+                    Some(key(7, 9, RegionQuality::Interactive)),
+                ],
+                7,
+                (100, 80),
+            ),
+            vec![1],
+            "an earlier recipe cannot leak into uncovered pixels"
+        );
+        assert!(
+            region_key_order([Some(key(6, 10, RegionQuality::Exact)), None], 7, (100, 80),)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mixed_quality_overlap_suppresses_only_the_covered_region_overlay() {
+        let full_stage = (1000, 800);
+        let interactive = RegionKey {
+            rect: [200, 50, 400, 300],
+            stage: (500, 400),
+            full_stage,
+            quality: RegionQuality::Interactive,
+            content_id: 7,
+            generation: 11,
+        };
+        let exact = RegionKey {
+            rect: [700, 100, 950, 600],
+            stage: full_stage,
+            full_stage,
+            quality: RegionQuality::Exact,
+            content_id: 7,
+            generation: 10,
+        };
+        let overlay = |rect, quality, generation| {
+            RegionOverlay::new(
+                raster(10, 10, generation),
+                rect,
+                full_stage,
+                full_stage,
+                quality,
+                7,
+                generation,
+            )
+            .expect("region overlay")
+        };
+        let interactive_overlay = overlay([400, 100, 800, 600], RegionQuality::Interactive, 11);
+        let exact_overlay = overlay(exact.rect, RegionQuality::Exact, 10);
+        let visible = |overlay: &RegionOverlay, keys: [Option<RegionKey>; 2]| {
+            let order = region_key_order(keys, 7, full_stage);
+            overlay_matches_draw_order(overlay, keys, &order)
+        };
+        assert!(!visible(
+            &interactive_overlay,
+            [Some(interactive), Some(exact)]
+        ));
+        assert!(visible(&exact_overlay, [Some(interactive), Some(exact)]));
+
+        let disjoint = RegionKey {
+            rect: [850, 100, 950, 600],
+            ..exact
+        };
+        assert!(visible(
+            &interactive_overlay,
+            [Some(interactive), Some(disjoint)]
+        ));
+        let same_quality = RegionKey {
+            quality: RegionQuality::Interactive,
+            ..exact
+        };
+        assert!(visible(
+            &interactive_overlay,
+            [Some(interactive), Some(same_quality)]
+        ));
+        assert!(!visible(&interactive_overlay, [Some(exact), None]));
+    }
+
+    #[test]
+    fn later_same_quality_region_suppresses_an_older_overlapping_overlay() {
+        let full_stage = (1000, 800);
+        let older = RegionKey {
+            rect: [100, 100, 400, 300],
+            stage: (500, 400),
+            full_stage,
+            quality: RegionQuality::Interactive,
+            content_id: 7,
+            generation: 10,
+        };
+        let newer = RegionKey {
+            rect: [350, 100, 650, 300],
+            generation: 11,
+            ..older
+        };
+        let older_overlay = RegionOverlay::new(
+            raster(10, 10, 1),
+            older.rect,
+            older.stage,
+            full_stage,
+            older.quality,
+            older.content_id,
+            older.generation,
+        )
+        .expect("older clipping overlay");
+        let keys = [Some(older), Some(newer)];
+        let order = region_key_order(keys, 7, full_stage);
+        assert_eq!(order, vec![0, 1]);
+        assert!(regions_overlap(older_overlay.key(), newer));
+        assert!(
+            !overlay_matches_draw_order(&older_overlay, keys, &order),
+            "the old grid must not cover newer pixels of the same quality"
+        );
+
+        let disjoint = RegionKey {
+            rect: [700, 100, 950, 300],
+            ..newer
+        };
+        let keys = [Some(older), Some(disjoint)];
+        let order = region_key_order(keys, 7, full_stage);
+        assert!(overlay_matches_draw_order(&older_overlay, keys, &order));
     }
 
     /// A frame is exactly its declared size, or it is not a frame at all.
@@ -1082,7 +2656,7 @@ mod tests {
                 }],
                 "{size:?}"
             );
-            let (region, texels) = tiles[0].placement(size);
+            let (region, texels) = tiles[0].placement(size, tiles[0].texture_size());
             assert_eq!(region, [0.0, 0.0, 1.0, 1.0], "{size:?}");
             assert_eq!(texels, [0.0, 0.0, 1.0, 1.0], "{size:?}");
             let copy = tiles[0].copy_layout(size.0);
@@ -1152,8 +2726,8 @@ mod tests {
         assert_eq!(right.content, [5000, 0, 10000, 6000]);
         assert_eq!(left.texels, [0, 0, 5001, 6000]);
         assert_eq!(right.texels, [4999, 0, 10000, 6000]);
-        let (left_region, left_texels) = left.placement(size);
-        let (right_region, right_texels) = right.placement(size);
+        let (left_region, left_texels) = left.placement(size, left.texture_size());
+        let (right_region, right_texels) = right.placement(size, right.texture_size());
         assert_eq!(left_region[2], right_region[0], "one shared edge");
         assert_eq!(left_region, [0.0, 0.0, 0.5, 1.0]);
         // Texture coordinates of the content, in each tile's own texture.
@@ -1515,8 +3089,8 @@ mod tests {
             destination[0] + destination[2] / 2.0,
             destination[1] + destination[3] / 2.0,
         );
-        let (left, _) = tiles[0].placement(size);
-        let (right, _) = tiles[1].placement(size);
+        let (left, _) = tiles[0].placement(size, tiles[0].texture_size());
+        let (right, _) = tiles[1].placement(size, tiles[1].texture_size());
         for degrees in [7.0_f32, -12.5, 44.0] {
             let angle = degrees.to_radians();
             let turn = turn_uniform(angle, 0.35, false);
@@ -1603,5 +3177,821 @@ mod tests {
             ..turn
         };
         assert!(visible_placement(Base::Stage(empty), (4800, 3200), bounds, bounds).is_none());
+    }
+}
+
+/// Headless GPU regression coverage for viewport photo residency and retirement.
+/// A missing adapter is printed as a skip and must not be reported as native GPU evidence.
+#[cfg(test)]
+mod gpu_surface_tests {
+    use super::*;
+    use iced::widget::shader::{Pipeline as _, Primitive as _};
+    use std::time::{Duration, Instant};
+
+    static GPU_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct GpuTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for GpuTestGuard {
+        fn drop(&mut self) {
+            // Pipelines declared after this guard drop first. Their asynchronous retirements
+            // must finish before another test reads process-wide diagnostics.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while RETIREMENT_PENDING.load(Ordering::Acquire) != 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "GPU test retirements never finished"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn gpu_test_guard() -> GpuTestGuard {
+        let guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while RETIREMENT_PENDING.load(Ordering::Acquire) != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "previous GPU test retirements never finished"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        GpuTestGuard { _lock: guard }
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
+                return value;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        eprintln!("adapter: {:?}", adapter.get_info());
+        block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    }
+
+    fn headless_with_texture_limit(limit: u32) -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        eprintln!("adapter: {:?}", adapter.get_info());
+        let mut descriptor = wgpu::DeviceDescriptor::default();
+        descriptor.required_limits.max_texture_dimension_2d = limit;
+        block_on(adapter.request_device(&descriptor)).ok()
+    }
+
+    fn raster(width: u32, height: u32, version: u64) -> Frame {
+        let pixels: Arc<[u8]> = vec![0u8; (width * height * 4) as usize].into();
+        Frame::new(pixels, width, height, version).expect("a whole raster")
+    }
+
+    fn solid_raster(width: u32, height: u32, version: u64, rgba: [u8; 4]) -> Frame {
+        let pixels: Arc<[u8]> = vec![rgba; (width * height) as usize]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .into();
+        Frame::new(pixels, width, height, version).expect("an opaque raster")
+    }
+
+    fn striped_raster(width: u32, height: u32, version: u64, colours: [[u8; 4]; 2]) -> Frame {
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                pixels.extend_from_slice(&colours[usize::from(x >= width / 2)]);
+            }
+        }
+        Frame::new(pixels, width, height, version).expect("striped raster")
+    }
+
+    fn full_primitive(frame: Frame) -> PhotoPrimitive {
+        PhotoPrimitive {
+            layers: vec![(Layer::Photo, frame)],
+            viewport: None,
+            region_overlays: [None, None],
+            offset: Vector::new(0.0, 0.0),
+            size: Size::new(64.0, 64.0),
+            clip_size: Size::new(64.0, 64.0),
+            bright: None,
+            angle: 0.0,
+            snap: true,
+        }
+    }
+
+    fn viewport_primitive(
+        full: Option<(Frame, u64)>,
+        region: Option<RegionFrame>,
+        current_content: u64,
+        full_stage: (u32, u32),
+    ) -> PhotoPrimitive {
+        PhotoPrimitive {
+            layers: Vec::new(),
+            viewport: Some(ViewportFrames {
+                full,
+                region,
+                current_content,
+                full_stage,
+            }),
+            region_overlays: [None, None],
+            offset: Vector::new(0.0, 0.0),
+            size: Size::new(64.0, 64.0),
+            clip_size: Size::new(64.0, 64.0),
+            bright: None,
+            angle: 0.0,
+            snap: true,
+        }
+    }
+
+    /// Encode the real prepare and draw calls and read the 64×64 BGRA output. A distinct clear
+    /// colour makes a blank or partially uncovered photograph visible to the assertion.
+    fn paint(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut PhotoPipeline,
+        primitive: &PhotoPrimitive,
+    ) -> Vec<u8> {
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        let viewport = Viewport::with_physical_size(Size::new(64, 64), 1.0);
+        primitive.prepare(pipeline, device, queue, &bounds, &viewport);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("photo surface readback target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("photo surface readback"),
+            size: 64 * 64 * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("photo surface readback pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            assert!(primitive.draw(pipeline, &mut pass));
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(64 * 4),
+                    rows_per_image: Some(64),
+                },
+            },
+            wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+        let index = queue.submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).expect("readback receiver")
+            });
+        wait(device, index);
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("readback callback")
+            .expect("readback mapping");
+        let bytes = readback.slice(..).get_mapped_range().to_vec();
+        readback.unmap();
+        bytes
+    }
+
+    fn assert_solid_bgra(bytes: &[u8], expected: [u8; 4]) {
+        for (index, pixel) in bytes.chunks_exact(4).enumerate() {
+            assert_eq!(pixel, expected, "output pixel {index}");
+        }
+    }
+
+    fn settle(pipeline: &PhotoPipeline) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pipeline.retiring_regions.load(Ordering::Acquire) > 0
+            || pipeline.retiring_full.load(Ordering::Acquire) > 0
+        {
+            assert!(Instant::now() < deadline, "retirement never finished");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn bucketed_full_upload_prepare_and_draw_use_only_current_texels() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let blanks_before = surface_diagnostics().blank_photo_draws;
+        let first = full_primitive(solid_raster(20, 12, 1, [0, 255, 0, 255]));
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &first),
+            [0, 255, 0, 255],
+        );
+        let second = full_primitive(solid_raster(12, 20, 2, [255, 0, 0, 255]));
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &second),
+            [0, 0, 255, 255],
+        );
+        let third = full_primitive(solid_raster(9, 7, 3, [255, 255, 0, 255]));
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &third),
+            [0, 255, 255, 255],
+        );
+        assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 0);
+        assert_eq!(surface_diagnostics().blank_photo_draws, blanks_before);
+    }
+
+    #[test]
+    fn bucketed_tiled_shrink_matches_a_fresh_tiled_draw_at_seams_and_edges() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless_with_texture_limit(64) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut reused = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let old = full_primitive(striped_raster(
+            96,
+            48,
+            1,
+            [[255, 0, 0, 255], [0, 255, 0, 255]],
+        ));
+        paint(&device, &queue, &mut reused, &old);
+        let new_frame = striped_raster(80, 40, 2, [[0, 0, 255, 255], [255, 255, 0, 255]]);
+        let new = full_primitive(new_frame.clone());
+        let actual = paint(&device, &queue, &mut reused, &new);
+        assert_eq!(reused.retiring_full.load(Ordering::Acquire), 0);
+        let mut fresh = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let reference = paint(&device, &queue, &mut fresh, &full_primitive(new_frame));
+        assert_eq!(
+            actual, reference,
+            "reused tile edge or seam sampled stale texels"
+        );
+        assert_ne!(actual[0..4], [0, 0, 255, 255], "the old edge was sampled");
+    }
+
+    #[test]
+    fn bucketed_region_upload_prepare_and_draw_use_only_current_texels() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let blanks_before = surface_diagnostics().blank_photo_draws;
+        for (width, height, version, colour, bgra) in [
+            (16, 16, 1, [0, 255, 0, 255], [0, 255, 0, 255]),
+            (12, 12, 2, [255, 0, 0, 255], [0, 0, 255, 255]),
+            (8, 8, 3, [255, 255, 0, 255], [0, 255, 255, 255]),
+        ] {
+            let region = RegionFrame::new(
+                solid_raster(width, height, version, colour),
+                [0, 0, width, height],
+                (width, height),
+                (width, height),
+                1.0,
+                RegionQuality::Exact,
+                version,
+                version,
+            )
+            .expect("whole-region raster");
+            let primitive = viewport_primitive(None, Some(region), version, (width, height));
+            assert_solid_bgra(&paint(&device, &queue, &mut pipeline, &primitive), bgra);
+        }
+        assert_eq!(pipeline.retiring_regions.load(Ordering::Acquire), 0);
+        assert_eq!(surface_diagnostics().blank_photo_draws, blanks_before);
+    }
+
+    #[test]
+    fn deferred_full_upload_draws_a_stale_photo_then_progresses_on_retirement() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Photo,
+            &solid_raster(20, 12, 1, [0, 255, 0, 255]),
+            Some(1),
+            None,
+        ));
+        let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Photo,
+            &solid_raster(40, 20, 2, [255, 0, 0, 255]),
+            Some(2),
+            None,
+        ));
+        assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 1);
+        let desired = viewport_primitive(
+            Some((solid_raster(80, 40, 3, [255, 255, 0, 255]), 3)),
+            None,
+            3,
+            (80, 40),
+        );
+        let blanks_before = surface_diagnostics().blank_photo_draws;
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &desired),
+            [0, 0, 255, 255],
+        );
+        let diagnostic = surface_diagnostics();
+        assert_eq!(diagnostic.blank_photo_draws, blanks_before);
+        assert!(diagnostic.drawn_stale_photo);
+        assert_eq!(diagnostic.drawn_content, None);
+        assert_eq!(diagnostic.drawn_fallback_content, Some(2));
+        assert!(diagnostic.full_resident_bytes + diagnostic.retiring_bytes <= 2 * FULL_BUDGET);
+        assert!(pipeline.retiring_full.load(Ordering::Acquire) <= 1);
+        wait(&device, busy);
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring_bytes.load(Ordering::Acquire), 0);
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &desired),
+            [0, 255, 255, 255],
+        );
+        let diagnostic = surface_diagnostics();
+        assert!(!diagnostic.drawn_stale_photo);
+        assert_eq!(diagnostic.drawn_content, Some(3));
+    }
+
+    #[test]
+    fn stale_fit_photo_suppresses_new_overlay_until_replacement_arrives() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Photo,
+            &solid_raster(20, 12, 1, [255, 0, 0, 255]),
+            None,
+            None,
+        ));
+        let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Photo,
+            &solid_raster(40, 20, 2, [255, 0, 0, 255]),
+            None,
+            None,
+        ));
+        assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 1);
+        let mut desired = full_primitive(solid_raster(80, 40, 3, [255, 255, 0, 255]));
+        desired
+            .layers
+            .push((Layer::Clipping, solid_raster(80, 40, 1, [0, 255, 0, 255])));
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &desired),
+            [0, 0, 255, 255],
+        );
+        let diagnostic = surface_diagnostics();
+        assert!(diagnostic.drawn_stale_photo);
+        assert_eq!(diagnostic.drawn_clipping_version, None);
+        wait(&device, busy);
+        settle(&pipeline);
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &desired),
+            [0, 255, 0, 255],
+        );
+        let diagnostic = surface_diagnostics();
+        assert!(!diagnostic.drawn_stale_photo);
+        assert_eq!(diagnostic.drawn_clipping_version, Some(1));
+    }
+
+    #[test]
+    fn blank_photo_draw_resets_all_previous_drawn_identities() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let shown = viewport_primitive(
+            Some((solid_raster(16, 16, 1, [255, 0, 0, 255]), 1)),
+            None,
+            1,
+            (16, 16),
+        );
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &shown),
+            [0, 0, 255, 255],
+        );
+        let blank = viewport_primitive(None, None, 2, (16, 16));
+        // Deliberately remove the previous photo: this test checks the blank diagnostic itself.
+        pipeline.slots[Layer::Photo.index()] = None;
+        let before = surface_diagnostics().blank_photo_draws;
+        assert_solid_bgra(
+            &paint(&device, &queue, &mut pipeline, &blank),
+            [255, 0, 0, 255],
+        );
+        let diagnostic = surface_diagnostics();
+        assert_eq!(diagnostic.blank_photo_draws, before + 1);
+        assert_eq!(diagnostic.drawn_content, None);
+        assert_eq!(diagnostic.drawn_full_version, None);
+        assert_eq!(diagnostic.drawn_region_version, None);
+        assert_eq!(diagnostic.drawn_regions, [None; 2]);
+        assert!(!diagnostic.drawn_stale_photo);
+        assert_eq!(diagnostic.drawn_fallback_content, None);
+    }
+
+    /// Keep the GPU busy: `copies` copies between two `size`-byte buffers in one submission.
+    fn busy_gpu(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: u64,
+        copies: u32,
+    ) -> wgpu::SubmissionIndex {
+        let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        let buffer = || {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("review.busy"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let (a, b) = (buffer(), buffer());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        for index in 0..copies {
+            if index % 2 == 0 {
+                encoder.copy_buffer_to_buffer(&a, 0, &b, 0, size);
+            } else {
+                encoder.copy_buffer_to_buffer(&b, 0, &a, 0, size);
+            }
+        }
+        queue.submit([encoder.finish()])
+    }
+
+    fn wait(device: &wgpu::Device, index: wgpu::SubmissionIndex) {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(index),
+                timeout: None,
+            })
+            .expect("device wait");
+    }
+
+    const BUSY_SIZE: u64 = 64 * 1024 * 1024;
+    const BUSY_COPIES: u32 = 96;
+
+    /// A drag at 100%, a pause that refines the region to exact detail, then the drag resumes.
+    /// The second resumed revision needs the set that held the exact region, so its upload is
+    /// deferred behind retirement; the older revision is hidden; nothing is drawable.
+    #[test]
+    fn review_resumed_drag_after_exact_refinement_has_a_drawable_region() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let full_stage = (2000, 1200);
+        let interactive = |content: u64, generation: u64, version: u64| {
+            RegionFrame::new(
+                raster(400, 250, version),
+                [100, 100, 500, 350],
+                (1000, 600),
+                full_stage,
+                0.5,
+                RegionQuality::Interactive,
+                content,
+                generation,
+            )
+            .expect("half-detail region")
+        };
+        let exact = |content: u64, generation: u64, version: u64| {
+            RegionFrame::new(
+                raster(800, 500, version),
+                [200, 200, 1000, 700],
+                full_stage,
+                full_stage,
+                1.0,
+                RegionQuality::Exact,
+                content,
+                generation,
+            )
+            .expect("exact region")
+        };
+        pipeline.write_region(&device, &queue, &interactive(1, 1, 1));
+        pipeline.write_region(&device, &queue, &interactive(2, 2, 2));
+        assert_eq!(region_draw_order(&pipeline.regions, 2, full_stage).len(), 1);
+        // Quiet refinement of revision 2 (deferred once, then admitted after retirement).
+        pipeline.write_region(&device, &queue, &exact(2, 3, 3));
+        settle(&pipeline);
+        pipeline.write_region(&device, &queue, &exact(2, 3, 3));
+        assert!(pipeline.regions.iter().flatten().any(|picture| {
+            picture
+                .region_key
+                .is_some_and(|key| key.quality == RegionQuality::Exact)
+        }));
+        // The drag resumes: revision 3 reuses the half-detail set.
+        pipeline.write_region(&device, &queue, &interactive(3, 4, 4));
+        assert_eq!(
+            region_draw_order(&pipeline.regions, 3, full_stage).len(),
+            1,
+            "revision 3 is drawn"
+        );
+        // A frame is still executing on the GPU, as during every drag.
+        let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        let deferred_before = surface_diagnostics().deferred_uploads;
+        pipeline.write_region(&device, &queue, &interactive(4, 5, 5));
+        let deferred_after = surface_diagnostics().deferred_uploads;
+        let drawable = region_draw_order(&pipeline.regions, 4, full_stage);
+        let slots: Vec<_> = pipeline
+            .regions
+            .iter()
+            .map(|slot| {
+                slot.as_ref()
+                    .map(|picture| (picture.width, picture.height, picture.content_id))
+            })
+            .collect();
+        wait(&device, busy);
+        settle(&pipeline);
+        assert!(
+            !drawable.is_empty(),
+            "revision 4 was adopted but the surface can draw nothing for it: the canvas is blank \
+             for this frame (older revision hidden, new upload deferred). slots={slots:?} \
+             deferred_uploads {deferred_before}->{deferred_after}"
+        );
+    }
+
+    /// A quick drag at 100% leaves two half-detail sets. Release commits a new recipe identity
+    /// whose settle job starts with an exact visible region (full detail, other dimensions).
+    #[test]
+    fn review_release_at_100_percent_has_a_drawable_region() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let full_stage = (2000, 1200);
+        let interactive = |content: u64, generation: u64, version: u64| {
+            RegionFrame::new(
+                raster(400, 250, version),
+                [100, 100, 500, 350],
+                (1000, 600),
+                full_stage,
+                0.5,
+                RegionQuality::Interactive,
+                content,
+                generation,
+            )
+            .expect("half-detail region")
+        };
+        pipeline.write_region(&device, &queue, &interactive(1, 1, 1));
+        pipeline.write_region(&device, &queue, &interactive(2, 2, 2));
+        let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        // The committed recipe (content 3) arrives as its settle job's exact region.
+        let committed = RegionFrame::new(
+            raster(800, 500, 3),
+            [200, 200, 1000, 700],
+            full_stage,
+            full_stage,
+            1.0,
+            RegionQuality::Exact,
+            3,
+            3,
+        )
+        .expect("exact region");
+        pipeline.write_region(&device, &queue, &committed);
+        let drawable = region_draw_order(&pipeline.regions, 3, full_stage);
+        let slots: Vec<_> = pipeline
+            .regions
+            .iter()
+            .map(|slot| {
+                slot.as_ref()
+                    .map(|picture| (picture.width, picture.height, picture.content_id))
+            })
+            .collect();
+        wait(&device, busy);
+        settle(&pipeline);
+        assert!(
+            !drawable.is_empty(),
+            "the committed exact region was adopted but nothing is drawable for it: slots={slots:?}"
+        );
+    }
+
+    /// At Fit a proxy of new dimensions (rotation, crop, refit) replaces a small proxy.
+    #[test]
+    fn review_a_fit_proxy_of_new_dimensions_is_drawn_in_the_frame_it_arrives() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Photo,
+            &raster(1716, 1144, 1),
+            None,
+            None
+        ));
+        let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        let wrote = pipeline.write(
+            &device,
+            &queue,
+            Layer::Photo,
+            &raster(1144, 1716, 2),
+            None,
+            None,
+        );
+        let slot = pipeline.slots[Layer::Photo.index()]
+            .as_ref()
+            .map(|picture| (picture.width, picture.height, picture.version));
+        let retiring = pipeline.retiring_bytes.load(Ordering::Acquire);
+        wait(&device, busy);
+        settle(&pipeline);
+        assert!(
+            wrote && slot.is_some(),
+            "the new Fit proxy was not written (wrote={wrote}) and the photo slot is {slot:?}: \
+             the non-viewport draw has nothing to draw, although only {retiring} bytes were \
+             retiring against a 512 MiB budget"
+        );
+    }
+
+    /// Characterise the stall with a frame-sized GPU workload (prints only).
+    #[test]
+    #[ignore = "diagnostic timing probe; run after functional work is complete"]
+    fn review_retirement_submit_stall_with_small_gpu_frames() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let full_stage = (2000, 1200);
+        let region = |width: u32, content: u64, version: u64| {
+            RegionFrame::new(
+                raster(width, 200, version),
+                [0, 0, width, 200],
+                full_stage,
+                full_stage,
+                1.0,
+                RegionQuality::Exact,
+                content,
+                version,
+            )
+            .expect("region")
+        };
+        drop(pipeline);
+        for copies in [2u32, 8, 24] {
+            let mut gpus = Vec::new();
+            let mut stalls = Vec::new();
+            for round in 0..5u64 {
+                let mut pipeline =
+                    PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+                let base = 10 + round * 10 + u64::from(copies) * 1000;
+                pipeline.write_region(&device, &queue, &region(300, base, base));
+                pipeline.write_region(&device, &queue, &region(300, base + 1, base + 1));
+                settle(&pipeline);
+                let index = busy_gpu(&device, &queue, 16 * 1024 * 1024, copies);
+                let started = Instant::now();
+                wait(&device, index);
+                gpus.push(started.elapsed());
+                let index = busy_gpu(&device, &queue, 16 * 1024 * 1024, copies);
+                pipeline.write_region(&device, &queue, &region(600, base + 2, base + 2));
+                let retiring = pipeline.retiring_regions.load(Ordering::Acquire);
+                assert!(
+                    retiring > 0,
+                    "diagnostic requires a real texture retirement"
+                );
+                // The rest of the frame's prepare and draw encoding before its submit.
+                std::thread::sleep(Duration::from_micros(300));
+                let started = Instant::now();
+                queue.submit(None);
+                stalls.push((retiring, started.elapsed()));
+                wait(&device, index);
+                settle(&pipeline);
+            }
+            eprintln!("{copies} copies: gpu frames {gpus:?}; (retiring, submit stall) {stalls:?}");
+        }
+    }
+
+    /// Regression for the former retirement worker's `device.poll(Wait)` stall. The render
+    /// thread's next `Queue::submit` must not wait for retirement.
+    #[test]
+    #[ignore = "diagnostic timing probe; run after functional work is complete"]
+    fn review_retirement_never_blocks_a_render_thread_submit() {
+        let _gpu_guard = gpu_test_guard();
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        // How long the busy workload takes on this GPU.
+        let index = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        let started = Instant::now();
+        wait(&device, index);
+        let gpu = started.elapsed();
+        // Control: an empty submit while the GPU is busy and nothing retires.
+        let index = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        std::thread::sleep(Duration::from_millis(2));
+        let started = Instant::now();
+        queue.submit(None);
+        let control = started.elapsed();
+        wait(&device, index);
+        // Two region sets, then a region of new dimensions retires the back set while the GPU
+        // is busy — what a frame's `prepare` does before that frame's own submit.
+        let full_stage = (2000, 1200);
+        let region = |width: u32, content: u64, version: u64| {
+            RegionFrame::new(
+                raster(width, 200, version),
+                [0, 0, width, 200],
+                full_stage,
+                full_stage,
+                1.0,
+                RegionQuality::Exact,
+                content,
+                version,
+            )
+            .expect("region")
+        };
+        pipeline.write_region(&device, &queue, &region(300, 1, 1));
+        pipeline.write_region(&device, &queue, &region(300, 2, 2));
+        settle(&pipeline);
+        let index = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
+        pipeline.write_region(&device, &queue, &region(600, 3, 3));
+        let retiring = pipeline.retiring_regions.load(Ordering::Acquire);
+        assert!(
+            retiring > 0,
+            "diagnostic requires a real texture retirement"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        let started = Instant::now();
+        queue.submit(None);
+        let blocked = started.elapsed();
+        wait(&device, index);
+        settle(&pipeline);
+        eprintln!(
+            "busy workload {gpu:?}; empty submit without retirement {control:?}; \
+             with retirement in flight ({retiring} retiring) {blocked:?}"
+        );
+        assert!(
+            blocked < Duration::from_millis(4),
+            "the render thread's submit waited {blocked:?} for the retirement worker's GPU wait \
+             (busy workload {gpu:?}, control submit {control:?})"
+        );
     }
 }

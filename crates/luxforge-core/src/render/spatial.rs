@@ -866,12 +866,13 @@ impl<'a> PointTiles<'a> {
         &self,
         stage: Stage,
         through_tiles: bool,
+        cancel: &Cancel,
         fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
     ) -> Result<Reduction, Error> {
         if through_tiles {
-            build_reduction_by_tiles(stage, self.tile, fetch)
+            build_reduction_by_tiles(stage, self.tile, cancel, fetch)
         } else {
-            build_reduction(stage, fetch)
+            build_reduction_cancellable(stage, cancel, fetch)
         }
     }
 
@@ -961,12 +962,22 @@ pub(crate) fn resolve_globals(
 /// The reduced frame is at most [`MAX_REDUCTION_PIXELS`] pixels, so this allocates about 3 MiB at
 /// the largest stage the host accepts whatever the source is. The read itself is the whole stage,
 /// which is why the render context keeps a store of the estimates prepared from it.
+#[cfg(test)]
 pub(crate) fn build_reduction(
     stage: Stage,
     fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
 ) -> Result<Reduction, Error> {
+    build_reduction_cancellable(stage, &Cancel::never(), fetch)
+}
+
+pub(crate) fn build_reduction_cancellable(
+    stage: Stage,
+    cancel: &Cancel,
+    fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+) -> Result<Reduction, Error> {
     let (width, mut blocks) = reduction_blocks(stage)?;
     let row = |j: usize, row: &mut [[f32; 3]]| -> Result<(), Error> {
+        cancel.check()?;
         for (i, block) in row.iter_mut().enumerate() {
             *block = block_mean(stage, i as u32, j as u32, &fetch)?;
         }
@@ -995,6 +1006,7 @@ pub(crate) fn build_reduction(
 fn build_reduction_by_tiles(
     stage: Stage,
     tile: u32,
+    cancel: &Cancel,
     fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error>,
 ) -> Result<Reduction, Error> {
     let (width, mut blocks) = reduction_blocks(stage)?;
@@ -1003,6 +1015,7 @@ fn build_reduction_by_tiles(
     for j0 in (0..height).step_by(side) {
         for i0 in (0..width).step_by(side) {
             for j in j0..(j0 + side as u32).min(height) {
+                cancel.check()?;
                 for i in i0..(i0 + side as u32).min(width) {
                     blocks[(j * width + i) as usize] = block_mean(stage, i, j, &fetch)?;
                 }
@@ -1181,6 +1194,25 @@ mod tests {
         fn get(&self) -> usize {
             self.0.load(AtomicOrdering::SeqCst)
         }
+    }
+
+    #[test]
+    fn exact_global_reduction_observes_mid_work_cancellation() {
+        let stage = Stage {
+            width: 64,
+            height: 64,
+        };
+        let exact_cancel = Cancel::new();
+        let exact_reads = AtomicUsize::new(0);
+        let error = build_reduction_cancellable(stage, &exact_cancel, |_, _| {
+            if exact_reads.fetch_add(1, AtomicOrdering::Relaxed) == 300 {
+                exact_cancel.cancel();
+            }
+            Ok([0.5; 3])
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert!(exact_reads.load(AtomicOrdering::Relaxed) < 64 * 64);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3442,7 +3474,7 @@ mod tests {
             let rows = build_reduction(stage, fetch).unwrap();
             for tile in [1, 16, 40, 64, 512] {
                 assert_eq!(
-                    build_reduction_by_tiles(stage, tile, fetch).unwrap(),
+                    build_reduction_by_tiles(stage, tile, &Cancel::new(), fetch).unwrap(),
                     rows,
                     "{width}x{height}, tile {tile}"
                 );

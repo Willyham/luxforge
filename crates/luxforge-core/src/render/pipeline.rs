@@ -34,8 +34,8 @@ use super::{
     Cancel, ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows,
     color_runs, mapped_replacements,
     spatial::{
-        PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
-        run_tile,
+        PointTiles, SpatialPlan, build_reduction_cancellable, fill_planes, resolve_globals,
+        run_batches, run_tile,
     },
 };
 use crate::{
@@ -204,6 +204,7 @@ pub(crate) struct Evaluation<'a, D: PixelDomain> {
     /// result does not depend on it.
     pub(super) tiles: Option<PointTiles<'a>>,
     tile: u32,
+    cancel: Cancel,
     context: &'a RenderContext,
 }
 
@@ -229,6 +230,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             built: Vec::new(),
             tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile, context.spatial())),
             tile,
+            cancel: cancel.clone(),
             context,
         };
         if mode == SpatialMode::Point {
@@ -375,8 +377,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             },
             Some(Entry::Resample(resample)) => {
                 let previous = &self.compiled.segments[index - 1];
-                let origin = self.compiled.segments[index].entry_origin;
-                let (u, v) = resample.input_from(origin, x, y);
+                let segment = &self.compiled.segments[index];
+                let (full_x, full_y) = segment.resample_output_at(x, y);
+                let (u, v) = resample.input_from(segment.entry_origin, full_x, full_y);
                 D::blend(u, v, previous.width, previous.height, |x, y| {
                     self.pixel_in(index - 1, x, y)?
                         .ok_or_else(|| Error::render("a resample tap was outside its stage"))
@@ -527,8 +530,13 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             self.domain.fingerprint(),
             &self.domain.estimate_prefix(prefix_hash),
             || match &self.tiles {
-                Some(tiles) => tiles.reduce(stage, self.compiled.spatial_before(index), read),
-                None => build_reduction(stage, read),
+                Some(tiles) => tiles.reduce(
+                    stage,
+                    self.compiled.spatial_before(index),
+                    &self.cancel,
+                    read,
+                ),
+                None => build_reduction_cancellable(stage, &self.cancel, read),
             },
         )
     }
@@ -587,7 +595,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             Some(Entry::Spatial { .. }) => self.alpha_in(index - 1, x, y),
             Some(Entry::Resample(resample)) => {
                 let previous = &self.compiled.segments[index - 1];
-                let (u, v) = resample.input_from(segment.entry_origin, x, y);
+                let (full_x, full_y) = segment.resample_output_at(x, y);
+                let (u, v) = resample.input_from(segment.entry_origin, full_x, full_y);
                 let taps = Taps::new(u, v, previous.width, previous.height);
                 let alpha: f64 = taps
                     .corners
@@ -756,7 +765,8 @@ pub(super) trait SegmentRows: Sync {
 /// at the same coordinate exactly as a later layer does — and stored. Colour runs reach only the
 /// rows in `band`; a resample that follows reads no other.
 ///
-/// The chunks run on the shared Rayon pool above the one-megapixel threshold and serially below it.
+/// The chunks run on the shared Rayon pool above the one-megapixel threshold, or for a substantial
+/// sub-megapixel colour pass with several units or a mask. Small/simple passes stay serial.
 /// No full-frame float buffer exists at any point: each chunk reserves its float scratch from
 /// `budget` before it uses it, in a buffer its worker allocates once and reuses. `cancel` is read
 /// once per chunk, before the reservation.
@@ -782,6 +792,16 @@ pub(super) fn segment_pass<R: SegmentRows>(
     // Whether this pass needs snapshot scratch at all, decided once for the pass: an unmasked
     // segment reserves and allocates exactly what it would without masks.
     let masked = runs.iter().any(|run| run.has_mask());
+    let parallel = segment.width as u64 * segment.height as u64 >= super::PARALLEL_RENDER_PIXELS
+        || (segment.width as u64 * (band.end - band.start) as u64
+            >= super::PARALLEL_HEAVY_COLOUR_PIXELS
+            && (masked
+                || runs
+                    .iter()
+                    .flat_map(|run| run.colour_operations())
+                    .map(|(_, operation)| operation.len())
+                    .sum::<usize>()
+                    >= 3));
     let chunk_rows = color_chunk_rows(segment.width);
     let chunk_bytes = chunk_rows * width * 4;
     let process = |scratch: &mut (R::Scratch, Vec<[f32; 3]>),
@@ -836,7 +856,7 @@ pub(super) fn segment_pass<R: SegmentRows>(
         write(scratch, chunk, usize::MAX)?;
         rows.store(scratch, chunk)
     };
-    if segment.width as u64 * segment.height as u64 >= super::PARALLEL_RENDER_PIXELS {
+    if parallel {
         frame
             .par_chunks_mut(chunk_bytes)
             .enumerate()

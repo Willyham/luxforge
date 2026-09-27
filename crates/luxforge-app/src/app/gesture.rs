@@ -367,6 +367,8 @@ impl Editor {
             return None;
         };
         self.session.draft = None;
+        self.displayed_draft_id = None;
+        self.displayed_draft_revision = None;
         self.event(
             "mask_draft_disarmed",
             json!({"draft_id": gesture.draft.draft_id.as_ref().map(DraftId::as_str)}),
@@ -468,11 +470,25 @@ impl Editor {
         if self.slider_gesture().is_some() {
             self.dragging = None;
         }
+        self.quiet_since = None;
+        self.quiet_settle_requested = true;
+        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
+        self.released_draft = self
+            .core_gesture()
+            .and_then(|gesture| gesture.draft.draft_id.clone());
+        if self.released_draft.is_some() {
+            self.displayed_draft_id = None;
+            self.displayed_draft_revision = None;
+        }
         self.drive(Event::Release)
     }
 
     /// Escape, Discard or a script: end the open core gesture and commit nothing.
     pub(crate) fn discard(&mut self) -> Task<Message> {
+        if self.core_gesture().is_some() {
+            self.displayed_draft_id = None;
+            self.displayed_draft_revision = None;
+        }
         self.drive(Event::Cancel)
     }
 
@@ -563,12 +579,14 @@ impl Editor {
             return;
         };
         self.session.draft = None;
+        self.displayed_draft_id = None;
+        self.displayed_draft_revision = None;
         // Nothing the gesture asked for reaches the screen after this: its drafted frames are
         // stopped and held below the delivery floor, so the next frame presented is the committed
         // one the cancel asks for. The drafted pixels already on screen stay until it lands. An
         // armed brush drafted nothing, so it has nothing to hold back.
         if gesture.draft.drafted() {
-            self.preview_generation = self.preview_queue.cancel();
+            self.preview_generation = self.cancel_preview_queue();
         }
         match &gesture.kind {
             Kind::Slider(slider) => {
@@ -666,6 +684,8 @@ impl Editor {
     fn end_gesture(&mut self) {
         if let Some(Gesture::Core(gesture)) = self.gesture.take() {
             self.session.draft = None;
+            self.displayed_draft_id = None;
+            self.displayed_draft_revision = None;
             self.dragging = None;
             if gesture.crop().is_some() {
                 self.crop_ended();
@@ -722,6 +742,9 @@ impl Editor {
             Ok((set, job, round_trip)) => {
                 self.session.draft = Some(set.clone());
                 if let Some(job) = job {
+                    if self.released_draft.as_ref() != Some(&set.draft_id) {
+                        self.note_view_motion();
+                    }
                     let (generation, requested_at) =
                         if self.diagnostics.is_some() && self.mask_gesture().is_some() {
                             self.request_mask_preview_timed(job)
@@ -944,6 +967,7 @@ impl Editor {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
+                self.released_draft = None;
                 // The commit may have landed before its read-back failed: read the log once.
                 self.resync();
                 let prefix = self
@@ -966,6 +990,8 @@ impl Editor {
             return Task::none();
         };
         self.session.draft = None;
+        self.displayed_draft_id = None;
+        self.displayed_draft_revision = None;
         self.dragging = None;
         match (open.kind, outcome) {
             (Kind::Slider(_), Some(refresh)) => {
