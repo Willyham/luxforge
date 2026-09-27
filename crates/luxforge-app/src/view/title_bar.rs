@@ -3,14 +3,21 @@
 //! trailing edge.
 //!
 //! Open sits beside the file's identity, as the default board draws it: the editor has no library
-//! to open a photograph from, and without it a fresh launch could reach no photograph at all. Where
+//! to open a photograph from, and without it a fresh launch could reach no photograph at all.
+//! Export sits beside Open and drops its two-item menu under itself. Where
 //! the bar is the window's own title bar ([`crate::window_frame`]), its empty area drags the
 //! window; every control in it answers its own press first.
 use crate::{
-    app::message::{HistoryMessage, Message, OverlayMessage, Panel, SyncMessage, ViewMessage},
+    app::message::{
+        ExportMessage, HistoryMessage, MenuTarget, Message, OverlayMessage, Panel, SyncMessage,
+        ViewMessage,
+    },
     state::{
         Workspace,
-        title::{SEGMENT_FIT, SEGMENT_HUNDRED, SEGMENT_PERCENT, TitleBarModel},
+        title::{
+            EXPORT_ITEMS, EXPORT_TOOLTIP, SEGMENT_FIT, SEGMENT_HUNDRED, SEGMENT_PERCENT,
+            TitleBarModel,
+        },
     },
     window_frame,
 };
@@ -19,8 +26,8 @@ use iced::{
     widget::{Space, container, mouse_area, row, stack, text, text_input},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, icon_button, segment, segment_track,
-    text_button, theme,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, icon_button, inline_menu, popover, segment,
+    segment_track, text_button, theme,
 };
 
 /// The typed zoom field's focus target, so opening it puts the caret in it.
@@ -28,6 +35,9 @@ pub(crate) const ZOOM_FIELD: &str = "luxforge.title.zoom";
 
 /// How wide the typed-percentage field is: enough for four digits and the caret.
 const ZOOM_FIELD_WIDTH: f32 = 56.0;
+
+/// How wide the Export menu is: its longer item and the menu's padding.
+const EXPORT_MENU_WIDTH: f32 = 220.0;
 
 /// The whole bar: the identity and the actions at its two edges, with the view controls centred
 /// on the window over them rather than between them, so they stay put whatever the file's name.
@@ -56,7 +66,7 @@ pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
     }
 }
 
-/// The file name, its dimensions and format when known, and Open.
+/// The file name, its dimensions and format when known, Open and Export.
 fn identity(model: &TitleBarModel) -> Element<'_, Message> {
     let mut content = row![
         text(
@@ -90,7 +100,45 @@ fn identity(model: &TitleBarModel) -> Element<'_, Message> {
             },
             model.can_open.then_some(Message::Sync(SyncMessage::Open)),
         ))
+        .push(export(model))
         .into()
+}
+
+/// The Export button, and its menu dropped under it while open: one item per export the
+/// palette also offers. The button opens and closes the menu; a press elsewhere closes it too.
+fn export(model: &TitleBarModel) -> Element<'_, Message> {
+    let toggle = if model.export_menu_open {
+        ViewMessage::CloseMenu
+    } else {
+        ViewMessage::OpenMenu(MenuTarget::Export)
+    };
+    let button = icon_button(
+        &IconButtonModel {
+            icon: Icon::Export,
+            tooltip: EXPORT_TOOLTIP.into(),
+            enabled: model.can_export,
+            selected: model.export_menu_open,
+        },
+        model.can_export.then_some(Message::View(toggle)),
+    );
+    let menu = model.export_menu_open.then(|| {
+        container(inline_menu(
+            EXPORT_ITEMS
+                .iter()
+                .map(|(label, keep_metadata)| {
+                    (
+                        (*label).to_owned(),
+                        Message::Export(ExportMessage::Start {
+                            keep_metadata: *keep_metadata,
+                        }),
+                    )
+                })
+                .collect(),
+        ))
+        .width(Length::Fixed(EXPORT_MENU_WIDTH))
+        .into()
+    });
+    popover(button, menu, Message::View(ViewMessage::CloseMenu))
 }
 
 /// Fit, 100% and the effective percentage on one track, then Compare and Clipping. The

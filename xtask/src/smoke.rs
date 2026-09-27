@@ -5,11 +5,11 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, gallery_smoke as gallery, histogram_smoke as histogram,
-    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
-    mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
-    performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
-    raw_panel_smoke as raw_panel,
+    crop_smoke as crop, export_smoke as export, gallery_smoke as gallery,
+    histogram_smoke as histogram, mask_brush_smoke as mask_brush,
+    mask_combine_smoke as mask_combine, mask_range_smoke as mask_range, mask_smoke as mask,
+    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
+    presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Fixture, Launch, Plan, Run, Step, launch::Guard},
     vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
@@ -412,6 +412,19 @@ pub static SCENARIOS: &[Scenario] = &[
         }],
         verify: presets::verify,
         source: Source::Fixtures(&[presets::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "export",
+        about: "The Export menu, two exports written and read back, and a refused one",
+        launches: &[LaunchSpec {
+            plan: export::plan,
+            ..APP
+        }],
+        verify: export::verify,
+        source: Source::Fixtures(&[export::FIXTURE]),
         window: Some(PANELLED),
         note: None,
         own: None,
