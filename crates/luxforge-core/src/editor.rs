@@ -247,6 +247,26 @@ pub struct AnalysisPlan {
     pub failure: Option<Error>,
 }
 
+/// One saved entry's export, frozen on the catalog owner: whatever is committed afterwards, the job
+/// renders exactly this. Its recipe carries the verified bytes of the artifacts it references and
+/// its source shares the cached allocation.
+pub(crate) struct ExportPlan {
+    /// The asset, entry, snapshot, recipe hash, source fingerprint and output stage.
+    pub identity: AnalysisIdentity,
+    pub source: PreviewSource,
+    pub registry: Arc<ModuleRegistry>,
+    pub context: RenderContext,
+    pub recipe: Recipe,
+    /// The original's supported EXIF fields, read once when its source was prepared.
+    pub capture: Arc<crate::export::CaptureMetadata>,
+}
+
+/// What `export.plan` answers from: the entry's identity and output stage, and the original's path.
+pub(crate) struct ExportTarget {
+    pub identity: AnalysisIdentity,
+    pub original: PathBuf,
+}
+
 /// One asset's current entry bound for point sampling on a worker, as the catalog owner found it
 /// at request time: the samples describe that entry whatever is committed meanwhile. Its recipe
 /// carries the artifacts its stack binds, and it shares the source's allocation.
