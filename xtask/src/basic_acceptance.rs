@@ -352,7 +352,7 @@ impl Counts {
         })
     }
 
-    /// Every bin, every counter and the output stage, against a reported `analysis.read` report.
+    /// Every bin, every counter and the output stage, against a reported `job.read` report.
     fn expect(&self, report: &Value, what: &str) -> Result {
         let expected = self.as_json();
         for key in [
@@ -508,8 +508,8 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         for method in [
             "query.neutral-sample",
             "analysis.request",
-            "analysis.read",
-            "analysis.cancel",
+            "job.read",
+            "job.cancel",
         ] {
             ensure(
                 methods.get(method).is_some(),
@@ -743,7 +743,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 "The drafted render differs from the f64 reference by {drafted_difference} codes"
             ),
         )?;
-        drafted_counts.expect(&drafted_analysis["report"], "the drafted analysis")?;
+        drafted_counts.expect(&drafted_analysis["result"], "the drafted analysis")?;
         ensure(
             drafted_analysis["identity"]["draft"]["draft_revision"] == json!(3),
             format!(
@@ -798,7 +798,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             contrast_difference <= CODE_TOLERANCE,
             format!("Contrast +60 differs from the f64 reference by {contrast_difference} codes"),
         )?;
-        current_counts.expect(&current_report["report"], "the current stack")?;
+        current_counts.expect(&current_report["result"], "the current stack")?;
         let original_report = ready_report(
             &owner,
             editor,
@@ -819,7 +819,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             original_raster.rgba[..] == source.rgba[..],
             "The Original entry does not render the decoded source bytes",
         )?;
-        original_counts.expect(&original_report["report"], "the Original entry")?;
+        original_counts.expect(&original_report["result"], "the Original entry")?;
         ensure(
             current_report["identity"]["recipe_hash"] != original_report["identity"]["recipe_hash"],
             "Two different stacks share one recipe hash",
@@ -858,7 +858,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             ),
         )?;
         let clipped_stage = clipped_raster.rgba.to_vec();
-        full_counts.expect(&full_report["report"], "the clipping stack before the crop")?;
+        full_counts.expect(&full_report["result"], "the clipping stack before the crop")?;
         ensure(
             full_counts.any_highlight > 0,
             "The exposure chosen to clip the border clipped nothing",
@@ -891,7 +891,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"kind": "current"}),
             "the cropped clipping stack",
         )?;
-        interior_counts.expect(&cropped_report["report"], "the cropped clipping stack")?;
+        interior_counts.expect(&cropped_report["result"], "the cropped clipping stack")?;
         // The border's own clipped pixels are exactly the difference between the two populations,
         // which is the hand-counted `cropped-population` pair's semantics on a photo-sized stack.
         let border_highlight = full_counts.any_highlight - interior_counts.any_highlight;
@@ -1161,19 +1161,14 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             session["preview"]["selection"] == json!({"entry": original}),
             format!("The selection moved to {}", session["preview"]["selection"]),
         )?;
-        let reread = call(
-            &owner,
-            editor,
-            "analysis.read",
-            json!({"job_id": selected_job}),
-        )?;
+        let reread = call(&owner, editor, "job.read", json!({"job_id": selected_job}))?;
         ensure(
             reread["status"] == json!("ready")
                 && reread["identity"] == selected_report["identity"]
-                && reread["report"] == selected_report["report"],
+                && reread["result"] == selected_report["result"],
             "The historical analysis was relabelled by another client's commit",
         )?;
-        original_counts.expect(&reread["report"], "the historical analysis after a commit")?;
+        original_counts.expect(&reread["result"], "the historical analysis after a commit")?;
         let sample = call(
             &owner,
             editor,
@@ -1219,19 +1214,19 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         let withdrawn = call(
             &owner,
             editor,
-            "analysis.cancel",
+            "job.cancel",
             json!({"job_id": mine["job_id"]}),
         )?;
         ensure(
-            withdrawn["cancelled"] == json!(true),
-            format!("analysis.cancel answered {withdrawn}"),
+            withdrawn["job_id"] == mine["job_id"] && withdrawn["status"] != json!("cancelled"),
+            format!("job.cancel of a job another client wants answered {withdrawn}"),
         )?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let survivor = loop {
             let read = call(
                 &owner,
                 agent,
-                "analysis.read",
+                "job.read",
                 json!({"job_id": theirs["job_id"]}),
             )?;
             if !in_flight(&read)? {
@@ -1247,7 +1242,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 survivor["status"]
             ),
         )?;
-        original_counts.expect(&survivor["report"], "the surviving shared job")?;
+        original_counts.expect(&survivor["result"], "the surviving shared job")?;
         record(
             "two clients share one analysis job and one client's cancel leaves the other's result intact",
             json!({"job": mine["job_id"], "survivor_status": survivor["status"]}),
@@ -1286,14 +1281,14 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     outcome
 }
 
-/// Whether an `analysis.read` answer is a job still in flight, which a waiting client reads again.
+/// Whether a `job.read` answer is a job still in flight, which a waiting client reads again.
 ///
 /// The status is read as the core's own [`JobStatus`], so the wait follows the job vocabulary rather
 /// than a spelling of it kept here: queued and running are in flight and every other status ends
 /// the job. A status the vocabulary does not have is refused, never taken for a settled job.
 fn in_flight(read: &Value) -> Result<bool> {
     let status: JobStatus = serde_json::from_value(read["status"].clone())
-        .map_err(|_| format!("analysis.read answered no job status the core has: {read}"))?;
+        .map_err(|_| format!("job.read answered no job status the core has: {read}"))?;
     Ok(!status.is_finished())
 }
 

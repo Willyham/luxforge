@@ -1,6 +1,6 @@
 //! Module capabilities as the desktop knows them, and the models its tools panel, notices and
 //! evidence are derived from. Everything here is plain data: the owner's own answers
-//! (`module.settings.read`, `module.status`, `module.job.read`, a `consent-required` failure), the
+//! (`module.settings.read`, `module.status`, `job.read`, a `consent-required` failure), the
 //! text a person is typing, and which sub-view of a section is open. Nothing here calls the owner,
 //! and nothing decides what the host accepts: every value is validated by the core when it is sent.
 //! The section is generated from the descriptor, so any module that declares settings, resources,
@@ -16,11 +16,11 @@ use luxforge_core::{
         descriptor::{AdapterCost, SettingDescriptor},
         grants::{Denial, Grant, GrantKind, GrantList, PermissionCounts},
         host::{ActivationRead, ActivationState, Requirement},
-        jobs::{JobRecord, JobStatus},
         resources::{ResourceRow, ResourceState},
         settings::{FieldRead, ProfileStatus, SettingsRead, SettingsState},
         transport::{EndpointClass, parse_endpoint},
     },
+    jobs::{JobRecord, JobStatus},
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -371,7 +371,7 @@ impl ModuleCapabilities {
 pub(crate) struct CapabilityStore {
     pub(crate) modules: BTreeMap<String, ModuleCapabilities>,
     pub(crate) consent: Option<OpenConsent>,
-    /// One `module.job.read` batch is in flight.
+    /// One `job.read` batch is in flight.
     pub(crate) polling: bool,
 }
 

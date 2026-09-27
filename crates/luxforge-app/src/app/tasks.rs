@@ -428,7 +428,7 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 }
 
 /// Wait for one source job of this client's to finish and answer what it came to: its status when
-/// it is ready, and its error when it failed. Each turn reads `job.status` and, while the job is
+/// it is ready, and its error when it failed. Each turn reads `job.read` and, while the job is
 /// queued or running, blocks until the owner says it ended ([`OwnerHandle::wait_source`]), so the
 /// wait costs one owner request per state the job reaches and nothing in between. Decoding and
 /// hashing stay on the source worker. The caller's thread blocks: run it inside an [`owner_task`].
@@ -443,7 +443,7 @@ pub(crate) fn wait_source_job(
             owner,
             client,
             api_request_id(),
-            "job.status",
+            "job.read",
             json!({"job_id":job_id}),
         )?;
         match status["status"].as_str() {
@@ -740,7 +740,7 @@ fn import_now(
         return Err("superseded open".into());
     }
     let mut prepared = prepared.map_err(|error| error.to_string())?;
-    let state: EditorState = parse(prepared["asset"].take())?;
+    let state: EditorState = parse(prepared["result"].take())?;
     call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
     let mut refreshed = refresh(owner, client, state.asset.id, Scope::Open, proxy)?;
     if open_guard.superseded(generation) {
@@ -1925,7 +1925,7 @@ mod tests {
             let job = queued["job_id"].as_str().unwrap().to_owned();
             let ready = wait_source_job(&owner, client, &job).unwrap();
             call(&owner, client, "job.adopt", json!({"job_id": job})).unwrap();
-            let asset: AssetId = parse(ready["asset"]["asset"]["id"].clone()).unwrap();
+            let asset: AssetId = parse(ready["result"]["asset"]["id"].clone()).unwrap();
             owner_calls::take();
             let refresh = refresh(&owner, client, asset.clone(), Scope::Open, None).unwrap();
             let calls = owner_calls::take();
@@ -2055,7 +2055,7 @@ mod tests {
         .unwrap();
         let job = queued["job_id"].as_str().unwrap().to_owned();
         let ready = wait_source_job(&opened.owner, agent, &job).unwrap();
-        let other: AssetId = parse(ready["asset"]["asset"]["id"].clone()).unwrap();
+        let other: AssetId = parse(ready["result"]["asset"]["id"].clone()).unwrap();
         assert_ne!(other, opened.asset);
         call(
             &opened.owner,

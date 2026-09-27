@@ -21,8 +21,8 @@ use crate::{
     },
 };
 use luxforge_core::{
-    AssetId, HostConfig, ModuleDescriptor, OwnerHandle,
-    capabilities::{jobs::JobStatus, secrets::MemorySecretStore},
+    AssetId, HostConfig, ModuleDescriptor, OwnerHandle, capabilities::secrets::MemorySecretStore,
+    jobs::JobStatus,
 };
 use luxforge_testkit::ProofEndpoint;
 use serde_json::{Value, json};
@@ -100,12 +100,12 @@ impl Proof {
             let (status, _) = call(
                 &owner,
                 client,
-                "job.status",
+                "job.read",
                 json!({"job_id": imported["job_id"]}),
             )
             .unwrap();
             if status["status"] == "ready" {
-                break serde_json::from_value(status["asset"]["asset"]["id"].clone()).unwrap();
+                break serde_json::from_value(status["result"]["asset"]["id"].clone()).unwrap();
             }
             assert!(Instant::now() < deadline, "{status}");
             std::thread::sleep(Duration::from_millis(2));
@@ -799,9 +799,12 @@ fn cancel_and_deactivate_go_through_the_job_and_activation_methods() {
         job: job.clone(),
     });
     let sent = proof.answer();
-    assert_eq!(sent[0]["method"], "module.job.cancel");
+    assert_eq!(sent[0]["method"], "job.cancel");
     assert_eq!(sent[0]["params"]["job_id"], json!(job));
-    assert_eq!(sent[0]["params"]["mutation"]["actor"], "desktop");
+    assert!(
+        sent[0]["params"].get("mutation").is_none(),
+        "a cancel converges, so it carries no envelope"
+    );
     proof.endpoint.set_delay(Duration::ZERO);
     proof.finish_jobs();
     assert!(matches!(

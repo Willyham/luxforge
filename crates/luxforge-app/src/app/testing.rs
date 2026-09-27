@@ -64,7 +64,7 @@ pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforg
     let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        let status = call("job.status", json!({"job_id": job_id}));
+        let status = call("job.read", json!({"job_id": job_id}));
         match status["status"].as_str() {
             Some("ready") => break,
             Some("queued" | "running") => {

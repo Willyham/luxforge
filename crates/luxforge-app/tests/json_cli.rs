@@ -39,7 +39,7 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
         writeln!(
             input,
             "{}",
-            json!({"id":"status","method":"job.status","params":{"job_id":job_id}})
+            json!({"id":"status","method":"job.read","params":{"job_id":job_id}})
         )
         .unwrap();
         input.flush().unwrap();
@@ -48,7 +48,7 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
         let status: Value = serde_json::from_str(&line).unwrap();
         assert!(status.get("error").is_none(), "{status}");
         match status["result"]["status"].as_str() {
-            Some("ready") => break status["result"]["asset"]["asset"]["id"].clone(),
+            Some("ready") => break status["result"]["result"]["asset"]["id"].clone(),
             Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(1)),
             other => panic!("unexpected source job {other:?}: {status}"),
         }
@@ -201,9 +201,9 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         "catalog.import",
         json!({"path": fixture, "mutation": {"request_id": "cli-import", "actor": "cli-test"}}),
     );
-    let imported = client.settle("job.status", &imported["job_id"], JOB_TIMEOUT);
+    let imported = client.settle("job.read", &imported["job_id"], JOB_TIMEOUT);
     assert_eq!(imported["status"], "ready", "{imported}");
-    let asset = imported["asset"]["asset"]["id"].clone();
+    let asset = imported["result"]["asset"]["id"].clone();
     let module = "luxforge.capabilities";
     let mutation = settings_mutation(&mut client, "cli-profile");
     let profile = client.call(
@@ -238,7 +238,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     // After Allow the install is sent again as a new request: the refused one changed nothing.
     let installed = client.call("module.resource.install", install("cli-install-2"));
     assert_eq!(
-        client.settle("module.job.read", &installed["job_id"], JOB_TIMEOUT)["status"],
+        client.settle("job.read", &installed["job_id"], JOB_TIMEOUT)["status"],
         "ready"
     );
     let activating = client.call(
@@ -246,7 +246,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         json!({"module_id": module, "mutation": {"request_id": "cli-activate", "actor": "cli-test"}}),
     );
     assert_eq!(
-        client.settle("module.job.read", &activating["job_id"], JOB_TIMEOUT)["status"],
+        client.settle("job.read", &activating["job_id"], JOB_TIMEOUT)["status"],
         "ready"
     );
     // A refused request changed nothing, so asking again after Allow keeps its request_id.
@@ -273,7 +273,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         "a retry starts no second job"
     );
     assert_eq!(retried["job_id"], queued["job_id"]);
-    let job = client.settle("module.job.read", &queued["job_id"], JOB_TIMEOUT);
+    let job = client.settle("job.read", &queued["job_id"], JOB_TIMEOUT);
     assert_eq!(job["status"], "ready", "{job}");
     let artifact = job["result"]["artifacts"][0].clone();
     let gains = job["result"]["result"]["gains"].clone();

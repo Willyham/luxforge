@@ -1,8 +1,8 @@
 //! The export methods and the export job (`docs/design/export.md`). `export.plan` and
 //! `export.jpeg` plan on the catalog owner in `O(layers)`, with short file-system checks on the
-//! destination and the original's directory; the job renders, encodes and publishes on the owner's
-//! export lane, the shared lane runner's `export` lane: one running and four waiting, never
-//! superseded, cancelled only by `export.cancel` or the owner stopping. A client disconnecting
+//! destination and the original's directory; the job renders, encodes and publishes on the `export`
+//! lane of the owner's one job table: one running and four waiting, never superseded, read with
+//! `job.read` and cancelled only by `job.cancel` or the owner stopping. A client disconnecting
 //! leaves its exports running, as it leaves capability jobs.
 use super::{Call, Owner};
 use crate::{
@@ -10,14 +10,12 @@ use crate::{
     activity::ActivitySpec,
     api::announce_once,
     api::params::host_params,
-    capabilities::jobs::{
-        Admission, Cancelled, EXPORT_SUBJECT, JobControl, JobKind, JobRecord, NewJob, Work,
-    },
     editor::ExportPlan,
     export::{
         encode::encode_jpeg,
         publish::{self, Destination},
     },
+    jobs::{Admission, JobControl, JobKind, NewJob, Work},
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
@@ -27,8 +25,8 @@ const RENDERING: &str = "rendering";
 const ENCODING: &str = "encoding";
 const WRITING: &str = "writing";
 
-/// The reason `export.cancel` gives.
-const CANCELLED: &str = "the export was cancelled";
+/// The reason `job.cancel` gives an export.
+pub(super) const CANCELLED: &str = "the export was cancelled";
 
 /// Called on the export lane as each phase begins, after `encoding` has staged its temporary file,
 /// so a test can hold a running export at a known point.
@@ -51,13 +49,6 @@ host_params! {
         mutation: MutationRequest,
         entry_id: Option<EntryId> = "a saved entry of the asset; default its current entry",
         keep_metadata: Option<bool> = "write the original's supported EXIF fields; default false",
-    }
-}
-
-host_params! {
-    /// `export.read` and `export.cancel`.
-    pub(in crate::api) struct ExportJobParams {
-        job_id: JobId,
     }
 }
 
@@ -118,12 +109,13 @@ pub(in crate::api) fn jpeg(
         hold: owner.export_hold.clone(),
     };
     let work: Work = Box::new(move || job.run());
-    let record = owner.exports.submit(
+    let record = owner.jobs.submit(
         NewJob {
             job_id,
             kind: JobKind::Export,
-            module_id: EXPORT_SUBJECT.to_owned(),
+            module_id: None,
             resource_id: None,
+            asset_id: Some(identity.asset_id.clone()),
             origin: Some(call.origin.clone()),
             grants: Vec::new(),
             admission: Admission::Bounded,
@@ -154,68 +146,15 @@ pub(in crate::api) fn jpeg(
     }))
 }
 
-/// `export.read`: any client may read any export job the owner still keeps.
-pub(in crate::api) fn read(
-    owner: &mut Owner,
-    _: &Call<'_>,
-    params: ExportJobParams,
-) -> Result<Value, Error> {
-    let record = owner
-        .exports
-        .read(&params.job_id)
-        .ok_or_else(|| unknown(&params.job_id))?;
-    Ok(value(&record))
-}
-
-/// `export.cancel`: cancels the job for every client. A queued job is removed as `cancelled`; a
-/// running one is asked to stop at its next row or block and answers `running` until it has; a
-/// finished one is answered as it is.
-pub(in crate::api) fn cancel(
-    owner: &mut Owner,
-    _: &Call<'_>,
-    params: ExportJobParams,
-) -> Result<Value, Error> {
-    let record = match owner
-        .exports
-        .cancel(&params.job_id, CANCELLED)
-        .ok_or_else(|| unknown(&params.job_id))?
-    {
-        Cancelled::Removed(record) | Cancelled::Requested(record) | Cancelled::Finished(record) => {
-            record
-        }
-    };
-    Ok(value(&record))
-}
-
 /// The export lane finished a job: record it and start the next. A written file is announced under
 /// the request that asked for it, so every client learns of it from the event log.
 pub(super) fn finished(owner: &mut Owner, job_id: &JobId, result: Result<Value, Error>) {
-    if let Some(done) = owner.exports.complete(job_id, result)
+    if let Some(done) = owner.jobs.complete(job_id, result)
         && done.record.status == JobStatus::Ready
         && let Some(origin) = &done.origin
     {
         announce_once(&mut owner.announced, origin);
     }
-}
-
-fn unknown(job_id: &JobId) -> Error {
-    Error::validation(format!("unknown export job {job_id}"))
-}
-
-/// One export job as `export.read` answers it.
-fn value(record: &JobRecord) -> Value {
-    let mut value = json!({
-        "job_id": record.job_id,
-        "status": record.status,
-        "progress": record.progress,
-    });
-    if let Some(result) = &record.result {
-        value["result"] = result.clone();
-    }
-    if let Some(error) = &record.error {
-        value["error"] = json!(error);
-    }
-    value
 }
 
 /// Everything one export needs on the lane, frozen when it was accepted.
@@ -243,7 +182,7 @@ impl ExportJob {
             hold,
         } = self;
         // Each phase is published on the board and named by the progress message too, which is
-        // what `export.read` answers with; a cancel that arrived meanwhile stops the job there.
+        // what `job.read` answers with; a cancel that arrived meanwhile stops the job there.
         let phase = |phase: &'static str| {
             control.set_phase(phase);
             control.set_progress(None, phase);

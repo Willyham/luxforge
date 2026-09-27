@@ -443,6 +443,32 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only the field-patch module and the RAW module declare a patch action; declare a \
                  field-patch Spec instead of a second patch implementation",
     },
+    // One job table: every job kind (source, analysis, capability and export) is one record in
+    // one table with one retention, and the catalog owner creates that table once.
+    SourceRule {
+        name: "job-records",
+        tokens: &["VecDeque<JobId>"],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/jobs.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "only the one job table (crates/luxforge-core/src/jobs.rs) keeps finished job \
+                 records; register the job kind there",
+    },
+    SourceRule {
+        name: "job-table",
+        tokens: &["Jobs::new"],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/api/owner.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: true,
+        reason: "only the catalog owner (crates/luxforge-core/src/api/owner.rs) creates the job \
+                 table, once",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -451,12 +477,12 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             // The core: the source worker and the owner loop, the point-query worker, the API
-            // transport's accept and connection threads, the capability job lanes and the
+            // transport's accept and connection threads, the job table's lanes and the
             // latest-job worker.
             "crates/luxforge-core/src/api/owner.rs",
             "crates/luxforge-core/src/api/owner/point.rs",
             "crates/luxforge-core/src/api/transport.rs",
-            "crates/luxforge-core/src/capabilities/jobs.rs",
+            "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
             // The desktop's diagnostics log writer.
             "crates/luxforge-app/src/diagnostics.rs",
@@ -1998,6 +2024,78 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_job_table_keeps_job_records_and_only_the_owner_creates_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        for dir in [core.join("api"), core.join("analysis")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        // The table keeps its ring, the owner creates it once, and tests may build their own.
+        for (file, text) in [
+            (
+                core.join("jobs.rs"),
+                "struct Jobs { finished: VecDeque<JobId> }\n\
+                 #[cfg(test)]\nmod tests {\n    fn t() { Jobs::new(d, b); }\n}\n",
+            ),
+            (
+                core.join("api/owner.rs"),
+                "let jobs = Jobs::new(deliver, board);\n",
+            ),
+            (
+                core.join("api/owner_tests.rs"),
+                "let jobs = Jobs::new(d, b);\n",
+            ),
+            (
+                core.join("analysis/jobs.rs"),
+                "struct Queue { generations: VecDeque<(JobId, u64)> }\n\
+                 /// Not a `VecDeque<JobId>` ring.\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(
+            read(tmp.path(), &["job-records", "job-table"]).unwrap(),
+            (3, 0)
+        );
+        // A struct of its own with a finished ring, as each kind's table once had, is refused, and
+        // so is a table created anywhere but the owner, or twice there.
+        for (file, text, message) in [
+            (
+                core.join("api/owner.rs"),
+                "struct SourceJobs { completed: VecDeque<JobId> }\nlet jobs = Jobs::new(d, b);\n",
+                "only the one job table",
+            ),
+            (
+                core.join("capabilities.rs"),
+                "jobs: Jobs::new(deliver, board),\n",
+                "only the catalog owner",
+            ),
+            (
+                core.join("api/owner.rs"),
+                "let jobs = Jobs::new(d, b);\nlet exports = Jobs::new(d, b);\n",
+                "creates the job table, once",
+            ),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = refusal(
+                tmp.path(),
+                &["job-records", "job-table"],
+                &file.display().to_string(),
+            );
+            assert!(error.contains(message), "{error}");
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(
+            read(tmp.path(), &["job-records", "job-table"]).unwrap(),
+            (3, 0)
+        );
     }
 
     fn minimal_plan(id: &str) -> Value {

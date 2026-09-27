@@ -63,7 +63,7 @@ fn failure(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -
 fn settled(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status = ok(owner, client, "job.status", json!({"job_id": job_id}));
+        let status = ok(owner, client, "job.read", json!({"job_id": job_id}));
         match status["status"].as_str() {
             Some("queued" | "running") => {
                 assert!(Instant::now() < deadline, "the job never settled: {status}");
@@ -173,7 +173,7 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
         let read = ok(
             &owner,
             client,
-            "analysis.read",
+            "job.read",
             json!({"job_id": requested["job_id"]}),
         );
         if !matches!(read["status"].as_str(), Some("queued" | "running")) {

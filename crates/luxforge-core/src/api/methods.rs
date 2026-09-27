@@ -164,14 +164,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "catalog.import",
         owner::Import,
         owner::catalog_import,
-        "queues bounded source preparation; returns a job to inspect with job.status; commits only on verified success, which emits the event",
+        "queues bounded source preparation; returns a job to inspect with job.read; commits only on verified success, which emits the event",
         retries: Owner,
     ),
+    // The one job table belongs to the catalog owner, so the owner answers for every kind.
     owner!(
-        "job.status",
+        "job.read",
         owner::JobParams,
-        owner::job_status,
-        "this client's bounded source job status (queued, running, ready, failed); ready includes the committed asset state"
+        owner::job_read,
+        "{job_id, kind, status, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, activate, deactivate, install, remove and task (capability work) or export; status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; a source or analysis job is read by the clients that requested it, and a capability or export job by any client; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
     ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
@@ -179,7 +180,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "activity.list",
         NoParams,
         owner::activity_list,
-        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {fraction, message} and job_id when known; job_id names the job that job.status (source work), analysis.read (histograms), module.job.read (capability jobs) or export.read (kind export) also answers, all with the shared status vocabulary (queued, running, ready, failed, cancelled, superseded); sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
+        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {fraction, message} and job_id when known; job_id names the job job.read also answers, with the same status; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
     ),
     owner!(
         "job.adopt",
@@ -191,7 +192,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "job.cancel",
         owner::JobParams,
         owner::job_cancel,
-        "remove this client's interest in a source job without cancelling other clients"
+        "a source or analysis job: this client leaves it and still reads its outcome, and the work stops only when no other client wants it; a capability or export job: stops it for every client, a queued job never starts and a running one stops at its next checkpoint (an export removes its temporary file), and a running deactivation is refused with conflict; a finished job is unchanged, so a repeated cancel changes nothing; returns the job as job.read does"
     ),
     owner!(
         "source.prepare",
@@ -365,19 +366,6 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::capability::ResourceParams,
         owner::capability::resource_remove,
         "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
-        retries: Owner,
-    ),
-    owner!(
-        "module.job.read",
-        owner::capability::JobParams,
-        owner::capability::job_read,
-        "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, ready, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished"
-    ),
-    owner!(
-        "module.job.cancel",
-        owner::capability::JobCancelParams,
-        owner::capability::job_cancel,
-        "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job with deduplicated",
         retries: Owner,
     ),
     service!(
@@ -585,19 +573,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "analysis.request",
         owner::AnalysisRequest,
         owner::analysis_request,
-        "queues the exact RGB histogram and output-clipping reduction of one evaluated stack and returns {job_id, status, identity} promptly, with the report included when the store already holds it; target is {kind:current}, {kind:entry,entry_id} or {kind:draft,draft_id} for this client's own draft; identical identities share one job"
-    ),
-    owner!(
-        "analysis.read",
-        owner::AnalysisJobParams,
-        owner::analysis_read,
-        "{status, identity, report?, error?}; status is queued, running, ready, failed, superseded or cancelled and only ready carries counts, so no status can be read as an empty histogram; a job this client did not request is a validation error"
-    ),
-    owner!(
-        "analysis.cancel",
-        owner::AnalysisJobParams,
-        owner::analysis_cancel,
-        "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}"
+        "queues the exact RGB histogram and output-clipping reduction of one evaluated stack and returns the job as job.read does, promptly, with the report as its result when one is already kept; target is {kind:current}, {kind:entry,entry_id} or {kind:draft,draft_id} for this client's own draft; identical identities share one job; only ready carries counts, so no status can be read as an empty histogram"
     ),
     // JPEG export (`docs/design/export.md`): the owner plans in O(layers) and checks the
     // destination; the render, encode and write run on its export lane.
@@ -611,20 +587,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "export.jpeg",
         owner::export::ExportJpeg,
         owner::export::jpeg,
-        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond) and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
+        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond), read with job.read and cancelled with job.cancel, and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
         retries: Owner,
-    ),
-    owner!(
-        "export.read",
-        owner::export::ExportJobParams,
-        owner::export::read,
-        "{job_id, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}}; status is queued, running, ready, failed or cancelled; progress.message names the phase (rendering, encoding, writing); result is {path, bytes, width, height, metadata}, metadata listing the EXIF fields written; any client may read any export job; the owner keeps the last 32 finished"
-    ),
-    owner!(
-        "export.cancel",
-        owner::export::ExportJobParams,
-        owner::export::cancel,
-        "cancels an export for every client: a queued job never starts, a running one stops at its next row or block and removes its temporary file, a finished one is returned unchanged; returns the job as export.read does"
     ),
     service!(
         "artifact.status",
@@ -638,7 +602,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         artifact_inspect,
         "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only"
     ),
-    // Collection runs on the source worker and is read with job.status, so the catalog owner
+    // Collection runs on the source worker and is read with job.read, so the catalog owner
     // answers it. It emits its event when the request is accepted.
     owner!(
         "artifact.collect",
@@ -999,7 +963,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 .map(|(_, field)| json!(field))
                 .collect();
             let notes = format!(
-                "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status, deduplicated}}, and a retry with the same request_id returns the first job and starts none; module.job.read reports {{result, artifacts}} when it succeeds",
+                "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status, deduplicated}}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {{result, artifacts}} when it succeeds",
                 task.notes
             );
             let schema = method_schema(
@@ -2374,7 +2338,6 @@ mod tests {
             ("module.permission.grant", "request"),
             ("module.activate", "request"),
             ("module.resource.install", "request"),
-            ("module.job.cancel", "request"),
             ("export.jpeg", "request"),
         ] {
             assert_eq!(listed[name]["mutation"], json!(envelope), "{name}");

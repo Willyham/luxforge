@@ -22,11 +22,11 @@ use crate::{
             AdapterAuth, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, DataClass,
         },
         grants::{GrantScope, RemoteScope},
-        jobs::{Admission, JobControl, JobKind, JobStatus, NewJob, Work},
         resources::ResourceState,
         settings::{FieldRead, ProfileRead, ProfileStatus},
         transport::Endpoint,
     },
+    jobs::{Admission, JobControl, JobKind, JobStatus, Jobs, NewJob, Work},
     modules::check_declared_values,
 };
 use serde_json::{Value, json};
@@ -127,6 +127,7 @@ impl CapabilityHost {
     /// request table answers it with the first job, so a retried task starts nothing.
     pub(crate) fn task(
         &mut self,
+        jobs: &mut Jobs,
         service: &EditorService,
         task_id: &str,
         request: &Value,
@@ -226,7 +227,7 @@ impl CapabilityHost {
                 });
             }
         }
-        let rows = self.resource_rows(descriptor);
+        let rows = self.resource_rows(jobs, descriptor);
         let mut resources = Vec::new();
         for capability in &capabilities {
             match &capability.kind {
@@ -399,16 +400,16 @@ impl CapabilityHost {
         };
         // Only live tasks are kept; a queued task removed by its lane never reports back.
         self.tasks.retain(|job_id, _| {
-            self.jobs
-                .read(job_id)
+            jobs.read(job_id)
                 .is_some_and(|record| !record.status.is_finished())
         });
-        let job = self.jobs.submit(
+        let job = jobs.submit(
             NewJob {
                 job_id: JobId::new(),
                 kind: JobKind::Task,
-                module_id: module_id.to_owned(),
+                module_id: Some(module_id.to_owned()),
                 resource_id: None,
+                asset_id: None,
                 origin: Some(origin.clone()),
                 grants: grant_ids,
                 admission: Admission::Bounded,
@@ -427,6 +428,7 @@ impl CapabilityHost {
     /// cancelled task records nothing, so what it wrote stays an unreferenced file.
     pub(super) fn task_result(
         &mut self,
+        jobs: &Jobs,
         service: &mut EditorService,
         job_id: &JobId,
         result: Result<Value, Error>,
@@ -434,8 +436,7 @@ impl CapabilityHost {
         let Some(run) = self.tasks.remove(job_id) else {
             return result;
         };
-        let running = self
-            .jobs
+        let running = jobs
             .read(job_id)
             .is_some_and(|record| record.status == JobStatus::Running);
         if !running {

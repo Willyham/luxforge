@@ -56,7 +56,7 @@ impl Proof {
         let job_id = queued["job_id"].as_str().expect("source job");
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let status = call(&owner, json_client, "job.status", json!({"job_id":job_id})).0;
+            let status = call(&owner, json_client, "job.read", json!({"job_id":job_id})).0;
             match status["status"].as_str() {
                 Some("ready") => break,
                 Some("queued" | "running") => {

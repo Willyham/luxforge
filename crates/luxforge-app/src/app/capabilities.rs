@@ -30,12 +30,9 @@ use iced::{Subscription, Task};
 use luxforge_core::{
     AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
-        descriptor::SettingDescriptor,
-        grants::GrantList,
-        host::Requirement,
-        jobs::{JobRecord, JobStatus},
-        settings::SettingsRead,
+        descriptor::SettingDescriptor, grants::GrantList, host::Requirement, settings::SettingsRead,
     },
+    jobs::{JobRecord, JobStatus},
     redact_params,
 };
 use serde_json::{Map, Value, json};
@@ -254,13 +251,9 @@ fn perform(
             json!({"module_id": module_id, "mutation": request()}),
             sent,
         ),
-        Operation::Cancel { job } => call(
-            owner,
-            client,
-            "module.job.cancel",
-            json!({"job_id": job, "mutation": request()}),
-            sent,
-        ),
+        Operation::Cancel { job } => {
+            call(owner, client, "job.cancel", json!({"job_id": job}), sent)
+        }
         Operation::Revoke { grant } => call(
             owner,
             client,
@@ -297,7 +290,7 @@ fn perform(
                             .job_id
                             .clone()
                             .unwrap_or_else(|| error.message.clone());
-                        sent.push(json!({"method": "job.status", "params": {"job_id": job}}));
+                        sent.push(json!({"method": "job.read", "params": {"job_id": job}}));
                         if let Err(error) = tasks::wait_source_job(owner, client, &job) {
                             break Err(error);
                         }
@@ -382,15 +375,9 @@ pub(crate) fn run(
     };
     let job = match &outcome {
         Outcome::Done(answer) => answer["job_id"].as_str().and_then(|job| {
-            call(
-                owner,
-                client,
-                "module.job.read",
-                json!({"job_id": job}),
-                &mut sent,
-            )
-            .ok()
-            .and_then(|record| parse::<JobRecord>(record).ok())
+            call(owner, client, "job.read", json!({"job_id": job}), &mut sent)
+                .ok()
+                .and_then(|record| parse::<JobRecord>(record).ok())
         }),
         _ => None,
     };
@@ -436,15 +423,9 @@ pub(crate) fn poll(
     let mut sent = Vec::new();
     jobs.into_iter()
         .map(|(module, job)| {
-            let record = call(
-                owner,
-                client,
-                "module.job.read",
-                json!({"job_id": job}),
-                &mut sent,
-            )
-            .map_err(|error| error.to_string())
-            .and_then(parse::<JobRecord>);
+            let record = call(owner, client, "job.read", json!({"job_id": job}), &mut sent)
+                .map_err(|error| error.to_string())
+                .and_then(parse::<JobRecord>);
             (module, job, record)
         })
         .collect()

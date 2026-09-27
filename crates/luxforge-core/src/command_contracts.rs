@@ -50,9 +50,9 @@ fn import_asset(owner: &OwnerHandle, client: ClientId, source: &Path) -> Value {
     );
     let id = queued["job_id"].as_str().unwrap();
     loop {
-        let status = call("status", "job.status", json!({"job_id":id}));
+        let status = call("status", "job.read", json!({"job_id":id}));
         match status["status"].as_str() {
-            Some("ready") => return status["asset"]["asset"]["id"].clone(),
+            Some("ready") => return status["result"]["asset"]["id"].clone(),
             Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(1)),
             other => panic!("unexpected import job {other:?}: {status}"),
         }
@@ -462,9 +462,9 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     ));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let report = loop {
-        let read = call("analysis.read", json!({"job_id": requested["job_id"]}));
+        let read = call("job.read", json!({"job_id": requested["job_id"]}));
         if read["status"] == json!("ready") {
-            break read["report"].clone();
+            break read["result"].clone();
         }
         assert!(
             matches!(read["status"].as_str(), Some("queued" | "running")),
@@ -491,9 +491,10 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
             "{channel} channel population"
         );
     }
+    // Cancelling a finished job answers it unchanged.
     assert_eq!(
-        call("analysis.cancel", json!({"job_id": requested["job_id"]})),
-        json!({"cancelled": true})
+        call("job.cancel", json!({"job_id": requested["job_id"]}))["status"],
+        json!("ready")
     );
     assert_eq!(
         call("asset.state", json!({"asset_id": asset}))["revision"],

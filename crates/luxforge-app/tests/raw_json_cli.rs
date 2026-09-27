@@ -67,7 +67,7 @@ fn mutation(state: &Value, request_id: &str) -> Value {
 }
 
 fn wait_job(client: &mut JsonProcess, job_id: &str) -> Value {
-    let status = client.settle("job.status", &json!(job_id), JOB_TIMEOUT);
+    let status = client.settle("job.read", &json!(job_id), JOB_TIMEOUT);
     assert_eq!(status["status"], "ready", "RAW source job: {status}");
     status
 }
@@ -89,7 +89,7 @@ fn import_and_adopt(client: &mut JsonProcess, path: &Path) -> Value {
         .to_owned();
     let ready = wait_job(client, &job_id);
     let adopted = client.call("job.adopt", json!({"job_id":job_id}));
-    assert_eq!(asset_id(&adopted["asset"]), asset_id(&ready["asset"]));
+    assert_eq!(asset_id(&adopted["asset"]), asset_id(&ready["result"]));
     adopted["asset"].clone()
 }
 
@@ -415,7 +415,7 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     client.finish();
 
     // A fresh process has no source cache. Exercise the explicit PreparationRequired ->
-    // source.prepare(entry_id) -> job.status -> retry path rather than a direct service call.
+    // source.prepare(entry_id) -> job.read -> retry path rather than a direct service call.
     let mut reopened = start(&catalog);
     let reopened_state = reopened.call("asset.state", json!({"asset_id":asset}));
     assert_eq!(asset_id(&reopened_state), asset);

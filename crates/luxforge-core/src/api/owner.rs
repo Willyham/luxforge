@@ -14,10 +14,11 @@ use crate::{
     HostConfig, JobId, JobStatus, MaskOverlayRequest, ModuleRegistry, Preparation,
     PreparationNeeds, PreviewJob, ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
-    analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
+    analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
-    capabilities::{host::CapabilityHost, jobs::Jobs},
+    capabilities::host::CapabilityHost,
     editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
+    jobs::{CANCELLED, Family, JobControl, JobKind, Jobs, JoinKey, Opened, Output, Release},
     source::{PlaneGate, RawPrepared},
 };
 use point::{POINT_QUEUE_CAPACITY, PointWorker};
@@ -25,7 +26,7 @@ use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     ops::ControlFlow,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
@@ -50,7 +51,6 @@ mod requests;
 
 const EVENT_CAPACITY: usize = 256;
 const SOURCE_QUEUE_CAPACITY: usize = 8;
-const SOURCE_RESULT_CAPACITY: usize = 64;
 /// Pending developments may pin one sensor mosaic identity; the cache can retain one more.
 const MAX_QUEUED_MOSAICS: usize = 1;
 
@@ -68,7 +68,7 @@ impl ClientId {
 
 /// No registered client: [`OwnerHandle::register`] hands out `1` and up, so this id never
 /// collides with one. Attached to the collection [`launch`] queues on its own, which no client
-/// asked for and none can read through `job.status`.
+/// asked for and none can read through `job.read`.
 const SYSTEM_CLIENT: ClientId = ClientId(0);
 
 struct OwnerCall {
@@ -103,20 +103,15 @@ enum OwnerMessage {
         client: ClientId,
         authority: ClientAuthority,
     },
-    /// A capability lane finished a job. Like the analysis worker, the lane posts it into this
-    /// channel, so nothing polls.
-    CapabilityFinished {
+    /// A lane of the job table finished a capability or export job. Like the analysis worker, the
+    /// lane posts it into this channel, so nothing polls.
+    JobFinished {
         job_id: JobId,
         result: Result<Value, Error>,
     },
-    /// How many capability lane threads have started, for tests that prove discovery is inert.
+    /// How many lane threads have started, for tests that prove discovery is inert.
     #[cfg(test)]
-    CapabilityThreads(SyncSender<usize>),
-    /// The export lane finished a job, posted the same way.
-    ExportFinished {
-        job_id: JobId,
-        result: Result<Value, Error>,
-    },
+    LaneThreads(SyncSender<usize>),
     /// Hold every export job accepted from now on as it begins each phase, or stop holding them.
     #[cfg(test)]
     HoldExports(Option<export::Hold>),
@@ -263,7 +258,7 @@ impl PreviewRequest {
 /// the original's file signature, absent for a job that reads artifacts only; `artifacts` are the
 /// identities the job reads and verifies after any source work, sorted.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct SourceFlightKey {
+pub(crate) struct SourceFlightKey {
     path: PathBuf,
     signature: Option<SourceSignature>,
     expected_fingerprint: Option<String>,
@@ -281,6 +276,18 @@ enum SourceTaskKind {
     Collect(Collection),
 }
 
+impl SourceTaskKind {
+    /// The job kind this task is recorded as, and the asset it works on when one is known.
+    fn job(&self) -> (JobKind, Option<AssetId>) {
+        match self {
+            Self::File(_) => (JobKind::Prepare, None),
+            Self::Develop(request) => (JobKind::Develop, Some(request.asset_id.clone())),
+            Self::Artifacts(asset_id) => (JobKind::Artifacts, Some(asset_id.clone())),
+            Self::Collect(_) => (JobKind::Collect, None),
+        }
+    }
+}
+
 enum SourceResult {
     File(PreparedFile, Vec<VerifiedArtifact>),
     Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
@@ -291,19 +298,11 @@ enum SourceResult {
 struct SourceTask {
     id: JobId,
     key: SourceFlightKey,
-    cancelled: Arc<AtomicBool>,
+    /// The job's control in the one job table: its flag is what the worker checks between steps.
+    control: Arc<JobControl>,
     kind: SourceTaskKind,
     /// Read and verified after the source work of a preparation, so one job readies a whole stack.
     artifacts: Vec<ArtifactRead>,
-}
-
-enum SourceState {
-    Queued,
-    Preparing,
-    Ready(Box<EditorState>),
-    /// A job whose result is not an asset: a collection.
-    Finished(Value),
-    Failed(Error),
 }
 
 /// What a completed source job leaves for its clients to read.
@@ -313,20 +312,13 @@ enum Completed {
     Value(Value),
 }
 
-struct SourceJob {
-    key: SourceFlightKey,
-    import_request_id: Option<String>,
-    clients: HashSet<ClientId>,
-    cancelled: Arc<AtomicBool>,
-    state: SourceState,
-    sensor: Option<Weak<luxforge_raw::RawSource>>,
-}
-
-struct SourceJobs {
+/// The source worker's admission: a bounded channel to the worker, and the sensor mosaic each
+/// queued development pins until it completes, so developments pin at most
+/// [`MAX_QUEUED_MOSAICS`] distinct mosaics between them. The jobs themselves, who wants them and
+/// the flight they join by are records in the one job table.
+struct SourceQueue {
     sender: SyncSender<SourceTask>,
-    jobs: HashMap<JobId, SourceJob>,
-    active: HashMap<SourceFlightKey, JobId>,
-    completed: VecDeque<JobId>,
+    sensors: HashMap<JobId, Weak<luxforge_raw::RawSource>>,
     /// The worker's memory gate, woken whenever a job is stopped so a worker waiting on it for
     /// that job sees the stop.
     gate: Arc<PlaneGate>,
@@ -339,30 +331,19 @@ fn flight_artifacts(reads: &[ArtifactRead]) -> Vec<ArtifactId> {
     ids
 }
 
-impl SourceJobs {
+impl SourceQueue {
     fn new(sender: SyncSender<SourceTask>, gate: Arc<PlaneGate>) -> Self {
         Self {
             sender,
-            jobs: HashMap::new(),
-            active: HashMap::new(),
-            completed: VecDeque::new(),
+            sensors: HashMap::new(),
             gate,
         }
-    }
-
-    fn enqueue(
-        &mut self,
-        client: ClientId,
-        path: PathBuf,
-        target: Option<FilePreparation>,
-        artifacts: Vec<ArtifactRead>,
-    ) -> Result<JobId, Error> {
-        self.enqueue_file(client, path, target, artifacts)
     }
 
     /// Prepare an original and its artifacts for the requested entry.
     fn enqueue_file(
         &mut self,
+        jobs: &mut Jobs,
         client: ClientId,
         path: PathBuf,
         target: Option<FilePreparation>,
@@ -380,12 +361,13 @@ impl SourceJobs {
             artifacts: flight_artifacts(&artifacts),
         };
         let kind = SourceTaskKind::File(target.map(Box::new));
-        self.submit(client, key, kind, artifacts, None, true)
+        self.submit(jobs, client, key, kind, artifacts, None, true)
     }
 
     /// Read and verify an asset's artifacts when its source is already prepared.
     fn enqueue_artifacts(
         &mut self,
+        jobs: &mut Jobs,
         client: ClientId,
         asset_id: AssetId,
         artifacts: Vec<ArtifactRead>,
@@ -398,13 +380,14 @@ impl SourceJobs {
             artifacts: flight_artifacts(&artifacts),
         };
         let kind = SourceTaskKind::Artifacts(asset_id);
-        self.submit(client, key, kind, artifacts, None, true)
+        self.submit(jobs, client, key, kind, artifacts, None, true)
     }
 
     /// A collection: either a client asked for it explicitly, or [`OwnerHandle::launch`] queued it
     /// on its own when the catalog opened. Never shared: another request never joins it.
     fn enqueue_maintenance(
         &mut self,
+        jobs: &mut Jobs,
         client: ClientId,
         path: PathBuf,
         kind: SourceTaskKind,
@@ -416,13 +399,15 @@ impl SourceJobs {
             gains_bits: None,
             artifacts: Vec::new(),
         };
-        self.submit(client, key, kind, Vec::new(), None, false)
+        self.submit(jobs, client, key, kind, Vec::new(), None, false)
     }
 
-    /// Queue one task on the source worker, or join the queued or running job for the same key
-    /// when `shared`. A full queue is a `resource-limit` and changes nothing.
+    /// Queue one task on the source worker and record its job, or join the queued or running job
+    /// for the same key when `shared`. A full queue is a `resource-limit` and changes nothing.
+    #[allow(clippy::too_many_arguments)]
     fn submit(
         &mut self,
+        jobs: &mut Jobs,
         client: ClientId,
         key: SourceFlightKey,
         kind: SourceTaskKind,
@@ -430,17 +415,17 @@ impl SourceJobs {
         sensor: Option<Weak<luxforge_raw::RawSource>>,
         shared: bool,
     ) -> Result<JobId, Error> {
-        if shared && let Some(id) = self.active.get(&key) {
-            let job = self.jobs.get_mut(id).expect("active job is indexed");
-            job.clients.insert(client);
-            return Ok(id.clone());
+        let joined = JoinKey::Source(key.clone());
+        if shared && let Some(id) = jobs.join(&joined, client) {
+            return Ok(id);
         }
         let id = JobId::new();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let control = JobControl::new();
+        let (job_kind, asset_id) = kind.job();
         let task = SourceTask {
             id: id.clone(),
-            key: key.clone(),
-            cancelled: cancelled.clone(),
+            key,
+            control: control.clone(),
             kind,
             artifacts,
         };
@@ -453,25 +438,23 @@ impl SourceJobs {
                 return Err(Error::protocol("source preparation worker stopped"));
             }
         }
-        if shared {
-            self.active.insert(key.clone(), id.clone());
+        jobs.open(Opened {
+            job_id: id.clone(),
+            kind: job_kind,
+            client: Some(client),
+            key: shared.then_some(joined),
+            asset_id,
+            control,
+        });
+        if let Some(sensor) = sensor {
+            self.sensors.insert(id.clone(), sensor);
         }
-        self.jobs.insert(
-            id.clone(),
-            SourceJob {
-                key,
-                import_request_id: None,
-                clients: HashSet::from([client]),
-                cancelled,
-                state: SourceState::Queued,
-                sensor,
-            },
-        );
         Ok(id)
     }
 
     fn enqueue_development(
         &mut self,
+        jobs: &mut Jobs,
         client: ClientId,
         request: RawDevelopment,
         artifacts: Vec<ArtifactRead>,
@@ -483,18 +466,13 @@ impl SourceJobs {
             gains_bits: Some(request.gains.map(f32::to_bits)),
             artifacts: flight_artifacts(&artifacts),
         };
-        if let Some(id) = self.active.get(&key) {
-            let job = self.jobs.get_mut(id).expect("active development indexed");
-            job.clients.insert(client);
-            return Ok(id.clone());
+        if let Some(id) = jobs.join(&JoinKey::Source(key.clone()), client) {
+            return Ok(id);
         }
         let sensor = Arc::downgrade(&request.sensor);
         let mut distinct = Vec::<&Weak<luxforge_raw::RawSource>>::new();
-        for job in self.jobs.values() {
-            if let Some(existing) = job
-                .sensor
-                .as_ref()
-                .filter(|sensor| sensor.strong_count() > 0)
+        for existing in self.sensors.values() {
+            if existing.strong_count() > 0
                 && !distinct.iter().any(|seen| Weak::ptr_eq(seen, existing))
             {
                 distinct.push(existing);
@@ -510,124 +488,36 @@ impl SourceJobs {
             ));
         }
         let kind = SourceTaskKind::Develop(request);
-        self.submit(client, key, kind, artifacts, Some(sensor), true)
+        self.submit(jobs, client, key, kind, artifacts, Some(sensor), true)
     }
 
-    fn ready(&mut self, client: ClientId, state: EditorState) -> Result<JobId, Error> {
-        let signature = EditorService::request_signature(&state.asset.locator)?.1;
+    /// A job that is ready at once: an import or preparation the verified cache already answers.
+    fn ready(
+        &mut self,
+        jobs: &mut Jobs,
+        client: ClientId,
+        state: EditorState,
+    ) -> Result<JobId, Error> {
+        // The original must still be there with a readable signature, as for queued work.
+        EditorService::request_signature(&state.asset.locator)?;
         let id = JobId::new();
-        self.jobs.insert(
-            id.clone(),
-            SourceJob {
-                key: SourceFlightKey {
-                    path: state.asset.locator.clone(),
-                    signature: Some(signature),
-                    expected_fingerprint: Some(state.asset.fingerprint.clone()),
-                    gains_bits: None,
-                    artifacts: Vec::new(),
-                },
-                import_request_id: None,
-                clients: HashSet::from([client]),
-                cancelled: Arc::new(AtomicBool::new(false)),
-                state: SourceState::Ready(Box::new(state)),
-                sensor: None,
+        jobs.open_finished(
+            Opened {
+                job_id: id.clone(),
+                kind: JobKind::Prepare,
+                client: Some(client),
+                key: None,
+                asset_id: Some(state.asset.id.clone()),
+                control: JobControl::new(),
             },
+            Output::Asset(Box::new(state)),
         );
-        self.completed.push_back(id.clone());
-        while self.completed.len() > SOURCE_RESULT_CAPACITY {
-            if let Some(old) = self.completed.pop_front() {
-                self.jobs.remove(&old);
-            }
-        }
         Ok(id)
     }
 
-    fn mark_import(&mut self, id: &JobId, request_id: &str) {
-        if let Some(job) = self.jobs.get_mut(id)
-            && job.import_request_id.is_none()
-        {
-            job.import_request_id = Some(request_id.to_owned());
-        }
-    }
-
-    /// `queued`, `running` (preparing), `ready`, `failed`. Never `cancelled`: a client that cancels
-    /// leaves the job (see [`Self::cancel`]) and cannot read it again.
-    fn status(&self, client: ClientId, id: &JobId) -> Result<Value, Error> {
-        let job = self
-            .jobs
-            .get(id)
-            .filter(|job| job.clients.contains(&client))
-            .ok_or_else(|| Error::validation("unknown source job for this client"))?;
-        Ok(match &job.state {
-            SourceState::Queued => json!({"job_id":id,"status":JobStatus::Queued}),
-            SourceState::Preparing => json!({"job_id":id,"status":JobStatus::Running}),
-            SourceState::Ready(asset) => {
-                json!({"job_id":id,"status":JobStatus::Ready,"asset":asset})
-            }
-            SourceState::Finished(result) => {
-                json!({"job_id":id,"status":JobStatus::Ready,"result":result})
-            }
-            SourceState::Failed(error) => {
-                json!({"job_id":id,"status":JobStatus::Failed,"error":{"code":error.kind.code(),"message":error.detail}})
-            }
-        })
-    }
-
-    /// Leave the job: the calling client will never read it again, whatever becomes of the work.
-    /// The last client leaving stops the underlying task, if it has not already finished.
-    fn cancel(&mut self, client: ClientId, id: &JobId) -> Result<Value, Error> {
-        let job = self
-            .jobs
-            .get_mut(id)
-            .ok_or_else(|| Error::validation("unknown source job for this client"))?;
-        if !job.clients.remove(&client) {
-            return Err(Error::validation("unknown source job for this client"));
-        }
-        if job.clients.is_empty() {
-            job.cancelled.store(true, Ordering::Relaxed);
-            self.gate.wake();
-            let key = job.key.clone();
-            if self.active.get(&key).is_some_and(|active| active == id) {
-                self.active.remove(&key);
-            }
-        }
-        Ok(json!({"job_id":id,"status":JobStatus::Cancelled}))
-    }
-
-    fn disconnect(&mut self, client: ClientId) {
-        let mut detached = Vec::new();
-        for (id, job) in &mut self.jobs {
-            if job.clients.remove(&client) && job.clients.is_empty() {
-                job.cancelled.store(true, Ordering::Relaxed);
-                detached.push((id.clone(), job.key.clone()));
-            }
-        }
-        if !detached.is_empty() {
-            self.gate.wake();
-        }
-        for (id, key) in detached {
-            if self.active.get(&key).is_some_and(|active| active == &id) {
-                self.active.remove(&key);
-            }
-        }
-    }
-
-    /// Record a finished job's outcome: ready, finished or failed.
-    fn complete(&mut self, id: &JobId, state: SourceState) {
-        let Some(job) = self.jobs.get_mut(id) else {
-            return;
-        };
-        if self.active.get(&job.key).is_some_and(|active| active == id) {
-            self.active.remove(&job.key);
-        }
-        job.state = state;
-        job.sensor = None;
-        self.completed.push_back(id.clone());
-        while self.completed.len() > SOURCE_RESULT_CAPACITY {
-            if let Some(old) = self.completed.pop_front() {
-                self.jobs.remove(&old);
-            }
-        }
+    /// The worker reported a job, so a development it held pins nothing any more.
+    fn complete(&mut self, id: &JobId) {
+        self.sensors.remove(id);
     }
 }
 
@@ -639,7 +529,8 @@ impl SourceJobs {
 /// with a job that is already ready.
 fn queue_preparation(
     service: &EditorService,
-    jobs: &mut SourceJobs,
+    sources: &mut SourceQueue,
+    jobs: &mut Jobs,
     client: ClientId,
     needs: &PreparationNeeds,
 ) -> Result<JobId, Error> {
@@ -647,7 +538,8 @@ fn queue_preparation(
     let artifacts = service.artifact_reads(&needs.artifacts)?;
     let Some(state) = service.cached_state(asset_id)? else {
         let state = service.state(asset_id)?;
-        let id = jobs.enqueue_file(
+        let id = sources.enqueue_file(
+            jobs,
             client,
             state.asset.locator,
             Some(service.file_preparation(asset_id, Some(&needs.entry_id))?),
@@ -661,14 +553,14 @@ fn queue_preparation(
         None => None,
     };
     if let Some(request) = development {
-        let id = jobs.enqueue_development(client, request, artifacts)?;
+        let id = sources.enqueue_development(jobs, client, request, artifacts)?;
         service.evict_development();
         return Ok(id);
     }
     if artifacts.is_empty() {
-        jobs.ready(client, state)
+        sources.ready(jobs, client, state)
     } else {
-        jobs.enqueue_artifacts(client, state.asset.id, artifacts)
+        sources.enqueue_artifacts(jobs, client, state.asset.id, artifacts)
     }
 }
 
@@ -809,7 +701,7 @@ fn source_worker(
     hold: SourceHold,
 ) {
     while let Ok(task) = receiver.recv() {
-        if task.cancelled.load(Ordering::Relaxed) {
+        if task.control.is_cancelled() {
             let _ = owner.send(OwnerMessage::SourceComplete(
                 task.id,
                 Box::new(Err(Error::conflict("source job cancelled"))),
@@ -823,9 +715,9 @@ fn source_worker(
             task.kind,
             SourceTaskKind::File(_) | SourceTaskKind::Develop(_)
         ) {
-            gate.wait_released(&task.cancelled);
+            gate.wait_released(task.control.flag());
         }
-        if task.cancelled.load(Ordering::Relaxed) {
+        if task.control.is_cancelled() {
             let _ = owner.send(OwnerMessage::SourceComplete(
                 task.id,
                 Box::new(Err(Error::conflict("source job cancelled"))),
@@ -849,17 +741,19 @@ fn source_worker(
                 task.kind,
                 &task.key,
                 &task.artifacts,
-                &task.cancelled,
+                task.control.flag(),
                 &gate,
             )
         }))
         .unwrap_or_else(|_| Err(Error::internal("the source job stopped unexpectedly")));
         // The activity ends before the owner learns the result, so a client that reads the job as
-        // ready or failed never still finds it listed as running. A cancelled preparation fails
-        // with a conflict rather than `Cancelled`, so the job's own flag says which it was.
-        activity.finish(match &result {
-            Err(_) if task.cancelled.load(Ordering::Relaxed) => Outcome::Cancelled,
-            result => Outcome::of(result),
+        // ready or failed never still finds it listed as running. A stopped preparation fails with
+        // a conflict rather than `Cancelled`, or finishes before it sees the stop; either way the
+        // table records it cancelled, so the job's own flag says which it was.
+        activity.finish(if task.control.is_cancelled() {
+            Outcome::Cancelled
+        } else {
+            Outcome::of(&result)
         });
         if owner
             .send(OwnerMessage::SourceComplete(task.id, Box::new(result)))
@@ -879,7 +773,7 @@ host_params! {
 }
 
 host_params! {
-    /// `job.status`, `job.adopt` and `job.cancel`.
+    /// `job.read`, `job.cancel` and `job.adopt`.
     pub(super) struct JobParams {
         job_id: JobId,
     }
@@ -905,13 +799,6 @@ host_params! {
     pub(super) struct AnalysisRequest {
         asset_id: AssetId,
         target: AnalysisTarget,
-    }
-}
-
-host_params! {
-    /// `analysis.read` and `analysis.cancel`.
-    pub(super) struct AnalysisJobParams {
-        job_id: JobId,
     }
 }
 
@@ -1006,7 +893,16 @@ impl OwnerHandle {
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
         let worker_sender = sender.clone();
         let gate = Arc::new(PlaneGate::default());
-        let mut jobs = SourceJobs::new(source_sender, gate.clone());
+        // The job table's lanes post their finished capability and export jobs back through the
+        // owner's own channel, like the source and analysis workers.
+        let lane_sender = sender.clone();
+        let mut jobs = Jobs::new(
+            Arc::new(move |job_id, result| {
+                let _ = lane_sender.send(OwnerMessage::JobFinished { job_id, result });
+            }),
+            activity.clone(),
+        );
+        let mut sources = SourceQueue::new(source_sender, gate.clone());
         // One collection, queued here rather than on the owner thread or in response to any
         // client: the row query and deletion happen now, on the thread opening the catalog, and
         // the source worker removes the files once it starts. Skipped when there is nothing to
@@ -1018,8 +914,12 @@ impl OwnerHandle {
             && (collection.rows > 0 || collection.root.exists())
         {
             let root = collection.root.clone();
-            let _ =
-                jobs.enqueue_maintenance(SYSTEM_CLIENT, root, SourceTaskKind::Collect(collection));
+            let _ = sources.enqueue_maintenance(
+                &mut jobs,
+                SYSTEM_CLIENT,
+                root,
+                SourceTaskKind::Collect(collection),
+            );
         }
         let worker_activity = activity.clone();
         let worker = std::thread::spawn(move || {
@@ -1028,32 +928,16 @@ impl OwnerHandle {
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
-        // The capability lanes post their finished jobs the same way.
-        let capability_sender = sender.clone();
-        let host = CapabilityHost::new(
-            host,
-            Arc::new(move |job_id, result| {
-                let _ = capability_sender.send(OwnerMessage::CapabilityFinished { job_id, result });
-            }),
-            activity.clone(),
-        );
-        // And the export lane, the same lane runner's `export` lane in a table of the owner's own.
-        let export_sender = sender.clone();
-        let exports = Jobs::new(
-            Arc::new(move |job_id, result| {
-                let _ = export_sender.send(OwnerMessage::ExportFinished { job_id, result });
-            }),
-            activity.clone(),
-        );
+        let host = CapabilityHost::new(host);
         let owner_activity = activity.clone();
         let join = std::thread::spawn(move || {
             owner_loop(
                 service,
                 host,
-                exports,
+                jobs,
+                sources,
                 completions,
                 receiver,
-                jobs,
                 worker,
                 owner_activity,
             )
@@ -1100,12 +984,12 @@ impl OwnerHandle {
         client
     }
 
-    /// How many capability lane threads the owner has started.
+    /// How many lane threads the owner's job table has started.
     #[cfg(test)]
-    pub(crate) fn capability_threads(&self) -> usize {
+    pub(crate) fn lane_threads(&self) -> usize {
         let (reply, answer) = sync_channel(1);
         self.sender
-            .send(OwnerMessage::CapabilityThreads(reply))
+            .send(OwnerMessage::LaneThreads(reply))
             .expect("the owner is running");
         answer.recv().expect("the owner answered")
     }
@@ -1159,7 +1043,7 @@ impl OwnerHandle {
     /// running — it finished, failed, or `client` left it through `job.cancel` — or, with no job
     /// named, until any source job finishes, which is what makes room after a full source queue.
     /// It answers at once when there is nothing to wait for and reports nothing about the job: the
-    /// caller reads `job.status` afterwards. A blocking receive on the caller's thread rather than
+    /// caller reads `job.read` afterwards. A blocking receive on the caller's thread rather than
     /// a poll, so a client waiting on a decode costs nothing until it ends. Never call it on the
     /// owner thread or on an async executor's thread.
     pub fn wait_source(&self, client: ClientId, job: Option<&JobId>) -> Result<(), Error> {
@@ -1226,10 +1110,10 @@ impl OwnerHandle {
 fn owner_loop(
     service: EditorService,
     host: CapabilityHost,
-    exports: Jobs,
+    jobs: Jobs,
+    sources: SourceQueue,
     completions: SyncSender<OwnerMessage>,
     receiver: Receiver<OwnerMessage>,
-    jobs: SourceJobs,
     worker: JoinHandle<()>,
     activity: Arc<ActivityBoard>,
 ) {
@@ -1243,12 +1127,11 @@ fn owner_loop(
     let mut owner = Owner {
         service,
         host,
-        exports,
+        jobs,
         #[cfg(test)]
         export_hold: None,
-        jobs,
+        sources,
         sessions: HashMap::new(),
-        analyses: AnalysisStore::default(),
         queue,
         activity,
         latest_import: HashMap::new(),
@@ -1290,19 +1173,23 @@ fn owner_loop(
                 OwnerMessage::Register { client, authority } => {
                     owner.sessions.entry(client).or_default().authority = authority;
                 }
-                OwnerMessage::CapabilityFinished { job_id, result } => {
-                    owner
-                        .host
-                        .finished(&mut owner.service, &job_id, result, &mut owner.announced);
+                OwnerMessage::JobFinished { job_id, result } => {
+                    if owner.jobs.kind(&job_id) == Some(JobKind::Export) {
+                        export::finished(&mut owner, &job_id, result);
+                    } else {
+                        owner.host.finished(
+                            &mut owner.jobs,
+                            &mut owner.service,
+                            &job_id,
+                            result,
+                            &mut owner.announced,
+                        );
+                    }
                     owner.record_announced();
                 }
                 #[cfg(test)]
-                OwnerMessage::CapabilityThreads(reply) => {
-                    let _ = reply.send(owner.host.lanes_started());
-                }
-                OwnerMessage::ExportFinished { job_id, result } => {
-                    export::finished(&mut owner, &job_id, result);
-                    owner.record_announced();
+                OwnerMessage::LaneThreads(reply) => {
+                    let _ = reply.send(owner.jobs.lanes_started());
                 }
                 #[cfg(test)]
                 OwnerMessage::HoldExports(hold) => owner.export_hold = hold,
@@ -1313,21 +1200,22 @@ fn owner_loop(
                     owner.await_source(client, job, reply);
                 }
                 OwnerMessage::Disconnect(client) => owner.disconnect(client),
-                OwnerMessage::SourceStarted(id) => {
-                    if let Some(job) = owner.jobs.jobs.get_mut(&id) {
-                        job.state = SourceState::Preparing;
-                    }
-                }
+                OwnerMessage::SourceStarted(id) => owner.jobs.start(&id),
                 OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
                 OwnerMessage::AnalysisReady => {
+                    // An outcome for a job that is no longer live — superseded, or stopped and
+                    // already recorded — is discarded by the table.
                     while let Some(outcome) = owner.queue.poll() {
-                        if owner.analyses.awaits(&outcome.job_id) {
-                            owner.analyses.complete(&outcome.job_id, outcome.result);
-                        }
+                        owner.jobs.finish(
+                            &outcome.job_id,
+                            outcome
+                                .result
+                                .map(|report| Output::Report(Box::new(report))),
+                        );
                     }
                 }
                 OwnerMessage::AnalysisSubmitted { identity, report } => {
-                    owner.analyses.submit(*identity, *report);
+                    owner.analysis_submitted(*identity, *report);
                 }
             }
             ControlFlow::Continue(())
@@ -1341,23 +1229,18 @@ fn owner_loop(
     }
     // The sample being evaluated finishes; the ones waiting are dropped with every other call.
     owner.points.stop();
-    for job in owner.jobs.jobs.values() {
-        job.cancelled.store(true, Ordering::Relaxed);
-    }
-    owner.jobs.gate.wake();
     let Owner {
-        jobs,
-        mut host,
-        mut exports,
-        ..
+        mut jobs, sources, ..
     } = owner;
-    drop(jobs);
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
-    // left waiting on a full channel while the owner waits for it. A running export stops at its
+    // left waiting on a full channel while the owner waits for it. Every live job is asked to
+    // stop, the source worker's included, and the lanes are joined; a running export stops at its
     // next row or block and removes its temporary file.
     drop(receiver);
-    host.shutdown();
-    exports.shutdown();
+    jobs.shutdown();
+    // The source worker sees its stop on the memory gate, and its channel closes behind it.
+    sources.gate.wake();
+    drop(sources);
     let _ = worker.join();
 }
 
@@ -1429,20 +1312,22 @@ pub(super) struct Call<'a> {
     pub origin: Origin,
 }
 
-/// Everything the catalog owner holds: the catalog, every client's session, the source and analysis
-/// jobs, the capability host, the activity board, the event log and the request table. The owner
-/// loop hands it every message; the owner handlers of the method table read and change it.
+/// Everything the catalog owner holds: the catalog, every client's session, the one job table and
+/// the workers that schedule its source and analysis jobs, the capability host, the activity
+/// board, the event log and the request table. The owner loop hands it every message; the owner
+/// handlers of the method table read and change it.
 pub(super) struct Owner {
     pub(super) service: EditorService,
     pub(super) host: CapabilityHost,
-    /// The export lane and its jobs: the capability host's lane runner, in a table of the owner's.
-    exports: Jobs,
+    /// Every job this owner runs, of every kind, and the lanes that run capability work and export.
+    pub(super) jobs: Jobs,
     /// What every export accepted from now on calls as it begins each phase.
     #[cfg(test)]
     export_hold: Option<export::Hold>,
-    jobs: SourceJobs,
+    /// The source worker's admission.
+    sources: SourceQueue,
     sessions: HashMap<ClientId, ClientSession>,
-    analyses: AnalysisStore,
+    /// The analysis worker: one running job and one replaceable pending job.
     queue: AnalysisQueue,
     activity: Arc<ActivityBoard>,
     latest_import: HashMap<ClientId, JobId>,
@@ -1575,15 +1460,14 @@ impl Owner {
 
     /// Answer a wait at once when nothing it names is queued or running, and hold it otherwise.
     fn await_source(&mut self, client: ClientId, job: Option<JobId>, reply: SyncSender<()>) {
-        let live =
-            |state: &SourceState| matches!(state, SourceState::Queued | SourceState::Preparing);
         let pending = match &job {
-            Some(id) => self
-                .jobs
-                .jobs
-                .get(id)
-                .is_some_and(|held| held.clients.contains(&client) && live(&held.state)),
-            None => self.jobs.jobs.values().any(|held| live(&held.state)),
+            Some(id) => {
+                self.jobs
+                    .kind(id)
+                    .is_some_and(|kind| kind.family() == Family::Source)
+                    && self.jobs.wanted_by(id, client)
+            }
+            None => self.jobs.any_live(Family::Source),
         };
         if pending {
             self.source_waiters
@@ -1622,11 +1506,8 @@ impl Owner {
                 let _ = reply.try_send(());
             }
             Owed::Source(id) => {
-                if self.jobs.jobs.get(&id).is_some_and(|job| {
-                    matches!(job.state, SourceState::Queued | SourceState::Preparing)
-                }) {
-                    self.jobs.complete(&id, SourceState::Failed(error()));
-                }
+                self.jobs.finish(&id, Err(error()));
+                self.sources.complete(&id);
                 self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == &id));
             }
             Owed::Nobody => {}
@@ -1690,23 +1571,27 @@ impl Owner {
         let Some(needs) = refused.needs() else {
             return refused;
         };
-        match queue_preparation(&self.service, &mut self.jobs, client, needs) {
+        match queue_preparation(
+            &self.service,
+            &mut self.sources,
+            &mut self.jobs,
+            client,
+            needs,
+        ) {
             Ok(job) => refused.with_preparation(Preparation::Queued(job)),
             Err(error) => error,
         }
     }
 
-    /// Forget a client's session. A gone client releases its analysis interests exactly as a
-    /// cancel does; a job nobody else wants is dropped from the pending slot, or stopped on the
-    /// worker within a chunk.
+    /// Forget a client's session. A gone client leaves every source and analysis job it wanted
+    /// exactly as a cancel does, and the work nobody else wants is stopped; its capability and
+    /// export jobs run on, since they belong to no client.
     fn disconnect(&mut self, client: ClientId) {
         self.sessions.remove(&client);
-        for job_id in self.analyses.disconnect(client) {
-            self.queue.withdraw(&job_id);
-            self.analyses.cancel(&job_id);
+        for (job_id, kind) in self.jobs.disconnect(client) {
+            self.stop(&job_id, kind);
         }
         self.latest_import.remove(&client);
-        self.jobs.disconnect(client);
         self.points.disconnect(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
@@ -1716,11 +1601,7 @@ impl Owner {
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
     /// and record the import event when it created an asset.
     fn source_complete(&mut self, id: &JobId, result: Result<SourceResult, Error>) {
-        let interested = self
-            .jobs
-            .jobs
-            .get(id)
-            .is_some_and(|job| !job.clients.is_empty());
+        let interested = self.jobs.wanted(id);
         #[cfg(test)]
         let result = result.inspect(|_| {
             if let Some(fault) = &self.fault {
@@ -1754,30 +1635,86 @@ impl Owner {
         // An import is announced when it commits an asset, under the request that asked for it,
         // naming the asset it created.
         if let Ok(Completed::Asset(state, true)) = &outcome
-            && let Some(request_id) = self
-                .jobs
-                .jobs
-                .get(id)
-                .and_then(|job| job.import_request_id.as_deref())
+            && let Some(origin) = self.jobs.origin(id)
         {
-            self.log.record(
-                &Origin::new("catalog.import", request_id)
-                    .changed(state.asset.id.clone(), Some(state.revision)),
-            );
+            let origin = origin
+                .clone()
+                .changed(state.asset.id.clone(), Some(state.revision));
+            self.log.record(&origin);
         }
-        self.jobs.complete(
+        self.jobs.finish(
             id,
-            match outcome {
-                Ok(Completed::Asset(state, _)) => SourceState::Ready(state),
-                Ok(Completed::Value(value)) => SourceState::Finished(value),
-                Err(error) => SourceState::Failed(error),
-            },
+            outcome.map(|completed| match completed {
+                Completed::Asset(state, _) => Output::Asset(state),
+                Completed::Value(value) => Output::Value(value),
+            }),
         );
-        if !self.jobs.active.is_empty() {
+        self.sources.complete(id);
+        if self.jobs.source_in_flight() {
             self.service.evict_development();
         }
         // A wait for this job is over, and so is every wait for room on the source worker.
         self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
+    }
+
+    /// Stop the work of a shared job whose last client just left it, on the worker that holds it.
+    /// A source task sees its cancelled control between steps, and on the memory gate should it
+    /// wait there. An analysis still in the pending slot is dropped and recorded `cancelled` now;
+    /// a running one is abandoned, stops within a chunk and is recorded when its outcome arrives.
+    fn stop(&mut self, job_id: &JobId, kind: JobKind) {
+        match kind.family() {
+            Family::Source => self.sources.gate.wake(),
+            Family::Analysis => {
+                let pending = self.queue.is_pending(job_id);
+                let held = self.queue.withdraw(job_id);
+                if pending || !held {
+                    self.jobs.finish(job_id, Err(Error::cancelled(CANCELLED)));
+                }
+            }
+            Family::Capability | Family::Export => {}
+        }
+    }
+
+    /// One job as `client` reads it. An analysis the table records as live is `queued` while it
+    /// waits in the worker's one replaceable slot and `running` once the worker has taken it, which
+    /// only the worker knows.
+    fn read_job(&self, job_id: &JobId, client: ClientId) -> Result<Value, Error> {
+        let mut record = self.jobs.read_for(job_id, client)?;
+        if record.kind == JobKind::Analysis && !record.status.is_finished() {
+            record.status = if self.queue.is_pending(job_id) {
+                JobStatus::Queued
+            } else {
+                JobStatus::Running
+            };
+        }
+        methods::value(record)
+    }
+
+    /// A report the desktop's preview worker produced: it answers a live job for the same identity
+    /// at once, and otherwise is kept as a finished job, so the next request for the identity is a
+    /// cache hit. A job that already finished keeps its own outcome.
+    fn analysis_submitted(&mut self, identity: AnalysisIdentity, report: Report) {
+        let asset_id = identity.asset_id.clone();
+        let key = JoinKey::Analysis(Box::new(identity));
+        match self.jobs.keyed(&key).cloned() {
+            Some(job_id) => {
+                self.jobs
+                    .finish(&job_id, Ok(Output::Report(Box::new(report))));
+            }
+            None => {
+                self.jobs.open_finished(
+                    Opened {
+                        job_id: JobId::new(),
+                        kind: JobKind::Analysis,
+                        client: None,
+                        key: Some(key),
+                        asset_id: Some(asset_id),
+                        control: JobControl::new(),
+                    },
+                    Output::Report(Box::new(report)),
+                );
+            }
+        }
     }
 }
 
@@ -1790,27 +1727,75 @@ pub(super) fn catalog_import(
 ) -> Result<Value, Error> {
     params.mutation.validate()?;
     let (id, status) = match owner.service.cached_import(&params.path)? {
-        Some(state) => (owner.jobs.ready(call.client, state)?, JobStatus::Ready),
+        Some(state) => (
+            owner.sources.ready(&mut owner.jobs, call.client, state)?,
+            JobStatus::Ready,
+        ),
         None => {
             let expected = owner.service.known_file_preparation(&params.path)?;
-            let id = owner
-                .jobs
-                .enqueue(call.client, params.path, expected, Vec::new())?;
+            let id = owner.sources.enqueue_file(
+                &mut owner.jobs,
+                call.client,
+                params.path,
+                expected,
+                Vec::new(),
+            )?;
             owner.service.evict_development();
             (id, JobStatus::Queued)
         }
     };
-    owner.jobs.mark_import(&id, &call.request.id);
+    owner.jobs.set_origin(&id, call.origin.clone());
     owner.latest_import.insert(call.client, id.clone());
     Ok(json!({"job_id": id, "status": status}))
 }
 
-pub(super) fn job_status(
+/// `job.read`: any job of any kind, in the one shape. A source or analysis job is read by the
+/// clients that requested it; a capability or export job by any client.
+pub(super) fn job_read(
     owner: &mut Owner,
     call: &Call<'_>,
     params: JobParams,
 ) -> Result<Value, Error> {
-    owner.jobs.status(call.client, &params.job_id)
+    owner.read_job(&params.job_id, call.client)
+}
+
+/// `job.cancel`, by the job's kind. A source or analysis job belongs to the clients that want it:
+/// the caller leaves it, and the work stops only when no other client wants it. A capability or
+/// export job belongs to no client: its cancel stops it for everyone, and a running deactivation is
+/// refused. Answers the job as `job.read` does afterwards.
+///
+/// Every cancel converges, so it carries no mutation envelope and a retry needs no stored answer:
+/// a left job stays left, a cancelled one stays cancelled and a finished one is answered as it is.
+pub(super) fn job_cancel(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: JobParams,
+) -> Result<Value, Error> {
+    let job_id = &params.job_id;
+    let client = call.client;
+    let kind = owner.jobs.kind_for(job_id, client)?;
+    match kind.family() {
+        Family::Source | Family::Analysis => {
+            if owner.latest_import.get(&client) == Some(job_id) {
+                owner.latest_import.remove(&client);
+            }
+            if owner.jobs.release(job_id, client)? == Release::Stopped {
+                owner.stop(job_id, kind);
+            }
+            // The client left the job, so a wait of its own for it is over, whatever becomes of
+            // the work.
+            owner.release_waiters(|waiter| {
+                waiter.client == client && waiter.job.as_ref() == Some(job_id)
+            });
+        }
+        Family::Capability => owner
+            .host
+            .cancel(&mut owner.jobs, job_id, &mut owner.announced)?,
+        Family::Export => {
+            owner.jobs.cancel(job_id, export::CANCELLED);
+        }
+    }
+    owner.read_job(job_id, client)
 }
 
 /// `job.adopt`: the ready result of this client's latest import becomes its current asset.
@@ -1822,46 +1807,22 @@ pub(super) fn job_adopt(
     if owner.latest_import.get(&call.client) != Some(&params.job_id) {
         return Err(Error::conflict("a newer import superseded this job"));
     }
-    let state = match owner.jobs.jobs.get(&params.job_id) {
-        Some(job) if job.clients.contains(&call.client) => match &job.state {
-            SourceState::Ready(state) => (**state).clone(),
-            SourceState::Failed(error) => return Err(error.clone()),
-            SourceState::Finished(_) => {
-                return Err(Error::validation("this source job is not an import"));
-            }
-            SourceState::Queued | SourceState::Preparing => {
-                return Err(
-                    Error::preparation_required("the import is still being prepared")
-                        .with_preparation(Preparation::Queued(params.job_id.clone())),
-                );
-            }
-        },
-        _ => {
-            return Err(Error::validation("unknown source job for this client"));
+    let state = match owner.jobs.outcome_for(&params.job_id, call.client)? {
+        (JobStatus::Ready, Some(Output::Asset(state)), _) => (**state).clone(),
+        (JobStatus::Queued | JobStatus::Running, ..) => {
+            return Err(
+                Error::preparation_required("the import is still being prepared")
+                    .with_preparation(Preparation::Queued(params.job_id.clone())),
+            );
         }
+        (_, _, Some(error)) => return Err(error.clone()),
+        _ => return Err(Error::validation("this job is not an import")),
     };
     let session = owner.sessions.entry(call.client).or_default();
     session.preview.return_current();
     session.touch();
     owner.latest_import.remove(&call.client);
     Ok(json!({"asset": state, "session": session}))
-}
-
-pub(super) fn job_cancel(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    params: JobParams,
-) -> Result<Value, Error> {
-    if owner.latest_import.get(&call.client) == Some(&params.job_id) {
-        owner.latest_import.remove(&call.client);
-    }
-    let cancelled = owner.jobs.cancel(call.client, &params.job_id)?;
-    // The client left the job, so a wait of its own for it is over, whatever becomes of the work.
-    let client = call.client;
-    owner.release_waiters(|waiter| {
-        waiter.client == client && waiter.job.as_ref() == Some(&params.job_id)
-    });
-    Ok(cancelled)
 }
 
 pub(super) fn source_prepare(
@@ -1872,7 +1833,13 @@ pub(super) fn source_prepare(
     let needs = owner
         .service
         .entry_needs(&params.asset_id, params.entry_id.as_ref())?;
-    let id = queue_preparation(&owner.service, &mut owner.jobs, call.client, &needs)?;
+    let id = queue_preparation(
+        &owner.service,
+        &mut owner.sources,
+        &mut owner.jobs,
+        call.client,
+        &needs,
+    )?;
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
@@ -1888,10 +1855,12 @@ pub(super) fn artifact_collect(
     params.mutation.validate()?;
     let collection = owner.service.plan_collection()?;
     let root = collection.root.clone();
-    let id =
-        owner
-            .jobs
-            .enqueue_maintenance(call.client, root, SourceTaskKind::Collect(collection))?;
+    let id = owner.sources.enqueue_maintenance(
+        &mut owner.jobs,
+        call.client,
+        root,
+        SourceTaskKind::Collect(collection),
+    )?;
     announce_once(&mut owner.announced, &call.origin);
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
@@ -1912,7 +1881,8 @@ pub(super) fn events_since(
 
 /// `analysis.request`. Everything the owner does here is bookkeeping and `O(layers)` planning: a
 /// state read, the cached verified source, the draft's plan and one compile to learn the output
-/// stage. No frame is allocated and nothing is rasterized on this thread.
+/// stage. No frame is allocated and nothing is rasterized on this thread. Answers the job as
+/// `job.read` does.
 pub(super) fn analysis_request(
     owner: &mut Owner,
     call: &Call<'_>,
@@ -1941,77 +1911,43 @@ pub(super) fn analysis_request(
     } = owner.service.analysis_plan(&params.asset_id, selection)?;
     // An identical identity joins the job that already covers it, whether it is still running or
     // already holds a report: the same work is never done twice.
-    let (job_id, fresh) = owner.analyses.request(identity.clone(), call.client);
-    if fresh {
-        match failure {
-            // The effective recipe resolved but has no output stage the host can evaluate, so no
-            // worker is started: the job is failed from the start and carries the reason.
-            Some(error) => owner.analyses.fail(&job_id, error),
-            None => {
-                let source = source.expect("an evaluable stack carries its prepared source");
-                if let Some(displaced) = owner.queue.submit(AnalysisJob {
-                    job_id: job_id.clone(),
-                    identity,
-                    source,
-                    registry,
-                    context,
-                    recipe,
-                }) {
-                    owner.analyses.supersede(&displaced);
+    let key = JoinKey::Analysis(Box::new(identity.clone()));
+    let job_id = match owner.jobs.join(&key, call.client) {
+        Some(job_id) => job_id,
+        None => {
+            let job_id = JobId::new();
+            owner.jobs.open(Opened {
+                job_id: job_id.clone(),
+                kind: JobKind::Analysis,
+                client: Some(call.client),
+                key: Some(key),
+                asset_id: Some(identity.asset_id.clone()),
+                control: JobControl::new(),
+            });
+            match failure {
+                // The effective recipe resolved but has no output stage the host can evaluate, so
+                // no worker is started: the job fails at once and carries the reason.
+                Some(error) => {
+                    owner.jobs.finish(&job_id, Err(error));
+                }
+                None => {
+                    let source = source.expect("an evaluable stack carries its prepared source");
+                    if let Some(displaced) = owner.queue.submit(AnalysisJob {
+                        job_id: job_id.clone(),
+                        identity,
+                        source,
+                        registry,
+                        context,
+                        recipe,
+                    }) {
+                        owner.jobs.supersede(&displaced);
+                    }
                 }
             }
+            job_id
         }
-    }
-    let read = owner
-        .analyses
-        .state_of(&job_id, &owner.queue)
-        .expect("the job was just opened or joined");
-    let mut value = analysis_value(&read)?;
-    value["job_id"] = json!(job_id);
-    Ok(value)
-}
-
-/// `analysis.read`. A job this client never requested is not its own.
-pub(super) fn analysis_read(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    params: AnalysisJobParams,
-) -> Result<Value, Error> {
-    analysis_value(
-        &owner
-            .analyses
-            .read(&params.job_id, call.client, &owner.queue)?,
-    )
-}
-
-/// `analysis.cancel`. Dropping the last interest drops a pending job outright and stops a running
-/// one within a chunk of its render or reduction; its cancelled outcome is discarded on arrival.
-pub(super) fn analysis_cancel(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    params: AnalysisJobParams,
-) -> Result<Value, Error> {
-    if owner.analyses.release(&params.job_id, call.client)? == crate::analysis::Release::Cancelled {
-        owner.queue.withdraw(&params.job_id);
-        owner.analyses.cancel(&params.job_id);
-    }
-    Ok(json!({"cancelled": true}))
-}
-
-/// One job's state as a client reads it. Only `ready` ever carries `report`, so pending, failed,
-/// superseded and cancelled can never be mistaken for a valid but empty histogram.
-fn analysis_value(read: &AnalysisRead<'_>) -> Result<Value, Error> {
-    let mut value = json!({
-        "status": read.status,
-        "identity": read.identity,
-    });
-    if let Some(report) = read.report {
-        value["report"] = methods::value(report)?;
-    }
-    if let Some(error) = read.error {
-        value["error"] = json!({"code": error.kind.code(), "message": error.detail});
-    }
-    Ok(value)
+    };
+    owner.read_job(&job_id, call.client)
 }
 
 #[cfg(test)]
@@ -2081,7 +2017,7 @@ mod tests {
                 owner,
                 client,
                 "status",
-                "job.status",
+                "job.read",
                 json!({"job_id": job_id}),
             );
             match status["status"].as_str() {
@@ -2118,19 +2054,13 @@ mod tests {
             .unwrap_or_else(|| panic!("{id} was expected to fail"))
     }
 
-    /// Poll `analysis.read` until the job leaves `queued` or `running`. Nothing in the owner
+    /// Poll `job.read` until the job leaves `queued` or `running`. Nothing in the owner
     /// polls: this is the test standing in for a client that would rather be told, and it fails on
     /// a deadline instead of spinning forever.
     fn settled(owner: &OwnerHandle, client: ClientId, job_id: &Value) -> Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
-            let read = ok(
-                owner,
-                client,
-                "read",
-                "analysis.read",
-                json!({"job_id": job_id}),
-            );
+            let read = ok(owner, client, "read", "job.read", json!({"job_id": job_id}));
             if !matches!(read["status"].as_str(), Some("queued" | "running")) {
                 return read;
             }
@@ -2193,7 +2123,7 @@ mod tests {
     fn wait_source(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
         let start = std::time::Instant::now();
         loop {
-            let status = request(owner, client, "job.status", json!({"job_id":id}));
+            let status = request(owner, client, "job.read", json!({"job_id":id}));
             assert!(status.error.is_none(), "{:?}", status.error);
             let status = status.result.unwrap();
             match status["status"].as_str() {
@@ -2212,7 +2142,7 @@ mod tests {
     fn wait_development(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
-            let status = ok(owner, client, "status", "job.status", json!({"job_id": id}));
+            let status = ok(owner, client, "status", "job.read", json!({"job_id": id}));
             if !matches!(status["status"].as_str(), Some("queued" | "running")) {
                 return status;
             }
@@ -2326,10 +2256,10 @@ mod tests {
         let mut a_ready = false;
         let mut b_ready = false;
         while !(a_ready && b_ready) && std::time::Instant::now() < until {
-            let a_status = request(&owner, first, "job.status", json!({"job_id":a_id}))
+            let a_status = request(&owner, first, "job.read", json!({"job_id":a_id}))
                 .result
                 .unwrap();
-            let b_status = request(&owner, second, "job.status", json!({"job_id":b_id}))
+            let b_status = request(&owner, second, "job.read", json!({"job_id":b_id}))
                 .result
                 .unwrap();
             assert_ne!(a_status["status"], "failed", "{a_status}");
@@ -2367,14 +2297,10 @@ mod tests {
                     None => break,
                     Some(error) if error.code == "preparation-required" => {
                         let prepared = loop {
-                            let status = request(
-                                &owner,
-                                client,
-                                "job.status",
-                                json!({"job_id":error.job_id}),
-                            )
-                            .result
-                            .unwrap();
+                            let status =
+                                request(&owner, client, "job.read", json!({"job_id":error.job_id}))
+                                    .result
+                                    .unwrap();
                             match status["status"].as_str() {
                                 Some("ready" | "failed") => break status,
                                 Some("queued" | "running") => {
@@ -2429,61 +2355,87 @@ mod tests {
         };
         let a = request(&first_path, first_sensor);
         let b = request(&second_path, second_sensor);
-        let (sender, receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
-        let mut jobs = SourceJobs::new(sender, Arc::default());
-        let first = jobs
-            .enqueue_development(ClientId(1), a.clone(), Vec::new())
+        let (mut sources, mut jobs, receiver) = source_queue();
+        let first = sources
+            .enqueue_development(&mut jobs, ClientId(1), a.clone(), Vec::new())
             .unwrap();
         assert_eq!(
-            jobs.enqueue_development(ClientId(2), a, Vec::new())
+            sources
+                .enqueue_development(&mut jobs, ClientId(2), a, Vec::new())
                 .unwrap(),
             first
         );
-        let refusal = jobs
-            .enqueue_development(ClientId(3), b.clone(), Vec::new())
+        let refusal = sources
+            .enqueue_development(&mut jobs, ClientId(3), b.clone(), Vec::new())
             .unwrap_err();
         assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
         assert!(refusal.detail.starts_with("RAW mosaic queue is full"));
         drop(receiver.try_recv().unwrap());
-        jobs.complete(&first, SourceState::Failed(Error::conflict("finished")));
-        assert!(jobs.enqueue_development(ClientId(3), b, Vec::new()).is_ok());
+        jobs.finish(&first, Err(Error::conflict("finished")));
+        sources.complete(&first);
+        assert!(
+            sources
+                .enqueue_development(&mut jobs, ClientId(3), b, Vec::new())
+                .is_ok()
+        );
     }
 
+    /// The source worker's queue over a job table of its own, and the worker's end of its channel.
+    fn source_queue() -> (SourceQueue, Jobs, Receiver<SourceTask>) {
+        let (sender, receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
+        let jobs = Jobs::new(Arc::new(|_, _| {}), ActivityBoard::new());
+        (SourceQueue::new(sender, Arc::default()), jobs, receiver)
+    }
+
+    /// A second request for the same flight joins the queued job; one client leaving it leaves the
+    /// work for the other, and the last leaving stops it, whose flight then starts afresh.
     #[test]
     fn pending_source_jobs_deduplicate_and_cancellation_keeps_other_waiters() {
-        let (sender, _receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
-        let mut jobs = SourceJobs::new(sender, Arc::default());
+        let (mut sources, mut jobs, receiver) = source_queue();
         let first = ClientId(1);
         let second = ClientId(2);
-        let id = jobs.enqueue(first, fixture(), None, Vec::new()).unwrap();
+        let id = sources
+            .enqueue_file(&mut jobs, first, fixture(), None, Vec::new())
+            .unwrap();
         assert_eq!(
-            jobs.enqueue(second, fixture(), None, Vec::new()).unwrap(),
+            sources
+                .enqueue_file(&mut jobs, second, fixture(), None, Vec::new())
+                .unwrap(),
             id
         );
-        assert_eq!(jobs.cancel(first, &id).unwrap()["status"], "cancelled");
-        assert_eq!(jobs.status(second, &id).unwrap()["status"], "queued");
-        jobs.disconnect(second);
-        assert!(jobs.jobs[&id].cancelled.load(Ordering::Relaxed));
+        assert_eq!(jobs.release(&id, first).unwrap(), Release::Kept);
+        assert_eq!(
+            jobs.read_for(&id, second).unwrap().status,
+            JobStatus::Queued
+        );
+        assert_eq!(
+            jobs.disconnect(second),
+            vec![(id.clone(), JobKind::Prepare)]
+        );
+        let task = receiver.try_recv().unwrap();
+        assert_eq!(task.id, id);
+        assert!(task.control.is_cancelled(), "the worker sees the stop");
         assert_ne!(
-            jobs.enqueue(first, fixture(), None, Vec::new()).unwrap(),
+            sources
+                .enqueue_file(&mut jobs, first, fixture(), None, Vec::new())
+                .unwrap(),
             id
         );
     }
 
     #[test]
     fn changed_signature_starts_a_new_flight_instead_of_attaching_to_old_bytes() {
-        let (sender, _receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
-        let mut jobs = SourceJobs::new(sender, Arc::default());
+        let (mut sources, mut jobs, _receiver) = source_queue();
         let path = temp("source-flight-changed.jpg");
         std::fs::copy(fixture(), &path).unwrap();
-        let first = jobs
-            .enqueue(ClientId(1), path.clone(), None, Vec::new())
+        let first = sources
+            .enqueue_file(&mut jobs, ClientId(1), path.clone(), None, Vec::new())
             .unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[0] = 0;
         std::fs::write(&path, bytes).unwrap();
-        let second = jobs
-            .enqueue(ClientId(2), path.clone(), None, Vec::new())
+        let second = sources
+            .enqueue_file(&mut jobs, ClientId(2), path.clone(), None, Vec::new())
             .unwrap();
         assert_ne!(first, second);
         std::fs::remove_file(path).unwrap();
@@ -2508,7 +2460,7 @@ mod tests {
         let first = a["job_id"].as_str().unwrap();
         let second = b["job_id"].as_str().unwrap();
         assert_eq!(wait_source(&owner, client, first)["status"], "ready");
-        let expected = wait_source(&owner, client, second)["asset"]["asset"]["id"].clone();
+        let expected = wait_source(&owner, client, second)["result"]["asset"]["id"].clone();
         let stale = request(&owner, client, "job.adopt", json!({"job_id":first}));
         assert_eq!(stale.error.unwrap().code, "conflict");
         let adopted = request(&owner, client, "job.adopt", json!({"job_id":second}))
@@ -2685,22 +2637,36 @@ mod tests {
             .unwrap();
         let first_id = a["job_id"].as_str().unwrap();
         let second_id = b["job_id"].as_str().unwrap();
-        assert_eq!(
+        assert_ne!(
             request(&owner, first, "job.cancel", json!({"job_id":first_id}))
                 .result
                 .unwrap()["status"],
-            "cancelled"
+            "cancelled",
+            "leaving a job never cancels it while another client wants it"
         );
         assert_eq!(
-            request(&owner, first, "job.status", json!({"job_id":first_id}))
-                .error
-                .unwrap()
-                .code,
-            "validation"
+            request(&owner, first, "job.read", json!({"job_id":first_id}))
+                .result
+                .unwrap()["job_id"],
+            first_id,
+            "the client that left still reads the job it requested"
+        );
+        assert_eq!(
+            request(
+                &owner,
+                owner.register(),
+                "job.read",
+                json!({"job_id":first_id})
+            )
+            .error
+            .unwrap()
+            .code,
+            "validation",
+            "a client that never requested it does not"
         );
         let ready = wait_source(&owner, second, second_id);
         assert_eq!(ready["status"], "ready");
-        let asset = ready["asset"]["asset"]["id"].clone();
+        let asset = ready["result"]["asset"]["id"].clone();
         let again = request(&owner, second, "catalog.import", import_params(fixture()))
             .result
             .unwrap();
@@ -2709,7 +2675,7 @@ mod tests {
             "a matching signature uses cached pixels"
         );
         assert_eq!(
-            wait_source(&owner, second, again["job_id"].as_str().unwrap())["asset"]["asset"]["id"],
+            wait_source(&owner, second, again["job_id"].as_str().unwrap())["result"]["asset"]["id"],
             asset
         );
         assert_eq!(
@@ -2874,9 +2840,9 @@ mod tests {
         let queued = call(viewer, "import", "catalog.import", import_params(fixture()));
         let job_id = queued["job_id"].as_str().unwrap();
         let imported = loop {
-            let status = call(viewer, "status", "job.status", json!({"job_id":job_id}));
+            let status = call(viewer, "status", "job.read", json!({"job_id":job_id}));
             match status["status"].as_str() {
-                Some("ready") => break status["asset"].clone(),
+                Some("ready") => break status["result"].clone(),
                 Some("queued" | "running") => {
                     std::thread::sleep(std::time::Duration::from_millis(1))
                 }
@@ -3138,13 +3104,13 @@ mod tests {
         assert_eq!(settled_viewer["identity"], identity);
         let reference = expected_report(&owner, PreviewRequest::new(viewer, asset_id.clone()));
         assert_eq!(
-            settled_viewer["report"], reference,
+            settled_viewer["result"], reference,
             "the counts are the exact reduction of that entry's rendered frame"
         );
         assert!(settled_viewer.get("error").is_none());
         // The other client reads the very same shared result.
         assert_eq!(
-            settled(&owner, agent, &second["job_id"])["report"],
+            settled(&owner, agent, &second["job_id"])["result"],
             reference
         );
 
@@ -3166,7 +3132,7 @@ mod tests {
             "the stored report answers without a second render"
         );
         assert_eq!(historical["identity"], identity);
-        assert_eq!(historical["report"], reference);
+        assert_eq!(historical["result"], reference);
         assert_eq!(historical["identity"]["entry_id"], original);
 
         // The current composition is now different work with a different identity and counts.
@@ -3183,22 +3149,22 @@ mod tests {
         let settled_current = settled(&owner, viewer, &current["job_id"]);
         assert_eq!(settled_current["status"], json!("ready"));
         assert_ne!(
-            settled_current["report"], reference,
+            settled_current["result"], reference,
             "one replaced pixel moves the counts"
         );
         assert_eq!(
-            settled_current["report"],
+            settled_current["result"],
             expected_report(&owner, PreviewRequest::new(viewer, asset_id))
         );
         // The earlier result is untouched by the commit.
         assert_eq!(
-            settled(&owner, viewer, &first["job_id"])["report"],
+            settled(&owner, viewer, &first["job_id"])["result"],
             reference
         );
 
         // A job this client never requested is not its own, and neither is one that does not exist.
         let foreign = owner.register();
-        for (id, method) in [("foreign", "analysis.read"), ("fc", "analysis.cancel")] {
+        for (id, method) in [("foreign", "job.read"), ("fc", "job.cancel")] {
             assert_eq!(
                 failure(
                     &owner,
@@ -3216,7 +3182,7 @@ mod tests {
                 &owner,
                 viewer,
                 "missing",
-                "analysis.read",
+                "job.read",
                 json!({"job_id": crate::JobId::new()}),
             )
             .code,
@@ -3227,7 +3193,7 @@ mod tests {
                 &owner,
                 viewer,
                 "malformed",
-                "analysis.read",
+                "job.read",
                 json!({"job_id": "not-a-job"}),
             )
             .code,
@@ -3269,7 +3235,7 @@ mod tests {
             "analysis.request",
             json!({"asset_id": asset, "target": {"kind": "current"}}),
         );
-        let baseline = settled(&owner, client, &current["job_id"])["report"].clone();
+        let baseline = settled(&owner, client, &current["job_id"])["result"].clone();
 
         let begun = ok(
             &owner,
@@ -3300,11 +3266,11 @@ mod tests {
         let settled_draft = settled(&owner, client, &drafted["job_id"]);
         assert_eq!(settled_draft["status"], json!("ready"));
         assert_ne!(
-            settled_draft["report"], baseline,
+            settled_draft["result"], baseline,
             "the drafted white pixel moves the counts"
         );
         assert_eq!(
-            settled_draft["report"],
+            settled_draft["result"],
             expected_report(
                 &owner,
                 PreviewRequest::new(client, asset_id)
@@ -3312,7 +3278,7 @@ mod tests {
             )
         );
         // Exactly one pixel changed: the red channel's population moves by one at two codes.
-        let moved: u64 = settled_draft["report"]["r"]
+        let moved: u64 = settled_draft["result"]["r"]
             .as_array()
             .unwrap()
             .iter()
@@ -3354,7 +3320,7 @@ mod tests {
         );
         // Nothing was persisted: the current composition is still the baseline.
         assert_eq!(
-            settled(&owner, client, &current["job_id"])["report"],
+            settled(&owner, client, &current["job_id"])["result"],
             baseline
         );
         owner.stop();
@@ -3418,7 +3384,7 @@ mod tests {
             )
         };
         let read = |client: ClientId, id: &str, job: &Value| {
-            ok(&owner, client, id, "analysis.read", json!({"job_id": job}))
+            ok(&owner, client, id, "job.read", json!({"job_id": job}))
         };
 
         // From here until the gate opens, whichever job the worker started stays on it.
@@ -3443,7 +3409,7 @@ mod tests {
             "the single pending slot was taken by the newer request"
         );
         assert!(
-            superseded.get("report").is_none(),
+            superseded.get("result").is_none(),
             "a superseded job carries no counts"
         );
         assert!(superseded.get("error").is_none());
@@ -3466,15 +3432,16 @@ mod tests {
                 &owner,
                 viewer,
                 "cancel-queued",
-                "analysis.cancel",
+                "job.cancel",
                 json!({"job_id": again["job_id"]}),
-            ),
-            json!({"cancelled": true})
+            )["status"],
+            json!("cancelled"),
+            "the last interest leaving drops the job from the slot at once"
         );
         let withdrawn = read(viewer, "read-queued", &again["job_id"]);
         assert_eq!(withdrawn["status"], json!("cancelled"), "{withdrawn}");
         assert!(
-            withdrawn.get("report").is_none(),
+            withdrawn.get("result").is_none(),
             "a cancelled job carries no counts"
         );
 
@@ -3488,7 +3455,7 @@ mod tests {
                 &owner,
                 agent,
                 "gone",
-                "analysis.read",
+                "job.read",
                 json!({"job_id": before["job_id"]}),
             )
             .code,
@@ -3506,10 +3473,11 @@ mod tests {
                 &owner,
                 viewer,
                 "cancel",
-                "analysis.cancel",
+                "job.cancel",
                 json!({"job_id": shared_viewer["job_id"]}),
-            ),
-            json!({"cancelled": true})
+            )["status"],
+            json!("queued"),
+            "the canceller reads the shared job, which the other client keeps"
         );
         assert_eq!(
             read(partner, "read-shared-held", &shared_partner["job_id"])["status"],
@@ -3522,13 +3490,13 @@ mod tests {
         gate.open();
         let finished = settled(&owner, viewer, &active["job_id"]);
         assert_eq!(finished["status"], json!("ready"), "{finished}");
-        assert!(finished["report"].is_object());
+        assert!(finished["result"].is_object());
         let kept = settled(&owner, partner, &shared_partner["job_id"]);
         assert_eq!(kept["status"], json!("ready"), "{kept}");
-        assert!(kept["report"].is_object());
+        assert!(kept["result"].is_object());
         assert_eq!(
-            read(viewer, "read-shared", &shared_viewer["job_id"])["report"],
-            kept["report"],
+            read(viewer, "read-shared", &shared_viewer["job_id"])["result"],
+            kept["result"],
             "one client's cancel did not invalidate the shared result"
         );
 
@@ -3537,7 +3505,7 @@ mod tests {
             let requested = entry_request(viewer, id, &entries[entry]);
             let ready = settled(&owner, viewer, &requested["job_id"]);
             assert_eq!(ready["status"], json!("ready"), "{ready}");
-            assert!(ready["report"].is_object());
+            assert!(ready["result"].is_object());
         }
         let reconnected = owner.register();
         let after = entry_request(reconnected, "after", &entries[6]);
@@ -3591,19 +3559,19 @@ mod tests {
             json!({"asset_id": asset, "target": {"kind": "current"}}),
         );
         assert_eq!(requested["status"], json!("failed"));
-        assert!(requested.get("report").is_none());
+        assert!(requested.get("result").is_none());
         assert_eq!(requested["identity"]["width"], json!(0));
         assert_eq!(requested["identity"]["height"], json!(0));
         let read = ok(
             &owner,
             client,
             "read",
-            "analysis.read",
+            "job.read",
             json!({"job_id": requested["job_id"]}),
         );
         assert_eq!(read["status"], json!("failed"));
         assert!(
-            read.get("report").is_none(),
+            read.get("result").is_none(),
             "a failed job carries no counts"
         );
         assert_eq!(read["error"]["code"], json!("incompatible"));
@@ -3707,7 +3675,7 @@ mod tests {
             requested["identity"],
             serde_json::to_value(&result.identity).unwrap()
         );
-        assert_eq!(requested["report"], encoded);
+        assert_eq!(requested["result"], encoded);
 
         // Nothing re-read or re-decoded the original: every path served the one cached decode.
         let after = owner
@@ -3831,7 +3799,7 @@ mod tests {
         // running a moment after it is listed; it is held there, and still listed, until the
         // gate opens.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while request(&owner, client, "job.status", json!({"job_id": job_id}))
+        while request(&owner, client, "job.read", json!({"job_id": job_id}))
             .result
             .unwrap()["status"]
             != json!("running")
@@ -3966,11 +3934,268 @@ mod tests {
         assert!(notes.contains("250 ms"), "{notes}");
         assert!(notes.contains("needs no asset"), "{notes}");
         assert!(notes.contains("emits no event"), "{notes}");
-        assert!(notes.contains("job.status"), "{notes}");
+        assert!(notes.contains("job.read"), "{notes}");
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
         std::fs::remove_file(photo).unwrap();
+    }
+
+    /// The board entry that names this job, running or recent, if the board holds one.
+    fn entry_of(list: &Value, job_id: &Value) -> Option<(Value, bool)> {
+        for (key, running) in [("active", true), ("recent", false)] {
+            if let Some(entry) = list[key]
+                .as_array()
+                .and_then(|entries| entries.iter().find(|entry| entry["job_id"] == *job_id))
+            {
+                return Some((entry.clone(), running));
+            }
+        }
+        None
+    }
+
+    /// What `job.read` and `activity.list` say about one job, read back to back, and whether they
+    /// agree: a running job is listed as active, and a finished one as recent with the outcome its
+    /// status stands for. Answers the job as `job.read` answered it.
+    fn agreeing(owner: &OwnerHandle, client: ClientId, job_id: &Value, kind: &str) -> Value {
+        let job = ok(owner, client, "read", "job.read", json!({"job_id": job_id}));
+        let list = ok(owner, client, "list", "activity.list", json!({}));
+        let (entry, running) =
+            entry_of(&list, job_id).unwrap_or_else(|| panic!("{kind} {job_id} is not listed"));
+        assert_eq!(entry["kind"], json!(kind), "{entry}");
+        let status = job["status"].as_str().unwrap();
+        match status {
+            "running" => assert!(running, "{kind} reads running but is listed {entry}"),
+            finished => {
+                assert!(
+                    !running,
+                    "{kind} reads {finished} but is still listed active"
+                );
+                let outcome = match finished {
+                    "ready" => "completed",
+                    "cancelled" => "cancelled",
+                    _ => "failed",
+                };
+                assert_eq!(entry["outcome"], json!(outcome), "{kind} reads {finished}");
+            }
+        }
+        job
+    }
+
+    /// `job.read` and `activity.list` agree about a job of every kind, while it runs and once it
+    /// ended: a source preparation and an export that complete, an analysis whose one client
+    /// cancelled it while it ran, and a capability activation. Each is held on its own worker at a
+    /// gate the test controls; the board keeps work of any length as recent.
+    #[test]
+    fn activity_list_and_job_read_agree_about_a_job_of_every_kind() {
+        let catalog = temp("agree.sqlite");
+        let photo = temp("agree-photo.jpg");
+        let exports = temp("agree-exports");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        std::fs::create_dir_all(&exports).unwrap();
+        let source_gate = crate::modules::RenderGate::open_gate();
+        let render_gate = crate::modules::RenderGate::open_gate();
+        let export_gate = crate::modules::RenderGate::open_gate();
+        let probe = Arc::new(crate::capabilities::testing::Probe::default());
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(render_gate.clone()))
+            .expect("a valid holding module");
+        registry
+            .register(crate::capabilities::testing::LifecycleModule::shared(
+                crate::capabilities::testing::lane_descriptor(0),
+                probe.clone(),
+            ))
+            .expect("a valid lifecycle module");
+        let hold = source_gate.clone();
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(registry),
+            ActivityBoard::with_recent_threshold(Duration::ZERO),
+            Some(Arc::new(move || hold.pass())),
+        )
+        .unwrap();
+        let client = owner.register();
+        let until_listed = |job_id: &Value| {
+            listed(&owner, client, |list| {
+                entry_of(list, job_id).is_some_and(|(_, running)| running)
+            });
+        };
+        let until_running = |job_id: &Value| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while ok(
+                &owner,
+                client,
+                "poll",
+                "job.read",
+                json!({"job_id": job_id}),
+            )["status"]
+                != json!("running")
+            {
+                assert!(std::time::Instant::now() < deadline, "the job never ran");
+                std::thread::yield_now();
+            }
+        };
+
+        // Source: listed as its worker begins it, and running once the owner hears so.
+        source_gate.shut();
+        let prepare = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            import_params(&photo),
+        )["job_id"]
+            .clone();
+        until_listed(&prepare);
+        until_running(&prepare);
+        assert_eq!(
+            agreeing(&owner, client, &prepare, "source.prepare")["kind"],
+            "prepare"
+        );
+        source_gate.open();
+        wait_source(&owner, client, prepare.as_str().unwrap());
+        let prepared = agreeing(&owner, client, &prepare, "source.prepare");
+        assert_eq!(prepared["status"], "ready");
+        let asset = prepared["result"]["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "adopt",
+            "job.adopt",
+            json!({"job_id": prepare}),
+        );
+
+        // Analysis: running on its worker, then cancelled by its only client while it runs. It
+        // reads running until the worker stops, and cancelled with the board once it has.
+        ok(
+            &owner,
+            client,
+            "hold",
+            &format!("edit.{}", crate::modules::HELD_ACTION),
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "hold", "actor": "test"},
+            }),
+        );
+        render_gate.shut();
+        let analysis = ok(
+            &owner,
+            client,
+            "request",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        )["job_id"]
+            .clone();
+        until_listed(&analysis);
+        assert_eq!(
+            agreeing(&owner, client, &analysis, "analysis.histogram")["status"],
+            "running"
+        );
+        let left = ok(
+            &owner,
+            client,
+            "cancel",
+            "job.cancel",
+            json!({"job_id": analysis}),
+        );
+        assert_eq!(left["status"], "running", "stopping within a chunk");
+        agreeing(&owner, client, &analysis, "analysis.histogram");
+        render_gate.open();
+        assert_eq!(settled(&owner, client, &analysis)["status"], "cancelled");
+        assert_eq!(
+            agreeing(&owner, client, &analysis, "analysis.histogram")["status"],
+            "cancelled"
+        );
+
+        // Export: held as it begins rendering, on the job table's export lane.
+        export_gate.shut();
+        let held = export_gate.clone();
+        owner.hold_exports(Some(Arc::new(move |_| held.pass())));
+        let export = ok(
+            &owner,
+            client,
+            "export",
+            "export.jpeg",
+            json!({
+                "asset_id": asset,
+                "destination": exports.join("agree.jpg"),
+                "mutation": envelope(),
+            }),
+        )["job_id"]
+            .clone();
+        until_listed(&export);
+        let running = agreeing(&owner, client, &export, "export");
+        assert_eq!(
+            (running["kind"].clone(), running["status"].clone()),
+            (json!("export"), json!("running"))
+        );
+        export_gate.open();
+        owner.hold_exports(None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while ok(
+            &owner,
+            client,
+            "poll",
+            "job.read",
+            json!({"job_id": export}),
+        )["status"]
+            == json!("running")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the export never ended"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            agreeing(&owner, client, &export, "export")["status"],
+            "ready"
+        );
+
+        // Capability: an activation held by its module on the module lane.
+        probe.hold.store(true, Ordering::SeqCst);
+        let activation = ok(
+            &owner,
+            client,
+            "activate",
+            "module.activate",
+            json!({"module_id": "test.lane0", "mutation": envelope()}),
+        )["job_id"]
+            .clone();
+        until_listed(&activation);
+        let running = agreeing(&owner, client, &activation, "module.activate");
+        assert_eq!(
+            (running["kind"].clone(), running["module_id"].clone()),
+            (json!("activate"), json!("test.lane0"))
+        );
+        probe.hold.store(false, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while ok(
+            &owner,
+            client,
+            "poll",
+            "job.read",
+            json!({"job_id": activation}),
+        )["status"]
+            == json!("running")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the activation never ended"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            agreeing(&owner, client, &activation, "module.activate")["status"],
+            "ready"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+        std::fs::remove_dir_all(exports).unwrap();
     }
 
     /// Block in [`OwnerHandle::wait_source`] on a thread of its own, as the desktop's refresh and
@@ -3989,7 +4214,7 @@ mod tests {
         receiver
     }
 
-    /// A source task that panics fails `internal` like any other failed task: `job.status` reads
+    /// A source task that panics fails `internal` like any other failed task: `job.read` reads
     /// the job failed, the activity board records it failed, every client waiting on it is
     /// released, and the worker runs the next source job. The panic comes from the worker's test
     /// hold, inside the task, after its activity began and before its work.
@@ -4046,7 +4271,7 @@ mod tests {
             &owner,
             client,
             "status",
-            "job.status",
+            "job.read",
             json!({"job_id": job_id}),
         );
         assert_eq!(status["status"], json!("failed"), "{status}");
@@ -4133,7 +4358,7 @@ mod tests {
             &owner,
             client,
             "status",
-            "job.status",
+            "job.read",
             json!({"job_id": job_id}),
         );
         assert_eq!(status["status"], json!("failed"), "{status}");
@@ -4209,7 +4434,7 @@ mod tests {
         let workspace = &schema["methods"]["workspace.set"]["optional"];
         assert!(workspace["clip_shadows"].is_string());
         assert!(workspace["clip_highlights"].is_string());
-        for method in ["analysis.request", "analysis.read", "analysis.cancel"] {
+        for method in ["analysis.request", "job.read", "job.cancel"] {
             assert_eq!(
                 schema["methods"][method]["mutates"],
                 json!(false),
@@ -4220,14 +4445,26 @@ mod tests {
             schema["methods"]["analysis.request"]["required"],
             json!(["asset_id", "target"])
         );
+        assert_eq!(schema["methods"]["job.read"]["required"], json!(["job_id"]));
         assert_eq!(
-            schema["methods"]["analysis.read"]["required"],
+            schema["methods"]["job.cancel"]["required"],
             json!(["job_id"])
         );
-        assert_eq!(
-            schema["methods"]["analysis.cancel"]["required"],
-            json!(["job_id"])
-        );
+        // One job API serves every kind; no kind keeps a read or cancel of its own.
+        for retired in [
+            "job.status",
+            "analysis.read",
+            "analysis.cancel",
+            "module.job.read",
+            "module.job.cancel",
+            "export.read",
+            "export.cancel",
+        ] {
+            assert!(
+                schema["methods"].get(retired).is_none(),
+                "{retired} is not a method"
+            );
+        }
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -4536,7 +4773,7 @@ mod tests {
         let job_id = queued["job_id"].as_str().unwrap().to_owned();
         let ready = wait_source(&owner, client, &job_id);
         assert_eq!(ready["status"], "ready");
-        let asset = ready["asset"]["asset"]["id"].clone();
+        let asset = ready["result"]["asset"]["id"].clone();
         let (events, imported_at) = events_after(&owner, client, 0);
         assert_eq!(events, [("catalog.import".to_owned(), "import".to_owned())]);
         let retried = ok(&owner, client, "import", "catalog.import", import);
@@ -4654,7 +4891,7 @@ mod tests {
             &owner,
             client,
             "read",
-            "export.read",
+            "job.read",
             json!({"job_id": first["job_id"]}),
         )["status"]
             != "ready"

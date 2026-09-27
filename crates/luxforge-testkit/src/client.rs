@@ -111,7 +111,7 @@ pub fn refused(
 pub fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Checked<Value> {
     let deadline = Instant::now() + JOB_DEADLINE;
     loop {
-        let status = call(owner, client, "job.status", json!({"job_id": job}))?;
+        let status = call(owner, client, "job.read", json!({"job_id": job}))?;
         match status["status"].as_str() {
             Some("queued" | "running") => {
                 ensure(Instant::now() < deadline, "a source job never settled")?;
@@ -136,7 +136,7 @@ pub fn import(owner: &OwnerHandle, client: ClientId, path: &Path, actor: &str) -
         status["status"] == json!("ready"),
         format!("the import settled as {status}"),
     )?;
-    Ok(status["asset"].clone())
+    Ok(status["result"].clone())
 }
 
 /// Prepare the verified source so an evaluating call is answered rather than deferred: a freshly
@@ -150,7 +150,7 @@ pub fn prepare(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Checked 
     Ok(())
 }
 
-/// One `analysis.request` followed by `analysis.read` until it settles. The answer is the settled
+/// One `analysis.request` followed by `job.read` until it settles. The answer is the settled
 /// read with the request's `job_id` and `requested_identity` added, so a caller can hold the read
 /// identity to the requested one.
 pub fn analyse(
@@ -168,7 +168,7 @@ pub fn analyse(
     let job_id = requested["job_id"].clone();
     let deadline = Instant::now() + JOB_DEADLINE;
     loop {
-        let mut read = call(owner, client, "analysis.read", json!({"job_id": job_id}))?;
+        let mut read = call(owner, client, "job.read", json!({"job_id": job_id}))?;
         match read["status"].as_str() {
             Some("queued" | "running") => {
                 ensure(Instant::now() < deadline, "an analysis job never settled")?;

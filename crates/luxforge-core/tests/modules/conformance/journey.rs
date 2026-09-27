@@ -411,7 +411,7 @@ pub fn journey(
             "preview.return-current",
             "events.since",
             "analysis.request",
-            "analysis.read",
+            "job.read",
         ];
         if module.effect.maskable {
             used.push("mask.create-radial");
@@ -1444,7 +1444,7 @@ pub fn unavailable(module: &FieldPatch, catalog: &Path, state: &Final) -> Checke
     )?;
     let analysis = owner.analyse(client, asset, json!({"kind": "current"}))?;
     ensure(
-        analysis["status"] == json!("failed") && analysis.get("report").is_none(),
+        analysis["status"] == json!("failed") && analysis.get("result").is_none(),
         format!("the analysis of a stack of an unavailable effect answered {analysis}"),
     )?;
     let history = owner.call(

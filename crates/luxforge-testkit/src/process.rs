@@ -111,9 +111,8 @@ impl JsonProcess {
         response["error"].clone()
     }
 
-    /// Poll a job with `method` (`job.status` for a source job, `module.job.read` for a capability
-    /// job) until it leaves the queue, answering its last status. The client polls; the owner
-    /// never does.
+    /// Poll a job with `method` (`job.read`, for a job of any kind) until it leaves the queue,
+    /// answering its last status. The client polls; the owner never does.
     pub fn settle(&mut self, method: &str, job_id: &Value, timeout: Duration) -> Value {
         let deadline = Instant::now() + timeout;
         loop {

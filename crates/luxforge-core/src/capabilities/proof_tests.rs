@@ -7,7 +7,6 @@ use super::{
     data::SAMPLE_GRID_BYTES,
     grants::{DENY, GRANT, REVOKE},
     host::{ACTIVATE, DEACTIVATE, HostConfig, STATUS},
-    jobs::{JOB_CANCEL, JOB_READ},
     resources::{INSTALL, REMOVE},
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, SET, SET_SECRET},
@@ -21,6 +20,7 @@ use crate::{
     Stage, StageContext, ToolModule,
     capabilities::context::ModuleContext,
     colour::srgb::{decode_u8, quantize_pixel},
+    jobs::{JOB_CANCEL, JOB_READ},
     modules::{ActionInput, ActionPlan},
     redact_request,
 };
@@ -359,7 +359,7 @@ impl Owner {
                     let job = error.job_id.expect("a preparation names its job");
                     let deadline = Instant::now() + Duration::from_secs(20);
                     loop {
-                        let status = self.ok("job.status", json!({"job_id": job}));
+                        let status = self.ok("job.read", json!({"job_id": job}));
                         match status["status"].as_str() {
                             Some("queued" | "running") => {
                                 assert!(Instant::now() < deadline, "{status}");
@@ -553,7 +553,7 @@ fn the_proof_module_and_its_task_method_are_discovered_without_any_side_effect()
             .collect::<Vec<_>>(),
         ["fail"]
     );
-    assert_eq!(owner.handle.capability_threads(), 0);
+    assert_eq!(owner.handle.lane_threads(), 0);
     let observed = owner.stop();
     assert!(observed.iter().all(|text| !text.contains("\"error\"")));
     assert!(fixture.endpoint.requests().is_empty(), "no network");
@@ -758,7 +758,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
             assert_eq!(error.code, "preparation-required");
             let job = error.job_id.unwrap();
             let deadline = Instant::now() + Duration::from_secs(20);
-            while owner.ok("job.status", json!({"job_id": job}))["status"] != "ready" {
+            while owner.ok("job.read", json!({"job_id": job}))["status"] != "ready" {
                 assert!(Instant::now() < deadline);
                 thread::sleep(Duration::from_millis(2));
             }

@@ -258,7 +258,7 @@ mod tests {
                     preparer,
                     ApiRequest {
                         id: "status".into(),
-                        method: "job.status".into(),
+                        method: "job.read".into(),
                         params: json!({"job_id":job_id}),
                         token: None,
                     },

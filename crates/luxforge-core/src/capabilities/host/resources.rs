@@ -10,10 +10,10 @@ use crate::{
         consent::{consent_required, download_disclosure},
         descriptor::{CapabilityKind, ResourceDescriptor},
         grants::{DownloadScope, GrantScope},
-        jobs::{Admission, JobControl, JobKind, JobRecord, JobStatus, NewJob, Work},
         resources::{self as transfer, InstallJob, InstallSource, ResourceRow, ResourceState},
         transport::{EndpointClass, parse_endpoint},
     },
+    jobs::{Admission, JobControl, JobKind, JobRecord, JobStatus, Jobs, NewJob, Work},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -53,7 +53,11 @@ pub(super) fn download_scope(resource: &ResourceDescriptor) -> Result<DownloadSc
 impl CapabilityHost {
     /// Every declared resource of a module with its state: installed by its marker, installing or
     /// failed by its jobs, otherwise not installed.
-    pub(super) fn resource_rows(&self, descriptor: &ModuleDescriptor) -> Vec<ResourceRow> {
+    pub(super) fn resource_rows(
+        &self,
+        jobs: &Jobs,
+        descriptor: &ModuleDescriptor,
+    ) -> Vec<ResourceRow> {
         descriptor
             .resources
             .iter()
@@ -83,13 +87,11 @@ impl CapabilityHost {
                     row.path = Some(store.file_path(&descriptor.id, resource));
                     row.installed_ms = Some(marker.installed_ms);
                 } else if let Some(job) =
-                    self.jobs
-                        .live(JobKind::Install, &descriptor.id, Some(&resource.id))
+                    jobs.live(JobKind::Install, &descriptor.id, Some(&resource.id))
                 {
                     row.state = ResourceState::Installing;
                     row.job_id = Some(job.job_id);
-                } else if let Some(job) = self
-                    .jobs
+                } else if let Some(job) = jobs
                     .last_finished(JobKind::Install, &descriptor.id, Some(&resource.id))
                     .filter(|job| job.status == JobStatus::Failed)
                 {
@@ -105,6 +107,7 @@ impl CapabilityHost {
     /// `module.resource.list`: the declared resources and the storage they share.
     pub(crate) fn resource_list(
         &self,
+        jobs: &Jobs,
         registry: &ModuleRegistry,
         request: ModuleParams,
     ) -> Result<Value, Error> {
@@ -118,7 +121,7 @@ impl CapabilityHost {
         });
         Ok(json!({
             "module_id": descriptor.id,
-            "resources": self.resource_rows(descriptor),
+            "resources": self.resource_rows(jobs, descriptor),
             "storage": storage,
         }))
     }
@@ -128,6 +131,7 @@ impl CapabilityHost {
     /// the queued or running install, and an installed resource answers at once.
     pub(crate) fn install(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: InstallParams,
         origin: &Origin,
@@ -151,10 +155,7 @@ impl CapabilityHost {
         if store.installed(&descriptor.id, resource).is_some() {
             return Ok(answer(ResourceState::Installed, None));
         }
-        if let Some(job) = self
-            .jobs
-            .live(JobKind::Install, &descriptor.id, Some(&resource.id))
-        {
+        if let Some(job) = jobs.live(JobKind::Install, &descriptor.id, Some(&resource.id)) {
             return Ok(answer(ResourceState::Installing, Some(&job)));
         }
         let InstallSource::Download {} = request.source.unwrap_or(InstallSource::Download {});
@@ -198,12 +199,13 @@ impl CapabilityHost {
             actor: request.mutation.actor.clone(),
             control: control.clone(),
         };
-        let record = self.jobs.submit(
+        let record = jobs.submit(
             NewJob {
                 job_id,
                 kind: JobKind::Install,
-                module_id: descriptor.id.clone(),
+                module_id: Some(descriptor.id.clone()),
                 resource_id: Some(resource.id.clone()),
+                asset_id: None,
                 origin: Some(origin.clone()),
                 grants: vec![grant.grant_id],
                 admission: Admission::Bounded,
@@ -219,6 +221,7 @@ impl CapabilityHost {
     /// queued. A module that is active or activating and requires the resource is deactivated first.
     pub(crate) fn remove(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: ResourceParams,
         origin: &Origin,
@@ -241,14 +244,11 @@ impl CapabilityHost {
             value
         };
         let state = self
-            .resource_rows(descriptor)
+            .resource_rows(jobs, descriptor)
             .into_iter()
             .find(|row| row.id == resource.id)
             .map_or(ResourceState::NotInstalled, |row| row.state);
-        if let Some(job) = self
-            .jobs
-            .live(JobKind::Remove, &descriptor.id, Some(&resource.id))
-        {
+        if let Some(job) = jobs.live(JobKind::Remove, &descriptor.id, Some(&resource.id)) {
             return Ok(answer(Some(&job), state));
         }
         if !store.version_dir(&descriptor.id, resource).exists()
@@ -263,12 +263,13 @@ impl CapabilityHost {
             let resource = resource.clone();
             Box::new(move || transfer::remove(&store, &module_id, &resource, &control))
         };
-        let record = self.jobs.submit(
+        let record = jobs.submit(
             NewJob {
                 job_id: JobId::new(),
                 kind: JobKind::Remove,
-                module_id: descriptor.id.clone(),
+                module_id: Some(descriptor.id.clone()),
                 resource_id: Some(resource.id.clone()),
+                asset_id: None,
                 origin: Some(origin.clone()),
                 grants: Vec::new(),
                 admission: Admission::Bounded,
@@ -283,6 +284,7 @@ impl CapabilityHost {
             .is_some_and(|activation| activation.requires_resources.contains(&resource.id));
         if required {
             self.deactivate(
+                jobs,
                 registry,
                 &descriptor.id,
                 Some(RESOURCE_REMOVED.to_owned()),

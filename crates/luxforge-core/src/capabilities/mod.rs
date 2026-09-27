@@ -9,7 +9,6 @@ pub mod descriptor;
 mod document;
 pub mod grants;
 pub mod host;
-pub mod jobs;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]

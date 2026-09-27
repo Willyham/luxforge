@@ -62,7 +62,7 @@ impl Library {
         let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let (status, _) = call(&owner, agent, "job.status", json!({"job_id": job_id})).unwrap();
+            let (status, _) = call(&owner, agent, "job.read", json!({"job_id": job_id})).unwrap();
             match status["status"].as_str() {
                 Some("ready") => break,
                 Some("queued" | "running") => {

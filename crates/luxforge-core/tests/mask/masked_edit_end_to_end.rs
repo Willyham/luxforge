@@ -194,10 +194,10 @@ mod json_client {
                 .expect("import queues");
             let id = queued["job_id"].as_str().unwrap().to_owned();
             let asset = loop {
-                let status = Self::call(&owner, client, "job.status", json!({"job_id": id}))
+                let status = Self::call(&owner, client, "job.read", json!({"job_id": id}))
                     .expect("a job this client owns");
                 match status["status"].as_str() {
-                    Some("ready") => break status["asset"]["asset"]["id"].clone(),
+                    Some("ready") => break status["result"]["asset"]["id"].clone(),
                     Some("queued" | "running") => {
                         std::thread::sleep(std::time::Duration::from_millis(1))
                     }

@@ -5,7 +5,6 @@ use super::{
     descriptor::CapabilityKind,
     grants::{DENY, GRANT, GRANTS_FILE, LIST, REVOKE},
     host::{ACTIVATE, DEACTIVATE, HostConfig, STATUS},
-    jobs::{JOB_CANCEL, JOB_READ, LANE_QUEUE},
     resources::{INSTALL, INSTALLED_FILE, REMOVE, RESOURCE_LIST, STAGING_DIR, faults},
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
@@ -18,6 +17,7 @@ use super::{
 use crate::{
     ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, EditorService, LocalServer,
     ModuleDescriptor, ModuleRegistry, OwnerHandle,
+    jobs::{JOB_CANCEL, JOB_READ, LANE_QUEUE},
 };
 use luxforge_testkit::{TestServer, respond};
 use serde_json::{Value, json};
@@ -642,7 +642,7 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
         json!({"live": 0, "revoked": 0, "denials": 1})
     );
     assert_eq!(server.hits(), 0, "nothing was downloaded without a grant");
-    assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
+    assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
     owner.ok_as(
         owner.admin,
         GRANT,
@@ -915,11 +915,7 @@ fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
             "lane {index}"
         );
     }
-    assert_eq!(
-        owner.handle.capability_threads(),
-        1,
-        "only the module lane ran"
-    );
+    assert_eq!(owner.handle.lane_threads(), 1, "only the module lane ran");
     owner.stop();
 }
 
@@ -1003,7 +999,7 @@ fn activation_lists_every_missing_requirement_before_anything_is_queued() {
             .message
             .contains("setting label is missing, resource palette is not-installed")
     );
-    assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
+    assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
     // A module that declares no activation, or an unknown one, is refused outright.
     let error = owner.fail(ACTIVATE, json!({"module_id": "luxforge.basic"}));
     assert_eq!(
@@ -1398,7 +1394,7 @@ fn an_install_beyond_the_quota_is_refused_before_it_is_queued() {
         "{}",
         refused.message
     );
-    assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
+    assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
     assert_eq!(server.hits(), 0);
     fixture.assert_clean("palette", "over quota");
     owner.stop();
@@ -1465,7 +1461,7 @@ fn an_install_takes_only_the_pinned_url_and_refuses_a_caller_path() {
         "{}",
         refused.message
     );
-    assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
+    assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
     fixture.assert_clean("palette", "a caller path");
     // The declared URL, named or by default, is the one source, under its grant.
     assert_eq!(
@@ -1605,7 +1601,7 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
             "validation"
         );
         owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-        assert_eq!(owner.handle.capability_threads(), 0, "round {round}");
+        assert_eq!(owner.handle.lane_threads(), 0, "round {round}");
         owner.stop();
     }
     assert_eq!(fixture.net.total(), 0, "no lookup or connection was made");
@@ -1757,10 +1753,24 @@ fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_ev
         json!({"module_id": MODULE, "mutation": envelope("deactivate-1")}),
     );
     assert_eq!(jobs("deactivate"), 1);
-    twice(
-        owner.edit,
-        JOB_CANCEL,
-        json!({"job_id": installed["job_id"], "mutation": envelope("cancel-1")}),
+    // A cancel carries no envelope because it converges: sent again, it answers the same job and
+    // records nothing.
+    let announced = owner.events().len();
+    let cancelled = owner.ok(JOB_CANCEL, json!({"job_id": installed["job_id"]}));
+    assert_eq!(
+        cancelled["status"],
+        json!("ready"),
+        "a finished job is unchanged"
+    );
+    assert_eq!(
+        owner.ok(JOB_CANCEL, json!({"job_id": installed["job_id"]})),
+        cancelled,
+        "a repeated cancel answers the same job"
+    );
+    assert_eq!(
+        owner.events().len(),
+        announced,
+        "a cancel of a finished job records nothing"
     );
     let removed = twice(
         owner.edit,
