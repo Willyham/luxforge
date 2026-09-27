@@ -469,6 +469,27 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only the catalog owner (crates/luxforge-core/src/api/owner.rs) creates the job \
                  table, once",
     },
+    // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
+    // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
+    // the crop nor the orientation effect and deserializes neither payload. Tests may, to check
+    // what a commit stored.
+    SourceRule {
+        name: "desktop-crop-rows",
+        tokens: &[
+            "CROP_EFFECT",
+            "ORIENTATION_EFFECT",
+            "from_value::<CropPayload>",
+            "from_value::<Orientation>",
+        ],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &[],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the desktop reads the crop, its stage and the orientation ahead of it from \
+                 recipe.describe rows, never from a payload",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -1140,58 +1161,6 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
-/// The desktop reads a committed crop, the stage it receives and the orientation ahead of it from
-/// `recipe.describe` rows, and folds no geometry itself: no desktop product code names the crop or
-/// orientation effect or deserializes either payload.
-const DESKTOP_PAYLOADS: [&str; 4] = [
-    "CROP_EFFECT",
-    "ORIENTATION_EFFECT",
-    "from_value::<CropPayload>",
-    "from_value::<Orientation>",
-];
-
-/// Rule (scope: `crates/luxforge-app/src`; allowed: none; match: whole token over product lines;
-/// covers tests: no; reason: committed crop values and geometry come from `recipe.describe` rows).
-/// Fails on the first desktop product line that names a [`DESKTOP_PAYLOADS`] token; answers how
-/// many product files were read.
-fn desktop_payloads(root: &Path) -> Result<usize> {
-    let sources: Vec<PathBuf> = files(&root.join("crates/luxforge-app/src"))?
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect();
-    let texts = sources
-        .iter()
-        .map(fs::read_to_string)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
-    let mut test_only = BTreeSet::new();
-    for (path, (_, modules)) in sources.iter().zip(&scanned) {
-        for name in modules {
-            test_only.extend(module_files(path, name));
-        }
-    }
-    let mut checked = 0;
-    for (path, (lines, _)) in sources.iter().zip(&scanned) {
-        if test_file(path) || test_only.contains(path) {
-            continue;
-        }
-        for (number, line) in lines {
-            for token in DESKTOP_PAYLOADS {
-                ensure(
-                    !holds_whole_token(line, token),
-                    format!(
-                        "{}:{number}: the desktop names {token}; read the crop, its stage and \
-                         the orientation ahead of it from recipe.describe rows",
-                        path.display()
-                    ),
-                )?;
-            }
-        }
-        checked += 1;
-    }
-    Ok(checked)
-}
-
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1258,10 +1227,6 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
-    );
-    println!(
-        "PASS desktop crop read from recipe rows ({} desktop product files)",
-        desktop_payloads(root)?
     );
     Ok(())
 }
@@ -2173,7 +2138,7 @@ mod tests {
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(desktop_payloads(tmp.path()).unwrap(), 1);
+        assert_eq!(read(tmp.path(), &["desktop-crop-rows"]).unwrap(), (1, 0));
         for text in [
             "let p = serde_json::from_value::<CropPayload>(layer.payload.clone());\n",
             "let o = serde_json::from_value::<Orientation>(payload);\n",
@@ -2182,16 +2147,14 @@ mod tests {
         ] {
             let file = app.join("gesture.rs");
             fs::write(&file, text).unwrap();
-            let error = desktop_payloads(tmp.path())
-                .err()
-                .unwrap_or_else(|| panic!("{text:?} was accepted"))
-                .to_string();
+            let error = refusal(tmp.path(), &["desktop-crop-rows"], text);
             assert!(
                 error.contains("gesture.rs:1") && error.contains("recipe.describe rows"),
                 "{error}"
             );
             fs::remove_file(&file).unwrap();
         }
+        assert_eq!(read(tmp.path(), &["desktop-crop-rows"]).unwrap(), (1, 0));
     }
 
     fn minimal_plan(id: &str) -> Value {
