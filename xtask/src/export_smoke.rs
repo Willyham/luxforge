@@ -30,7 +30,8 @@ const BRIGHTER: f64 = 10.0;
 const SAME: f64 = 0.01;
 /// The title bar's height with its rule, in logical points, below which the menu drops.
 const TITLE_BAR: f64 = 44.0;
-/// The band under the title bar the open menu covers, in logical points below the bar.
+/// The band under the title bar the open menu covers, in logical points below the bar. Its
+/// columns are the window's left half, where the file's identity, Open and Export sit.
 const MENU_BAND: f64 = 60.0;
 /// The mean per-channel change across that band that counts as a menu drawn over it.
 const MENU_CHANGE: f64 = 1.0;
@@ -194,7 +195,8 @@ fn record(frame: &Frame, step: &str) -> Result<Value> {
     Ok(export.clone())
 }
 
-/// The mean per-channel difference between two captures over the band the menu drops into.
+/// The mean per-channel difference between two captures over the band the menu drops into, in the
+/// window's left half.
 fn band_change(before: &Frame, after: &Frame) -> Result<f64> {
     let (a, b) = (before.image()?, after.image()?);
     ensure(
@@ -207,7 +209,7 @@ fn band_change(before: &Frame, after: &Frame) -> Result<f64> {
     let mut total = 0.0;
     let mut count: f64 = 0.0;
     for y in top..bottom {
-        for x in 0..a.width() {
+        for x in 0..a.width() / 2 {
             let (p, q) = (a.get_pixel(x, y), b.get_pixel(x, y));
             for c in 0..3 {
                 total += (f64::from(p[c]) - f64::from(q[c])).abs();
