@@ -786,12 +786,11 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// A drafted preview job compiles the stack it evaluates once, on the catalog owner, and its
-    /// worker renders that compilation: the whole frame, and a viewport region that declines to the
-    /// whole-frame path, compile nothing more. Planning the draft's action compiles the stage
-    /// context it plans against, exactly as the draft's commit does; with the evaluation's, that is
-    /// every compile the owner makes. The frame is byte for byte the one a fresh compilation of the
-    /// same stack renders.
+    /// A drafted preview job compiles its stack once, on the catalog owner, and its worker renders
+    /// that compilation: the whole frame, and a viewport region that declines to the whole-frame
+    /// path, compile nothing more. Planning the draft's action asks its lazy stage context for no
+    /// stage, so the evaluation's compile of the drafted stack is the only one the owner makes. The
+    /// frame is byte for byte the one a fresh compilation of the same stack renders.
     #[test]
     fn a_drafted_preview_job_compiles_its_stack_once_and_its_worker_compiles_nothing() {
         let catalog = temp("drafted-preview-compiles.sqlite");
@@ -814,8 +813,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             crate::modules::stack_compiles::take(),
-            2,
-            "the draft's plan compiled its stage context and the evaluation its drafted stack"
+            1,
+            "the owner compiled the drafted stack once, for its evaluation, and nothing to plan it"
         );
         assert_eq!(
             context.compiles() - before,

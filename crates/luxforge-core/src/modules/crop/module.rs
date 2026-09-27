@@ -512,7 +512,7 @@ impl ToolModule for CropModule {
                     payload(&layer.effect_id, layer.effect_format, &layer.payload)?,
                 )),
             ),
-            None => (context.stage, None),
+            None => (context.stage()?, None),
         };
         let current = existing.as_ref().map(|(_, payload)| payload);
         match input.action_id.as_str() {
@@ -665,7 +665,6 @@ mod tests {
         module.plan(
             &input,
             &StageContext {
-                stage: if layers.is_empty() { INPUT } else { FINAL },
                 layers,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,
@@ -676,14 +675,20 @@ mod tests {
         )
     }
 
-    /// The crop layer, which is in a stack of this many layers, receives [`INPUT`]; planning a
-    /// crop never samples a pixel.
+    /// The crop layer, which is in a stack of this many layers, receives [`INPUT`], and a stack of
+    /// layers produces [`FINAL`]; planning a crop never samples a pixel.
     struct CropInput(usize);
 
     impl crate::modules::StageQuestions for CropInput {
         fn stage_before(&self, index: usize) -> Result<Stage, Error> {
-            assert!(index < self.0, "the crop layer is in the stack");
-            Ok(INPUT)
+            match index {
+                0 if self.0 == 0 => Ok(INPUT),
+                index if index == self.0 => Ok(FINAL),
+                index => {
+                    assert!(index < self.0, "the crop layer is in the stack");
+                    Ok(INPUT)
+                }
+            }
         }
         fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
             panic!("planning a crop never samples a pixel")

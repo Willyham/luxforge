@@ -51,7 +51,6 @@ impl Rules<'_> {
         self.provider.plan(
             &input,
             &StageContext {
-                stage: self.stage,
                 layers,
                 registry: self.registry,
                 target: None,
