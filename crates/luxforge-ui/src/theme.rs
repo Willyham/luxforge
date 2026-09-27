@@ -777,6 +777,30 @@ pub const COMPONENT_NOTE_PADDING: Padding = Padding {
     left: COMPONENT_DETAIL_INDENT,
 };
 
+/// A row's name while it is renamed in place: a 20 pt input in the name's place.
+pub const RENAME_INPUT_HEIGHT: f32 = 20.0;
+/// The Masks band's body (`.mod-b` with `padding-top:6px`): the overlay row, the list and New mask.
+pub const MASKS_BODY_PADDING: Padding = Padding {
+    top: 6.0,
+    right: 12.0,
+    bottom: 10.0,
+    left: 12.0,
+};
+/// The open mask's body under its group rule (`.mod-b` with `padding-top:0`).
+pub const OPEN_MASK_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 12.0,
+    bottom: 10.0,
+    left: 12.0,
+};
+/// The New mask row under the list: 30 pt, its count right-aligned.
+pub const NEW_MASK_ROW_HEIGHT: f32 = 30.0;
+/// The Add component row under the components: 28 pt, 2 pt under the last row.
+pub const ADD_ROW_HEIGHT: f32 = 28.0;
+pub const ADD_ROW_MARGIN: f32 = 2.0;
+/// Between Invert mask and the first component row.
+pub const COMPONENTS_GAP: f32 = 4.0;
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {

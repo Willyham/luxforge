@@ -60,6 +60,58 @@ pub(crate) struct MaskRow {
     /// a mask that reads pixels with no operation whose input it can read. The widget draws its
     /// placeholder then.
     pub(crate) thumbnail: Option<Thumbnail>,
+    /// The name as it is being typed while this row is renamed in place.
+    pub(crate) renaming: Option<String>,
+    /// This row's menu is open.
+    pub(crate) menu_open: bool,
+    /// Why Duplicate is refused, when the recipe holds as many masks as it may.
+    pub(crate) duplicate_reason: Option<String>,
+}
+
+/// The panel's one text field: what it edits and the text typed so far. Per-client view state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct MaskTyping {
+    pub(crate) target: TypingTarget,
+    pub(crate) text: String,
+}
+
+/// What the panel's one text field edits.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum TypingTarget {
+    /// A mask's name, in its row, by the mask's identity.
+    RenameMask(String),
+    /// A component's name, in its row, by the component's identity.
+    RenameComponent(String),
+    /// One declared field of the open shape gesture, by its parameter's name.
+    DraftField(String),
+    /// One declared brush number, by its parameter's name.
+    Brush(String),
+}
+
+impl TypingTarget {
+    /// The target as a captured frame reports it.
+    pub(crate) fn summary(&self) -> serde_json::Value {
+        match self {
+            Self::RenameMask(mask) => serde_json::json!({"rename_mask": mask}),
+            Self::RenameComponent(component) => serde_json::json!({"rename_component": component}),
+            Self::DraftField(name) => serde_json::json!({"draft_field": name}),
+            Self::Brush(name) => serde_json::json!({"brush": name}),
+        }
+    }
+}
+
+/// The row a drag reorder picked up by its handle, by its identity.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum DragItem {
+    Mask(String),
+    Component(String),
+}
+
+/// A reorder by drag in progress: the row picked up and the index of the row under the pointer.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct MaskDrag {
+    pub(crate) item: DragItem,
+    pub(crate) over: Option<usize>,
 }
 
 /// One mask's coverage thumbnail: `width × height` quantized coverage bytes, row-major, the
@@ -195,6 +247,17 @@ pub(crate) struct ComponentRow {
     /// [`luxforge_core::mask::component_kind_limits`], which is the host's own kind table, so a kind
     /// registered later carries its own line and the shared one without this being edited.
     pub(crate) limits: Vec<String>,
+    /// How many colours this component's kind holds, for the swatch slots; zero for a kind that
+    /// samples none.
+    pub(crate) sample_limit: usize,
+    /// The kind's glyph, from the host's kind table.
+    pub(crate) icon: Option<luxforge_ui::Icon>,
+    /// The name as it is being typed while this row is renamed in place.
+    pub(crate) renaming: Option<String>,
+    /// This row's menu is open.
+    pub(crate) menu_open: bool,
+    /// The open gesture edits this component, so its fields are the gesture's.
+    pub(crate) drafting: bool,
 }
 
 /// One sampled colour of a component that holds a list of them, as the panel lists it.
@@ -258,6 +321,11 @@ pub(crate) struct KindOption {
     /// created as the starting selection its defaults describe and narrowed afterwards through the
     /// number fields the same declarations generate.
     pub(crate) typed: bool,
+    /// This kind is painted, so choosing it arms the brush rather than opening a handle gesture.
+    pub(crate) paints: bool,
+    /// The kind's glyph and the letter that starts it while a kind menu is open.
+    pub(crate) icon: Option<luxforge_ui::Icon>,
+    pub(crate) letter: Option<char>,
     pub(crate) enabled: bool,
 }
 
@@ -277,6 +345,11 @@ pub(crate) struct DraftField {
     pub(crate) value: f64,
     /// The declared step one nudge moves by.
     pub(crate) step: f64,
+    /// The declared range, steps and precision, which a slider for this field is drawn over.
+    pub(crate) spec: Option<NumberSpec>,
+    /// The text as it is being typed into this field, and why it cannot be read when it cannot.
+    pub(crate) typing: Option<String>,
+    pub(crate) invalid: Option<String>,
 }
 
 /// The open shape gesture, as the panel and the draft bar read it.
@@ -347,9 +420,20 @@ pub(crate) struct MasksModel {
     pub(crate) create_reason: Option<String>,
     /// Why a component cannot be added to the open mask, when it is full.
     pub(crate) add_reason: Option<String>,
-    /// The open mask's name as it is being typed: the text `mask.rename` takes as its declared
-    /// `name` parameter, kept here until it is sent.
+    /// The open mask's name, or the text replacing it while its row is renamed in place.
     pub(crate) name: String,
+    /// The Masks band is collapsed: everything down to the adjustments is hidden. View state.
+    pub(crate) collapsed: bool,
+    /// The panel's own menu that is open, when one is.
+    pub(crate) menu: Option<crate::state::MenuTarget>,
+    /// The panel's one text field while it is open.
+    pub(crate) typing: Option<MaskTyping>,
+    /// A reorder by drag in progress.
+    pub(crate) drag: Option<MaskDrag>,
+    /// The masks the recipe holds against the host's limit: `2 of 16`.
+    pub(crate) count: String,
+    /// The Brush section is shown: a brush is armed or a brush component is selected.
+    pub(crate) brush_visible: bool,
 }
 
 impl Default for MasksModel {
@@ -374,6 +458,7 @@ impl Default for MasksModel {
                 erase_label: String::new(),
                 limit: false,
                 limit_label: String::new(),
+                refine: String::new(),
                 limit_reason: None,
                 erase_held: false,
                 locked: false,
@@ -392,6 +477,12 @@ impl Default for MasksModel {
             create_reason: None,
             add_reason: None,
             name: String::new(),
+            collapsed: false,
+            menu: None,
+            typing: None,
+            drag: None,
+            count: String::new(),
+            brush_visible: false,
         }
     }
 }
@@ -411,6 +502,8 @@ impl MasksModel {
                 "selected": row.selected,
                 "layers": row.layers,
                 "unavailable": row.unavailable,
+                "renaming": row.renaming,
+                "menu_open": row.menu_open,
                 // Whether a thumbnail is drawn, its cells and the mean of its coverage, so a
                 // captured row can be told apart from the placeholder and matched to its mask.
                 "thumbnail": row.thumbnail.as_ref().map(|thumbnail| serde_json::json!({
@@ -457,6 +550,9 @@ impl MasksModel {
                     _ => None,
                 }).collect::<serde_json::Map<_, _>>(),
                 "limits": row.limits,
+                "renaming": row.renaming,
+                "menu_open": row.menu_open,
+                "drafting": row.drafting,
             })).collect::<Vec<_>>(),
             "brush": serde_json::json!({
                 "fields": self.brush.fields.iter()
@@ -482,8 +578,54 @@ impl MasksModel {
             "name": self.name,
             "enabled": self.enabled,
             "disabled_reason": self.disabled_reason,
+            // The panel's own view state, so a captured frame says which menu, field, drag and
+            // section it drew.
+            "collapsed": self.collapsed,
+            "menu": self.menu.as_ref().map(menu_summary),
+            "typing": self.typing.as_ref().map(|typing| serde_json::json!({
+                "target": typing.target.summary(),
+                "text": typing.text,
+            })),
+            "drag": self.drag.as_ref().map(|drag| serde_json::json!({
+                "item": match &drag.item {
+                    DragItem::Mask(mask) => serde_json::json!({"mask": mask}),
+                    DragItem::Component(component) => serde_json::json!({"component": component}),
+                },
+                "over": drag.over,
+            })),
+            "count": self.count,
+            "brush_visible": self.brush_visible,
         })
     }
+}
+
+/// One of the panel's own menus as a captured frame reports it, or `null` for any other menu.
+fn menu_summary(menu: &crate::state::MenuTarget) -> serde_json::Value {
+    use crate::state::MenuTarget;
+    match menu {
+        MenuTarget::Mask(mask) => serde_json::json!({"mask": mask}),
+        MenuTarget::OpenMask(mask) => serde_json::json!({"open_mask": mask}),
+        MenuTarget::MaskCopy(mask) => serde_json::json!({"mask_copy": mask}),
+        MenuTarget::OpenMaskCopy(mask) => serde_json::json!({"open_mask_copy": mask}),
+        MenuTarget::Component(component) => serde_json::json!({"component": component}),
+        MenuTarget::ComponentCopy(component) => {
+            serde_json::json!({"component_copy": component})
+        }
+        MenuTarget::NewMask => serde_json::json!("new_mask"),
+        MenuTarget::AddComponent => serde_json::json!("add_component"),
+        MenuTarget::Swatch { component, index } => {
+            serde_json::json!({"swatch": {"component": component, "index": index}})
+        }
+        MenuTarget::Stroke { component, stroke } => {
+            serde_json::json!({"stroke": {"component": component, "stroke": stroke}})
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Whether `menu` is one of the Masks panel's own.
+pub(crate) fn panel_menu(menu: &crate::state::MenuTarget) -> bool {
+    !menu_summary(menu).is_null()
 }
 
 /// The icon one component kind is drawn with wherever it is named: its row, the New mask and Add
@@ -577,7 +719,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
             id: report.id.clone(),
             index: report.index,
             name: report.name.clone(),
-            amount: format!("{:.0}%", report.amount),
+            // The row reads the amount as the board draws it, a number without its unit; the
+            // Amount slider under the open mask carries the declared unit.
+            amount: format!("{:.0}", report.amount),
             // A mask with no layer bound to it changes nothing yet, and neither does one turned all
             // the way down: the dot says "this is doing something", not "this exists".
             non_neutral: !report.layers.is_empty() && report.amount > 0.0,
@@ -593,14 +737,38 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
             can_move_up: enabled && report.index > 0,
             can_move_down: enabled && report.index + 1 < reports.len(),
             thumbnail: inputs.thumbnails.get(&report.id).cloned(),
+            renaming: renaming(
+                inputs,
+                &TypingTarget::RenameMask(report.id.as_str().to_owned()),
+            ),
+            menu_open: matches!(
+                inputs.menu,
+                Some(crate::state::MenuTarget::Mask(id) | crate::state::MenuTarget::MaskCopy(id))
+                    if id == report.id.as_str()
+            ),
+            duplicate_reason: reason(rules::room_for_mask(reports.len())),
         })
         .collect();
     let open = selected
         .as_ref()
         .and_then(|id| reports.iter().find(|report| &report.id == id));
-    let components = open
+    let components: Vec<ComponentRow> = open
         .map(|report| component_rows(report, inputs, enabled))
         .unwrap_or_default();
+    let brush = brush_model(inputs, enabled, open);
+    // The Brush section is the brush's while it is in hand or while a painted component is the
+    // one being looked at, and nobody's otherwise.
+    let brush_visible = brush.armed
+        || components
+            .iter()
+            .any(|component| component.selected && component.painted);
+    let name = match inputs.mask_typing {
+        Some(MaskTyping {
+            target: TypingTarget::RenameMask(mask),
+            text,
+        }) if open.is_some_and(|report| report.id.as_str() == mask) => text.clone(),
+        _ => open.map(|report| report.name.clone()).unwrap_or_default(),
+    };
     MasksModel {
         caption: caption(inputs, listing.is_some(), reports.is_empty()),
         create_reason: reason(rules::room_for_mask(reports.len()))
@@ -624,10 +792,29 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         disabled_reason,
         enabled,
         draft: draft_model(inputs, enabled),
-        brush: brush_model(inputs, enabled, open),
-        name: inputs.mask_name.to_owned(),
+        brush,
+        name,
         overlay: overlay_model(inputs),
+        collapsed: inputs.masks_collapsed,
+        menu: inputs.menu.filter(|menu| panel_menu(menu)).cloned(),
+        typing: inputs.mask_typing.cloned(),
+        drag: inputs.mask_drag.cloned(),
+        count: format!("{} of {}", reports.len(), luxforge_core::MASKS_PER_RECIPE),
+        brush_visible,
     }
+}
+
+/// The text a row shows in place of its name while it is renamed, when `target` is the rename.
+fn renaming(inputs: &Inputs<'_>, target: &TypingTarget) -> Option<String> {
+    inputs
+        .mask_typing
+        .filter(|typing| &typing.target == target)
+        .map(|typing| typing.text.clone())
+}
+
+/// The text one typed field shows while it is being typed.
+fn typed(inputs: &Inputs<'_>, target: &TypingTarget) -> Option<String> {
+    renaming(inputs, target)
 }
 
 /// Why nothing in the panel can run, in the words the status bar uses. The same rules a module
@@ -674,14 +861,26 @@ fn unavailable(components: &[ComponentReport]) -> Option<String> {
 /// defaulted is **typed** and is created straight away, as the selection its defaults describe, then
 /// narrowed through the number fields its own declarations generate. A kind that is neither says so
 /// on its button rather than offering an action that would do nothing.
+///
+/// The painted kind is listed too, in the host's table order: it declares no geometry and so has no
+/// `mask.create-<kind>`, but choosing it arms the brush, whose first stroke creates the mask or adds
+/// the component through `mask.add-stroke`. A kind that is neither drawn nor typed is not listed at
+/// all, because a menu item has nowhere to say that nothing would happen.
 fn kinds(enabled: bool) -> Vec<KindOption> {
-    luxforge_core::mask::declared_geometry_kinds()
-        .map(|kind| KindOption {
-            kind: kind.to_owned(),
-            label: luxforge_core::mask::kind_title(kind),
-            drawable: crate::mask_draft::drawable(kind),
-            typed: luxforge_core::mask::component_geometry_is_defaulted(kind),
-            enabled,
+    luxforge_core::mask::component_kinds()
+        .filter_map(|kind| {
+            let drawable = crate::mask_draft::drawable(kind);
+            let typed = luxforge_core::mask::component_geometry_is_defaulted(kind);
+            (drawable || typed).then(|| KindOption {
+                kind: kind.to_owned(),
+                label: luxforge_core::mask::kind_title(kind),
+                drawable,
+                typed,
+                paints: crate::mask_draft::paintable(kind),
+                icon: kind_icon(kind),
+                letter: crate::mask_draft::kind_letter(kind),
+                enabled,
+            })
         })
         .collect()
 }
@@ -810,6 +1009,23 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 } else {
                     Vec::new()
                 },
+                sample_limit: luxforge_core::mask::component_sample_limit(&component.kind)
+                    .unwrap_or(0),
+                icon: kind_icon(&component.kind),
+                renaming: renaming(
+                    inputs,
+                    &TypingTarget::RenameComponent(component.id.as_str().to_owned()),
+                ),
+                menu_open: matches!(
+                    inputs.menu,
+                    Some(
+                        crate::state::MenuTarget::Component(id)
+                            | crate::state::MenuTarget::ComponentCopy(id)
+                    ) if id == component.id.as_str()
+                ),
+                drafting: inputs.mask_draft.is_some_and(|draft| {
+                    draft.brush().is_none() && draft.component.as_ref() == Some(&component.id)
+                }),
             }
         })
         .collect()
@@ -952,6 +1168,8 @@ pub(crate) struct BrushModel {
     /// Mask: a per-pixel colour test with no notion of an edge, which the label and the guide say.
     pub(crate) limit: bool,
     pub(crate) limit_label: String,
+    /// The limit's refine value as the toggle's hint reads it: `refine 50`.
+    pub(crate) refine: String,
     /// Why the limit cannot apply to the next stroke, when it cannot: it reads the pixel the masked
     /// operation receives, so the open mask has to be bound to a layer.
     pub(crate) limit_reason: Option<String>,
@@ -981,12 +1199,17 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
             let spec = declared
                 .and_then(|command| command.action.parameter(name))
                 .and_then(NumberSpec::of);
+            let (typing, invalid) =
+                typed_field(inputs, TypingTarget::Brush(name.to_owned()), spec.as_ref());
             DraftField {
                 label: luxforge_core::mask::kind_title(name),
                 text: spec.map_or_else(|| format!("{value:.4}"), |spec| spec.format(value)),
                 step: spec.map_or(0.01, |spec| spec.step),
                 name: name.to_owned(),
                 value,
+                spec,
+                typing,
+                invalid,
             }
         })
         .collect();
@@ -1001,6 +1224,7 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
         erase_label: luxforge_core::mask::kind_title("erase"),
         limit: brush.limit_to_colour && limit_reason.is_none(),
         limit_label: luxforge_core::mask::kind_title("limit_to_colour"),
+        refine: format!("refine {:.0}", brush.colour_refine),
         limit_reason,
         erase_held: inputs.brush_erase_held,
         locked: painting,
@@ -1080,6 +1304,37 @@ fn kind_fields(inputs: &Inputs<'_>, kind: &str, enabled: bool) -> Vec<ControlMod
     host_controls(inputs, enabled, |action| action == command.method)
 }
 
+/// The text one typed number field holds while it is typed, and why it cannot be read when it
+/// cannot: not a number, or outside the range its parameter declares.
+fn typed_field(
+    inputs: &Inputs<'_>,
+    target: TypingTarget,
+    spec: Option<&NumberSpec>,
+) -> (Option<String>, Option<String>) {
+    let Some(text) = typed(inputs, &target) else {
+        return (None, None);
+    };
+    let invalid = match (parse_number(&text), spec) {
+        (None, _) => Some("Type a number".to_owned()),
+        (Some(value), Some(spec)) if !(spec.min..=spec.max).contains(&value) => Some(format!(
+            "Range is {} to {}",
+            spec.format(spec.min),
+            spec.format(spec.max)
+        )),
+        _ => None,
+    };
+    (Some(text), invalid)
+}
+
+/// A typed number, accepting the true minus sign the panel writes as well as a hyphen.
+pub(crate) fn parse_number(text: &str) -> Option<f64> {
+    text.trim()
+        .replace('\u{2212}', "-")
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
 fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
     let draft: &MaskDraft = inputs.mask_draft?;
     let apply_reason = if inputs.gesture_conflicted {
@@ -1112,6 +1367,11 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
             let spec = patch
                 .and_then(|command| command.action.parameter(name))
                 .and_then(NumberSpec::of);
+            let (typing, invalid) = typed_field(
+                inputs,
+                TypingTarget::DraftField(name.to_owned()),
+                spec.as_ref(),
+            );
             DraftField {
                 name: name.to_owned(),
                 label: crate::state::tools::labelled_control(
@@ -1124,6 +1384,9 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
                 text: spec.map_or_else(|| format!("{value:.4}"), |spec| spec.format(value)),
                 value,
                 step: spec.map_or(0.01, |spec| spec.step),
+                typing,
+                invalid,
+                spec,
             }
         })
         .collect();

@@ -8,17 +8,34 @@
 //! the caller gives one; how a drag then reorders is the caller's. A row's menu is the caller's to
 //! open: wrap the row in [`crate::popover`] with a [`crate::menu_list`] and the menu drops under
 //! the row, and a second press on the row's menu button closes it again.
+//!
+//! A row being renamed draws its name as a text input in place ([`rename_input_id`] names it, so
+//! the caller can focus it); Enter publishes the caller's submit message, and the caller decides
+//! what Escape does.
 
 use super::coverage_thumbnail::{CoverageThumbnailModel, coverage_thumbnail};
 use super::icon_button::{Icon, IconButtonModel, icon, sized_icon_button};
 use super::list_row::marker_circle;
 use super::mode_control::{CombineMode, ModeControlModel, inert_mode_control, mode_control};
+use super::number_field::value_input;
 use super::truncated_text::truncated_text;
 use crate::theme;
 use iced::alignment::Horizontal;
-use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, container, mouse_area, row, text, tooltip};
+use iced::widget::text::{LineHeight, Wrapping};
+use iced::widget::{Id, Space, button, container, mouse_area, row, text, tooltip};
 use iced::{Alignment, Color, Element, Length, Padding};
+
+/// The identity of the one name input a row being renamed draws, so the caller can focus it as the
+/// rename starts. Only one row is renamed at a time.
+pub fn rename_input_id() -> Id {
+    Id::new("mask-row-rename")
+}
+
+/// What a row being renamed publishes: each edit of its text, and Enter.
+pub struct RenameMessages<'a, M> {
+    pub on_text: Box<dyn Fn(String) -> M + 'a>,
+    pub on_submit: M,
+}
 
 /// Plain data for one mask's row.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,12 +54,13 @@ pub struct MaskRowModel {
     pub selected: bool,
     /// The row's menu is open: its button is drawn selected.
     pub menu_open: bool,
+    /// The name as it is being typed while the row is renamed in place; `None` shows the name.
+    pub renaming: Option<String>,
     pub enabled: bool,
 }
 
 /// What a mask row publishes. `None` leaves that part inert.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MaskRowMessages<M> {
+pub struct MaskRowMessages<'a, M> {
     /// A press on the row.
     pub on_select: Option<M>,
     /// A press on the eye.
@@ -51,20 +69,39 @@ pub struct MaskRowMessages<M> {
     pub on_menu: Option<M>,
     /// A press on the thumbnail, the row's drag handle. `None` lets the press select the row.
     pub on_drag_start: Option<M>,
+    /// The name input's messages while the row is renamed; without them the input is inert.
+    pub rename: Option<RenameMessages<'a, M>>,
+}
+
+impl<M> Default for MaskRowMessages<'_, M> {
+    fn default() -> Self {
+        Self {
+            on_select: None,
+            on_toggle_visibility: None,
+            on_menu: None,
+            on_drag_start: None,
+            rename: None,
+        }
+    }
 }
 
 /// Renders one mask's row: the coverage thumbnail, the name, the accent dot, the amount, the eye
 /// and the menu button.
 pub fn mask_row<'a, M: Clone + 'a>(
     model: &MaskRowModel,
-    messages: MaskRowMessages<M>,
+    messages: MaskRowMessages<'a, M>,
 ) -> Element<'a, M> {
     let enabled = model.enabled;
+    let renaming = model.renaming.is_some();
     let thumbnail = drag_handle(
         coverage_thumbnail(&model.coverage),
-        messages.on_drag_start.filter(|_| enabled),
+        messages.on_drag_start.filter(|_| enabled && !renaming),
     );
-    let mut content = row![thumbnail, name(&model.name, model.selected, enabled)]
+    let label = match &model.renaming {
+        Some(typed) => rename_input(typed, enabled, messages.rename),
+        None => name(&model.name, model.selected, enabled),
+    };
+    let mut content = row![thumbnail, label]
         .spacing(theme::MASK_ROW_SPACING)
         .align_y(Alignment::Center);
     if model.active {
@@ -103,7 +140,7 @@ pub fn mask_row<'a, M: Clone + 'a>(
         theme::MASK_ROW_PADDING,
         model.selected.then_some(theme::MASK_ROW_SELECTED),
         false,
-        messages.on_select.filter(|_| enabled),
+        messages.on_select.filter(|_| enabled && !renaming),
     )
 }
 
@@ -123,6 +160,8 @@ pub struct ComponentRowModel {
     /// The overlay is showing this component's own coverage because the pointer is over its row.
     pub hovered: bool,
     pub menu_open: bool,
+    /// The name as it is being typed while the row is renamed in place; `None` shows the name.
+    pub renaming: Option<String>,
     pub enabled: bool,
 }
 
@@ -138,6 +177,8 @@ pub struct ComponentRowMessages<'a, M> {
     /// The pointer entered or left the row.
     pub on_hover_enter: Option<M>,
     pub on_hover_exit: Option<M>,
+    /// The name input's messages while the row is renamed; without them the input is inert.
+    pub rename: Option<RenameMessages<'a, M>>,
 }
 
 impl<M> Default for ComponentRowMessages<'_, M> {
@@ -150,6 +191,7 @@ impl<M> Default for ComponentRowMessages<'_, M> {
             on_drag_start: None,
             on_hover_enter: None,
             on_hover_exit: None,
+            rename: None,
         }
     }
 }
@@ -161,9 +203,10 @@ pub fn component_row<'a, M: Clone + 'a>(
     messages: ComponentRowMessages<'a, M>,
 ) -> Element<'a, M> {
     let enabled = model.enabled;
+    let renaming = model.renaming.is_some();
     let grip = drag_handle(
         icon(Icon::Grip, theme::GRIP_SIZE, theme::TEXT_FAINT),
-        messages.on_drag_start.filter(|_| enabled),
+        messages.on_drag_start.filter(|_| enabled && !renaming),
     );
     let kind: Element<'a, M> = match model.icon {
         Some(kind) => icon(kind, theme::HEADER_ICON_SIZE, theme::TEXT_SECONDARY),
@@ -183,7 +226,10 @@ pub fn component_row<'a, M: Clone + 'a>(
         container(kind)
             .center_x(Length::Fixed(theme::KIND_ICON_WIDTH))
             .center_y(Length::Shrink),
-        name(&model.name, model.selected, enabled),
+        match &model.renaming {
+            Some(typed) => rename_input(typed, enabled, messages.rename),
+            None => name(&model.name, model.selected, enabled),
+        },
         mode,
         small_button(
             Icon::Invert,
@@ -208,7 +254,7 @@ pub fn component_row<'a, M: Clone + 'a>(
         theme::COMPONENT_ROW_PADDING,
         model.selected.then_some(theme::LIST_ROW_CURRENT),
         model.hovered,
-        messages.on_select.filter(|_| enabled),
+        messages.on_select.filter(|_| enabled && !renaming),
     );
     let mut area = mouse_area(control);
     if let Some(enter) = messages.on_hover_enter {
@@ -302,6 +348,36 @@ fn name<'a, M: 'a>(name: &str, selected: bool, enabled: bool) -> Element<'a, M> 
     .into()
 }
 
+/// A row's name as a text input, while the row is renamed in place: it takes the name's width.
+fn rename_input<'a, M: Clone + 'a>(
+    typed: &str,
+    enabled: bool,
+    messages: Option<RenameMessages<'a, M>>,
+) -> Element<'a, M> {
+    let input = match messages {
+        Some(RenameMessages { on_text, on_submit }) => {
+            value_input("Name", typed, false, enabled, on_text, on_submit)
+        }
+        None => iced::widget::text_input("Name", typed),
+    };
+    input
+        .id(rename_input_id())
+        .size(theme::SIZE_CONTROL)
+        .line_height(LineHeight::Absolute(
+            (theme::RENAME_INPUT_HEIGHT - 2.0 * theme::FIELD_PADDING_Y).into(),
+        ))
+        .padding(Padding {
+            top: theme::FIELD_PADDING_Y,
+            right: theme::FIELD_INSET,
+            bottom: theme::FIELD_PADDING_Y,
+            left: theme::FIELD_INSET,
+        })
+        .align_x(Horizontal::Left)
+        .width(Length::Fill)
+        .style(theme::field_input_style(false))
+        .into()
+}
+
 /// `content`, publishing `on_press` when pressed and showing the grab cursor, or `content` alone.
 fn drag_handle<'a, M: Clone + 'a>(content: Element<'a, M>, on_press: Option<M>) -> Element<'a, M> {
     match on_press {
@@ -393,6 +469,7 @@ mod tests {
             menu_tooltip: "Mask actions".into(),
             selected,
             menu_open: false,
+            renaming: None,
             enabled: true,
         }
     }
@@ -407,6 +484,7 @@ mod tests {
                     on_toggle_visibility: Some(1),
                     on_menu: Some(2),
                     on_drag_start: Some(3),
+                    rename: None,
                 },
             );
         }
@@ -416,13 +494,23 @@ mod tests {
                 menu_open: true,
                 ..mask(false, true, true)
             },
-            MaskRowMessages {
-                on_select: None,
-                on_toggle_visibility: None,
-                on_menu: None,
-                on_drag_start: None,
-            },
+            MaskRowMessages::default(),
         );
+        for rename in [true, false] {
+            let _: Element<'_, u8> = mask_row(
+                &MaskRowModel {
+                    renaming: Some("Face".into()),
+                    ..mask(true, true, true)
+                },
+                MaskRowMessages {
+                    rename: rename.then(|| RenameMessages {
+                        on_text: Box::new(|_| 4),
+                        on_submit: 5,
+                    }),
+                    ..MaskRowMessages::default()
+                },
+            );
+        }
     }
 
     #[test]
@@ -442,6 +530,7 @@ mod tests {
             selected: true,
             hovered: false,
             menu_open: false,
+            renaming: None,
             enabled: true,
         };
         let _: Element<'_, u8> = component_row(
@@ -454,6 +543,20 @@ mod tests {
                 on_drag_start: Some(4),
                 on_hover_enter: Some(5),
                 on_hover_exit: Some(6),
+                rename: None,
+            },
+        );
+        let _: Element<'_, u8> = component_row(
+            &ComponentRowModel {
+                renaming: Some("Radial".into()),
+                ..model.clone()
+            },
+            ComponentRowMessages {
+                rename: Some(RenameMessages {
+                    on_text: Box::new(|_| 7),
+                    on_submit: 8,
+                }),
+                ..ComponentRowMessages::default()
             },
         );
         let _: Element<'_, u8> = component_row(

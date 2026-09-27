@@ -77,13 +77,14 @@ pub use histogram::{
 };
 pub use icon_button::{
     Icon, IconButtonModel, header_icon_button, icon, icon_button, title_bar_icon_button,
+    with_tooltip,
 };
 pub use inline_menu::inline_menu;
 pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{
-    ComponentRowMessages, ComponentRowModel, MaskRowMessages, MaskRowModel, StrokeRowModel,
-    component_note, component_row, mask_row, stroke_row,
+    ComponentRowMessages, ComponentRowModel, MaskRowMessages, MaskRowModel, RenameMessages,
+    StrokeRowModel, component_note, component_row, mask_row, rename_input_id, stroke_row,
 };
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
@@ -99,7 +100,7 @@ pub use overlay_control::{
 pub use popover::{POPOVER_GAP, popover};
 pub use readout_card::{readout_card, readout_card_height};
 pub use section_header::{
-    SectionHeaderModel, collapsed_section_height, expanded_section_height, module_section,
+    SectionHeaderModel, band_header, collapsed_section_height, expanded_section_height, module_section,
     section_body, section_header,
 };
 pub use segmented::{SegmentedModel, segment, segment_track, segmented};

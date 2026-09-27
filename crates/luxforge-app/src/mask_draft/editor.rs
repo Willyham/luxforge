@@ -236,9 +236,13 @@ impl DrawnShape {
     }
 }
 
-/// One drawn kind's row: its token, whether its geometry is painted, and how its editor opens.
+/// One drawn kind's row: its token, its letter, whether its geometry is painted, and how its editor
+/// opens.
 struct DrawnKind {
     kind: &'static str,
+    /// The key that starts this kind while the New mask or Add component menu is open, shown
+    /// beside the kind in that menu. A typed kind has none: it is created by choosing it.
+    letter: char,
     paints: bool,
     open: fn(Option<&Value>, Brush) -> Option<DrawnShape>,
 }
@@ -249,16 +253,19 @@ struct DrawnKind {
 const DRAWN_KINDS: &[DrawnKind] = &[
     DrawnKind {
         kind: super::linear::KIND,
+        letter: 'L',
         paints: false,
         open: super::linear::open,
     },
     DrawnKind {
         kind: super::radial::KIND,
+        letter: 'R',
         paints: false,
         open: super::radial::open,
     },
     DrawnKind {
         kind: super::brush::KIND,
+        letter: 'B',
         paints: true,
         open: super::brush::open,
     },
@@ -272,6 +279,12 @@ fn drawn_kind(kind: &str) -> Option<&'static DrawnKind> {
 /// gesture and by the draft that opens one, so the two cannot disagree.
 pub(crate) fn drawable(kind: &str) -> bool {
     drawn_kind(kind).is_some()
+}
+
+/// The letter that starts `kind` while a kind menu is open, or `None` for a kind this build draws
+/// nothing for.
+pub(crate) fn kind_letter(kind: &str) -> Option<char> {
+    drawn_kind(kind).map(|row| row.letter)
 }
 
 /// This kind's geometry is a drawn path, so its gesture paints rather than drags handles.

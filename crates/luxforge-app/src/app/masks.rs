@@ -137,14 +137,11 @@ impl Editor {
         self.selected_mask = Some(created);
         self.selected_component = None;
         self.hovered_component = None;
-        self.mask_name = self
-            .open_mask()
-            .map(|report| report.name.clone())
-            .unwrap_or_default();
         self.seed_values();
     }
 
     pub(crate) fn follow_mask_selection(&mut self) -> bool {
+        self.drop_stale_panel_state();
         let before = self.selected_mask.clone();
         let reports = self
             .masks
@@ -163,13 +160,6 @@ impl Editor {
             self.selected_mask = reports.first().map(|report| report.id.clone());
         }
         if self.selected_mask != before {
-            // The name field follows the mask it renames rather than keeping the previous one's.
-            self.mask_name = self
-                .selected_mask
-                .as_ref()
-                .and_then(|id| reports.iter().find(|report| &report.id == id))
-                .map(|report| report.name.clone())
-                .unwrap_or_default();
             self.selected_component = None;
             self.hovered_component = None;
             return true;
@@ -374,6 +364,19 @@ impl Editor {
 
     /// One Masks-panel message.
     pub(crate) fn mask_message(&mut self, message: MaskMessage) -> Task<Message> {
+        // A choice or an edit puts the panel's open menu away, as a native menu does; the pointer
+        // moving, a gesture's own steps and the text being typed leave it where it is.
+        if !matches!(
+            message,
+            MaskMessage::Hover(_)
+                | MaskMessage::Handle(_)
+                | MaskMessage::Transform(..)
+                | MaskMessage::Brush(_)
+                | MaskMessage::Drag(crate::app::message::DragEdit::Over(_))
+                | MaskMessage::Typing(crate::app::message::TypingEdit::Text(_))
+        ) {
+            self.close_mask_menu();
+        }
         match message {
             MaskMessage::Select(id) => {
                 let id = MaskId::parse(id).ok();
@@ -524,29 +527,14 @@ impl Editor {
                 };
                 self.dispatch(Message::View(ViewMessage::SetMode(target)))
             }
-            MaskMessage::Name(text) => {
-                self.mask_name = text;
+            MaskMessage::Typing(edit) => self.mask_typing_edit(edit),
+            MaskMessage::ToggleBand => {
+                self.masks_collapsed = !self.masks_collapsed;
                 Task::none()
             }
-            MaskMessage::Rename(mask) => {
-                let Ok(mask) = MaskId::parse(mask) else {
-                    return Task::none();
-                };
-                let name = self.mask_name.trim().to_owned();
-                if name.is_empty() {
-                    self.status = "A mask's name needs at least one printable character".into();
-                    return Task::none();
-                }
-                self.mask_command(
-                    "mask.rename",
-                    MaskTarget {
-                        mask: Some(mask),
-                        name: Some(name),
-                        ..MaskTarget::default()
-                    },
-                    Map::new(),
-                )
-            }
+            MaskMessage::Choose { menu, kind } => self.choose_kind(menu, kind),
+            MaskMessage::Drag(edit) => self.mask_drag_edit(edit),
+            MaskMessage::Key(key) => self.mask_key(key),
             MaskMessage::Transform(gesture, result) => self.mask_transform(gesture, result),
         }
     }
@@ -615,6 +603,19 @@ impl Editor {
                 "mask.set-component-invert",
                 one("invert", json!(invert)),
             ),
+            // A name is free text, which no declared parameter kind carries, so it travels in the
+            // request's envelope beside the identities, as `mask.rename` has always taken it.
+            RowEdit::RenameMask { mask, name } => {
+                let (method, mut target, fields) = of_mask(mask, "mask.rename", Map::new())?;
+                target.name = Some(name.clone());
+                Some((method, target, fields))
+            }
+            RowEdit::RenameComponent { component, name } => {
+                let (method, mut target, fields) =
+                    of_component(component, RENAME_COMPONENT, Map::new())?;
+                target.name = Some(name.clone());
+                Some((method, target, fields))
+            }
             // A swatch is addressed by its position in the component's own list, which is an
             // ordinary declared integer; the method is the one the host generated for that kind, so
             // the panel spells no method name of its own.
@@ -666,6 +667,10 @@ impl Editor {
                 self.brush.limit_to_colour = *limit;
                 changed
             }
+            BrushEdit::Fraction { .. } | BrushEdit::Reset(_) => match self.brush_number(&edit) {
+                Some((name, value)) => self.brush.set(&name, value),
+                None => false,
+            },
             // Held, not latched: the modifier erases while it is down and the toggle's own state is
             // what it returns to.
             BrushEdit::EraseHeld(held) => {
@@ -1225,6 +1230,10 @@ impl Editor {
         }
     }
 }
+
+/// The host command that renames one component of a mask, with the new name in the request's
+/// envelope as `mask.rename` carries a mask's.
+pub(crate) const RENAME_COMPONENT: &str = "mask.rename-component";
 
 /// The target one generated mask control submits with, from the panel's own selection. A command
 /// that addresses a component takes both identities; one that addresses a mask takes the mask alone.

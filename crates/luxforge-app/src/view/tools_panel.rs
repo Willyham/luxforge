@@ -777,6 +777,22 @@ fn control_menu_preset(
     .into()
 }
 
+/// The context menu of one generated control's field, when it is the one open: the Masks panel's
+/// field grid draws its fields itself and puts the open field's menu under the grid.
+pub(crate) fn control_copy_menu(
+    action: &str,
+    parameter: &str,
+    menu: Option<&MenuTarget>,
+) -> Option<Element<'static, Message>> {
+    menu_open_for_preset(menu, action, Some(parameter), None)
+        .then(|| control_menu_preset(action, Some(parameter), None))
+}
+
+/// The context-menu target of one generated control's field.
+pub(crate) fn control_target(action: &str, parameter: &str) -> MenuTarget {
+    control_target_preset(action, Some(parameter), None)
+}
+
 /// Wrap a generated control so a right-click on it opens its own context menu, and append the
 /// menu itself directly under the control when it is the one currently open.
 fn with_control_menu<'a>(
@@ -809,7 +825,11 @@ fn with_control_menu_preset<'a>(
     }
 }
 
-fn ui_edit(edit: &ValueEdit, display: &str, invalid: &Option<String>) -> luxforge_ui::ValueEdit {
+pub(crate) fn ui_edit(
+    edit: &ValueEdit,
+    display: &str,
+    invalid: &Option<String>,
+) -> luxforge_ui::ValueEdit {
     match edit {
         ValueEdit::Typing(_) => luxforge_ui::ValueEdit::Editing {
             text: edit.text(display).to_owned(),

@@ -7,7 +7,7 @@ use crate::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
     DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
-    POPOVER_GAP, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit, caption, compact_toggle,
+    POPOVER_GAP, RenameMessages, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit, caption, compact_toggle,
     component_note, component_row, coverage_thumbnail, dropdown_button, field_grid, group_rule,
     mask_row, menu_list, mode_control, overlay_control, stroke_row, swatch_slots, theme,
 };
@@ -78,16 +78,21 @@ fn mask(name: &str, coverage: CoverageThumbnailModel, amount: &str) -> MaskRowMo
         menu_tooltip: "Mask actions".into(),
         selected: false,
         menu_open: false,
+        renaming: None,
         enabled: true,
     }
 }
 
-fn mask_messages() -> MaskRowMessages<()> {
+fn mask_messages() -> MaskRowMessages<'static, ()> {
     MaskRowMessages {
         on_select: Some(()),
         on_toggle_visibility: Some(()),
         on_menu: Some(()),
         on_drag_start: Some(()),
+        rename: Some(RenameMessages {
+            on_text: Box::new(|_| ()),
+            on_submit: (),
+        }),
     }
 }
 
@@ -114,6 +119,7 @@ fn component(name: &str, icon: Icon, mode: ModeControlModel) -> ComponentRowMode
         selected: false,
         hovered: false,
         menu_open: false,
+        renaming: None,
         enabled: true,
     }
 }
@@ -134,6 +140,10 @@ fn component_messages() -> ComponentRowMessages<'static, ()> {
         on_drag_start: Some(()),
         on_hover_enter: Some(()),
         on_hover_exit: Some(()),
+        rename: Some(RenameMessages {
+            on_text: Box::new(|_| ()),
+            on_submit: (),
+        }),
     }
 }
 
@@ -173,6 +183,7 @@ fn field(
         on_text: Box::new(|_| ()),
         on_submit: (),
         on_reset: (),
+        on_menu: Some(()),
     }
 }
 
@@ -230,12 +241,20 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
             mask_messages(),
         ),
     ]));
-    // -- A mask row with its menu open, and a disabled one.
+    // -- A mask row with its menu open, one being renamed in place, and a disabled one.
     states.push(panel(vec![
         mask_row(
             &MaskRowModel {
                 menu_open: true,
                 ..mask("Sky", sky(), "100")
+            },
+            mask_messages(),
+        ),
+        mask_row(
+            &MaskRowModel {
+                renaming: Some("Face and hands".into()),
+                selected: true,
+                ..mask("Face", face(), "80")
             },
             mask_messages(),
         ),
