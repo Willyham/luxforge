@@ -255,71 +255,26 @@ pub(crate) fn crop_layer(payload: CropPayload) -> luxforge_core::Layer {
     }
 }
 
-/// The rows the owner's `recipe.describe` gives an entry, from the core's own built-in modules:
-/// each layer's provider, summary and values, and the core's answer to whether it is neutral. The
-/// desktop derives none of this from a payload, so its tests describe a stack as the owner does.
-/// Each row's input stage is left unknown; [`described_at`] reports it for a test that reads it.
+/// The rows the owner's `recipe.describe` gives an entry, from the core's own built-in modules and
+/// its own description ([`luxforge_core::ModuleRegistry::describe_recipe`]): each layer's provider,
+/// summary and values, and the core's answer to whether it is neutral. The desktop derives none of
+/// this from a payload, so its tests describe a stack as the owner does. Each row's input stage and
+/// orientation are left unknown; [`described_at`] reports them for a test that reads them.
 pub(crate) fn described(entry: &HistoryEntry) -> RecipeDescription {
-    describe(entry, None)
-}
-
-/// [`described`] for an asset of `source` extents, with each row's input stage the core's own
-/// stage fold reports ([`luxforge_core::ModuleRegistry::input_stages`]), as the owner does.
-pub(crate) fn described_at(entry: &HistoryEntry, source: (u32, u32)) -> RecipeDescription {
-    describe(entry, Some(source))
-}
-
-fn describe(entry: &HistoryEntry, source: Option<(u32, u32)>) -> RecipeDescription {
-    let registry = luxforge_core::ModuleRegistry::builtin();
-    let stages = source.map_or_else(Vec::new, |(width, height)| {
-        registry.input_stages(width, height, &entry.snapshot.recipe)
-    });
-    RecipeDescription {
-        entry_id: entry.id.clone(),
-        layers: entry
-            .snapshot
-            .recipe
-            .layers
-            .iter()
-            .enumerate()
-            .map(|(index, layer)| {
-                let module = registry.effect(&layer.effect_id).map(|(module, _)| module);
-                let read = |layer: &luxforge_core::Layer| {
-                    module.and_then(|module| {
-                        Some((
-                            module
-                                .describe_layer(
-                                    &layer.effect_id,
-                                    layer.effect_format,
-                                    &layer.payload,
-                                )
-                                .ok()?,
-                            module
-                                .values(&layer.effect_id, layer.effect_format, &layer.payload)
-                                .ok()?,
-                        ))
-                    })
-                };
-                let (summary, values) = read(layer).unwrap_or_default();
-                luxforge_core::LayerDescription {
-                    id: layer.id.clone(),
-                    effect: layer.effect_id.clone(),
-                    module: module.map(|module| module.descriptor().id.clone()),
-                    title: module.map(|module| module.descriptor().title.clone()),
-                    summary,
-                    values,
-                    available: module.is_some(),
-                    mask: layer.mask.clone(),
-                    artifacts: layer.artifacts.clone(),
-                    neutral: registry.layer_neutral(layer),
-                    input_stage: stages.get(index).map(|stage| luxforge_core::StageSize {
-                        width: stage.width,
-                        height: stage.height,
-                    }),
-                }
-            })
-            .collect(),
+    let mut described = described_at(entry, (1, 1));
+    for row in &mut described.layers {
+        row.input_stage = None;
+        row.input_orientation = None;
     }
+    described.output_stage = None;
+    described.output_orientation = None;
+    described
+}
+
+/// [`described`] for an asset of `source` extents, with each row's input stage and orientation and
+/// the stack's output as the core's own stage fold reports them, as the owner does.
+pub(crate) fn described_at(entry: &HistoryEntry, source: (u32, u32)) -> RecipeDescription {
+    luxforge_core::ModuleRegistry::builtin().describe_recipe(source.0, source.1, entry)
 }
 
 /// The Nikon Z6's camera matrix and as-shot gains, from the supplied NEF's metadata: a real camera

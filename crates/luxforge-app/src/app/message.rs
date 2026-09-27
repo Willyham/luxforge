@@ -308,11 +308,10 @@ pub(crate) enum CropPointer {
 /// update function without simulating a pointer.
 #[derive(Clone, Debug)]
 pub(crate) enum CropMessage {
-    /// Open a draft on the current stack.
+    /// Open a draft on the current stack. Apply, Cancel and Reapply are the one draft lifecycle's
+    /// [`DraftMessage`]s, as they are for every other gesture.
     Start,
-    /// Re-read the current stack and rebase the conflicted draft onto it.
-    Reapply,
-    /// The truncated preview job for a start or a reapply.
+    /// The truncated preview job for the input stage of a start or a reapply.
     PreviewReady(Result<Box<PreviewJob>, String>),
     Pointer(CropPointer),
     AngleText(String),
@@ -341,8 +340,6 @@ pub(crate) enum CropMessage {
         dx: f32,
         dy: f32,
     },
-    Apply,
-    Cancel,
 }
 
 /// One capability gesture on a module's section or on the consent notice, or an owner answer the

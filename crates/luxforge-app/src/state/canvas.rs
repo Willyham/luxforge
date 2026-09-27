@@ -57,12 +57,10 @@ pub(crate) struct ModeEntry {
     pub(crate) enabled: bool,
 }
 
-/// The bar over the top of the canvas while a mode has a draft open.
+/// The bar over the top of the canvas while a mode has a draft open. Its Apply and Cancel are the
+/// one draft lifecycle's, whichever gesture is open, since a client holds only one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DraftBar {
-    /// The bar belongs to a mask shape gesture rather than to the crop draft, so Apply and Cancel
-    /// reach the gesture that is actually open.
-    pub(crate) mask: bool,
     pub(crate) title: String,
     /// One line of the draft's own numbers, e.g. `300 × 200 px · 0°`.
     pub(crate) readout: String,
@@ -90,9 +88,7 @@ pub(crate) enum NoticeIcon {
 /// What a notice's button does. Every one is an existing operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NoticeAction {
-    DiscardDraft,
-    ReapplyDraft,
-    /// The same two decisions for the open slider or mask gesture's core draft.
+    /// The two decisions a conflicted draft waits for, whichever gesture holds it.
     DiscardGesture,
     ReapplyGesture,
     ReturnCurrent,
@@ -259,68 +255,46 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
     PhotoView::default()
 }
 
+/// The bar over the open mask shape gesture or crop draft: its title, its own numbers, and whether
+/// Apply can run, which is the app's one release refusal and never a rule of the bar's own.
 fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
-    // A mask shape gesture takes the bar over while it is open: only one draft exists per client, so
-    // the two can never both be there.
-    if let Some(draft) = inputs.mask_draft {
-        let readout = draft
-            .values()
-            .into_iter()
-            .map(|(name, value)| format!("{name} {value:.3}"))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let apply_reason = if inputs.gesture_conflicted {
-            Some("Changed elsewhere: discard the gesture or reapply it".to_owned())
-        } else if !inputs.session.preview.can_edit() {
-            Some("Return to the current state to apply".to_owned())
-        } else if inputs.busy {
-            Some("Waiting for the last request".to_owned())
-        } else {
-            None
-        };
-        return Some(DraftBar {
-            mask: true,
-            title: format!("{} · {}", draft.op.label(), draft.kind()),
-            readout,
-            can_apply: apply_reason.is_none(),
-            conflicted: inputs.gesture_conflicted,
-            apply_reason,
-        });
-    }
-    let draft = inputs.draft?;
-    let title = inputs
-        .modules
-        .iter()
-        .find(|module| module.id == inputs.session.workspace.mode)
-        .and_then(|module| module.canvas.as_ref())
-        .map(CanvasInteraction::title)
-        .unwrap_or("Crop")
-        .to_owned();
-    let readout = match draft.output() {
-        Ok(rect) => format!(
-            "{} × {} px · {}°",
-            rect.width,
-            rect.height,
-            number_text(draft.stage.angle)
+    let (title, readout) = match (inputs.mask_draft, inputs.draft) {
+        (Some(draft), _) => (
+            format!("{} · {}", draft.op.label(), draft.kind()),
+            draft
+                .values()
+                .into_iter()
+                .map(|(name, value)| format!("{name} {value:.3}"))
+                .collect::<Vec<_>>()
+                .join(" · "),
         ),
-        Err(error) => error.detail.clone(),
-    };
-    let apply_reason = if inputs.gesture_conflicted {
-        Some("Changed elsewhere: discard the draft or reapply it".into())
-    } else if !inputs.session.preview.can_edit() {
-        Some("Return to the current state to apply".into())
-    } else if inputs.busy {
-        Some("Waiting for the last request".into())
-    } else {
-        None
+        (None, Some(draft)) => (
+            inputs
+                .modules
+                .iter()
+                .find(|module| module.id == inputs.session.workspace.mode)
+                .and_then(|module| module.canvas.as_ref())
+                .map(CanvasInteraction::title)
+                .unwrap_or("Crop")
+                .to_owned(),
+            match draft.output() {
+                Ok(rect) => format!(
+                    "{} × {} px · {}°",
+                    rect.width,
+                    rect.height,
+                    number_text(draft.stage.angle)
+                ),
+                Err(error) => error.detail.clone(),
+            },
+        ),
+        (None, None) => return None,
     };
     Some(DraftBar {
-        mask: false,
         title,
         readout,
-        can_apply: apply_reason.is_none(),
+        can_apply: inputs.apply_refusal.is_none(),
         conflicted: inputs.gesture_conflicted,
-        apply_reason,
+        apply_reason: inputs.apply_refusal.clone(),
     })
 }
 
@@ -332,9 +306,11 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     // A capability operation the desktop started was refused for want of consent: the person
     // decides here, and nothing else on screen waits for the answer.
     notices.extend(crate::state::capabilities::consent_notice(inputs));
-    // A slider gesture's draft conflicts exactly as the crop draft does, and offers the same two
-    // decisions. Only one draft exists at a time, so only one of these two ever appears.
-    if inputs.slider_draft.is_some_and(|draft| draft.conflicted) {
+    // Every gesture's draft conflicts the same way and offers the same two decisions, so there is
+    // one notice, naming the gesture that is open. Only one draft exists at a time.
+    if inputs.gesture_conflicted
+        && let Some(gesture) = inputs.gesture
+    {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,
@@ -342,49 +318,15 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             title: "Changed elsewhere".into(),
             body: match revision {
                 Some(revision) => format!(
-                    "Another client committed revision {revision} while your slider draft was open. Your draft is kept."
+                    "Another client committed revision {revision} while your {gesture} was open. Your {gesture} is kept."
                 ),
-                None => "Another client committed while your slider draft was open. Your draft is kept.".into(),
+                None => format!(
+                    "Another client committed while your {gesture} was open. Your {gesture} is kept."
+                ),
             },
             actions: vec![
                 ("Discard draft".into(), NoticeAction::DiscardGesture),
                 ("Reapply".into(), NoticeAction::ReapplyGesture),
-            ],
-        });
-    }
-    if inputs.mask_draft.is_some() && inputs.gesture_conflicted {
-        let revision = inputs.state.map(|state| state.revision);
-        notices.push(Notice {
-            tone: NoticeTone::Warning,
-            icon: NoticeIcon::Spark,
-            title: "Changed elsewhere".into(),
-            body: match revision {
-                Some(revision) => format!(
-                    "Another client committed revision {revision} while your mask gesture was open. Your gesture is kept."
-                ),
-                None => "Another client committed while your mask gesture was open. Your gesture is kept.".into(),
-            },
-            actions: vec![
-                ("Discard draft".into(), NoticeAction::DiscardGesture),
-                ("Reapply".into(), NoticeAction::ReapplyGesture),
-            ],
-        });
-    }
-    if inputs.draft.is_some() && inputs.gesture_conflicted {
-        let revision = inputs.state.map(|state| state.revision);
-        notices.push(Notice {
-            tone: NoticeTone::Warning,
-            icon: NoticeIcon::Spark,
-            title: "Changed elsewhere".into(),
-            body: match revision {
-                Some(revision) => format!(
-                    "Another client committed revision {revision} while your crop draft was open. Your draft is kept."
-                ),
-                None => "Another client committed while your crop draft was open. Your draft is kept.".into(),
-            },
-            actions: vec![
-                ("Discard draft".into(), NoticeAction::DiscardDraft),
-                ("Reapply".into(), NoticeAction::ReapplyDraft),
             ],
         });
     }

@@ -116,8 +116,7 @@ impl Editor {
                     && self.section_target().is_some();
                 let opens_draft = tools::crop_frame(&self.modules)
                     .is_some_and(|frame| frame.module.id == mode)
-                    && self.crop().is_none()
-                    && self.crop_pending().is_none();
+                    && self.crop_gesture().is_none();
                 self.mode_sync = None;
                 if opens_draft {
                     // The crop mode is the draft's: a start asks the session to enter it, through

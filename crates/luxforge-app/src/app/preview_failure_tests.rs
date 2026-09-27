@@ -14,13 +14,13 @@
 //! arrive: the queue is idle, or its job is held at a gate this test has not opened.
 use super::{
     Editor, ProxyFrame,
-    crop::PendingStage,
+    crop::StageView,
     evidence::Settle,
-    message::{CropMessage, Message, PreviewMessage, SyncMessage},
+    message::{CropMessage, DraftMessage, Message, PointerMessage, PreviewMessage, SyncMessage},
     tasks::SyncResult,
     testing::{
-        attach_log, core_draft, crop_layer, entry, finish, hold_crop, logged, open_crop, opened,
-        refresh_for,
+        CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, finish, hold_crop,
+        logged, open_crop, opened, refresh_for,
     },
 };
 use crate::state::{canvas::PhotoView, histogram::HistogramStatus};
@@ -559,26 +559,30 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
 }
 
 /// The crop layer's input stage could not be rendered: a start that was waiting ends in the pointer
-/// mode with the reason in the status bar, while the photograph — the current state — stays; a
-/// reapply keeps the draft it was rebasing.
+/// mode with the reason in the status bar, and its draft is discarded once the update is over,
+/// while the photograph — the current state — stays; a reapply keeps the draft it rebased.
 #[test]
 fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     let (mut editor, catalog, _, _) = opened_and_shown();
     let error = Error::resource_limit("linear output exceeds 512 MiB");
-    let starting = PendingStage {
-        layer: None,
-        layer_index: 0,
-        ahead: luxforge_core::Orientation::NEUTRAL,
-        payload: None,
-        base_revision: 4,
-        reapply: false,
-        queued: Vec::new(),
+    let stage = CropStage {
+        width: 480,
+        height: 320,
+        angle: 0.0,
     };
-    hold_crop(&mut editor, None, Some(starting));
+    hold_crop(
+        &mut editor,
+        crate::crop_draft::CropDraft::neutral(stage, 0),
+        StageView::Rendering {
+            reapply: false,
+            base_revision: 4,
+        },
+    );
     editor.draft_generation = Some(99);
     editor.draft_preview_failed(&error);
-    assert!(editor.crop_pending().is_none() && editor.draft_generation.is_none());
-    assert!(editor.crop().is_none());
+    assert_eq!(editor.draft_generation, None);
+    assert!(editor.crop().is_none(), "the start's frame left at once");
+    assert_eq!(editor.crop_stage(), Some(StageView::Abandoned));
     assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
     assert!(
         editor
@@ -592,25 +596,25 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         "the photograph's own state did not fail"
     );
     assert!(editor.presenter.photo().is_some());
+    // The update's end discards the start's core draft.
+    let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
+    assert!(editor.gesture_closing());
+    assert!(
+        editor
+            .status
+            .starts_with("The crop's input stage could not be rendered: resource-limit"),
+        "the discard keeps the reason: {}",
+        editor.status
+    );
+    editor.gesture = None;
 
-    let stage = CropStage {
-        width: 480,
-        height: 320,
-        angle: 0.0,
-    };
-    let rebasing = PendingStage {
-        layer: None,
-        layer_index: 0,
-        ahead: luxforge_core::Orientation::NEUTRAL,
-        payload: None,
-        base_revision: 5,
-        reapply: true,
-        queued: Vec::new(),
-    };
     hold_crop(
         &mut editor,
-        Some(crate::crop_draft::CropDraft::neutral(stage, 0)),
-        Some(rebasing),
+        crate::crop_draft::CropDraft::neutral(stage, 0),
+        StageView::Rendering {
+            reapply: true,
+            base_revision: 5,
+        },
     );
     editor.draft_generation = Some(100);
     editor.draft_preview_failed(&error);
@@ -618,7 +622,8 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         editor.crop().is_some(),
         "a failed reapply discarded the draft"
     );
-    assert!(editor.crop_pending().is_none() && editor.draft_generation.is_none());
+    assert_eq!(editor.crop_stage(), Some(StageView::Missing));
+    assert_eq!(editor.draft_generation, None);
     finish(editor, catalog);
 }
 
@@ -667,10 +672,10 @@ fn basic() -> Layer {
 fn draft_job(editor: &Editor, source: SourceImage) -> PreviewJob {
     let state = editor.state.as_ref().expect("an open asset");
     let current = &state.current_entry;
-    let pending = editor.crop_pending().expect("a starting draft");
+    let layer_index = editor.crop().expect("an open crop draft").layer_index;
     let mut job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
     job.source = PreviewSource::Jpeg(source);
-    job.layer_count = Some(pending.layer_index);
+    job.layer_count = Some(layer_index);
     job
 }
 
@@ -691,6 +696,7 @@ fn committed_elsewhere(
     let mut next = entry(asset, sequence, Some(&current.id));
     next.snapshot = current.snapshot.clone();
     let mut refresh = committed(asset, &next, &[&current], small());
+    refresh.recipe = described_at(&next, CROP_SOURCE);
     if let Some(hold) = hold {
         hold.hold(&mut refresh.job);
     }
@@ -715,7 +721,7 @@ fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) 
 /// frame is then shown as usual, and its own status replaces the reason.
 ///
 /// Both jobs are held: the draft's until the commit has superseded it, so it cannot finish first
-/// and open the draft; the new entry's until the draft has ended, so its frame cannot follow the
+/// and show the stage; the new entry's until the draft has ended, so its frame cannot follow the
 /// draft's end in the same poll and replace the reason before it is read.
 #[test]
 fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() {
@@ -750,7 +756,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     );
     stage.open();
     dispatch_polls_until(&mut editor, "the draft's end", |editor| {
-        editor.crop_pending().is_none()
+        editor.crop().is_none()
     });
     assert_eq!(editor.draft_generation, None);
     assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
@@ -772,7 +778,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         editor.presenter.stage().is_none(),
         "nothing of the draft was shown"
     );
-    assert!(editor.crop_pending().is_none() && editor.presenter.stage().is_none());
+    assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
     assert_eq!(editor.render_error, None);
     let records = logged(&mut editor, &log);
@@ -794,10 +800,10 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
 }
 
 /// A reapply's input stage waits in the pending slot behind the frame of one commit from another
-/// client when a second commit's frame replaces it there, so it never starts: the reapply ends as
-/// it is replaced, and keeps the conflicted draft it was rebasing for another reapply. The status
-/// bar goes straight on to the second commit's frame, which is what the photograph is waiting for;
-/// the draft's own notice still says it changed elsewhere.
+/// client when a second commit's frame replaces it there, so it never starts: the reapply's wait
+/// ends as it is replaced, and the draft it rebased is kept, still conflicted, for another reapply.
+/// The status bar goes straight on to the second commit's frame, which is what the photograph is
+/// waiting for; the draft's own notice still says it changed elsewhere.
 ///
 /// The first commit's job is held inside its render until the second commit has replaced the
 /// reapply's, so the reapply's job is still waiting behind it however slowly this test runs.
@@ -808,21 +814,17 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         editor.presented_generation > 0 && !editor.preview_queue.is_busy()
     });
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    open_crop(
-        &mut editor,
-        CropStage {
-            width: 480,
-            height: 320,
-            angle: 0.0,
-        },
-    );
+    open_crop(&mut editor);
     // The first commit makes the draft conflicted; its frame is held inside its render.
     let first = Hold::shut();
     committed_elsewhere(&mut editor, &asset, 5, Some(&first));
     first.reached(&editor, "the first commit's frame");
     assert!(core_draft(&editor).expect("the draft is kept").conflicted);
-    let _ = editor.update(Message::Crop(CropMessage::Reapply));
-    assert!(editor.crop_pending().expect("a pending rebase").reapply);
+    let _ = editor.update(Message::Draft(DraftMessage::Reapply));
+    assert!(matches!(
+        editor.crop_stage(),
+        Some(StageView::Rendering { reapply: true, .. })
+    ));
     let log = attach_log(&mut editor);
     let job = draft_job(&editor, small());
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
@@ -837,7 +839,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
 
     let next = committed_elsewhere(&mut editor, &asset, 6, None);
     assert!(
-        editor.crop_pending().is_none() && editor.draft_generation.is_none(),
+        editor.crop_stage() == Some(StageView::Missing) && editor.draft_generation.is_none(),
         "the replaced reapply is still waiting"
     );
     assert!(editor.crop().is_some(), "the reapply kept its draft");
@@ -889,7 +891,7 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
         editor.draft_generation, None,
         "the stale stage was not requested"
     );
-    assert!(editor.crop_pending().is_none() && editor.crop().is_none());
+    assert!(editor.crop().is_none());
     assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
     assert!(
         editor.status.ends_with("start the crop again"),
@@ -903,11 +905,11 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
     finish(editor, catalog);
 }
 
-/// A draft's input stage opens the draft in the very update that takes it up: it becomes the
-/// presenter's stage from the render's own buffer, with no upload and no message to wait for, and
-/// the photograph stays held under it, its version untouched, for when the draft ends.
+/// A draft's input stage is shown under its open frame in the very update that takes it up: it
+/// becomes the presenter's stage from the render's own buffer, with no upload and no message to
+/// wait for, and the photograph stays held under it, its version untouched, for when the draft ends.
 #[test]
-fn a_draft_opens_on_its_input_stage_in_the_update_that_takes_it_up() {
+fn a_draft_shows_its_input_stage_in_the_update_that_takes_it_up() {
     let (mut editor, catalog, _, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
         editor.presented_generation > 0 && !editor.preview_queue.is_busy()
@@ -924,9 +926,9 @@ fn a_draft_opens_on_its_input_stage_in_the_update_that_takes_it_up() {
         |editor| editor.preview_queue.ready(),
         |_| {},
     );
+    assert!(!editor.drafting(), "the frame waits for its stage");
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-    let open = editor.crop().expect("the draft opened in the same update");
-    assert_eq!((open.stage.width, open.stage.height), (64, 48));
+    assert_eq!(editor.crop_stage(), Some(StageView::Shown));
     assert_eq!(
         editor.presenter.stage().map(luxforge_ui::Frame::size),
         Some((64, 48))
@@ -939,7 +941,7 @@ fn a_draft_opens_on_its_input_stage_in_the_update_that_takes_it_up() {
     );
     assert!(editor.presenter.photo().is_some());
     assert_ne!(editor.presented_generation, draft);
-    let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     assert!(editor.presenter.stage().is_none(), "the stage was kept");
     finish(editor, catalog);
 }

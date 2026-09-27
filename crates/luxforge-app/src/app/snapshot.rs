@@ -383,7 +383,7 @@ impl Editor {
         match self
             .core_gesture()
             .and_then(|gesture| Some((gesture.crop()?, &gesture.draft)))
-            .filter(|(crop, _)| crop.frame.is_some())
+            .filter(|_| self.crop().is_some())
         {
             Some((crop, draft)) => {
                 let mut summary = crop.summary(draft);
@@ -405,7 +405,7 @@ impl Editor {
                 summary
             }
             None => {
-                json!({"drafting":false,"pending":self.crop_pending().is_some(),"section":self.crop_section_summary()})
+                json!({"drafting":false,"section":self.crop_section_summary()})
             }
         }
     }
@@ -425,7 +425,6 @@ impl Editor {
             .map_or(Value::Null, |model| {
                 json!({
                     "drafting": model.drafting,
-                    "pending": model.pending,
                     "enabled": model.enabled,
                     "chosen": model.presets.iter().find(|chip| chip.chosen).map(|chip| chip.label.clone()),
                     "locked": model.locked,

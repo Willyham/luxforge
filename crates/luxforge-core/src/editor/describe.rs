@@ -2,7 +2,10 @@ use super::{
     AssetRecord, EditorService, EditorState, LayerDescription, RecipeDescription,
     catalog::{ASSET_COLUMNS, asset_row, stored_revision},
 };
-use crate::{AssetId, EntryId, Error, HistoryEntry, StageSize};
+use crate::{
+    AssetId, EntryId, Error, HistoryEntry, ModuleRegistry, ORIENTATION_EFFECT, Orientation,
+    StageSize, modules::stored_orientation,
+};
 use serde_json::Map;
 
 impl EditorService {
@@ -45,11 +48,9 @@ impl EditorService {
             .map(|entry| HistoryEntry::clone(&entry))
     }
 
-    /// Describe one entry's stored layers for the recipe panel: `O(layers)` registry lookups,
-    /// payload reads and payload compiles, with no decode, no render and no source access. Each
-    /// row carries the stage its layer receives, folded once over the stack from the asset's
-    /// recorded extents ([`crate::ModuleRegistry::input_stages`]). A layer whose provider is missing
-    /// or unavailable is listed with the reason, never omitted.
+    /// Describe one entry's stored layers for the recipe panel against the asset's recorded
+    /// extents ([`ModuleRegistry::describe_recipe`]). A layer whose provider is missing or
+    /// unavailable is listed with the reason, never omitted.
     pub fn describe_entry(
         &self,
         asset_id: &AssetId,
@@ -62,17 +63,49 @@ impl EditorService {
                 (state.asset, state.current_entry)
             }
         };
-        let recipe = &entry.snapshot.recipe;
-        let stages = self
+        Ok(self
             .registry
-            .input_stages(asset.width, asset.height, recipe);
-        let mut layers = Vec::with_capacity(recipe.layers.len());
-        for (index, layer) in recipe.layers.iter().enumerate() {
-            let input_stage = stages.get(index).map(|stage| StageSize {
+            .describe_recipe(asset.width, asset.height, &entry))
+    }
+}
+
+impl ModuleRegistry {
+    /// Describe one entry's stored layers, for a source of these extents: `O(layers)` registry
+    /// lookups, payload reads and payload compiles, with no decode, no render and no source access.
+    /// Each row carries the stage its layer receives, folded once over the stack
+    /// ([`Self::stages`]), and the orientation the orientation layers before it composed; the
+    /// description ends with the stack's own output stage and orientation, which a layer appended
+    /// to it would receive. A layer whose provider is missing or unavailable is listed with the
+    /// reason, never omitted.
+    pub fn describe_recipe(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        entry: &HistoryEntry,
+    ) -> RecipeDescription {
+        let recipe = &entry.snapshot.recipe;
+        let stages = self.stages(source_width, source_height, recipe);
+        let size = |index: usize| {
+            stages.get(index).map(|stage| StageSize {
                 width: stage.width,
                 height: stage.height,
-            });
-            let described = match self.registry.effect(&layer.effect_id) {
+            })
+        };
+        // The orientation ahead of each layer, composed in stack order; an orientation payload
+        // that cannot be read leaves every later one unknown rather than guessed.
+        let mut orientation = Some(Orientation::NEUTRAL);
+        let mut layers = Vec::with_capacity(recipe.layers.len());
+        for (index, layer) in recipe.layers.iter().enumerate() {
+            let input_stage = size(index);
+            let input_orientation = input_stage.and(orientation);
+            if layer.effect_id == ORIENTATION_EFFECT {
+                orientation = orientation.and_then(|ahead| {
+                    stored_orientation(layer)
+                        .ok()
+                        .map(|next| ahead.followed_by(next))
+                });
+            }
+            let described = match self.effect(&layer.effect_id) {
                 None => LayerDescription {
                     id: layer.id.clone(),
                     effect: layer.effect_id.clone(),
@@ -85,6 +118,7 @@ impl EditorService {
                     artifacts: layer.artifacts.clone(),
                     neutral: false,
                     input_stage,
+                    input_orientation,
                 },
                 Some((module, _)) => {
                     let descriptor = module.descriptor();
@@ -127,17 +161,21 @@ impl EditorService {
                         available,
                         mask: layer.mask.clone(),
                         artifacts: layer.artifacts.clone(),
-                        neutral: self.registry.layer_neutral(layer),
+                        neutral: self.layer_neutral(layer),
                         input_stage,
+                        input_orientation,
                     }
                 }
             };
             layers.push(described);
         }
-        Ok(RecipeDescription {
-            entry_id: entry.id,
+        let output_stage = size(recipe.layers.len());
+        RecipeDescription {
+            entry_id: entry.id.clone(),
             layers,
-        })
+            output_stage,
+            output_orientation: output_stage.and(orientation),
+        }
     }
 }
 
@@ -155,13 +193,22 @@ mod tests {
         let mut service = EditorService::open(&catalog).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let original = service.state(&asset).unwrap().current_entry.id;
+        let fixture_size = {
+            let asset = service.state(&asset).unwrap().asset;
+            StageSize {
+                width: asset.width,
+                height: asset.height,
+            }
+        };
         assert_eq!(
             service.describe_entry(&asset, None).unwrap(),
             RecipeDescription {
                 entry_id: original.clone(),
                 layers: Vec::new(),
+                output_stage: Some(fixture_size),
+                output_orientation: Some(Orientation::NEUTRAL),
             },
-            "the original entry has no layers"
+            "the original entry has no layers, and a first layer would receive the source"
         );
         service
             .apply_action(
@@ -239,12 +286,29 @@ mod tests {
             "the stored order and identities"
         );
         // A half turn swaps nothing, so every layer receives the fixture's own extents.
-        let source = service.state(&asset).unwrap().asset;
-        assert!(described.layers.iter().all(|layer| layer.input_stage
-            == Some(StageSize {
-                width: source.width,
-                height: source.height
-            })));
+        assert!(
+            described
+                .layers
+                .iter()
+                .all(|layer| layer.input_stage == Some(fixture_size))
+        );
+        // The crop receives the half turn the orientation layer ahead of it holds, and so does
+        // whatever would follow the crop.
+        let half =
+            Orientation::of(crate::Transform::RotateRight).then(crate::Transform::RotateRight);
+        assert_eq!(
+            described
+                .layers
+                .iter()
+                .map(|layer| layer.input_orientation)
+                .collect::<Vec<_>>(),
+            [
+                Some(Orientation::NEUTRAL),
+                Some(Orientation::NEUTRAL),
+                Some(half)
+            ]
+        );
+        assert_eq!(described.output_orientation, Some(half));
         // An earlier entry describes its own stack.
         assert!(
             service
@@ -328,6 +392,36 @@ mod tests {
                 "row {index} is the stage the host compiles for its prefix"
             );
         }
+        // The stack's own output is the whole stack's compiled stage, turned by the quarter turn
+        // ahead of the crop, and only the crop receives that turn.
+        let whole = service
+            .registry
+            .compile_layers(
+                source.width,
+                source.height,
+                &recipe.layers,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )
+            .unwrap()
+            .stage();
+        assert_eq!(described.output_stage, size(whole.width, whole.height));
+        let right = Orientation::of(crate::Transform::RotateRight);
+        assert_eq!(
+            described
+                .layers
+                .iter()
+                .map(|layer| layer.input_orientation)
+                .collect::<Vec<_>>(),
+            [
+                Some(Orientation::NEUTRAL),
+                Some(Orientation::NEUTRAL),
+                Some(Orientation::NEUTRAL),
+                Some(right)
+            ]
+        );
+        assert_eq!(described.output_orientation, Some(right));
         // An earlier entry is described against its own stack: before the turn, the crop receives
         // the shrink's output unturned.
         let earlier = service.describe_entry(&asset, Some(&entries[1])).unwrap();
@@ -363,6 +457,78 @@ mod tests {
             serde_json::to_value(&described.layers[3]).unwrap()["input_stage"],
             serde_json::Value::Null,
             "an unknown stage is reported as null, never omitted"
+        );
+        assert_eq!(
+            described
+                .layers
+                .iter()
+                .map(|layer| layer.input_orientation)
+                .collect::<Vec<_>>(),
+            [
+                Some(Orientation::NEUTRAL),
+                Some(Orientation::NEUTRAL),
+                None,
+                None
+            ],
+            "no orientation is reported for a stage that is not known"
+        );
+        assert_eq!(
+            (described.output_stage, described.output_orientation),
+            (None, None),
+            "nor is the output of a stack whose output cannot be known"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stack with no crop layer describes the stage its output has, which is the stage a crop
+    /// appended to it would receive, and the orientation that output was given: here a shrink and
+    /// then a quarter turn, so a new crop would frame the turned, shrunk photograph. The rows alone
+    /// could not say it, since no row follows the turn.
+    #[test]
+    fn the_output_stage_is_what_a_layer_appended_to_the_stack_receives() {
+        let catalog = temp("describe-output.sqlite");
+        let mut service = EditorService::open_with(&catalog, ShrinkModule::registry()).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let edits = [
+            (SHRINK_ACTION, shrink(200, 120)),
+            ("transform", json!({"transform": "rotate-right"})),
+        ];
+        for (revision, (action, parameters)) in edits.into_iter().enumerate() {
+            service
+                .apply_action(
+                    &asset,
+                    mutation(revision as u64, action),
+                    action,
+                    parameters,
+                )
+                .unwrap();
+        }
+        let described = service.describe_entry(&asset, None).unwrap();
+        assert!(
+            described
+                .layers
+                .iter()
+                .all(|layer| layer.effect != crate::CROP_EFFECT),
+            "no crop layer"
+        );
+        assert_eq!(
+            described.output_stage,
+            Some(StageSize {
+                width: 120,
+                height: 200
+            }),
+            "the shrunk stage, turned"
+        );
+        assert_eq!(
+            described.output_orientation,
+            Some(Orientation::of(crate::Transform::RotateRight))
+        );
+        let wire = serde_json::to_value(&described).unwrap();
+        assert_eq!(wire["output_stage"], json!({"width": 120, "height": 200}));
+        assert_eq!(
+            wire["output_orientation"],
+            json!({"mirror": false, "turns": 1})
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

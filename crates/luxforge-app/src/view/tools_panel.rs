@@ -4,8 +4,8 @@
 //! `state::tools` describes it.
 use crate::{
     app::message::{
-        ActionMessage, ClipEndpoint, ControlMessage, CropMessage, MenuTarget, Message,
-        OverlayMessage, PresetMessage, ViewMessage,
+        ActionMessage, ClipEndpoint, ControlMessage, CropMessage, DraftMessage, MenuTarget,
+        Message, OverlayMessage, PresetMessage, ViewMessage,
     },
     state::{
         capabilities::CapabilityView,
@@ -1540,7 +1540,7 @@ fn crop_section_view<'a>(
                     "Discard",
                     ButtonTone::Control,
                     ButtonSize::Regular,
-                    Some(Message::Crop(CropMessage::Cancel)),
+                    Some(Message::Draft(DraftMessage::Cancel)),
                 ),
                 text_button(
                     "Reapply",
@@ -1548,7 +1548,7 @@ fn crop_section_view<'a>(
                     ButtonSize::Regular,
                     model
                         .can_reapply
-                        .then_some(Message::Crop(CropMessage::Reapply)),
+                        .then_some(Message::Draft(DraftMessage::Reapply)),
                 ),
             ],
             RowPlacement {
@@ -1646,9 +1646,6 @@ fn crop_section_view<'a>(
     rows.push(angle_stepper(model));
     rows.push(straighten_toggle(model));
     if !model.drafting {
-        if model.pending {
-            rows.push(caption("Preparing the crop's input stage…"));
-        }
         return column(rows).spacing(theme::ROW_SPACING).into();
     }
     rows.push(readout_card(
@@ -1668,7 +1665,7 @@ fn crop_section_view<'a>(
             fill: true,
             enabled: true,
         },
-        Some(Message::Crop(CropMessage::Cancel)),
+        Some(Message::Draft(DraftMessage::Cancel)),
     );
     let apply = labelled_button(
         &LabelledButtonModel {
@@ -1680,7 +1677,9 @@ fn crop_section_view<'a>(
             fill: true,
             enabled: model.can_apply,
         },
-        model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
+        model
+            .can_apply
+            .then_some(Message::Draft(DraftMessage::Commit)),
     );
     let apply: Element<'a, Message> = mouse_area(apply)
         .on_right_press(Message::View(ViewMessage::OpenMenu(MenuTarget::Draft)))

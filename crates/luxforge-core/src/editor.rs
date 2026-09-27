@@ -10,7 +10,8 @@
 use crate::ErrorKind;
 use crate::{
     AssetId, Draft, DraftId, EntryId, Error, HistoryEntry, HistoryRow, LayerId, MaskId,
-    ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId, StageSize,
+    ModuleRegistry, Orientation, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
+    StageSize,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
     source::PreparedSource,
@@ -413,12 +414,19 @@ pub struct LayerDescription {
     pub neutral: bool,
     /// The stage this layer receives: the source's extents for the first layer and the output of
     /// the layers before it for every later one, by the core's own stage fold
-    /// ([`crate::ModuleRegistry::input_stages`]). It is the stage the layer's payload addresses, so
+    /// ([`crate::ModuleRegistry::stages`]). It is the stage the layer's payload addresses, so
     /// a client reads a crop's pixel rectangle or its ratio from it without folding geometry itself.
     /// `null` for every layer after one whose output cannot be known: a missing or unavailable
     /// provider, or a payload its provider cannot compile.
     #[serde(default)]
     pub input_stage: Option<StageSize>,
+    /// The exact orientation — reflection and quarter turns — the orientation layers before this
+    /// one gave the stage it receives, composed in stack order by the core. A client that holds a
+    /// frame on this stage carries it through a turn committed ahead of it from this, without
+    /// reading an orientation payload. `null` exactly when `input_stage` is, or after an
+    /// orientation layer whose payload cannot be read.
+    #[serde(default)]
+    pub input_orientation: Option<Orientation>,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.
@@ -427,6 +435,14 @@ pub struct LayerDescription {
 pub struct RecipeDescription {
     pub entry_id: EntryId,
     pub layers: Vec<LayerDescription>,
+    /// The stage the whole stack produces, by the same fold as each row's `input_stage`: what a
+    /// layer appended to the stack would receive. `null` when some layer's output cannot be known.
+    #[serde(default)]
+    pub output_stage: Option<StageSize>,
+    /// The orientation the whole stack gives its output, as each row's `input_orientation` does
+    /// for that row; `null` exactly when `output_stage` is, or when an orientation cannot be read.
+    #[serde(default)]
+    pub output_orientation: Option<Orientation>,
 }
 
 /// A named reference to one retained history entry: the Lightroom-style saved state.

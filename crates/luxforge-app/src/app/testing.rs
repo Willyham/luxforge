@@ -22,7 +22,7 @@ use std::{collections::VecDeque, path::PathBuf, sync::Arc, sync::atomic::Orderin
 
 pub(crate) use crate::state::testing::{
     CROP_ASPECTS, Z6_AS_SHOT, Z6_CAM_XYZ, controls_descriptor, crop_descriptor, crop_layer,
-    described, descriptors, entry, listed, raw_entry, raw_source,
+    described, described_at, descriptors, entry, listed, raw_entry, raw_source,
 };
 
 pub(crate) fn boot() -> (Editor, PathBuf) {
@@ -156,6 +156,8 @@ pub(crate) fn refresh_for(
         recipe: RecipeDescription {
             entry_id: current.id.clone(),
             layers: Vec::new(),
+            output_stage: None,
+            output_orientation: None,
         },
         current_recipe: None,
         masks: luxforge_core::mask::commands::MaskListing {
@@ -231,13 +233,18 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
                 .is_neutral(&layer.effect_id, layer.effect_format, &layer.payload)
                 .expect("RAW neutrality"),
             input_stage: None,
+            input_orientation: None,
         })
         .collect();
     refresh
 }
 
+/// The source extents the rows of [`opened`] describe, so a crop draft opened there has a stage of
+/// this size with no geometry ahead of it.
+pub(crate) const CROP_SOURCE: (u32, u32) = (480, 320);
+
 /// An editor with the crop module discovered and one asset open at that revision, whose stack is
-/// those layers.
+/// those layers, described as the owner describes them for a [`CROP_SOURCE`] photograph.
 pub(crate) fn opened(
     layers: Vec<luxforge_core::Layer>,
     revision: u64,
@@ -252,7 +259,8 @@ pub(crate) fn opened(
         current.snapshot = current.snapshot.append(layer).expect("a valid stack");
     }
     let entry_id = current.id.clone();
-    let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    refresh.recipe = described_at(&current, CROP_SOURCE);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     assert!(editor.editable(), "{}", editor.status);
     (editor, catalog, asset, entry_id)
@@ -635,7 +643,8 @@ pub(crate) fn drafting() -> (Editor, PathBuf, PathBuf, AssetId, String, String) 
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
     let asset = AssetId::new();
     let current = entry(&asset, 4, None);
-    let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    refresh.recipe = described_at(&current, CROP_SOURCE);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     let log = attach_log(&mut editor);
     let (action, parameter) = patch_control(&editor);
@@ -653,10 +662,10 @@ pub(crate) fn begun(editor: &mut Editor, asset: &AssetId, action: &str, revision
     answer_begin(editor, draft);
 }
 
-/// Answer the crop gesture's `draft.begin`, if it has not answered, with a draft on the revision
-/// the desktop holds, and open its frame on `stage`: the draft a crop test drives, with every
-/// `draft.set` answered by [`accepted_set`].
-pub(crate) fn open_crop(editor: &mut Editor, stage: luxforge_core::CropStage) {
+/// Answer the started crop gesture's `draft.begin`, if it has not answered, with a draft on the
+/// revision the desktop holds, and take its input stage as shown: the draft a crop test drives,
+/// with every `draft.set` answered by [`accepted_set`]. The frame itself opened with the start.
+pub(crate) fn open_crop(editor: &mut Editor) {
     if core_draft(editor).is_some_and(|draft| draft.in_flight() == Some(Round::Begin)) {
         let state = editor.state.as_ref().expect("a photograph");
         let (asset, revision) = (state.asset.id.clone(), state.revision);
@@ -667,15 +676,15 @@ pub(crate) fn open_crop(editor: &mut Editor, stage: luxforge_core::CropStage) {
             .clone();
         begun(editor, &asset, &action, revision);
     }
-    editor.open_draft(stage);
+    editor.crop_stage_shown();
 }
 
-/// Put an open crop gesture with this frame and this stage on its way in the editor's one slot
-/// directly, its `draft.begin` answered, as a test that is about something else needs one there.
+/// Put an open crop gesture with this frame and this stage in the editor's one slot directly, its
+/// `draft.begin` answered, as a test that is about something else needs one there.
 pub(crate) fn hold_crop(
     editor: &mut Editor,
-    frame: Option<crate::crop_draft::CropDraft>,
-    stage: Option<crate::app::crop::PendingStage>,
+    frame: crate::crop_draft::CropDraft,
+    stage: crate::app::crop::StageView,
 ) {
     let asset = editor
         .state

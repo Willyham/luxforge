@@ -865,6 +865,8 @@ impl Editor {
                     .is_some_and(|gesture| gesture.draft.conflicted),
             }),
             gesture_conflicted: self.gesture_conflicted(),
+            gesture: self.core_gesture().map(|gesture| gesture.kind.noun()),
+            apply_refusal: self.release_refusal(),
             preset_refusal: self.gesture_refusal(Starting::Preset),
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
             history_refusal: self.gesture_refusal(Starting::History),
@@ -883,7 +885,6 @@ impl Editor {
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
             target: self.section_target(),
-            draft_pending: self.crop_pending().is_some(),
             drafting: self.drafting(),
             crop_angle: &self.crop_angle,
             crop_custom: (&self.crop_custom.0, &self.crop_custom.1),
@@ -1025,9 +1026,9 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             gallery_open: self.gallery_page().is_some(),
-            drafting: self.crop().is_some(),
+            drafting: self.crop().is_some() || self.mask_gesture().is_some(),
+            crop: self.crop().is_some(),
             slider_drafting: self.slider_gesture().is_some(),
-            mask_drafting: self.mask_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
             export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),

@@ -17,14 +17,15 @@ use luxforge_core::{MASK_MODE, POINTER_MODE};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
     pub(crate) gallery_open: bool,
-    /// A crop draft is open, so Enter, Escape, Space and Option drive it.
+    /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
+    /// through the one draft lifecycle, whichever it is.
     pub(crate) drafting: bool,
+    /// The open draft is the crop's, so Space pans the photograph and Option scales a handle about
+    /// the centre. No other draft has these keys.
+    pub(crate) crop: bool,
     /// A slider gesture's draft is open, so Escape discards it and the arrow key that is stepping
     /// it commits it on key-up.
     pub(crate) slider_drafting: bool,
-    /// A mask shape gesture is open, so Enter applies it and Escape cancels it, exactly as the crop
-    /// draft's keys do for its own gesture.
-    pub(crate) mask_drafting: bool,
     /// Mask mode is active, so the brush's own keys are live: the brackets size it, the shifted
     /// brackets feather it, and the erase modifier erases while it is held. They are here rather
     /// than only while a stroke is down, because the brush is sized before it is put down.
@@ -91,7 +92,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             modifiers.alt(),
         ))));
     }
-    if context.drafting {
+    if context.crop {
         match keyboard {
             Keys::ModifiersChanged(modifiers) => {
                 return Some(Message::Crop(CropMessage::Option(modifiers.alt())));
@@ -179,16 +180,12 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if status != Status::Ignored {
         return None;
     }
-    if context.drafting {
-        match key {
-            Key::Named(Named::Space) => return Some(Message::Crop(CropMessage::Space(true))),
-            Key::Named(Named::Enter) => return Some(Message::Crop(CropMessage::Apply)),
-            Key::Named(Named::Escape) => return Some(Message::Crop(CropMessage::Cancel)),
-            _ => {}
-        }
+    if context.crop && matches!(key, Key::Named(Named::Space)) {
+        return Some(Message::Crop(CropMessage::Space(true)));
     }
-    // A mask shape gesture answers the same two keys, because it is the same kind of draft.
-    if context.mask_drafting {
+    // The crop draft and a mask shape gesture answer the same two keys, because they are the same
+    // kind of draft.
+    if context.drafting {
         match key {
             Key::Named(Named::Enter) => return Some(Message::Draft(DraftMessage::Commit)),
             Key::Named(Named::Escape) => return Some(Message::Draft(DraftMessage::Cancel)),
@@ -212,11 +209,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
     // nothing. A mode that owns a draft answered Escape above by cancelling that draft, which is
     // what returns it to the pointer.
-    if context.mode_active
-        && !context.drafting
-        && !context.mask_drafting
-        && matches!(key, Key::Named(Named::Escape))
-    {
+    if context.mode_active && !context.drafting && matches!(key, Key::Named(Named::Escape)) {
         let leave = context.leave_to.as_deref().unwrap_or(POINTER_MODE);
         return Some(Message::View(ViewMessage::SetMode(leave.into())));
     }
@@ -332,8 +325,8 @@ mod tests {
         KeyContext {
             gallery_open: false,
             drafting: false,
+            crop: false,
             slider_drafting: false,
-            mask_drafting: false,
             mask_brush: false,
             palette_open: false,
             export_menu_open: false,
@@ -373,6 +366,11 @@ mod tests {
         let plain = context();
         let drafting = KeyContext {
             drafting: true,
+            crop: true,
+            ..context()
+        };
+        let mask_drafting = KeyContext {
+            drafting: true,
             ..context()
         };
         let palette = KeyContext {
@@ -381,6 +379,7 @@ mod tests {
         };
         let drafting_palette = KeyContext {
             drafting: true,
+            crop: true,
             palette_open: true,
             ..context()
         };
@@ -390,6 +389,7 @@ mod tests {
         };
         let drafting_export_menu = KeyContext {
             drafting: true,
+            crop: true,
             export_menu_open: true,
             ..context()
         };
@@ -633,14 +633,35 @@ mod tests {
                 pressed(Key::Named(Named::Enter), Modifiers::empty()),
                 Status::Ignored,
                 &drafting,
-                Some("Crop"),
+                Some("Draft(Commit)"),
             ),
             (
                 "cancel the draft",
                 pressed(Key::Named(Named::Escape), Modifiers::empty()),
                 Status::Ignored,
                 &drafting,
-                Some("Crop"),
+                Some("Draft(Cancel)"),
+            ),
+            (
+                "apply a mask gesture the same way",
+                pressed(Key::Named(Named::Enter), Modifiers::empty()),
+                Status::Ignored,
+                &mask_drafting,
+                Some("Draft(Commit)"),
+            ),
+            (
+                "cancel a mask gesture the same way",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &mask_drafting,
+                Some("Draft(Cancel)"),
+            ),
+            (
+                "space pans only a crop draft",
+                pressed(Key::Named(Named::Space), Modifiers::empty()),
+                Status::Ignored,
+                &mask_drafting,
+                None,
             ),
             (
                 "space pans the draft",
@@ -677,6 +698,13 @@ mod tests {
                 &plain,
                 None,
             ),
+            (
+                "option scales only a crop draft's handles",
+                Event::Keyboard(Keys::ModifiersChanged(Modifiers::ALT)),
+                Status::Ignored,
+                &mask_drafting,
+                None,
+            ),
         ];
         for (case, event, status, context, expected) in cases {
             let mapped = keymap(&event, status, context);
@@ -691,10 +719,11 @@ mod tests {
                 None => assert!(mapped.is_none(), "{case}: {mapped:?}"),
             }
         }
-        // Space released ends the pan only while a draft is open.
+        // Space released ends the pan only while a crop draft is open.
         let release = released(Key::Named(Named::Space));
         assert!(keymap(&release, Status::Ignored, &drafting).is_some());
         assert!(keymap(&release, Status::Ignored, &plain).is_none());
+        assert!(keymap(&release, Status::Ignored, &mask_drafting).is_none());
         // Compare's release arrives whatever took the press, and whatever else is open.
         for (case, status, context) in [
             ("plain", Status::Ignored, &plain),

@@ -339,8 +339,8 @@ photo identity and that request's assigned clipping frame version (`drawn_clippi
 the clipping version changes while a screenshot is in flight, capture retries. Empty, crop, gallery
 and render-error captures do not wait for this pair. If clipping derivation or presentation fails,
 the active script step is marked failed and the refusal frame is captured. Mask coverage still
-settles a waiting step in its update, and the crop draft opens in the update that takes up its input
-stage. `preview_exact_adopted` records the exact phase of such a job
+settles a waiting step in its update, and the crop draft's open frame is drawn over its input
+stage in the update that takes that stage up. `preview_exact_adopted` records the exact phase of such a job
 being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer request superseded, under its own generation and with `draft` when it was a crop draft's input stage, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `preview_failed` records every failed preview of the displayed state,
@@ -553,7 +553,8 @@ Each step is an object with exactly one key.
 - `draft` drives the crop draft: `start`, `reapply`, `angle`, `nudge`, `preset` (a declared aspect
   option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
   top-left then bottom-right), `swap`, `lock`, `option`, `guide`, `apply`, `cancel`. `start` and
-  `reapply` wait for the crop layer's truncated input-stage preview, `apply` waits for its committed
+  `reapply` open or rebase the frame at once and wait for the crop layer's truncated input-stage
+  preview under it (and a reapply for its `draft.reapply` too), `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
 - `slider` drives one gesture on a generated control: `{"action": "set-basic", "parameter":
   "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value, exactly as a drag

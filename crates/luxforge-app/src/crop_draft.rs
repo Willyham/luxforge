@@ -11,8 +11,8 @@
 //! [`CropStage::fit_about_center`], so it is covered by the source, snapped to whole box pixels and
 //! accepted by [`CropPayload::output_rect`].
 use luxforge_core::{
-    BoxRect, CropPayload, CropStage, Edge, LayerId, MAX_ANGLE, MIN_ANGLE, Orientation, OutputRect,
-    guide_angle, largest_with_ratio_inside,
+    BoxRect, CropAspect, CropPayload, CropStage, Edge, LayerId, MAX_ANGLE, MIN_ANGLE, Orientation,
+    OutputRect, guide_angle, largest_with_ratio_inside,
 };
 use serde_json::{Value, json};
 
@@ -25,12 +25,6 @@ pub(crate) const ANGLE_RAIL_STEP: f64 = ANGLE_STEP / 10.0;
 
 /// The smallest extent a gesture may leave on either axis, in box pixels.
 pub(crate) const MIN_EXTENT: f64 = 1.0;
-
-/// The special words the crop module's `aspect` enum uses for the ratios that are not `W:H`.
-/// `free` is also the option a draft shows as chosen when its ratio is not locked.
-pub(crate) const FREE: &str = "free";
-const ORIGINAL: &str = "original";
-const CUSTOM: &str = "custom";
 
 /// Whether the rectangle's width to height ratio is pinned.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,62 +43,37 @@ impl Aspect {
     }
 }
 
-/// What one option of the module's `aspect` enum means. The list of presets is generated from the
-/// descriptor, so the desktop hard-codes no ratio.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum PresetKind {
-    Free,
-    /// The input stage's own ratio, which already reflects preceding quarter-turns.
-    Original,
-    /// A literal `W:H` option.
-    Ratio(f64),
-    /// `custom`, whose two extents come from the panel's own fields.
-    Custom,
-}
-
-/// One ratio preset: the enum option exactly as the descriptor spells it and what it means.
+/// One ratio preset: the enum option exactly as the descriptor spells it and what the core says it
+/// names ([`CropAspect`]). The list of presets is generated from the descriptor, so the desktop
+/// hard-codes no ratio and spells no option. Its Free is the lock open: the frame editor offers the
+/// options as a ratio lock, where `crop-fit` reads the same option as "keep the ratio it finds".
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AspectPreset {
     pub(crate) option: String,
-    pub(crate) kind: PresetKind,
+    pub(crate) kind: CropAspect,
 }
 
 impl AspectPreset {
-    /// The button label: the declared option, with the two special words capitalized.
+    /// The button label: the declared option, with the words that name no ratio capitalized.
     pub(crate) fn label(&self) -> String {
         match self.kind {
-            PresetKind::Free => "Free".into(),
-            PresetKind::Original => "Original".into(),
-            PresetKind::Custom => "Custom".into(),
-            PresetKind::Ratio(_) => self.option.clone(),
+            CropAspect::Free => "Free".into(),
+            CropAspect::Original => "Original".into(),
+            CropAspect::Custom => "Custom".into(),
+            CropAspect::Ratio(_) => self.option.clone(),
         }
     }
 }
 
-/// `W:H` as a ratio; only finite, positive extents are a ratio.
-pub(crate) fn parse_ratio(option: &str) -> Option<f64> {
-    let (width, height) = option.split_once(':')?;
-    let width: f64 = width.trim().parse().ok()?;
-    let height: f64 = height.trim().parse().ok()?;
-    (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
-        .then_some(width / height)
-}
-
-/// The presets the panel offers, derived from the declared `aspect` enum options. An option that is
-/// neither a special word nor a `W:H` ratio is dropped rather than guessed at.
+/// The presets the panel offers, derived from the declared `aspect` enum options as the core reads
+/// them. An option the core does not name is dropped rather than guessed at.
 pub(crate) fn aspect_presets(options: &[String]) -> Vec<AspectPreset> {
     options
         .iter()
         .filter_map(|option| {
-            let kind = match option.as_str() {
-                FREE => PresetKind::Free,
-                ORIGINAL => PresetKind::Original,
-                CUSTOM => PresetKind::Custom,
-                other => PresetKind::Ratio(parse_ratio(other)?),
-            };
             Some(AspectPreset {
                 option: option.clone(),
-                kind,
+                kind: CropAspect::parse(option)?,
             })
         })
         .collect()
@@ -136,9 +105,9 @@ pub(crate) fn committed_aspect(
     };
     presets.iter().find_map(|preset| {
         let ratio = match preset.kind {
-            PresetKind::Original => f64::from(stage.0.max(1)) / f64::from(stage.1.max(1)),
-            PresetKind::Ratio(ratio) => ratio,
-            PresetKind::Free | PresetKind::Custom => return None,
+            CropAspect::Original => f64::from(stage.0.max(1)) / f64::from(stage.1.max(1)),
+            CropAspect::Ratio(ratio) => ratio,
+            CropAspect::Free | CropAspect::Custom => return None,
         };
         let wide = ratio.max(1.0 / ratio);
         ((long - wide * short).abs() <= 2.0 * wide)
@@ -312,7 +281,7 @@ impl CropDraft {
             rect,
             reference: (stage, rect),
             aspect: Aspect::Free,
-            preset: FREE.into(),
+            preset: CropAspect::FREE.into(),
             layer,
             layer_index,
             ahead: Orientation::NEUTRAL,
@@ -457,12 +426,12 @@ impl CropDraft {
     /// inside the current one becomes the new frame reference.
     pub(crate) fn set_preset(&mut self, preset: &AspectPreset, custom: Option<(f64, f64)>) {
         let aspect = match preset.kind {
-            PresetKind::Free => Aspect::Free,
-            PresetKind::Original => Aspect::Locked(
+            CropAspect::Free => Aspect::Free,
+            CropAspect::Original => Aspect::Locked(
                 f64::from(self.stage.width.max(1)) / f64::from(self.stage.height.max(1)),
             ),
-            PresetKind::Ratio(ratio) => Aspect::Locked(ratio),
-            PresetKind::Custom => match custom {
+            CropAspect::Ratio(ratio) => Aspect::Locked(ratio),
+            CropAspect::Custom => match custom {
                 Some((width, height))
                     if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 =>
                 {
@@ -490,13 +459,13 @@ impl CropDraft {
         match self.aspect {
             Aspect::Locked(_) => {
                 self.aspect = Aspect::Free;
-                self.preset = FREE.into();
+                self.preset = CropAspect::FREE.into();
             }
             Aspect::Free => {
                 let ratio = self.rect.width / self.rect.height;
                 if ratio.is_finite() && ratio > 0.0 {
                     self.apply_aspect(Aspect::Locked(ratio));
-                    self.preset = CUSTOM.into();
+                    self.preset = CropAspect::CUSTOM.into();
                 }
             }
         }
@@ -541,13 +510,7 @@ impl CropDraft {
             angle: self.stage.angle,
             ..input
         };
-        let center = self.rect.center();
-        let (u, v) = self.stage.to_input(center.0, center.1);
-        let rect = stage.fit_about_center(BoxRect::from_center(
-            stage.to_box(u, v),
-            self.rect.width,
-            self.rect.height,
-        ));
+        let rect = stage.refit(&self.stage, self.rect);
         self.stage = stage;
         self.rect = rect;
         self.reference = (stage, rect);
@@ -973,19 +936,17 @@ mod tests {
     fn presets_come_from_the_declared_enum_options() {
         let presets = presets();
         assert_eq!(presets.len(), PRESETS.len());
-        assert_eq!(presets[0].kind, PresetKind::Free);
-        assert_eq!(presets[1].kind, PresetKind::Original);
-        assert_eq!(presets[2].kind, PresetKind::Ratio(1.0));
-        assert_eq!(presets[3].kind, PresetKind::Ratio(1.5));
-        assert_eq!(presets[4].kind, PresetKind::Ratio(4.0 / 3.0));
-        assert_eq!(presets[5].kind, PresetKind::Ratio(16.0 / 9.0));
-        assert_eq!(presets[6].kind, PresetKind::Custom);
+        assert_eq!(presets[0].kind, CropAspect::Free);
+        assert_eq!(presets[1].kind, CropAspect::Original);
+        assert_eq!(presets[2].kind, CropAspect::Ratio(1.0));
+        assert_eq!(presets[3].kind, CropAspect::Ratio(1.5));
+        assert_eq!(presets[4].kind, CropAspect::Ratio(4.0 / 3.0));
+        assert_eq!(presets[5].kind, CropAspect::Ratio(16.0 / 9.0));
+        assert_eq!(presets[6].kind, CropAspect::Custom);
         assert_eq!(presets[0].label(), "Free");
         assert_eq!(presets[3].label(), "3:2");
-        // An option the desktop cannot read is dropped, never guessed at.
-        assert!(aspect_presets(&["wide".to_string(), "0:3".into(), "1:0".into()]).is_empty());
-        assert_eq!(parse_ratio(" 3 : 2 "), Some(1.5));
-        assert_eq!(parse_ratio("3"), None);
+        // An option the core does not name is dropped, never guessed at.
+        assert!(aspect_presets(&["wide".to_string(), "0:3".into(), "5:4".into()]).is_empty());
     }
 
     #[test]
@@ -1126,7 +1087,7 @@ mod tests {
                 .filter_map(|output| committed_aspect(&presets, (480, 360), output))
                 .all(|(preset, _)| matches!(
                     preset.kind,
-                    PresetKind::Original | PresetKind::Ratio(_)
+                    CropAspect::Original | CropAspect::Ratio(_)
                 ))
         );
         for (width, height) in STAGES {

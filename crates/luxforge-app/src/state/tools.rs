@@ -18,9 +18,9 @@ use crate::{
 };
 use luxforge_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, MAX_ANGLE,
-    MIN_ANGLE, MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind,
-    RailDecoration, ResetAction, SourceTag,
+    CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, LayerDescription,
+    MAX_ANGLE, MIN_ANGLE, MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor,
+    ParameterKind, RailDecoration, RecipeDescription, ResetAction, SourceTag,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -469,8 +469,6 @@ pub(crate) struct CropSectionModel {
     pub(crate) title: String,
     /// A draft is open.
     pub(crate) drafting: bool,
-    /// The truncated preview that opens a draft is in flight.
-    pub(crate) pending: bool,
     pub(crate) conflicted: bool,
     /// A historical preview is shown, so the draft is paused rather than discarded.
     pub(crate) paused: bool,
@@ -496,6 +494,7 @@ pub(crate) struct CropSectionModel {
     /// The draft's own numbers, so what is on screen is observable without a debugger: each a
     /// name and its value.
     pub(crate) readout: Vec<(String, String)>,
+    /// Apply can run: the app's one refusal ([`Inputs::apply_refusal`]) has nothing to say.
     pub(crate) can_apply: bool,
     pub(crate) can_reapply: bool,
     pub(crate) enabled: bool,
@@ -946,7 +945,7 @@ fn contains_curve(controls: &[Control]) -> bool {
 /// crop and shows the same fields, so it follows those instead.
 fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
     let fields = format!(
-        "{}|{:?}|{}|{}|{}|{}|{}",
+        "{}|{:?}|{}|{}|{}|{}|{}|{:?}",
         inputs.crop_angle,
         inputs.editing,
         inputs.crop_custom.0,
@@ -954,12 +953,12 @@ fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
         inputs.crop_guide,
         inputs.session.preview.can_edit(),
         inputs.gesture_conflicted,
+        inputs.apply_refusal,
     );
     match inputs.draft {
         Some(draft) => format!("{}|{}|{fields}", draft.summary(), draft.preset),
         None => format!(
-            "none|{}|{:?}|{fields}",
-            inputs.draft_pending,
+            "none|{:?}|{fields}",
             frame.map(|frame| committed_crop(frame, inputs)),
         ),
     }
@@ -1631,7 +1630,6 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
     let presets = frame.presets();
     let base = CropSectionModel {
         title: frame.title.to_owned(),
-        pending: inputs.draft_pending,
         paused: !inputs.session.preview.can_edit(),
         custom: (
             inputs.crop_custom.0.to_owned(),
@@ -1654,25 +1652,19 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         ..CropSectionModel::default()
     };
     let Some(draft) = inputs.draft else {
+        // Idle, the box and the rail show the committed angle, and the box shows what is being
+        // typed while it is open.
         let committed = committed_crop(frame, inputs);
-        // While the draft a change opened is starting, the box and the rail show the angle the
-        // queued changes lead to, which the driver keeps in the angle's text; otherwise they show
-        // the committed angle, and the box shows what is being typed while it is open.
-        let queued = inputs
-            .draft_pending
-            .then(|| inputs.crop_angle.trim().parse::<f64>().ok())
-            .flatten()
-            .filter(|angle| angle.is_finite())
-            .map(|angle| angle.clamp(MIN_ANGLE, MAX_ANGLE));
-        let angle = queued.unwrap_or(committed.angle);
         let locked = committed.aspect.is_some();
         let chosen = committed
             .aspect
             .as_ref()
-            .map_or(crate::crop_draft::FREE, |(option, _)| option.as_str());
+            .map_or(luxforge_core::CropAspect::FREE, |(option, _)| {
+                option.as_str()
+            });
         return CropSectionModel {
             presets: preset_chips(&presets, chosen),
-            angle: if base.angle_editing || queued.is_some() {
+            angle: if base.angle_editing {
                 base.angle.clone()
             } else {
                 number_text(committed.angle)
@@ -1680,7 +1672,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             angle_rail: Some(AngleRailModel {
                 min: MIN_ANGLE,
                 max: MAX_ANGLE,
-                value: angle,
+                value: committed.angle,
                 step: crate::crop_draft::ANGLE_RAIL_STEP,
                 live: false,
             }),
@@ -1697,7 +1689,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         lock_label: lock_label(draft.aspect.ratio().is_some()),
         locked: draft.aspect.ratio().is_some(),
         can_swap: enabled && draft.aspect.ratio().is_some(),
-        can_apply: enabled && !inputs.gesture_conflicted,
+        can_apply: inputs.apply_refusal.is_none(),
         can_reapply: !inputs.busy,
         readout: readout(draft, frame.action),
         angle_rail: Some(AngleRailModel {
@@ -1745,27 +1737,27 @@ pub(crate) struct CommittedCrop {
 
 /// The displayed entry's committed crop, as the idle section shows it, read from that entry's own
 /// `recipe.describe` row. The draft that Start opens edits the stack's first crop layer, so this
-/// reads that same one: its `neutral`, its `values` (the stored rectangle and angle) and its
-/// `input_stage`, the stage the core's own stage fold says the crop receives, whatever geometry
-/// precedes it. The desktop folds no geometry itself. Rows that describe another entry, which is
-/// what the desktop holds until the displayed entry's rows arrive, read as no crop, and a row
-/// without a stage (a provider before it the core cannot compile) reads as Free at its own angle.
-/// Reading it is `O(layers)` over rows already in hand: no render, no sample, no request.
+/// reads that same one: its `neutral`, its `values` (the stored rectangle and angle, read under the
+/// declared parameter names) and its `input_stage`, the stage the core's own stage fold says the
+/// crop receives, whatever geometry precedes it. The desktop folds no geometry and parses no
+/// payload itself. Rows that describe another entry, which is what the desktop holds until the
+/// displayed entry's rows arrive, read as no crop, and a row without a stage (a provider before it
+/// the core cannot compile) reads as Free at its own angle. Reading it is `O(layers)` over rows
+/// already in hand: no render, no sample, no request.
 pub(crate) fn committed_crop(frame: &CropFrame<'_>, inputs: &Inputs<'_>) -> CommittedCrop {
     let displayed = inputs
         .display_entry
         .or_else(|| inputs.state.map(|state| &state.current_entry.id));
-    let (Some(effect), Some(recipe)) = (frame.effect(), inputs.recipe) else {
-        return CommittedCrop::default();
-    };
-    if Some(&recipe.entry_id) != displayed {
-        return CommittedCrop::default();
-    }
-    let Some(row) = recipe.layers.iter().find(|row| row.effect == effect) else {
-        return CommittedCrop::default();
-    };
-    let Ok(payload) = serde_json::from_value::<CropPayload>(Value::Object(row.values.clone()))
+    let Some(recipe) = inputs
+        .recipe
+        .filter(|recipe| Some(&recipe.entry_id) == displayed)
     else {
+        return CommittedCrop::default();
+    };
+    let Some((_, row)) = crop_row(frame, recipe) else {
+        return CommittedCrop::default();
+    };
+    let Some(payload) = frame.payload(&row.values) else {
         return CommittedCrop::default();
     };
     if row.neutral {
@@ -2496,6 +2488,20 @@ impl CropFrame<'_> {
         }
     }
 
+    /// The frame a `recipe.describe` row's values hold, read under the declared parameter names:
+    /// the inverse of [`Self::params`]. `None` when a value is missing or not a number, as it is
+    /// for a row whose provider could not read its payload.
+    pub(crate) fn payload(&self, values: &Map<String, Value>) -> Option<CropPayload> {
+        let read = |name: &str| values.get(name).and_then(Value::as_f64);
+        Some(CropPayload {
+            angle: read(self.angle)?,
+            x: read(self.x)?,
+            y: read(self.y)?,
+            width: read(self.width)?,
+            height: read(self.height)?,
+        })
+    }
+
     /// The payload as request fields under the declared parameter names.
     pub(crate) fn params(&self, payload: &CropPayload) -> Map<String, Value> {
         [
@@ -2509,6 +2515,20 @@ impl CropFrame<'_> {
         .map(|(name, value)| (name.to_owned(), Value::from(value)))
         .collect()
     }
+}
+
+/// The row of the crop layer a draft edits, and its index: the stack's first layer of the frame's
+/// geometry effect.
+pub(crate) fn crop_row<'a>(
+    frame: &CropFrame<'_>,
+    recipe: &'a RecipeDescription,
+) -> Option<(usize, &'a LayerDescription)> {
+    let effect = frame.effect()?;
+    recipe
+        .layers
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.effect == effect)
 }
 
 /// The first available module that declares a crop frame.

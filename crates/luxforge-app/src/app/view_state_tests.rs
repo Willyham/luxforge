@@ -5,7 +5,7 @@ use super::{
     testing::{boot, crop_descriptor, finish, opened},
     *,
 };
-use luxforge_core::{CropStage, POINTER_MODE};
+use luxforge_core::POINTER_MODE;
 
 /// The gallery page is this desktop's own view state: opening a page needs no photograph, sends
 /// nothing to the owner and leaves the session exactly as it was.
@@ -145,15 +145,10 @@ fn a_section_toggle_is_local_and_a_mode_change_is_session_state() {
     // Entering the crop module's mode opens its draft; leaving it with a draft open is refused.
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop.id.clone())));
     assert!(
-        editor.crop_pending().is_some(),
+        editor.crop().is_some(),
         "the mode opens the draft: {}",
         editor.status
     );
-    editor.open_draft(CropStage {
-        width: 480,
-        height: 320,
-        angle: 0.0,
-    });
     editor.session.workspace.mode = crop.id.clone();
     let _ = editor.update(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
     assert!(editor.crop().is_some(), "the draft is never discarded");

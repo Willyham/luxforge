@@ -10,7 +10,7 @@ use crate::app::message::{HistoryMessage, PointerMessage, ViewMessage};
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{CapabilityMessage, CropMessage, DraftMessage, Message},
+        message::{CapabilityMessage, DraftMessage, Message},
     },
     canvas_view::CanvasView,
     crop_canvas::{CropCanvas, Mode},
@@ -176,26 +176,17 @@ fn top_chrome<'a>(model: &'a CanvasModel) -> Option<Element<'a, Message>> {
 }
 
 fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
-    // The bar belongs to whichever gesture is open; only one ever is.
-    let (cancel, apply) = if model.mask {
-        (
-            Message::Draft(DraftMessage::Cancel),
-            Message::Draft(DraftMessage::Commit),
-        )
-    } else {
-        (
-            Message::Crop(CropMessage::Cancel),
-            Message::Crop(CropMessage::Apply),
-        )
-    };
+    // The bar belongs to whichever gesture is open; only one ever is, and all share one lifecycle.
     draft_bar(
         &DraftBarModel {
             title: model.title.clone(),
             readout: model.readout.clone(),
             apply_reason: model.apply_reason.clone(),
         },
-        cancel,
-        model.can_apply.then_some(apply),
+        Message::Draft(DraftMessage::Cancel),
+        model
+            .can_apply
+            .then_some(Message::Draft(DraftMessage::Commit)),
     )
 }
 
@@ -207,8 +198,6 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
             (
                 label.clone(),
                 match action {
-                    NoticeAction::DiscardDraft => Message::Crop(CropMessage::Cancel),
-                    NoticeAction::ReapplyDraft => Message::Crop(CropMessage::Reapply),
                     NoticeAction::DiscardGesture => Message::Draft(DraftMessage::Cancel),
                     NoticeAction::ReapplyGesture => Message::Draft(DraftMessage::Reapply),
                     NoticeAction::ReturnCurrent => Message::History(HistoryMessage::ReturnCurrent),

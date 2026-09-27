@@ -1,12 +1,15 @@
 //! The crop gesture. A crop draft is a core draft ([`crate::app::gesture::Kind::Crop`]), driven by
-//! the one draft driver like a slider's or a mask's, so `session.state` reports it and only Apply
-//! commits it. Its frame is drawn and dragged here, over the crop layer's input stage; every change
-//! goes through `crop_update`, so the API-equivalent path and the pointer path are the same code,
-//! and the end of each change is one synchronous `draft.set` of the payload's declared fields.
+//! the one draft driver like a slider's or a mask's: it commits, cancels and reapplies through the
+//! shared [`crate::app::message::DraftMessage`]s, `session.state` reports it and only Apply commits
+//! it. Its frame opens at once, from the current entry's `recipe.describe` rows — the crop layer's
+//! values, the stage it receives and the orientation ahead of it — and is drawn and dragged over
+//! that stage once its pixels have rendered. Every change goes through `crop_update`, so the
+//! API-equivalent path and the pointer path are the same code, and the end of each change is one
+//! synchronous `draft.set` of the payload's declared fields.
 use crate::{
     app::{
         Editor,
-        draft::{CoreDraft, Event},
+        draft::{CoreDraft, Event, Round},
         evidence::Settle,
         gesture::{Kind, Starting},
         message::{CropMessage, CropPointer, Message},
@@ -15,64 +18,78 @@ use crate::{
     crop_draft::{ANGLE_RAIL_STEP, CropDraft, Modifiers as DraftModifiers},
     state::{
         number::{decimals_of, number_text},
-        tools::crop_frame,
+        tools::{crop_frame, crop_row},
     },
 };
 use iced::{Task, widget::operation};
 use luxforge_core::{
-    CropPayload, CropStage, Layer, LayerId, MAX_ANGLE, MIN_ANGLE, ORIENTATION_EFFECT, Orientation,
-    POINTER_MODE, insertion_index_among,
+    CropPayload, CropStage, LayerId, MAX_ANGLE, MIN_ANGLE, Orientation, POINTER_MODE,
+    insertion_index_among,
 };
 use luxforge_ui::geometry::{quantize, value_from_fraction};
 use serde_json::{Map, Value, json};
 
 /// The scrollable around the photo, so a Space drag can scroll it while drafting a crop.
 pub(crate) const SURFACE_ID: &str = "luxforge.surface";
-/// How many changes from the idle section a starting draft holds for when it opens. A drag on the
-/// angle's rail replaces its own queued position rather than adding to it, so only discrete changes
-/// count, and a person cannot make this many in the one truncated preview a start waits for.
-pub(crate) const QUEUED_CHANGES: usize = 32;
 
 /// The crop frame editor's gesture on the core draft lifecycle: the declared action its draft
-/// commits, the frame once the crop layer's input stage has arrived, and the stage it is waiting
-/// for — at the start, and again while a Reapply rebases the frame.
+/// commits, the frame, and where the crop layer's input stage — the pixels the frame is drawn
+/// over — has got to.
 #[derive(Clone, Debug)]
 pub(crate) struct CropGesture {
     pub(crate) action: String,
-    pub(crate) frame: Option<CropDraft>,
-    pub(crate) stage: Option<PendingStage>,
+    pub(crate) frame: CropDraft,
+    pub(crate) stage: StageView,
 }
 
-/// What a crop gesture is waiting for its truncated preview to tell it: the layer it edits and the
-/// payload it starts from are known from the stack, but the input stage is whatever that preview
-/// renders, so the frame opens when its pixels arrive.
-#[derive(Clone, Debug)]
-pub(crate) struct PendingStage {
-    pub(crate) layer: Option<LayerId>,
-    pub(crate) layer_index: usize,
-    /// The orientation the layers ahead of the crop give its input stage.
-    pub(crate) ahead: Orientation,
-    pub(crate) payload: Option<CropPayload>,
-    /// The revision whose stack the stage was planned from.
-    pub(crate) base_revision: u64,
-    /// A reapply rebases the open frame instead of opening one.
-    pub(crate) reapply: bool,
-    /// Changes made from the idle section while this draft is starting, applied in order once it
-    /// opens, so none is lost to the truncated preview's round trip. At most [`QUEUED_CHANGES`].
-    pub(crate) queued: Vec<CropMessage>,
+/// Where the crop layer's input stage has got to. The frame never waits for it: the section and
+/// the draft are live from the start, and the canvas draws the frame once the stage is on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageView {
+    /// Being planned or rendered for the stack at `base_revision`: at the start, or after a
+    /// Reapply rebased the frame onto the stage the rows now report.
+    Rendering { reapply: bool, base_revision: u64 },
+    /// On screen under the frame.
+    Shown,
+    /// A rebased frame's stage will not arrive. The draft is kept, still conflicted when it is, and
+    /// the photograph is shown until a Reapply asks for the stage again.
+    Missing,
+    /// A starting draft's stage will not arrive. The draft has ended for everything but its owner
+    /// round trips, and is discarded once the update is over ([`Editor::close_abandoned_crop`]).
+    Abandoned,
 }
 
 impl CropGesture {
     /// Correlated evidence: the frame's geometry with the revision its core draft is based on and
-    /// whether that draft is conflicted. `None` until the frame has opened.
+    /// whether that draft is conflicted.
     pub(crate) fn summary(&self, draft: &CoreDraft) -> Value {
-        let Some(frame) = &self.frame else {
-            return Value::Null;
-        };
-        let mut summary = frame.summary();
+        let mut summary = self.frame.summary();
         summary["base_revision"] = json!(draft.base_revision);
         summary["conflicted"] = json!(draft.conflicted);
         summary
+    }
+}
+
+/// What the current entry's `recipe.describe` rows say a crop draft opens on. The desktop reads
+/// the stage, the orientation ahead and the committed frame from the rows, and folds no geometry
+/// and parses no payload itself.
+struct CropRow {
+    /// The stack's first crop layer, with the frame its row's values hold: `None` when its
+    /// provider could not read them.
+    layer: Option<(LayerId, Option<CropPayload>)>,
+    /// How many layers precede the crop: the preview truncation that shows its input stage.
+    layer_index: usize,
+    input: CropStage,
+    ahead: Orientation,
+}
+
+impl CropRow {
+    /// The committed straightening angle, or 0 without a crop layer.
+    fn angle(&self) -> f64 {
+        match &self.layer {
+            Some((_, Some(payload))) => payload.angle,
+            _ => 0.0,
+        }
     }
 }
 
@@ -94,17 +111,6 @@ fn changes_draft(message: &CropMessage) -> bool {
     )
 }
 
-/// The orientation the exact transforms among `layers` compose into, in stack order: what they do
-/// to the stage a crop after them receives. A payload that does not read as an orientation adds
-/// nothing, since such a stack does not render and no draft opens on it.
-fn orientation_ahead(layers: &[Layer]) -> Orientation {
-    layers
-        .iter()
-        .filter(|layer| layer.effect_id == ORIENTATION_EFFECT)
-        .filter_map(|layer| serde_json::from_value::<Orientation>(layer.payload.clone()).ok())
-        .fold(Orientation::NEUTRAL, Orientation::followed_by)
-}
-
 /// The angle a drag on the rail reaches at this fraction: on the rail's own step, within range.
 fn rail_angle(fraction: f64) -> f64 {
     let angle = value_from_fraction(MIN_ANGLE, MAX_ANGLE, ANGLE_RAIL_STEP, fraction);
@@ -118,7 +124,7 @@ fn rail_angle(fraction: f64) -> f64 {
 }
 
 impl Editor {
-    /// The open crop gesture, starting or drafting.
+    /// The crop gesture in the slot, whatever its stage has got to.
     pub(crate) fn crop_gesture(&self) -> Option<&CropGesture> {
         self.core_gesture()?.crop()
     }
@@ -130,45 +136,122 @@ impl Editor {
         }
     }
 
-    /// The open crop frame.
+    /// The open crop frame. A start whose stage will not arrive has none: it is ending.
     pub(crate) fn crop(&self) -> Option<&CropDraft> {
-        self.crop_gesture()?.frame.as_ref()
+        self.crop_gesture()
+            .filter(|crop| crop.stage != StageView::Abandoned)
+            .map(|crop| &crop.frame)
     }
 
     pub(crate) fn crop_mut(&mut self) -> Option<&mut CropDraft> {
-        self.crop_gesture_mut()?.frame.as_mut()
+        self.crop_gesture_mut()
+            .filter(|crop| crop.stage != StageView::Abandoned)
+            .map(|crop| &mut crop.frame)
     }
 
-    /// The input stage the crop gesture is waiting for, at its start or while it rebases.
-    pub(crate) fn crop_pending(&self) -> Option<&PendingStage> {
-        self.crop_gesture()?.stage.as_ref()
+    /// Where the open crop draft's input stage has got to.
+    pub(crate) fn crop_stage(&self) -> Option<StageView> {
+        self.crop_gesture().map(|crop| crop.stage)
     }
 
-    fn crop_pending_mut(&mut self) -> Option<&mut PendingStage> {
-        self.crop_gesture_mut()?.stage.as_mut()
+    /// Read what a crop draft opens on from the current entry's `recipe.describe` rows: the first
+    /// crop layer's row, or, for a stack without one, the stage a crop the host appends at its
+    /// insertion index would receive — that row's own, or the stack's output past the last row.
+    /// The reason names what is missing when the rows cannot say.
+    fn crop_row(&self) -> Result<CropRow, String> {
+        let frame = crop_frame(&self.modules).ok_or("No module declares a crop frame")?;
+        let effect = frame
+            .effect()
+            .ok_or("The crop module declares no geometry effect")?;
+        let state = self.state.as_ref().ok_or("No photograph is open")?;
+        let recipe = self
+            .current_recipe
+            .as_ref()
+            .filter(|recipe| recipe.entry_id == state.current_entry.id)
+            .ok_or("The current recipe is still being read; crop again once it has arrived")?;
+        let found = crop_row(&frame, recipe);
+        let layer_index = found.map_or_else(
+            || {
+                insertion_index_among(
+                    &self.modules,
+                    &state.current_entry.snapshot.recipe.layers,
+                    effect,
+                )
+            },
+            |(index, _)| index,
+        );
+        let (stage, ahead) = match recipe.layers.get(layer_index) {
+            Some(row) => (row.input_stage, row.input_orientation),
+            None => (recipe.output_stage, recipe.output_orientation),
+        };
+        let (Some(stage), Some(ahead)) = (stage, ahead) else {
+            return Err(
+                "The crop's input stage cannot be known: a layer ahead of it cannot be read".into(),
+            );
+        };
+        Ok(CropRow {
+            layer: found.map(|(_, row)| (row.id.clone(), frame.payload(&row.values))),
+            layer_index,
+            input: CropStage {
+                width: stage.width,
+                height: stage.height,
+                angle: 0.0,
+            },
+            ahead,
+        })
     }
 
-    /// The input stage the crop gesture waited for will not arrive. A reapply keeps its frame,
-    /// still conflicted; a start is left with nothing, and its core draft is discarded once the
-    /// update is over ([`Self::close_abandoned_crop`]). Returns whether it was a reapply.
-    pub(crate) fn drop_crop_stage(&mut self) -> bool {
+    /// The frame a draft opens with: the committed crop layer's own rectangle and angle, or a
+    /// neutral crop of the whole stage for a stack without one. An unreadable crop layer is never
+    /// silently replaced by a neutral crop: the stored layer stays exactly as it is and no draft
+    /// opens.
+    fn crop_opening(&self, row: CropRow) -> Result<CropDraft, String> {
+        let presets = crop_frame(&self.modules)
+            .map(|frame| frame.presets())
+            .unwrap_or_default();
+        let mut frame = match row.layer {
+            Some((layer, Some(payload))) => {
+                CropDraft::from_layer(row.input, payload, layer, row.layer_index, &presets)
+            }
+            Some((_, None)) => {
+                return Err(
+                    "The existing crop layer's payload cannot be read; no draft was opened".into(),
+                );
+            }
+            None => CropDraft::neutral(row.input, row.layer_index),
+        };
+        frame.ahead = row.ahead;
+        Ok(frame)
+    }
+
+    /// The input stage the crop gesture waited for will not arrive. A rebased frame keeps its
+    /// draft; a start leaves the canvas at once and its core draft is discarded once the update is
+    /// over ([`Self::close_abandoned_crop`]). Returns whether it was a reapply.
+    pub(crate) fn crop_stage_lost(&mut self) -> bool {
         self.draft_generation = None;
-        let reapply = self.crop().is_some();
-        if let Some(crop) = self.crop_gesture_mut() {
-            crop.stage = None;
-        }
+        let Some(crop) = self.crop_gesture_mut() else {
+            return false;
+        };
+        let StageView::Rendering { reapply, .. } = crop.stage else {
+            return false;
+        };
+        crop.stage = if reapply {
+            StageView::Missing
+        } else {
+            StageView::Abandoned
+        };
         if !reapply {
             self.end_crop_view();
         }
         reapply
     }
 
-    /// A crop gesture with neither a frame nor a stage on its way has nothing left to show: its
-    /// start failed. Its core draft is discarded here, once per update, because the failure is
-    /// often learned where no task can be returned — a preview request that replaced its stage.
+    /// A start whose stage will not arrive has nothing left to show. Its core draft is discarded
+    /// here, once per update, because the failure is often learned where no task can be returned —
+    /// a preview request that replaced its stage.
     pub(crate) fn close_abandoned_crop(&mut self) -> Task<Message> {
-        match self.crop_gesture() {
-            Some(crop) if crop.frame.is_none() && crop.stage.is_none() => self.discard(),
+        match self.crop_stage() {
+            Some(StageView::Abandoned) => self.discard(),
             _ => Task::none(),
         }
     }
@@ -183,11 +266,10 @@ impl Editor {
             CropMessage::Option(option) => self.crop_option = option,
             CropMessage::Space(space) => self.crop_space = space,
             CropMessage::Guide(guide) => self.crop_guide = guide && self.crop().is_some(),
-            CropMessage::Start => return self.crop_start(false),
-            CropMessage::Reapply => return self.crop_start(true),
+            CropMessage::Start => return self.crop_start(),
             CropMessage::PreviewReady(result) => match result {
-                // The stack or the selection changed since the draft started, so the input stage
-                // the owner planned is not the one the draft would open on, and nothing else will
+                // The stack or the selection changed since the stage was asked for, so the input
+                // stage the owner planned is not the one the frame is on, and nothing else will
                 // arrive for it.
                 Ok(job) if !self.crop_stage_current(&job.entry.id) => {
                     self.draft_preview_superseded(None);
@@ -200,9 +282,11 @@ impl Editor {
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
-                    self.drop_crop_stage();
-                    self.status = error;
-                    self.settle_step(Settle::Draft);
+                    if matches!(self.crop_stage(), Some(StageView::Rendering { .. })) {
+                        self.crop_stage_lost();
+                        self.status = error;
+                        self.settle_step(Settle::Draft);
+                    }
                 }
             },
             CropMessage::Pointer(pointer) => {
@@ -235,19 +319,10 @@ impl Editor {
             }
             CropMessage::AngleRailReleased => return self.crop_changed("crop_draft_changed"),
             CropMessage::SubmitAngle => {
-                // Text that is not a number stays open for correcting; a number closes the box.
-                let Ok(value) = self.crop_angle.trim().parse::<f64>() else {
-                    self.status =
-                        format!("Angle must be a number from {MIN_ANGLE} to {MAX_ANGLE} degrees");
+                let Some(value) = self.typed_angle() else {
                     return Task::none();
                 };
-                if self.editing_angle() {
-                    self.editing = None;
-                }
-                if let Some(draft) = self.crop_mut() {
-                    draft.set_angle(value);
-                }
-                return self.crop_changed("crop_draft_changed");
+                return self.set_crop_angle(value);
             }
             CropMessage::NudgeAngle(step) => {
                 if let Some(draft) = self.crop_mut() {
@@ -255,12 +330,7 @@ impl Editor {
                 }
                 return self.crop_changed("crop_draft_changed");
             }
-            CropMessage::ResetAngle => {
-                if let Some(draft) = self.crop_mut() {
-                    draft.set_angle(0.0);
-                }
-                return self.crop_changed("crop_draft_changed");
-            }
+            CropMessage::ResetAngle => return self.set_crop_angle(0.0),
             CropMessage::Preset(index) => {
                 let Some(preset) = crop_frame(&self.modules)
                     .map(|frame| frame.presets())
@@ -297,296 +367,231 @@ impl Editor {
                     operation::AbsoluteOffset { x: dx, y: dy },
                 );
             }
-            CropMessage::Apply => match self.crop_apply() {
-                Ok(task) => return task,
-                Err(reason) => self.status = reason,
-            },
-            // Only an open frame has anything to discard; a draft still starting ends when its
-            // stage arrives or fails.
-            CropMessage::Cancel if self.crop().is_some() => return self.discard(),
-            CropMessage::Cancel => {}
         }
         Task::none()
     }
 
-    /// Open a draft, or re-read the stack for a reapply. The layer identity, its stored payload and
-    /// the preview truncation come from the current stack; the input stage comes from that preview.
-    /// A start opens the core draft at once, beside the stage's preview job, so both are on their
-    /// way while the stage renders.
-    pub(crate) fn crop_start(&mut self, reapply: bool) -> Task<Message> {
-        if self.busy || !self.session.preview.can_edit() || reapply != self.crop().is_some() {
+    /// Open a draft on the current stack. The frame opens now, from the current entry's rows, and
+    /// the core draft's `draft.begin` and the input stage's truncated preview go out together: the
+    /// section is live at once, and the canvas draws the frame when the stage's pixels arrive.
+    pub(crate) fn crop_start(&mut self) -> Task<Message> {
+        if self.busy || !self.session.preview.can_edit() || self.crop().is_some() {
             return Task::none();
         }
-        // One draft per client: another gesture is finished deliberately, never displaced. A
-        // reapply rebases the crop draft that already holds the slot.
-        if !reapply && let Some(reason) = self.gesture_refusal(Starting::Crop) {
+        // One draft per client: another gesture is finished deliberately, never displaced.
+        if let Some(reason) = self.gesture_refusal(Starting::Crop) {
             self.status = reason;
             return Task::none();
         }
-        let Some((module_id, action, effect)) = crop_frame(&self.modules)
-            .and_then(|frame| {
-                Some((
-                    frame.module.id.clone(),
-                    frame.action.to_owned(),
-                    frame.effect()?.to_owned(),
-                ))
-            })
-            .filter(|_| self.state.is_some())
+        let Some((module_id, action)) = crop_frame(&self.modules)
+            .map(|frame| (frame.module.id.clone(), frame.action.to_owned()))
         else {
             return Task::none();
+        };
+        let frame = match self.crop_row().and_then(|row| self.crop_opening(row)) {
+            Ok(frame) => frame,
+            Err(reason) => {
+                self.status = reason;
+                return Task::none();
+            }
         };
         let Some(state) = self.state.as_ref() else {
             return Task::none();
         };
-        let layers = &state.current_entry.snapshot.recipe.layers;
-        let found = layers.iter().position(|layer| layer.effect_id == effect);
-        // Without a crop layer the draft shows the stage the host would give a new one: after
-        // every transform and edit, and before any finish layer, which acts on the crop's output.
-        let layer_index =
-            found.unwrap_or_else(|| insertion_index_among(&self.modules, layers, &effect));
-        let pending = PendingStage {
-            layer: found.map(|index| layers[index].id.clone()),
-            layer_index,
-            ahead: orientation_ahead(&layers[..layer_index]),
-            payload: found
-                .and_then(|index| serde_json::from_value(layers[index].payload.clone()).ok()),
-            base_revision: state.revision,
-            reapply,
-            queued: Vec::new(),
-        };
-        let asset = state.asset.id.clone();
-        let stage = crop_preview_task(self.owner.clone(), self.client, asset, layer_index);
-        self.status = "Preparing the crop's input stage…".into();
-        if reapply {
-            if let Some(crop) = self.crop_gesture_mut() {
-                crop.stage = Some(pending);
-            }
-            return stage;
-        }
-        // The section keeps showing the angle the draft will open at while it starts.
-        self.crop_angle = number_text(pending.payload.map_or(0.0, |payload| payload.angle));
-        // Starting a draft by any route — the section's own button, `R`, the mode strip or a
-        // scripted `draft.start` — asks the session to enter this module's mode, so the strip shows
-        // Crop selected for the whole life of the draft.
+        let (asset, base_revision) = (state.asset.id.clone(), state.revision);
+        let layer_index = frame.layer_index;
+        // Starting a draft by any route — the section's own button, `R`, the mode strip, a change
+        // in the idle section or a scripted `draft.start` — asks the session to enter this
+        // module's mode, so the strip shows Crop selected for the whole life of the draft.
         self.mode_sync = Some(module_id);
         // An armed brush gives its core draft up to the crop; the `draft.begin` task cancels it
         // before anything else.
         let displaced = self.claim_slot();
         let crop = CropGesture {
             action,
-            frame: None,
-            stage: Some(pending),
+            frame,
+            stage: StageView::Rendering {
+                reapply: false,
+                base_revision,
+            },
         };
         let begin = self.open_core(Kind::Crop(crop), None, displaced);
-        Task::batch([begin, stage])
+        // The opened frame is the draft's first fields, sent once `draft.begin` has answered.
+        let fields = self.crop_changed("crop_draft_started");
+        let stage = crop_preview_task(self.owner.clone(), self.client, asset, layer_index);
+        self.status = "Preparing the crop's input stage…".into();
+        Task::batch([begin, fields, stage])
     }
 
-    /// A starting or reapplied draft's input stage, planned from `entry`, is still the one it would
-    /// open on: the session still shows the current state, that entry is the current one this
-    /// desktop holds, and the state has not moved since the draft started. Decided from what the
+    /// The Changed elsewhere notice's Reapply for the crop draft: the frame is rebased at once onto
+    /// the stage the current rows report — carried through a turn committed ahead of it, and on a
+    /// stage of another size keeping its composition as far as it fits — the core draft is rebased
+    /// by `draft.reapply` and the rebased frame's fields follow it, and the new stage's pixels are
+    /// asked for. Apply stays refused until the rebase has answered.
+    pub(crate) fn crop_reapply(&mut self) -> Task<Message> {
+        if self.busy || !self.session.preview.can_edit() || self.crop().is_none() {
+            return Task::none();
+        }
+        let row = match self.crop_row() {
+            Ok(row) => row,
+            Err(reason) => {
+                self.status = reason;
+                return Task::none();
+            }
+        };
+        let Some(state) = self.state.as_ref() else {
+            return Task::none();
+        };
+        let (asset, base_revision) = (state.asset.id.clone(), state.revision);
+        let Some(crop) = self.crop_gesture_mut() else {
+            return Task::none();
+        };
+        crop.frame.rebase(
+            row.input,
+            row.layer.map(|(layer, _)| layer),
+            row.layer_index,
+            row.ahead,
+        );
+        crop.stage = StageView::Rendering {
+            reapply: true,
+            base_revision,
+        };
+        // The stage on screen is the one the frame was rebased away from, and one still rendering
+        // for it is stopped and held below the delivery floor, so neither is drawn under the
+        // rebased frame nor taken up as the photograph.
+        self.presenter.end_stage();
+        if self.draft_generation.take().is_some() {
+            self.preview_generation = self.cancel_preview_queue();
+        }
+        let rebase = self.drive(Event::Reapply);
+        let fields = self.crop_changed("crop_draft_changed");
+        let stage = crop_preview_task(self.owner.clone(), self.client, asset, row.layer_index);
+        self.status = "Preparing the crop's input stage…".into();
+        Task::batch([rebase, fields, stage])
+    }
+
+    /// The input stage the draft asked for, planned from `entry`, is still the one its frame is
+    /// on: the session still shows the current state, that entry is the current one this desktop
+    /// holds, and the state has not moved since the stage was asked for. Decided from what the
     /// answer and the desktop already hold, so the job needs no currency request of its own.
     fn crop_stage_current(&self, entry: &luxforge_core::EntryId) -> bool {
-        let (Some(state), Some(pending)) = (self.state.as_ref(), self.crop_pending()) else {
+        let (Some(state), Some(StageView::Rendering { base_revision, .. })) =
+            (self.state.as_ref(), self.crop_stage())
+        else {
             return false;
         };
         self.session.preview.can_edit()
             && &state.current_entry.id == entry
-            && state.revision == pending.base_revision
+            && state.revision == base_revision
     }
 
-    /// The truncated preview arrived, so the crop layer's input stage is known: open the frame on
-    /// it, or rebase the frame onto it and the core draft onto the current revision.
-    pub(crate) fn open_draft(&mut self, input: CropStage) {
-        let Some(mut pending) = self.crop_gesture_mut().and_then(|crop| crop.stage.take()) else {
+    /// The crop layer's input stage is on screen, so the canvas draws the frame over it.
+    pub(crate) fn crop_stage_shown(&mut self) {
+        let Some(crop) = self.crop_gesture_mut() else {
             return;
         };
-        let queued = std::mem::take(&mut pending.queued);
-        let frame = if pending.reapply {
-            let Some(frame) = self.crop_mut() else {
-                return self.settle_step(Settle::Draft);
-            };
-            frame.rebase(input, pending.layer, pending.layer_index, pending.ahead);
-            None
-        } else {
-            match (pending.layer, pending.payload) {
-                (Some(layer), Some(payload)) => Some(CropDraft::from_layer(
-                    input,
-                    payload,
-                    layer,
-                    pending.layer_index,
-                    &crop_frame(&self.modules)
-                        .map(|frame| frame.presets())
-                        .unwrap_or_default(),
-                )),
-                // An unreadable payload is never silently replaced by a neutral crop: the stored
-                // layer stays exactly as it is, the frame does not open and the draft is discarded.
-                (Some(_), None) => {
-                    self.drop_crop_stage();
-                    self.status =
-                        "The existing crop layer's payload cannot be read; no draft was opened"
-                            .into();
-                    return self.settle_step(Settle::Draft);
-                }
-                (None, _) => Some(CropDraft::neutral(input, pending.layer_index)),
-            }
-        };
-        if let Some(mut frame) = frame
-            && let Some(crop) = self.crop_gesture_mut()
-        {
-            frame.ahead = pending.ahead;
-            crop.frame = Some(frame);
+        if !matches!(crop.stage, StageView::Rendering { .. }) {
+            return;
         }
-        // A rebased frame goes with a rebased draft: `draft.reapply` puts the core draft on the
-        // current revision and the frame's fields follow it, so Apply stays refused until both
-        // have. A start's fields go as soon as its `draft.begin` has answered.
-        let rebase = if pending.reapply {
-            self.drive(Event::Reapply)
-        } else {
-            Task::none()
-        };
-        // Neither answers with a task of its own: the reapply is in flight and a `draft.set` is
-        // synchronous, and no commit can be due before the frame has opened.
-        drop(rebase);
-        drop(self.crop_changed(if pending.reapply {
-            "crop_draft_changed"
-        } else {
-            "crop_draft_started"
-        }));
-        self.replay(queued);
+        crop.stage = StageView::Shown;
+        let input = crop.frame.stage;
         self.status = format!(
             "Crop draft on the layer's {} × {} input stage",
             input.width, input.height
         );
-        // A rebased frame is settled once its draft has been rebased too, so a captured frame
-        // never shows the frame rebased and the draft still conflicted.
-        if !pending.reapply {
+        self.settle_crop();
+    }
+
+    /// A scripted step waiting for the crop draft settles once the frame can be captured over its
+    /// stage: the stage is on screen and a Reapply's `draft.reapply` has answered, so a captured
+    /// frame never shows the frame rebased and the draft still conflicted.
+    pub(crate) fn settle_crop(&mut self) {
+        let ready = self.core_gesture().is_some_and(|gesture| {
+            gesture
+                .crop()
+                .is_some_and(|crop| crop.stage == StageView::Shown)
+                && gesture.draft.in_flight() != Some(Round::Reapply)
+        });
+        if ready {
             self.settle_step(Settle::Draft);
         }
     }
 
     /// A control of the idle section changed: open the draft seeded from the committed crop, as
-    /// Start does, and hold the change for when the draft is ready, so the canvas enters crop mode
-    /// with the frame already showing it. A draft that is still starting takes the change onto its
-    /// queue instead. Nothing commits until Apply.
+    /// Start does, and apply the change to it at once. A change that leaves the committed crop as
+    /// it is opens nothing: the committed angle submitted again, a reset of a 0° angle or a rail
+    /// release with no drag. Nothing commits until Apply.
     fn idle_change(&mut self, message: CropMessage) -> Task<Message> {
-        let mut changes = vec![message];
-        if matches!(changes[0], CropMessage::SubmitAngle) {
-            // Text that is not a number stays open for correcting, as it does while drafting; the
-            // committed angle itself is no change, so the box just closes.
-            let Ok(value) = self.crop_angle.trim().parse::<f64>() else {
-                self.status =
-                    format!("Angle must be a number from {MIN_ANGLE} to {MAX_ANGLE} degrees");
-                return Task::none();
-            };
-            if self.editing_angle() {
-                self.editing = None;
-            }
-            if self.crop_pending().is_none() && value == self.committed_crop_angle() {
-                return Task::none();
-            }
-            changes.insert(0, CropMessage::AngleText(self.crop_angle.clone()));
+        if matches!(message, CropMessage::AngleRailReleased) {
+            return Task::none();
         }
-        let mut task = Task::none();
-        if self.crop_pending().is_none() {
-            // A release with no drag ahead of it has nothing to finish, and a reset of a committed
-            // angle that is already 0 changes nothing.
-            if matches!(changes[0], CropMessage::AngleRailReleased)
-                || (matches!(changes[0], CropMessage::ResetAngle)
-                    && self.committed_crop_angle() == 0.0)
-            {
-                return task;
-            }
-            // A start another gesture refuses says so and queues nothing.
-            task = self.crop_start(false);
-            if self.crop_pending().is_none() {
-                return task;
-            }
-        }
-        for change in changes {
-            self.queue(change);
-        }
-        task
-    }
-
-    /// Hold one change for the starting draft. The section's angle box and rail show the angle the
-    /// queued changes lead to, which the angle's text carries until the draft opens.
-    fn queue(&mut self, change: CropMessage) {
-        let angle = self.crop_angle.trim().parse::<f64>().unwrap_or(0.0);
-        let prospective = match &change {
-            CropMessage::AngleRail(fraction) => Some(rail_angle(*fraction)),
-            CropMessage::NudgeAngle(step) => Some(angle + step),
-            CropMessage::ResetAngle => Some(0.0),
-            CropMessage::AngleText(text) => text.trim().parse::<f64>().ok(),
+        // The typed text is read before the draft opens, since opening it shows the committed
+        // angle in the box.
+        let typed = match message {
+            CropMessage::SubmitAngle => match self.typed_angle() {
+                Some(value) => Some(value),
+                None => return Task::none(),
+            },
             _ => None,
-        }
-        .filter(|angle| angle.is_finite())
-        .map(|angle| angle.clamp(MIN_ANGLE, MAX_ANGLE));
-        let Some(pending) = self.crop_pending_mut() else {
-            return;
         };
-        // A rail drag is one change however far it moves: only its latest position matters.
-        if matches!(
-            (pending.queued.last(), &change),
-            (Some(CropMessage::AngleRail(_)), CropMessage::AngleRail(_))
-        ) {
-            pending.queued.pop();
-        } else if pending.queued.len() >= QUEUED_CHANGES {
-            self.status = "The crop draft is still starting; that change was not applied".into();
-            return;
+        let committed = self.committed_angle();
+        if typed == Some(committed)
+            || (matches!(message, CropMessage::ResetAngle) && committed == 0.0)
+        {
+            return Task::none();
         }
-        pending.queued.push(change);
-        if let Some(angle) = prospective {
-            self.crop_angle = number_text(angle);
+        let start = self.crop_start();
+        let Some(draft) = self.crop() else {
+            return start;
+        };
+        // Choosing the ratio the draft already shows chosen changes nothing, because refitting the
+        // committed rectangle to it could only trim a pixel from it.
+        if let CropMessage::Preset(index) = message
+            && crop_frame(&self.modules)
+                .and_then(|frame| frame.presets().get(index).cloned())
+                .is_some_and(|preset| preset.option == draft.preset)
+        {
+            return start;
         }
+        let change = match typed {
+            Some(value) => self.set_crop_angle(value),
+            None => self.crop_update(message),
+        };
+        Task::batch([start, change])
     }
 
-    /// Apply the changes the idle section queued, in order, to the draft that just opened: each
-    /// through the drafting path, so each is one logged draft change. Choosing the ratio the draft
-    /// already shows chosen changes nothing, because refitting the committed rectangle to it could
-    /// only trim a pixel from it.
-    fn replay(&mut self, queued: Vec<CropMessage>) {
-        for change in queued {
-            let Some(draft) = self.crop() else {
-                return;
-            };
-            if let CropMessage::Preset(index) = change
-                && crop_frame(&self.modules)
-                    .and_then(|frame| frame.presets().get(index).cloned())
-                    .is_some_and(|preset| preset.option == draft.preset)
-            {
-                continue;
-            }
-            // Every change the idle section queues is handled by a drafting arm whose only request
-            // is its synchronous `draft.set`, so nothing is dropped here.
-            drop(self.crop_update(change));
+    /// The angle typed into the box. Text that is not a number keeps the box open for correcting,
+    /// with the reason; a number closes it.
+    fn typed_angle(&mut self) -> Option<f64> {
+        let Ok(value) = self.crop_angle.trim().parse::<f64>() else {
+            self.status = format!("Angle must be a number from {MIN_ANGLE} to {MAX_ANGLE} degrees");
+            return None;
+        };
+        if self.editing_angle() {
+            self.editing = None;
         }
+        Some(value)
     }
 
-    /// The committed straightening angle of the current stack's crop layer, which the idle section
-    /// shows and a draft opened on it starts at; 0 without one.
-    fn committed_crop_angle(&self) -> f64 {
-        let (Some(frame), Some(state)) = (crop_frame(&self.modules), &self.state) else {
-            return 0.0;
-        };
-        let Some(effect) = frame.effect() else {
-            return 0.0;
-        };
-        state
-            .current_entry
-            .snapshot
-            .recipe
-            .layers
-            .iter()
-            .find(|layer| layer.effect_id == effect)
-            .and_then(|layer| serde_json::from_value::<CropPayload>(layer.payload.clone()).ok())
-            .map_or(0.0, |payload| payload.angle)
+    /// Straighten the open frame to `degrees`: one draft change.
+    fn set_crop_angle(&mut self, degrees: f64) -> Task<Message> {
+        if let Some(draft) = self.crop_mut() {
+            draft.set_angle(degrees);
+        }
+        self.crop_changed("crop_draft_changed")
+    }
+
+    /// The straightening angle of the current entry's crop layer as its `recipe.describe` row
+    /// reports it, which the idle section shows and a draft opened on it starts at; 0 without one.
+    fn committed_angle(&self) -> f64 {
+        self.crop_row().map_or(0.0, |row| row.angle())
     }
 
     /// The idle section's angle box opened for typing: it starts from the committed angle, since
     /// the angle's text otherwise holds whatever the last draft left in it.
     pub(crate) fn seed_idle_angle(&mut self) {
-        if self.crop().is_none() && self.crop_pending().is_none() && self.editing_angle() {
-            self.crop_angle = number_text(self.committed_crop_angle());
+        if self.crop().is_none() && self.editing_angle() {
+            self.crop_angle = number_text(self.committed_angle());
         }
     }
 
@@ -601,11 +606,11 @@ impl Editor {
         let (Some(crop), Some(frame)) = (gesture.crop(), crop_frame(&self.modules)) else {
             return Task::none();
         };
-        let Some(draft) = &crop.frame else {
-            return Task::none();
-        };
-        let fields = Value::Object(frame.params(&draft.payload()).into_iter().collect());
-        let (angle, summary) = (number_text(draft.stage.angle), crop.summary(&gesture.draft));
+        let fields = Value::Object(frame.params(&crop.frame.payload()).into_iter().collect());
+        let (angle, summary) = (
+            number_text(crop.frame.stage.angle),
+            crop.summary(&gesture.draft),
+        );
         self.crop_angle = angle;
         self.event(event, summary);
         self.drive(Event::Offer(fields))
@@ -637,10 +642,11 @@ impl Editor {
         self.mode_sync = Some(POINTER_MODE.into());
     }
 
-    /// The crop gesture was discarded: the frame leaves the screen, and a draft that opened says so.
+    /// The crop gesture was discarded: the frame leaves the screen and says so, unless it is a
+    /// start whose stage never arrived, which already said why it ended.
     pub(crate) fn crop_discarded(&mut self, crop: &CropGesture, draft: &CoreDraft) {
         self.end_crop_view();
-        if crop.frame.is_some() {
+        if crop.stage != StageView::Abandoned {
             self.event("crop_draft_discarded", crop.summary(draft));
             self.status = "Crop draft discarded".into();
         }
@@ -696,34 +702,6 @@ impl Editor {
             .then_some((width, height))
     }
 
-    /// Why the open crop draft cannot be applied now, or `None` when it can.
-    pub(crate) fn crop_refusal(&self) -> Option<String> {
-        let (gesture, frame) = (self.core_gesture()?, self.crop()?);
-        if self.busy {
-            return Some("A request is already in flight".into());
-        }
-        if !self.session.preview.can_edit() {
-            return Some("Return to the current state before applying a crop".into());
-        }
-        if gesture.draft.conflicted {
-            return Some("Discard or reapply the conflicted crop draft first".into());
-        }
-        frame.output().err().map(|error| error.to_string())
-    }
-
-    /// Commit the draft: the one path Apply, Enter and a scripted apply all take, which is the
-    /// driver's release. The error is the reason nothing was sent, so a caller can report it or
-    /// record it.
-    pub(crate) fn crop_apply(&mut self) -> Result<Task<Message>, String> {
-        if self.crop().is_none() {
-            return Err("No crop draft is open".into());
-        }
-        match self.crop_refusal() {
-            Some(reason) => Err(reason),
-            None => Ok(self.release()),
-        }
-    }
-
     /// The `edit.<action>` request an independent client would send for the open draft's frame,
     /// against the revision the draft is based on, built from the canvas descriptor's own parameter
     /// names: what Copy as JSON request puts on the clipboard. The validation message stops it;
@@ -753,26 +731,50 @@ mod tests {
     use super::*;
     use crate::app::{
         draft::Round,
-        message::{ControlMessage, Message, PointerMessage, SyncMessage, ViewMessage},
+        message::{
+            ControlMessage, DraftMessage, Message, PointerMessage, SyncMessage, ViewMessage,
+        },
         tasks::SyncResult,
         testing::{
-            CROP_ASPECTS, answer_begin, answer_cancel, answer_commit, answer_reapply, core_draft,
-            crop_layer, entry, finish, open_crop, opened, refresh_for,
+            CROP_ASPECTS, CROP_SOURCE, answer_begin, answer_cancel, answer_commit, answer_reapply,
+            core_draft, crop_layer, described_at, entry, finish, open_crop, opened, refresh_for,
         },
     };
     use crate::crop_draft::{ANGLE_STEP, Corner, Handle};
-    use luxforge_core::{ClientSession, HistorySelection};
+    use luxforge_core::{ClientSession, HistoryEntry, HistorySelection};
 
+    /// The stage the rows of [`opened`] give a crop with no geometry ahead of it.
     fn stage() -> CropStage {
         CropStage {
-            width: 480,
-            height: 320,
+            width: CROP_SOURCE.0,
+            height: CROP_SOURCE.1,
             angle: 0.0,
         }
     }
 
+    fn draft_message(editor: &mut Editor, message: DraftMessage) {
+        let _ = editor.update(Message::Draft(message));
+    }
+
+    /// Another client's commit of `newer`, read back with the rows the owner describes for it.
+    fn committed_elsewhere(
+        editor: &mut Editor,
+        asset: &luxforge_core::AssetId,
+        newer: &HistoryEntry,
+    ) {
+        let mut refresh = refresh_for(asset, newer, vec![newer.clone()], &[newer], false);
+        refresh.recipe = described_at(newer, CROP_SOURCE);
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
+            refresh,
+        )))));
+    }
+
+    /// The frame opens in the update that starts the draft, from the current entry's row for the
+    /// stack's first crop layer: its layer, its index, the stage it receives and the rectangle and
+    /// angle its values hold, exactly as committed. The stage's pixels and the core draft's
+    /// `draft.begin` are still on their way.
     #[test]
-    fn a_draft_opens_on_the_existing_crop_layer_and_its_truncated_input_stage() {
+    fn a_draft_opens_at_once_on_the_existing_crop_layers_row() {
         let payload = CropPayload {
             angle: 7.0,
             x: 0.2,
@@ -788,34 +790,37 @@ mod tests {
         );
         // Only the first crop layer is the one being edited.
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        let pending = editor.crop_pending().cloned().expect("a pending draft");
-        assert_eq!(pending.layer, Some(crop.id.clone()));
-        assert_eq!(pending.layer_index, 1, "the preview truncates to one layer");
-        assert_eq!(pending.payload, Some(payload));
-        assert_eq!(pending.base_revision, 4);
-        assert!(!pending.reapply);
-        assert!(
-            editor.crop().is_none(),
-            "the draft waits for its input stage"
-        );
-
-        open_crop(&mut editor, stage());
-        let draft = editor.crop().expect("an opened draft");
-        assert_eq!(draft.layer, Some(crop.id));
-        assert_eq!(draft.layer_index, 1);
-        assert_eq!(core_draft(&editor).expect("a core draft").base_revision, 4);
+        let draft = editor.crop().expect("the frame opened with the start");
+        assert_eq!(draft.layer, Some(crop.id.clone()));
+        assert_eq!(draft.layer_index, 1, "the stage is the pixel edit's output");
+        assert_eq!((draft.stage.width, draft.stage.height), CROP_SOURCE);
         assert_eq!(draft.stage.angle, 7.0);
-        assert_eq!(editor.crop_angle, "7");
-        // Reopening shows exactly the rectangle the payload committed.
         let reopened = CropStage {
             angle: 7.0,
             ..stage()
         };
         assert_eq!(
             draft.output().expect("a valid draft"),
-            payload.output_rect(&reopened).expect("a valid payload")
+            payload.output_rect(&reopened).expect("a valid payload"),
+            "reopening shows exactly the rectangle the payload committed"
+        );
+        assert_eq!(editor.crop_angle, "7");
+        assert_eq!(
+            editor.crop_stage(),
+            Some(StageView::Rendering {
+                reapply: false,
+                base_revision: 4
+            }),
+            "the stage's pixels are on their way"
+        );
+        assert_eq!(
+            core_draft(&editor).and_then(CoreDraft::in_flight),
+            Some(Round::Begin)
         );
         assert_eq!(editor.snapshot()["crop"]["layer_index"], json!(1));
+        open_crop(&mut editor);
+        assert_eq!(editor.crop_stage(), Some(StageView::Shown));
+        assert_eq!(core_draft(&editor).expect("a core draft").base_revision, 4);
         finish(editor, catalog);
     }
 
@@ -826,7 +831,7 @@ mod tests {
         let (mut editor, catalog, _, _) =
             opened(vec![luxforge_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let log = crate::app::testing::attach_log(&mut editor);
         // 2.4° is 47.4 of the rail's 90°; a fraction a hair off it snaps to the rail's 0.05° step.
         for fraction in [0.6, 0.5 + 2.4 / 90.0 + 1e-4] {
@@ -866,21 +871,12 @@ mod tests {
                 .0["draft"]
                 .clone()
         };
-        let (width, height) = {
-            let asset = &editor.state.as_ref().expect("a photograph").asset;
-            (asset.width, asset.height)
-        };
         let revision = editor.state.as_ref().expect("a photograph").revision;
         let _ = editor.update(Message::Crop(CropMessage::Start));
         assert_eq!(
             crate::app::testing::run_round(&mut editor),
             Some(Round::Begin)
         );
-        editor.open_draft(CropStage {
-            width,
-            height,
-            angle: 0.0,
-        });
         let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
         assert_eq!(editor.crop().expect("a frame").stage.angle, ANGLE_STEP);
         let before = draft();
@@ -920,7 +916,7 @@ mod tests {
         let (mut editor, catalog, _, _) =
             opened(vec![luxforge_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let frame = crop_frame(&editor.modules).expect("a crop frame");
         let key = (frame.action.to_owned(), frame.angle.to_owned());
         assert!(!editor.editing_angle());
@@ -944,31 +940,33 @@ mod tests {
         let (mut editor, catalog, _, _) =
             opened(vec![luxforge_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        let pending = editor.crop_pending().cloned().expect("a pending draft");
-        assert_eq!(pending.layer, None);
-        assert_eq!(pending.layer_index, 1, "the whole stack is the input stage");
-        open_crop(&mut editor, stage());
         let draft = editor.crop().expect("an opened draft");
         assert!(draft.layer.is_none());
+        assert_eq!(draft.layer_index, 1, "the whole stack is the input stage");
+        assert_eq!(
+            (draft.stage.width, draft.stage.height),
+            CROP_SOURCE,
+            "the stack's output stage, which no row reports"
+        );
         assert_eq!(draft.payload(), CropPayload::NEUTRAL);
         finish(editor, catalog);
     }
 
+    /// A crop layer whose row carries no readable values is never silently replaced by a neutral
+    /// crop: the start is refused before any draft begins, and says why.
     #[test]
     fn an_unreadable_crop_payload_refuses_the_draft_and_keeps_the_layer() {
         let mut broken = crop_layer(CropPayload::NEUTRAL);
         broken.payload = json!({"angle":"sideways"});
         let (mut editor, catalog, _, _) = opened(vec![broken], 1);
-        let _ = editor.update(Message::Crop(CropMessage::Start));
-        assert_eq!(
-            editor.crop_pending().map(|pending| pending.payload),
-            Some(None)
-        );
-        open_crop(&mut editor, stage());
+        let task = editor.dispatch(Message::Crop(CropMessage::Start));
+        assert_eq!(task.units(), 0, "nothing was sent");
+        assert!(editor.gesture.is_none(), "no draft began");
         assert!(
             editor.crop().is_none(),
             "no neutral crop replaced the layer"
         );
+        assert_eq!(editor.mode_sync, None, "the mode did not change");
         assert!(
             editor.status.contains("cannot be read"),
             "{}",
@@ -981,7 +979,7 @@ mod tests {
     fn every_draft_change_is_reachable_as_a_message() {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 3);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let start = editor.crop().expect("a draft").rect;
 
         // A pointer gesture: begin, drag, end. Nothing changes until the drag arrives.
@@ -1015,13 +1013,7 @@ mod tests {
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
 
         // Ratio presets, swap, lock and the custom extents, all by index into the declared list.
-        let index = |option: &str| {
-            CROP_ASPECTS
-                .iter()
-                .position(|candidate| *candidate == option)
-                .expect("a declared option")
-        };
-        let _ = editor.update(Message::Crop(CropMessage::Preset(index("16:9"))));
+        let _ = editor.update(Message::Crop(CropMessage::Preset(option("16:9"))));
         let draft = editor.crop().expect("a draft");
         assert_eq!(draft.preset, "16:9");
         assert_eq!(draft.aspect.ratio(), Some(16.0 / 9.0));
@@ -1034,11 +1026,11 @@ mod tests {
         assert_eq!(editor.crop().expect("a draft").aspect.ratio(), None);
         let _ = editor.update(Message::Crop(CropMessage::CustomWidth("5".into())));
         let _ = editor.update(Message::Crop(CropMessage::CustomHeight("4".into())));
-        let _ = editor.update(Message::Crop(CropMessage::Preset(index("custom"))));
+        let _ = editor.update(Message::Crop(CropMessage::Preset(option("custom"))));
         assert_eq!(editor.crop().expect("a draft").aspect.ratio(), Some(1.25));
         let _ = editor.update(Message::Crop(CropMessage::CustomHeight("none".into())));
-        let _ = editor.update(Message::Crop(CropMessage::Preset(index("1:1"))));
-        let _ = editor.update(Message::Crop(CropMessage::Preset(index("custom"))));
+        let _ = editor.update(Message::Crop(CropMessage::Preset(option("1:1"))));
+        let _ = editor.update(Message::Crop(CropMessage::Preset(option("custom"))));
         assert_eq!(
             editor.crop().expect("a draft").aspect.ratio(),
             Some(1.0),
@@ -1058,19 +1050,17 @@ mod tests {
         let _ = editor.update(Message::Crop(CropMessage::Guide(true)));
         assert!(editor.crop_guide);
 
-        let _ = editor.update(Message::Crop(CropMessage::Cancel));
+        // Cancel is the one draft lifecycle's, as it is for every gesture.
+        draft_message(&mut editor, DraftMessage::Cancel);
         assert!(editor.crop().is_none());
         assert!(editor.presenter.stage().is_none());
         assert!(!editor.crop_guide, "cancelling leaves no guide mode on");
         let summary = editor.snapshot()["crop"].clone();
-        assert_eq!(
-            (&summary["drafting"], &summary["pending"]),
-            (&json!(false), &json!(false))
-        );
+        assert_eq!(summary["drafting"], json!(false));
         // The idle section is back, reading the stack the draft never committed to.
         assert_eq!(
             summary["section"],
-            json!({"drafting":false,"pending":false,"enabled":true,"chosen":"Free","locked":false,"can_swap":false,"angle":"0","rail":0.0,"guide":false})
+            json!({"drafting":false,"enabled":true,"chosen":"Free","locked":false,"can_swap":false,"angle":"0","rail":0.0,"guide":false})
         );
         finish(editor, catalog);
     }
@@ -1083,7 +1073,7 @@ mod tests {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 6);
         let log = crate::app::testing::attach_log(&mut editor);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let _ = editor.update(Message::Crop(CropMessage::Pointer(CropPointer::Begin {
             handle: Handle::Corner(Corner::TopLeft),
             x: 0.0,
@@ -1130,7 +1120,7 @@ mod tests {
         assert_eq!(request["mutation"]["expected_revision"], json!(6));
         assert_eq!(request["angle"], json!(payload.angle));
 
-        let _ = editor.update(Message::Crop(CropMessage::Apply));
+        draft_message(&mut editor, DraftMessage::Commit);
         assert_eq!(
             core_draft(&editor).and_then(CoreDraft::in_flight),
             Some(Round::Commit)
@@ -1163,28 +1153,31 @@ mod tests {
         draft
     }
 
+    /// Another client's commit conflicts the draft, which the one Changed elsewhere notice says;
+    /// the shared Reapply rebases the frame at once, onto the stage the new rows report, and the
+    /// core draft through `draft.reapply`. Apply is refused until that answers.
     #[test]
     fn an_external_commit_marks_the_draft_conflicted_and_reapply_rebases_it() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 1);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let _ = editor.update(Message::Crop(CropMessage::AngleText("6".into())));
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
         let composed = editor.crop().expect("a draft").rect;
 
         // Somebody else committed: the draft survives and says so, and Apply is refused.
-        let newer = entry(&asset, 9, None);
-        let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
-            refresh,
-        )))));
+        committed_elsewhere(&mut editor, &asset, &entry(&asset, 9, None));
         assert!(core_draft(&editor).expect("the draft is kept").conflicted);
         assert_eq!(
             editor.crop().expect("the draft is kept").rect,
             composed,
             "the composition is untouched"
         );
-        assert!(editor.crop_apply().is_err(), "Apply is refused");
+        assert_eq!(
+            editor.release_refusal().as_deref(),
+            Some("Changed elsewhere: discard the crop draft or reapply it"),
+            "Apply is refused"
+        );
         let snapshot = editor.snapshot();
         assert_eq!(snapshot["crop"]["conflicted"], json!(true));
         assert_eq!(
@@ -1195,20 +1188,23 @@ mod tests {
         assert_eq!(snapshot["render_error"], json!(null));
         assert_eq!(snapshot["compare"], json!(false));
 
-        // Reapply re-reads the stack, rebases the frame onto the new input stage and the core
-        // draft onto the new revision, and sends the rebased frame's fields.
+        // Reapply re-reads the rows, rebases the frame onto the new input stage now and the core
+        // draft onto the new revision, and asks for the new stage's pixels.
         editor.busy = false;
-        let _ = editor.update(Message::Crop(CropMessage::Reapply));
-        let pending = editor.crop_pending().cloned().expect("a pending rebase");
-        assert!(pending.reapply);
-        assert_eq!(pending.base_revision, 9);
-        editor.open_draft(stage());
+        draft_message(&mut editor, DraftMessage::Reapply);
+        assert_eq!(
+            editor.crop_stage(),
+            Some(StageView::Rendering {
+                reapply: true,
+                base_revision: 9
+            })
+        );
         assert_eq!(
             core_draft(&editor).and_then(CoreDraft::in_flight),
             Some(Round::Reapply)
         );
         assert!(
-            editor.crop_apply().is_err(),
+            editor.release_refusal().is_some(),
             "Apply waits for the rebased draft"
         );
         let rebased = rebased(&editor, 9);
@@ -1221,7 +1217,10 @@ mod tests {
             6.0,
             "the angle survives a rebase"
         );
-        assert!(editor.crop_refusal().is_none(), "Apply is possible again");
+        assert!(
+            editor.release_refusal().is_none(),
+            "Apply is possible again"
+        );
         finish(editor, catalog);
     }
 
@@ -1244,10 +1243,6 @@ mod tests {
                 .expect("a session")
                 .0
         };
-        let (width, height) = {
-            let asset = &editor.state.as_ref().expect("a photograph").asset;
-            (asset.width, asset.height)
-        };
         let revision = editor.state.as_ref().expect("a photograph").revision;
 
         let _ = editor.update(Message::Crop(CropMessage::Start));
@@ -1255,11 +1250,6 @@ mod tests {
             crate::app::testing::run_round(&mut editor),
             Some(Round::Begin)
         );
-        editor.open_draft(CropStage {
-            width,
-            height,
-            angle: 0.0,
-        });
         let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
         let payload = editor.crop().expect("an open frame").payload();
         let held = session(client);
@@ -1289,7 +1279,7 @@ mod tests {
             "another client cannot commit it"
         );
 
-        let _ = editor.update(Message::Crop(CropMessage::Apply));
+        draft_message(&mut editor, DraftMessage::Commit);
         assert_eq!(
             crate::app::testing::run_round(&mut editor),
             Some(Round::Commit)
@@ -1311,19 +1301,20 @@ mod tests {
             payload
         );
 
-        // A second draft, discarded: nothing commits and the session holds no draft afterwards.
+        // A second draft, opened on the committed crop's row and discarded: nothing commits and
+        // the session holds no draft afterwards.
         let _ = editor.update(Message::Crop(CropMessage::Start));
+        assert_eq!(
+            editor.crop().expect("a second frame").payload(),
+            payload,
+            "the frame reopens at what was committed"
+        );
         assert_eq!(
             crate::app::testing::run_round(&mut editor),
             Some(Round::Begin)
         );
-        editor.open_draft(CropStage {
-            width,
-            height,
-            angle: payload.angle,
-        });
         assert_eq!(session(client)["draft"]["action"], json!("crop"));
-        let _ = editor.update(Message::Crop(CropMessage::Cancel));
+        draft_message(&mut editor, DraftMessage::Cancel);
         assert_eq!(
             crate::app::testing::run_round(&mut editor),
             Some(Round::Cancel)
@@ -1338,13 +1329,12 @@ mod tests {
     }
 
     /// A crop's input stage is everything ahead of it, the transforms included: a draft on a stack
-    /// turned after it was cropped truncates after the orientation layer, which the host keeps
-    /// ahead of the crop, and remembers the turn it opened behind.
+    /// turned after it was cropped opens on the turned stage the crop's row reports, after the
+    /// orientation layer the host keeps ahead of the crop, and remembers the turn the row says it
+    /// opened behind.
     #[test]
     fn a_draft_opens_behind_every_transform_ahead_of_its_crop() {
-        let turn = luxforge_core::Layer::orientation(
-            Orientation::NEUTRAL.then(luxforge_core::Transform::RotateRight),
-        );
+        let right = Orientation::NEUTRAL.then(luxforge_core::Transform::RotateRight);
         let crop = crop_layer(CropPayload {
             angle: 0.0,
             x: 0.25,
@@ -1355,33 +1345,23 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(
             vec![
                 luxforge_core::Layer::pixel(0, 0, [1, 2, 3]),
-                turn,
+                luxforge_core::Layer::orientation(right),
                 crop.clone(),
             ],
             3,
         );
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        let pending = editor.crop_pending().cloned().expect("a pending draft");
-        assert_eq!(pending.layer, Some(crop.id));
+        let draft = editor.crop().expect("an opened draft");
+        assert_eq!(draft.layer, Some(crop.id));
         assert_eq!(
-            pending.layer_index, 2,
+            draft.layer_index, 2,
             "the pixel edit and the turn are shown"
         );
+        assert_eq!(draft.ahead, right);
         assert_eq!(
-            pending.ahead,
-            Orientation::NEUTRAL.then(luxforge_core::Transform::RotateRight)
+            (draft.stage.width, draft.stage.height),
+            (CROP_SOURCE.1, CROP_SOURCE.0)
         );
-        open_crop(
-            &mut editor,
-            CropStage {
-                width: 320,
-                height: 480,
-                angle: 0.0,
-            },
-        );
-        let draft = editor.crop().expect("an opened draft");
-        assert_eq!(draft.ahead, pending.ahead);
-        assert_eq!((draft.stage.width, draft.stage.height), (320, 480));
         finish(editor, catalog);
     }
 
@@ -1420,18 +1400,19 @@ mod tests {
             finishing,
         ]))));
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        let pending = editor.crop_pending().cloned().expect("a pending draft");
-        assert_eq!(pending.layer, None);
+        let draft = editor.crop().expect("an opened draft");
+        assert_eq!(draft.layer, None);
         assert_eq!(
-            pending.layer_index, 1,
+            draft.layer_index, 1,
             "the vignette is not part of the input"
         );
         finish(editor, catalog);
     }
 
     /// A turn committed while drafting, here as another client would commit it, goes ahead of the
-    /// crop and turns its input stage. Reapply carries the draft through the turn, so the frame
-    /// keeps selecting what it did instead of landing on whatever the same box numbers now show.
+    /// crop and turns its input stage. Reapply carries the draft through the turn the rows report,
+    /// so the frame keeps selecting what it did instead of landing on whatever the same box numbers
+    /// now show.
     #[test]
     fn reapply_after_a_turn_carries_the_draft_with_the_photograph() {
         let crop = crop_layer(CropPayload {
@@ -1443,7 +1424,7 @@ mod tests {
         });
         let (mut editor, catalog, asset, _) = opened(vec![crop.clone()], 4);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let before = editor.crop().expect("a draft").rect;
         assert_eq!(
             (before.x, before.y, before.width, before.height),
@@ -1458,7 +1439,7 @@ mod tests {
                 payload: serde_json::to_value(
                     serde_json::from_value::<CropPayload>(crop.payload.clone())
                         .unwrap()
-                        .carried((480, 320), right)
+                        .carried(CROP_SOURCE, right)
                         .unwrap(),
                 )
                 .unwrap(),
@@ -1467,25 +1448,13 @@ mod tests {
         ] {
             newer.snapshot = newer.snapshot.append(layer).expect("a valid stack");
         }
-        let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
-            refresh,
-        )))));
+        committed_elsewhere(&mut editor, &asset, &newer);
         assert!(core_draft(&editor).expect("the draft is kept").conflicted);
 
         editor.busy = false;
-        let _ = editor.update(Message::Crop(CropMessage::Reapply));
-        let pending = editor.crop_pending().cloned().expect("a pending rebase");
-        assert_eq!((pending.layer_index, pending.ahead), (1, right));
-        editor.open_draft(CropStage {
-            width: 320,
-            height: 480,
-            angle: 0.0,
-        });
-        let rebased = rebased(&editor, 5);
-        answer_reapply(&mut editor, Ok(rebased));
-        assert!(!core_draft(&editor).expect("the rebased draft").conflicted);
-        let draft = editor.crop().expect("the rebased draft");
+        draft_message(&mut editor, DraftMessage::Reapply);
+        let draft = editor.crop().expect("the rebased frame");
+        assert_eq!((draft.layer_index, draft.ahead), (1, right));
         // The top-left quarter of the photograph, turned clockwise, is its top-right quarter.
         assert_eq!(
             (
@@ -1496,6 +1465,9 @@ mod tests {
             ),
             (160.0, 0.0, 160.0, 240.0)
         );
+        let rebased = rebased(&editor, 5);
+        answer_reapply(&mut editor, Ok(rebased));
+        assert!(!core_draft(&editor).expect("the rebased draft").conflicted);
         finish(editor, catalog);
     }
 
@@ -1503,17 +1475,17 @@ mod tests {
     fn the_drafts_own_apply_ends_it_and_a_failed_apply_keeps_it() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 2);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         // A stale revision comes back as a conflict: the draft is kept and marked.
-        let _ = editor.update(Message::Crop(CropMessage::Apply));
+        draft_message(&mut editor, DraftMessage::Commit);
         answer_commit(&mut editor, Err("conflict: stale revision".into()));
         assert!(editor.crop().is_some(), "the draft is kept");
         assert!(core_draft(&editor).expect("the draft is kept").conflicted);
-        assert!(editor.crop_apply().is_err());
+        assert!(editor.release_refusal().is_some());
 
         // The draft's own successful Apply ends it and drops the extra texture.
         editor.core_gesture_mut().expect("a draft").draft.conflicted = false;
-        let _ = editor.update(Message::Crop(CropMessage::Apply));
+        draft_message(&mut editor, DraftMessage::Commit);
         let newer = entry(&asset, 5, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
         answer_commit(&mut editor, Ok(Some(refresh)));
@@ -1547,7 +1519,7 @@ mod tests {
         let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
         assert_eq!(editor.mode_sync, None, "the wrapper always consumes it");
 
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         assert!(editor.workspace.canvas.modes[0].id == POINTER_MODE);
         assert!(
             !editor.workspace.canvas.modes[0].selected,
@@ -1556,7 +1528,7 @@ mod tests {
 
         // Ending it, by Cancel here (Apply and a scripted cancel go through the same `end_crop_view`),
         // returns the session to pointer.
-        let _ = editor.dispatch(Message::Crop(CropMessage::Cancel));
+        let _ = editor.dispatch(Message::Draft(DraftMessage::Cancel));
         assert_eq!(
             editor.mode_sync.as_deref(),
             Some(POINTER_MODE),
@@ -1581,7 +1553,7 @@ mod tests {
             let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
             assert_eq!(task.units(), 0, "{case}: nothing is sent");
             assert_eq!(editor.mode_sync, None, "{case}: no mode change is queued");
-            assert!(editor.crop_pending().is_none() && editor.crop().is_none());
+            assert!(editor.crop().is_none());
             assert_eq!(editor.session.workspace.mode, mode, "{case}");
         };
 
@@ -1609,18 +1581,18 @@ mod tests {
         assert_eq!(
             task.units(),
             2,
-            "the draft's begin and its truncated preview"
+            "the draft's begin and its input stage's truncated preview"
         );
-        assert!(editor.crop_pending().is_some());
+        assert!(editor.crop().is_some());
         assert_eq!(editor.mode_sync.as_deref(), Some(crop_id.as_str()));
         finish(editor, catalog);
     }
 
     #[test]
     fn a_history_preview_pauses_the_draft_without_discarding_it() {
-        let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 1);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        open_crop(&mut editor, stage());
+        open_crop(&mut editor);
         let composed = editor.crop().expect("a draft").rect;
         let mut session = ClientSession {
             revision: 3,
@@ -1636,15 +1608,79 @@ mod tests {
         assert!(!editor.drafting(), "the plain historical preview is shown");
         assert_eq!(editor.snapshot()["crop"]["paused"], json!(true));
         // Nothing can be applied or started while previewing history.
-        let _ = editor.update(Message::Crop(CropMessage::Apply));
+        draft_message(&mut editor, DraftMessage::Commit);
         assert!(editor.crop().is_some());
+        assert_eq!(editor.status, "Return to the current state to apply");
         assert_eq!(
             core_draft(&editor).and_then(CoreDraft::in_flight),
             None,
             "nothing was committed"
         );
         assert_eq!(editor.crop().expect("a draft").rect, composed);
-        let _ = std::hint::black_box(&asset);
+        finish(editor, catalog);
+    }
+
+    /// Apply reads enabled exactly when the app would commit: the draft bar and the crop section
+    /// both show the app's one release refusal, whatever it is — none, another request in flight,
+    /// a historical preview on screen or a conflicted draft — so neither can read enabled while
+    /// Enter or the button's own press would be refused.
+    #[test]
+    fn apply_reads_enabled_exactly_when_the_app_would_commit() {
+        let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        open_crop(&mut editor);
+        let agree = |editor: &mut Editor, case: &str| -> Option<String> {
+            let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
+            let refusal = editor.release_refusal();
+            let bar = editor
+                .workspace
+                .canvas
+                .draft_bar
+                .clone()
+                .expect("the draft bar");
+            assert_eq!(bar.apply_reason, refusal, "{case}: the bar's reason");
+            assert_eq!(bar.can_apply, refusal.is_none(), "{case}: the bar's Apply");
+            let section = editor
+                .workspace
+                .tools
+                .all()
+                .flat_map(|section| section.controls.iter())
+                .find_map(|control| match control {
+                    crate::state::tools::ControlModel::CropFrame(model) => Some(model.can_apply),
+                    _ => None,
+                })
+                .expect("the crop section");
+            assert_eq!(section, refusal.is_none(), "{case}: the section's Apply");
+            refusal
+        };
+        assert_eq!(agree(&mut editor, "a fresh draft"), None);
+
+        editor.busy = true;
+        assert_eq!(
+            agree(&mut editor, "a request in flight").as_deref(),
+            Some("Waiting for the last request")
+        );
+        draft_message(&mut editor, DraftMessage::Commit);
+        assert_eq!(
+            core_draft(&editor).and_then(CoreDraft::in_flight),
+            None,
+            "the refused Apply sent nothing"
+        );
+        editor.busy = false;
+
+        let current = editor.session.preview.selection.clone();
+        editor.session.preview.selection = HistorySelection::Entry(entry_id);
+        assert_eq!(
+            agree(&mut editor, "a historical preview").as_deref(),
+            Some("Return to the current state to apply")
+        );
+        editor.session.preview.selection = current;
+
+        committed_elsewhere(&mut editor, &asset, &entry(&asset, 4, None));
+        assert_eq!(
+            agree(&mut editor, "a conflicted draft").as_deref(),
+            Some("Changed elsewhere: discard the crop draft or reapply it")
+        );
         finish(editor, catalog);
     }
 
@@ -1679,43 +1715,24 @@ mod tests {
     }
 
     /// A chip pressed in the idle section opens the draft seeded from the committed crop, as Start
-    /// does, and applies itself once the draft's input stage arrives: the canvas enters crop mode
-    /// with the frame at the new ratio, the log shows the seeded draft and then the one change, and
-    /// nothing commits.
+    /// does, and applies itself at once: the canvas enters crop mode with the frame at the new
+    /// ratio, the log shows the seeded draft and then the one change, and nothing commits.
     #[test]
     fn an_idle_change_opens_the_draft_seeded_from_the_committed_crop_and_applies_it() {
         let crop = crop_layer(committed_wide());
         let (mut editor, catalog, _, _) = opened(vec![crop.clone()], 5);
         let log = crate::app::testing::attach_log(&mut editor);
         let _ = editor.dispatch(Message::Crop(CropMessage::Preset(option("1:1"))));
-        let pending = editor
-            .crop_pending()
-            .cloned()
-            .expect("the change opened a draft");
-        assert_eq!(pending.layer, Some(crop.id.clone()));
-        assert_eq!(pending.payload, Some(committed_wide()));
-        assert!(
-            matches!(pending.queued.as_slice(), [CropMessage::Preset(index)] if *index == option("1:1")),
-            "{:?}",
-            pending.queued
-        );
-        assert!(
-            editor.crop().is_none(),
-            "the change waits for the input stage"
-        );
+        let draft = editor.crop().expect("the change opened a draft");
+        assert_eq!(draft.layer, Some(crop.id));
+        assert_eq!(draft.preset, "1:1");
+        assert_eq!(draft.aspect.ratio(), Some(1.0));
+        assert_eq!(draft.rect.width, draft.rect.height);
         assert_eq!(
             editor.mode_sync.as_deref(),
             Some("luxforge.crop"),
             "the canvas enters crop mode"
         );
-
-        open_crop(&mut editor, stage());
-        let draft = editor.crop().expect("an opened draft");
-        assert_eq!(draft.layer, Some(crop.id));
-        assert_eq!(draft.preset, "1:1");
-        assert_eq!(draft.aspect.ratio(), Some(1.0));
-        assert_eq!(draft.rect.width, draft.rect.height);
-        assert!(editor.crop_pending().is_none());
         assert_eq!(
             editor.state.as_ref().expect("a state").revision,
             5,
@@ -1735,44 +1752,65 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// Changes made while the draft is still starting — here after the mode strip's plain Start —
-    /// are queued in order and applied once it opens, none lost: a ratio, a nudge and a rail drag
-    /// that is one change however far it moves. Meanwhile the section's angle shows where the
-    /// queued changes lead.
+    /// The draft is live before its stage's pixels arrive: changes made then — a ratio, a nudge and
+    /// a rail drag — apply to the frame at once, each one draft change, with no queue between
+    /// them and the frame; the stage then arrives under the frame they made.
     #[test]
-    fn a_change_made_while_the_draft_is_starting_is_applied_once_it_opens() {
+    fn a_change_made_before_the_stage_arrives_applies_at_once() {
         let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
+        let log = crate::app::testing::attach_log(&mut editor);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        assert_eq!(editor.crop_angle, "0", "the committed angle while starting");
+        assert_eq!(editor.crop_angle, "0", "the committed angle");
         let _ = editor.update(Message::Crop(CropMessage::Preset(option("4:3"))));
         let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
+        assert_eq!(editor.crop().expect("an open frame").stage.angle, 0.5);
         assert_eq!(editor.crop_angle, "0.5");
         for fraction in [0.52, 0.55, 0.5 + 2.4 / 90.0 + 1e-4] {
             let _ = editor.update(Message::Crop(CropMessage::AngleRail(fraction)));
         }
         let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
-        assert_eq!(editor.crop_angle, "2.4");
-        let queued = &editor.crop_pending().expect("still starting").queued;
-        assert!(
-            matches!(
-                queued.as_slice(),
-                [
-                    CropMessage::Preset(_),
-                    CropMessage::NudgeAngle(_),
-                    CropMessage::AngleRail(_),
-                    CropMessage::AngleRailReleased
-                ]
-            ),
-            "the rail's moves are one queued change: {queued:?}"
-        );
-        assert!(editor.crop().is_none());
-
-        open_crop(&mut editor, stage());
-        let draft = editor.crop().expect("an opened draft");
+        let draft = editor.crop().expect("an open frame");
         assert_eq!(draft.preset, "4:3");
-        assert_eq!(draft.stage.angle, 2.4, "the rail's last position wins");
+        assert_eq!(draft.stage.angle, 2.4, "the rail's last position");
         assert_eq!(editor.crop_angle, "2.4");
+        assert!(
+            matches!(editor.crop_stage(), Some(StageView::Rendering { .. })),
+            "the stage is still on its way"
+        );
+        open_crop(&mut editor);
+        assert_eq!(editor.crop().expect("an open frame").stage.angle, 2.4);
         assert_eq!(editor.state.as_ref().expect("a state").revision, 5);
+        let records = crate::app::testing::logged(&mut editor, &log);
+        assert_eq!(
+            events(&records, "crop_draft_changed").len(),
+            3,
+            "the ratio, the nudge and the rail's release"
+        );
+        finish(editor, catalog);
+    }
+
+    /// Cancel on a draft that is still starting — its `draft.begin` unanswered and its stage not
+    /// yet rendered — cancels it outright: the frame leaves at once, the stage's job is stopped,
+    /// the session returns to pointer, and the draft's own `draft.cancel` follows its begin.
+    #[test]
+    fn cancel_while_the_draft_is_starting_cancels_it_outright() {
+        let (mut editor, catalog, asset, _) = opened(Vec::new(), 2);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        assert_eq!(
+            core_draft(&editor).and_then(CoreDraft::in_flight),
+            Some(Round::Begin)
+        );
+        let _ = editor.dispatch(Message::Draft(DraftMessage::Cancel));
+        assert!(editor.crop().is_none(), "the frame left at once");
+        assert!(editor.gesture_closing(), "the slot waits for the begin");
+        assert_eq!(editor.draft_generation, None);
+        assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
+        assert_eq!(editor.status, "Crop draft discarded");
+        let begun = luxforge_core::Draft::new("crop", asset, 2);
+        answer_begin(&mut editor, begun);
+        answer_cancel(&mut editor);
+        assert!(editor.gesture.is_none());
+        assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
         finish(editor, catalog);
     }
 
@@ -1780,7 +1818,7 @@ mod tests {
     /// closes the box, text that is not a number stays open with its reason, a rail release with no
     /// drag does nothing, and pressing the chip already chosen opens the draft without refitting
     /// the committed rectangle to it. An open slider gesture refuses the draft, and a start whose
-    /// input stage fails takes its queued changes with it.
+    /// input stage fails ends with the change it made.
     #[test]
     fn an_idle_control_that_changes_nothing_opens_no_draft_or_leaves_the_crop_as_it_is() {
         let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
@@ -1796,39 +1834,36 @@ mod tests {
             "the idle box opens at the committed angle"
         );
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
-        assert!(editor.crop_pending().is_none() && !editor.editing_angle());
+        assert!(editor.gesture.is_none() && !editor.editing_angle());
         let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: key.0,
             parameter: key.1,
         }));
         let _ = editor.update(Message::Crop(CropMessage::AngleText("level".into())));
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
-        assert!(editor.crop_pending().is_none() && editor.editing_angle());
+        assert!(editor.gesture.is_none() && editor.editing_angle());
         assert!(editor.status.contains("Angle must be"), "{}", editor.status);
         let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
         let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
+        let _ = editor.update(Message::Crop(CropMessage::ResetAngle));
         let _ = editor.update(Message::Crop(CropMessage::Guide(false)));
-        assert!(editor.crop_pending().is_none());
+        assert!(editor.gesture.is_none());
 
         // A slider gesture is finished deliberately, never displaced by the crop draft.
         crate::app::testing::hold_slider(&mut editor, "set-basic", "exposure");
         let _ = editor.update(Message::Crop(CropMessage::Lock));
-        assert!(editor.crop_pending().is_none());
+        assert!(editor.crop().is_none());
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
         editor.gesture = None;
 
-        // A start whose input stage cannot be prepared drops what it queued.
+        // A start whose input stage cannot be prepared ends, taking the change it made with it.
         let _ = editor.update(Message::Crop(CropMessage::Swap));
-        assert_eq!(
-            editor.crop_pending().map(|pending| pending.queued.len()),
-            Some(1)
-        );
+        assert!(editor.crop().is_some(), "the swap opened a draft");
         let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Err(
             "the source is gone".into(),
         ))));
-        assert!(editor.crop_pending().is_none());
-        editor.open_draft(stage());
-        assert!(editor.crop().is_none(), "nothing opens after the failure");
+        assert!(editor.crop().is_none(), "nothing is left open");
+        assert_eq!(editor.status, "the source is gone");
         // Its core draft is discarded, and closes once its `draft.begin` and `draft.cancel` answer.
         assert!(editor.gesture_closing());
         let action = crop_frame(&editor.modules).expect("a crop frame").action;
@@ -1840,7 +1875,6 @@ mod tests {
 
         // The chip already chosen opens the draft and leaves the committed rectangle exactly.
         let _ = editor.update(Message::Crop(CropMessage::Preset(option("16:9"))));
-        open_crop(&mut editor, stage());
         let draft = editor.crop().expect("an opened draft");
         assert_eq!(draft.preset, "16:9");
         assert_eq!(draft.payload(), committed_wide());
