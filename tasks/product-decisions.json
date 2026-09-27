@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run. Interactive-preview softness, an updating histogram, and viewport-bounded clipping are accepted; measured quality/error choices beyond the authorized baseline remain open. Two further decisions are open: whether to change the owner-approved moving-frame RAW white-balance quality criterion, and whether to accept the 1088 MiB photo-texture residency proposal including retirement.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run. Interactive-preview softness, an updating histogram, and viewport-bounded clipping are accepted; measured quality/error choices beyond the authorized baseline remain open. The owner decided the 100% RAW white-balance gate and provisionally accepted the 1088 MiB temporary-overlap photo-texture ceiling on 2026-09-27. Both decisions are recorded below; the revised RAW gate passes fresh native checks, while total GPU-memory accounting remains implementation follow-up.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -368,27 +368,27 @@
     },
     {
       "id": "TASK-008",
-      "description": "Decide whether held full-detail RAW white-balance quality can replace or supplement the approved moving-frame comparison.",
-      "status": "ready",
+      "description": "Decide how to qualify moving and held full-detail RAW white-balance previews at 100%.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "The owner-approved 2026-09-26 raw-panel criterion compares the drafted frame shown during the drag with the released exact frame relative to the drag change at Fit and 100%, and also requires a one-code mean difference at Fit. Do not silently change this gate.",
-        "On the prior recorded build, motion residuals were Z6 2.42%, X100VI 3.69%, and Air 2S 17.33% of the drag change. These combine half-detail softness and white-balance approximation, so the Air 2S misses the approved 10% 100% criterion. A held full-detail comparison after quiet refinement gave 0.81%, 1.39%, and 5.06%, respectively, but tests a different view state."
+        "The original 2026-09-26 gate compared the drafted moving frame with the released exact frame at Fit and 100%, within 10% of the drag change, plus one code mean at Fit. The final review binary missed it for the Air 2S moving 100% frame at 17.33%; the Z6 and X100VI moving residuals were 2.42% and 3.69%.",
+        "Owner decision, 2026-09-27: assess motion and held full-detail separately. At 100%, the 10% relative gate applies to the approximate held draft after full-detail refinement under the shared 120 ms quiet policy and before release. Motion checks viewport identity, approximate label, visible response and refinement, with measured softness recorded but no numeric softness threshold. Fit retains the 10% relative and one-code mean gates. The recorded held results were 0.81%, 1.39% and 5.06%; fresh native `raw-panel` runs of the revised verifier pass for all three supplied cameras. RAW redevelopment remains exact on release."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Approved RAW panel decision",
+          "label": "Original and revised RAW panel decisions",
           "target": "docs/decisions.md",
           "locator": "RAW white-balance drafts",
-          "relevance": "Preserves the criterion that remains in force until the owner decides otherwise."
+          "relevance": "Records the original 2026-09-26 moving criterion and the owner-approved 2026-09-27 split gate."
         },
         {
           "kind": "file",
-          "label": "RAW preview evidence and proposal",
+          "label": "RAW preview evidence and accepted gate",
           "target": "docs/design/instant-preview.md",
           "locator": "A RAW white balance during a drag",
-          "relevance": "Explains motion and held-detail measurements and their distinct scopes."
+          "relevance": "Records the distinct moving and held comparisons and accepted 100% gate."
         },
         {
           "kind": "file",
@@ -399,30 +399,29 @@
         }
       ],
       "acceptance_criteria": [
-        "The owner chooses to retain the moving-frame criterion or explicitly approves a revised or additional held-detail criterion, including which view state the quality check captures.",
-        "The choice states how reduced-resolution softness and white-balance approximation are judged and how the Air 2S miss is treated.",
-        "Only after the decision, align the RAW design, raw-panel native verifier, and decision record; do not call a new criterion accepted before then."
+        "The 2026-09-27 owner decision explicitly separates moving response from the held full-detail 100% numerical gate while retaining the Fit gates and the earlier decision record.",
+        "The Air 2S moving miss and held 5.06% result retain their measured scope; no general photo-error or moving-softness threshold is claimed.",
+        "The native verifier and fresh three-camera runs follow the revised gate; their measured scope does not imply a full-tier or general photo-error qualification."
       ],
       "test_strategy": {
-        "approach": "manual",
+        "approach": "inspection",
         "steps": [
-          "Review moving and held-detail frames and their relative error for each supplied camera.",
-          "Record the owner decision and update the affected specification and verifier if authorized."
+          "Compare the decision record and design against the owner choice and recorded camera measurements."
         ],
         "commands": [],
         "expected_results": [
-          "The accepted RAW quality gate and native check agree, with the Air 2S result honestly reported."
+          "The revised gate passes fresh native raw-panel checks on the three supplied cameras, without claiming a full-tier result or general photo-error bound."
         ]
       }
     },
     {
       "id": "TASK-009",
-      "description": "Decide whether to accept the proposed photo-texture residency budget and its exclusions.",
-      "status": "ready",
+      "description": "Decide the scope of the temporary photo-texture residency ceiling.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Current implementation bounds one current plus at most one retiring full-photo allocation to 512 MiB each, and at most two region sets including retirement to 32 MiB each: 1088 MiB combined for these photo textures.",
-        "Crop GPU texture and tiles, overlays, and backend-owned upload staging are outside this photo bound. Crop raster creation has the core frame-size limit, but crop GPU residency has no separate UI cap. Backend staging has not been measured. The implemented bound is a proposal for owner acceptance, not an approved product memory budget."
+        "Owner decision, 2026-09-27: provisionally accept the current 1088 MiB photo-texture temporary-overlap ceiling as an engineering ceiling, not a total editor or GPU product budget. It consists of current and retiring full-photo allocations up to 512 MiB each and two region sets up to 32 MiB each.",
+        "Crop GPU textures and tiles, overlays, and backend-owned upload staging remain outside the photo ceiling and are not fully measured or bounded. The rendering follow-up must provide native evidence and bounds before a total-memory guarantee."
       ],
       "context_links": [
         {
@@ -436,7 +435,7 @@
           "label": "Viewport design",
           "target": "docs/design/instant-preview.md",
           "locator": "Region textures and stale pixels",
-          "relevance": "Current behavior and proposed budget scope."
+          "relevance": "Records the provisional ceiling and excluded resources."
         },
         {
           "kind": "file",
@@ -447,19 +446,17 @@
         }
       ],
       "acceptance_criteria": [
-        "The owner accepts, rejects, or revises the 1088 MiB photo-texture budget after seeing current and retiring full/region residency and the separate crop/overlay/backend-staging costs.",
-        "The recorded decision states the total memory accounting scope and any additional cap or native GPU measurement required before qualification.",
-        "Specifications distinguish the implementation limit from an accepted product budget until the owner decides."
+        "The provisional 1088 MiB ceiling is stated as a photo-texture engineering limit including retirement, without implying a total editor or GPU memory budget.",
+        "The excluded crop, overlay and backend staging allocations and required native measurement and bounds are explicit."
       ],
       "test_strategy": {
-        "approach": "manual",
+        "approach": "inspection",
         "steps": [
-          "Review native photo-texture residency and crop/overlay allocation evidence at representative 24 MP and 60 MP workloads.",
-          "State the exclusions and choose a budget or retain the question as open."
+          "Review the decision, viewport design and performance rule for the same accounting scope."
         ],
         "commands": [],
         "expected_results": [
-          "No implementation limit is presented as owner acceptance without a recorded decision."
+          "A rendering follow-up owns the omitted-resource qualification."
         ]
       }
     }

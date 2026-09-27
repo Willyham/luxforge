@@ -3,7 +3,7 @@
 //! drag left open, whose drafted frame approximates the white balance on the developed planes and
 //! is labelled so, then released, which redevelops the mosaic and lands the exact frame, at Fit
 //! and again at 100%. At 100%, a held-draft pause checks the exact visible-region refinement and
-//! captures full-detail approximate pixels for a separately reported diagnostic.
+//! captures full-detail approximate pixels for white-balance accuracy against the release.
 //! Both drags keep the tint in force (the first, from As shot, the camera's as-shot
 //! tint); and a double-click reset on each of the three sliders after the committed
 //! drag the first press makes: exposure back to 0 EV, and the custom temperature and tint back to
@@ -257,9 +257,49 @@ fn raw_payload(frame: &Value) -> Result<&Value> {
         .ok_or_else(|| "The stack has no RAW layer".into())
 }
 
-/// The most the released exact frame may differ from the moving drafted frame, as a share of the
-/// drag's own change from the frame before it (owner decision, 2026-09-26).
-const MAX_MOVING_SHARE: f64 = 0.1;
+/// The most the released exact frame may differ from the tested draft view state, as a share of
+/// the drag's own change from the frame before it (owner decision, 2026-09-27).
+const MAX_WB_ACCURACY_SHARE: f64 = 0.1;
+
+/// Fit tests the moving proxy. At 100%, the moving half-detail capture remains evidence of the
+/// interaction, while white-balance accuracy tests the held full-detail capture before release.
+/// The latter says nothing by itself about motion timing or visible softness.
+fn check_white_balance_accuracy(
+    fit: bool,
+    moving_mean: f64,
+    moving_ratio: f64,
+    held: Option<(f64, f64)>,
+    change_mean: f64,
+) -> Result<&'static str> {
+    if fit {
+        ensure(
+            moving_ratio <= MAX_WB_ACCURACY_SHARE,
+            format!(
+                "Fit moving white-balance accuracy failed: the released frame is {moving_mean:.3} codes from the moving draft on average, {:.2}% of the drag's own {change_mean:.3}; the limit is 10%",
+                moving_ratio * 100.0,
+            ),
+        )?;
+        ensure(
+            moving_mean <= 1.0,
+            format!(
+                "Fit moving white-balance accuracy failed: the released frame is {moving_mean:.3} codes from the moving draft on average; the limit is 1 code"
+            ),
+        )?;
+        Ok("moving")
+    } else {
+        let (held_mean, held_ratio) =
+            held.ok_or("The 100% draft has no held full-detail capture")?;
+        ensure(
+            held_ratio <= MAX_WB_ACCURACY_SHARE,
+            format!(
+                "100% held full-detail white-balance accuracy failed: the released frame is {held_mean:.3} codes from the held draft on average, {:.2}% of the drag's own {change_mean:.3}; the limit is 10%. Moving half-detail difference: {moving_mean:.3} codes, {:.2}% of the same change",
+                held_ratio * 100.0,
+                moving_ratio * 100.0,
+            ),
+        )?;
+        Ok("held_full_detail")
+    }
+}
 
 /// How far the photo surface of one capture is from another's: the mean absolute channel
 /// difference in codes over the surface columns the frame records, between its top and bottom
@@ -887,8 +927,10 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
 ///
 /// Released, the commit redevelops the mosaic and adopts the exact report. At Fit its proxy is the
 /// first new photo; at 100% its exact region precedes the whole frame, all under one committed
-/// generation. Full-detail approximate and committed captures must remain within a tenth of the
-/// drag's own image change, and at Fit within a code. The plan checks one history entry.
+/// generation. White-balance accuracy compares the moving Fit capture or the held full-detail
+/// 100% capture with the release, within a tenth of the drag's own image change; Fit is also within
+/// a code. Moving 100% differences remain reported for independent visual assessment. The plan
+/// checks one history entry.
 fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     let kelvin = drag.kelvin;
     let (before, drafted, released) = (
@@ -1220,33 +1262,30 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "A stale report was adopted, or the committed frame's own report was not adopted",
     )?;
     let (moving_mean, moving_over) = surface_difference(drafted, released)?;
-    let (settled_mean, settled_over) = surface_difference(quality_draft, released)?;
-    // The owner's accepted comparison is the frame during the moving drag against the exact
-    // release. The held full-detail frame is a useful, separately reported diagnostic, but does
-    // not replace that acceptance check. Fit also has an absolute one-code limit.
+    let held_difference = drag
+        .quiet
+        .map(|_| surface_difference(quality_draft, released))
+        .transpose()?;
     let (change_mean, _) = surface_difference(before, released)?;
     ensure(
         change_mean > 0.0,
         "The temperature drag caused no photographed change",
     )?;
     let moving_ratio = moving_mean / change_mean;
-    let paused_ratio = settled_mean / change_mean;
-    ensure(
-        moving_ratio <= MAX_MOVING_SHARE,
-        format!(
-            "Accepted moving-frame check failed: the exact frame is {moving_mean:.3} codes from the moving drafted one on average, {:.2}% of the drag's own {change_mean:.3}; the owner limit is 10%. Proposed paused-frame diagnostic: {settled_mean:.3} codes, {:.2}% of the same change",
-            moving_ratio * 100.0,
-            paused_ratio * 100.0
-        ),
+    let held_accuracy = held_difference.map(|(mean, _)| (mean, mean / change_mean));
+    let held_ratio = held_accuracy.map(|(_, ratio)| ratio);
+    let checked_view_state = check_white_balance_accuracy(
+        drag.fit,
+        moving_mean,
+        moving_ratio,
+        held_accuracy,
+        change_mean,
     )?;
-    if drag.fit {
-        ensure(
-            moving_mean <= 1.0,
-            format!(
-                "The exact frame is {moving_mean:.3} codes from the moving approximate one on average; the Fit limit is 1 code"
-            ),
-        )?;
-    }
+    let accuracy_ratio = if drag.fit {
+        moving_ratio
+    } else {
+        held_ratio.expect("the 100% accuracy check requires a held capture")
+    };
     let tint = keeps_the_tint_in_force(before, drafted, released, drag)?;
     Ok(json!({
         "step": drag.drag,
@@ -1262,10 +1301,12 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "released_frame": released["file"],
         "released_render": state["status_bar"]["render"],
         "released_histogram": histogram["status"],
-        "released_against_full_detail_draft": {"mean_codes": settled_mean, "share_over_2": settled_over},
+        "released_against_held_full_detail_draft": held_difference.map(|(mean, over)| json!({"mean_codes": mean, "share_over_2": over})),
         "released_against_before": {"mean_codes": change_mean},
         "moving_share_of_change": moving_ratio,
-        "paused_full_detail_share_of_change_proposed_diagnostic": paused_ratio,
+        "held_full_detail_share_of_change": held_ratio,
+        "accuracy_checked_view_state": checked_view_state,
+        "accuracy_share_of_change": accuracy_ratio,
         "surface_versions": [versions.0, versions.1],
     }))
 }
@@ -1314,6 +1355,31 @@ fn keeps_the_tint_in_force(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hundred_percent_accuracy_uses_held_full_detail_after_refinement() {
+        // The Air 2S review's 17.33% moving difference is still evidence, while its 5.06%
+        // held difference passes the accepted white-balance comparison.
+        assert_eq!(
+            check_white_balance_accuracy(false, 4.2, 0.1733, Some((1.227, 0.0506)), 24.242)
+                .unwrap(),
+            "held_full_detail"
+        );
+        let failure = check_white_balance_accuracy(false, 0.5, 0.02, Some((2.5, 0.1001)), 24.242)
+            .unwrap_err();
+        assert!(failure.to_string().contains("held full-detail"));
+        assert!(check_white_balance_accuracy(false, 0.5, 0.02, None, 24.242).is_err());
+    }
+
+    #[test]
+    fn fit_accuracy_requires_moving_share_and_one_code_mean() {
+        assert_eq!(
+            check_white_balance_accuracy(true, 1.0, 0.1, None, 10.0).unwrap(),
+            "moving"
+        );
+        assert!(check_white_balance_accuracy(true, 0.9, 0.1001, None, 8.99).is_err());
+        assert!(check_white_balance_accuracy(true, 1.001, 0.08, None, 12.5).is_err());
+    }
 
     /// What the plan scripts at the named step.
     fn scripted(plan: &Plan, step: &str) -> Value {
