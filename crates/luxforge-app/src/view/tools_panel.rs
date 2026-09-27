@@ -1748,6 +1748,11 @@ fn custom_field<'a>(
     .into()
 }
 
+/// What a double-click on the angle's rail sends.
+pub(crate) fn angle_reset() -> Message {
+    Message::Crop(CropMessage::ResetAngle)
+}
+
 /// The straightening angle: the ± nudges either side of its rail, its value box, which opens for
 /// typing when pressed, and the arrow keys while focused.
 fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
@@ -1791,7 +1796,7 @@ fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
         }),
         |text| Message::Crop(CropMessage::AngleText(text)),
         Message::Crop(CropMessage::SubmitAngle),
-        Message::Crop(CropMessage::AngleText("0".into())),
+        angle_reset(),
         Some(StepperRailMessages {
             on_change: Box::new(|fraction| Message::Crop(CropMessage::AngleRail(fraction))),
             on_release: Message::Crop(CropMessage::AngleRailReleased),
