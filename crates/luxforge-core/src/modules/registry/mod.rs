@@ -202,6 +202,12 @@ impl ModuleRegistry {
         registry
             .check_complete()
             .expect("built-in control variants are valid");
+        // The host's own descriptors are published beside the modules' and never registered, so
+        // they are held to the same rules here, by the host's form of the one validation.
+        for host in registry.host_descriptors() {
+            host.validate_host()
+                .expect("the host's descriptors are valid");
+        }
         registry
     }
 

@@ -15,7 +15,7 @@ use crate::{
         message::{MaskMessage, Message, PaintTarget, RowEdit},
         tasks::{Refresh, mutation},
     },
-    mask_draft::{BRUSH, ContentMap, MaskDraft, MaskDraftOp},
+    mask_draft::{ContentMap, MaskDraft, MaskDraftOp, painted_kind},
 };
 use iced::Task;
 use luxforge_core::{
@@ -448,14 +448,16 @@ impl Editor {
             // no command behind it; painting is reached from the Brush section instead.
             MaskMessage::Paint(target) => match target {
                 PaintTarget::NewMask => {
-                    self.begin_shape(MaskDraftOp::Create, BRUSH.to_owned(), None)
+                    self.begin_shape(MaskDraftOp::Create, painted_kind().to_owned(), None)
                 }
                 PaintTarget::NewBrush => {
                     let mode = self.mask_mode;
                     match self.selected_mask.clone() {
-                        Some(mask) => {
-                            self.begin_shape(MaskDraftOp::Add(mode), BRUSH.to_owned(), Some(mask))
-                        }
+                        Some(mask) => self.begin_shape(
+                            MaskDraftOp::Add(mode),
+                            painted_kind().to_owned(),
+                            Some(mask),
+                        ),
                         None => {
                             self.status = "Select a mask before painting on it".into();
                             Task::none()
@@ -1127,7 +1129,7 @@ impl Editor {
         let brush = self.painting_brush();
         self.selected_mask = Some(mask.clone());
         self.selected_component = Some(component.clone());
-        match MaskDraft::editing(mask, component, BRUSH, &Value::Null, brush) {
+        match MaskDraft::editing(mask, component, painted_kind(), &Value::Null, brush) {
             Some(draft) => self.open_shape(draft),
             None => Task::none(),
         }

@@ -1385,6 +1385,30 @@ impl ModuleDescriptor {
 
     /// Reject every descriptor a client could not render or validate against.
     pub fn validate(&self) -> Result<(), Error> {
+        self.validate_as(Declarer::Module)
+    }
+
+    /// [`Self::validate`] for a descriptor the **host** publishes for its own objects
+    /// ([`crate::ModuleRegistry::host_descriptors`]), which meets every rule a module's does except
+    /// the three that describe what only the host may declare:
+    ///
+    /// - an action or query identity is the method a client calls, one lowercase family word, a dot
+    ///   and a hyphenated name (`mask.create-linear`, `mask.list`): the host's commands live in its
+    ///   own method namespace, as `history.*` does, and a module identity may carry no dot, which is
+    ///   what keeps the two namespaces apart;
+    /// - a parameter name may join its words with `_` as well as `-`, because a host command's
+    ///   geometry parameters are its stored payload's field names (`radius_x`);
+    /// - a parameter may be of a host-only kind ([`ParameterKind::host_only`]), which names one of
+    ///   the host's own objects.
+    ///
+    /// It adds one rule a module does not have: **a host control declares no variants**. A variant
+    /// applies only on the global target, and a host control always addresses one of the host's
+    /// objects — a mask control is always masked — so a variant on one could never apply.
+    pub fn validate_host(&self) -> Result<(), Error> {
+        self.validate_as(Declarer::Host)
+    }
+
+    fn validate_as(&self, declarer: Declarer) -> Result<(), Error> {
         if !valid_identity(&self.id) {
             return Err(Error::validation(format!(
                 "invalid module identity {}",
@@ -1436,18 +1460,28 @@ impl ModuleDescriptor {
         }
         let mut actions = HashSet::with_capacity(self.actions.len());
         for action in &self.actions {
-            check_declared(action, "action", &mut actions)?;
+            check_declared(declarer, action, "action", &mut actions)?;
         }
         // A query declares and validates exactly like an action, in its own identity namespace.
         let mut queries = HashSet::with_capacity(self.queries.len());
         for query in &self.queries {
-            check_declared(query, "query", &mut queries)?;
+            check_declared(declarer, query, "query", &mut queries)?;
         }
         // Settings, capabilities, resources, activation and tasks refer to each other and to the
         // actions above, so they are checked together once those are known to be sound.
         crate::capabilities::descriptor::validate(self)?;
         for control in &self.controls {
             self.check_control(control, 1)?;
+        }
+        if declarer == Declarer::Host
+            && let Some(control) = with_variants(&self.controls)
+        {
+            return Err(Error::validation(format!(
+                "{} control of host descriptor {} declares variants, which apply only on the \
+                 global target a host control never addresses",
+                control.kind_name(),
+                self.id
+            )));
         }
         // One picker stands for one pick mode, so two would be two ways into the same mode and a
         // panel could not say which is selected.
@@ -2040,11 +2074,16 @@ fn check_raw_control_hints(control: &Value) -> Result<(), Error> {
 /// ranges, hints and defaults a caller can be validated against. Actions and queries are checked by
 /// the same rules because a client calls them the same way; only the method prefix differs.
 fn check_declared<'a>(
+    declarer: Declarer,
     declared: &'a ActionDescriptor,
     kind: &str,
     seen: &mut HashSet<&'a str>,
 ) -> Result<(), Error> {
-    if !valid_name(&declared.id) {
+    let valid = match declarer {
+        Declarer::Module => valid_name(&declared.id),
+        Declarer::Host => valid_host_method(&declared.id),
+    };
+    if !valid {
         return Err(Error::validation(format!(
             "invalid {kind} identity {}",
             declared.id
@@ -2062,8 +2101,37 @@ fn check_declared<'a>(
             declared.id
         )));
     }
-    check_parameter_declarations(kind, &declared.id, &declared.parameters)?;
+    declared_parameters(declarer, kind, &declared.id, &declared.parameters)?;
     check_summary(declared)
+}
+
+/// Who declares a descriptor, which decides the three things only the host may declare
+/// ([`ModuleDescriptor::validate_host`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Declarer {
+    Module,
+    Host,
+}
+
+/// A host action or query identity: the method a client calls, one lowercase family word, a dot and
+/// a hyphenated name, e.g. `mask.create-linear`.
+fn valid_host_method(value: &str) -> bool {
+    value
+        .split_once('.')
+        .is_some_and(|(family, name)| valid_segments(family, '.', true) && valid_name(name))
+}
+
+/// The first control, at any depth, that declares variants.
+fn with_variants(controls: &[Control]) -> Option<&Control> {
+    controls.iter().find_map(|control| {
+        if !control.variants().is_empty() {
+            return Some(control);
+        }
+        match control {
+            Control::Group { controls, .. } => with_variants(controls),
+            _ => None,
+        }
+    })
 }
 
 /// The parameters one action, query or task declares: valid, unique names, sound kinds, hints and
@@ -2073,9 +2141,21 @@ pub(crate) fn check_parameter_declarations(
     id: &str,
     declared: &[ParameterDescriptor],
 ) -> Result<(), Error> {
+    declared_parameters(Declarer::Module, kind, id, declared)
+}
+
+fn declared_parameters(
+    declarer: Declarer,
+    kind: &str,
+    id: &str,
+    declared: &[ParameterDescriptor],
+) -> Result<(), Error> {
+    let host = declarer == Declarer::Host;
     let mut parameters = HashSet::with_capacity(declared.len());
     for parameter in declared {
-        if !valid_name(&parameter.name) {
+        let valid =
+            valid_name(&parameter.name) || (host && valid_segments(&parameter.name, '_', false));
+        if !valid {
             return Err(Error::validation(format!(
                 "invalid parameter name {} of {kind} {id}",
                 parameter.name
@@ -2096,7 +2176,7 @@ pub(crate) fn check_parameter_declarations(
         }
         // An identity names one of the host's own objects, which only the host's commands address;
         // a module edits through the host's `mask` target and never names a mask itself.
-        if parameter.kind.host_only() {
+        if !host && parameter.kind.host_only() {
             return Err(Error::validation(format!(
                 "parameter {} of {kind} {id} declares kind {}, which only a host command declares",
                 parameter.name,
