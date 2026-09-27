@@ -48,7 +48,9 @@ pub(crate) use evaluate::PointPlan;
 pub use masks::{MASK_FIELD, mask_target_parameter};
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
-pub(crate) use source::{FilePreparation, source_signature, source_signature_for_handle};
+pub(crate) use source::{
+    Prepared, Preparing, SourceWork, source_signature, source_signature_for_handle,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -495,7 +497,6 @@ pub struct EditorService {
     /// that moves a head updates it where it commits.
     entries: RefCell<entries::EntryCache>,
     source_cache: RefCell<Option<CachedSource>>,
-    allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
     /// The budgets and the estimate store every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -564,7 +565,6 @@ impl EditorService {
             // Opening starts empty: nothing read before a reopen is trusted after it.
             entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),
-            allow_sync_source: true,
             registry,
             render: RenderContext::new(),
             catalog_id,

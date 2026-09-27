@@ -335,7 +335,7 @@ fn a_reopened_catalog_gives_back_the_masks_their_components_and_the_layers_bound
     };
 
     // A new process would open the catalog exactly this way.
-    let service = EditorService::open(&catalog).unwrap();
+    let mut service = EditorService::open(&catalog).unwrap();
     let state = service.state(&asset).unwrap();
     assert_eq!(
         state.revision, 2,
@@ -411,6 +411,9 @@ fn a_reopened_catalog_gives_back_the_masks_their_components_and_the_layers_bound
     );
     // And it still renders, at each entry, which is what history navigation shows a person.
     for entry in &entries {
+        service
+            .prepare(&service.entry_needs(&asset, Some(entry)).unwrap())
+            .unwrap();
         service
             .render_entry(&asset, entry)
             .unwrap_or_else(|error| panic!("a reopened entry renders: {error}"));

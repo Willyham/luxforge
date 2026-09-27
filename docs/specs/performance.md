@@ -100,6 +100,11 @@ work on identical frames.
 | Import | 54.4 (single) | 127.3 (single) |
 | Reopen: source and preview job after a fresh `EditorService` | 30.5 (single) | 89.9 (single) |
 
+The reopen row times the catalog owner's own preparation, run blocking by `EditorService::prepare` —
+the source job's read, hash and decode and the owner's completion — followed by the preview job. The
+figures above were taken while the harness read the original through a synchronous shortcut the
+product never took; they are re-measured at the next timing run.
+
 The crop output stage measures 3695 × 2077 from the rotated 4000 × 6000 input at 24 MP and
 5542 × 3116 from 6000 × 10000 at 60 MP. Against the colour baseline on the same run, each unit's own
 added cost at the median is about 15 ms (24 MP) and 42 ms (60 MP) for Exposure's single multiply,

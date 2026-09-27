@@ -15,13 +15,7 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use std::{
-    borrow::Cow,
-    collections::HashSet,
-    io,
-    path::Path,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{borrow::Cow, collections::HashSet, io, path::Path, sync::Arc};
 
 /// Every artifact a stack references, each once, in the order its layers first list them.
 pub(super) fn referenced(recipe: &Recipe) -> Vec<ArtifactId> {
@@ -217,10 +211,10 @@ impl EditorService {
     /// catalog`), a usable root (a missing directory is `source-unavailable` naming it; a manifest
     /// naming another catalog is `incompatible`) and a present object file of the recorded length.
     /// Everything one stack binds must fit the prepared cache at once, or it is a `resource-limit`.
-    /// Bytes kept ready under the file's current signature are a hit. On a miss a direct service
-    /// reads and hashes synchronously; the catalog owner instead answers `preparation-required`,
-    /// which the evaluation that bound the stack names with everything that stack needs
-    /// ([`EditorService::needing`]), so a source job reads the missing identities on the worker.
+    /// Bytes kept ready under the file's current signature are a hit. Nothing is read here: a miss
+    /// is `preparation-required`, which the evaluation that bound the stack names with everything
+    /// that stack needs ([`EditorService::needing`]), so a source job reads the missing identities
+    /// ([`super::SourceWork`]).
     /// The table is replaced by exactly what the stack lists, and only when all of it is bound; a
     /// stack without artifacts costs one walk of its layers and allocates nothing.
     pub fn bind_artifacts(&self, recipe: &mut Recipe) -> Result<(), Error> {
@@ -230,20 +224,15 @@ impl EditorService {
             return Ok(());
         }
         let mut bound = Vec::with_capacity(ids.len());
-        let mut unprepared = Vec::new();
+        let mut unprepared = false;
         for binding in self.bind(&ids)? {
             match binding {
                 Binding::Ready(artifact) => bound.push(artifact),
-                Binding::Unprepared(read) => unprepared.push(read),
+                Binding::Unprepared(_) => unprepared = true,
             }
         }
-        if !unprepared.is_empty() && !self.allow_sync_source {
+        if unprepared {
             return Err(Error::preparation_required("artifact preparation required"));
-        }
-        let never = AtomicBool::new(false);
-        for read in &unprepared {
-            let verified = artifacts::read_verified(read, &never)?;
-            bound.extend(self.adopt_artifacts(vec![verified]));
         }
         recipe.artifacts = bound.into_iter().collect();
         Ok(())
@@ -297,7 +286,7 @@ impl EditorService {
 
     /// Keep bytes a worker verified ready under the signature they were read with, and return what
     /// was kept.
-    pub(crate) fn adopt_artifacts(
+    pub(super) fn adopt_artifacts(
         &self,
         verified: Vec<VerifiedArtifact>,
     ) -> Vec<Arc<PreparedArtifact>> {

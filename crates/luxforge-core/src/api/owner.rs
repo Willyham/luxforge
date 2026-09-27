@@ -15,11 +15,11 @@ use crate::{
     PreparationNeeds, PreviewJob, ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, Report},
-    artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
+    artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection},
     capabilities::host::CapabilityHost,
-    editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
+    editor::{Prepared, Preparing, SourceSignature, SourceWork},
     jobs::{CANCELLED, Family, JobControl, JobKind, Jobs, JoinKey, Opened, Output, Release},
-    source::{PlaneGate, RawPrepared},
+    source::PlaneGate,
 };
 use point::{POINT_QUEUE_CAPACITY, PointWorker};
 use requests::{RequestKey, RequestTable};
@@ -266,11 +266,9 @@ pub(crate) struct SourceFlightKey {
 }
 
 enum SourceTaskKind {
-    /// Read and decode the original, developing a known RAW at the requested entry gains.
-    File(Option<Box<FilePreparation>>),
-    Develop(RawDevelopment),
-    /// The asset's source is already prepared; only its artifacts need reading.
-    Artifacts(AssetId),
+    /// Prepare an original, a RAW development or artifacts: the service's own source work, which
+    /// the service completes ([`EditorService::complete_preparation`]).
+    Prepare(SourceWork),
     /// Remove the object files the owner's collection left unrecorded, and stale staged files.
     Collect(Collection),
 }
@@ -279,24 +277,25 @@ impl SourceTaskKind {
     /// The job kind this task is recorded as, and the asset it works on when one is known.
     fn job(&self) -> (JobKind, Option<AssetId>) {
         match self {
-            Self::File(_) => (JobKind::Prepare, None),
-            Self::Develop(request) => (JobKind::Develop, Some(request.asset_id.clone())),
-            Self::Artifacts(asset_id) => (JobKind::Artifacts, Some(asset_id.clone())),
+            Self::Prepare(SourceWork::File { .. }) => (JobKind::Prepare, None),
+            Self::Prepare(SourceWork::Develop(request)) => {
+                (JobKind::Develop, Some(request.asset_id.clone()))
+            }
+            Self::Prepare(SourceWork::Artifacts(asset_id)) => {
+                (JobKind::Artifacts, Some(asset_id.clone()))
+            }
             Self::Collect(_) => (JobKind::Collect, None),
         }
     }
 }
 
 enum SourceResult {
-    File(PreparedFile, Vec<VerifiedArtifact>),
-    Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
-    Artifacts(AssetId, Vec<VerifiedArtifact>),
+    Prepared(Box<Prepared>),
     Collected(Collected),
 }
 
 struct SourceTask {
     id: JobId,
-    key: SourceFlightKey,
     /// The job's control in the one job table: its flag is what the worker checks between steps.
     control: Arc<JobControl>,
     kind: SourceTaskKind,
@@ -339,47 +338,85 @@ impl SourceQueue {
         }
     }
 
-    /// Prepare an original and its artifacts for the requested entry.
-    fn enqueue_file(
+    /// Queue one source job's work and the artifacts it reads after it, or join the queued or
+    /// running job doing the same. A development is admitted only while queued developments pin
+    /// fewer than [`MAX_QUEUED_MOSAICS`] distinct mosaics, or the one it pins already.
+    fn enqueue(
         &mut self,
         jobs: &mut Jobs,
         client: ClientId,
-        path: PathBuf,
-        target: Option<FilePreparation>,
+        work: SourceWork,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<JobId, Error> {
-        let (canonical, signature) = EditorService::request_signature(&path)?;
-        let key = SourceFlightKey {
-            path: canonical,
-            signature: Some(signature),
-            expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
-            gains_bits: target
-                .as_ref()
-                .and_then(|target| target.raw.as_ref())
-                .map(|raw| raw.gains.map(f32::to_bits)),
-            artifacts: flight_artifacts(&artifacts),
+        let (key, sensor) = match &work {
+            SourceWork::File {
+                path,
+                signature,
+                target,
+            } => (
+                SourceFlightKey {
+                    path: path.clone(),
+                    signature: Some(signature.clone()),
+                    expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
+                    gains_bits: target
+                        .as_ref()
+                        .and_then(|target| target.raw.as_ref())
+                        .map(|raw| raw.gains.map(f32::to_bits)),
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
+            SourceWork::Develop(request) => {
+                let key = SourceFlightKey {
+                    path: request.asset_id.as_str().into(),
+                    signature: Some(request.signature.clone()),
+                    expected_fingerprint: Some(request.fingerprint.clone()),
+                    gains_bits: Some(request.gains.map(f32::to_bits)),
+                    artifacts: flight_artifacts(&artifacts),
+                };
+                if let Some(id) = jobs.join(&JoinKey::Source(key.clone()), client) {
+                    return Ok(id);
+                }
+                let sensor = Arc::downgrade(&request.sensor);
+                self.admit_mosaic(&sensor)?;
+                (key, Some(sensor))
+            }
+            SourceWork::Artifacts(asset_id) => (
+                SourceFlightKey {
+                    path: asset_id.as_str().into(),
+                    signature: None,
+                    expected_fingerprint: None,
+                    gains_bits: None,
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
         };
-        let kind = SourceTaskKind::File(target.map(Box::new));
-        self.submit(jobs, client, key, kind, artifacts, None, true)
+        let kind = SourceTaskKind::Prepare(work);
+        self.submit(jobs, client, key, kind, artifacts, sensor, true)
     }
 
-    /// Read and verify an asset's artifacts when its source is already prepared.
-    fn enqueue_artifacts(
-        &mut self,
-        jobs: &mut Jobs,
-        client: ClientId,
-        asset_id: AssetId,
-        artifacts: Vec<ArtifactRead>,
-    ) -> Result<JobId, Error> {
-        let key = SourceFlightKey {
-            path: asset_id.as_str().into(),
-            signature: None,
-            expected_fingerprint: None,
-            gains_bits: None,
-            artifacts: flight_artifacts(&artifacts),
-        };
-        let kind = SourceTaskKind::Artifacts(asset_id);
-        self.submit(jobs, client, key, kind, artifacts, None, true)
+    /// Refuse a development of a mosaic no queued development pins yet once they pin
+    /// [`MAX_QUEUED_MOSAICS`] distinct mosaics between them.
+    fn admit_mosaic(&self, sensor: &Weak<luxforge_raw::RawSource>) -> Result<(), Error> {
+        let mut distinct = Vec::<&Weak<luxforge_raw::RawSource>>::new();
+        for existing in self.sensors.values() {
+            if existing.strong_count() > 0
+                && !distinct.iter().any(|seen| Weak::ptr_eq(seen, existing))
+            {
+                distinct.push(existing);
+            }
+        }
+        if distinct.len() >= MAX_QUEUED_MOSAICS
+            && !distinct
+                .iter()
+                .any(|existing| Weak::ptr_eq(existing, sensor))
+        {
+            return Err(Error::source_queue_full(
+                "RAW mosaic queue is full; retry after the active development",
+            ));
+        }
+        Ok(())
     }
 
     /// A collection: either a client asked for it explicitly, or [`OwnerHandle::launch`] queued it
@@ -423,7 +460,6 @@ impl SourceQueue {
         let (job_kind, asset_id) = kind.job();
         let task = SourceTask {
             id: id.clone(),
-            key,
             control: control.clone(),
             kind,
             artifacts,
@@ -449,45 +485,6 @@ impl SourceQueue {
             self.sensors.insert(id.clone(), sensor);
         }
         Ok(id)
-    }
-
-    fn enqueue_development(
-        &mut self,
-        jobs: &mut Jobs,
-        client: ClientId,
-        request: RawDevelopment,
-        artifacts: Vec<ArtifactRead>,
-    ) -> Result<JobId, Error> {
-        let key = SourceFlightKey {
-            path: request.asset_id.as_str().into(),
-            signature: Some(request.signature.clone()),
-            expected_fingerprint: Some(request.fingerprint.clone()),
-            gains_bits: Some(request.gains.map(f32::to_bits)),
-            artifacts: flight_artifacts(&artifacts),
-        };
-        if let Some(id) = jobs.join(&JoinKey::Source(key.clone()), client) {
-            return Ok(id);
-        }
-        let sensor = Arc::downgrade(&request.sensor);
-        let mut distinct = Vec::<&Weak<luxforge_raw::RawSource>>::new();
-        for existing in self.sensors.values() {
-            if existing.strong_count() > 0
-                && !distinct.iter().any(|seen| Weak::ptr_eq(seen, existing))
-            {
-                distinct.push(existing);
-            }
-        }
-        if distinct.len() >= MAX_QUEUED_MOSAICS
-            && !distinct
-                .iter()
-                .any(|existing| Weak::ptr_eq(existing, &sensor))
-        {
-            return Err(Error::source_queue_full(
-                "RAW mosaic queue is full; retry after the active development",
-            ));
-        }
-        let kind = SourceTaskKind::Develop(request);
-        self.submit(jobs, client, key, kind, artifacts, Some(sensor), true)
     }
 
     /// A job that is ready at once: an import or preparation the verified cache already answers.
@@ -520,12 +517,8 @@ impl SourceQueue {
     }
 }
 
-/// Queue one source job that prepares exactly what `needs` names — the asset's original, its RAW
-/// development at the named gains and the named artifacts — and nothing re-derived from the request
-/// that was refused. An original the cache does not hold is prepared and developed at those gains
-/// in the same job; one it holds is redeveloped only when its planes do not hold them; artifacts
-/// that became ready since they were named are left out. Needs with nothing left to prepare answer
-/// with a job that is already ready.
+/// Queue the source job that prepares exactly what `needs` names ([`EditorService::preparation`]),
+/// or answer with a job that is already ready when nothing is left to prepare.
 fn queue_preparation(
     service: &EditorService,
     sources: &mut SourceQueue,
@@ -533,34 +526,28 @@ fn queue_preparation(
     client: ClientId,
     needs: &PreparationNeeds,
 ) -> Result<JobId, Error> {
-    let asset_id = &needs.asset_id;
-    let artifacts = service.artifact_reads(&needs.artifacts)?;
-    let Some(state) = service.cached_state(asset_id)? else {
-        let state = service.state(asset_id)?;
-        let id = sources.enqueue_file(
-            jobs,
-            client,
-            state.asset.locator,
-            Some(service.file_preparation(asset_id, Some(&needs.entry_id))?),
-            artifacts,
-        )?;
-        service.evict_development();
-        return Ok(id);
-    };
-    let development = match needs.gains {
-        Some(gains) => service.raw_development(asset_id, gains)?,
-        None => None,
-    };
-    if let Some(request) = development {
-        let id = sources.enqueue_development(jobs, client, request, artifacts)?;
-        service.evict_development();
-        return Ok(id);
+    match service.preparation(needs)? {
+        Preparing::Ready(state) => sources.ready(jobs, client, *state),
+        Preparing::Work(work, reads) => queue_work(service, sources, jobs, client, work, reads),
     }
-    if artifacts.is_empty() {
-        sources.ready(jobs, client, state)
-    } else {
-        sources.enqueue_artifacts(jobs, client, state.asset.id, artifacts)
+}
+
+/// Queue one source job's work, and release the cache's float planes once work that allocates
+/// planes of its own is queued.
+fn queue_work(
+    service: &EditorService,
+    sources: &mut SourceQueue,
+    jobs: &mut Jobs,
+    client: ClientId,
+    work: SourceWork,
+    reads: Vec<ArtifactRead>,
+) -> Result<JobId, Error> {
+    let decodes = work.decodes();
+    let id = sources.enqueue(jobs, client, work, reads)?;
+    if decodes {
+        service.evict_development();
     }
+    Ok(id)
 }
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
@@ -581,25 +568,23 @@ impl SourceHold {
 /// The activity one source task publishes, with the original's file name as its detail line.
 fn source_activity(task: &SourceTask) -> ActivitySpec {
     match &task.kind {
-        SourceTaskKind::File(_) => ActivitySpec {
+        SourceTaskKind::Prepare(SourceWork::File { path, .. }) => ActivitySpec {
             kind: "source.prepare",
             label: "Preparing original",
-            detail: task
-                .key
-                .path
+            detail: path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned()),
             asset_id: None,
             job_id: Some(task.id.to_string()),
         },
-        SourceTaskKind::Develop(request) => ActivitySpec {
+        SourceTaskKind::Prepare(SourceWork::Develop(request)) => ActivitySpec {
             kind: "source.develop",
             label: "Developing RAW",
             detail: request.file_name.clone(),
             asset_id: Some(request.asset_id.clone()),
             job_id: Some(task.id.to_string()),
         },
-        SourceTaskKind::Artifacts(asset_id) => ActivitySpec {
+        SourceTaskKind::Prepare(SourceWork::Artifacts(asset_id)) => ActivitySpec {
             kind: "artifacts.read",
             label: "Verifying artifacts",
             detail: None,
@@ -616,80 +601,27 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
     }
 }
 
-/// Read and verify every listed artifact on the source worker, stopping at the first that is
-/// missing, corrupt or cancelled.
-fn read_artifacts(
-    reads: &[ArtifactRead],
-    cancel: &AtomicBool,
-) -> Result<Vec<VerifiedArtifact>, Error> {
-    reads
-        .iter()
-        .map(|read| artifacts::read_verified(read, cancel))
-        .collect()
-}
-
-/// One source task's work on the worker: decode the original and develop a RAW, read and verify
-/// artifacts, or remove a collection's files. A developed RAW's linear planes hold a lease on the
-/// worker's memory gate until they are released.
+/// One source task's work on the worker: the service's own preparation ([`SourceWork::run`]), or a
+/// collection's removal of files. A developed RAW's linear planes hold a lease on the worker's
+/// memory gate until they are released.
 fn run_source_task(
     kind: SourceTaskKind,
-    key: &SourceFlightKey,
     reads: &[ArtifactRead],
     cancel: &AtomicBool,
     gate: &Arc<PlaneGate>,
 ) -> Result<SourceResult, Error> {
-    let mut result = match kind {
-        SourceTaskKind::File(target) => {
-            EditorService::prepare_file_cancel(&key.path, target.as_deref(), cancel).and_then(
-                |prepared| {
-                    if Some(&prepared.signature) != key.signature.as_ref() {
-                        return Err(Error::conflict("source changed after job was queued"));
-                    }
-                    if key
-                        .expected_fingerprint
-                        .as_deref()
-                        .is_some_and(|expected| expected != prepared.fingerprint)
-                    {
-                        return Err(Error::source_unavailable(
-                            "original source fingerprint changed",
-                        ));
-                    }
-                    let verified = read_artifacts(reads, cancel)?;
-                    Ok(SourceResult::File(prepared, verified))
-                },
-            )
+    match kind {
+        SourceTaskKind::Prepare(work) => {
+            let mut prepared = work.run(reads, cancel)?;
+            if let Some(linear) = prepared.linear_mut() {
+                linear.hold(gate.lease());
+            }
+            Ok(SourceResult::Prepared(Box::new(prepared)))
         }
-        SourceTaskKind::Develop(request) => RawPrepared::develop(
-            request.sensor.clone(),
-            request.capture.clone(),
-            request.fingerprint.clone(),
-            request.gains,
-            cancel,
-        )
-        .and_then(|developed| {
-            let verified = read_artifacts(reads, cancel)?;
-            Ok(SourceResult::Develop(request, developed, verified))
-        }),
-        SourceTaskKind::Artifacts(asset_id) => read_artifacts(reads, cancel)
-            .map(|verified| SourceResult::Artifacts(asset_id, verified)),
         SourceTaskKind::Collect(collection) => {
             artifacts::collect_files(&collection, cancel).map(SourceResult::Collected)
         }
-    };
-    if let Ok(prepared) = &mut result {
-        let raw = match prepared {
-            SourceResult::File(file, _) => match &mut file.source {
-                crate::source::PreparedSource::Raw(raw) => Some(raw),
-                _ => None,
-            },
-            SourceResult::Develop(_, raw, _) => Some(raw),
-            SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
-        };
-        if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
-            linear.hold(gate.lease());
-        }
     }
-    result
 }
 
 fn source_worker(
@@ -710,10 +642,7 @@ fn source_worker(
         // A previous RAW result/cache or active/pending preview may still pin its large float
         // planes. Wait on the worker, never the catalog owner, before another source allocation:
         // the last release or a stop wakes it. Artifact work allocates no planes and never waits.
-        if matches!(
-            task.kind,
-            SourceTaskKind::File(_) | SourceTaskKind::Develop(_)
-        ) {
+        if matches!(&task.kind, SourceTaskKind::Prepare(work) if work.decodes()) {
             gate.wait_released(task.control.flag());
         }
         if task.control.is_cancelled() {
@@ -736,13 +665,7 @@ fn source_worker(
         // waiting on it and the board agree, and the worker lives on for the next task.
         let result = catch_unwind(AssertUnwindSafe(|| {
             hold.wait();
-            run_source_task(
-                task.kind,
-                &task.key,
-                &task.artifacts,
-                task.control.flag(),
-                &gate,
-            )
+            run_source_task(task.kind, &task.artifacts, task.control.flag(), &gate)
         }))
         .unwrap_or_else(|_| Err(Error::internal("the source job stopped unexpectedly")));
         // The activity ends before the owner learns the result, so a client that reads the job as
@@ -886,7 +809,6 @@ impl OwnerHandle {
         hold: SourceHold,
     ) -> Result<(Self, JoinHandle<()>), Error> {
         let mut service = EditorService::open_with(catalog, registry)?;
-        service.disable_sync_source();
         let render = service.render_context().clone();
         let (sender, receiver) = sync_channel(64);
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
@@ -1627,19 +1549,9 @@ impl Owner {
         let service = &mut self.service;
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
-                SourceResult::File(file, verified) => {
-                    let (state, created) = service.import_prepared(file)?;
-                    service.adopt_artifacts(verified);
+                SourceResult::Prepared(prepared) => {
+                    let (state, created) = service.complete_preparation(*prepared)?;
                     Ok(Completed::Asset(Box::new(state), created))
-                }
-                SourceResult::Develop(request, developed, verified) => {
-                    let state = service.install_development(&request, developed)?;
-                    service.adopt_artifacts(verified);
-                    Ok(Completed::Asset(Box::new(state), false))
-                }
-                SourceResult::Artifacts(asset_id, verified) => {
-                    service.adopt_artifacts(verified);
-                    Ok(Completed::Asset(Box::new(service.state(&asset_id)?), false))
                 }
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
@@ -1741,23 +1653,22 @@ pub(super) fn catalog_import(
     call: &Call<'_>,
     params: Import,
 ) -> Result<Value, Error> {
-    let (id, status) = match owner.service.cached_import(&params.path)? {
-        Some(state) => (
-            owner.sources.ready(&mut owner.jobs, call.client, state)?,
+    let (id, status) = match owner.service.importing(&params.path)? {
+        Preparing::Ready(state) => (
+            owner.sources.ready(&mut owner.jobs, call.client, *state)?,
             JobStatus::Ready,
         ),
-        None => {
-            let expected = owner.service.known_file_preparation(&params.path)?;
-            let id = owner.sources.enqueue_file(
+        Preparing::Work(work, reads) => (
+            queue_work(
+                &owner.service,
+                &mut owner.sources,
                 &mut owner.jobs,
                 call.client,
-                params.path,
-                expected,
-                Vec::new(),
-            )?;
-            owner.service.evict_development();
-            (id, JobStatus::Queued)
-        }
+                work,
+                reads,
+            )?,
+            JobStatus::Queued,
+        ),
     };
     owner.jobs.set_origin(&id, call.origin.clone());
     owner.latest_import.insert(call.client, id.clone());
@@ -2310,29 +2221,45 @@ mod tests {
             )
             .unwrap(),
         );
-        let request = |path: &Path, sensor: Arc<luxforge_raw::RawSource>| RawDevelopment {
-            asset_id: AssetId::new(),
-            signature: EditorService::request_signature(path).unwrap().1,
-            fingerprint: "test".into(),
-            gains: sensor.metadata().as_shot_gains,
-            sensor,
-            capture: Arc::default(),
-            file_name: None,
-        };
+        let request =
+            |path: &Path, sensor: Arc<luxforge_raw::RawSource>| crate::editor::RawDevelopment {
+                asset_id: AssetId::new(),
+                signature: EditorService::request_signature(path).unwrap().1,
+                fingerprint: "test".into(),
+                gains: sensor.metadata().as_shot_gains,
+                sensor,
+                capture: Arc::default(),
+                file_name: None,
+            };
         let a = request(&first_path, first_sensor);
         let b = request(&second_path, second_sensor);
         let (mut sources, mut jobs, receiver) = source_queue();
         let first = sources
-            .enqueue_development(&mut jobs, ClientId(1), a.clone(), Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::Develop(Box::new(a.clone())),
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(
             sources
-                .enqueue_development(&mut jobs, ClientId(2), a, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    ClientId(2),
+                    SourceWork::Develop(Box::new(a)),
+                    Vec::new()
+                )
                 .unwrap(),
             first
         );
         let refusal = sources
-            .enqueue_development(&mut jobs, ClientId(3), b.clone(), Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(3),
+                SourceWork::Develop(Box::new(b.clone())),
+                Vec::new(),
+            )
             .unwrap_err();
         assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
         assert_eq!(
@@ -2345,7 +2272,12 @@ mod tests {
         sources.complete(&first);
         assert!(
             sources
-                .enqueue_development(&mut jobs, ClientId(3), b, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    ClientId(3),
+                    SourceWork::Develop(Box::new(b)),
+                    Vec::new()
+                )
                 .is_ok()
         );
     }
@@ -2358,12 +2290,22 @@ mod tests {
         let (mut sources, mut jobs, receiver) = source_queue();
         for _ in 0..SOURCE_QUEUE_CAPACITY {
             sources
-                .enqueue_artifacts(&mut jobs, ClientId(1), AssetId::new(), Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    ClientId(1),
+                    SourceWork::Artifacts(AssetId::new()),
+                    Vec::new(),
+                )
                 .unwrap();
         }
         let asset = AssetId::new();
         let refusal = sources
-            .enqueue_artifacts(&mut jobs, ClientId(1), asset.clone(), Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::Artifacts(asset.clone()),
+                Vec::new(),
+            )
             .unwrap_err();
         assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
         assert_eq!(refusal.detail, "source preparation queue is full");
@@ -2375,7 +2317,12 @@ mod tests {
         drop(receiver.try_recv().unwrap());
         assert!(
             sources
-                .enqueue_artifacts(&mut jobs, ClientId(1), asset, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    ClientId(1),
+                    SourceWork::Artifacts(asset),
+                    Vec::new()
+                )
                 .is_ok()
         );
     }
@@ -2395,11 +2342,21 @@ mod tests {
         let first = ClientId(1);
         let second = ClientId(2);
         let id = sources
-            .enqueue_file(&mut jobs, first, fixture(), None, Vec::new())
+            .enqueue(
+                &mut jobs,
+                first,
+                SourceWork::file(&fixture(), None).unwrap(),
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(
             sources
-                .enqueue_file(&mut jobs, second, fixture(), None, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    second,
+                    SourceWork::file(&fixture(), None).unwrap(),
+                    Vec::new()
+                )
                 .unwrap(),
             id
         );
@@ -2417,7 +2374,12 @@ mod tests {
         assert!(task.control.is_cancelled(), "the worker sees the stop");
         assert_ne!(
             sources
-                .enqueue_file(&mut jobs, first, fixture(), None, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    first,
+                    SourceWork::file(&fixture(), None).unwrap(),
+                    Vec::new()
+                )
                 .unwrap(),
             id
         );
@@ -2429,13 +2391,23 @@ mod tests {
         let path = temp("source-flight-changed.jpg");
         std::fs::copy(fixture(), &path).unwrap();
         let first = sources
-            .enqueue_file(&mut jobs, ClientId(1), path.clone(), None, Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::file(&path.clone(), None).unwrap(),
+                Vec::new(),
+            )
             .unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[0] = 0;
         std::fs::write(&path, bytes).unwrap();
         let second = sources
-            .enqueue_file(&mut jobs, ClientId(2), path.clone(), None, Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(2),
+                SourceWork::file(&path.clone(), None).unwrap(),
+                Vec::new(),
+            )
             .unwrap();
         assert_ne!(first, second);
         std::fs::remove_file(path).unwrap();
