@@ -431,7 +431,7 @@ impl SourceQueue {
         match self.sender.try_send(task) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(Error::resource_limit("source preparation queue is full"));
+                return Err(Error::source_queue_full("source preparation queue is full"));
             }
             Err(TrySendError::Disconnected(_)) => {
                 return Err(Error::protocol("source preparation worker stopped"));
@@ -482,7 +482,7 @@ impl SourceQueue {
                 .iter()
                 .any(|existing| Weak::ptr_eq(existing, &sensor))
         {
-            return Err(Error::resource_limit(
+            return Err(Error::source_queue_full(
                 "RAW mosaic queue is full; retry after the active development",
             ));
         }
@@ -2380,13 +2380,47 @@ mod tests {
             .enqueue_development(&mut jobs, ClientId(3), b.clone(), Vec::new())
             .unwrap_err();
         assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
-        assert!(refusal.detail.starts_with("RAW mosaic queue is full"));
+        assert_eq!(
+            refusal.detail,
+            "RAW mosaic queue is full; retry after the active development"
+        );
+        assert!(refusal.retries_after_source_job(), "{:?}", refusal.data);
         drop(receiver.try_recv().unwrap());
         jobs.finish(&first, Err(Error::conflict("finished")));
         sources.complete(&first);
         assert!(
             sources
                 .enqueue_development(&mut jobs, ClientId(3), b, Vec::new())
+                .is_ok()
+        );
+    }
+
+    /// A full source preparation queue refuses the next job as `resource-limit` whose data says a
+    /// source job ending makes room, with its message unchanged; once the worker takes one task,
+    /// the same request is admitted.
+    #[test]
+    fn a_full_source_queue_refuses_with_data_that_says_retry_after_a_source_job() {
+        let (mut sources, mut jobs, receiver) = source_queue();
+        for _ in 0..SOURCE_QUEUE_CAPACITY {
+            sources
+                .enqueue_artifacts(&mut jobs, ClientId(1), AssetId::new(), Vec::new())
+                .unwrap();
+        }
+        let asset = AssetId::new();
+        let refusal = sources
+            .enqueue_artifacts(&mut jobs, ClientId(1), asset.clone(), Vec::new())
+            .unwrap_err();
+        assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
+        assert_eq!(refusal.detail, "source preparation queue is full");
+        assert_eq!(
+            refusal.data.as_deref(),
+            Some(&json!({"retry": "after-source-job"}))
+        );
+        assert!(refusal.retries_after_source_job());
+        drop(receiver.try_recv().unwrap());
+        assert!(
+            sources
+                .enqueue_artifacts(&mut jobs, ClientId(1), asset, Vec::new())
                 .is_ok()
         );
     }

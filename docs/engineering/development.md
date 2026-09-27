@@ -74,6 +74,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `jpeg-codec-name`, `jpeg-through-codec` | `mozjpeg` outside `luxforge-jpeg`; decoding JPEG through `image` | Shipped crates' production code |
 | `raw-identity` | `"luxforge.raw"` and `RAW_EFFECT` outside the RAW module | Production code under `crates/` |
 | `presettable-action` | The refusal `is not a field-patch action` outside `ModuleRegistry::patch_action`, the one answer to whether an action is presettable | Production code under `crates/` |
+| `refusal-text` | The unavailable-effect and full-source-queue messages (`"unavailable effect`, `queue is full`) outside their constructors' homes (`error.rs`, and `api/owner.rs` for the two queues): a client, the desktop included, reads the refusal's code and data (`data.effect_id`, `data.retry`), never its message | Production code under `crates/` |
 | `component-kind` | A mask component kind's token (`BRUSH`, `LINEAR`, `RADIAL`, `KIND`, `LUMINANCE_KIND`, `COLOUR_KIND`, `"luminance-range"`, `"colour-range"`) outside the host's kind table (`mask/mod.rs`), each kind's own file and the desktop's drawn-kind table and editors | Production code under `crates/` |
 | `one-read-rectangle` | A resample's tap index, `- 0.5).floor()`, anywhere but once, in `Resample::reads` in `render.rs` | Core production code |
 | `one-spatial-entry` | Keying the estimate store by a domain's prefix, `.estimate_prefix(`, anywhere but once, in `SpatialEntry::globals` in `render/pipeline.rs` | Core production code |
@@ -845,7 +846,7 @@ opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module 
 second reuses the first launch's own catalog (`--catalog <dir1>/catalog.sqlite`) with
 `--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same
 asset by file identity, so its stack still names the now-unavailable crop layer. The runner checks
-that the second launch's frame reports `state.render_error.code` `incompatible`, `state.notices`
+that the second launch's frame reports `state.render_error.code` `incompatible` with `data.effect_id` the crop effect, `state.notices`
 naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.

@@ -1141,9 +1141,9 @@ impl Editor {
     ) {
         self.refit_pending = false;
         self.status = error.to_string();
-        // The canvas explains the failure: the kind and the detail are all the view model needs to
-        // name the cause and offer the allowed actions.
-        self.render_error = Some((error.kind, error.detail.clone()));
+        // The canvas explains the failure from its kind, detail and data: the data names what an
+        // unavailable effect is, so the cause is never parsed out of the message.
+        self.render_error = Some(error.clone());
         self.event(
             "preview_failed",
             json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),

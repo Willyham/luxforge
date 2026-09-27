@@ -358,6 +358,26 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only ModuleRegistry::patch_action decides whether an action is presettable; \
                  resolve it there",
     },
+    // The facts a client acts on are the refusal's code and data, never its message: the
+    // unavailable-effect refusal is worded once, by `Error::unavailable_effect`, and the full
+    // source queues by their two producers through `Error::source_queue_full`. So no client — the
+    // desktop above all — matches that text, and no second producer words it without the data.
+    SourceRule {
+        name: "refusal-text",
+        tokens: &["\"unavailable effect", "queue is full"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/error.rs",
+            "crates/luxforge-core/src/api/owner.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the core words these refusals once, with their facts in data \
+                 (Error::unavailable_effect, Error::source_queue_full); read the code and \
+                 data (unavailable_effect_id, retries_after_source_job), never the message",
+    },
     // A mask component kind is dispatched only through the host's kind table (`mask/mod.rs`) or,
     // on the desktop, the drawn-kind table (`mask_draft/editor.rs`); each kind's own file declares
     // its token, and everything else asks a table (`component_geometry_is_drawn`, `stroke_kind`,
@@ -1904,6 +1924,61 @@ mod tests {
         );
         fs::remove_file(copy).unwrap();
         assert_eq!(read(tmp.path(), &["presettable-action"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn no_client_matches_the_cores_refusal_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        let app = tmp.path().join("crates/luxforge-app/src");
+        for dir in [core.join("api"), core.join("modules"), app.join("app")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let wording = "        format!(\"unavailable effect {effect_id}\")\n";
+        let full = "        Error::source_queue_full(\"source preparation queue is full\")\n";
+        // The constructor's home, the queues' owner, a test file, a test item and a comment.
+        for (file, text) in [
+            (core.join("error.rs"), wording.to_owned()),
+            (core.join("api/owner.rs"), full.to_owned()),
+            (core.join("modules/pixel_tests.rs"), wording.to_owned()),
+            (
+                app.join("app/tasks.rs"),
+                format!(
+                    "#[cfg(test)]\nmod tests {{\n    {full}}}\n// when its queue is full\n\
+                     // it reports the unavailable effect\n"
+                ),
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["refusal-text"]).unwrap(), (1, 0));
+        // The desktop matching either message is refused, and so is a second producer's wording.
+        for (file, text, found) in [
+            (
+                app.join("app/tasks.rs"),
+                "    error.detail.starts_with(\"RAW mosaic queue is full\")\n",
+                "tasks.rs:1",
+            ),
+            (
+                app.join("app/canvas.rs"),
+                "const PREFIX: &str = \"unavailable effect \";\n",
+                "canvas.rs:1",
+            ),
+            (core.join("modules/pixel.rs"), wording, "pixel.rs:1"),
+        ] {
+            let before = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["refusal-text"], found);
+            assert!(
+                error.contains(found) && error.contains("Error::unavailable_effect"),
+                "{error}"
+            );
+            match before {
+                Some(before) => fs::write(&file, before).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(read(tmp.path(), &["refusal-text"]).unwrap(), (1, 0));
     }
 
     #[test]

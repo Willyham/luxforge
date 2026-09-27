@@ -308,13 +308,15 @@ impl std::fmt::Display for CallError {
     }
 }
 
+/// The same fields the wire answer's error object carries, so a Rust-only entry point loses
+/// nothing a JSON client would read.
 impl From<luxforge_core::Error> for CallError {
     fn from(error: luxforge_core::Error) -> Self {
         Self {
             code: error.kind.code().into(),
+            job_id: error.preparation_job().map(ToString::to_string),
             message: error.detail,
-            data: None,
-            job_id: None,
+            data: error.data.map(|data| *data),
         }
     }
 }
@@ -459,7 +461,7 @@ pub(crate) fn wait_source_job(
                         .as_str()
                         .unwrap_or("source preparation failed")
                         .into(),
-                    data: None,
+                    data: status["error"].get("data").cloned(),
                     job_id: None,
                 });
             }
@@ -530,6 +532,30 @@ impl OpenGuard {
     }
 }
 
+/// What a refused preview job waits for before it is asked again.
+#[derive(Debug, PartialEq)]
+enum PreviewWait {
+    /// The source job preparing what the preview needs.
+    Preparation(String),
+    /// Any source job ending, which makes room on a full source queue.
+    Room,
+}
+
+/// Whether a refused preview job is worth asking for again, and after what, read from the
+/// refusal's kind, preparation and data and never from its message: a failure otherwise.
+fn preview_wait(error: &luxforge_core::Error) -> Result<PreviewWait, String> {
+    if error.kind == ErrorKind::PreparationRequired {
+        return error
+            .preparation_job()
+            .map(|job| PreviewWait::Preparation(job.to_string()))
+            .ok_or_else(|| error.to_string());
+    }
+    if error.retries_after_source_job() {
+        return Ok(PreviewWait::Room);
+    }
+    Err(error.to_string())
+}
+
 /// One preview job, waiting for the source preparation it needs first, or for room on the source
 /// worker when its queue is full. Both waits block on the owner's answer ([`OwnerHandle::
 /// wait_source`]) and never on a timer. Whether the job is still wanted is not asked here: the
@@ -539,27 +565,19 @@ impl OpenGuard {
 fn ready_preview_job(owner: &OwnerHandle, request: PreviewRequest) -> Result<PreviewJob, String> {
     let client = request.client;
     loop {
-        match plan_preview(owner, request.clone()) {
+        let error = match plan_preview(owner, request.clone()) {
             Ok(job) => return Ok(job),
-            Err(error) if error.kind == ErrorKind::PreparationRequired => {
-                let job = error
-                    .preparation_job()
-                    .ok_or_else(|| error.to_string())?
-                    .to_string();
+            Err(error) => error,
+        };
+        match preview_wait(&error)? {
+            PreviewWait::Preparation(job) => {
                 wait_source_job(owner, client, &job).map_err(|error| error.to_string())?;
             }
             // Room is made by a source job ending, and the owner answers the wait when one does:
             // at once when none is queued or running, so this never spins.
-            Err(error)
-                if error.kind == ErrorKind::ResourceLimit
-                    && (error.detail.starts_with("RAW mosaic queue is full")
-                        || error.detail.starts_with("source preparation queue is full")) =>
-            {
-                owner
-                    .wait_source(client, None)
-                    .map_err(|error| error.to_string())?;
-            }
-            Err(error) => return Err(error.to_string()),
+            PreviewWait::Room => owner
+                .wait_source(client, None)
+                .map_err(|error| error.to_string())?,
         }
     }
 }
@@ -2325,5 +2343,51 @@ mod tests {
         assert_eq!(history.entries[0].sequence, HISTORY_PAGE_SIZE as u64);
         assert_eq!(history.entries.last().unwrap().sequence, 1);
         assert_eq!(history.next_before_sequence, Some(1));
+    }
+
+    /// A refused preview waits for what its refusal's kind, preparation and data name, and only
+    /// that: both full source queues wait for room whatever their message says, and a message that
+    /// merely reads like a full queue, with no data behind it, is a failure.
+    #[test]
+    fn a_refused_preview_waits_for_what_its_code_and_data_name() {
+        for full in [
+            luxforge_core::Error::source_queue_full("source preparation queue is full"),
+            luxforge_core::Error::source_queue_full(
+                "RAW mosaic queue is full; retry after the active development",
+            ),
+            luxforge_core::Error::source_queue_full("a reworded refusal"),
+        ] {
+            assert_eq!(preview_wait(&full), Ok(PreviewWait::Room), "{full}");
+        }
+        let job = JobId::new();
+        let preparing = luxforge_core::Error::preparation_required("prepare the original")
+            .with_preparation(luxforge_core::Preparation::Queued(job.clone()));
+        assert_eq!(
+            preview_wait(&preparing),
+            Ok(PreviewWait::Preparation(job.to_string()))
+        );
+
+        let text_only = luxforge_core::Error::resource_limit("source preparation queue is full");
+        assert_eq!(
+            preview_wait(&text_only),
+            Err("resource-limit: source preparation queue is full".into())
+        );
+        let other = luxforge_core::Error::resource_limit("the export lane is full");
+        assert!(preview_wait(&other).is_err());
+    }
+
+    /// The Rust-only entry points keep what the wire answer's error object carries.
+    #[test]
+    fn a_core_error_keeps_its_data_and_job_as_a_call_error() {
+        let refusal = CallError::from(luxforge_core::Error::unavailable_effect("test.effect", &[]));
+        assert_eq!(refusal.code, "incompatible");
+        assert_eq!(refusal.message, "unavailable effect test.effect");
+        assert_eq!(refusal.data, Some(json!({"effect_id": "test.effect"})));
+        let job = JobId::new();
+        let waiting = CallError::from(
+            luxforge_core::Error::preparation_required("prepare the original")
+                .with_preparation(luxforge_core::Preparation::Queued(job.clone())),
+        );
+        assert_eq!(waiting.job_id, Some(job.to_string()));
     }
 }

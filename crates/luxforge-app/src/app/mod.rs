@@ -97,9 +97,9 @@ use evidence::Evidence;
 use gesture::{Gesture, Starting};
 use iced::{Element, Subscription, Task};
 use luxforge_core::{
-    ClientAuthority, ClientId, ClientSession, EditorState, ErrorKind, HistoryPage,
-    HistorySelection, LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue,
-    ProxyBounds, RecipeDescription, Version,
+    ClientAuthority, ClientId, ClientSession, EditorState, HistoryPage, HistorySelection,
+    LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue, ProxyBounds,
+    RecipeDescription, Version,
 };
 use message::{
     EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, ViewMessage,
@@ -281,7 +281,7 @@ pub(crate) struct Editor {
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     /// Why the last preview failed, cleared by the next presented frame. The canvas turns this
     /// into the notice that names the cause; nothing here decides what it means.
-    pub(crate) render_error: Option<(ErrorKind, String)>,
+    pub(crate) render_error: Option<luxforge_core::Error>,
     pub(crate) busy: bool,
     /// The event sync's one poll is in flight.
     pub(crate) syncing: bool,

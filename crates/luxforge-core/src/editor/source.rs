@@ -661,10 +661,9 @@ pub(super) fn validate_source_recipe(
         if let Some((module, effect)) = registry.effect(&layer.effect_id)
             && !effect.applies_to(kind)
         {
-            return Err(Error::incompatible(crate::modules::not_applicable(
-                &module.descriptor().title,
-                kind,
-            )));
+            return Err(module
+                .descriptor()
+                .not_applicable_refusal(crate::ErrorKind::Incompatible, kind));
         }
     }
     reject_superseded_fields(registry, kind, recipe)?;
@@ -722,7 +721,7 @@ fn reject_superseded_fields(
             if let Some(value) = values.get(field.parameter)
                 && Some(value) != parameter.default.as_ref()
             {
-                return Err(Error::incompatible(registry.superseded_refusal(field)));
+                return Err(registry.superseded_error(crate::ErrorKind::Incompatible, field));
             }
         }
     }
@@ -1157,6 +1156,11 @@ mod tests {
                 module.descriptor().title
             )
         );
+        assert_eq!(
+            refused.data.as_deref(),
+            Some(&json!({"source": "jpeg", "module_id": module.descriptor().id})),
+            "the kind and the module are data, not only prose"
+        );
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {
@@ -1194,14 +1198,16 @@ mod tests {
             recipe.layers.push(layer);
             recipe
         };
-        for (payload, detail) in [
+        for (payload, detail, by) in [
             (
                 json!({"temperature": 12.0}),
                 "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+                ("set-basic.temperature", "set-raw.temperature"),
             ),
             (
                 json!({"tint": -3.0, "exposure": 0.5}),
                 "on a RAW photo, Tint is the source development's: set-raw tint",
+                ("set-basic.tint", "set-raw.tint"),
             ),
         ] {
             let refused =
@@ -1209,6 +1215,11 @@ mod tests {
                     .unwrap_err();
             assert_eq!(refused.kind, ErrorKind::Incompatible, "{payload}");
             assert_eq!(refused.detail, detail, "{payload}");
+            assert_eq!(
+                refused.data.as_deref(),
+                Some(&json!({"source": "raw", "field": by.0, "by": by.1})),
+                "{payload}"
+            );
             let mut on_jpeg = with(basic(payload.clone(), None));
             on_jpeg.layers.remove(0);
             validate_source_recipe(&registry, &jpeg, &on_jpeg).expect("Basic's own on a JPEG");

@@ -742,7 +742,7 @@ pub(super) fn check_superseded(
         if let Some(field) = superseded.iter().find(|field| {
             field.source == kind && field.action == input.action_id && field.parameter == name
         }) {
-            return Err(Error::validation(registry.superseded_refusal(field)));
+            return Err(registry.superseded_error(ErrorKind::Validation, field));
         }
     }
     Ok(())
@@ -938,7 +938,7 @@ pub(super) fn edited(
         registry
             .effect(effect_id)
             .map(|(_, effect)| effect.format)
-            .ok_or_else(|| Error::incompatible(format!("unavailable effect {effect_id}")))
+            .ok_or_else(|| Error::unavailable_effect(effect_id, &[]))
     };
     match edit {
         LayerEdit::Commit(new) => {
@@ -1937,6 +1937,7 @@ mod tests {
         .expect_err("no provider declares the effect");
         assert_eq!(unknown.kind, ErrorKind::Incompatible);
         assert_eq!(unknown.detail, "unavailable effect test.nobody");
+        assert_eq!(unknown.unavailable_effect_id(), Some("test.nobody"));
     }
 
     /// The 480x320 fixture's crop journey: an exact copy at angle zero, in-place updates that keep
@@ -2733,14 +2734,16 @@ mod tests {
             parameters: fields.as_object().unwrap().clone(),
         };
         let mask = MaskId::new();
-        for (fields, detail) in [
+        for (fields, detail, data) in [
             (
                 json!({"temperature": 20.0}),
                 "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+                json!({"source": "raw", "field": "set-basic.temperature", "by": "set-raw.temperature"}),
             ),
             (
                 json!({"exposure": 0.5, "tint": 4.0}),
                 "on a RAW photo, Tint is the source development's: set-raw tint",
+                json!({"source": "raw", "field": "set-basic.tint", "by": "set-raw.tint"}),
             ),
         ] {
             let error = check_superseded(
@@ -2752,6 +2755,7 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Validation, "{fields}");
             assert_eq!(error.detail, detail, "{fields}");
+            assert_eq!(error.data.as_deref(), Some(&data), "{fields}");
             check_superseded(
                 &registry,
                 crate::SourceTag::Raw,
