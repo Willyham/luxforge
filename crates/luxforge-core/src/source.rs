@@ -1,7 +1,9 @@
 //! Decoding an original into pixels: the JPEG path (bounded header validation, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
 //! JPEG or an immutable RAW mosaic with one WB development.
-use crate::{Error, ErrorKind, LinearImage, Raster, colour::mat3::matvec_f32};
+use crate::{
+    Error, ErrorKind, LinearImage, Raster, colour::mat3::matvec_f32, export::CaptureMetadata,
+};
 use image::{ImageDecoder, ImageReader, Limits};
 use luxforge_raw::{RawError, RawMetadata, RawSource};
 use sha2::{Digest, Sha256};
@@ -27,6 +29,9 @@ pub struct SourceImage {
     pub rgba: Arc<[u8]>,
     pub fingerprint: String,
     pub orientation: u8,
+    /// The original's kept EXIF fields, read from the same bytes as the pixels; empty for a source
+    /// that was not read from a file.
+    pub capture: Arc<CaptureMetadata>,
 }
 
 // Walk JPEG header segments without decoding or allocating from declared dimensions.
@@ -177,6 +182,7 @@ pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
 /// written once: no intermediate RGBA buffer that this then copies into an `Arc<[u8]>`.
 pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
+    let capture = Arc::new(CaptureMetadata::from_jpeg(&bytes));
     let decoded = decode_upright(bytes)?;
     let width = decoded.upright.width();
     let height = decoded.upright.height();
@@ -188,6 +194,7 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
         rgba: frame,
         fingerprint,
         orientation: decoded.orientation,
+        capture,
     })
 }
 
@@ -264,6 +271,9 @@ pub(crate) struct RawPrepared {
     pub(crate) sensor: Arc<RawSource>,
     pub(crate) linear: Option<LinearImage>,
     pub(crate) gains: [f32; 3],
+    /// The original's kept EXIF fields, read from the bytes the mosaic was decoded from; a
+    /// redevelopment carries its sensor's.
+    pub(crate) capture: Arc<CaptureMetadata>,
 }
 
 /// A known recipe's source-only target, resolved without reading pixels on the catalog owner.
@@ -336,6 +346,7 @@ impl RawPrepared {
         target: Option<&RawPreparation>,
         cancel: &AtomicBool,
     ) -> Result<Self, Error> {
+        let capture = Arc::new(CaptureMetadata::from_raw(&bytes));
         // The file's bytes go to the decoder as read: no copy into another buffer.
         let sensor = Arc::new(RawSource::decode(bytes, cancel).map_err(raw_error)?);
         let gains = match target {
@@ -345,11 +356,12 @@ impl RawPrepared {
             }
             None => sensor.metadata().as_shot_gains,
         };
-        Self::develop(sensor, fingerprint, gains, cancel)
+        Self::develop(sensor, capture, fingerprint, gains, cancel)
     }
 
     pub(crate) fn develop(
         sensor: Arc<RawSource>,
+        capture: Arc<CaptureMetadata>,
         fingerprint: String,
         gains: [f32; 3],
         cancel: &AtomicBool,
@@ -369,6 +381,7 @@ impl RawPrepared {
             sensor,
             linear: Some(linear),
             gains,
+            capture,
         })
     }
 }
@@ -709,16 +722,20 @@ mod tests {
             let fingerprint = format!("{:x}", Sha256::digest(&bytes));
             let cancel = AtomicBool::new(false);
             let prepared = RawPrepared::decode(bytes, fingerprint.clone(), None, &cancel).unwrap();
+            // The capture metadata comes from the same bytes, with the camera named.
+            assert_eq!(prepared.capture.field_names()[..2], ["Make", "Model"]);
             let as_shot = prepared.linear.as_ref().unwrap();
             let as_shot_planes = digest(&mut as_shot.planes().iter().map(|v| v.to_bits()));
             let gains = prepared.gains;
             let custom = RawPrepared::develop(
                 prepared.sensor.clone(),
+                prepared.capture.clone(),
                 fingerprint,
                 [gains[0] * 1.15, 1.0, gains[2] * 0.85],
                 &cancel,
             )
             .unwrap();
+            assert!(Arc::ptr_eq(&custom.capture, &prepared.capture));
             let custom_planes = digest(
                 &mut custom
                     .linear
@@ -925,9 +942,14 @@ mod tests {
             let balance =
                 WhiteBalanceApproximation::between(camera, as_shot.gains, target).unwrap();
             let started = std::time::Instant::now();
-            let exact =
-                RawPrepared::develop(as_shot.sensor.clone(), fingerprint.clone(), target, &cancel)
-                    .unwrap();
+            let exact = RawPrepared::develop(
+                as_shot.sensor.clone(),
+                as_shot.capture.clone(),
+                fingerprint.clone(),
+                target,
+                &cancel,
+            )
+            .unwrap();
             let redevelop_ms = started.elapsed().as_secs_f64() * 1000.0;
             let approximate = PreviewSource::Raw {
                 image: developed.clone(),
@@ -1262,5 +1284,35 @@ mod jpeg_tests {
             Some(&(source.rgba.as_ptr() as usize)),
             "the decoded source is the frame written last, not a copy of it"
         );
+    }
+
+    /// The prepared JPEG carries the capture metadata of the bytes it decoded: the kept fields,
+    /// never the orientation it applied.
+    #[test]
+    fn a_prepared_jpeg_carries_its_capture_metadata() {
+        let rotated = open_source_bytes(std::fs::read(fixture("orientation-6.jpg")).unwrap());
+        let rotated = rotated.unwrap();
+        assert_eq!(rotated.orientation, 6);
+        assert!(rotated.capture.is_empty(), "orientation is not kept");
+
+        let make = exif::Field {
+            tag: exif::Tag::Make,
+            ifd_num: exif::In::PRIMARY,
+            value: exif::Value::Ascii(vec![b"Luxforge Camera".to_vec()]),
+        };
+        let mut writer = exif::experimental::Writer::new();
+        writer.push_field(&make);
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        writer.write(&mut tiff, false).unwrap();
+        let payload = [b"Exif\0\0".as_slice(), tiff.get_ref()].concat();
+        let original = std::fs::read(fixture("orientation-1.jpg")).unwrap();
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
+        bytes.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes.extend_from_slice(&original[2..]);
+        let expected = CaptureMetadata::from_jpeg(&bytes);
+        let source = open_source_bytes(bytes).unwrap();
+        assert_eq!(source.capture.field_names(), ["Make"]);
+        assert_eq!(*source.capture, expected);
     }
 }

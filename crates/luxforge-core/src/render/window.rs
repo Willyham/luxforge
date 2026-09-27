@@ -380,6 +380,7 @@ mod tests {
             rgba: rgba.into(),
             fingerprint: "sha256:window-fixture".into(),
             orientation: 1,
+            capture: Default::default(),
         })
     }
 
