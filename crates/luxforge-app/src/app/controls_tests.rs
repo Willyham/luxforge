@@ -1,6 +1,6 @@
 //! Behavioral checks for generated gestures, independent of a production module's identity.
 use super::{
-    Editor,
+    Editor, gesture,
     message::{
         ActionMessage, ControlMessage, DraftMessage, HistoryMessage, Message, PaletteAction,
         PreviewMessage, SyncMessage, ViewMessage,
@@ -419,6 +419,118 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
         preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
     }));
     assert!(editor.busy, "{}", editor.status);
+    finish(editor, catalog);
+}
+
+/// Every way a generated control starts — Enter, a discrete value, a rail, a step, the picker, the
+/// curve, a field reset and an action button — asks the one refusal and writes its reason when
+/// refused, sending nothing and leaving the field as it was. Each used to return without a word
+/// when the photograph was not editable.
+#[test]
+fn every_refused_control_start_says_why() {
+    let (mut editor, catalog, asset) = editor();
+    let fraction = |parameter: &str| {
+        Message::Control(ControlMessage::Fraction {
+            action: ACTION.into(),
+            parameter: parameter.into(),
+            fraction: 0.9,
+        })
+    };
+    let starts = [
+        (
+            "Enter",
+            Message::Control(ControlMessage::Submit {
+                action: ACTION.into(),
+                parameter: Some("coordinate".into()),
+            }),
+        ),
+        (
+            "a toggle",
+            Message::Control(ControlMessage::Discrete {
+                action: ACTION.into(),
+                parameter: "enabled".into(),
+                value: json!(true),
+            }),
+        ),
+        ("a rail", fraction("amount")),
+        (
+            "a step",
+            Message::Control(ControlMessage::Step {
+                action: ACTION.into(),
+                parameter: "count".into(),
+                direction: 1,
+            }),
+        ),
+        (
+            "the picker",
+            Message::Control(ControlMessage::Picker {
+                action: ACTION.into(),
+                parameter: "rgb".into(),
+                event: ColorPickerEvent::Hue(0.5),
+            }),
+        ),
+        (
+            "the curve",
+            Message::Control(ControlMessage::Curve {
+                action: ACTION.into(),
+                parameter: "master".into(),
+                event: CurveEditorEvent::Move {
+                    index: 1,
+                    position: [0.5, 0.75],
+                },
+            }),
+        ),
+        (
+            "a field reset",
+            Message::Control(ControlMessage::ResetField {
+                action: ACTION.into(),
+                parameter: "amount".into(),
+            }),
+        ),
+        (
+            "an action button",
+            Message::Action(ActionMessage::Run {
+                action: ACTION.into(),
+                preset: Map::from_iter([("amount".to_owned(), json!(0.0))]),
+            }),
+        ),
+    ];
+    let refused = |editor: &mut Editor, name: &str, message: Message, reason: &str| {
+        editor.set_control_field_value(ACTION, "amount", &json!(3.0));
+        let fields = editor.fields.clone();
+        let (sequence, busy) = (editor.api_sequence, editor.busy);
+        editor.status.clear();
+        let task = editor.update(message);
+        assert_eq!(editor.status, reason, "{name}");
+        assert_eq!(task.units(), 0, "{name}: nothing is sent");
+        assert_eq!(editor.api_sequence, sequence, "{name}: nothing is called");
+        assert_eq!(editor.busy, busy, "{name}");
+        assert!(editor.gesture.is_none(), "{name}: no draft opens");
+        assert_eq!(editor.fields, fields, "{name}: the field is as it was");
+        assert!(editor.pending_reset.is_none(), "{name}: nothing waits");
+    };
+
+    // A previewed history entry refuses every one of them.
+    editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
+    for (name, message) in starts.clone() {
+        refused(&mut editor, name, message, gesture::NOT_CURRENT);
+    }
+
+    // A request in flight refuses what commits at once; a drafting control's gesture goes ahead
+    // and its own round trips wait their turn, and a field reset waits for the request.
+    editor.session.preview.selection = HistorySelection::Current;
+    editor.busy = true;
+    for (name, message) in starts {
+        if matches!(
+            name,
+            "a rail" | "a step" | "the picker" | "the curve" | "a field reset"
+        ) {
+            continue;
+        }
+        refused(&mut editor, name, message, gesture::IN_FLIGHT);
+    }
+    let _ = editor.update(fraction("amount"));
+    assert!(editor.slider_gesture().is_some(), "{}", editor.status);
     finish(editor, catalog);
 }
 

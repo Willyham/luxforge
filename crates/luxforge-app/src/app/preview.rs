@@ -1511,7 +1511,6 @@ impl Editor {
     /// gesture or a crop draft owns the preview, or while a refit is already on its way.
     pub(super) fn refit_proxy(&mut self) -> Task<Message> {
         if self.state.is_none()
-            || self.gesture_refusal(Starting::Refit).is_some()
             || self.proxy_refit_deferred()
             || self.presented_generation == 0
             || !self.presented_proxy
@@ -1535,7 +1534,9 @@ impl Editor {
     }
 
     /// Drafts own the preview until they finish, so a layout change deliberately leaves their
-    /// displayed proxy at its previous bounds instead of starting a competing refit.
+    /// displayed proxy at its previous bounds instead of starting a competing refit. A refit takes
+    /// the one-draft rule alone ([`Starting::Refit`]): it still runs while a request is in flight
+    /// or a history entry is previewed.
     pub(super) fn proxy_refit_deferred(&self) -> bool {
         self.gesture_refusal(Starting::Refit).is_some()
     }

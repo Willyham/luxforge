@@ -1189,6 +1189,28 @@ fn a_bounds_change_refits_the_presented_proxy_once() {
     finish(editor, catalog);
 }
 
+/// A refit takes the one-draft rule alone: a previewed history entry and a request in flight hold
+/// back every edit, but the proxy on screen is still refitted to new bounds.
+#[test]
+fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() {
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    editor.window = (1440.0, 900.0);
+    editor.dimensions = Some((4000, 3000));
+    editor.session.preview.view.zoom = Zoom::Fit;
+    editor.scale_factor = 1.0;
+    editor.presented_generation = 7;
+    editor.presented_proxy = true;
+    editor.preview_generation = 7;
+    editor.presented_bounds = editor.proxy_bounds();
+    editor.session.preview.selection =
+        luxforge_core::HistorySelection::Entry(entry(&asset, 2, None).id);
+    editor.busy = true;
+    assert!(editor.gesture_refusal(gesture::Starting::Action).is_some());
+    let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
+    assert!(editor.refit_pending, "the new bounds asked for a frame");
+    finish(editor, catalog);
+}
+
 /// A refit can discover that the source now fits the display bounds and therefore has no proxy
 /// phase. Its exact-only result must replace the old, smaller proxy and finish the pending refit.
 #[test]

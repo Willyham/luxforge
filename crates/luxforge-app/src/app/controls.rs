@@ -156,7 +156,9 @@ impl Editor {
             }
             ControlMessage::Submit { action, parameter } => {
                 self.dragging = None;
-                if !self.editable() {
+                // Refused before the field lets go, so the typed text stays with its reason.
+                if let Some(reason) = self.action_refusal(&action) {
+                    self.status = reason;
                     return Task::none();
                 }
                 let preset =
@@ -171,11 +173,6 @@ impl Editor {
                             return Task::none();
                         }
                     };
-                // Refused before the field lets go, so the typed text stays with its reason.
-                if let Some(reason) = self.action_refusal(&action) {
-                    self.status = reason;
-                    return Task::none();
-                }
                 self.editing = None;
                 return self.dispatch(Message::Action(ActionMessage::Run { action, preset }));
             }
@@ -365,12 +362,9 @@ impl Editor {
         if continuous && tools::drafts(&self.modules, &action, &parameter) {
             return self.control_moved(action, parameter, value);
         }
-        if !self.editable() {
-            return Task::none();
-        }
-        // A discrete value commits at once: refused under an open draft before the control shows a
-        // value that was never sent.
-        if !continuous && let Some(reason) = self.action_refusal(&action) {
+        // A discrete value commits at once, and a continuous one that does not draft commits on
+        // release: either is refused before the control shows a value that was never sent.
+        if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
             self.status = reason;
             return Task::none();
         }
@@ -393,10 +387,10 @@ impl Editor {
         parameter: String,
         direction: i8,
     ) -> Task<Message> {
-        if self
-            .drafting_control()
-            .is_some_and(|(drafting, field)| drafting != action || field != parameter)
-        {
+        let drafts = tools::drafts(&self.modules, &action, &parameter);
+        // Refused as a whole, so a refused step never releases a gesture it did not open.
+        if let Some(reason) = self.control_refusal(&action, &parameter, drafts) {
+            self.status = reason;
             return Task::none();
         }
         let Some(spec) = self.number_spec(&action, &parameter) else {
@@ -407,7 +401,6 @@ impl Editor {
             .and_then(|v| v.as_f64())
             .unwrap_or(spec.min);
         let value = spec.value(spec.nudged(current, direction, false, false));
-        let drafts = tools::drafts(&self.modules, &action, &parameter);
         let task = self.control_value(action, parameter, value, drafts);
         if drafts {
             Task::batch([task, self.release()])
@@ -574,7 +567,8 @@ impl Editor {
         rgb: [u8; 3],
         hsv: [f64; 3],
     ) -> Task<Message> {
-        if !self.editable() {
+        if let Some(reason) = self.control_refusal(&action, &parameter, true) {
+            self.status = reason;
             return Task::none();
         }
         let next = hsv_to_rgb(hsv);
@@ -789,13 +783,8 @@ impl Editor {
         channel: usize,
     ) -> Task<Message> {
         let value = json!(points);
-        if !self.editable() {
-            return Task::none();
-        }
-        if self
-            .drafting_control()
-            .is_some_and(|(drafting, field)| drafting != action || field != parameter)
-        {
+        if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
+            self.status = reason;
             return Task::none();
         }
         let Some(declared) =

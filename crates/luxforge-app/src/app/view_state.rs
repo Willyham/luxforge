@@ -24,11 +24,13 @@ impl Editor {
                     return Task::none();
                 }
                 if page.is_some()
-                    && (self.busy
-                        || self.gesture_refusal(Starting::Gallery).is_some()
-                        || self.compare_return.is_some())
+                    && let Some(reason) = self.gesture_refusal(Starting::Gallery).or_else(|| {
+                        self.compare_return
+                            .is_some()
+                            .then(|| "Release Compare before opening Components".to_owned())
+                    })
                 {
-                    self.status = "Finish the current operation before opening Components".into();
+                    self.status = reason;
                     return Task::none();
                 }
                 // The page is this desktop's own view state, so opening, turning and closing the

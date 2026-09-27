@@ -94,7 +94,10 @@ impl Proof {
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
             refreshed,
         )))));
-        assert!(editor.editable());
+        assert_eq!(
+            editor.gesture_refusal(crate::app::gesture::Starting::Action),
+            None
+        );
         assert_eq!(editor.workspace.tools.developer.len(), 1);
         Self {
             editor,

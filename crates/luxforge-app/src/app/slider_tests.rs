@@ -553,7 +553,10 @@ fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
         let (mut editor, catalog, log, _, _, _) = drafting();
         let _ = testing::let_go(&mut editor, action, parameter);
         assert!(!editor.busy, "{action}: no request is in flight");
-        assert!(editor.editable());
+        assert_eq!(
+            editor.gesture_refusal(crate::app::gesture::Starting::Action),
+            None
+        );
         assert!(
             !editor.status.starts_with("Running"),
             "{action}: {}",
@@ -1139,12 +1142,14 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
         editor.status
     );
 
-    // A second release while the first request is still in flight sends nothing further.
-    let busy_status = editor.status.clone();
+    // A second release while the first request is still in flight sends nothing further, and the
+    // status bar says why.
+    let sequence = editor.api_sequence;
     let _ = testing::let_go(&mut editor, &action, &x);
     assert_eq!(
-        editor.status, busy_status,
+        editor.api_sequence, sequence,
         "already busy: no second request"
     );
+    assert_eq!(editor.status, crate::app::gesture::IN_FLIGHT);
     finish(editor, catalog);
 }

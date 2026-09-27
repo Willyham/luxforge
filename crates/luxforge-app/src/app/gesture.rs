@@ -93,37 +93,87 @@ impl MaskGesture {
     }
 }
 
-/// What wants to start while the gesture slot may be taken.
+/// Why a start that needs the editable state is refused with no photograph open.
+pub(crate) const NO_PHOTOGRAPH: &str = "No photograph is open";
+/// Why a start that needs the editable state is refused while a history entry is previewed.
+pub(crate) const NOT_CURRENT: &str = "Return to the current state before editing";
+/// Why a start that waits for requests is refused while one is in flight.
+pub(crate) const IN_FLIGHT: &str = "Waiting for the last request";
+
+/// What wants to start. Each variant declares which halves of [`Editor::gesture_refusal`] it
+/// answers to ([`Starting::halves`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Starting {
-    /// A slider gesture of a generated control.
+    /// A slider gesture of a generated control: one draft and editable, but it goes ahead while a
+    /// request is in flight, since its own round trips wait their turn.
     Slider,
-    /// A mask shape or stroke gesture.
+    /// A mask shape or stroke gesture: all three halves.
     Mask,
-    /// A `mask.*` command from the Masks panel.
+    /// A `mask.*` command from the Masks panel or a generated `mask.*` control: all three halves.
     MaskCommand,
-    /// The crop draft.
+    /// The crop draft: all three halves.
     Crop,
-    /// Another canvas mode.
+    /// Another canvas mode: one draft only. A mode is the session's view state, which neither a
+    /// historical preview nor a request in flight holds back.
     Mode,
-    /// A pick on the photograph.
+    /// A pick on the photograph: all three halves. A sample-apply pick commits; a point pick
+    /// commits nothing but answers to the same rule, so one sentence describes every canvas pick.
+    /// A pick that commits asks again once its locate or query has answered.
     Pick,
-    /// The components gallery.
+    /// The components gallery: one draft and no request in flight. The gallery is this desktop's
+    /// own view, so a historical preview does not hold it back.
     Gallery,
-    /// Compare with the original.
+    /// Compare with the original: one draft only. It selects the Original entry, from the current
+    /// state or a previewed one, and never waits for a request.
     Compare,
-    /// A preset applied to the photograph.
+    /// A preset applied to the photograph, as the section's rows read it: one draft only. The
+    /// section's own enabled state carries the rest, and the apply itself is a
+    /// [`Starting::Action`].
     Preset,
-    /// A discrete control's one commit: a button, a toggle, a choice or a field's Enter.
+    /// A discrete control's one commit: a button, a toggle, a choice, a field's Enter, a reset or
+    /// a palette action. All three halves.
     Action,
-    /// Undo, Redo or Restore, which move the current entry at once.
+    /// Undo, Redo or Restore, which move the current entry at once: one draft and no request in
+    /// flight. Never the editable half, since Restore runs from a previewed entry.
     History,
-    /// A preview of the committed state for the view's own sake: a refit to new bounds, or a new
-    /// mask overlay.
+    /// A preview of the committed state for the view's own sake — a refit to new bounds, or a new
+    /// mask overlay: one draft only. It runs while a request is in flight or an entry is previewed.
     Refit,
+    /// An export of the displayed entry: no request in flight only. The one-draft rule does not
+    /// apply, since an open draft does not change the displayed entry an export writes.
+    Export,
+}
+
+/// Which halves of the one refusal answer a start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Halves {
+    /// The one-draft rule: an open draft is finished deliberately before this may start.
+    pub(crate) one_draft: bool,
+    /// A photograph is open and the current state, not a previewed entry, is on screen.
+    pub(crate) editable: bool,
+    /// No request of this desktop's is in flight.
+    pub(crate) busy: bool,
 }
 
 impl Starting {
+    /// The halves this start answers to, declared once per variant.
+    pub(crate) const fn halves(self) -> Halves {
+        let (one_draft, editable, busy) = match self {
+            Self::Mask | Self::MaskCommand | Self::Crop | Self::Pick | Self::Action => {
+                (true, true, true)
+            }
+            Self::Slider => (true, true, false),
+            Self::Gallery | Self::History => (true, false, true),
+            Self::Mode | Self::Compare | Self::Preset | Self::Refit => (true, false, false),
+            Self::Export => (false, false, true),
+        };
+        Halves {
+            one_draft,
+            editable,
+            busy,
+        }
+    }
+
     /// This opens a draft of its own, so it takes the one slot.
     fn claims_slot(self) -> bool {
         matches!(self, Self::Slider | Self::Mask | Self::Crop)
@@ -148,6 +198,7 @@ impl Starting {
             Self::Action => "before running another edit",
             Self::History => "before undoing, redoing or restoring",
             Self::Refit => "before refitting the preview",
+            Self::Export => "before exporting",
         }
     }
 }
@@ -293,16 +344,39 @@ impl Editor {
             .map(|slider| (slider.action.as_str(), slider.parameter.as_str()))
     }
 
-    /// Why `starting` cannot start now, in the words the status bar uses, or `None` when it can.
+    /// Why `starting` cannot start now, in the words the status bar uses, or `None` when it can:
+    /// the one answer to "may this start" behind every start site, each of which writes the reason
+    /// to the status bar. It asks only the halves `starting` declares ([`Starting::halves`]), in
+    /// order: the one-draft rule, then a photograph open with the current state shown
+    /// ([`NO_PHOTOGRAPH`], [`NOT_CURRENT`]), then no request in flight ([`IN_FLIGHT`]).
     ///
-    /// This is the one-draft rule, answered once: a client holds one draft, so any gesture that
-    /// needs one waits for the open gesture to be applied, cancelled or finished, and so does any
-    /// mode change, pick, preset, gallery or comparison that would displace or pause it. An armed
-    /// brush is the one gesture that never refuses: it has painted nothing, so the gesture that
-    /// needs the slot takes it ([`Editor::claim_slot`]) and everything else goes ahead around it. A
+    /// A slider, mask or crop gesture's release is answered by [`Editor::release_refusal`] instead.
+    pub(crate) fn gesture_refusal(&self, starting: Starting) -> Option<String> {
+        let halves = starting.halves();
+        if halves.one_draft
+            && let Some(reason) = self.draft_refusal(starting)
+        {
+            return Some(reason);
+        }
+        if halves.editable {
+            if self.state.is_none() {
+                return Some(NO_PHOTOGRAPH.into());
+            }
+            if !self.session.preview.can_edit() {
+                return Some(NOT_CURRENT.into());
+            }
+        }
+        (halves.busy && self.busy).then(|| IN_FLIGHT.into())
+    }
+
+    /// The one-draft rule, answered once: a client holds one draft, so any gesture that needs one
+    /// waits for the open gesture to be applied, cancelled or finished, and so does any mode
+    /// change, pick, preset, gallery or comparison that would displace or pause it. An armed brush
+    /// is the one gesture that never refuses: it has painted nothing, so the gesture that needs
+    /// the slot takes it ([`Editor::claim_slot`]) and everything else goes ahead around it. A
     /// discarded core draft still closing refuses only what would open a draft of its own, or ask
     /// for the frame its own read-back is already bringing.
-    pub(crate) fn gesture_refusal(&self, starting: Starting) -> Option<String> {
+    fn draft_refusal(&self, starting: Starting) -> Option<String> {
         let held = match self.gesture.as_ref()? {
             Gesture::Closing { .. } => {
                 return starting.waits_for_closing().then(|| {
@@ -472,7 +546,7 @@ impl Editor {
             Kind::Crop(_) if !self.session.preview.can_edit() => {
                 Some("Return to the current state to apply".into())
             }
-            Kind::Crop(_) if self.busy => Some("Waiting for the last request".into()),
+            Kind::Crop(_) if self.busy => Some(IN_FLIGHT.into()),
             Kind::Crop(crop) => crop.frame.output().err().map(|error| error.to_string()),
             Kind::Slider(_) | Kind::Mask(_) => None,
         }

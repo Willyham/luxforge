@@ -209,8 +209,7 @@ pub(crate) struct Inputs<'a> {
     pub(crate) status: &'a str,
     pub(crate) busy: bool,
     pub(crate) can_open: bool,
-    /// An export can start: a photograph is open, no request or dialog is in flight and this window
-    /// is not already exporting.
+    /// An export can start: the app's export refusal has nothing to say.
     pub(crate) can_export: bool,
     /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
