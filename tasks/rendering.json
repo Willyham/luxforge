@@ -3,7 +3,7 @@
   "plan_id": "rendering",
   "title": "Rendering, preview and analysis",
   "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, an exact viewport-region path with a half-scale interactive preview, opaque frames, render.rs split by concept and one test per property, then stage-boundary methods before Corrections adds a new boundary.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and some passes now select their parallel path by work; heavy colour with at least three units or a mask uses the shared pool from 256 Ki pixels, while ordinary work retains its existing one-megapixel threshold; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The original moving-frame RAW white-balance gate missed on the Air 2S at 17.33% against 10%; the owner revised the 100% gate on 2026-09-27 to test the held full-detail draft after quiet refinement. Fresh native `raw-panel` runs pass for all three supplied cameras under the revised gate. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only; crop GPU textures, overlays and backend staging remain outside it and are not fully measured or bounded. No total-memory guarantee or general numerical photo-error bound is qualified.",
+  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates, beside a separate 256 Ki heavy-colour threshold that a colour pass with at least three units or a mask uses while every other pass keeps the one-megapixel one. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, and spends three power-function calls per pixel quantizing the byte resample. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The original moving-frame RAW white-balance gate missed on the Air 2S at 17.33% against 10%; the owner revised the 100% gate on 2026-09-27 to test the held full-detail draft after quiet refinement. Fresh native `raw-panel` runs pass for all three supplied cameras under the revised gate. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only; crop GPU textures, overlays and backend staging remain outside it and are not fully measured or bounded. No total-memory guarantee or general numerical photo-error bound is qualified.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -71,14 +71,15 @@
     },
     {
       "id": "TASK-002",
-      "description": "Declare the one-megapixel parallel threshold, the 512 MiB frame limit and the spatial tile size once, in a limits module the core and the RAW crate both import.",
+      "description": "Declare the parallel thresholds, the 512 MiB frame limit, the side limit and the spatial tile size once, in a limits module the core and the RAW crate both import.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. Every speedup later in this group tunes a threshold; each should tune one declaration, not several.",
-        "The 1 MP threshold is declared five times: PARALLEL_RENDER_PIXELS (render.rs:36), PARALLEL_PROXY_PIXELS (proxy.rs:27), PARALLEL_CAMERA_PIXELS (source.rs:196), PARALLEL_REDUCE_PIXELS (analysis.rs:34, whose own comment says it mirrors render::PARALLEL_RENDER_PIXELS), and PARALLEL_CORRECTION_PIXELS (luxforge-raw/src/dng.rs:20).",
-        "The 512 MiB frame limit is declared four times in three shapes: FRAME_LIMIT_BYTES (proxy.rs:31), MAX_RGBA_BYTES (render/linear.rs:25), a bare 512 * 1024 * 1024 comparison (render.rs:448), and a max_alloc field assignment (source.rs:116). render/spatial.rs's PRODUCTION_TILE is only an alias of SPATIAL_TILE (modules/spatial.rs:16), and render/linear.rs declares its own MAX_SIDE: u32 = 16_384 beside MAX_PIXELS and MAX_SOURCE_BYTES, which the same file already imports from luxforge_raw instead of restating.",
-        "luxforge-raw already has a limits module (crates/luxforge-raw/src/limits.rs) that the core imports MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE and MAX_SOURCE_BYTES from; the shared parallel threshold and frame-limit constants belong there, or in a small module both crates depend on, following that existing pattern rather than a new one.",
+        "The 1 MP threshold is declared five times: `PARALLEL_RENDER_PIXELS` (render.rs:40), `PARALLEL_PROXY_PIXELS` (proxy.rs:27), `PARALLEL_CAMERA_PIXELS` (source.rs:228), `PARALLEL_REDUCE_PIXELS` (analysis.rs:34, whose own comment says it mirrors `render::PARALLEL_RENDER_PIXELS`) and `PARALLEL_CORRECTION_PIXELS` (luxforge-raw/src/dng.rs:20); `PARALLEL_GRID_CELLS` (analysis/mask_overlay.rs:80) aliases the analysis copy. `PARALLEL_HEAVY_COLOUR_PIXELS` (256 Ki, render.rs:43), which the colour pass uses for a heavy pass (render/pipeline.rs:795-806), is a second parallel threshold and belongs in the same module.",
+        "The 512 MiB frame limit has three production spellings: `FRAME_LIMIT_BYTES` (proxy.rs:31), `MAX_RGBA_BYTES` (render/linear.rs:25) and a bare `512 * 1024 * 1024` comparison in `Raster::expected_len` (render.rs:462). A fourth copy survives only in the test-only `previous_decode` bench in source.rs's tests (the `image` reader's `max_alloc`), which imports the constant or is exempt from the rule. render/spatial.rs's `PRODUCTION_TILE` (render/spatial.rs:1152) is only an alias of `SPATIAL_TILE` (modules/spatial.rs:16). The 16384 px side limit has three copies: `luxforge_raw::MAX_SIDE` (luxforge-raw/src/limits.rs:7), render/linear.rs's own `MAX_SIDE` (render/linear.rs:23), which sits beside constants the same file already derives from luxforge_raw, and `JPEG_LIMITS.max_side` (source.rs:28-31); the last two use the shared constant. Decide in the change whether `REGION_FRAME_BYTES` (32 MiB viewport frame, render/entry.rs:149) and `MAX_JPEG_BYTES` (source.rs:24) join the module.",
+        "luxforge-raw already has a limits module (crates/luxforge-raw/src/limits.rs) that the core imports `MAX_PIXELS`, `MAX_RGB_BYTES`, `MAX_SIDE` and `MAX_SOURCE_BYTES` from; the shared constants belong there, or in a small module both crates depend on, following that existing pattern rather than a new one. `luxforge-jpeg` declares no limit values, only the `Limits` struct the core fills, and may depend on no workspace crate (`cargo xtask check-repository` enforces it), so the limits module does not span it.",
+        "The repository rule is scoped so it does not flag values that only share a spelling: `FULL_BUDGET` (luxforge-ui/src/photo_surface.rs:92) is a GPU texture budget and luxforge-raw's `MAX_SOURCE_BYTES` (luxforge-raw/src/limits.rs:3) bounds source-file bytes, both 512 MiB. The rule matches declarations in the core and RAW crates' sources outside the limits module, or exempts those two by name.",
         "Every value stays what it is today, only declared once, so renders and samples are unaffected by this task on their own."
       ],
       "context_links": [
@@ -98,14 +99,21 @@
           "kind": "file",
           "label": "Render limits and threshold",
           "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "PARALLEL_RENDER_PIXELS and the 512 MiB frame-size check.",
+          "relevance": "PARALLEL_RENDER_PIXELS, PARALLEL_HEAVY_COLOUR_PIXELS and the 512 MiB frame-size check.",
           "locator": "PARALLEL_RENDER_PIXELS"
         },
         {
           "kind": "file",
-          "label": "Proxy and analysis thresholds",
+          "label": "Proxy threshold and frame limit",
           "target": "crates/luxforge-core/src/proxy.rs",
-          "relevance": "PARALLEL_PROXY_PIXELS and FRAME_LIMIT_BYTES, two of the five and four duplicated declarations."
+          "relevance": "PARALLEL_PROXY_PIXELS and FRAME_LIMIT_BYTES, one copy each of the threshold and the frame limit."
+        },
+        {
+          "kind": "file",
+          "label": "JPEG source limits",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "PARALLEL_CAMERA_PIXELS, JPEG_LIMITS' copy of the side limit and MAX_JPEG_BYTES.",
+          "locator": "JPEG_LIMITS"
         },
         {
           "kind": "file",
@@ -123,15 +131,15 @@
         }
       ],
       "acceptance_criteria": [
-        "The parallel threshold, the 512 MiB frame limit and the spatial tile alias are each declared once, imported by every former call site in luxforge-core and luxforge-raw.",
-        "cargo xtask check-repository gains a rule that refuses a new 1_000_000-pixel or 512 * 1024 * 1024-byte constant declared outside the limits module, so a sixth copy of either fails the check.",
+        "The one-megapixel and 256 Ki parallel thresholds, the 512 MiB frame limit, the 16384 px side limit and the spatial tile size are each declared once, imported by every former call site in luxforge-core and luxforge-raw; the change records whether REGION_FRAME_BYTES and MAX_JPEG_BYTES join them.",
+        "cargo xtask check-repository gains a rule that refuses a new 1_000_000-pixel or 512 * 1024 * 1024-byte constant declared in the core or RAW crates outside the limits module, so a sixth copy of either fails the check, without flagging FULL_BUDGET or luxforge-raw's MAX_SOURCE_BYTES.",
         "Renders and samples stay byte-identical on both pixel domains, since every value is unchanged."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Move the five threshold constants and the four frame-limit spellings into the limits module and re-point every call site at it.",
-          "Add a repository rule that refuses a new copy of either constant declared outside that module.",
+          "Move the five one-megapixel threshold constants, PARALLEL_HEAVY_COLOUR_PIXELS, the three frame-limit spellings and the side-limit copies into the limits module and re-point every call site at it, including the test-only previous_decode bench or its exemption.",
+          "Add a repository rule, scoped to the core and RAW crates' sources, that refuses a new copy of either constant declared outside that module and leaves FULL_BUDGET and MAX_SOURCE_BYTES alone.",
           "Run the core and RAW crates' existing threshold and frame-limit boundary tests unchanged."
         ],
         "commands": [
@@ -147,15 +155,15 @@
     },
     {
       "id": "TASK-003",
-      "description": "Trim the pixel-domain pipeline to one resample read-rectangle rule, one spatial-entry helper and one alpha blend, delete the GRID policy knob, and move the domain-independent no-op checks into Render.",
+      "description": "Trim the pixel-domain pipeline to one resample read-rectangle rule and one spatial-entry helper, delete the GRID policy knob, and move the domain-independent no-op checks into Render.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. The generic pipeline is the right design; it should describe only what the two domains actually do differently.",
-        "PixelDomain (render/pipeline.rs) has 23 items: 3 associated types, 1 const and 19 methods. About ten are no-ops, identities or unreachable on one side: Byte::frame_pixel (render.rs:1279) is never called because Byte's GRID is SpatialMode::Point (render.rs:1145) while Linear's is SpatialMode::Frames (render/linear.rs:640), so a grid is materialised for one domain and tiled for the other.",
-        "The rectangle a resample reads is computed three separate ways: rows_read_by (render.rs:697), tap_region (render/window.rs:113) and a second tap_region (render/linear.rs:977). Spatial-entry orchestration (resolve or reuse handed globals, reduce, call spatial_output) is written out twice, inline in the byte driver and again in render/pipeline.rs; the resample's alpha blend is likewise written twice.",
-        "The 8x8 capability sample grid (capabilities/data.rs, SampleGrid8) reads 64 points through Render::grid; because GRID is Frames for the linear domain, a RAW asset with a spatial layer materialises a full spatial frame to answer it, where the byte domain answers the same 64 points by reading tiles.",
-        "The two rendering-unification commits added roughly 250 net production lines rather than removing them; this is where that count comes back down. Constraint: renders and samples stay byte-identical on both domains, since the read rectangles being unified are supersets of what each domain reads today, and a windowed downscale already proves equal to the whole one inside it."
+        "`PixelDomain` (render/pipeline.rs:52-166) has 23 items: 3 associated types, 1 const and 19 methods. About ten are no-ops, identities or unreachable on one side: `Byte::frame_pixel` (render.rs:1323) is never called because Byte's `GRID` is `SpatialMode::Point` (render.rs:1186) while Linear's is `SpatialMode::Frames` (render/linear.rs:640), so a grid is materialised for one domain and tiled for the other. `Linear::adjust_source_pixel` (render/linear.rs:620-631) is an identity on every exact evaluation, a white-balance multiply only under an approximate white balance, and repeats the finiteness check `pixel_f64` (render/linear.rs:377-390) has already made; it is another one-sided item to trim.",
+        "The rectangle a resample reads is computed three separate ways, each with its own margin: `rows_read_by` (render.rs:711, -2/+3 rows), the proxy window's `tap_region` (render/window.rs:145, `TAP_MARGIN` 2) and a second `tap_region` (render/linear.rs:979, -1/+2 clamped, capped at `TAP_BLOCK_PIXELS`). Resamples carry an output window: `Segment::entry_window` (render.rs:847), `resample_output_at` (render.rs:870) and the windowed `resample_frame`. The one rule, `Resample::reads`, takes the entry origin and the output window and uses one margin that covers all three. `WindowPlan::of_rect` (render/window.rs:202-268) is a separate halo and tile-alignment rule, out of scope, and the one-home check does not trip on it. Spatial-entry orchestration (resolve or reuse handed globals, reduce, call `spatial_output`) is written out twice: inline in the byte driver (render.rs:1655-1695) and as `Evaluation::spatial_globals` (render/pipeline.rs:514-541, called from the `spatial_output` call at render/pipeline.rs:251).",
+        "The 8x8 capability sample grid (capabilities/data.rs, `SampleGrid8`) reads 64 points through `grid_in` (render/entry.rs:751-768), which evaluates in `D::GRID` mode (render/entry.rs:759); because `GRID` is `Frames` for the linear domain, a RAW asset with a spatial layer materialises a full spatial frame to answer it, where the byte domain answers the same 64 points by reading tiles.",
+        "Alpha handling, `bilinear`'s blend (render.rs:397-427) and `alpha_in` (render/pipeline.rs:589), is left to TASK-013, which deletes it with opaque frames. The two rendering-unification commits added roughly 250 net production lines rather than removing them; this is where that count comes back down. Constraint: renders and samples stay byte-identical on both domains, since the read rectangles being unified are supersets of what each domain reads today, and a windowed downscale already proves equal to the whole one inside it."
       ],
       "context_links": [
         {
@@ -175,19 +183,19 @@
           "kind": "file",
           "label": "Byte domain driver",
           "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "rows_read_by, the inline spatial-entry orchestration, GRID = Point, and the unreachable frame_pixel."
+          "relevance": "rows_read_by, the windowed resample, the inline spatial-entry orchestration, GRID = Point, and the unreachable frame_pixel."
         },
         {
           "kind": "file",
           "label": "Linear domain driver",
           "target": "crates/luxforge-core/src/render/linear.rs",
-          "relevance": "The second tap_region and GRID = Frames."
+          "relevance": "The second tap_region, GRID = Frames and adjust_source_pixel's one-sided identity and repeated finiteness check."
         },
         {
           "kind": "file",
           "label": "Window read rectangle",
           "target": "crates/luxforge-core/src/render/window.rs",
-          "relevance": "The proxy window's own tap_region, the third copy of the read-rectangle rule.",
+          "relevance": "The proxy window's own tap_region, the third copy of the read-rectangle rule; of_rect beside it is a separate rule and stays.",
           "locator": "tap_region"
         },
         {
@@ -205,11 +213,11 @@
         }
       ],
       "acceptance_criteria": [
-        "One Resample::reads computes the rectangle a resample reads, used by the byte band, the proxy window and the linear tap blocks.",
+        "One Resample::reads computes the rectangle a resample reads from its entry origin and output window, with one margin that covers every current reader, used by the byte band, the proxy window and the linear tap blocks.",
         "One spatial-entry helper resolves or reuses globals and calls spatial_output, called by both domain drivers.",
         "PixelDomain::GRID is deleted and both domains answer a grid through tiled point queries; the trait's no-op and identity-only items are removed or given a default on Render.",
         "Renders and samples stay byte-identical on both pixel domains, and the crate's production line count drops.",
-        "cargo xtask check-repository gains a rule that refuses a second implementation of the resample read-rectangle or the spatial-entry orchestration outside their one home, so a reintroduced copy fails the check."
+        "cargo xtask check-repository gains a rule that refuses a second implementation of the resample read-rectangle or the spatial-entry orchestration outside their one home, so a reintroduced copy fails the check, without flagging WindowPlan::of_rect."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -239,7 +247,7 @@
       ],
       "extra_context": [
         "Wave 3, speed. The clearest byte-identical win in the group: the same values move to the same places, only as whole rows instead of one pixel at a time.",
-        "run_batches (render/spatial.rs:606-641) evaluates a batch in parallel and then writes it back serially: `for (tile, result) in batch.iter().zip(results) { write(*tile, result)?; }`. Byte::write_tile (render.rs:1261) copies three bytes and calls an alpha closure per pixel; Linear::write_tile (render/linear.rs:815) does the planar equivalent. The pool sits idle during every one of these writes.",
+        "`run_batches` (render/spatial.rs:605) evaluates a batch in parallel and then writes it back serially (render/spatial.rs:636): `for (tile, result) in batch.iter().zip(results) { write(*tile, result)?; }`. `Byte::write_tile` (render.rs:1305) copies three bytes and calls an alpha closure per pixel; `Linear::write_tile` (render/linear.rs:813) does the planar equivalent. The pool sits idle during every one of these writes.",
         "Recorded CPU utilisation on the generated fixtures matches a serial write of this size: Clarity at 60 MP renders in 620 ms at 1105% CPU (about 140 ms serial-equivalent), Dehaze in 355 ms at 713% (about 190 ms), Texture in 629 ms at 858% (about 260 ms); the 24 MP figures (193 ms at 1090%, 128 ms at 771%) scale down consistently (docs/specs/performance.md, Presence exact renders on the generated JPEGs).",
         "Proposal: have tile_output (already computed in the parallel phase) produce the tile in the frame's final row layout, then have write_tile copy whole rows with copy_from_slice, one memcpy per row for the byte frame's RGBA rows and three for the linear frame's planes, instead of a per-pixel loop; reuse one scratch buffer per worker in run_tile rather than reallocating and zero-filling it per tile."
       ],
@@ -309,7 +317,7 @@
       ],
       "extra_context": [
         "Wave 3, speed. Pairs with the tile write-back speedup: both remove a serial full-frame pass that the parallel pass then overwrites anyway.",
-        "zeroed_frame (render.rs:470) is `std::iter::repeat_n(0, len).collect::<Arc<[u8]>>()`, which writes every byte serially on the calling thread: 96 MB at 24 MP, 240 MB at 60 MP, 159 MB for the X100VI's RAW output. Its callers include the resample, a non-identity segment, the byte spatial frame, the RAW linear output, the proxy and JPEG decode. An identity segment with a colour run additionally copies the whole source up front with `Arc::<[u8]>::from(source.rgba.as_ref())` before the parallel colour pass runs.",
+        "`zeroed_frame` (render.rs:484) is `std::iter::repeat_n(0, len).collect::<Arc<[u8]>>()`, which writes every byte serially on the calling thread: 96 MB at 24 MP, 240 MB at 60 MP, 159 MB for the X100VI's RAW output. Its callers include the resample, a non-identity segment, the byte spatial frame, the RAW linear output, the proxy, `SourceImage::window` (source.rs:65) and JPEG decode, which zero-fills the frame before libjpeg writes every row into it (source.rs:165). An identity segment with a colour run additionally copies the whole source up front with `Arc::<[u8]>::from(source.rgba.as_ref())` (render.rs:1718) before the parallel colour pass runs.",
         "Proposal: hold frames as Arc<Vec<u8>> allocated with vec![0; len] (fresh pages are already zero and are faulted in by whichever worker first writes them), as LinearImage already holds its planes in Arc<Vec<f32>>. For the identity-with-colour case, let the row loader copy source rows inside the parallel pass, with a row copy_from_slice fast path when the geometry is the identity, instead of copying the whole source first.",
         "This changes the field type of two pub fields on Raster and SourceImage; the desktop and presenter (Frame::new, luxforge-ui/src/photo_surface.rs:157) accept anything implementing AsRef<[u8]>, so a thin wrapper keeps them unchanged. Current shapes only: this is an internal type change, not a catalog or API one."
       ],
@@ -379,8 +387,8 @@
       ],
       "extra_context": [
         "Wave 3, speed. A straightened crop's resample is the largest per-pixel cost left on the gesture path it serves.",
-        "bilinear (render.rs:383) quantizes each of a pixel's three channels with linear_to_srgb (colour.rs:155), which calls the sRGB encode power function once per channel: three powf calls per output pixel. quantize_channel (colour.rs:134), used elsewhere, already answers the same question through a guarded lookup (CODE_INDEX/CODE_THRESHOLDS) with no power function per pixel, and the RAW terminal path already relies on that same guard argument. A 24 MP 10-degree crop outputs about 7.7 MP, so this is roughly 23 million powf calls; instant-preview.md records the straightened crop adding about 30 ms to a 24 MP exact render and about 23 ms to the proxy frame.",
-        "Smaller costs in the same loops: decode_pixel and quantize_channel dereference a LazyLock table on every call, an atomic load the compiler cannot merge, up to six times per pixel across the byte colour path. LinearImage::pixel (render/linear.rs:328) recomputes output_dimensions(), view.map() and a plane-length try_from on every call, which any cropped or turned RAW source read pays per pixel; pixel_f64 then re-checks finiteness that construction already proved. The finiteness scan after each colour unit (render.rs:311) short-circuits with all(...), which cannot vectorise.",
+        "`bilinear` (render.rs:397) quantizes each of a pixel's three channels with `linear_to_srgb` (colour.rs:155), which calls the sRGB encode power function once per channel: three powf calls per output pixel. `quantize_channel` (colour.rs:134), used elsewhere, already answers the same question through a guarded lookup (`CODE_INDEX`/`CODE_THRESHOLDS`) with no power function per pixel, and the RAW terminal path already relies on that same guard argument. A 24 MP 10-degree crop outputs about 7.7 MP, so this is roughly 23 million powf calls; instant-preview.md records the straightened crop adding about 30 ms to a 24 MP exact render and about 23 ms to the proxy frame.",
+        "Smaller costs in the same loops: `decode_pixel` and `quantize_channel` dereference a LazyLock table on every call, an atomic load the compiler cannot merge, up to six times per pixel across the byte colour path. `LinearImage::pixel` (render/linear.rs:358) recomputes `output_dimensions()`, `view.map()` and a plane-length `try_from` on every call. Frame renders already read through a precomputed `ViewReader` (render/linear.rs:394); the point path (`source_pixel` through `pixel_f64`) still pays the recomputation per pixel, and `pixel_f64` re-checks finiteness that construction already proved. The finiteness scan after each colour unit (render.rs:324) short-circuits with `all(...)`, which cannot vectorise.",
         "Constraint: byte identity for the resample change rests on the same guard the RAW terminal already ships with, not on construction alone; extend the existing boundary tests to linear_to_srgb and prove it with full-frame hashes of rotated-crop renders, not only the boundary cases."
       ],
       "context_links": [
@@ -408,7 +416,7 @@
           "kind": "file",
           "label": "Linear pixel read",
           "target": "crates/luxforge-core/src/render/linear.rs",
-          "relevance": "LinearImage::pixel's per-call layout recomputation and pixel_f64's redundant finiteness check."
+          "relevance": "LinearImage::pixel's per-call layout recomputation on the point path, the existing ViewReader, and pixel_f64's redundant finiteness check."
         },
         {
           "kind": "file",
@@ -427,7 +435,7 @@
         "steps": [
           "Route bilinear's per-channel quantization through the guarded threshold lookup and extend the existing boundary tests to cover it.",
           "Hoist the LazyLock table lookups to once per row in the byte and RAW colour loops.",
-          "Give Linear a precomputed view reader for source_pixel and drop the redundant finiteness recheck.",
+          "Read Linear's point-path source_pixel through the existing ViewReader and drop the redundant finiteness recheck.",
           "Measure a straightened-crop render at 24 MP before and after."
         ],
         "commands": [
@@ -449,8 +457,8 @@
         "TASK-002"
       ],
       "extra_context": [
-        "The transform and ordinary rendering paths still use the one-megapixel threshold. A measured heavy-colour change now uses the shared pool from 256 Ki pixels for a colour pass containing at least three units or a mask; see docs/engineering/performance-rules.md Rule 9.",
-        "This is a partial threshold decision, not a completed per-pass redesign. Spatial and resample thresholds remain at their existing rules until separately measured. Do not repeat the former blanket claim that all work below one megapixel is serial.",
+        "Wave 3, speed. A heavy colour pass already uses the shared pool from 256 Ki pixels when it contains at least three units or a mask (docs/engineering/performance-rules.md Rule 9); what remains is the transform, resample, spatial and proxy passes, which keep the one-megapixel threshold.",
+        "This is a per-pass threshold decision for the remaining passes, each measured before it changes. Do not claim that all work below one megapixel is serial. RAW Exposure is a Basic colour operation and counts toward the heavy-colour gate (render/pipeline.rs:795-804), so per-pass measurements use current recipes.",
         "Viewport performance evidence uses the native Fit and zoomed scenarios in docs/specs/performance.md. Loaded runs are labeled with their host load and are not treated as clean-load qualification."
       ],
       "context_links": [
@@ -470,7 +478,7 @@
           "kind": "file",
           "label": "Colour row pass",
           "target": "crates/luxforge-core/src/render/pipeline.rs",
-          "relevance": "The colour pass's own use of the one shared parallel threshold."
+          "relevance": "The colour pass's heavy-colour gate beside the one-megapixel threshold."
         },
         {
           "kind": "file",
@@ -482,7 +490,7 @@
           "kind": "file",
           "label": "Rule 9",
           "target": "docs/engineering/performance-rules.md",
-          "relevance": "The transform-only measurement this task extends to every pass kind.",
+          "relevance": "The current one-megapixel and heavy-colour thresholds this task extends to every pass kind.",
           "locator": "Parallelize above a measured threshold"
         }
       ],
@@ -496,7 +504,7 @@
         "approach": "unit",
         "steps": [
           "Measure per-pass break-evens with single-unit recipes the same way the existing per-unit CPU-utilisation figures were produced.",
-          "Declare a threshold per pass kind in the limits module and gate colour, resample and spatial parallelism by it.",
+          "Declare a threshold per pass kind in the limits module and gate the transform, resample, spatial and proxy passes by it.",
           "Extend editor-performance with a sub-megapixel proxy bound (today's proxy case is fixed at 2880x1800) and measure a full Basic layer and a Presence layer there before and after."
         ],
         "commands": [
@@ -518,8 +526,8 @@
       ],
       "extra_context": [
         "Wave 3, speed. The row reader this task uses already exists and already proves equal to the per-pixel path; this closes the two pulls the domain unification left per-pixel.",
-        "PointTiles::pixel (render/spatial.rs:784) fills a tile's input region one pixel at a time through the pipeline's spatial_read -> pixel_in. The global-estimate reduction (render/pipeline.rs and render/spatial.rs's build_reduction / build_reduction_by_tiles) reads every pixel of the stage the same way, and the byte domain's colour_row falls back to PixelDomain's per-pixel default rather than a row implementation. Evaluation::fill_rows (render/pipeline.rs:450) and the row-equals-point contract it already proves are used only by linear frame renders today.",
-        "On RAW, the Dehaze global estimate is keyed by the recipe prefix and the exposure bits, so it is rebuilt on every upstream edit and, during a Basic drag, on every input frame. Estimated from the per-pixel cost (not yet a recorded RAW-with-Dehaze drag measurement): the X100VI's 40 MP exact-phase reduction is on the order of 4-5 s of CPU, about 0.3-0.4 s wall, and a 1.65 MP RAW proxy on the order of 190 ms of CPU, about 14 ms wall, per drag frame. The byte path does not pay this, because it reads its already-materialized frame instead.",
+        "`PointTiles::pixel` (render/spatial.rs:783) fills a tile's input region one pixel at a time through the pipeline's `spatial_read` -> `pixel_in`. The global-estimate reduction (render/pipeline.rs and render/spatial.rs's `build_reduction` / `build_reduction_by_tiles`) reads every pixel of the stage the same way, and the byte domain's `colour_row` falls back to `PixelDomain`'s per-pixel default rather than a row implementation. `Evaluation::fill_rows` (render/pipeline.rs:453) and the row-equals-point contract it already proves are used only by linear frame renders today.",
+        "On RAW, the Dehaze global estimate is keyed by `{prefix}+linear:{development}:{view}` plus the approximate white-balance key when there is one (render/linear.rs:652-665). Exposure is a Basic layer in the recipe prefix, so the estimate is rebuilt on every upstream edit and, during a Basic drag, on every input frame. Estimated from the per-pixel cost (not yet a recorded RAW-with-Dehaze drag measurement): the X100VI's 40 MP exact-phase reduction is on the order of 4-5 s of CPU, about 0.3-0.4 s wall, and a 1.65 MP RAW proxy on the order of 190 ms of CPU, about 14 ms wall, per drag frame. The byte path does not pay this, because it reads its already-materialized frame instead.",
         "Proposal: give PointTiles::pixel and the reduction builders a region fetch backed by Evaluation::fill_rows, implement Byte::colour_row with the row arithmetic ByteRows::run already uses, and delete the per-pixel read closures; block_mean keeps summing in the same order so estimates stay identical."
       ],
       "context_links": [
@@ -585,8 +593,8 @@
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed. Three independent proxy-build costs the design already bounds in principle but the code does not yet honour.",
-        "BoxDownscale::new (proxy.rs:464) allocates one intermediate of window width x every source row the window reads x 3 f32 before its vertical pass runs: 124 MiB for a 24 MP JPEG proxy, 159 MiB for the X100VI, 198 MiB at 60 MP, all at the owner's 2880x1800 display bound. instant-preview.md says the proxy adds at most one bounded buffer; this one scales with the source instead.",
-        "proxy_window (render/entry.rs:303) compiles the proxy stage and computes WindowPlan::of, and render_proxy (render/entry.rs:341) compiles and plans again and re-runs the same source checks; a job with a proxy phase compiles its stack more than once per stage. The existing test named for that claim, a_preview_job_compiles_its_stack_once_per_stage_it_renders_at (preview/tests.rs:569), counts only calls to render(), so it does not see the window-plan compile inside proxy_window.",
+        "`BoxDownscale::new` (proxy.rs:488) allocates one intermediate of window width x every source row the window reads x 3 f32 before its vertical pass runs: 124 MiB for a 24 MP JPEG proxy, 159 MiB for the X100VI, 198 MiB at 60 MP, all at the owner's 2880x1800 display bound. instant-preview.md says the proxy adds at most one bounded buffer; this one scales with the source instead.",
+        "`proxy_window` (render/entry.rs:596) compiles the proxy stage and computes `WindowPlan::of`, and `render_proxy` (render/entry.rs:634) compiles and plans again and, for a Byte source, re-runs the source check; a job with a proxy phase compiles its stack more than once per stage. The existing test named for that claim, `a_preview_job_compiles_its_stack_once_per_stage_it_renders_at` (preview/tests.rs:741), counts only calls to `render()`, so it does not see the window-plan compile inside `proxy_window`.",
         "The previous cached proxy (preview/worker.rs, proxy.rs's cache insert) stays alive for the whole build of its replacement, on top of the new intermediate.",
         "Proposal: stream the vertical pass in row bands (about 1 MiB per worker instead of the whole window), each band reading only the source rows it needs with one row of overlap between bands; let proxy_window hand its compiled stage and WindowPlan back for render_proxy to reuse; clear the cache entry before building the replacement."
       ],
@@ -889,9 +897,9 @@
       ],
       "extra_context": [
         "Wave 4, structure. Follows the frame-allocation change so the byte tile write can become a plain row copy with no per-pixel alpha read.",
-        "Owner decision: frames are opaque by contract. Every production byte frame already is: JPEG decode (source.rs) and the proxy (proxy.rs) both write 255, and analysis.rs already documents that the supported JPEG path is opaque.",
-        "Despite that, the renderer still blends alpha through resamples (bilinear's alpha average), walks the geometry to fetch a spatial output's input alpha (alpha_in, render/pipeline.rs), and threads an alpha closure through spatial_output and write_tile. It is also inconsistent: the exact path preserves a source's alpha while the proxy discards it, so 'proxy equals the exact recipe over the exact downscale' would not hold for a hypothetical non-opaque source, harmless only because none exists.",
-        "Test fixtures with varying alpha (the gradient source builder in render.rs, and samples_match_rendered_pixels_and_keep_source_alpha at render.rs:3713) become uniformly opaque."
+        "Owner decision: frames are opaque by contract. Every production byte frame already is: JPEG decode takes libjpeg's RGBA output (luxforge-jpeg's decode.rs, `header.rgba()`), whose alpha is always 255, the proxy (proxy.rs) writes 255, and analysis.rs already documents that the supported JPEG path is opaque.",
+        "Despite that, the renderer still blends alpha through resamples (`bilinear`'s alpha average, reached through the windowed `resample_frame`), walks the geometry to fetch a spatial output's input alpha (`alpha_in`, render/pipeline.rs), and threads an alpha closure through `spatial_output` and `write_tile`. It is also inconsistent: the exact path preserves a source's alpha while the proxy discards it, so 'proxy equals the exact recipe over the exact downscale' would not hold for a hypothetical non-opaque source, harmless only because none exists.",
+        "Test fixtures with varying alpha (the gradient source builder in render.rs, and `samples_match_rendered_pixels_and_keep_source_alpha` at render.rs:3801) become uniformly opaque."
       ],
       "context_links": [
         {
@@ -904,7 +912,7 @@
           "kind": "file",
           "label": "Alpha plumbing",
           "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "bilinear's alpha blend, source_alpha, and the varying-alpha gradient test fixture."
+          "relevance": "bilinear's alpha blend and the windowed resample_frame, source_alpha, and the varying-alpha gradient test fixture."
         },
         {
           "kind": "file",
@@ -917,7 +925,7 @@
           "kind": "file",
           "label": "JPEG decode",
           "target": "crates/luxforge-core/src/source.rs",
-          "relevance": "Writes alpha 255 on every decoded frame."
+          "relevance": "Decodes through libjpeg's RGBA output, so every decoded frame is opaque."
         },
         {
           "kind": "file",

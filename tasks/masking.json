@@ -259,10 +259,13 @@
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. This gets the kind table into the shape the next mask kinds need, without building any of those kinds yet.",
-        "`CONTROLS` in `mask/commands.rs` builds a `Control::number(...)` for every parameter every geometry kind declares (`declared_geometry_kinds`, `component_parameters`), with no check of the parameter's own declared kind. Every kind today is all-numeric, so this is latent, but a kind whose geometry includes a `points` parameter — the polygon proposed next — would silently get a broken number control for its vertex list.",
-        "The host's mask descriptor (`mask::commands::descriptor()`) is deliberately never passed to `ModuleRegistry::register`, so it never reaches `ModuleDescriptor::validate` the way every `ToolModule`'s descriptor does: it is the one descriptor in the system exempt from the rules it asks modules to meet.",
+        "`CONTROLS` in `mask/commands.rs` (1965-2000) builds a `Control::number(...)` for every parameter every geometry kind declares (`declared_geometry_kinds`, `component_parameters`), with no check of the parameter's own declared kind. Every kind today is all-numeric, so this is latent, but a kind whose geometry includes a `points` parameter — the polygon proposed next — would silently get a broken number control for its vertex list.",
+        "The host's mask descriptor (`mask::commands::descriptor()`, 274-326, published by `host_descriptors` in `registry/lookups.rs` 130-131) is deliberately never passed to `ModuleRegistry::register`, so it never reaches `ModuleDescriptor::validate` the way every `ToolModule`'s descriptor does: it is the one descriptor in the system exempt from the rules it asks modules to meet. It is also outside the registry's `check_complete` and `superseded()` (registry/variants.rs ~59, ~155).",
+        "`validate` refuses the host descriptor today: `check_declared` requires `valid_name`, the hyphen form, for every action and query identity (modules/descriptor.rs ~2034), and the host's identities are method names (`mask.create-<kind>`, `mask.list`; mask/commands.rs ~54, ~95, ~1563). Validating it needs either a host-identity allowance in validation, which accepts a dotted `mask.` method name only for the host descriptor, or a stated rename of the host's action and query identities apart from their methods. Host validation also refuses `variants` on a host control: a variant applies only on the global target, and a mask control is always masked.",
+        "Kind dispatch outside the kind table today: `strokes_reach` (mask/commands.rs 1123-1127) refuses `component.kind != BRUSH`, `mask.add-stroke` creates its component by `BRUSH` (~1015-1045), and `check_painted_occupancy` (mask/mod.rs 676-685) finds its component by `kind == BRUSH`; the desktop has its own drawn-kind table, `DRAWN_KINDS` (crates/luxforge-app/src/mask_draft/editor.rs 200-225) with the kind tokens in crates/luxforge-app/src/mask_draft.rs (127-130), and crates/luxforge-app/src/app/masks.rs names `BRUSH` to start and edit a brush (451, 457, 1130). The repository rule needs each of these either moved behind the kind table (`component_geometry_is_drawn` or a row of it) or named as an owning path; `strokes_reach` must move, since the command family is not the kind table's module, or the rule fails the current tree. Decide whether mask/mod.rs, which holds `COMPONENT_KINDS`, counts as the kind table's module.",
+        "The repository rule reuses the check's RAW-identity machinery (whole-token matching and the production-line and test-file exclusions, xtask/src/repository.rs ~550-638) with an allow-list of owning paths, rather than the forbid-per-directory `BOUNDARIES` table.",
         "docs/design/masking.md says twice that a new kind is \"one module and one row\" (component kinds, and the desktop's drawn-kind table). docs/design/masking-workspace.md's own polygon proposal shows that is not true for a kind whose geometry is not a flat list of numbers, or that needs an artifact binding: a polygon alone touches about 24 places across roughly 20 files, because `ShapeEditor` and `MaskHandle` are numbers-only and closed, the canvas knows only two gesture families, and the kind table's `Binding` carries no artifacts for a model-based kind to bind at compile time.",
-        "Do only the three cheap, safe parts now — filtering `CONTROLS` by parameter kind, validating the host descriptor, and correcting the docs — and record the rest (a JSON-geometry `ShapeEditor`, pointer semantics owned by each editor, a wider `Binding`, artifact discovery from mask components) in masking-workspace.md as what a new kind still needs; none of it is built until a kind is authorized."
+        "Do only the cheap, safe parts now — filtering `CONTROLS` by parameter kind, validating the host descriptor, keeping kind dispatch in the kind table with its repository rule, and correcting the docs — and record the rest (a JSON-geometry `ShapeEditor`, pointer semantics owned by each editor, a wider `Binding`, artifact discovery from mask components) in masking-workspace.md as what a new kind still needs; none of it is built until a kind is authorized."
       ],
       "context_links": [
         {
@@ -289,15 +292,15 @@
           "kind": "file",
           "label": "Mask commands",
           "target": "crates/luxforge-core/src/mask/commands.rs",
-          "locator": "CONTROLS, descriptor()",
-          "relevance": "Where controls are generated and the host descriptor is declared."
+          "locator": "CONTROLS, descriptor(), strokes_reach",
+          "relevance": "Where controls are generated, the host descriptor is declared with method-name identities, and a stroke dispatches on BRUSH."
         },
         {
           "kind": "file",
           "label": "Kind table",
           "target": "crates/luxforge-core/src/mask/mod.rs",
-          "locator": "declared_geometry_kinds, component_parameters, Binding",
-          "relevance": "The one row per kind this task keeps single."
+          "locator": "COMPONENT_KINDS, component_geometry_is_drawn, check_painted_occupancy, Binding",
+          "relevance": "The one row per kind this task keeps single, and the occupancy check that still names BRUSH."
         },
         {
           "kind": "file",
@@ -308,25 +311,40 @@
         },
         {
           "kind": "file",
+          "label": "Descriptor validation",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "locator": "validate, check_declared",
+          "relevance": "The valid_name rule the host's method-name identities fail today."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop drawn kinds",
+          "target": "crates/luxforge-app/src/mask_draft/editor.rs",
+          "locator": "DRAWN_KINDS",
+          "relevance": "The desktop's drawn-kind table, with its tokens in mask_draft.rs and BRUSH named in app/masks.rs."
+        },
+        {
+          "kind": "file",
           "label": "Repository checks",
           "target": "xtask/src/repository.rs",
-          "locator": "BOUNDARIES",
-          "relevance": "Where a forbidden-token rule keeping the kind table single is added."
+          "locator": "raw_identity, holds_whole_token, production_lines",
+          "relevance": "The RAW-identity machinery the kind rule reuses with an allow-list of owning paths."
         }
       ],
       "acceptance_criteria": [
         "`CONTROLS` generates a number control only for a parameter whose declared kind is Number; a non-number geometry parameter gets no control from this path.",
-        "A test runs `ModuleDescriptor::validate` against the host mask descriptor and passes, and would fail if the descriptor were made invalid.",
+        "A test runs `ModuleDescriptor::validate` against the host mask descriptor and passes, and would fail if the descriptor were made invalid: through a host-identity allowance for its method-name identities or a stated rename, with `variants` refused on a host control.",
         "docs/design/masking.md no longer claims a new kind is one module and one row; docs/design/masking-workspace.md lists the real touch points a polygon or a model-selection kind needs.",
-        "A `cargo xtask check-repository` rule fails if a component-kind name match appears outside the kind table's own module and each kind's own file, so a second kind dispatch cannot return.",
-        "`schema.list` and the existing kind table tests are unchanged for linear, radial and brush."
+        "A `cargo xtask check-repository` rule fails if a component-kind name match appears outside an allow-list of owning paths (the kind table's module, each kind's own file and the desktop's drawn-kind table, plus any path the task names explicitly), so a second kind dispatch cannot return; `strokes_reach` reads the kind table instead of naming `BRUSH`, and `check_painted_occupancy` does too unless mask/mod.rs is the module the rule names as the kind table's.",
+        "`schema.list` and the existing kind table tests are unchanged for linear, radial and the two ranges (luminance and colour), the declared-parameter kinds; brush is drawn and generates no controls."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Filter CONTROLS to Number-kind parameters and add a test that a non-number geometry parameter gets no generated control.",
-          "Add a test that runs ModuleDescriptor::validate on mask::commands::descriptor() and passes.",
-          "Add a check-repository rule and a fixture test that a kind-string match outside its home is caught.",
+          "Give the host descriptor a host-identity allowance (or rename its identities), refuse variants on host controls, and add a test that runs ModuleDescriptor::validate on mask::commands::descriptor() and passes.",
+          "Move strokes_reach's BRUSH check behind the kind table and give every remaining BRUSH match an owning path.",
+          "Add a check-repository rule on the RAW-identity machinery with an allow-list of owning paths, and a fixture test that a kind match outside them is caught.",
           "Correct the two docs and add the touch-points list to masking-workspace.md."
         ],
         "commands": [
@@ -337,7 +355,7 @@
         "expected_results": [
           "CONTROLS never emits a control for a non-number geometry parameter.",
           "The host descriptor validates like a module's; schema.list is unchanged.",
-          "The new repository rule fails on a synthetic second kind match and passes on the current tree."
+          "The new repository rule fails on a synthetic second kind match and passes once strokes_reach reads the kind table and every other match sits on an owning path."
         ]
       }
     },
