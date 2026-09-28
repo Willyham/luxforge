@@ -106,20 +106,16 @@ pub(crate) trait PixelDomain: Sync {
     }
 
     /// [`Self::colour`] and [`Self::finish`] over one contiguous run of row `y` starting at column
-    /// `x0`. Units are pointwise and are handed a row with its coordinates, so a domain may run
-    /// them over the whole row at once; this default applies them one pixel at a time.
+    /// `x0`, with the same arithmetic. Units are pointwise and are handed a row with its
+    /// coordinates, so each domain runs them over the whole row at once, as the rows of a rendered
+    /// segment do; `scratch` is the worker's reused float row.
     fn colour_row<'r>(
         pixels: &mut [Self::Pixel],
-        runs: impl Iterator<Item = ColorRun<'r>> + Clone,
+        runs: impl Iterator<Item = ColorRun<'r>>,
         y: u32,
         x0: u32,
-        _scratch: &mut RowScratch,
-    ) -> Result<(), Error> {
-        for (offset, pixel) in pixels.iter_mut().enumerate() {
-            *pixel = Self::finish(Self::colour(*pixel, runs.clone(), x0 + offset as u32, y)?)?;
-        }
-        Ok(())
-    }
+        scratch: &mut RowScratch,
+    ) -> Result<(), Error>;
 
     /// One resample tap set: the bilinear blend at the continuous input coordinate `(u, v)` of a
     /// `width` × `height` stage, whose pixels `fetch` reads.
@@ -251,7 +247,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 evaluation.tiling,
                 cancel,
                 evaluation.context,
-                |x, y| evaluation.spatial_read(index, x, y),
                 |region, planes, parallelism| {
                     evaluation.fill_rows(index - 1, region, planes, parallelism)
                 },
@@ -383,15 +378,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
-    /// One pixel of the stage spatial segment `index` reads: the previous segment's output, pulled
-    /// through [`Self::pixel_in`], which already applies every replacement and colour run.
-    fn spatial_read(&self, index: usize, x: u32, y: u32) -> Result<[f32; 3], Error> {
-        let pixel = self
-            .pixel_in(index - 1, x, y)?
-            .ok_or_else(|| Error::render("a spatial read was outside its input stage"))?;
-        Ok(D::spatial_input(pixel))
-    }
-
     /// Segment `index`'s output over `region`, row-major, into `out`: exactly the values
     /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A
     /// segment with colour and no replacement pulls each row's entry through its geometry and
@@ -436,6 +422,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// [`Self::region_in`] per row, on the pool under [`Parallelism::Pool`], for a segment whose
     /// colour runs over rows. Any other segment is read pixel by pixel straight into the planes,
     /// since a row buffer would only copy what a pull already answers.
+    ///
+    /// This is how the stage a spatial entry reads is read everywhere: a tile's input, in a frame
+    /// and in a point query, and the reduction its global estimates are prepared from.
     fn fill_rows(
         &self,
         index: usize,
@@ -446,7 +435,10 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         let segment = &self.compiled.segments[index];
         if !segment.has_color || segment.has_pixels {
             return fill_planes(region, planes, parallelism, |x, y| {
-                self.spatial_read(index + 1, x, y)
+                let pixel = self
+                    .pixel_in(index, x, y)?
+                    .ok_or_else(|| Error::render("a spatial read was outside its input stage"))?;
+                Ok(D::spatial_input(pixel))
             });
         }
         if region.is_empty() {
@@ -494,15 +486,18 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// The global estimates of spatial segment `index`, whose entry is `entry`
-    /// ([`SpatialEntry::globals`]). A point query's reduction reads through [`PointTiles::reduce`];
-    /// a frame's, which [`spatial_entry`] resolves itself, reads the stage as a render does.
+    /// ([`SpatialEntry::globals`]), its stage read by rows ([`Self::fill_rows`]). A point query's
+    /// reduction reads through [`PointTiles::reduce`]; a frame's, which [`spatial_entry`] resolves
+    /// itself, reads the stage as a render does.
     fn spatial_globals(
         &self,
         index: usize,
         entry: SpatialEntry<'_>,
     ) -> Result<Vec<Option<Global>>, Error> {
         let stage = self.spatial_stage(index);
-        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
+        let fill = |region: Region, planes: &mut [f32]| {
+            self.fill_rows(index - 1, region, planes, Parallelism::Serial)
+        };
         entry.globals(&self.domain, self.context, stage, || match &self.tiles {
             Some(tiles) => {
                 // The tile side of the nearest spatial segment before this one, whose tiles the
@@ -513,9 +508,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                             .tile(entry.operation, self.spatial_stage(earlier))
                     })
                 });
-                tiles.reduce(stage, through, &self.cancel, read)
+                tiles.reduce(stage, through, &self.cancel, fill)
             }
-            None => build_reduction_cancellable(stage, &self.cancel, read),
+            None => build_reduction_cancellable(stage, &self.cancel, fill),
         })
     }
 
@@ -546,7 +541,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             x,
             y,
             || self.spatial_globals(index, entry),
-            |x, y| self.spatial_read(index, x, y),
+            |region, planes| self.fill_rows(index - 1, region, planes, Parallelism::Serial),
         )?;
         // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
         // it.
@@ -699,13 +694,13 @@ impl<'e> SpatialEntry<'e> {
 }
 
 /// One spatial entry's output over its whole `stage`, written tile by tile into the domain's frame:
-/// the one place either driver materializes a spatial operation. Its global estimates are
-/// [`SpatialEntry::globals`], reducing `read` (one pixel of the stage it reads) on a store miss;
-/// `fill` reads one rectangle of that stage into three planes and `alpha` one pixel's alpha. Every
-/// tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets, checking
-/// `cancel` between batches. No full-frame float buffer exists beside the output, only one tile's
-/// working set per tile in flight, charged to the spatial budget before each batch of tiles
-/// allocates.
+/// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
+/// stage it reads into three planes, for every tile and, on a store miss, for the reduction its
+/// global estimates ([`SpatialEntry::globals`]) are prepared from; `alpha` reads one pixel's alpha.
+/// Every tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets,
+/// checking `cancel` between batches. No full-frame float buffer exists beside the output, only
+/// one tile's working set per tile in flight, charged to the spatial budget before each batch of
+/// tiles allocates.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spatial_entry<D: PixelDomain>(
     domain: &D,
@@ -714,14 +709,15 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     tiling: Tiling,
     cancel: &Cancel,
     context: &RenderContext,
-    read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
     fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
     alpha: impl Fn(u32, u32) -> u8 + Sync,
 ) -> Result<D::SpatialFrame, Error> {
     let operation = entry.operation;
     let plan = SpatialPlan::new(operation, stage, tiling)?;
     let globals = entry.globals(domain, context, stage, || {
-        build_reduction_cancellable(stage, cancel, read)
+        build_reduction_cancellable(stage, cancel, |region, planes| {
+            fill(region, planes, Parallelism::Serial)
+        })
     })?;
     let mut frame = D::spatial_frame(stage)?;
     #[cfg(test)]

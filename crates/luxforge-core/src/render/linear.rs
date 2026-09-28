@@ -691,7 +691,7 @@ impl PixelDomain for Linear<'_> {
     /// of a rendered segment do too.
     fn colour_row<'r>(
         pixels: &mut [[f64; 3]],
-        runs: impl Iterator<Item = ColorRun<'r>> + Clone,
+        runs: impl Iterator<Item = ColorRun<'r>>,
         y: u32,
         x0: u32,
         scratch: &mut RowScratch,
