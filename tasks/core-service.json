@@ -3,7 +3,7 @@
   "plan_id": "core-service",
   "title": "Core service and API",
   "objective": "Make the editor service's front doors single and honest: retries answered, panics contained, events that name what changed, one job table and job API, method envelopes and retry routes declared in the table, one bound evaluation, one preparation path, errors that carry their facts as data and an explicit public surface, then prepare the service for the MCP adapter and the library when those milestones start.",
-  "context_summary": "The consolidation gave the service one write path (`mutate` with one `admit`), one planning path and one method table; this plan finishes what that left: four job tables and method families, export's among them, events with no subject, evaluation prologues repeated across several entry points, a synchronous preparation mode only tests and xtask use, facts clients still parse out of error text, and a public surface built from glob re-exports. The owner's 2026-09-26 decisions and the constraints on this work are recorded in docs/decisions.md and docs/design/post-consolidation.md. The roadmap-groundwork tasks are blocked until their milestone starts.",
+  "context_summary": "The consolidation gave the service one write path (`mutate` with one `admit`), one planning path and one method table. Waves 1 and 2 finished what that left: retried commits are answered, panics are contained, events name their asset and revision, one job table and one job API serve every kind with export's lane among them, envelopes and retry routes are declared in the table, evaluation is bound once, preparation has one path and errors carry their facts as data. What remains is a public surface still built from glob re-exports, core tests that prove properties now true by construction, and the roadmap groundwork. The owner's 2026-09-26 decisions and the constraints on this work are recorded in docs/decisions.md and docs/design/post-consolidation.md. The roadmap-groundwork tasks are blocked until their milestone starts.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -597,7 +597,7 @@
     {
       "id": "TASK-009",
       "description": "Replace luxforge-core's glob re-exports with an explicit public surface and make everything else pub(crate), deleting what the compiler then reports unused.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004",
         "TASK-005",
@@ -606,10 +606,11 @@
         "TASK-008"
       ],
       "extra_context": [
-        "Wave 4, structure. Land this after the other groups' own wave-2 changes to the core have merged, since a public-surface pass touches every module the core exports.",
-        "`lib.rs` re-exports `api::*`, `editor::*`, `model::*`, `modules::*`, `presets::*` and `preview::*`, so nearly every item in those modules is public and exempt from the dead-code lint. `modules/mod.rs` alone re-exports well over a hundred names, most with no user outside the core.",
-        "Several `EditorService` methods, `analysis_identity`, `analysis_plan`, `sample_draft`, `artifact_writer`, `register_artifact`, `bind_artifacts`, `describe_entry` and `inspect_source`, and `open_source` (`lib.rs`) are `pub` with no caller outside `luxforge-core` itself; the desktop, `luxforge-json` and xtask never call them.",
-        "This is a mechanical narrowing, not a redesign: what the desktop, `luxforge-json`, xtask and the testkit actually use stays exported; everything else becomes `pub(crate)`, and the compiler's own dead-code warnings say what is then genuinely unused."
+        "Wave 4, structure. Its dependencies here are complete and the other groups' wave-2 changes to the core have merged. Start it after the other groups' wave-4 changes to the core have merged too, since a public-surface pass touches every module the core exports: the `ToolModule` and descriptor trims and developer-only test modules (module contract), opaque frames and the `render.rs` split (rendering), the trimmed `luxforge-raw` API the core consumes (RAW), typed mask commands and per-kind parameter validation (masking), core controls matched without the desktop's `Rendered` mirror (desktop), and activation deferred, the transport and Keychain store in their own crate and the capability leftovers (capabilities). The other groups' wave-5 test clean-ups change only test code and may land on either side.",
+        "`lib.rs` re-exports `api::*`, `editor::*`, `model::*`, `modules::*`, `presets::*` and `preview::*`, and declares eleven modules `pub` outright (`activity`, `analysis`, `artifacts`, `capabilities`, `colour`, `export`, `jobs`, `latest`, `mask`, `path`, `resources`), so nearly every item in them is public and exempt from the dead-code lint. `modules/mod.rs` alone re-exports about 120 names, most with no user outside the core.",
+        "`EditorService::analysis_plan`, `sample_draft`, `artifact_writer`, `register_artifact`, `bind_artifacts`, `describe_entry` and `inspect_source` are `pub` with no caller outside `luxforge-core`; the desktop, `luxforge-json`, xtask and the testkit never call them. `open_source` stays public: xtask's acceptance chapters and fixture checks call it.",
+        "The consumers that define the surface are `luxforge-app` (the desktop and the `luxforge-json` binary, or the headless binary's own crate once the desktop group gives it one), xtask, `luxforge-testkit`, and the core's own integration tests under `crates/luxforge-core/tests/`, including the field-patch conformance suite xtask compiles in through `#[path]`. Integration tests reach only the public surface, so what they use stays exported.",
+        "This is a mechanical narrowing, not a redesign: what those consumers actually use stays exported; everything else becomes `pub(crate)`, and the compiler's own dead-code warnings say what is then genuinely unused."
       ],
       "context_links": [
         {
@@ -622,13 +623,19 @@
           "kind": "file",
           "label": "Core lib",
           "target": "crates/luxforge-core/src/lib.rs",
-          "relevance": "The six glob re-exports this task replaces with an explicit list."
+          "relevance": "The six glob re-exports and eleven public modules this task replaces with an explicit list."
         },
         {
           "kind": "file",
           "label": "Module re-exports",
           "target": "crates/luxforge-core/src/modules/mod.rs",
           "relevance": "The large re-export block to trim to what other crates actually use."
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch conformance suite",
+          "target": "crates/luxforge-core/tests/modules/conformance/mod.rs",
+          "relevance": "One of the core integration tests that reach only the public surface; xtask also compiles it in through `#[path]`."
         },
         {
           "kind": "file",
@@ -639,10 +646,10 @@
         }
       ],
       "acceptance_criteria": [
-        "`lib.rs` lists only what `luxforge-app`, `luxforge-json`, xtask and the testkit actually use; every glob re-export is gone.",
-        "Items with no caller outside the crate are `pub(crate)`, including the `EditorService` methods and `open_source` named above.",
+        "`lib.rs` lists only what `luxforge-app` (or the headless binary's crate), xtask, `luxforge-testkit` and the core's own integration tests use; every glob re-export is gone, and a module stays `pub` only where a consumer names items through its path.",
+        "Items with no caller outside the crate are `pub(crate)`, including the `EditorService` methods named above.",
         "No `#[allow(dead_code)]` is added to hide a newly reported item; anything the compiler reports unused after narrowing visibility is deleted.",
-        "`cargo build --workspace` is warning-free."
+        "`cargo build --workspace` is warning-free and the quick tier's Clippy run passes."
       ],
       "test_strategy": {
         "approach": "inspection",
@@ -652,7 +659,7 @@
         ],
         "commands": [
           "cargo build --workspace",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "A clean, warning-free build with a smaller, explicit public surface."
@@ -662,16 +669,18 @@
     {
       "id": "TASK-010",
       "description": "Prove each core service property once: delete the parity module that now holds by construction, reduce the schema test to structural properties, and delete the storage study and the historical catalog-format tests.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "Wave 5, tests. Several tests prove a property that now holds by construction, or a design already decided, rather than a live risk.",
-        "`command_contracts.rs` is an 835-line test-only module, gated `#[cfg(test)]` in `lib.rs`, whose main assertion is that the `apply_*` wrappers, `apply_action` and the JSON API build identical stacks, true by construction now that all three reach `run_action`. Its descriptor assertions repeat ones `api/methods.rs`'s own schema test and the crop module's own tests already make, and it carries its own temp-catalog and fixture helpers.",
-        "`api/methods.rs`'s schema test hand-copies around fifty method names and descriptor strings that the module and command tables already own. `editor/catalog.rs` carries an `#[ignore = \"a measurement, not a gate\"]` mask-growth study of around 600 lines re-proving the content-addressed stroke store's design, which `one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it` already guards structurally; three more tests hand-build format 2, 5 and 7 catalogs to prove refusals that the generic `unsupported_catalog_formats_are_rejected_without_rewriting_data` loop already covers for every unsupported marker.",
-        "Around ten files declare their own `mutation()` test helper with the same body.",
-        "Keep exactly: the malformed-request error's equality across the service and the API, currently `command_contracts.rs`'s one unique assertion, and format 5's unique check that no `.artifacts` directory is created for a refused catalog, both moved into the tests that stay."
+        "`command_contracts.rs` is an 832-line test-only module, gated `#[cfg(test)]` in `lib.rs`. Its main assertion (`wrappers_actions_and_the_api_produce_identical_entries_pixels_and_errors`) is that the `apply_pixel` and `apply_transform` wrappers, `apply_action` and the JSON API build identical stacks, true by construction now that all three reach `EditorService::run_action` (`editor/plan.rs`). Its other three tests' discovery assertions repeat ones the schema test, the committed descriptor snapshot (`tests/modules/descriptors.rs`) and the crop module's own tests already make, and it carries its own temp-catalog and fixture helpers.",
+        "`api/methods.rs`'s `host_and_generated_methods_are_unique_complete_and_match_the_schema` hand-copies about forty `mask.*` method names in order, plus per-method strings such as `query.neutral-sample`'s fields and `edit.set-pixel`'s parameters, which the host's mask kind table, the module descriptors and the descriptor snapshot already own.",
+        "`editor/catalog.rs` carries the `#[ignore = \"a measurement, not a gate\"]` study `measure_mask_growth_across_a_painting_session`, which re-measures the content-addressed stroke store's design. `one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it` guards the design structurally, and `a_painting_session_grows_with_the_square_of_its_stroke_count` and `a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling` hold its figures; they share the study's `painting_session`, `quadratic_fit`, `Growth` and `CEILING`, while `load_average` and `painting_session`'s `mark_fresh_as_stored = false` counterfactual serve only the study. docs/design/masking.md and docs/specs/performance.md name the study and its command as the source of recorded figures.",
+        "Three more tests hand-build format 2, 5 and 7 catalogs (`a_format_2_catalog_is_refused_by_name_without_rewriting_it`, `a_format_5_catalog_is_refused_by_name_and_left_untouched`, `a_format_7_catalog_without_row_columns_is_refused_by_name_without_rewriting_it`) to prove refusals the generic `unsupported_catalog_formats_are_rejected_without_rewriting_data` loop already proves for markers 0, `CATALOG_FORMAT - 1` and `CATALOG_FORMAT + 1` (format 10 today).",
+        "Ten test modules declare their own `mutation` helper, returning a `Mutation` or its JSON form: `command_contracts.rs`, `api/methods.rs`, `editor/test_support.rs`, `editor/artifact_tests.rs`, `presets/library_tests.rs`, `capabilities/settings.rs`, `capabilities/host.rs`, `capabilities/lifecycle_tests.rs`, `capabilities/proof_tests.rs` and `mask/command_contracts.rs`. The capability and mask test files are also rewritten by those groups' own test clean-ups, which adopt the one helper when they land.",
+        "Keep exactly: the malformed-request error's equality across the service and the API, currently `command_contracts.rs`'s one unique assertion, and format 5's unique check that no `.artifacts` directory is created for a refused catalog, both moved into tests that stay."
       ],
       "context_links": [
         {
@@ -690,7 +699,15 @@
           "kind": "file",
           "label": "Schema test",
           "target": "crates/luxforge-core/src/api/methods.rs",
+          "locator": "host_and_generated_methods_are_unique_complete_and_match_the_schema",
           "relevance": "The hand-copied method-name and descriptor assertions to reduce to structural checks."
+        },
+        {
+          "kind": "file",
+          "label": "Generated-dispatch test",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "locator": "every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one",
+          "relevance": "Where the malformed-request assertion moves."
         },
         {
           "kind": "file",
@@ -700,28 +717,41 @@
         },
         {
           "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "Names the mask-growth study as the source of the stroke store's recorded curve."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "locator": "Brush-heavy recipes across history",
+          "relevance": "Records the study's figures and the command that reproduced them."
+        },
+        {
+          "kind": "file",
           "label": "Project rules",
           "target": "AGENTS.md",
           "relevance": "Rules out old-version fixtures and historical parity checks, and requires naming a deleted test's replacement."
         }
       ],
       "acceptance_criteria": [
-        "`command_contracts.rs` is deleted; its unique surviving assertion, the malformed-request error, equal across the service and the API, lives in the generated-dispatch test.",
+        "`command_contracts.rs` is deleted; its unique surviving assertion, the malformed-request error equal across the service and the API, lives in or beside `api/owner.rs`'s `every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one`.",
         "The schema test in `api/methods.rs` checks structural properties, names are unique, every listed method dispatches, the envelope matches whether it mutates, instead of hand-copied strings.",
-        "The mask-growth study and the format 2, 5 and 7 catalog tests are deleted; format 5's `.artifacts`-directory assertion moves into the generic unsupported-format loop.",
-        "Every deleted assertion is named in the commit next to the kept test that proves it, and one crate-level `mutation()` helper replaces the others.",
+        "The mask-growth study, the helpers only it uses and the format 2, 5 and 7 catalog tests are deleted; format 5's `.artifacts`-directory assertion moves into the generic unsupported-format loop; docs/design/masking.md and docs/specs/performance.md keep the recorded figures with their scope and name no command that no longer exists.",
+        "Every deleted assertion is named in the commit next to the kept test that proves it, and one crate-level test helper, in its `Mutation` and JSON forms, replaces the `mutation` helpers in the core's own test modules.",
         "The quick tier passes."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Match each assertion slated for deletion to the test that already proves it.",
-          "Delete `command_contracts.rs`, the storage study and the format 2, 5 and 7 tests, and reduce the schema test.",
+          "Delete `command_contracts.rs`, the storage study and the format 2, 5 and 7 tests, reduce the schema test, and correct the two documents that name the study.",
           "Run the full core test suite once."
         ],
         "commands": [
           "cargo test -p luxforge-core",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Nothing is lost: every deleted assertion has a named surviving equivalent, and the quick tier passes."
@@ -737,9 +767,9 @@
       ],
       "extra_context": [
         "Wave 6, roadmap groundwork. Blocked: starts with the MCP adapter milestone on the roadmap.",
-        "Today an agent or another JSON client has no way to be woken by a change; it must poll `events.since` on its own schedule. The desktop's own `watch_events` is a Rust-only callback in `api/owner.rs`, not something a JSON client can ask for.",
-        "The owner already parks a reply and answers it later for `AwaitSource`, so `events.wait` parks the same way: hold the reply until the log passes `after` or a timeout expires, then answer.",
-        "This depends on events naming their subject, since a client will want to wait for a change to a specific asset as well as for any change at all."
+        "Today an agent or another JSON client has no way to be woken by a change; it must poll `events.since` (`events_since`, `api/owner.rs`) on its own schedule. The desktop's own `OwnerHandle::watch_events` is a Rust-only wake callback, not something a JSON client can ask for.",
+        "The owner already parks a reply and answers it later for `OwnerMessage::AwaitSource`, so `events.wait` parks the same way: hold the reply until the log passes `after` or a timeout expires, then answer.",
+        "Events already name the asset and revision they changed, so a client can wait for a change to one asset as well as for any change at all."
       ],
       "context_links": [
         {
@@ -752,7 +782,7 @@
           "kind": "file",
           "label": "Parked replies",
           "target": "crates/luxforge-core/src/api/owner.rs",
-          "relevance": "`AwaitSource`'s existing parking pattern this method reuses."
+          "relevance": "`OwnerMessage::AwaitSource`'s parking pattern this method reuses, `events_since` and `OwnerHandle::watch_events`."
         },
         {
           "kind": "file",
@@ -797,7 +827,7 @@
       ],
       "extra_context": [
         "Wave 6, roadmap groundwork. Blocked: starts with the MCP adapter milestone.",
-        "`host_params!` (`api/params.rs`) publishes each host method's required and optional field names with a free-text note, such as \"u64\", \"1..100\" or \"{mode:fit} or {mode:percent,value:10..1600}\". A module's actions, queries, tasks and settings already publish typed `ParameterDescriptor`s (`modules/descriptor.rs`) through the same schema; the 71 host methods are the one place the parameter vocabulary is still prose.",
+        "`host_params!` (`api/params.rs`) publishes each host method's required field names, and for each optional field a free-text note such as \"u64\", \"1..100\" or \"{mode:fit} or {mode:percent,value:10..1600}\". A module's actions, queries, tasks and settings already publish typed `ParameterDescriptor`s (`modules/descriptor.rs`) through the same schema; the 69 host methods of the `METHODS` table (`api/methods.rs`) are the one place the parameter vocabulary is still prose.",
         "An MCP adapter needs a JSON Schema per tool; without typed host parameters it would have to hand-write about seventy of them, the exact kind of second copy the method table exists to prevent.",
         "Proposal: give each `host_params!` field a `ParameterKind`, identity kinds for asset, entry, draft, job, preset and artifact ids, integer and number ranges in place of the range prose, and one `json` kind for the handful of genuinely structured fields (`Zoom`, `AnalysisTarget`, `fields`, `settings`, `values`), so `schemas()` can list `parameters` for host methods the same way it already does for generated ones."
       ],
@@ -836,7 +866,7 @@
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Extend the owner's declared-fields test to check each kind's valid and out-of-range behaviour.",
+          "Extend the owner's declared-fields test, `every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one`, to check each kind's valid and out-of-range behaviour.",
           "Compare `schema.list`'s host-method parameters before and after."
         ],
         "commands": [
@@ -855,8 +885,8 @@
       "extra_context": [
         "Wave 6, roadmap groundwork. Blocked: starts with the library or Locate milestone, or earlier if an agent client needs to work on two photos at once.",
         "`PreviewSession::can_edit` (`preview.rs`) takes no asset and is true only while `selection == HistorySelection::Current`, so while a client previews a historical entry of asset A, its edits to a completely different asset B are refused as a conflict, and `render.sample`, `render.locate` and `preset.capture` on B without an explicit `entry_id` resolve A's selected entry instead.",
-        "`catalog_list` (`api/methods.rs`) takes no parameters and returns `service.assets()` outright; `EditorService::assets` runs one unbounded query and JSON-decodes every stored source interpretation on every call, on the owner thread.",
-        "`EntryCache` (`editor/entries.rs`) has no way to record that an asset's own row changed; Locate, the first write that would change an asset's locator rather than its history, cannot update the cached head, which would leave the cache's old locator in place until the catalog is reopened.",
+        "`catalog.list`'s handler (`api/methods.rs`) takes `NoParams` and returns `service.assets()` outright; `EditorService::assets` (`editor/describe.rs`) runs one unbounded query and JSON-decodes every stored source interpretation on every call, on the owner thread.",
+        "`EntryCache` (`editor/entries.rs`) records history movement only (`EntryCache::moved` updates a cached head's revision, current entry and redo path); it has no way to record that an asset's own row changed. Locate, the first write that would change an asset's locator rather than its history, could not update the cached head, which would leave the cache's old locator in place until the catalog is reopened.",
         "`source.inspect` already exists and already answers one asset's full interpretation, so the fix for `catalog.list` is to stop it returning that detail for every row, not to invent a new method for it."
       ],
       "context_links": [
@@ -877,13 +907,13 @@
           "label": "catalog.list",
           "target": "crates/luxforge-core/src/api/methods.rs",
           "relevance": "The unbounded handler this task pages and trims.",
-          "locator": "catalog_list"
+          "locator": "catalog.list"
         },
         {
           "kind": "file",
           "label": "Entry cache",
           "target": "crates/luxforge-core/src/editor/entries.rs",
-          "relevance": "`EntryCache`, which cannot yet record a change to an asset's own row."
+          "relevance": "`EntryCache` and `EntryCache::moved`, which cannot yet record a change to an asset's own row."
         },
         {
           "kind": "file",

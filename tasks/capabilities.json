@@ -3,7 +3,7 @@
   "plan_id": "capabilities",
   "title": "Module capabilities and derived artifacts",
   "objective": "Trim the module capabilities framework to what its recorded decisions require: resources installed from their pinned URL only, grants that evict instead of refusing at the cap, artifacts collected, the transport on ureq's own agent in a crate of its own, activation deferred until a module needs it, a desktop surface sized to what a person must see, and each behaviour tested at one level.",
-  "context_summary": "The framework (settings and profiles, Keychain secrets, per-asset consent, the capability worker, verified resource installs, tasks and derived artifacts) has one consumer, the developer proof module, and costs about 15.6k shipped lines, 43 packages and about 4.3 MB of the executable. The owner kept it on 2026-09-24 and on 2026-09-26 trimmed it further; the 2026-09-24 decision to move the transport onto a well-known HTTP client did not land in substance (the `ureq-proto` exchange loop is the size of the old client). Artifacts already travel on the recipe, settings and grants share one document store, settings use the parameter vocabulary and capability jobs publish to the activity board. Decisions: docs/decisions.md \"Module capabilities\", \"Architecture review\" and \"Post-consolidation review\"; design: docs/design/module-capabilities.md; constraints: docs/design/post-consolidation.md.",
+  "context_summary": "The framework (settings and profiles, Keychain secrets, per-asset consent, the capability worker, verified resource installs, tasks and derived artifacts) has one consumer, the developer proof module; at the 2026-09-26 review it cost about 15.6k shipped lines, 43 packages and about 4.3 MB of the executable. The owner kept it on 2026-09-24 and on 2026-09-26 trimmed it further. Waves 1 and 2 landed resource installs from the pinned URL only, grant eviction at the record cap, artifact collection and the transport on `ureq`'s own agent. What remains is activation deferred, the desktop surface trimmed, the transport and Keychain store in a crate of their own, the leftovers and the duplicate tests. Artifacts travel on the recipe, settings, grants and installed resources share one document store, settings use the parameter vocabulary, capability jobs are records in the one job table and publish to the activity board. Decisions: docs/decisions.md \"Module capabilities\", \"Architecture review\" and \"Post-consolidation review\"; design: docs/design/module-capabilities.md; constraints: docs/design/post-consolidation.md.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -396,10 +396,11 @@
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. Activation's only real consumer is preloading a local model using a cancellable worker (docs/design/corrections.md), which is the `local-runtime` capability the owner's decisions already defer until its first consumer.",
-        "`capabilities/host/activation.rs` (421 lines) implements `inactive`/`activating`/`active`/`failed` states, a pending-deactivation-while-activating flag and supersede-versus-cancel; `jobs.rs` gives deactivation its own always-admitted lane slot and a supersede that replaces a still-queued activation; `descriptor.rs` validates an `ActivationDescriptor`. The proof module's whole `activate()` reads a 20-byte palette, then sleeps out an artificial delay in 10 ms checkpoints purely so the cancel path has something to test.",
-        "Tasks already read installed resources through their own context (`ModuleContext::resource_path`, `capabilities/context.rs`) with no dependency on activation at all, so the proof task's palette read moves there with no new mechanism.",
-        "docs/design/module-capabilities.md's Lifecycle section, docs/design/develop-workspace.md's tool-array row for the capability block, docs/features.md's capability row and docs/user-guide.md's `module.activate`/`deactivate` line all describe activation as shipped today; each needs to say it returns with `local-runtime` instead.",
-        "Current shapes only: this removes two API methods, two job kinds and a requirement kind from `schema.list`, not a soft deprecation. No render path is touched."
+        "`capabilities/host/activation.rs` (424 lines) implements `inactive`/`activating`/`active`/`failed` states, a pending-deactivation-while-activating flag and supersede-versus-cancel. The one job table (`jobs.rs`) carries `JobKind::Activate` and `JobKind::Deactivate` on the module lane and `Admission::Always`, which only a deactivation uses; `Jobs::supersede` stays, because the analysis path also supersedes pending jobs. `capabilities/descriptor.rs` validates an `ActivationDescriptor`, a setting can declare `invalidates_activation` (`capabilities/settings.rs`), `module.status` reports an `activation` block, and a `requires_active` task fails with an `activation` requirement (`host/tasks.rs`).",
+        "The proof module's `activate()` (`modules/capabilities_proof.rs`) reads a 20-byte palette, then sleeps out an artificial `activation_delay` in 10 ms checkpoints purely so the cancel path has something to test; its task refuses until that palette is loaded. Tasks already read installed resources through their own context (`ModuleContext::resource_path`, `capabilities/context.rs`) with no dependency on activation, so the proof task's palette read moves there with no new mechanism.",
+        "Beyond the core: the desktop's Activate control and its message, the evidence script's `activate` capability step (`CapabilityAction::Activate` in `luxforge-evidence`), the `capabilities` smoke's `activated` step and `luxforge-app/tests/json_cli.rs`'s `module.activate` case all go with it.",
+        "docs/design/module-capabilities.md's Lifecycle, jobs and resources section, docs/design/develop-workspace.md's tool-array row for the capability block (which also still names `module.job.*`), docs/features.md's capability row and docs/user-guide.md's `module.activate`/`deactivate` paragraph all describe activation as shipped today; each needs to say it returns with `local-runtime` instead.",
+        "Current shapes only: this removes two API methods, two job kinds, the `activation` requirement kind and `module.status`'s activation block from `schema.list`, not a soft deprecation. No render path is touched. The module contract's developer-only test modules also change how the proof module registers; whichever lands second follows the other."
       ],
       "context_links": [
         {
@@ -457,7 +458,7 @@
         }
       ],
       "acceptance_criteria": [
-        "`module.activate`, `module.deactivate`, their job kinds, the always-admitted deactivation slot, supersede, `requires_active` and the `activate`/`deactivate` module hooks are gone from the core, the API and the desktop.",
+        "`module.activate`, `module.deactivate`, `JobKind::Activate` and `JobKind::Deactivate`, `Admission::Always`, the activation supersede, `requires_active`, `invalidates_activation`, `ActivationDescriptor`, `module.status`'s activation block and the `activate`/`deactivate` module hooks are gone from the core, the API, the evidence vocabulary and the desktop; the job table's `supersede`, which analysis uses, stays.",
         "The proof module's task reads its palette resource through `context.resource_path` and no longer declares an activation.",
         "The capabilities smoke no longer has an Activate step.",
         "docs/design/module-capabilities.md, docs/design/develop-workspace.md, docs/features.md and docs/user-guide.md describe activation as deferred until `local-runtime`, not shipped."
@@ -472,7 +473,8 @@
         "commands": [
           "cargo test -p luxforge-core capabilities",
           "cargo test -p luxforge-app capabilities",
-          "cargo xtask verify --tier quick",
+          "cargo test -p luxforge-evidence",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR",
           "cargo xtask smoke --scenario capabilities --output NEW_DIR"
         ],
         "expected_results": [
@@ -489,10 +491,11 @@
       ],
       "extra_context": [
         "Wave 4, structure, after activation is gone so there is no Status/Activate view left to trim around.",
-        "`app/capabilities.rs` (1,455 lines), `state/capabilities.rs` (1,494) and `view/capabilities.rs` (633) — about 3,580 shipped lines plus 934 test lines, roughly 343 evidence-step lines and a 708-line smoke scenario — implement a generated settings editor with per-kind field models, a multi-adapter profile manager, a Status/Settings view switch, a per-grant permissions browser, per-field conflict tracking and a 100 ms job poll. All of it renders only for the developer proof module; no shipped module declares settings, resources or tasks.",
+        "`app/capabilities.rs` (1,468 lines), `state/capabilities.rs` (1,517) and `view/capabilities.rs` (635), about 3,620 shipped lines plus the 984-line `app/capabilities_tests.rs`, the capability step vocabulary in `luxforge-evidence` and the 724-line `capabilities` smoke scenario, implement a generated settings editor with per-kind field models, a multi-adapter profile manager, a Status/Settings view switch, a per-grant permissions browser (`PermissionsModel`), per-field conflict tracking and a 100 ms job poll (`JOB_POLL`) that reads capability jobs through the one `job.read`. All of it renders only for the developer proof module; no shipped module declares settings, resources or tasks.",
         "Parity runs one way only: every GUI gesture already has an API equivalent, so trimming the GUI removes no capability, only its bespoke rendering. The grant browser's Revoke stays reachable through `module.permission.list` and `module.permission.revoke`; a per-module \"Revoke all\" is the one new affordance, since neither exists today.",
         "A settings conflict drops its per-field marks and instead re-reads settings and shows one status line; the evidence summary becomes a redacted settings/jobs/consent summary instead of a full per-field capture; the smoke's setup (settings, install) drives through generic `api` steps, keeping capability-specific UI steps only for the consent notice, the task control and Apply, which must actually be seen.",
-        "docs/design/develop-workspace.md's tool-array row for the capability block and docs/design/module-capabilities.md's Desktop section both describe the current generated Status/Settings surface and need to describe the trimmed one instead."
+        "docs/design/develop-workspace.md's tool-array row for the capability block and docs/design/module-capabilities.md's Desktop section both describe the current generated Status/Settings surface and need to describe the trimmed one instead.",
+        "The desktop group's seam-owned state and typed evidence outcomes also rewrite `app/capabilities.rs`'s messages and its `settle_step` calls, and its test clean-up replaces `app/capabilities_tests.rs`'s import-and-wait fixture; agree an order with those so the trim is not done twice."
       ],
       "context_links": [
         {
@@ -519,20 +522,21 @@
           "kind": "file",
           "label": "Desktop capability state",
           "target": "crates/luxforge-app/src/state/capabilities.rs",
-          "locator": "PermissionsModel, summary, JOB_POLL",
-          "relevance": "The permissions browser, evidence summary and job poll this task trims."
+          "locator": "PermissionsModel, summary",
+          "relevance": "The permissions browser and evidence summary this task trims."
         },
         {
           "kind": "file",
           "label": "Desktop capability update",
           "target": "crates/luxforge-app/src/app/capabilities.rs",
-          "relevance": "The update logic and secret handling behind the surface being trimmed."
+          "locator": "JOB_POLL",
+          "relevance": "The update logic, job poll and secret handling behind the surface being trimmed."
         },
         {
           "kind": "file",
           "label": "Evidence script vocabulary",
           "target": "crates/luxforge-evidence/src/lib.rs",
-          "locator": "capability step types",
+          "locator": "CapabilityStep, CapabilityAction",
           "relevance": "The scripted evidence step vocabulary this task cuts down."
         },
         {
@@ -558,9 +562,9 @@
         ],
         "commands": [
           "cargo test -p luxforge-app capabilities",
-          "cargo xtask verify --tier quick",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR",
           "cargo xtask smoke --scenario capabilities --output NEW_DIR",
-          "cargo xtask verify --tier rendered"
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
           "The trimmed surface still consents, installs, sets a value and applies a task's result exactly as before, proven by a rendered run with correlated state and logs."
@@ -569,16 +573,18 @@
     },
     {
       "id": "TASK-008",
-      "description": "Move the TLS transport and the Keychain secret store out of `luxforge-core` into a crate the desktop and `luxforge-json` inject through `HostConfig`, so the core and its test binaries link no TLS or Security framework.",
-      "status": "pending",
+      "description": "Move the TLS transport and the Keychain secret store out of `luxforge-core` into a crate the desktop and `luxforge-json` inject through `HostConfig`, behind a core-owned transport trait, so the core and its test binaries link no TLS or Security framework.",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
-        "Wave 4, structure, after the transport is settled on ureq, so this moves the finished code once rather than the deleted exchange loop.",
-        "`crates/luxforge-core/Cargo.toml` lists `rustls`, `rustls-platform-verifier` and `ureq-proto` as plain dependencies, and `security-framework` under the macOS target — unconditional either way, so they compile into `luxforge-core`'s one rlib and link every one of its test binaries, including render, mask and history/undo tests that never touch a module capability.",
-        "The seam already exists: `SecretStore` (`capabilities/secrets.rs`) and `Resolve`/`Connect` (`capabilities/transport/net.rs`) are traits that `HostConfig` (`capabilities/host.rs`) already takes as an injected `Arc<dyn SecretStore>` and a pluggable transport, and core tests already inject loopback fakes rather than the real Keychain or network. Moving `capabilities/transport/` and `capabilities/secrets.rs` into their own crate is a Cargo-graph change behind that seam, not an API or catalog shape change.",
-        "docs/design/architecture.md's Workspace section already states the principle this follows: \"Add boundaries when there is real code to own them.\" Its `luxforge-core` bullet lists `host.rs`, the `host/` files and `atomic_file.rs` as part of the core and needs updating once the transport and secrets move out."
+        "Wave 4, structure. The transport is settled on `ureq`'s own agent (`capabilities/transport/agent.rs`), so this moves the finished code once.",
+        "`crates/luxforge-core/Cargo.toml` lists `rustls` (with `ring`), `rustls-platform-verifier`, `ureq` and `ureq-proto` as plain dependencies, and `security-framework` under the macOS target, unconditionally, so they compile into `luxforge-core`'s one rlib and link every one of its test binaries, including render, mask and history tests that never touch a module capability.",
+        "The seam is half there. `SecretStore` (`capabilities/secrets.rs`) is already a trait `HostConfig` takes as `Arc<dyn SecretStore>`: the Keychain store (`KeychainSecretStore`, `platform_secret_store`) moves out, and the trait, `MemorySecretStore` and `UnavailableSecretStore` stay. The transport is not injected yet: `HostConfig.transport` is a `TransportConfig` of `TlsTrust`, `Resolve` and `Connect` (`capabilities/transport/net.rs`), from which the core builds its own rustls `Transport` on first use (`SharedTransport`, `capabilities/resources.rs`). This task adds a core-owned trait for sending one checked request, which `HostConfig` takes and resource installs and `ModuleContext::send` call, with the rustls and `ureq` implementation in the new crate.",
+        "The address policy's endpoint parsing (`EndpointClass`, `parse_endpoint`, `capabilities/transport/policy.rs`) stays in the core, because both descriptor validators use it; the capability leftovers task moves it to a neutral module, and whichever of the two lands second follows the other.",
+        "The core's capability tests (`lifecycle_tests.rs`, `proof_tests.rs`, `context.rs`) run real TLS today, over loopback with `TlsTrust::Roots` and `luxforge-testkit`'s `TestServer`. They move to an in-memory implementation of the new trait, and `capabilities/transport/tests.rs` (about 1,275 lines) moves with the transport, so TLS stays tested where it lives. The `http-client-crates` and `http-framing` rows of `cargo xtask check-repository` name `luxforge-core` and its `capabilities/transport` directory as the only home of `ureq` and HTTP framing; they follow the move.",
+        "docs/design/architecture.md's Workspace section already states the principle this follows: \"Add boundaries when there is real code to own them.\" Its `luxforge-core` bullet lists the capability host and its files as part of the core and needs updating once the transport and secrets move out. The desktop group's headless-binary crate, once it exists, is the other injector beside the desktop."
       ],
       "context_links": [
         {
@@ -598,21 +604,28 @@
           "kind": "file",
           "label": "Core crate manifest",
           "target": "crates/luxforge-core/Cargo.toml",
-          "relevance": "Where rustls, rustls-platform-verifier, ureq-proto and security-framework are unconditional dependencies today."
+          "relevance": "Where rustls, rustls-platform-verifier, ureq, ureq-proto and security-framework are unconditional dependencies today."
         },
         {
           "kind": "file",
           "label": "Secret store trait",
           "target": "crates/luxforge-core/src/capabilities/secrets.rs",
-          "locator": "SecretStore",
-          "relevance": "The trait boundary the Keychain store already sits behind."
+          "locator": "SecretStore, KeychainSecretStore, platform_secret_store",
+          "relevance": "The trait that stays and the Keychain store that moves."
         },
         {
           "kind": "file",
-          "label": "Transport resolution and connection",
-          "target": "crates/luxforge-core/src/capabilities/transport/net.rs",
-          "locator": "Resolve, Connect",
-          "relevance": "The trait boundary the TLS transport already sits behind."
+          "label": "Transport",
+          "target": "crates/luxforge-core/src/capabilities/transport/mod.rs",
+          "locator": "Transport, TransportConfig",
+          "relevance": "The rustls transport that moves, and the configuration `HostConfig` takes today in place of an injected transport."
+        },
+        {
+          "kind": "file",
+          "label": "Shared transport",
+          "target": "crates/luxforge-core/src/capabilities/resources.rs",
+          "locator": "SharedTransport",
+          "relevance": "Where the core builds its own transport today; it takes the injected one instead."
         },
         {
           "kind": "file",
@@ -620,28 +633,40 @@
           "target": "crates/luxforge-core/src/capabilities/host.rs",
           "locator": "HostConfig",
           "relevance": "Where the desktop and luxforge-json inject the moved implementations."
+        },
+        {
+          "kind": "file",
+          "label": "Repository rules",
+          "target": "xtask/src/repository.rs",
+          "locator": "http-client-crates, http-framing",
+          "relevance": "The one-path rows that name the transport's current home."
         }
       ],
       "acceptance_criteria": [
-        "`cargo tree -p luxforge-core -e normal` lists no `rustls`, `ring`, `ureq` or `security-framework` package.",
-        "The desktop and `luxforge-json` behave identically, injecting the moved transport and Keychain store through `HostConfig` exactly as before.",
+        "`cargo tree -p luxforge-core -e normal` lists no `rustls`, `rustls-platform-verifier`, `ring`, `ureq`, `ureq-proto` or `security-framework` package.",
+        "`HostConfig` takes the transport as a core-owned trait object and the secret store as today; the desktop and `luxforge-json` inject the new crate's TLS transport and Keychain store and behave identically.",
+        "The core's capability tests pass on an in-memory transport, and the transport's TLS, protocol and address-policy tests pass in the new crate.",
+        "`cargo xtask check-repository`'s HTTP rows name the new crate as the only home of `ureq` and HTTP framing.",
         "Clean-build time of the core's test binaries is recorded before and after the split.",
         "docs/design/architecture.md's Workspace section describes the new crate and the trimmed `luxforge-core` capabilities list."
       ],
       "test_strategy": {
         "approach": "integration",
         "steps": [
-          "Move capabilities/transport/ and capabilities/secrets.rs into the new crate, re-exporting the traits HostConfig needs.",
+          "Add the core-owned transport trait, take it in `HostConfig`, and move `capabilities/transport/` (keeping the endpoint parsing in the core) and the Keychain store into the new crate.",
+          "Move the core's capability tests onto an in-memory transport, and the transport's own tests into the new crate.",
           "Wire the desktop and luxforge-json to construct the real transport and Keychain store from the new crate and pass them through HostConfig.",
           "Time a clean build of the core's test binaries before and after, on the same host."
         ],
         "commands": [
           "cargo tree -p luxforge-core -e normal",
           "cargo test -p luxforge-core capabilities",
-          "cargo xtask verify --tier quick"
+          "cargo test --workspace transport",
+          "cargo xtask check-repository",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
-          "No TLS, ring or Keychain crate appears in the core's dependency tree, and every capability test still passes through the injected fakes."
+          "No TLS, ring or Keychain crate appears in the core's dependency tree, every capability test passes through the injected in-memory transport, and the TLS tests pass in the new crate."
         ]
       }
     },
@@ -656,10 +681,10 @@
       "extra_context": [
         "Wave 4, structure, swept up after the fixes and after activation is gone (this task depends on both) so it edits code that has already settled. None of these items changes behavior beyond refusing one setting shape nothing can use.",
         "`Requirement.kind` (`capabilities/host.rs`) is a bare string whose own doc comment lists `setting`, `resource`, `activation` and `profile`, while docs/design/module-capabilities.md instead lists `setting|resource|activation|grant`; the code never emits `grant`, and the desktop's `\"grant\"` match arm (`state/capabilities.rs`) is dead. With activation gone, only `setting`, `resource` and `profile` remain possible: make the field an enum of those three and bring the doc in line with it.",
-        "A settings `file` parameter kind and its `read-user-file` capability were decided removed on 2026-09-24 because nothing used them, and the type itself is gone, but the wording survives: docs/decisions.md's \"path change\" phrase, a comment in `host.rs` saying a grant names its exact path, `context.rs`'s comment excluding \"file paths\" from a module's context values, an error string in `app/capabilities.rs` naming a \"file\" setting step, `view/capabilities.rs`'s doc comment about a native file dialog, and the settings test fixture (`settings.rs`) still writing an unused `input.bin`. This is a separate, already-decided removal from this plan's own resource-install source.",
-        "`SettingsWrite.previous` (`capabilities/settings.rs`) is built on every write and read only by tests; the requirement list that becomes a `not-ready` error is formatted twice (`host/activation.rs` and `host/tasks.rs`); `profile_status` hand-copies the serde field names once in `host/tasks.rs` and again in the desktop's `state/capabilities.rs`; there are three separate io-error mappers (`crates/luxforge-core/src/atomic_file.rs`, `capabilities/resources.rs`, `artifacts/store.rs`) and two `now_ms` helpers (`grants.rs`, returning `u64`, and `artifacts/store.rs`, returning `i64`).",
-        "`artifacts/store.rs`'s manifest reader hand-parses its format-marked JSON instead of using the shared `JsonDocument` that settings and grants already use, and `modules/descriptor.rs` (the module parameter vocabulary, not the capability descriptor of the same name) imports `capabilities::transport::{EndpointClass, parse_endpoint}` directly; move those two items to a neutral module both can depend on.",
-        "A module-level `endpoint` setting passes `descriptor.rs`'s field validation today but nothing reads it, since `profile_endpoint` only reads profile-level fields, so it should be refused at registration instead of silently doing nothing. `context.rs`'s comment says a credential is cleared as soon as the request is done and zeroizes its own header copy, but the transport's request header value and ureq's output buffer hold two further copies that are never zeroed; say \"best effort\", or zero those too. docs/features.md's long-running-work list omits capability jobs, which already publish to the activity board."
+        "A settings `file` parameter kind and its `read-user-file` capability were decided removed on 2026-09-24 because nothing used them, and the type itself is gone, but the wording survives: docs/decisions.md's \"an endpoint or path change\" phrase, a comment in `host.rs` saying a grant names its exact path, `context.rs`'s comment excluding \"file paths\" from a module's context values, an error string in `app/capabilities.rs` naming a \"file\" setting step, `view/capabilities.rs`'s doc comment about a native file dialog, and the settings test fixture (`settings.rs`) still writing an unused `input.bin`. This is a separate, already-decided removal from this plan's own resource-install source.",
+        "`SettingsWrite.previous` (`capabilities/settings.rs`) is built on every write and read only by tests; the requirement list that becomes a `not-ready` error is formatted in `host/activation.rs` and `host/tasks.rs`, and deferring activation removes one copy; `profile_status` hand-copies the serde field names once in `host/tasks.rs` and again in the desktop's `state/capabilities.rs`; io errors are mapped by four helpers (`atomic_file.rs`'s `file_error`, `capabilities/resources.rs`'s `write_failure`, `artifacts/store.rs`'s `access` and `editor/source.rs`'s `file_access`); and there are three `now_ms` helpers (`capabilities/grants.rs` returning `u64`, `artifacts/store.rs` and `editor/catalog.rs` returning `i64`).",
+        "`artifacts/store.rs`'s manifest reader (`root_state`) reads and checks its format-marked JSON by hand instead of through the shared `JsonDocument` that settings, grants and installed resources already use, and both `modules/descriptor.rs` (the module parameter vocabulary) and `capabilities/descriptor.rs` import `capabilities::transport::{EndpointClass, parse_endpoint}` directly; move those two items to a neutral module both can depend on, which also keeps them in the core when the transport moves to its own crate.",
+        "A module-level `endpoint` setting passes `capabilities/descriptor.rs`'s field validation today but nothing reads it, since `profile_endpoint` (`host.rs`) only reads profile-level fields, so it should be refused at registration instead of silently doing nothing. `context.rs`'s comment says a credential is cleared as soon as the request is done and zeroizes its own header copy, but the transport's prepared request (`prepare`, `capabilities/transport/mod.rs`) and `ureq`'s buffers hold further copies that are never zeroed; say \"best effort\", or zero those too. docs/features.md's long-running-work list omits capability jobs, which already publish to the activity board."
       ],
       "context_links": [
         {
@@ -707,21 +732,21 @@
           "label": "Artifact store",
           "target": "crates/luxforge-core/src/artifacts/store.rs",
           "locator": "root_state, access, now_ms",
-          "relevance": "The hand-parsed manifest and two of the three io-error and now_ms duplicates."
+          "relevance": "The hand-read manifest and two of the io-error and now_ms duplicates."
         },
         {
           "kind": "file",
           "label": "Durable file writes",
           "target": "crates/luxforge-core/src/atomic_file.rs",
           "locator": "file_error",
-          "relevance": "The third io-error mapper."
+          "relevance": "One of the four io-error mappers."
         },
         {
           "kind": "file",
           "label": "Module parameter vocabulary",
           "target": "crates/luxforge-core/src/modules/descriptor.rs",
           "locator": "EndpointClass, parse_endpoint import",
-          "relevance": "Imports transport internals that should move to a neutral module."
+          "relevance": "Imports transport internals that should move to a neutral module, as does the capability descriptor."
         },
         {
           "kind": "file",
@@ -735,7 +760,7 @@
         "`Requirement.kind` is an enum of exactly `setting`, `resource` and `profile`; docs/design/module-capabilities.md's kind list matches it, and the desktop's dead `\"grant\"` arm is gone.",
         "Every leftover mention of the already-removed file setting kind and read-user-file capability is gone from docs and code comments, and the settings test fixture no longer writes the unused `input.bin`.",
         "`SettingsWrite.previous` is removed or read by production code; the requirement-list formatting, `profile_status`'s field copy, the io-error mappers and the `now_ms` helpers each exist once, or the remaining duplication is left named with its reason.",
-        "The artifact manifest reads through `JsonDocument`, and the module parameter vocabulary no longer imports `capabilities::transport`.",
+        "The artifact manifest reads through `JsonDocument`, and neither descriptor module imports `capabilities::transport`.",
         "A module-level `endpoint` setting is refused at registration; `context.rs`'s comment matches what is actually zeroed; docs/features.md lists capability jobs among long-running work.",
         "No behavior changes beyond refusing the unusable module-level `endpoint` setting."
       ],
@@ -749,7 +774,7 @@
         "commands": [
           "cargo test -p luxforge-core capabilities",
           "cargo test -p luxforge-app capabilities",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Every listed item is either fixed or explicitly left with its reason; no test's behavior changes except the new endpoint-setting refusal."
@@ -766,10 +791,10 @@
       ],
       "extra_context": [
         "Wave 5, tests, after activation and the desktop surface are trimmed so there is no dead-code coverage left to carry along.",
-        "`app/capabilities_tests.rs`'s script-parsing test and `luxforge-evidence/src/tests.rs`'s script round-trip test run the same script (settings, secret, profile, install, activate, task, consent, apply, cancel, revoke) and assert the same redaction; keep the evidence crate's version and delete the app's copy.",
-        "The same behaviours are proved on both the fixture module and the proof module: endpoint revocation and removing a required resource each exist once in `lifecycle_tests.rs` and again in `proof_tests.rs` (the running-activation cancel pair goes with activation). Four fake capability modules exist across the tree, including `registry/compile_tests.rs`'s `TintModule`, which re-implements the proof module's own tint; the artifact tests should use the proof module instead.",
-        "Discovery being inert — no file, thread or Keychain touched by listing or reopening — is shown three times, and a sentinel-secret redaction scan four times, each needing one owner; near-identical owner test harnesses exist in `lifecycle_tests.rs` and `proof_tests.rs`. The shared `JsonDocument` (`capabilities/document.rs`) is exercised only through settings and grants, its two callers, with no test of its own.",
-        "One property is tested once per layer (unit, service, owner/JSON, process, desktop, rendered); a second test at the same layer must say what the first one misses that justifies it. Each deleted assertion is named, in the commit, with the kept test that proves it: a test that cannot fail is deleted or rewritten, never kept as coverage."
+        "`app/capabilities_tests.rs`'s `capability_steps_parse_strictly_and_record_a_secret_as_redacted` and `luxforge-evidence/src/tests.rs`'s `capability_steps_round_trip_and_record_a_secret_as_redacted` run the same script (settings, secret, profile, install, remove, task, consent, apply, cancel, revoke) and assert the same redaction; keep the evidence crate's version and delete the app's copy.",
+        "The same behaviours are proved on both the fixture module and the proof module: endpoint revocation (`changing_what_a_grant_names_revokes_it` in `lifecycle_tests.rs`, `changing_the_endpoint_revokes_its_grant_and_asks_for_consent_again` in `proof_tests.rs`) and removing a required resource (`removing_a_required_resource_deactivates_the_module_and_deletes_only_the_resource`, `removing_the_resource_deactivates_the_module_and_the_accepted_tint_still_renders`); the running-activation cancel pair goes with activation. Besides the proof module there are five fake capability modules: `LifecycleModule` (`capabilities/testing.rs`), `Publisher` (`proof_tests.rs`), `TintModule` (`artifacts/testing.rs`, used by `editor/artifact_tests.rs` and `api/owner/artifact_tests.rs`, re-implementing the proof module's own tint), and `BoundModule` and `TestModule` in the registry's tests; the artifact tests should use the proof module instead of `TintModule`.",
+        "Discovery being inert (no file, thread or Keychain touched by listing or reopening) is shown more than once, as in `discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing` and `the_proof_module_and_its_task_method_are_discovered_without_any_side_effect`, and a sentinel-secret redaction scan several times; each needs one owner. Near-identical owner test harnesses exist in `lifecycle_tests.rs` and `proof_tests.rs`, each with its own `mutation` helper. The shared `JsonDocument` (`capabilities/document.rs`) is exercised only through its three callers, settings, grants and installed resources, with no test of its own.",
+        "One property is tested once per layer (unit, service, owner/JSON, process, desktop, rendered); a second test at the same layer must say what the first one misses that justifies it. Each deleted assertion is named, in the commit, with the kept test that proves it: a test that cannot fail is deleted or rewritten, never kept as coverage. The core's own test clean-up gives the crate one `mutation` helper; the capability tests adopt it."
       ],
       "context_links": [
         {
@@ -807,14 +832,14 @@
           "label": "Shared JSON document store",
           "target": "crates/luxforge-core/src/capabilities/document.rs",
           "locator": "JsonDocument",
-          "relevance": "Gets its own tests instead of being proved only through settings and grants."
+          "relevance": "Gets its own tests instead of being proved only through settings, grants and installed resources."
         },
         {
           "kind": "file",
-          "label": "Module registry compile tests",
-          "target": "crates/luxforge-core/src/modules/registry/compile_tests.rs",
+          "label": "Artifact test module",
+          "target": "crates/luxforge-core/src/artifacts/testing.rs",
           "locator": "TintModule",
-          "relevance": "The fake capability module to replace with the proof module in the artifact tests."
+          "relevance": "The fake capability module the artifact tests use in place of the proof module."
         }
       ],
       "acceptance_criteria": [
@@ -836,7 +861,8 @@
           "cargo test -p luxforge-core capabilities",
           "cargo test -p luxforge-core artifact",
           "cargo test -p luxforge-app",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-evidence",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Coverage is unchanged when mutation-tested on a sample of the deleted assertions, and the retained suite runs faster while proving the same properties."
