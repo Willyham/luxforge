@@ -22,20 +22,22 @@ use crate::{
         masks::{ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
         tools::{ControlModel, drawn_by_range},
     },
-    view::tools_panel::{control_copy_menu, control_target, control_view, ui_edit},
+    view::tools_panel::{
+        control_copy_menu, control_target, control_view, sized_toggle_view, ui_edit,
+    },
 };
 use iced::{
     Alignment, Element, Length, Padding,
     widget::{Column, Space, column, container, mouse_area, row},
 };
 use luxforge_ui::{
-    CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
+    CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
     DropdownButtonModel, GridField, GroupRuleModel, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
     RenameMessages, SliderModel, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
-    band_header, caption, compact_toggle, component_note, component_row, dropdown_button,
-    field_grid, group_rule, mask_row, menu_list, mode_control, overlay_control, popover, slider,
-    stroke_row, swatch_slots, theme, with_tooltip,
+    band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
+    dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control, overlay_control,
+    popover, slider, stroke_row, swatch_slots, theme, with_tooltip,
 };
 
 /// The panel's own module key, for the generated controls' group and focus keys. The mask commands
@@ -88,6 +90,43 @@ fn item(label: impl Into<String>, message: Option<Message>) -> MenuEntry<Message
         label: label.into(),
         trailing: None,
         on_press: message,
+        reason: None,
+    })
+}
+
+/// One menu item that runs `edit` unless `refusal` says why it cannot, in which case it is drawn
+/// disabled with that reason as its tooltip.
+fn refusable(
+    label: impl Into<String>,
+    edit: Message,
+    refusal: Option<String>,
+) -> MenuEntry<Message> {
+    MenuEntry::Item(MenuItem {
+        icon: None,
+        label: label.into(),
+        trailing: None,
+        on_press: refusal.is_none().then_some(edit),
+        reason: refusal,
+    })
+}
+
+/// A tertiary note at the board's `.note` size (10.5 pt), as the count under the list and the Add
+/// row's `as` read.
+fn note<'a>(content: impl Into<String>) -> Element<'a, Message> {
+    iced::widget::text(content.into())
+        .size(theme::SIZE_SMALL_CAPTION)
+        .wrapping(iced::widget::text::Wrapping::None)
+        .color(theme::TEXT_TERTIARY)
+        .into()
+}
+
+/// Why the panel refuses every edit right now, or `None` when it takes them.
+fn busy(model: &MasksModel) -> Option<String> {
+    (!model.enabled).then(|| {
+        model
+            .disabled_reason
+            .clone()
+            .unwrap_or_else(|| "Waiting for the last request".to_owned())
     })
 }
 
@@ -98,6 +137,7 @@ fn copy_item(target: MenuTarget, enabled: bool) -> MenuEntry<Message> {
         label: "Copy as JSON request".into(),
         trailing: Some("\u{203a}".into()),
         on_press: enabled.then(|| Message::View(ViewMessage::OpenMenu(target))),
+        reason: None,
     })
 }
 
@@ -184,20 +224,27 @@ fn drop_zone<'a>(list: Column<'a, Message>, model: &MasksModel) -> Element<'a, M
     }
 }
 
-/// `row` wrapped so the pointer entering it during a drag of its list names it as the drop target.
+/// `row` wrapped so the pointer entering it during a drag of its list names it as the drop target,
+/// with the drag drawn on it: the dragged row dimmed, and an accent line at the edge of the row under
+/// the pointer where the dragged row will land. `dragged` is the index of the row in hand when a row
+/// of this list is being dragged.
 fn drop_target<'a>(
     row: Element<'a, Message>,
-    dragging: bool,
+    model: &MasksModel,
+    dragged: Option<usize>,
     index: usize,
 ) -> Element<'a, Message> {
-    if dragging {
-        mouse_area(row)
-            .on_enter(mask(MaskMessage::Drag(DragEdit::Over(Some(index)))))
-            .interaction(iced::mouse::Interaction::Grabbing)
-            .into()
-    } else {
-        row
-    }
+    let Some(from) = dragged else {
+        return row;
+    };
+    let over = model.drag.as_ref().and_then(|drag| drag.over);
+    let edge = (over == Some(index))
+        .then(|| DropEdge::of(from, index))
+        .flatten();
+    mouse_area(drop_feedback(row, edge, from == index))
+        .on_enter(mask(MaskMessage::Drag(DragEdit::Over(Some(index)))))
+        .interaction(iced::mouse::Interaction::Grabbing)
+        .into()
 }
 
 // ---- the overlay row -----------------------------------------------------------------------------
@@ -298,11 +345,15 @@ fn mask_row_view<'a>(
             rename: Some(rename_messages()),
         },
     );
-    let dragging = matches!(
-        model.drag.as_ref().map(|drag| &drag.item),
-        Some(DragItem::Mask(_))
-    );
-    let view = drop_target(view, dragging, row.index);
+    let dragged = match model.drag.as_ref().map(|drag| &drag.item) {
+        Some(DragItem::Mask(held)) => model
+            .masks
+            .iter()
+            .find(|mask| mask.id.as_str() == held)
+            .map(|mask| mask.index),
+        _ => None,
+    };
+    let view = drop_target(view, model, dragged, row.index);
     let entries = match menu {
         Some(MenuTarget::Mask(open)) if open == &id => Some(mask_menu(model, row, false)),
         Some(MenuTarget::MaskCopy(open)) if open == &id => Some(mask_copy_menu(row)),
@@ -318,38 +369,34 @@ pub(crate) fn mask_menu(
     from_rule: bool,
 ) -> Vec<MenuEntry<Message>> {
     let id = row.id.as_str().to_owned();
-    let enabled = model.enabled;
-    let live = |edit: RowEdit, allowed: bool| (enabled && allowed).then(|| run(edit));
+    let busy = busy(model);
     let (up, down) = mask_moves(row);
     vec![
-        item(
+        refusable(
             "Rename",
-            enabled.then(|| typing(TypingEdit::Begin(TypingTarget::RenameMask(id.clone())))),
+            typing(TypingEdit::Begin(TypingTarget::RenameMask(id.clone()))),
+            busy.clone(),
         ),
-        item(
+        refusable(
             "Duplicate",
-            live(
-                RowEdit::DuplicateMask(id.clone()),
-                row.duplicate_reason.is_none(),
-            ),
+            run(RowEdit::DuplicateMask(id.clone())),
+            busy.clone().or_else(|| row.duplicate_reason.clone()),
         ),
-        item(
+        refusable(
             if row.inverted {
                 "Not inverted"
             } else {
                 "Invert"
             },
-            live(
-                RowEdit::InvertMask {
-                    mask: id.clone(),
-                    invert: !row.inverted,
-                },
-                true,
-            ),
+            run(RowEdit::InvertMask {
+                mask: id.clone(),
+                invert: !row.inverted,
+            }),
+            busy.clone(),
         ),
-        item("Move up", live(up, row.can_move_up)),
-        item("Move down", live(down, row.can_move_down)),
-        item("Delete", live(RowEdit::DeleteMask(id.clone()), true)),
+        refusable("Move up", run(up), row.up_reason.clone()),
+        refusable("Move down", run(down), row.down_reason.clone()),
+        refusable("Delete", run(RowEdit::DeleteMask(id.clone())), busy),
         MenuEntry::Separator,
         copy_item(
             if from_rule {
@@ -401,10 +448,10 @@ pub(crate) fn mask_copy_menu(row: &MaskRow) -> Vec<MenuEntry<Message>> {
             })),
         ),
     ];
-    if row.can_move_up {
+    if row.can_move_up() {
         entries.push(item("Copy move up request", Some(copy(up))));
     }
-    if row.can_move_down {
+    if row.can_move_down() {
         entries.push(item("Copy move down request", Some(copy(down))));
     }
     entries.push(item(
@@ -417,6 +464,10 @@ pub(crate) fn mask_copy_menu(row: &MaskRow) -> Vec<MenuEntry<Message>> {
 /// A kind menu: every kind the build can create, each with its icon and letter, the drawn kinds
 /// first and the typed ones after a rule, in the host's table order.
 pub(crate) fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Message>> {
+    let refusal = busy(model).or_else(|| match menu {
+        KindMenu::New => model.create_reason.clone(),
+        KindMenu::Add => model.add_reason.clone(),
+    });
     let mut entries = Vec::new();
     let mut drawn = true;
     for kind in &model.kinds {
@@ -428,12 +479,13 @@ pub(crate) fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Mes
             icon: kind.icon,
             label: kind.label.clone(),
             trailing: kind.letter.map(|letter| letter.to_string()),
-            on_press: (model.enabled && kind.enabled).then(|| {
+            on_press: (refusal.is_none() && kind.enabled).then(|| {
                 mask(MaskMessage::Choose {
                     menu,
                     kind: kind.kind.clone(),
                 })
             }),
+            reason: refusal.clone(),
         }));
     }
     entries
@@ -479,7 +531,7 @@ fn new_mask_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Elem
             menu,
         ),
         Space::new().width(Length::Fill),
-        caption(model.count.clone()),
+        note(model.count.clone()),
     ]
     .align_y(Alignment::Center)
     .height(Length::Fixed(theme::NEW_MASK_ROW_HEIGHT))
@@ -530,8 +582,12 @@ fn open_mask<'a>(
     let mut body = Column::new().spacing(theme::ROW_SPACING);
     // The whole-mask controls: the amount slider and the inversion, generated from the host's own
     // declarations exactly as a module's controls are.
+    // Invert mask sits at the panel's compact toggle height, as the board draws it under Amount.
     for control in &model.controls {
-        body = body.push(control_view(HOST, model.enabled, control, menu, plot));
+        body = body.push(match control {
+            ControlModel::Toggle(toggle) => sized_toggle_view(model.enabled, toggle, menu, true),
+            other => control_view(HOST, model.enabled, other, menu, plot),
+        });
     }
     body = body.push(Space::new().height(Length::Fixed(theme::COMPONENTS_GAP)));
     let rows = model
@@ -599,7 +655,7 @@ fn add_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Element<'
         },
     );
     container(
-        row![add, Space::new().width(Length::Fill), caption("as"), mode]
+        row![add, Space::new().width(Length::Fill), note("as"), mode]
             .spacing(theme::OVERLAY_SPACING)
             .align_y(Alignment::Center)
             .height(Length::Fixed(theme::ADD_ROW_HEIGHT)),
@@ -691,11 +747,15 @@ fn component_view<'a>(
             rename: Some(rename_messages()),
         },
     );
-    let dragging = matches!(
-        model.drag.as_ref().map(|drag| &drag.item),
-        Some(DragItem::Component(_))
-    );
-    let view = drop_target(view, dragging, component.index);
+    let dragged = match model.drag.as_ref().map(|drag| &drag.item) {
+        Some(DragItem::Component(held)) => model
+            .components
+            .iter()
+            .find(|row| row.id.as_str() == held)
+            .map(|row| row.index),
+        _ => None,
+    };
+    let view = drop_target(view, model, dragged, component.index);
     let entries = match menu {
         Some(MenuTarget::Component(target)) if target == &id => {
             Some(component_menu(model, open, component))
@@ -749,11 +809,20 @@ pub(crate) fn component_menu(
     component: &ComponentRow,
 ) -> Vec<MenuEntry<Message>> {
     let id = component.id.as_str().to_owned();
-    let enabled = model.enabled && component.available;
+    // A component of a kind this build cannot evaluate is kept and listed, and nothing edits it.
+    let refusal = busy(model).or_else(|| {
+        (!component.available).then(|| {
+            format!(
+                "This build cannot evaluate {} components; the component is kept as stored",
+                component.kind
+            )
+        })
+    });
     let (up, down) = component_moves(component);
-    let mut entries = vec![item(
+    let mut entries = vec![refusable(
         "Rename",
-        enabled.then(|| typing(TypingEdit::Begin(TypingTarget::RenameComponent(id.clone())))),
+        typing(TypingEdit::Begin(TypingTarget::RenameComponent(id.clone()))),
+        refusal.clone(),
     )];
     if component.can_edit_shape {
         // A painted component has no shape to reopen: what it offers is the next stroke on it,
@@ -767,26 +836,24 @@ pub(crate) fn component_menu(
             item("Edit shape", Some(mask(MaskMessage::EditShape(id.clone()))))
         });
     }
-    entries.push(item(
+    entries.push(refusable(
         "Move up",
-        (enabled && component.can_move_up()).then(|| run(up)),
+        run(up),
+        refusal.clone().or_else(|| component.up_reason.clone()),
     ));
-    entries.push(item(
+    entries.push(refusable(
         "Move down",
-        (enabled && component.can_move_down()).then(|| run(down)),
+        run(down),
+        refusal.clone().or_else(|| component.down_reason.clone()),
     ));
     entries.push(match &component.delete_reason {
         // A mask's only component is removed by removing the mask, which says what it removes.
-        Some(_) => item(
+        Some(_) => refusable(
             "Delete mask",
-            model
-                .enabled
-                .then(|| run(RowEdit::DeleteMask(open.id.as_str().to_owned()))),
+            run(RowEdit::DeleteMask(open.id.as_str().to_owned())),
+            busy(model),
         ),
-        None => item(
-            "Delete",
-            enabled.then(|| run(RowEdit::DeleteComponent(id.clone()))),
-        ),
+        None => refusable("Delete", run(RowEdit::DeleteComponent(id.clone())), refusal),
     });
     entries.push(MenuEntry::Separator);
     entries.push(copy_item(MenuTarget::ComponentCopy(id), true));
@@ -1015,7 +1082,7 @@ fn strokes<'a>(
         let view = stroke_row(
             &StrokeRowModel {
                 index: (stroke.index + 1).to_string(),
-                label: stroke.label.clone(),
+                label: stroke.summary.clone(),
                 delete_tooltip: stroke
                     .delete_reason
                     .clone()
@@ -1036,7 +1103,16 @@ fn strokes<'a>(
             view,
             open.then(|| {
                 menu_list(vec![
-                    item("Delete stroke", deletable.then(|| run(edit.clone()))),
+                    refusable(
+                        "Delete stroke",
+                        run(edit.clone()),
+                        (!deletable).then(|| {
+                            stroke
+                                .delete_reason
+                                .clone()
+                                .unwrap_or_else(|| "Waiting for the last request".to_owned())
+                        }),
+                    ),
                     item("Copy delete request", Some(copy(edit))),
                 ])
             }),
@@ -1112,9 +1188,13 @@ fn swatches<'a>(
                 index: sample.index,
             };
             vec![
-                item(
+                refusable(
                     format!("Remove {}", sample.label),
-                    (enabled && sample.delete_reason.is_none()).then(|| run(edit.clone())),
+                    run(edit.clone()),
+                    sample
+                        .delete_reason
+                        .clone()
+                        .or_else(|| (!enabled).then(|| "Waiting for the last request".to_owned())),
                 ),
                 item("Copy remove request", Some(copy(edit))),
             ]

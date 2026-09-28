@@ -266,6 +266,73 @@ pub fn component_row<'a, M: Clone + 'a>(
     area.into()
 }
 
+/// Where a dragged row will land relative to the row under the pointer: above it when the drag moves
+/// up the list, below it when it moves down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropEdge {
+    Above,
+    Below,
+}
+
+impl DropEdge {
+    /// The edge a row at `target` shows while the row at `from` is dragged over it, or `None` for
+    /// the dragged row itself.
+    pub fn of(from: usize, target: usize) -> Option<Self> {
+        match target.cmp(&from) {
+            std::cmp::Ordering::Less => Some(Self::Above),
+            std::cmp::Ordering::Greater => Some(Self::Below),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+}
+
+/// A mask or component row while a reorder drag is in progress: the row being dragged is dimmed,
+/// and the row under the pointer carries a [`theme::DROP_INDICATOR_WIDTH`] accent line at the edge
+/// the dragged row will land on. Pure view: it draws over the row without changing its size, so the
+/// list does not move under the pointer while it is dragged.
+pub fn drop_feedback<'a, M: 'a>(
+    content: Element<'a, M>,
+    edge: Option<DropEdge>,
+    dimmed: bool,
+) -> Element<'a, M> {
+    if edge.is_none() && !dimmed {
+        return content;
+    }
+    let mut layers = iced::widget::Stack::new().push(content).width(Length::Fill);
+    if dimmed {
+        layers = layers.push(
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(
+                        Color {
+                            a: theme::DRAGGED_ROW_DIM,
+                            ..theme::PANEL
+                        }
+                        .into(),
+                    ),
+                    ..container::Style::default()
+                }),
+        );
+    }
+    if let Some(edge) = edge {
+        let line = container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fixed(theme::DROP_INDICATOR_WIDTH))
+            .style(|_| container::Style {
+                background: Some(theme::ACCENT.into()),
+                ..container::Style::default()
+            });
+        let fill = Space::new().height(Length::Fill);
+        layers = layers.push(match edge {
+            DropEdge::Above => iced::widget::column![line, fill],
+            DropEdge::Below => iced::widget::column![fill, line],
+        });
+    }
+    layers.into()
+}
+
 /// Plain data for one brush stroke under a brush component: its number, its caption
 /// (`add · 0.06 · f50`) and its delete button, disabled with the reason as its tooltip.
 #[derive(Debug, Clone, PartialEq)]
@@ -569,6 +636,21 @@ mod tests {
             },
             ComponentRowMessages::default(),
         );
+    }
+
+    #[test]
+    fn drop_edges_follow_the_direction_of_the_drag() {
+        assert_eq!(DropEdge::of(2, 0), Some(DropEdge::Above));
+        assert_eq!(DropEdge::of(0, 2), Some(DropEdge::Below));
+        assert_eq!(DropEdge::of(1, 1), None);
+        for (edge, dimmed) in [
+            (Some(DropEdge::Above), false),
+            (Some(DropEdge::Below), false),
+            (None, true),
+            (None, false),
+        ] {
+            let _: Element<'_, ()> = drop_feedback(text("Sky").into(), edge, dimmed);
+        }
     }
 
     #[test]
