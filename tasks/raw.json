@@ -283,7 +283,7 @@
     {
       "id": "TASK-005",
       "description": "Evict the cached RAW development only when a queued task will allocate new planes, then measure the hold-`\\` compare on the X100VI and add a byte-budgeted second slot or a proxy-only compare if a switch still costs more than about 150 ms.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-003"

@@ -899,7 +899,8 @@ mod tests {
             )
             .unwrap()
         };
-        let x100vi = planes(7728, 5152);
+        // 40.9 MP, the X100VI's full sensor: 468 MiB of planes.
+        let x100vi = planes(7824, 5228);
         assert!(retainable(&x100vi), "{} bytes", x100vi.plane_bytes());
         let past = planes(8192, 6401);
         assert!(
