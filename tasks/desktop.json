@@ -1475,7 +1475,7 @@
     {
       "id": "TASK-018",
       "description": "Keep only widget-level states on the components board, deleting the widget crate's mock panels and their copied constants.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",

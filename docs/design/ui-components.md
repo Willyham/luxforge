@@ -112,8 +112,13 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 ## Developer gallery
 
 The title bar exposes **Developer** in debug builds and in optimized builds started with
-`--developer`. It opens the existing 89 reference states across eleven component pages, using the
-same widget constructors as the editor. A page menu and Previous/Next buttons browse the board;
+`--developer`. It opens 99 named widget states on thirteen named pages, built with the same widget
+constructors as the editor. The board holds widget states only, as the owner decided: no composed
+module section or panel, and no copy of an app constant such as a panel width or the performance
+sampler's window. The real panels are proven where the app composes them, by the `workspace`,
+`basic-panel`, `crop-draft`, `mixer`, `controls` and `performance` smokes. The widget crate names
+each page and its states (`GALLERY_PAGES`); the app draws one named page at a time and addresses
+no state by index. A page menu and Previous/Next buttons browse the board;
 Back to editor or Escape restores the workspace. No photograph is required. The examples display
 reference states and do not edit the photograph; the Controls proof provides live editing tests.
 Opening is disabled during an active draft, import or Compare hold. Photo shortcuts are suppressed

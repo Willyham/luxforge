@@ -12,7 +12,18 @@ use crate::{
     inline_menu, label, list_row, mode_strip, notice_card, section_header, section_label, segment,
     segment_track, segmented, slider, sub_group_header, theme, title, value_text,
 };
-use iced::Element;
+use iced::widget::container;
+use iced::{Element, Length};
+
+/// The width the board frames a state at when the state depends on its width: narrow enough that
+/// a long hint, label or detail ends in its ellipsis. It frames the examples only; every row fills
+/// the width its panel gives it.
+const NARROW_WIDTH: f32 = 220.0;
+
+/// `content` framed at [`NARROW_WIDTH`].
+pub(crate) fn narrow(content: Element<'static, ()>) -> Element<'static, ()> {
+    container(content).width(Length::Fixed(NARROW_WIDTH)).into()
+}
 
 /// One instance of every widget in every state the components board shows.
 // A single `vec![...]` literal would bury each state's own comment inside one giant expression;
@@ -421,7 +432,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         Some(()),
     ));
 
-    // -- The state panel's Performance section, beside the history rows it sits under.
+    // -- The Performance section's heading, metric rows and job rows.
     states.extend(crate::gallery_performance::gallery_performance());
 
     // -- Notice cards: error, warning and neutral tone, each with its leading icon.
@@ -606,8 +617,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.push(value_text::<()>("+0.62"));
 
     states.extend(crate::gallery_components::gallery_components());
-    states.extend(crate::gallery_panels::gallery_panels());
-    states.extend(crate::gallery_panels::gallery_panel_rows());
+    states.extend(crate::gallery_components::gallery_labels());
     states.extend(crate::gallery_masks::gallery_masks());
     states.extend(crate::gallery_components::gallery_ranges());
 
