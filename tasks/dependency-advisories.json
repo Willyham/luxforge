@@ -11,7 +11,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Expires exclusively on 2026-10-19; UTC expiry is enforced by the audit wrapper. Review sooner for new security information, distribution or font-input scope changes."
+        "RUSTSEC-2026-0192 on ttf-parser 0.25.1 via the Iced text stack, reviewed 2026-09-19 and expiring exclusively on 2026-10-19 (UTC), as `exceptions()` in xtask/src/policy.rs records. The audit wrapper enforces the expiry, the exact resolved version and registry source, a review window of at most 90 days and that this task stays open. Review sooner for new security information, distribution or font-input scope changes."
       ],
       "context_links": [
         {
@@ -19,6 +19,13 @@
           "label": "Advisory review and enforcement",
           "target": "docs/engineering/dependencies.md",
           "relevance": "Records exposure, upstream constraints and expiry."
+        },
+        {
+          "kind": "file",
+          "label": "Exception list and audit wrapper",
+          "target": "xtask/src/policy.rs",
+          "locator": "exceptions",
+          "relevance": "The advisory, exact version, review and expiry dates and task the audit checks."
         }
       ],
       "acceptance_criteria": [
@@ -47,7 +54,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Expires exclusively on 2026-12-18; UTC expiry is enforced by the audit wrapper. Review sooner for new security information, distribution or font-input scope changes."
+        "RUSTSEC-2024-0436 on paste 1.0.15, a build-time proc macro reached through metal and wgpu-hal, reviewed 2026-09-19 and expiring exclusively on 2026-12-18 (UTC), as `exceptions()` in xtask/src/policy.rs records. The audit wrapper enforces the expiry, the exact resolved version and registry source, a review window of at most 90 days and that this task stays open. Review sooner for new security information or a change to the pinned Iced, wgpu or Metal stack."
       ],
       "context_links": [
         {
@@ -55,6 +62,13 @@
           "label": "Advisory review and enforcement",
           "target": "docs/engineering/dependencies.md",
           "relevance": "Records exposure, upstream constraints and expiry."
+        },
+        {
+          "kind": "file",
+          "label": "Exception list and audit wrapper",
+          "target": "xtask/src/policy.rs",
+          "locator": "exceptions",
+          "relevance": "The advisory, exact version, review and expiry dates and task the audit checks."
         }
       ],
       "acceptance_criteria": [
