@@ -253,34 +253,93 @@ impl GainMap {
                 "DNG GainMap point outside active image",
             ));
         }
-        if lx < self.area.x as f64
-            || ly < self.area.y as f64
-            || lx >= (self.area.x + self.area.width) as f64
-            || ly >= (self.area.y + self.area.height) as f64
-            || channel < self.plane as usize
-            || channel >= (self.plane + self.planes) as usize
-            || !(ly as u32 - self.area.y).is_multiple_of(self.row_pitch)
-            || !(lx as u32 - self.area.x).is_multiple_of(self.col_pitch)
-        {
+        if !self.covers(channel) {
             return Ok(1.0);
+        }
+        let (Some(row), Some(column)) = (self.row_taps(ly, active), self.column_taps(lx, active))
+        else {
+            return Ok(1.0);
+        };
+        Ok(self.interpolate(row, column, channel))
+    }
+
+    /// Whether the map corrects `channel`; every other channel keeps a gain of 1.0.
+    fn covers(&self, channel: usize) -> bool {
+        channel >= self.plane as usize && channel < (self.plane + self.planes) as usize
+    }
+
+    /// The map rows that weigh active-local pixel row `ly`, or `None` where the map leaves that
+    /// row at a gain of 1.0. It depends on the row alone.
+    fn row_taps(&self, ly: f64, active: RawRect) -> Option<Taps> {
+        if ly < self.area.y as f64
+            || ly >= (self.area.y + self.area.height) as f64
+            || !(ly as u32 - self.area.y).is_multiple_of(self.row_pitch)
+        {
+            return None;
         }
         // DNG map coordinates are normalized over the entire stage image,
         // including the 0.5 pixel-center offset. Clamp at map borders.
         let fy = (((ly + 0.5) / active.height as f64) - self.origin[0]) / self.spacing[0];
+        Some(Taps::clamped(fy, self.rows))
+    }
+
+    /// The map columns that weigh active-local pixel column `lx`, or `None` where the map leaves
+    /// that column at a gain of 1.0. It depends on the column alone.
+    fn column_taps(&self, lx: f64, active: RawRect) -> Option<Taps> {
+        if lx < self.area.x as f64
+            || lx >= (self.area.x + self.area.width) as f64
+            || !(lx as u32 - self.area.x).is_multiple_of(self.col_pitch)
+        {
+            return None;
+        }
         let fx = (((lx + 0.5) / active.width as f64) - self.origin[1]) / self.spacing[1];
-        let fy = fy.clamp(0.0, (self.rows - 1) as f64);
-        let fx = fx.clamp(0.0, (self.cols - 1) as f64);
-        let y0 = fy.floor() as usize;
-        let x0 = fx.floor() as usize;
-        let y1 = (y0 + 1).min(self.rows - 1);
-        let x1 = (x0 + 1).min(self.cols - 1);
-        let wy = fy - y0 as f64;
-        let wx = fx - x0 as f64;
+        Some(Taps::clamped(fx, self.cols))
+    }
+
+    /// Every active row's and every active column's taps, in active-local order: what
+    /// [`Self::gain`] derives per pixel, derived once per stage. Each vector is bounded by one
+    /// side of the active area, at most `MAX_SIDE` entries.
+    fn active_taps(&self, active: RawRect) -> (Vec<Option<Taps>>, Vec<Option<Taps>>) {
+        let rows = (0..active.height)
+            .map(|ly| self.row_taps(ly as f64, active))
+            .collect();
+        let columns = (0..active.width)
+            .map(|lx| self.column_taps(lx as f64, active))
+            .collect();
+        (rows, columns)
+    }
+
+    /// The bilinear gain of `channel` between one row's and one column's taps.
+    fn interpolate(&self, row: Taps, column: Taps, channel: usize) -> f64 {
+        let (y0, y1, wy) = (row.near, row.far, row.weight);
+        let (x0, x1, wx) = (column.near, column.far, column.weight);
         let at = |row: usize, col: usize| -> f64 {
             self.values[(row * self.cols + col) * self.map_planes + channel] as f64
         };
-        Ok((at(y0, x0) * (1.0 - wx) + at(y0, x1) * wx) * (1.0 - wy)
-            + (at(y1, x0) * (1.0 - wx) + at(y1, x1) * wx) * wy)
+        (at(y0, x0) * (1.0 - wx) + at(y0, x1) * wx) * (1.0 - wy)
+            + (at(y1, x0) * (1.0 - wx) + at(y1, x1) * wx) * wy
+    }
+}
+
+/// One map axis's bilinear taps for one pixel row or column: the map index at or before the
+/// pixel's map coordinate, the next one (clamped at the map's edge) and the next one's weight.
+#[derive(Debug, Clone, Copy)]
+struct Taps {
+    near: usize,
+    far: usize,
+    weight: f64,
+}
+
+impl Taps {
+    /// The taps of map coordinate `f` on an axis of `count` map points, clamped to the map.
+    fn clamped(f: f64, count: usize) -> Self {
+        let f = f.clamp(0.0, (count - 1) as f64);
+        let near = f.floor() as usize;
+        Self {
+            near,
+            far: (near + 1).min(count - 1),
+            weight: f - near as f64,
+        }
     }
 }
 
@@ -628,27 +687,45 @@ impl DngCorrection {
         // warp, then reused across all channels/stages. Gain-only/no-op recipes
         // allocate no frame scratch. The parent frame's pixel limit bounds it.
         let mut scratch = Vec::new();
+        let first = self.active.y as usize * width;
+        let left = self.active.x as usize;
         for stage in &self.stages {
+            // A GainMap's taps depend on the row alone or the column alone: derive them once per
+            // stage, then weigh each pixel of each channel by the same expression as `gain`.
+            let taps = match stage {
+                Stage3::Gain(map) => Some(map.active_taps(self.active)),
+                _ => None,
+            };
             for channel in 0..3 {
                 let plane = &mut rgb.data[channel * n..(channel + 1) * n];
                 match stage {
-                    Stage3::Gain(_) | Stage3::Vignette(_) => {
-                        let first = self.active.y as usize * width;
+                    Stage3::Gain(map) => {
+                        let (row_taps, column_taps) = taps.as_ref().unwrap();
+                        let covered = map.covers(channel);
                         let rows = &mut plane[first..first + area_h * width];
                         correction_rows(rows, width, parallel, cancel, |yy, row| {
-                            let y = self.active.y as usize + yy;
-                            let left = self.active.x as usize;
-                            for (xx, pixel) in row[left..left + area_w].iter_mut().enumerate() {
-                                let x = self.active.x as usize + xx;
-                                let gain = match stage {
-                                    Stage3::Gain(map) => {
-                                        map.gain(x as f64, y as f64, channel, self.active)?
+                            let row_taps = row_taps[yy];
+                            for (pixel, column) in
+                                row[left..left + area_w].iter_mut().zip(column_taps)
+                            {
+                                let gain = match (covered, row_taps, *column) {
+                                    (true, Some(row), Some(column)) => {
+                                        map.interpolate(row, column, channel)
                                     }
-                                    Stage3::Vignette(radial) => radial
-                                        .gain(xx as f64, yy as f64, area_w, area_h)
-                                        .map_err(opcode_error)?,
-                                    Stage3::Warp(_) => unreachable!(),
+                                    _ => 1.0,
                                 };
+                                *pixel = (*pixel as f64 * gain) as f32;
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    Stage3::Vignette(radial) => {
+                        let rows = &mut plane[first..first + area_h * width];
+                        correction_rows(rows, width, parallel, cancel, |yy, row| {
+                            for (xx, pixel) in row[left..left + area_w].iter_mut().enumerate() {
+                                let gain = radial
+                                    .gain(xx as f64, yy as f64, area_w, area_h)
+                                    .map_err(opcode_error)?;
                                 *pixel = (*pixel as f64 * gain) as f32;
                             }
                             Ok(())

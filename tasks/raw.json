@@ -224,7 +224,7 @@
     {
       "id": "TASK-004",
       "description": "Precompute the DNG GainMap's row and column weights once per row and column instead of recomputing them for every pixel and channel.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed. This is now the Air 2S's largest development stage, since pooled RCD already made the native demosaic itself fast.",
