@@ -788,6 +788,9 @@ pub struct Options<'a> {
     /// Move the scrollable on each paced burst tick; kept explicit so the fixed-view burst script
     /// can also run against the pre-viewport binary for a like-for-like baseline.
     pub moving_pan: bool,
+    /// Paint mode only: show the selected mask's tint while the stroke is painted, so each drafted
+    /// job fills the overlay's coverage grid beside its frame.
+    pub mask_overlay: bool,
 }
 
 fn zoom_step(options: &Options) -> Option<script::Step> {
@@ -825,25 +828,40 @@ fn basic_precondition() -> script::Step {
 /// choice, and the same figure, the `mask-range` scenario's paced stroke makes. Anything shorter
 /// measures the desktop's coalescing instead of the gesture.
 const PAINT_INTERVAL_MS: u64 = 24;
-/// The brush, in mask-space units and `0..100`: a hard edge, so the profile costs one compare rather
-/// than a `smooth`, and a size in the middle of the declared range.
+/// The brush, in mask-space units and `0..100`: a size in the middle of the declared range and the
+/// panel's own default feather, the brush a person paints with. A feathered edge is the ramp the
+/// proxy phase point samples; a hard edge (feather 0) is narrower than two proxy pixels, so it would
+/// force the 2 × 2 supersample of the mask field on every frame and measure that instead.
 const PAINT_SIZE: f64 = 0.06;
-const PAINT_FEATHER: f64 = 0.0;
+const PAINT_FEATHER: f64 = 50.0;
 /// The exposure the one masked colour layer holds, in EV. Non-neutral, so the layer exists and its
 /// unit runs on every frame the stroke draws.
 const PAINT_EV: f64 = 0.6;
+/// How many positions the measured stroke paints when `--samples` does not say: hundreds, so a cost
+/// that grows with the length of the path already drawn shows between the stroke's early and late
+/// positions.
+pub const PAINT_POSITIONS: usize = 400;
+/// The most positions one paint run takes: the stroke's real time, `PAINT_POSITIONS_MAX ×
+/// PAINT_INTERVAL_MS`, stays well inside the editor's 60 s scripted-evidence deadline.
+const PAINT_POSITIONS_MAX: usize = 1000;
 
-/// The measured stroke's path: a straight sweep across the middle of the frame, in normalized
-/// content coordinates, one position per paced interval.
+/// The measured stroke's path: a sine across the frame, in normalized content coordinates, one
+/// position per paced interval.
 ///
-/// A straight path is deliberate. The measurement is the round trip from one position to the frame
-/// carrying it, and a path that wanders changes the component's rectangle between positions, which
-/// would put the growth of the bounds into a figure about latency.
+/// It is curved on purpose. The stroke's decimated path then keeps positions along its whole
+/// length — a straight sweep decimates to its two ends — so the work that is proportional to the
+/// path already drawn (its decimation, validation, capture, hashing and index) grows along the
+/// stroke as it does under a hand. It advances monotonically in `x` exactly as the straight sweep
+/// did, so the component's rectangle grows the same way along the stroke, and its amplitude keeps
+/// it inside the frame.
 fn paint_path(positions: usize) -> Vec<[f64; 2]> {
     (0..positions)
         .map(|index| {
             let t = index as f64 / (positions.max(2) - 1) as f64;
-            [0.2 + 0.6 * t, 0.5]
+            [
+                0.2 + 0.8 * t,
+                0.5 + 0.2 * (std::f64::consts::TAU * 2.5 * t).sin(),
+            ]
         })
         .collect()
 }
@@ -854,9 +872,17 @@ fn paint_path(positions: usize) -> Vec<[f64; 2]> {
 /// The seeding stroke is what creates the mask and its `Brush 1`, because a brush declares no
 /// geometry and therefore has no `mask.create-brush` to call; the mask it makes is the one that
 /// opens, so the Exposure slider under the component list binds to it with nothing to name it by.
-fn paint_precondition() -> Vec<script::Step> {
+fn paint_precondition(options: &Options) -> Vec<script::Step> {
+    // With `--mask-overlay`, the selected mask's tint is on while the stroke is painted, so every
+    // drafted job also fills the overlay's coverage grid.
+    let workspace = WorkspaceStep::default().mode("mask");
+    let workspace = if options.mask_overlay {
+        workspace.mask_overlay("tint")
+    } else {
+        workspace
+    };
     vec![
-        script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+        script::Step::Workspace(workspace),
         script::Step::Mask(MaskStep::Brush(BrushStep {
             size: Some(PAINT_SIZE),
             feather: Some(PAINT_FEATHER),
@@ -891,7 +917,7 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
     if options.basic {
         steps.push(basic_precondition());
     }
-    steps.extend(paint_precondition());
+    steps.extend(paint_precondition(options));
     steps.extend(zoom_step(options));
     steps.push(script::Step::Mask(MaskStep::Stroke {
         points: path,
@@ -1350,6 +1376,9 @@ fn viewport(
 #[derive(Clone, Debug)]
 struct PaintPhaseSample {
     generation: u64,
+    /// How many positions the stroke had captured when the `draft.set` behind this frame went,
+    /// which is how far along the stroke the frame is.
+    positions: Option<usize>,
     phase: &'static str,
     proxy: bool,
     /// When the frame was presented, on the run's own clock.
@@ -1389,7 +1418,7 @@ fn paced_stroke_phase_samples(
 ) -> Result<(usize, Vec<PaintPhaseSample>)> {
     let events = paced_stroke_events(events, positions)?;
     let mut pending: Option<f64> = None;
-    let mut inputs: Vec<(f64, u64, [f64; 4])> = Vec::new();
+    let mut inputs: Vec<(f64, u64, [f64; 4], Option<usize>)> = Vec::new();
     for event in events {
         match event["event"].as_str() {
             Some("mask_draft_set") => pending = Some(elapsed(event)?),
@@ -1400,6 +1429,9 @@ fn paced_stroke_phase_samples(
                 let generation = event["detail"]["generation"]
                     .as_u64()
                     .ok_or("A mask draft preview named no generation")?;
+                let positions = event["detail"]["positions"]
+                    .as_u64()
+                    .and_then(|positions| usize::try_from(positions).ok());
                 let legs = &event["detail"]["round_trip_ms"];
                 let legs = [
                     "executor_wait",
@@ -1417,7 +1449,7 @@ fn paced_stroke_phase_samples(
                 let legs: [f64; 4] = legs
                     .try_into()
                     .map_err(|_| "A mask draft preview has an invalid owner timing count")?;
-                inputs.push((sent, generation, legs));
+                inputs.push((sent, generation, legs, positions));
             }
             _ => {}
         }
@@ -1432,9 +1464,9 @@ fn paced_stroke_phase_samples(
         let Some(generation) = displayed["detail"]["generation"].as_u64() else {
             continue;
         };
-        let Some((sent, _, owner_legs)) = inputs
+        let Some((sent, _, owner_legs, positions)) = inputs
             .iter()
-            .find(|(_, held, _)| *held == generation)
+            .find(|(_, held, _, _)| *held == generation)
             .copied()
         else {
             continue;
@@ -1470,6 +1502,7 @@ fn paced_stroke_phase_samples(
             received_ms - sent - owner_round_trip_ms - queue_wait_ms - worker_render_ms;
         samples.push(PaintPhaseSample {
             generation,
+            positions,
             phase,
             proxy,
             displayed_ms,
@@ -1523,6 +1556,76 @@ fn stroke_press(
         .reduce(f64::min)
         .map(|at| at - press);
     Ok((first_set - press, first_frame))
+}
+
+/// Every paced position's own wait for the screen: from its `mask_stroke_position`, logged in the
+/// update that hands it to the desktop, to the first of the stroke's frames presented after it whose
+/// `draft.set` already carried it (the frame's `positions` reach past the position's index).
+///
+/// It is timed from the input rather than from a `draft.set`, so it counts a position however the
+/// desktop gets it to the owner, and a position whose own frame was superseded is answered by the
+/// newer frame that carries it, which is what a hand sees. Returns `(index, milliseconds)` for every
+/// position some presented frame carried.
+fn position_latencies(
+    events: &[Value],
+    positions: usize,
+    samples: &[PaintPhaseSample],
+) -> Result<Vec<(usize, f64)>> {
+    let events = paced_stroke_events(events, positions)?;
+    let mut presented: Vec<(f64, usize)> = samples
+        .iter()
+        .filter_map(|sample| Some((sample.displayed_ms, sample.positions?)))
+        .collect();
+    presented.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut latencies = Vec::new();
+    for event in events
+        .iter()
+        .filter(|event| event["event"] == json!("mask_stroke_position"))
+    {
+        let index = event["detail"]["index"]
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or("A stroke position carries no index")?;
+        let at = elapsed(event)?;
+        if let Some((shown, _)) = presented
+            .iter()
+            .find(|(shown, carried)| *shown >= at && *carried > index)
+        {
+            latencies.push((index, shown - at));
+        }
+    }
+    Ok(latencies)
+}
+
+/// How long each of the stroke's presented frames waited for its mask overlay: from its
+/// `preview_displayed` to the `mask_overlay` of the same generation, which is logged in the update
+/// that hands the grid to the presenter. Empty when no overlay was asked for.
+fn overlay_lags(events: &[Value], samples: &[PaintPhaseSample]) -> Result<Vec<f64>> {
+    let mut lags = Vec::new();
+    for sample in samples {
+        let overlay = events.iter().find(|event| {
+            event["event"] == json!("mask_overlay")
+                && event["detail"]["generation"].as_u64() == Some(sample.generation)
+        });
+        if let Some(overlay) = overlay {
+            lags.push(elapsed(overlay)? - sample.displayed_ms);
+        }
+    }
+    Ok(lags)
+}
+
+/// Whether a frame belongs to the stroke's first or last quarter, by how many positions its
+/// `draft.set` carried: the split that shows whether a position's cost grows with the path already
+/// drawn.
+fn stroke_quarter(positions: Option<usize>, total: usize) -> Option<&'static str> {
+    let positions = positions?;
+    if positions * 4 <= total {
+        Some("early")
+    } else if positions * 4 > total * 3 {
+        Some("late")
+    } else {
+        None
+    }
 }
 
 /// One paced stroke's input-to-presented-frame samples, paired out of a run's own events.
@@ -1579,12 +1682,15 @@ pub fn paced_stroke_latencies(events: &[Value]) -> Result<(usize, Vec<f64>)> {
 /// `mask_draft_preview` rather than `slider_draft_preview`.
 fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     ensure(
-        (2..=48).contains(&options.samples),
-        "Paint samples must be 2..48 positions; a stroke of one position has no path and the script takes at most 64 steps",
+        (2..=PAINT_POSITIONS_MAX).contains(&options.samples),
+        format!(
+            "Paint samples must be 2..{PAINT_POSITIONS_MAX} positions; a stroke of one position has no path, and the stroke's real time must stay inside the editor's scripted-evidence deadline"
+        ),
     )?;
-    // The paced stroke itself takes samples × interval of real time on top of the editor's own
-    // 25 s evidence deadline; allow generously for both plus the launch wrapper.
-    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
+    // The paced stroke itself takes samples × interval of real time on top of the launch and the
+    // setup steps; allow generously for both plus the launch wrapper.
+    let stroke = Duration::from_millis(PAINT_INTERVAL_MS * options.samples as u64);
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90) + stroke)?;
     run.check(|run| paint(run, options))
 }
 
@@ -1595,7 +1701,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let source_hash = hash(&source)?;
     let path = paint_path(options.samples);
 
-    let steps = paint_script(options, path.clone());
+    let steps = paint_script(options, path);
     let load_start = launch::load_average(root);
     let gesture = gesture_launch(
         out,
@@ -1706,6 +1812,56 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "ms",
         press_to_frame,
     ));
+    let carried = position_latencies(&events, options.samples, &phase_samples)?;
+    rows.push(stats::row(
+        "position_to_presented_frame",
+        "ms",
+        carried.iter().map(|(_, ms)| *ms),
+    ));
+    // The stroke's first and last quarters side by side: a cost proportional to the path already
+    // drawn shows as a late row above its early one.
+    for quarter in ["early", "late"] {
+        rows.push(stats::row(
+            &format!("{quarter}_position_to_presented_frame"),
+            "ms",
+            carried
+                .iter()
+                .filter(|(index, _)| {
+                    stroke_quarter(Some(index + 1), options.samples) == Some(quarter)
+                })
+                .map(|(_, ms)| *ms),
+        ));
+        let in_quarter = || {
+            phase_samples.iter().filter(move |sample| {
+                stroke_quarter(sample.positions, options.samples) == Some(quarter)
+            })
+        };
+        let quartered: [(&str, Phase); 4] = [
+            ("input_to_presented_frame", |s| s.input_to_presented_ms),
+            ("draft_set", |s| s.draft_set_ms),
+            ("preview_job_planning", |s| s.preview_job_ms),
+            ("preview_worker_render", |s| s.worker_render_ms),
+        ];
+        for (metric, phase) in quartered {
+            rows.push(stats::row(
+                &format!("{quarter}_{metric}"),
+                "ms",
+                in_quarter().map(phase),
+            ));
+        }
+    }
+    let overlay_lag = overlay_lags(&events, &phase_samples)?;
+    if options.mask_overlay {
+        ensure(
+            !overlay_lag.is_empty(),
+            "The run showed the mask overlay but no frame of the stroke drew its grid",
+        )?;
+    }
+    rows.push(stats::row(
+        "presented_frame_to_mask_overlay",
+        "ms",
+        overlay_lag.iter().copied(),
+    ));
     rows.extend(resource_rows(&usage, last));
 
     let mut result = json!({
@@ -1721,7 +1877,8 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "full_basic_layer":options.basic,
         "mode":"paint",
         "samples":options.samples,
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache. One brush stroke of {} positions is handed to the desktop one per {} ms in real time, so the first tick presses, each later one moves and the last releases: one paced step is still one stroke and one history entry. Each position is its own mask draft.set, preview job and displayed frame, paired by the generation mask_draft_preview carries. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source; it is not display scanout.", options.samples, PAINT_INTERVAL_MS),
+        "mask_overlay":if options.mask_overlay {"tint"} else {"off"},
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. One curved brush stroke of {} positions is handed to the desktop one per {} ms in real time, so the first tick presses, each later one moves and the last releases: one paced step is still one stroke and one history entry. Each mask draft.set is paired with its preview job and displayed frame by the generation mask_draft_preview carries, and each position with the first presented frame whose draft.set carried it. The early_ and late_ rows are the stroke's first and last quarters by the positions a frame's draft.set carried. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source; it is not display scanout.", options.samples, PAINT_INTERVAL_MS),
         "recipe":{
             "masks":masks.len(),
             "components":components,
@@ -1730,11 +1887,13 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "note":"One brush mask of one component and one masked Basic exposure layer: the bare recipe, stated because the figure this mode replaces was taken on four masked colour layers, three of whose masks hold a component that reads pixels and therefore bounds the whole stage.",
         },
         "brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,"erase":false,
-            "exposure_ev":PAINT_EV},
+            "exposure_ev":PAINT_EV,
+            "note":"Feathered, so the proxy phase point samples the mask field; a hard edge would force its 2 × 2 supersample."},
         "stroke":{
             "interval_ms":PAINT_INTERVAL_MS,
             "positions":options.samples,
-            "path":path,
+            "path":"a sine across the frame: x = 0.2 + 0.8t, y = 0.5 + 0.2 sin(5πt), t in 0..1",
+            "positions_carried_to_the_screen":carried.len(),
             "inputs_that_queued_a_preview":queued,
             "displayed":latencies.len(),
             "superseded":queued.saturating_sub(latencies.len()),
@@ -2854,6 +3013,7 @@ mod tests {
                             mask,
                             zoom,
                             moving_pan,
+                            mask_overlay: false,
                         };
                         let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                         if let Some(zoom) = zoom {
@@ -2927,6 +3087,7 @@ mod tests {
                             mask,
                             zoom: Some(zoom),
                             moving_pan: false,
+                            mask_overlay: false,
                         };
                         let tag =
                             format!("crop{}-mask{mask}-basic{basic}-zoom{zoom}", crop.is_some());
@@ -3064,6 +3225,52 @@ mod tests {
         assert_eq!(sample.input_to_presented_ms, 15.0);
     }
 
+    /// A position is answered by the first presented frame whose `draft.set` already carried it,
+    /// so one whose own frame was superseded is answered by the newer frame that carries it; the
+    /// stroke's quarters are read from the positions a frame carried; and each frame's overlay lag
+    /// is its own generation's.
+    #[test]
+    fn a_position_waits_for_the_first_frame_that_carries_it() {
+        let events = vec![
+            json!({"event":"script_step","elapsed_ms":0.0,"detail":{"request":{"mask":{"stroke":{
+                "interval_ms":24,"points":[[0.2,0.5],[0.3,0.5],[0.4,0.5],[0.5,0.5]]
+            }}}}}),
+            json!({"event":"mask_stroke_position","elapsed_ms":10.0,"detail":{"index":0}}),
+            json!({"event":"mask_stroke_position","elapsed_ms":34.0,"detail":{"index":1}}),
+            json!({"event":"mask_stroke_position","elapsed_ms":58.0,"detail":{"index":2}}),
+            json!({"event":"mask_stroke_position","elapsed_ms":82.0,"detail":{"index":3}}),
+            json!({"event":"mask_overlay","elapsed_ms":24.0,"detail":{"generation":1}}),
+            json!({"event":"mask_overlay","elapsed_ms":99.0,"detail":{"generation":4}}),
+        ];
+        let sample = |generation, positions, displayed_ms| PaintPhaseSample {
+            generation,
+            positions: Some(positions),
+            phase: "proxy",
+            proxy: true,
+            displayed_ms,
+            input_to_presented_ms: 0.0,
+            owner_round_trip_ms: 0.0,
+            executor_wait_ms: 0.0,
+            draft_set_ms: 0.0,
+            preview_job_ms: 0.0,
+            return_to_queue_ms: 0.0,
+            queue_wait_ms: 0.0,
+            worker_render_ms: 0.0,
+            before_worker_result_ms: 0.0,
+            result_to_surface_ms: 0.0,
+        };
+        // Position 2's own frame was superseded: position 3's frame, which carried both, is the
+        // first to show it.
+        let samples = [sample(1, 1, 20.0), sample(2, 2, 44.0), sample(4, 4, 95.0)];
+        let latencies = position_latencies(&events, 4, &samples).expect("paired positions");
+        assert_eq!(latencies, vec![(0, 10.0), (1, 10.0), (2, 37.0), (3, 13.0)]);
+        assert_eq!(overlay_lags(&events, &samples).unwrap(), vec![4.0, 4.0]);
+        assert_eq!(stroke_quarter(Some(1), 4), Some("early"));
+        assert_eq!(stroke_quarter(Some(2), 4), None);
+        assert_eq!(stroke_quarter(Some(4), 4), Some("late"));
+        assert_eq!(stroke_quarter(None, 4), None);
+    }
+
     #[test]
     fn a_strokes_press_is_timed_to_its_first_set_and_its_first_frame() {
         let events = vec![
@@ -3079,6 +3286,7 @@ mod tests {
         ];
         let sample = |displayed_ms| PaintPhaseSample {
             generation: 1,
+            positions: Some(1),
             phase: "proxy",
             proxy: true,
             displayed_ms,
