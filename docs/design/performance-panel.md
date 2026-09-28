@@ -141,7 +141,7 @@ At one sample a second, a job shorter than about a second may never be seen runn
 - **Full-frame allocations:** none. The board holds at most 80 small entries; the desktop keeps 60 samples of a few integers.
 - **Point queries:** none added.
 - **Owner thread:** `resources.read` (system calls and IORegistry reads, measured) and `activity.list` (one lock and a copy). No frame work.
-- **Desktop messages:** a tick every second while the section is expanded, one owner task per tick, and a re-derivation of the state panel; no `asset.state`, `history.list`, preview job or upload.
+- **Desktop messages:** a tick every second while the section is expanded, one owner task per tick, and a derivation of the workspace; no `asset.state`, `history.list`, preview job or upload.
 - **Timers:** one, gated on the section being expanded and the state panel shown; its interval is the sparkline's resolution. Its cost is measured as idle CPU with the section expanded and collapsed.
 - **Timing:** `editor-latency` Exposure drag before and after, since every preview job now begins and finishes one activity.
 

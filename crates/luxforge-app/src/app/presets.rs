@@ -48,7 +48,7 @@ impl Editor {
             PresetMessage::Check { label, checked } => {
                 self.preset_form.checked.insert(label, checked);
             }
-            PresetMessage::Cancel => *self.preset_form = PresetForm::default(),
+            PresetMessage::Cancel => self.preset_form = PresetForm::default(),
             PresetMessage::Create => {
                 if self.presets.pending {
                     return self.preset_refused("Waiting for the last preset request".into());
@@ -72,7 +72,7 @@ impl Editor {
                         let (name, group) = named(&change.result["preset"]);
                         self.adopt_change(*change);
                         self.status = format!("Saved preset \u{201c}{name}\u{201d} in {group}");
-                        *self.preset_form = PresetForm::default();
+                        self.preset_form = PresetForm::default();
                     }
                     Err(error) => {
                         // A duplicate name is the core's `conflict`, shown as it is, in the form
@@ -128,7 +128,7 @@ impl Editor {
                 self.settle_step(Settle::Presets);
             }
             PresetMessage::Delete(id) => {
-                *self.menu = None;
+                self.menu = None;
                 if self.presets.pending {
                     return self.preset_refused("Waiting for the last preset request".into());
                 }
@@ -152,7 +152,7 @@ impl Editor {
                 self.settle_step(Settle::Presets);
             }
             PresetMessage::CopyReport(id) => {
-                *self.menu = None;
+                self.menu = None;
                 return preset_report_task(self.owner.clone(), self.client, id);
             }
             PresetMessage::ReportRead(result) => match result {
@@ -163,7 +163,7 @@ impl Editor {
                 Err(error) => self.status = error,
             },
             PresetMessage::Export(id) => {
-                *self.menu = None;
+                self.menu = None;
                 if self.evidence.is_some() {
                     return Task::none();
                 }
@@ -222,10 +222,10 @@ impl Editor {
     /// Adopt a listing, and close a row menu whose preset it no longer holds.
     pub(crate) fn adopt_presets(&mut self, presets: Vec<PresetSummary>, sequence: u64) {
         self.presets.adopt(presets, sequence);
-        if let Some(MenuTarget::Preset(id)) = &*self.menu
+        if let Some(MenuTarget::Preset(id)) = &self.menu
             && self.presets.find(id).is_none()
         {
-            *self.menu = None;
+            self.menu = None;
         }
     }
 

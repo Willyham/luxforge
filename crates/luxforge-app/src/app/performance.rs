@@ -516,16 +516,17 @@ mod tests {
                 .iter()
                 .position(|entry| entry.label == label)
         };
+        let _ = editor.update(Message::Palette(PaletteMessage::Open));
         let show = index(&editor, "Show performance").expect("offered while collapsed");
         assert_eq!(
             editor.workspace.palette.entries[show].action,
             PaletteAction::TogglePerformance
         );
         assert!(index(&editor, "Hide performance").is_none());
-        let _ = editor.update(Message::Palette(PaletteMessage::Open));
         let _ = editor.update(Message::Palette(PaletteMessage::RunIndex(show)));
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.requested, 1);
+        let _ = editor.update(Message::Palette(PaletteMessage::Open));
         assert!(index(&editor, "Hide performance").is_some());
         finish(editor, catalog);
     }

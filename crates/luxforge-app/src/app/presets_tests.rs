@@ -5,7 +5,8 @@
 use super::{
     Boot, Editor,
     message::{
-        ActionMessage, MenuTarget, Message, PaletteAction, PresetMessage, SyncMessage, ViewMessage,
+        ActionMessage, MenuTarget, Message, PaletteAction, PaletteMessage, PresetMessage,
+        SyncMessage, ViewMessage,
     },
     tasks::{self, call},
 };
@@ -224,6 +225,9 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         "the settings, the name and the library identity, and nothing else"
     );
     // The palette entry runs the very message the row's click sends.
+    let _ = library
+        .editor
+        .update(Message::Palette(PaletteMessage::Open));
     let entry = library
         .editor
         .workspace
@@ -231,7 +235,11 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         .entries
         .iter()
         .find(|entry| entry.label == "Apply preset: Soft film")
+        .cloned()
         .expect("a palette entry");
+    let _ = library
+        .editor
+        .update(Message::Palette(PaletteMessage::Close));
     assert_eq!(
         entry.action,
         PaletteAction::Run {

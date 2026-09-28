@@ -52,7 +52,7 @@ impl Editor {
     /// panel makes, puts the menu away as a native menu does.
     pub(crate) fn close_mask_menu(&mut self) {
         if self.mask_menu_open() {
-            *self.menu = None;
+            self.menu = None;
         }
     }
 

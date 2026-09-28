@@ -61,11 +61,17 @@ pub(crate) struct PaletteEntry {
 pub(crate) struct PaletteModel {
     pub(crate) open: bool,
     pub(crate) query: String,
+    /// The entries matching the query, listed only while the palette is open.
     pub(crate) entries: Vec<PaletteEntry>,
     pub(crate) selected: usize,
 }
 
+/// The palette for these inputs. Closed, it is empty: only the open palette's field, rows and keys
+/// read it, so a closed palette costs a message nothing.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
+    if !inputs.palette_open {
+        return PaletteModel::default();
+    }
     let applicable: Vec<_> = inputs
         .modules
         .iter()

@@ -1,6 +1,7 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; after each message the view
-//! models whose inputs moved are derived again ([`state::Built`]), and the view renders those alone.
+//! models are derived again from the state it left ([`Workspace::derive`]), and the view renders
+//! them.
 //!
 //! This file holds the [`Editor`] state and the Iced entry points only. [`Message`] has one variant
 //! per seam, each carrying that seam's own message enum (declared together in `message.rs`), and
@@ -93,7 +94,6 @@ use crate::{
         histogram::{Analysis, Readout},
         presets::{PresetForm, PresetLibrary},
         tools,
-        tracked::Tracked,
     },
     view,
 };
@@ -174,10 +174,10 @@ pub(crate) struct Editor {
     pub(crate) verbose: bool,
     pub(crate) started: Instant,
     pub(crate) state: Option<EditorState>,
-    pub(crate) history: Tracked<HistoryPage>,
-    pub(crate) versions: Tracked<Vec<Version>>,
+    pub(crate) history: HistoryPage,
+    pub(crate) versions: Vec<Version>,
     /// Entries on the current undo-parent chain; other loaded entries are abandoned branches.
-    pub(crate) lineage: Tracked<HashSet<luxforge_core::EntryId>>,
+    pub(crate) lineage: HashSet<luxforge_core::EntryId>,
     /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
     pub(crate) lineage_floor: Option<u64>,
     pub(crate) display_entry: Option<luxforge_core::EntryId>,
@@ -327,7 +327,7 @@ pub(crate) struct Editor {
     pub(crate) own_requests: std::collections::VecDeque<String>,
     pub(crate) scale_factor: f32,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
-    pub(crate) modules: Tracked<Vec<ModuleDescriptor>>,
+    pub(crate) modules: Vec<ModuleDescriptor>,
     /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
     pub(crate) modules_ready: bool,
     /// Proof and diagnostic modules are listed only when the run asked for them.
@@ -337,9 +337,9 @@ pub(crate) struct Editor {
     /// hold it.
     pub(crate) gallery: Option<usize>,
     /// The text typed into each generated field, by (action id, parameter name).
-    pub(crate) fields: Tracked<Fields>,
+    pub(crate) fields: Fields,
     /// Local presentation state of generated controls; authoritative values stay in the recipe.
-    pub(crate) controls_ui: Tracked<tools::ControlsUi>,
+    pub(crate) controls_ui: tools::ControlsUi,
     pub(crate) curve_sample_sequence: u64,
     pub(crate) curve_sample_requested: BTreeMap<(String, String), u64>,
     pub(crate) curve_sample_requested_source:
@@ -368,15 +368,15 @@ pub(crate) struct Editor {
     /// Revisions are ordered only within this draft; a new draft starts at zero.
     pub(crate) displayed_draft_id: Option<luxforge_core::DraftId>,
     /// Sections the person collapsed or expanded; every other follows the default.
-    pub(crate) expanded: Tracked<BTreeMap<String, bool>>,
+    pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
-    pub(crate) recipe: Tracked<Option<RecipeDescription>>,
+    pub(crate) recipe: Option<RecipeDescription>,
     /// The current entry's layers, whichever entry is displayed: a section's edited dot follows the
     /// current entry, never a historical preview.
-    pub(crate) current_recipe: Tracked<Option<RecipeDescription>>,
+    pub(crate) current_recipe: Option<RecipeDescription>,
     /// The last `recipe.describe` for a displayed entry failed, so no rows will come for it.
     pub(crate) recipe_failed: bool,
-    pub(crate) menu: Tracked<Option<MenuTarget>>,
+    pub(crate) menu: Option<MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
@@ -402,7 +402,7 @@ pub(crate) struct Editor {
     pub(crate) mode_sync: Option<String>,
     /// The masks of the displayed entry, as `mask.list` last answered them. Read back with the
     /// recipe after every change, so the panel never shows a mask the stack no longer holds.
-    pub(crate) masks: Tracked<Option<luxforge_core::mask::commands::MaskListing>>,
+    pub(crate) masks: Option<luxforge_core::mask::commands::MaskListing>,
     /// The mask the Masks panel has open, and the component selected inside it. Per-client
     /// selection: it changes no recipe and is never sent.
     pub(crate) selected_mask: Option<luxforge_core::MaskId>,
@@ -415,7 +415,7 @@ pub(crate) struct Editor {
     /// View state of the same kind as the selection, and never sent.
     pub(crate) hovered_component: Option<luxforge_core::ComponentId>,
     /// Masks whose overlay the eye has hidden. A hidden mask still applies to the picture.
-    pub(crate) hidden_masks: Tracked<std::collections::HashSet<luxforge_core::MaskId>>,
+    pub(crate) hidden_masks: std::collections::HashSet<luxforge_core::MaskId>,
     /// The mode the next Add-component gesture will use.
     pub(crate) mask_mode: luxforge_core::ComponentMode,
     /// The brush the next stroke will be drawn with: per-client gesture state, never sent on its
@@ -460,25 +460,22 @@ pub(crate) struct Editor {
     /// What the desktop knows about every capability-declaring module: its last settings and
     /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
     /// the authoritative state; this is what was last read back.
-    pub(crate) capabilities: Tracked<CapabilityStore>,
+    pub(crate) capabilities: CapabilityStore,
     /// Every capability operation the update function started, in order, so a test can run
     /// exactly those through the owner and hand the answers back.
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
     /// The preset library as `preset.list` last answered it.
-    pub(crate) presets: Tracked<PresetLibrary>,
+    pub(crate) presets: PresetLibrary,
     /// The Presets section's create form.
-    pub(crate) preset_form: Tracked<PresetForm>,
+    pub(crate) preset_form: PresetForm,
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
-    /// The whole screen as plain data. After every message, only the sections whose inputs moved
-    /// are built again ([`state::Built`]).
+    /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
-    /// What each section of [`Self::workspace`] was last built from.
-    pub(crate) built: state::Built,
 }
 
 impl Editor {
@@ -551,12 +548,12 @@ impl Editor {
             verbose: config.wants_events(),
             started: Instant::now(),
             state: None,
-            history: Tracked::new(HistoryPage {
+            history: HistoryPage {
                 entries: Vec::new(),
                 next_before_sequence: None,
-            }),
-            versions: Tracked::default(),
-            lineage: Tracked::default(),
+            },
+            versions: Default::default(),
+            lineage: Default::default(),
             lineage_floor: None,
             display_entry: None,
             presented_entry: None,
@@ -620,12 +617,12 @@ impl Editor {
             api_sequence: 0,
             own_requests: std::collections::VecDeque::new(),
             scale_factor: 1.0,
-            modules: Tracked::default(),
+            modules: Default::default(),
             modules_ready: false,
             developer: config.developer,
             gallery: None,
-            fields: Tracked::default(),
-            controls_ui: Tracked::default(),
+            fields: Default::default(),
+            controls_ui: Default::default(),
             curve_sample_sequence: 0,
             curve_sample_requested: BTreeMap::new(),
             curve_sample_requested_source: BTreeMap::new(),
@@ -641,11 +638,11 @@ impl Editor {
             pending_reset: None,
             displayed_draft_revision: None,
             displayed_draft_id: None,
-            expanded: Tracked::default(),
-            recipe: Tracked::default(),
-            current_recipe: Tracked::default(),
+            expanded: Default::default(),
+            recipe: Default::default(),
+            current_recipe: Default::default(),
             recipe_failed: false,
-            menu: Tracked::default(),
+            menu: Default::default(),
             palette_open: false,
             palette_query: String::new(),
             palette_selected: 0,
@@ -660,12 +657,12 @@ impl Editor {
             crop_option: false,
             crop_space: false,
             mode_sync: None,
-            masks: Tracked::default(),
+            masks: Default::default(),
             selected_mask: None,
             pick_on_mask: false,
             selected_component: None,
             hovered_component: None,
-            hidden_masks: Tracked::default(),
+            hidden_masks: Default::default(),
             mask_mode: luxforge_core::ComponentMode::Add,
             brush: crate::mask_draft::NEUTRAL_BRUSH,
             brush_erase_held: false,
@@ -680,15 +677,14 @@ impl Editor {
             thumbnail_queue: thumbnails::ThumbnailQueue::default(),
             thumbnail_source: thumbnails::ThumbnailSource::default(),
             thumbnails: state::masks::MaskThumbnails::default(),
-            capabilities: Tracked::default(),
+            capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
-            presets: Tracked::default(),
-            preset_form: Tracked::default(),
+            presets: Default::default(),
+            preset_form: Default::default(),
             performance: performance::Sampler::open(),
             export: export::Exporting::default(),
             workspace: Workspace::default(),
-            built: state::Built::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -856,31 +852,11 @@ impl Editor {
         ])
     }
 
-    /// Bring the screen up to date with the state this message left behind: every section whose
-    /// inputs moved is built again, and every other one is kept as it is.
+    /// Bring the screen up to date with the state this message left behind: every region is
+    /// derived again from it.
     fn rederive(&mut self) {
         let mut workspace = std::mem::take(&mut self.workspace);
-        let mut built = std::mem::take(&mut self.built);
-        let stamps = state::Stamps {
-            modules: self.modules.stamp(),
-            history: self.history.stamp(),
-            versions: self.versions.stamp(),
-            lineage: self.lineage.stamp(),
-            recipe: self.recipe.stamp(),
-            current_recipe: self.current_recipe.stamp(),
-            masks: self.masks.stamp(),
-            hidden_masks: self.hidden_masks.stamp(),
-            fields: self.fields.stamp(),
-            controls: self.controls_ui.stamp(),
-            expanded: self.expanded.stamp(),
-            menu: self.menu.stamp(),
-            presets: self.presets.stamp(),
-            preset_form: self.preset_form.stamp(),
-            capabilities: self.capabilities.stamp(),
-            session: built.session_stamp(&self.session),
-        };
         let inputs = state::Inputs {
-            stamps,
             state: self.state.as_ref(),
             history: &self.history,
             versions: &self.versions,
@@ -896,13 +872,6 @@ impl Editor {
             editing: self.editing.as_ref(),
             dragging: self.dragging.as_ref(),
             expanded: &self.expanded,
-            slider_draft: self.slider_gesture().map(|slider| state::SliderDrafting {
-                action: &slider.action,
-                parameter: &slider.parameter,
-                conflicted: self
-                    .core_gesture()
-                    .is_some_and(|gesture| gesture.draft.conflicted),
-            }),
             gesture_conflicted: self.gesture_conflicted(),
             gesture: self.core_gesture().map(|gesture| gesture.kind.noun()),
             apply_refusal: self.release_refusal(),
@@ -969,9 +938,8 @@ impl Editor {
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
         };
-        workspace.refresh(&inputs, &mut built);
+        workspace.derive(&inputs);
         self.workspace = workspace;
-        self.built = built;
     }
 
     /// Hand one message to the seam that owns it. Routing only: each seam's own update function
@@ -1077,7 +1045,7 @@ impl Editor {
             slider_drafting: self.slider_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
-            export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),
+            export_menu_open: matches!(self.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(

@@ -154,12 +154,9 @@ impl Thumbnail {
     }
 }
 
-/// Every mask's thumbnail as the thumbnail worker last delivered them, by mask. `version` moves
-/// exactly when a delivered set differs from the one held, so the panel is derived again only
-/// then.
+/// Every mask's thumbnail as the thumbnail worker last delivered them, by mask.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MaskThumbnails {
-    pub(crate) version: u64,
     pub(crate) masks: Vec<(MaskId, Option<Thumbnail>)>,
 }
 

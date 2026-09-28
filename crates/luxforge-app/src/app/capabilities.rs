@@ -437,7 +437,7 @@ impl Editor {
     /// Start one owner round trip for a module. Nothing runs on the update loop but this. It reads
     /// the permissions list too while that list is open.
     pub(crate) fn capability_op(&mut self, module_id: &str, op: Operation) -> Task<Message> {
-        let state = self.capabilities.touch(module_id);
+        let state = self.capabilities.module_mut(module_id);
         state.pending += 1;
         let list = state.permissions_open;
         #[cfg(test)]
@@ -522,7 +522,7 @@ impl Editor {
             .collect();
         for module in stale {
             self.capabilities
-                .touch(&module)
+                .module_mut(&module)
                 .tasks
                 .retain(|_, run| run.asset.as_ref().is_none_or(|ran| ran == asset));
         }
@@ -569,7 +569,7 @@ impl Editor {
             Ok(revision) => self.capability_op(module_id, build(revision)),
             Err(reason) => {
                 self.capabilities
-                    .touch(module_id)
+                    .module_mut(module_id)
                     .errors
                     .insert(key, reason.clone());
                 self.status = reason;
@@ -587,14 +587,14 @@ impl Editor {
     fn capability_message(&mut self, message: CapabilityMessage) -> Task<Message> {
         match message {
             CapabilityMessage::Show { module_id, view } => {
-                let state = self.capabilities.touch(&module_id);
+                let state = self.capabilities.module_mut(&module_id);
                 state.view = view;
                 if view == CapabilityView::Status {
                     state.secret = None;
                 }
             }
             CapabilityMessage::TogglePermissions(module_id) => {
-                let state = self.capabilities.touch(&module_id);
+                let state = self.capabilities.module_mut(&module_id);
                 state.permissions_open = !state.permissions_open;
                 if !state.permissions_open {
                     state.permission_list = None;
@@ -610,7 +610,7 @@ impl Editor {
                 text,
             } => {
                 self.capabilities
-                    .touch(&module_id)
+                    .module_mut(&module_id)
                     .edits
                     .insert((profile, field), text);
             }
@@ -662,7 +662,7 @@ impl Editor {
                     }
                     Err(reason) => {
                         self.capabilities
-                            .touch(&module_id)
+                            .module_mut(&module_id)
                             .errors
                             .insert(key, reason.clone());
                         self.status = reason;
@@ -688,16 +688,16 @@ impl Editor {
                 profile,
                 field,
             } => {
-                self.capabilities.touch(&module_id).secret =
+                self.capabilities.module_mut(&module_id).secret =
                     Some(((profile, field), SecretText::default()));
             }
             CapabilityMessage::SecretText { module_id, text } => {
-                if let Some((_, typed)) = &mut self.capabilities.touch(&module_id).secret {
+                if let Some((_, typed)) = &mut self.capabilities.module_mut(&module_id).secret {
                     *typed = text;
                 }
             }
             CapabilityMessage::SecretCancel(module_id) => {
-                self.capabilities.touch(&module_id).secret = None;
+                self.capabilities.module_mut(&module_id).secret = None;
             }
             CapabilityMessage::SecretCommit(module_id) => {
                 let Some(((profile, field), value)) = self
@@ -729,10 +729,10 @@ impl Editor {
                 });
             }
             CapabilityMessage::ProfileAdapter { module_id, adapter } => {
-                self.capabilities.touch(&module_id).profile_adapter = Some(adapter);
+                self.capabilities.module_mut(&module_id).profile_adapter = Some(adapter);
             }
             CapabilityMessage::ProfileLabel { module_id, label } => {
-                self.capabilities.touch(&module_id).profile_label = label;
+                self.capabilities.module_mut(&module_id).profile_label = label;
             }
             CapabilityMessage::ProfileCreate(module_id) => {
                 let Some(adapters) = self
@@ -810,7 +810,7 @@ impl Editor {
                 profile,
             } => {
                 self.capabilities
-                    .touch(&module_id)
+                    .module_mut(&module_id)
                     .task_profiles
                     .insert(task, profile);
             }
@@ -825,7 +825,10 @@ impl Editor {
                             profile: profile.clone(),
                             phase: TaskPhase::Requesting,
                         };
-                        self.capabilities.touch(&module_id).tasks.insert(task, run);
+                        self.capabilities
+                            .module_mut(&module_id)
+                            .tasks
+                            .insert(task, run);
                         self.capability_op(&module_id, op)
                     }
                     Err(reason) => {
@@ -846,7 +849,7 @@ impl Editor {
                 };
             }
             CapabilityMessage::CopyTaskRequest { module_id, task } => {
-                *self.menu = None;
+                self.menu = None;
                 return match self.task_operation(&module_id, &task) {
                     Ok(Operation::RunTask {
                         task,
@@ -1001,7 +1004,7 @@ impl Editor {
                 "requests": sent,
             }),
         );
-        let state = self.capabilities.touch(&module_id);
+        let state = self.capabilities.module_mut(&module_id);
         state.pending = state.pending.saturating_sub(1);
         if let Some(settings) = settings {
             state.settings = Some(settings);
@@ -1072,13 +1075,13 @@ impl Editor {
                 {
                     run.phase = TaskPhase::Consent;
                 }
-                // The notice belongs to one module; opening it re-derives that module's section.
+                // The notice belongs to one module, and opening it shows in that module's section.
                 let previous = self.capabilities.consent.replace(OpenConsent {
                     consent: *consent,
                     retry: Some(*retry),
                 });
                 if let Some(previous) = previous {
-                    self.capabilities.touch(&previous.consent.module_id);
+                    self.capabilities.module_mut(&previous.consent.module_id);
                 }
             }
             Outcome::NotReady {
@@ -1129,7 +1132,7 @@ impl Editor {
 
     /// A tracked job reached a terminal status: a task's run takes its result or its error.
     fn job_finished(&mut self, module_id: &str, record: &JobRecord) {
-        let state = self.capabilities.touch(module_id);
+        let state = self.capabilities.module_mut(module_id);
         let id = record.job_id.as_str();
         for run in state.tasks.values_mut() {
             if run.phase != TaskPhase::Job(id.to_owned()) {
@@ -1172,7 +1175,7 @@ impl Editor {
                 Ok(record) => {
                     let finished = record.status.is_finished();
                     self.capabilities
-                        .touch(&module)
+                        .module_mut(&module)
                         .track(record.clone(), false);
                     if finished {
                         self.job_finished(&module, &record);
@@ -1183,7 +1186,7 @@ impl Editor {
                 }
                 Err(error) => {
                     // A job the owner no longer knows cannot be followed: stop polling it.
-                    let state = self.capabilities.touch(&module);
+                    let state = self.capabilities.module_mut(&module);
                     state.jobs.retain(|record| record.job_id.as_str() != job);
                     state.message = Some(format!("Job {job} could not be read: {error}"));
                     if !refresh.contains(&module) {

@@ -992,9 +992,9 @@ fn shift_m_toggles_the_overlay_and_o_still_means_thirds() {
 }
 
 /// Every generated mask control's message produces the request an independent JSON client sends,
-/// and a drag re-derives only the section that changed.
+/// and a drag changes only the section it drafts.
 #[test]
-fn a_mask_controls_request_matches_json_and_a_drag_rederives_one_section() {
+fn a_mask_controls_request_matches_json_and_a_drag_changes_one_section() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.draw_mask();
@@ -1043,29 +1043,22 @@ fn a_mask_controls_request_matches_json_and_a_drag_rederives_one_section() {
     assert_eq!(copied["params"]["mask"], json!(mask));
     assert_eq!(copied["params"]["component"], json!(component));
 
-    // A drag re-derives only the section that changed: every other section keeps its version.
-    let versions = |editor: &Editor| -> Vec<(String, u64)> {
-        editor
-            .workspace
-            .tools
-            .all()
-            .map(|section| (section.module_id.clone(), section.version))
-            .collect()
-    };
-    let before = versions(&masking.editor);
+    // A drag changes only the section it drafts: every other section is exactly as it was.
+    let sections = |editor: &Editor| editor.workspace.tools.all().cloned().collect::<Vec<_>>();
+    let before = sections(&masking.editor);
     let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.2);
-    let after = versions(&masking.editor);
+    let after = sections(&masking.editor);
     assert_eq!(before.len(), after.len());
     let moved: Vec<&str> = before
         .iter()
         .zip(after.iter())
-        .filter(|(before, after)| before.1 != after.1)
-        .map(|(before, _)| before.0.as_str())
+        .filter(|(before, after)| before != after)
+        .map(|(before, _)| before.module_id.as_str())
         .collect();
     assert_eq!(
         moved,
         vec!["luxforge.basic"],
-        "a drag re-derived more than the section it changed"
+        "a drag changed more than the section it drafts"
     );
 }
 
@@ -3711,7 +3704,7 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
         TypingTarget::RenameMask(mask.clone()),
     )));
     assert_eq!(
-        *masking.editor.menu, None,
+        masking.editor.menu, None,
         "choosing Rename puts the menu away"
     );
     let row = &masking.editor.workspace.masks.masks[0];
@@ -4023,7 +4016,7 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
         Modifiers::empty(),
         iced::event::Status::Ignored,
     );
-    assert_eq!(*masking.editor.menu, None);
+    assert_eq!(masking.editor.menu, None);
     assert!(masking.editor.mask_mode_active());
 
     // Every item is a kind the menu can start, labelled with its letter where it has one.
@@ -4050,7 +4043,7 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
     // `L` starts a linear while New mask is open.
     open(&mut masking, MenuTarget::NewMask);
     masking.key("l", Modifiers::empty());
-    assert_eq!(*masking.editor.menu, None);
+    assert_eq!(masking.editor.menu, None);
     assert_eq!(
         masking.editor.mask_shape().map(MaskDraft::kind),
         Some(LINEAR)
@@ -4126,7 +4119,7 @@ fn a_swatch_menu_removes_one_colour_with_the_request_it_copies() {
     };
     let expected = masking.request_for(&edit);
     masking.run(MaskMessage::Row(edit));
-    assert_eq!(*masking.editor.menu, None, "Remove puts the menu away");
+    assert_eq!(masking.editor.menu, None, "Remove puts the menu away");
     let (_, params) = masking.editor.last_mask_request.clone().unwrap();
     assert_eq!(identified(params), expected);
     assert_eq!(

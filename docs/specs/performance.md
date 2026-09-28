@@ -1182,6 +1182,71 @@ burst (before p95 162.8 ms, after 43.5 ms) and is kept for completeness. A job w
 its stack once at the proxy stage now, where the plan and the render each compiled it; that saves
 one `O(layers)` compile per proxy-phase job and is not separately timed.
 
+#### The workspace derivation per message
+
+The desktop derives every region of the workspace — title bar, state panel, canvas, Masks panel,
+tools panel, histogram, status bar, palette and the Performance section — after every message, with
+no per-region keys ([develop workspace](../design/develop-workspace.md#message-flow)). What
+that costs is the `detail.loop.last_rederive_ms` of `slider_draft_preview`: the `rederive` span of
+the update before that event's own, with a capability section's second derivation and the visible
+curves' sample requests inside it; `last_view_ms` is the `view()` of the same update. One sample per
+drafted input. Native Apple M4 Pro (14 cores), macOS 26.5.2 (25F84), Metal, a 2880 × 1800 window at
+2×, background hidden-window launches of release builds, `--locked` (Cargo.lock `a2642772…`), warm
+filesystem cache, the generated 24 MP and 60 MP JPEGs at Fit, Basic's exposure slider, and with
+`--mask` the same slider bound to a linear gradient. Three builds of the same tree: keyed (the
+region keys, `Tracked` stamps and per-section digests, SHA-256 `415770e3…`), bypassed (the same with
+every region key treated as moved, so every region is derived on every message while the tools
+panel's per-section digests still decide which sections are rebuilt, `6a16c4a0…`) and this change's
+(`814ee788…`, every region derived with no key or digest and the palette's entries built only while
+it is open). `editor-latency --mode drag` (30 inputs, 62 `slider_draft_preview` events a launch)
+and `--mode burst` (360 events a launch), each workload run keyed, other, other, keyed back to back,
+so every figure below pools two launches: 124 samples a drag cell and 720 a burst cell. The host
+was shared with other agents building throughout; the one-minute load at each round's start is
+given. Nearest-rank p50 / p95 in ms, `last_rederive_ms` then `last_view_ms`.
+
+| Drag, keyed against bypassed | Keyed | Bypassed |
+| --- | --- | --- |
+| 24 MP, load 21–33 | 0.017 / 0.156 · view 0.066 / 0.089 | 0.082 / 0.178 · view 0.064 / 0.077 |
+| 60 MP, load 21–33 | 0.025 / 0.099 · view 0.069 / 0.091 | 0.087 / 0.182 · view 0.066 / 0.090 |
+| 24 MP masked, load 21–33 | 0.030 / 0.235 · view 0.102 / 0.220 | 0.101 / 0.156 · view 0.098 / 0.130 |
+| 24 MP, repeated, load 11–15 | 0.030 / 0.261 · view 0.068 / 0.177 | 0.137 / 0.429 · view 0.072 / 0.152 |
+| 60 MP, repeated, load 11–15 | 0.017 / 0.130 · view 0.065 / 0.088 | 0.081 / 0.143 · view 0.067 / 0.083 |
+| 24 MP masked, repeated, load 11–15 | 0.017 / 0.100 · view 0.088 / 0.105 | 0.123 / 0.355 · view 0.106 / 0.249 |
+
+| Burst, keyed against bypassed, load 19–43 | Keyed | Bypassed |
+| --- | --- | --- |
+| 24 MP | 0.003 / 0.018 · view 0.078 / 0.227 | 0.110 / 0.322 · view 0.090 / 0.204 |
+| 60 MP | 0.005 / 0.027 · view 0.095 / 0.326 | 0.120 / 0.484 · view 0.143 / 0.670 |
+| 24 MP masked | 0.007 / 0.028 · view 0.185 / 1.084 | 0.117 / 0.416 · view 0.168 / 0.765 |
+
+| This change against keyed | Drag, load 14–18: keyed · this change | Burst, load 21–37: keyed · this change |
+| --- | --- | --- |
+| 24 MP | 0.052 / 0.192 · 0.116 / 0.270 | 0.008 / 0.029 · 0.109 / 0.580 |
+| 60 MP | 0.021 / 0.120 · 0.086 / 0.143 | 0.006 / 0.026 · 0.063 / 0.189 |
+| 24 MP masked | 0.028 / 0.368 · 0.095 / 0.219 | 0.007 / 0.026 · 0.048 / 0.157 |
+
+Deriving every region costs about 0.05 to 0.14 ms at p50 per message, against 0.003 to 0.05 ms with
+the keys. The p95 follows the host rather than the build: in drags the keyed build's own p95
+reached 0.24 to 0.37 ms in three of the nine keyed cells, and a launch whose derivation p95 is high
+has its `view()` inflated with it (the bypassed repeated 24 MP pair's second launch: derivation
+0.160 / 0.523, view 0.152 / 0.216, against 0.124 / 0.269 and 0.065 / 0.082 for the first). The
+quietest launches of this change's burst held p95 at 0.126 ms (60 MP) and 0.082 ms (masked); the
+busiest reached 0.68 ms. Bursts separate the builds cleanly, because between two paced inputs the
+keyed build derives nothing, and there the bypassed p95 passed 0.2 ms in every launch. Input to
+presented frame is unchanged by any of it: p50 7.7 to 9.5 ms for every build in every round, one
+frame of the 120 Hz display.
+
+Where the time goes, from a diagnostic build of this change that timed each region (not kept;
+drags and a burst of one launch each, load 28–31): outside a mask the tools panel takes 64 to 67%
+and dropping its previous model 7 to 11% more, and the Masks panel 16 to 21%; in the masked drag the
+tools panel takes 44% (and 8% to drop) and the Masks panel 43%; the canvas 1 to 7%; every other
+region 3% or less, the palette 0.1%. The tools panel's time is
+spread over its sections by the controls they build: in a burst the Presets section 33%, the colour
+mixer 32% and Basic 20%; in the masked drag Basic 62% and the mixer 34%. The tools panel reads
+almost every input the editor holds, so no one value keys it without the input tracking the keys
+were built on, and during a drag it is derived for every input anyway. The decision this informed
+is recorded in [decisions](../decisions.md#post-consolidation-review).
+
 ### Native viewport-region qualification
 
 The current release executable is SHA-256

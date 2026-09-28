@@ -17,7 +17,6 @@ pub(crate) mod status;
 pub(crate) mod testing;
 pub(crate) mod title;
 pub(crate) mod tools;
-pub(crate) mod tracked;
 
 use crate::{crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
@@ -26,10 +25,7 @@ use luxforge_core::{
     ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
 };
 use serde_json::{Map, Value};
-use std::{
-    collections::{BTreeMap, HashSet},
-    hash::{DefaultHasher, Hash, Hasher},
-};
+use std::collections::{BTreeMap, HashSet};
 
 /// The actor this desktop records on every request it sends, which is how its own history entries
 /// are told from another client's.
@@ -86,65 +82,6 @@ pub(crate) enum MenuTarget {
     Export,
 }
 
-/// The open slider gesture as the models read it: the control it drafts and whether its core draft
-/// is conflicted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct SliderDrafting<'a> {
-    pub(crate) action: &'a str,
-    pub(crate) parameter: &'a str,
-    pub(crate) conflicted: bool,
-}
-
-/// The stamps of the inputs too large to compare on every message: each moves whenever its value
-/// may have changed ([`tracked::Tracked`]), so a section built from them knows in one comparison
-/// whether to build again. The session is stamped by the editor, which compares it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Stamps {
-    pub(crate) modules: u64,
-    pub(crate) history: u64,
-    pub(crate) versions: u64,
-    pub(crate) lineage: u64,
-    pub(crate) recipe: u64,
-    pub(crate) current_recipe: u64,
-    pub(crate) masks: u64,
-    pub(crate) hidden_masks: u64,
-    pub(crate) fields: u64,
-    pub(crate) controls: u64,
-    pub(crate) expanded: u64,
-    pub(crate) menu: u64,
-    pub(crate) presets: u64,
-    pub(crate) preset_form: u64,
-    pub(crate) capabilities: u64,
-    pub(crate) session: u64,
-}
-
-#[cfg(test)]
-impl Stamps {
-    /// Stamps no section has been built from, so every section builds: what a derivation from
-    /// inputs nobody tracks — a test's scene — must do.
-    pub(crate) fn fresh() -> Self {
-        let stamp = tracked::stamp;
-        Self {
-            modules: stamp(),
-            history: stamp(),
-            versions: stamp(),
-            lineage: stamp(),
-            recipe: stamp(),
-            current_recipe: stamp(),
-            masks: stamp(),
-            hidden_masks: stamp(),
-            fields: stamp(),
-            controls: stamp(),
-            expanded: stamp(),
-            menu: stamp(),
-            presets: stamp(),
-            preset_form: stamp(),
-            capabilities: stamp(),
-            session: stamp(),
-        }
-    }
-}
-
 /// Why a start that needs the editable state is refused with no photograph open.
 pub(crate) const NO_PHOTOGRAPH: &str = "No photograph is open";
 /// Why a start that needs the editable state is refused while a history entry is previewed.
@@ -183,8 +120,6 @@ pub(crate) fn edit_refusal(
 
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
-    /// Whether the large inputs below may have changed since a section was last built.
-    pub(crate) stamps: Stamps,
     pub(crate) state: Option<&'a EditorState>,
     pub(crate) history: &'a HistoryPage,
     pub(crate) versions: &'a [Version],
@@ -210,8 +145,6 @@ pub(crate) struct Inputs<'a> {
     pub(crate) dragging: Option<&'a (String, String)>,
     /// Sections the person collapsed or expanded; everything else follows the default.
     pub(crate) expanded: &'a BTreeMap<String, bool>,
-    /// The open slider gesture, when a drafting control is being moved.
-    pub(crate) slider_draft: Option<SliderDrafting<'a>>,
     /// The open slider, mask or crop gesture's core draft is conflicted: something else committed
     /// since it was based, and its commit waits for Discard or Reapply.
     pub(crate) gesture_conflicted: bool,
@@ -327,8 +260,7 @@ pub(crate) struct Inputs<'a> {
     pub(crate) performance: &'a performance::PerformanceHistory,
 }
 
-/// The whole screen as plain data. The tools panel keeps its sections across derivations so an
-/// untouched module is not rebuilt.
+/// The whole screen as plain data, derived again after every message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Workspace {
     pub(crate) title: title::TitleBarModel,
@@ -344,329 +276,21 @@ pub(crate) struct Workspace {
     pub(crate) performance: performance::PerformanceModel,
 }
 
-/// What each section of the workspace was last built from, as one key per section: the stamps and
-/// the small values that section reads, hashed. A section whose key is unchanged is not built
-/// again, so a message that changed nothing a section shows costs that section one comparison. The
-/// Performance section keeps its own version and is not listed here.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Built {
-    title: Option<u64>,
-    panel: Option<u64>,
-    canvas: Option<u64>,
-    masks: Option<u64>,
-    tools: Option<u64>,
-    histogram: Option<u64>,
-    status: Option<u64>,
-    palette: Option<u64>,
-    /// The session the last derivation read and its stamp. The session is small, and the desktop
-    /// edits it in place as well as replacing it, so it is compared rather than tracked.
-    session: Option<(ClientSession, u64)>,
-    /// How many sections have been built, for tests that prove an unchanged message builds none.
-    #[cfg(test)]
-    pub(crate) builds: u64,
-}
-
-impl Built {
-    /// The session's stamp: the one it had, unless it differs from the session last read.
-    pub(crate) fn session_stamp(&mut self, session: &ClientSession) -> u64 {
-        match &self.session {
-            Some((seen, stamp)) if seen == session => *stamp,
-            _ => {
-                let stamp = tracked::stamp();
-                self.session = Some((session.clone(), stamp));
-                stamp
-            }
-        }
-    }
-}
-
-/// One section's key: the values it reads, hashed. Nothing here allocates.
-fn key(parts: impl Hash) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    parts.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// The small values of the open asset that the sections read. The state is replaced whole by each
-/// read-back, and a state read at one revision is the same state, so its identity, revision and
-/// current entry stand for all of it.
-fn state_key<'a>(inputs: &Inputs<'a>) -> Option<(&'a luxforge_core::AssetId, u64, &'a EntryId)> {
-    inputs
-        .state
-        .map(|state| (&state.asset.id, state.revision, &state.current_entry.id))
-}
-
-/// The window's size and display scale, which decide what Fit comes to as a percentage.
-fn window_key(inputs: &Inputs<'_>) -> (u32, u32, u32) {
-    (
-        inputs.window.0.to_bits(),
-        inputs.window.1.to_bits(),
-        inputs.scale_factor.to_bits(),
-    )
-}
-
-/// A draft being dragged changes with every pointer move, so a section that draws one is built on
-/// every derivation while it is open: a fresh stamp can never match.
-fn drafting_key(open: bool) -> Option<u64> {
-    open.then(tracked::stamp)
-}
-
-impl Built {
-    /// Build every section whose key moved.
-    fn refresh(&mut self, workspace: &mut Workspace, inputs: &Inputs<'_>) {
-        let stamps = &inputs.stamps;
-        let state = state_key(inputs);
-        let session = stamps.session;
-        let render_error = inputs.render_error.map(|error| {
-            (
-                error.kind.code(),
-                error.detail.as_str(),
-                error.unavailable_effect_id(),
-            )
-        });
-        let title = key((
-            (
-                inputs.busy,
-                inputs.can_open,
-                inputs.compare_held,
-                inputs.developer,
-            ),
-            (
-                inputs.can_export,
-                matches!(inputs.menu, Some(MenuTarget::Export)),
-            ),
-            inputs.dimensions,
-            (&inputs.gallery_refusal, &inputs.history_refusal),
-            session,
-            state,
-            (inputs.zoom, inputs.zoom_editing),
-            window_key(inputs),
-        ));
-        let panel = key((
-            (stamps.history, stamps.versions, stamps.lineage),
-            (stamps.menu, session),
-            inputs.lineage_floor,
-            inputs.display_entry,
-            state,
-            (inputs.busy, inputs.version_form_open, inputs.version_name),
-            &inputs.history_refusal,
-        ));
-        let canvas = key((
-            (stamps.modules, stamps.capabilities, stamps.menu, session),
-            (inputs.busy, inputs.developer, inputs.drafting, inputs.photo),
-            (inputs.crop_guide, inputs.crop_option, inputs.crop_space),
-            (
-                inputs.gesture_conflicted,
-                inputs.gesture,
-                &inputs.apply_refusal,
-            ),
-            drafting_key(inputs.draft.is_some() || inputs.mask_draft.is_some()),
-            (
-                inputs.dimensions,
-                inputs.pointer,
-                inputs.scale_factor.to_bits(),
-            ),
-            render_error,
-            inputs.slider_draft,
-            state,
-        ));
-        let brush = inputs.brush;
-        let masks = key((
-            (
-                stamps.masks,
-                stamps.hidden_masks,
-                stamps.modules,
-                stamps.menu,
-                session,
-            ),
-            (
-                brush.size.to_bits(),
-                brush.feather.to_bits(),
-                brush.flow.to_bits(),
-                brush.erase,
-                brush.limit_to_colour,
-                brush.colour_refine.to_bits(),
-            ),
-            (
-                inputs.brush_erase_held,
-                inputs.busy,
-                inputs.gesture_conflicted,
-            ),
-            drafting_key(inputs.mask_draft.is_some()),
-            std::mem::discriminant(&inputs.mask_mode),
-            (inputs.mask_typing, inputs.masks_collapsed, inputs.mask_drag),
-            // The panel's generated fields — the amount, the invert and the open component's own
-            // geometry and band — read the host's field texts and which of them is typed or held.
-            (
-                inputs.fields.host_digest(),
-                inputs.editing.filter(|(action, _)| action.contains('.')),
-                inputs.dragging.filter(|(action, _)| action.contains('.')),
-            ),
-            (
-                inputs.display_entry,
-                inputs.selected_mask,
-                inputs.selected_component,
-                inputs.hovered_component,
-            ),
-            inputs.thumbnails.version,
-            state,
-        ));
-        let tools = key((
-            (
-                stamps.modules,
-                stamps.fields,
-                stamps.controls,
-                stamps.expanded,
-            ),
-            (stamps.current_recipe, stamps.recipe, stamps.menu, session),
-            (stamps.presets, stamps.preset_form, stamps.capabilities),
-            (inputs.busy, inputs.developer, inputs.modules_ready),
-            (inputs.crop_custom, inputs.crop_guide),
-            (inputs.editing, inputs.dragging),
-            drafting_key(inputs.draft.is_some()),
-            (&inputs.preset_refusal, inputs.slider_draft, inputs.target),
-            // The bound mask's name is its sections' scope chip, so a rename reaches the bands.
-            tools::bound_mask_name(inputs),
-            inputs.display_entry,
-            state,
-        ));
-        let histogram = key((
-            inputs
-                .analysis
-                .map(|analysis| (analysis.generation, &analysis.identity)),
-            inputs.analysis_updating,
-            render_error,
-            session,
-            state,
-        ));
-        let status = key((
-            inputs.clients,
-            inputs
-                .readout
-                .map(|readout| (readout.x, readout.y, readout.rgba)),
-            inputs
-                .render
-                .map(|render| (render.ms.to_bits(), render.proxy, render.approximate)),
-            inputs.rendering,
-            inputs.dimensions,
-            window_key(inputs),
-            session,
-            inputs.status,
-        ));
-        let palette = key((
-            (stamps.modules, stamps.presets, stamps.preset_form, session),
-            (inputs.developer, inputs.performance_expanded, inputs.busy),
-            (
-                inputs.palette_open,
-                inputs.palette_query,
-                inputs.palette_selected,
-            ),
-            (&inputs.preset_refusal, inputs.display_entry, state),
-        ));
-
-        let stale = [
-            moved(&mut self.title, title),
-            moved(&mut self.panel, panel),
-            moved(&mut self.canvas, canvas),
-            moved(&mut self.masks, masks),
-            moved(&mut self.tools, tools),
-            moved(&mut self.histogram, histogram),
-            moved(&mut self.status, status),
-            moved(&mut self.palette, palette),
-        ];
-        #[cfg(test)]
-        {
-            self.builds += stale.iter().filter(|stale| **stale).count() as u64;
-        }
-        let [
-            title_moved,
-            panel_moved,
-            canvas_moved,
-            masks_moved,
-            tools_moved,
-            histogram_moved,
-            status_moved,
-            palette_moved,
-        ] = stale;
-        if title_moved {
-            workspace.title = title::derive(inputs);
-        }
-        if panel_moved {
-            workspace.panel = panel::derive(inputs);
-        }
-        if canvas_moved {
-            workspace.canvas = canvas::derive(inputs);
-        }
-        if masks_moved {
-            workspace.masks = masks::derive(inputs);
-        }
-        if tools_moved {
-            workspace.tools.refresh(inputs);
-        }
-        if histogram_moved {
-            workspace.histogram = histogram::derive(inputs, &workspace.histogram);
-        }
-        if status_moved {
-            workspace.status = status::derive(inputs);
-        }
-        if palette_moved {
-            workspace.palette = palette::derive(inputs);
-        }
-        workspace.performance.refresh(inputs);
-    }
-}
-
-/// Record a section's new key, and say whether it moved.
-fn moved(held: &mut Option<u64>, key: u64) -> bool {
-    let moved = *held != Some(key);
-    *held = Some(key);
-    moved
-}
-
 impl Workspace {
-    /// Build every section from these inputs, as a test scene does.
-    #[cfg(test)]
+    /// Derive every region from these inputs, after every message. Each region is rebuilt whole
+    /// from them; the histogram reuses its plotted bins while it describes the same render, and
+    /// the Performance section is rebuilt only when a sample lands or it opens or closes, which
+    /// keeps its sparklines' version.
     pub(crate) fn derive(&mut self, inputs: &Inputs<'_>) {
         self.title = title::derive(inputs);
         self.panel = panel::derive(inputs);
         self.performance.refresh(inputs);
         self.canvas = canvas::derive(inputs);
         self.masks = masks::derive(inputs);
-        self.tools.refresh(inputs);
+        self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
         self.palette = palette::derive(inputs);
-    }
-
-    /// Build only the sections whose inputs moved since `built` recorded them; the rest stay as
-    /// they are, unread and uncloned. A debug build checks every section it kept against a fresh
-    /// derivation, so a key that misses an input fails the tests rather than showing a stale panel.
-    pub(crate) fn refresh(&mut self, inputs: &Inputs<'_>, built: &mut Built) {
-        built.refresh(self, inputs);
-        #[cfg(debug_assertions)]
-        self.check_kept(inputs);
-    }
-
-    /// Every section as a fresh derivation from `inputs` would build it.
-    #[cfg(debug_assertions)]
-    fn check_kept(&self, inputs: &Inputs<'_>) {
-        let mut tools = self.tools.clone();
-        tools.refresh(inputs);
-        let fresh = Workspace {
-            title: title::derive(inputs),
-            panel: panel::derive(inputs),
-            canvas: canvas::derive(inputs),
-            masks: masks::derive(inputs),
-            tools,
-            histogram: histogram::derive(inputs, &self.histogram),
-            status: status::derive(inputs),
-            palette: palette::derive(inputs),
-            performance: self.performance.clone(),
-        };
-        debug_assert!(
-            fresh == *self,
-            "a kept section differs from its fresh derivation: a section key misses an input"
-        );
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -848,6 +472,7 @@ mod tests {
         capabilities: capabilities::CapabilityStore,
         performance_expanded: bool,
         performance: performance::PerformanceHistory,
+        palette_open: bool,
     }
 
     impl Scene {
@@ -896,6 +521,7 @@ mod tests {
                 capabilities: capabilities::CapabilityStore::default(),
                 performance_expanded: false,
                 performance: performance::PerformanceHistory::default(),
+                palette_open: false,
             }
         }
 
@@ -937,7 +563,6 @@ mod tests {
 
         fn inputs(&self) -> Inputs<'_> {
             Inputs {
-                stamps: Stamps::fresh(),
                 state: self.state.as_ref(),
                 history: &self.history,
                 versions: &self.versions,
@@ -953,14 +578,6 @@ mod tests {
                 editing: self.editing.as_ref(),
                 dragging: self.dragging.as_ref(),
                 expanded: &self.expanded,
-                slider_draft: self
-                    .slider_draft
-                    .as_ref()
-                    .map(|(action, parameter, conflicted)| SliderDrafting {
-                        action,
-                        parameter,
-                        conflicted: *conflicted,
-                    }),
                 gesture_conflicted: self.crop_conflicted
                     || self
                         .slider_draft
@@ -1034,7 +651,7 @@ mod tests {
                 analysis_updating: self.analysis_updating,
                 readout: self.readout.as_ref(),
                 menu: None,
-                palette_open: false,
+                palette_open: self.palette_open,
                 palette_query: "",
                 palette_selected: 0,
                 presets: &self.presets,
@@ -1806,27 +1423,21 @@ mod tests {
         );
 
         // Every declaring module gets one, and only the module whose mode is active reads selected.
-        let versions: Vec<(String, u64)> = workspace
-            .tools
-            .all()
-            .map(|section| (section.module_id.clone(), section.version))
-            .collect();
+        let before = workspace.tools.clone();
         scene.session.workspace.mode = "luxforge.basic".into();
         workspace.derive(&scene.inputs());
         assert!(
             section(&workspace, "luxforge.basic").pickers()[0].selected,
             "the picker reads selected while its own mode is active"
         );
-        for (id, before) in versions {
-            let after = section(&workspace, &id).version;
-            if id == "luxforge.basic" {
+        for earlier in before.all() {
+            let id = &earlier.module_id;
+            if id != "luxforge.basic" {
                 assert_eq!(
-                    after,
-                    before + 1,
-                    "{id} re-derives when its mode is entered"
+                    section(&workspace, id),
+                    earlier,
+                    "{id} is untouched by another module's mode"
                 );
-            } else {
-                assert_eq!(after, before, "{id} is untouched by another module's mode");
             }
         }
         assert!(
@@ -1835,8 +1446,10 @@ mod tests {
         );
     }
 
+    /// A field change shows in its own module's section and leaves every other section exactly as
+    /// it was.
     #[test]
-    fn a_field_change_re_derives_only_its_own_section() {
+    fn a_field_change_changes_only_its_own_section() {
         let modules = descriptors();
         let (action, x, _) = tools::point_pick(&modules).expect("a canvas pick");
         let (action, x) = (action.to_owned(), x.to_owned());
@@ -1846,108 +1459,31 @@ mod tests {
             .expect("the declaring module")
             .id
             .clone();
-        let other = modules
-            .iter()
-            .find(|module| module.id != pixel && module.applies_to(luxforge_core::SourceTag::Jpeg))
-            .expect("a second module")
-            .id
-            .clone();
         let mut scene = Scene::new(modules).opened(Vec::new());
         scene.developer = true;
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
-        let before = (
-            section(&workspace, &pixel).version,
-            section(&workspace, &other).version,
-        );
-
-        // Deriving again with the same inputs changes nothing at all.
-        workspace.derive(&scene.inputs());
-        assert_eq!(
-            (
-                section(&workspace, &pixel).version,
-                section(&workspace, &other).version
-            ),
-            before,
-            "an unchanged section is not re-derived"
-        );
+        let before = workspace.tools.clone();
+        assert!(before.all().count() > 1, "more than one section is drawn");
 
         scene.fields.set(&action, &x, "42".into());
         workspace.derive(&scene.inputs());
-        assert_eq!(
-            section(&workspace, &pixel).version,
-            before.0 + 1,
-            "the module whose field changed is re-derived"
-        );
-        assert_eq!(
-            section(&workspace, &other).version,
-            before.1,
-            "every other section keeps its version"
-        );
-    }
-
-    /// A refresh builds exactly the sections whose inputs moved: none when nothing did, the status
-    /// bar alone for a new status line, the tools panel alone for a field whose stamp moved, and
-    /// every section on a new session. What it keeps is what a fresh derivation would build.
-    #[test]
-    fn a_refresh_builds_only_the_sections_whose_inputs_moved() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
-        let mut stamps = Stamps::fresh();
-        let mut workspace = Workspace::default();
-        let mut built = Built::default();
-        let refresh =
-            |scene: &Scene, stamps: Stamps, workspace: &mut Workspace, built: &mut Built| {
-                let before = built.builds;
-                let mut inputs = scene.inputs();
-                inputs.stamps = stamps;
-                workspace.refresh(&inputs, built);
-                built.builds - before
-            };
-        assert_eq!(refresh(&scene, stamps, &mut workspace, &mut built), 8);
-        assert_eq!(workspace, scene.derive(), "the first refresh builds it all");
-        assert_eq!(
-            refresh(&scene, stamps, &mut workspace, &mut built),
-            0,
-            "nothing moved, so nothing is built"
-        );
-
-        scene.status = "Something else".into();
-        assert_eq!(refresh(&scene, stamps, &mut workspace, &mut built), 1);
-        assert_eq!(workspace.status.message, "Something else");
-
-        stamps.fields = tracked::stamp();
-        assert_eq!(
-            refresh(&scene, stamps, &mut workspace, &mut built),
-            1,
-            "a field's stamp reaches the tools panel alone"
-        );
-
-        stamps.session = tracked::stamp();
-        assert_eq!(
-            refresh(&scene, stamps, &mut workspace, &mut built),
-            8,
-            "every section reads the session"
-        );
-        assert_eq!(workspace, scene.derive());
-    }
-
-    /// The debug build's check is what keeps the keys honest: a section kept while an input it
-    /// shows changed without its key moving fails the derivation instead of drawing a stale panel.
-    #[test]
-    #[should_panic(expected = "a section key misses an input")]
-    fn a_kept_section_that_differs_from_a_fresh_one_fails_a_debug_build() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
-        let stamps = Stamps::fresh();
-        let mut workspace = Workspace::default();
-        let mut built = Built::default();
-        let mut inputs = scene.inputs();
-        inputs.stamps = stamps;
-        workspace.refresh(&inputs, &mut built);
-        // The history page changed with its stamp held still, which no tracked value allows.
-        scene.history.entries.clear();
-        let mut inputs = scene.inputs();
-        inputs.stamps = stamps;
-        workspace.refresh(&inputs, &mut built);
+        for earlier in before.all() {
+            let id = &earlier.module_id;
+            if id == &pixel {
+                assert_ne!(
+                    section(&workspace, id),
+                    earlier,
+                    "the module whose field changed shows it"
+                );
+            } else {
+                assert_eq!(
+                    section(&workspace, id),
+                    earlier,
+                    "{id} is untouched by another module's field"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3010,8 +2546,8 @@ mod tests {
         assert!(
             matches!(controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
         );
-        let crop_version = section(&workspace, "luxforge.crop").version;
-        let fixture_version = fixture_section.version;
+        let crop = section(&workspace, "luxforge.crop").clone();
+        let fixture_before = fixture_section.clone();
         scene
             .control_ui
             .curve_channels
@@ -3038,8 +2574,8 @@ mod tests {
             .insert(tools::group_key(&fixture.id, &[0]), false);
         workspace.derive(&scene.inputs());
         let fixture_section = section(&workspace, &fixture.id);
-        assert_eq!(fixture_section.version, fixture_version + 1);
-        assert_eq!(section(&workspace, "luxforge.crop").version, crop_version);
+        assert_ne!(fixture_section, &fixture_before);
+        assert_eq!(section(&workspace, "luxforge.crop"), &crop);
         assert_eq!(
             fixture_section.controls.len(),
             8,
@@ -3047,11 +2583,6 @@ mod tests {
         );
         assert!(
             matches!(fixture_section.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
-        );
-        workspace.derive(&scene.inputs());
-        assert_eq!(
-            section(&workspace, &fixture.id).version,
-            fixture_version + 1
         );
         let original_entry = scene.display_entry.replace(EntryId::new()).unwrap();
         workspace.derive(&scene.inputs());
@@ -3071,7 +2602,7 @@ mod tests {
             matches!(section(&workspace, &fixture.id).controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "old sampled geometry is hidden until the query matches the current points"
         );
-        assert_eq!(section(&workspace, "luxforge.crop").version, crop_version);
+        assert_eq!(section(&workspace, "luxforge.crop"), &crop);
     }
 
     /// A stacked module whose controls are one group draws that group's controls straight under
@@ -3163,10 +2694,10 @@ mod tests {
     }
 
     /// Selecting a tab in a `layout: tabs` module is per-client view state exactly like a group's
-    /// expansion: it re-derives only that section, changes no recipe and issues no command (the
+    /// expansion: it changes only that section, changes no recipe and issues no command (the
     /// message handler that would send one lives outside this crate's UI-independent state).
     #[test]
-    fn selecting_a_tab_rederives_only_its_own_section_and_changes_no_recipe() {
+    fn selecting_a_tab_changes_only_its_own_section_and_no_recipe() {
         let tabs = tabs_descriptor();
         let mut scene = Scene::new(vec![tabs.clone(), crop_descriptor()]).opened(Vec::new());
         let mut workspace = Workspace::default();
@@ -3181,22 +2712,16 @@ mod tests {
             .state
             .as_ref()
             .map(|state| state.current_entry.snapshot.recipe.layers.clone());
-        let tabs_version = tabs_section.version;
-        let crop_version = section(&workspace, "luxforge.crop").version;
+        let crop = section(&workspace, "luxforge.crop").clone();
 
         scene.control_ui.selected_tab.insert(tabs.id.clone(), 1);
         workspace.derive(&scene.inputs());
         let selected = section(&workspace, &tabs.id);
         assert_eq!(selected.layout, tools::SectionLayout::Tabs { selected: 1 });
         assert_eq!(
-            selected.version,
-            tabs_version + 1,
-            "the tabbed section is re-derived"
-        );
-        assert_eq!(
-            section(&workspace, "luxforge.crop").version,
-            crop_version,
-            "an unrelated section keeps its version"
+            section(&workspace, "luxforge.crop"),
+            &crop,
+            "an unrelated section is unchanged"
         );
         assert_eq!(
             scene
@@ -3430,6 +2955,7 @@ mod tests {
     #[test]
     fn the_palette_offers_each_applicable_preset_with_its_rows_own_message() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        scene.palette_open = true;
         let mut legacy = listed("Legacy", "Imported", Some(counts(0, 0)));
         legacy.unavailable = vec!["set-curve".into()];
         scene
@@ -3554,6 +3080,7 @@ mod tests {
             let label = kind.label();
             let mut scene = Scene::new(modules.clone()).opened(Vec::new());
             scene.developer = true;
+            scene.palette_open = true;
             if kind == SourceTag::Raw {
                 scene.state.as_mut().expect("an asset").asset.source =
                     crate::state::testing::raw_source();
@@ -3743,7 +3270,6 @@ mod tests {
             height: 19,
         };
         scene.thumbnails = masks::MaskThumbnails {
-            version: 1,
             masks: vec![(sky.clone(), Some(thumbnail.clone())), (face.clone(), None)],
         };
         let workspace = scene.derive();

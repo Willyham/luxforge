@@ -55,23 +55,6 @@ impl Fields {
         fields
     }
 
-    /// A digest of the host's own fields alone: the `mask.*` commands' texts, which the Masks panel
-    /// draws. A host method carries a dot and a module action never does, so a module slider's
-    /// tick leaves it unchanged and the panel is not built again for it. `O(fields)`, no
-    /// allocation.
-    pub(crate) fn host_digest(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for (key, text) in self
-            .0
-            .iter()
-            .filter(|((action, _), _)| action.contains('.'))
-        {
-            (key, text).hash(&mut hasher);
-        }
-        hasher.finish()
-    }
-
     pub(crate) fn get(&self, action: &str, parameter: &str) -> Option<&str> {
         self.0
             .iter()
