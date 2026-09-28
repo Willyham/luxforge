@@ -6,10 +6,7 @@ use crate::{
         Inputs, MenuTarget,
         capabilities::{self, CapabilityModel, TaskControl},
         control_tree::{Walk, walk},
-        fields::{
-            action_params, channel_text, field_id, labelled, parse_field, undeclared_label,
-            unsupported_label,
-        },
+        fields::{action_params, channel_text, field_id, labelled, parse_field, undeclared_label},
         number::NumberSpec,
         palette::PaletteAction,
         presets::{PresetsModel, presets_model},
@@ -313,7 +310,6 @@ impl ValueEdit {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SliderControl {
     pub(crate) action: String,
@@ -340,7 +336,6 @@ pub(crate) struct SliderControl {
     pub(crate) reset: Option<ResetRef>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EnumControl {
     pub(crate) action: String,
@@ -349,8 +344,6 @@ pub(crate) struct EnumControl {
     pub(crate) label: String,
     pub(crate) options: Vec<String>,
     pub(crate) selected: Option<usize>,
-    /// A short option list is a segmented control rather than a menu.
-    pub(crate) segmented: bool,
     pub(crate) style: ChoiceControlStyle,
 }
 
@@ -362,7 +355,6 @@ pub(crate) struct ToggleControl {
     pub(crate) on: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ColorControl {
     pub(crate) action: String,
@@ -455,7 +447,6 @@ impl GroupState {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GroupControl {
     pub(crate) label: String,
@@ -470,7 +461,6 @@ pub(crate) struct GroupControl {
     pub(crate) state: Option<GroupState>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ActionControl {
     pub(crate) action: String,
@@ -486,7 +476,6 @@ pub(crate) struct ActionControl {
 /// The declaring module's canvas pick, as a button in that module's own panel. It carries no
 /// action: clicking it enters the module's canvas mode through `workspace.set`, and clicking it
 /// again returns to the pointer, so a pick is never a mode the panel cannot leave.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PickerControl {
     /// The module whose canvas mode this button selects.
@@ -590,7 +579,6 @@ pub(crate) struct PresetChip {
 /// Idle, the same Ratio and Angle controls read the displayed entry's committed crop exactly as a
 /// draft opened on it would seed them, so opening the draft moves nothing; a change to one of
 /// them opens that draft and applies the change to it.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CropSectionModel {
     pub(crate) title: String,
@@ -917,7 +905,7 @@ pub(crate) fn control_model(
         Some(_) => resolved_model(owner, None, control, inputs, enabled, path),
         None => ControlModel::Unsupported(format!(
             "a {} control of {} whose providing module is not registered",
-            control_kind(control),
+            control.kind_name(),
             module.title
         )),
     }
@@ -934,14 +922,11 @@ fn resolved_model(
     enabled: bool,
     path: &[usize],
 ) -> ControlModel {
-    match classify(control) {
-        Rendered::Group {
-            label,
-            controls,
-            collapsed,
-        } => {
+    match control {
+        Control::Group(group) => {
             let reset = group_reset(owner.id(), control, inputs);
-            let controls: Vec<ControlModel> = controls
+            let controls: Vec<ControlModel> = group
+                .controls
                 .iter()
                 .enumerate()
                 .map(|(index, child)| {
@@ -951,7 +936,7 @@ fn resolved_model(
                 })
                 .collect();
             ControlModel::Group(GroupControl {
-                label: label.to_owned(),
+                label: group.label.clone(),
                 reset,
                 path: path.to_vec(),
                 expanded: inputs
@@ -959,51 +944,44 @@ fn resolved_model(
                     .group_expanded
                     .get(&group_key(owner.id(), path))
                     .copied()
-                    .unwrap_or(!collapsed),
+                    .unwrap_or(!group.collapsed),
                 state: group_state(&controls, inputs),
                 controls,
             })
         }
         // A declared field reset is resolved from the descriptors when the reset is asked for, by
         // `fields::field_reset`; the slider itself draws nothing for it.
-        Rendered::Number {
-            action,
-            parameter,
-            label,
-            style,
-            rail,
-            reset,
-        } => {
-            let mut model = value_model(owner, inputs, action, parameter, label);
+        Control::Number(number) => {
+            let mut model = value_model(
+                owner,
+                inputs,
+                &number.action,
+                &number.parameter,
+                &number.label,
+            );
             if let ControlModel::Slider(slider) = &mut model {
-                slider.reset = ResetRef::of(reset);
-                slider.style = match style {
+                slider.reset = ResetRef::of(number.reset.as_ref());
+                slider.style = match number.style {
                     NumberStyle::Slider => NumberControlStyle::Slider,
                     NumberStyle::Field => NumberControlStyle::Field,
                     NumberStyle::Stepper => NumberControlStyle::Stepper { rail: false },
                 };
-                slider.rail = rail_style(rail);
+                slider.rail = rail_style(number.rail.as_ref());
             }
             model
         }
-        Rendered::Range {
-            action,
-            low,
-            high,
-            low_feather,
-            high_feather,
-            label,
-            rail,
-        } => {
+        Control::Range(range) => {
+            let action = range.action.as_str();
             // Each edge and shoulder is modelled exactly as its own number field is, as a field,
             // under the label its own number control declares. A parameter that is not a number
             // field names the band's problem in the band's place, as a lone field would.
             let mut fields: [Option<SliderControl>; 4] = Default::default();
-            for (slot, parameter) in
-                fields
-                    .iter_mut()
-                    .zip([Some(low), Some(high), low_feather, high_feather])
-            {
+            for (slot, parameter) in fields.iter_mut().zip([
+                Some(range.low.as_str()),
+                Some(range.high.as_str()),
+                range.low_feather.as_deref(),
+                range.high_feather.as_deref(),
+            ]) {
                 let Some(parameter) = parameter else { continue };
                 let label = owner.field_label(action, parameter);
                 match value_model(owner, inputs, action, parameter, &label) {
@@ -1021,87 +999,73 @@ fn resolved_model(
             };
             ControlModel::Range(Box::new(RangeControl {
                 action: action.to_owned(),
-                label: label.to_owned(),
-                rail: rail_style(rail),
+                label: range.label.clone(),
+                rail: rail_style(range.rail.as_ref()),
                 low,
                 high,
                 low_feather,
                 high_feather,
             }))
         }
-        Rendered::Toggle {
-            action,
-            parameter,
-            label,
-        }
-        | Rendered::Choice {
-            action,
-            parameter,
-            label,
-            ..
-        }
-        | Rendered::Color {
-            action,
-            parameter,
-            label,
-            ..
-        } => {
-            let mut model = value_model(owner, inputs, action, parameter, label);
-            if let Rendered::Choice { style, .. } = classify(control)
-                && let ControlModel::Enum(choice) = &mut model
-            {
-                choice.style = choice_style(style, choice.options.len());
-                choice.segmented = choice.style == ChoiceControlStyle::Segmented;
+        Control::Toggle(toggle) => value_model(
+            owner,
+            inputs,
+            &toggle.action,
+            &toggle.parameter,
+            &toggle.label,
+        ),
+        Control::Choice(choice) => {
+            let mut model = value_model(
+                owner,
+                inputs,
+                &choice.action,
+                &choice.parameter,
+                &choice.label,
+            );
+            if let ControlModel::Enum(field) = &mut model {
+                field.style = choice_style(choice.style, field.options.len());
             }
-            if let Rendered::Color { style, .. } = classify(control)
-                && let ControlModel::Color(color) = &mut model
-            {
-                color.style = match style {
+            model
+        }
+        Control::Color(color) => {
+            let mut model =
+                value_model(owner, inputs, &color.action, &color.parameter, &color.label);
+            if let ControlModel::Color(field) = &mut model {
+                field.style = match color.style {
                     ColorStyle::Fields => ColorControlStyle::Fields,
                     ColorStyle::Picker => ColorControlStyle::Picker,
                 };
             }
             model
         }
-        Rendered::Curve {
-            action,
-            channels,
-            label,
-            sample_query,
-            background,
-        } => curve_model(inputs, action, channels, label, sample_query, background),
-        Rendered::Action {
-            action,
-            label,
-            preset,
-            style,
-            icon,
-        } => {
-            let declared = declared_action(inputs.modules, action);
-            let params = declared.map(|declared| action_params(declared, preset, inputs.fields));
+        Control::Curve(curve) => curve_model(inputs, curve),
+        Control::Action(button) => {
+            let action = button.action.as_str();
+            let params = declared_action(inputs.modules, action)
+                .map(|declared| action_params(declared, &button.preset, inputs.fields));
             ControlModel::Action(ActionControl {
                 action: action.to_owned(),
-                label: label.to_owned(),
-                preset: preset.clone(),
+                label: button.label.clone(),
+                preset: button.preset.clone(),
                 runnable: enabled && matches!(params, Some(Ok(_))),
                 reason: match params {
                     Some(Err(message)) => Some(message),
                     Some(Ok(_)) => None,
                     None => Some(format!("No module declares the action {action}")),
                 },
-                style: match style {
+                style: match button.style {
                     ActionStyle::Default => ActionControlStyle::Default,
                     ActionStyle::Primary => ActionControlStyle::Primary,
                     ActionStyle::Icon => ActionControlStyle::Icon,
                 },
-                icon: icon.map(str::to_owned),
+                icon: button.icon.clone(),
             })
         }
         // The picker reads its mode's name and letter from the same canvas declaration the keymap
         // binds, so the panel and the keyboard always agree about what the mode is called.
         // A picker provided as a variant enters its providing module's canvas and answers to the
         // declaring module's letter, which the keyboard binds to the same mode ([`mode_shortcuts`]).
-        Rendered::Picker { label } => {
+        Control::Picker(picker) => {
             let Some(module) = owner.descriptor() else {
                 return ControlModel::Unsupported("a picker needs a declaring module".into());
             };
@@ -1114,12 +1078,12 @@ fn resolved_model(
             };
             ControlModel::Picker(PickerControl {
                 module_id: module.id.clone(),
-                label: label.to_owned(),
+                label: picker.label.clone(),
                 title: module
                     .canvas
                     .as_ref()
                     .map(CanvasInteraction::title)
-                    .unwrap_or(label)
+                    .unwrap_or(&picker.label)
                     .to_owned(),
                 shortcut: letter(module).or_else(|| declarer.and_then(letter)),
                 selected: owns_mode(module, inputs),
@@ -1133,17 +1097,21 @@ fn resolved_model(
                 enabled,
             })
         }
-        Rendered::Task { task, label } => {
+        Control::Task(task) => {
             let Some(module) = owner.descriptor() else {
                 return ControlModel::Unsupported("a task needs a declaring module".into());
             };
             ControlModel::Task(capabilities::task_control(
-                module, task, label, inputs, enabled,
+                module,
+                &task.task,
+                &task.label,
+                inputs,
+                enabled,
             ))
         }
         // The library is host data beside the recipe; the module declares only where it goes and
         // which of its actions a row submits.
-        Rendered::Presets { action } => {
+        Control::Presets(presets) => {
             let Some(module) = owner.descriptor() else {
                 return ControlModel::Unsupported(
                     "a preset library needs a declaring module".into(),
@@ -1155,13 +1123,12 @@ fn resolved_model(
             };
             let reason = disabled_reason(unavailable, inputs);
             ControlModel::Presets(Box::new(presets_model(
-                action,
+                &presets.action,
                 inputs,
                 enabled,
                 reason.as_deref(),
             )))
         }
-        Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
     }
 }
 
@@ -1356,7 +1323,6 @@ fn value_model(
             label: labelled(label, declared),
             options: options.clone(),
             selected: options.iter().position(|option| option == text.trim()),
-            segmented: options.len() <= 4,
             style: choice_style(ChoiceStyle::Automatic, options.len()),
         }),
         ParameterKind::Boolean => ControlModel::Toggle(ToggleControl {
@@ -1457,14 +1423,9 @@ fn unit_symbol(unit: &str) -> String {
     }
 }
 
-fn curve_model(
-    inputs: &Inputs<'_>,
-    action: &str,
-    channels: &[luxforge_core::CurveChannel],
-    label: &str,
-    sample_query: &str,
-    background: CurveBackground,
-) -> ControlModel {
+fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> ControlModel {
+    let action = curve.action.as_str();
+    let channels = &curve.channels;
     let id = (
         action.to_owned(),
         channels
@@ -1572,7 +1533,7 @@ fn curve_model(
     ControlModel::Curve(CurveControl {
         id,
         action: action.to_owned(),
-        label: label.to_owned(),
+        label: curve.label.clone(),
         channels: channels
             .iter()
             .map(|channel| CurveChannelModel {
@@ -1580,8 +1541,8 @@ fn curve_model(
                 label: channel.label.clone(),
             })
             .collect(),
-        sample_query: sample_query.to_owned(),
-        background: matches!(background, CurveBackground::Histogram),
+        sample_query: curve.sample_query.clone(),
+        background: matches!(curve.background, CurveBackground::Histogram),
         selected_channel,
         selected_point,
         identity: points.iter().all(|point| point[0] == point[1]),
@@ -1815,200 +1776,6 @@ fn readout(draft: &CropDraft, action: &str) -> Vec<(String, String)> {
 
 // ---- descriptor mapping ------------------------------------------------------------------------
 
-/// What the desktop makes of one declared control. A kind this build cannot draw keeps its name on
-/// screen rather than disappearing from the panel.
-pub(crate) enum Rendered<'a> {
-    Group {
-        label: &'a str,
-        controls: &'a [Control],
-        collapsed: bool,
-    },
-    Number {
-        action: &'a str,
-        parameter: &'a str,
-        label: &'a str,
-        style: NumberStyle,
-        rail: Option<&'a RailDecoration>,
-        /// What resetting this field runs, when it is not the parameter's declared default.
-        reset: Option<&'a ResetAction>,
-    },
-    Toggle {
-        action: &'a str,
-        parameter: &'a str,
-        label: &'a str,
-    },
-    Choice {
-        action: &'a str,
-        parameter: &'a str,
-        label: &'a str,
-        style: ChoiceStyle,
-    },
-    Color {
-        action: &'a str,
-        parameter: &'a str,
-        label: &'a str,
-        style: ColorStyle,
-    },
-    Curve {
-        action: &'a str,
-        channels: &'a [luxforge_core::CurveChannel],
-        label: &'a str,
-        sample_query: &'a str,
-        background: CurveBackground,
-    },
-    Action {
-        action: &'a str,
-        label: &'a str,
-        preset: &'a Map<String, Value>,
-        style: ActionStyle,
-        icon: Option<&'a str>,
-    },
-    /// A band over number parameters of one action: its edges and, when declared, its shoulders.
-    Range {
-        action: &'a str,
-        low: &'a str,
-        high: &'a str,
-        low_feather: Option<&'a str>,
-        high_feather: Option<&'a str>,
-        label: &'a str,
-        rail: Option<&'a RailDecoration>,
-    },
-    /// The declaring module's own canvas pick, offered in its panel.
-    Picker {
-        label: &'a str,
-    },
-    /// One of the declaring module's worker tasks.
-    Task {
-        task: &'a str,
-        label: &'a str,
-    },
-    /// The host's preset library, whose rows submit this action.
-    Presets {
-        action: &'a str,
-    },
-    Unsupported(String),
-}
-
-pub(crate) fn classify(control: &Control) -> Rendered<'_> {
-    match control {
-        Control::Group(luxforge_core::GroupControl {
-            label,
-            controls,
-            collapsed,
-            ..
-        }) => Rendered::Group {
-            label,
-            controls,
-            collapsed: *collapsed,
-        },
-        Control::Number(luxforge_core::NumberControl {
-            action,
-            parameter,
-            label,
-            style,
-            rail,
-            reset,
-            ..
-        }) => Rendered::Number {
-            action,
-            parameter,
-            label,
-            style: *style,
-            rail: rail.as_ref(),
-            reset: reset.as_ref(),
-        },
-        Control::Toggle(luxforge_core::ToggleControl {
-            action,
-            parameter,
-            label,
-        }) => Rendered::Toggle {
-            action,
-            parameter,
-            label,
-        },
-        Control::Choice(luxforge_core::ChoiceControl {
-            action,
-            parameter,
-            label,
-            style,
-        }) => Rendered::Choice {
-            action,
-            parameter,
-            label,
-            style: *style,
-        },
-        Control::Curve(luxforge_core::CurveControl {
-            action,
-            channels,
-            label,
-            sample_query,
-            background,
-        }) => Rendered::Curve {
-            action,
-            channels,
-            label,
-            sample_query,
-            background: *background,
-        },
-        Control::Color(luxforge_core::ColorControl {
-            action,
-            parameter,
-            label,
-            style,
-        }) => Rendered::Color {
-            action,
-            parameter,
-            label,
-            style: *style,
-        },
-        Control::Action(luxforge_core::ActionControl {
-            action,
-            label,
-            preset,
-            style,
-            icon,
-            ..
-        }) => Rendered::Action {
-            action,
-            label,
-            preset,
-            style: *style,
-            icon: icon.as_deref(),
-        },
-        Control::Range(luxforge_core::RangeControl {
-            action,
-            low,
-            high,
-            low_feather,
-            high_feather,
-            label,
-            rail,
-        }) => Rendered::Range {
-            action,
-            low,
-            high,
-            low_feather: low_feather.as_deref(),
-            high_feather: high_feather.as_deref(),
-            label,
-            rail: rail.as_ref(),
-        },
-        Control::Picker(luxforge_core::PickerControl { label, .. }) => Rendered::Picker { label },
-        Control::Task(luxforge_core::TaskControl { task, label }) => Rendered::Task { task, label },
-        Control::Presets(luxforge_core::PresetsControl { action }) => Rendered::Presets { action },
-        // A kind added to the descriptor later is reported, never dropped.
-        #[allow(unreachable_patterns)]
-        other => Rendered::Unsupported(control_kind(other)),
-    }
-}
-
-/// The descriptor's own kind tag, so an unrenderable control can still be named.
-pub(crate) fn control_kind(control: &Control) -> String {
-    serde_json::to_value(control)
-        .ok()
-        .and_then(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
-}
-
 /// The declaration one action identity carries, whether a module declares it or the host does.
 ///
 /// The `mask.*` family is declared with the same [`ActionDescriptor`] type a module uses, so every
@@ -2115,13 +1882,12 @@ pub(crate) fn declared_field_reset<'a>(
     modules
         .iter()
         .find_map(|module| {
-            with_variants(&module.controls).find_map(|control| match classify(control) {
-                Rendered::Number {
-                    action: declared,
-                    parameter: named,
-                    reset,
-                    ..
-                } if declared == action && named == parameter => Some(reset),
+            with_variants(&module.controls).find_map(|control| match control {
+                Control::Number(number)
+                    if number.action == action && number.parameter == parameter =>
+                {
+                    Some(number.reset.as_ref())
+                }
                 _ => None,
             })
         })
@@ -2152,43 +1918,28 @@ pub(crate) fn labelled_control<'a>(
     action: &str,
     parameter: &str,
 ) -> Option<&'a str> {
-    with_variants(controls).find_map(|control| match classify(control) {
-        Rendered::Number {
-            action: declared,
-            parameter: named,
-            label,
-            ..
-        }
-        | Rendered::Color {
-            action: declared,
-            parameter: named,
-            label,
-            ..
-        }
-        | Rendered::Toggle {
-            action: declared,
-            parameter: named,
-            label,
-        }
-        | Rendered::Choice {
-            action: declared,
-            parameter: named,
-            label,
-            ..
-        } if declared == action && named == parameter => Some(label),
-        Rendered::Curve {
-            action: declared,
-            channels,
-            label,
-            ..
-        } if declared == action
-            && channels
+    let field = |declared: &str, named: &str, label: &'a str| {
+        (declared == action && named == parameter).then_some(label)
+    };
+    with_variants(controls).find_map(|control| match control {
+        Control::Number(number) => field(&number.action, &number.parameter, &number.label),
+        Control::Color(color) => field(&color.action, &color.parameter, &color.label),
+        Control::Toggle(toggle) => field(&toggle.action, &toggle.parameter, &toggle.label),
+        Control::Choice(choice) => field(&choice.action, &choice.parameter, &choice.label),
+        Control::Curve(curve) => (curve.action == action
+            && curve
+                .channels
                 .iter()
-                .any(|channel| channel.parameter == parameter) =>
-        {
-            Some(label)
-        }
-        _ => None,
+                .any(|channel| channel.parameter == parameter))
+        .then_some(curve.label.as_str()),
+        // A band's fields carry the labels of their own number controls, and no other kind labels
+        // a field.
+        Control::Group(_)
+        | Control::Range(_)
+        | Control::Action(_)
+        | Control::Picker(_)
+        | Control::Task(_)
+        | Control::Presets(_) => None,
     })
 }
 
@@ -2671,19 +2422,13 @@ fn collect_actions(
         let Some((_, control)) = resolved(modules, module, declared, kind, target) else {
             continue;
         };
-        if let Rendered::Action {
-            action,
-            label,
-            preset,
-            ..
-        } = classify(control)
-        {
+        if let Control::Action(button) = control {
             entries.push((
-                format!("{} · {label}", module.title),
-                format!("edit.{action}"),
+                format!("{} · {}", module.title, button.label),
+                format!("edit.{}", button.action),
                 PaletteAction::Run {
-                    action: action.to_owned(),
-                    preset: preset.clone(),
+                    action: button.action.clone(),
+                    preset: button.preset.clone(),
                 },
             ));
         }

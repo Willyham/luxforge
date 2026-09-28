@@ -19,7 +19,6 @@ pub(crate) enum Marker {
     Plain,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VersionChip {
     pub(crate) name: String,
@@ -28,7 +27,6 @@ pub(crate) struct VersionChip {
     pub(crate) selected: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HistoryRow {
     pub(crate) entry_id: EntryId,
@@ -42,7 +40,6 @@ pub(crate) struct HistoryRow {
     pub(crate) branch: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PreviewControls {
     /// Return to current can run: no request is in flight.
@@ -52,7 +49,6 @@ pub(crate) struct PreviewControls {
     pub(crate) can_restore: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatePanelModel {
     pub(crate) versions: Vec<VersionChip>,
