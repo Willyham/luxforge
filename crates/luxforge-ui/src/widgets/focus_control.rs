@@ -1,13 +1,13 @@
 //! Keyboard focus for generated controls built from Iced widgets without native Tab stops.
 //! The wrapper owns only transient focus. The caller maps keys to parameter values and requests.
 
+use super::decorator::{Decoration, decorate};
 use crate::theme;
 use iced::{
-    Background, Border, Color, Element, Event, Length, Rectangle, Renderer, Shadow, Size, Theme,
-    Vector,
+    Background, Border, Color, Element, Event, Rectangle, Renderer, Shadow, Theme,
     advanced::{
-        Clipboard, Layout, Shell, Widget, layout, overlay, renderer,
-        widget::{Operation, Tree, operation, tree},
+        Clipboard, Layout, Shell, renderer,
+        widget::{Operation, Tree, operation},
     },
     keyboard::{self, Key, key::Named},
     mouse::{self, Cursor},
@@ -39,16 +39,16 @@ pub fn focus_control<'a, M: Clone + 'a>(
     enabled: bool,
     on_key: impl Fn(ControlKeyEvent) -> Option<M> + 'a,
 ) -> Element<'a, M> {
-    FocusControl {
+    decorate(
         content,
-        enabled,
-        on_key: Box::new(on_key),
-    }
-    .into()
+        FocusControl {
+            enabled,
+            on_key: Box::new(on_key),
+        },
+    )
 }
 
 struct FocusControl<'a, M> {
-    content: Element<'a, M>,
     enabled: bool,
     on_key: Box<dyn Fn(ControlKeyEvent) -> Option<M> + 'a>,
 }
@@ -83,34 +83,12 @@ fn key_of(key: &Key) -> Option<ControlKey> {
     })
 }
 
-impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<FocusState>()
-    }
-    fn state(&self) -> tree::State {
-        tree::State::new(FocusState::default())
-    }
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
-    }
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.content
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
-    }
+impl<'a, M: Clone> Decoration<'a, M, Theme, Renderer> for FocusControl<'a, M> {
+    type State = FocusState;
+
     fn operate(
         &mut self,
+        content: &mut Element<'a, M>,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
@@ -123,13 +101,15 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
             state.focused = false;
         }
         operation.traverse(&mut |operation| {
-            self.content
+            content
                 .as_widget_mut()
                 .operate(&mut tree.children[0], layout, renderer, operation)
         });
     }
+
     fn update(
         &mut self,
+        content: &mut Element<'a, M>,
         tree: &mut Tree,
         event: &Event,
         layout: Layout<'_>,
@@ -162,7 +142,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
                 return;
             }
         }
-        self.content.as_widget_mut().update(
+        content.as_widget_mut().update(
             &mut tree.children[0],
             event,
             layout,
@@ -182,8 +162,10 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
             tree.state.downcast_mut::<FocusState>().focused = cursor.is_over(layout.bounds());
         }
     }
+
     fn draw(
         &self,
+        content: &Element<'a, M>,
         tree: &Tree,
         renderer: &mut Renderer,
         theme: &Theme,
@@ -192,7 +174,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
         cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        self.content.as_widget().draw(
+        content.as_widget().draw(
             &tree.children[0],
             renderer,
             theme,
@@ -217,44 +199,6 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
                 Background::Color(Color::TRANSPARENT),
             );
         }
-    }
-    fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
-    }
-    fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
-        self.content.as_widget_mut().overlay(
-            &mut tree.children[0],
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
-    }
-}
-
-impl<'a, M: Clone + 'a> From<FocusControl<'a, M>> for Element<'a, M> {
-    fn from(widget: FocusControl<'a, M>) -> Self {
-        Element::new(widget)
     }
 }
 

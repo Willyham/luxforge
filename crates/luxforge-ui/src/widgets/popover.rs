@@ -7,14 +7,12 @@
 //! elsewhere closes the menu without also acting on what was under it; a press on the anchor is the
 //! anchor's own, which is how the control that opened the menu closes it again. The widget holds no
 //! state: whether the menu is open is the caller's.
-use iced::advanced::{
-    Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
-    widget::{Operation, Tree},
-};
-use iced::{Element, Event, Length, Point, Rectangle, Size, Vector, touch};
+use super::decorator::{Decoration, decorate};
+use iced::advanced::{Clipboard, Layout, Shell, layout, mouse, overlay, renderer, widget::Tree};
+use iced::{Element, Event, Point, Rectangle, Size, Vector, touch};
 
 /// The space between the anchor's bottom edge and the menu's top edge.
-pub const POPOVER_GAP: f32 = 4.0;
+pub(crate) const POPOVER_GAP: f32 = 4.0;
 
 /// `anchor`, with `menu` dropped under it while `menu` is `Some`. A press outside both publishes
 /// `on_dismiss`.
@@ -24,124 +22,39 @@ pub fn popover<'a, M: Clone + 'a>(
     on_dismiss: M,
 ) -> Element<'a, M> {
     let open = menu.is_some();
-    Element::new(Popover {
-        anchor: anchor.into(),
-        menu: menu.unwrap_or_else(|| iced::widget::Space::new().into()),
-        open,
-        on_dismiss,
-    })
+    decorate(
+        anchor,
+        Popover {
+            menu: menu.unwrap_or_else(|| iced::widget::Space::new().into()),
+            open,
+            on_dismiss,
+        },
+    )
 }
 
+/// The popover as a decoration of its anchor: the anchor is measured, laid out, drawn and given
+/// events as it would be on its own, through the shared forwarding; the menu is a second child
+/// the anchor never sees, drawn only as the overlay while open.
 struct Popover<'a, M> {
-    anchor: Element<'a, M>,
     menu: Element<'a, M>,
     open: bool,
     on_dismiss: M,
 }
 
-impl<M: Clone> Widget<M, iced::Theme, iced::Renderer> for Popover<'_, M> {
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.anchor), Tree::new(&self.menu)]
+impl<'a, M: Clone> Decoration<'a, M, iced::Theme, iced::Renderer> for Popover<'a, M> {
+    type State = ();
+
+    fn children(&self, anchor: &Element<'a, M>) -> Vec<Tree> {
+        vec![Tree::new(anchor), Tree::new(&self.menu)]
     }
 
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[self.anchor.as_widget(), self.menu.as_widget()]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.anchor.as_widget().size()
-    }
-
-    fn size_hint(&self) -> Size<Length> {
-        self.anchor.as_widget().size_hint()
-    }
-
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.anchor
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
-    }
-
-    fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &iced::Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
-    ) {
-        self.anchor.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            viewport,
-        );
-    }
-
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.anchor.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
-    }
-
-    fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &iced::Renderer,
-    ) -> mouse::Interaction {
-        self.anchor.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
-    }
-
-    fn operate(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &iced::Renderer,
-        operation: &mut dyn Operation,
-    ) {
-        self.anchor
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+    fn diff(&self, anchor: &Element<'a, M>, tree: &mut Tree) {
+        tree.diff_children(&[anchor.as_widget(), self.menu.as_widget()]);
     }
 
     fn overlay<'b>(
         &'b mut self,
+        anchor: &'b mut Element<'a, M>,
         tree: &'b mut Tree,
         layout: Layout<'b>,
         renderer: &iced::Renderer,
@@ -151,13 +64,10 @@ impl<M: Clone> Widget<M, iced::Theme, iced::Renderer> for Popover<'_, M> {
         let [anchor_tree, menu_tree] = tree.children.as_mut_slice() else {
             return None;
         };
-        let anchor = self.anchor.as_widget_mut().overlay(
-            anchor_tree,
-            layout,
-            renderer,
-            viewport,
-            translation,
-        );
+        let anchor =
+            anchor
+                .as_widget_mut()
+                .overlay(anchor_tree, layout, renderer, viewport, translation);
         let menu = self.open.then(|| {
             overlay::Element::new(Box::new(Menu {
                 menu: &mut self.menu,

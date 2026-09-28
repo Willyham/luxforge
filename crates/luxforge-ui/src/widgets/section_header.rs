@@ -46,12 +46,14 @@ const SCOPE_PADDING: [f32; 2] = [1.0, 6.0];
 const SCOPE_RADIUS: f32 = 4.0;
 
 /// The band's total height including the border above it: what a collapsed section occupies.
-pub const fn collapsed_section_height() -> f32 {
+#[cfg(test)]
+pub(crate) const fn collapsed_section_height() -> f32 {
     theme::BORDER_WIDTH + theme::MODULE_HEADER_HEIGHT
 }
 
 /// The height of an expanded section whose body rows are `rows` tall in total, `count` of them.
-pub fn expanded_section_height(rows: f32, count: usize) -> f32 {
+#[cfg(test)]
+pub(crate) fn expanded_section_height(rows: f32, count: usize) -> f32 {
     collapsed_section_height()
         + theme::SECTION_PADDING.top
         + rows
@@ -60,7 +62,7 @@ pub fn expanded_section_height(rows: f32, count: usize) -> f32 {
 }
 
 /// Renders one section header: the border above and the band.
-pub fn section_header<'a, M: Clone + 'a>(
+pub(crate) fn section_header<'a, M: Clone + 'a>(
     model: &SectionHeaderModel,
     on_toggle: M,
     on_reset: M,
@@ -242,7 +244,7 @@ pub fn module_section<'a, M: Clone + 'a>(
 }
 
 /// A section body: rows flush at the section padding, separated only by the row spacing.
-pub fn section_body<'a, M: 'a>(rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+pub(crate) fn section_body<'a, M: 'a>(rows: Vec<Element<'a, M>>) -> Element<'a, M> {
     Column::with_children(rows)
         .spacing(theme::ROW_SPACING)
         .padding(theme::SECTION_PADDING)
@@ -371,7 +373,7 @@ mod tests {
         let basic = expanded_section_height(
             3.0 * group
                 + 10.0 * theme::SLIDER_ROW_HEIGHT
-                + super::super::button_row_height(
+                + super::super::button_row::button_row_height(
                     super::super::ButtonSize::Compact,
                     super::super::RowPlacement {
                         after_header: false,
@@ -384,7 +386,7 @@ mod tests {
         // Transforms: its icon row alone, the first and last row of the body, as Crop's idle
         // button row is.
         let transforms = expanded_section_height(
-            super::super::button_row_height(
+            super::super::button_row::button_row_height(
                 super::super::ButtonSize::Regular,
                 super::super::RowPlacement::default(),
             ),
@@ -394,7 +396,7 @@ mod tests {
         // RAW: three sliders and the picker row ending the section.
         let raw = expanded_section_height(
             3.0 * theme::SLIDER_ROW_HEIGHT
-                + super::super::button_row_height(
+                + super::super::button_row::button_row_height(
                     super::super::ButtonSize::Compact,
                     super::super::RowPlacement::default(),
                 ),

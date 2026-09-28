@@ -197,7 +197,8 @@ impl RowPlacement {
 }
 
 /// The height a one-line button row takes in a section body, margins included.
-pub const fn button_row_height(size: ButtonSize, placement: RowPlacement) -> f32 {
+#[cfg(test)]
+pub(crate) const fn button_row_height(size: ButtonSize, placement: RowPlacement) -> f32 {
     let padding = placement.padding();
     padding.top + size.height() + padding.bottom
 }

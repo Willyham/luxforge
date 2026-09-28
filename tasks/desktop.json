@@ -1557,7 +1557,7 @@
     {
       "id": "TASK-019",
       "description": "Give the decorator widgets one shared forwarding implementation, so each writes only the gesture it intercepts.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",

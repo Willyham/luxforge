@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const POINT_HIT_RADIUS: f32 = 9.0;
+pub(crate) const POINT_HIT_RADIUS: f32 = 9.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
 
 /// Keep the cache across unrelated redraws; Iced's cache handles size changes itself.
@@ -39,7 +39,12 @@ pub(crate) fn invalidate_on_version_change<K: Copy + PartialEq>(
 }
 
 /// The point nearest `pointer` in plot pixels, within `radius` inclusive.
-pub fn hit_test(points: &[[f32; 2]], pointer: Point, size: Size, radius: f32) -> Option<usize> {
+pub(crate) fn hit_test(
+    points: &[[f32; 2]],
+    pointer: Point,
+    size: Size,
+    radius: f32,
+) -> Option<usize> {
     let mut best = None;
     let mut best_distance = radius.max(0.0).powi(2);
     for (index, [x, y]) in points.iter().copied().enumerate() {
@@ -54,7 +59,7 @@ pub fn hit_test(points: &[[f32; 2]], pointer: Point, size: Size, radius: f32) ->
     best
 }
 
-pub fn point_fraction(pointer: Point, bounds: Rectangle) -> [f32; 2] {
+pub(crate) fn point_fraction(pointer: Point, bounds: Rectangle) -> [f32; 2] {
     [
         ((pointer.x - bounds.x) / bounds.width).clamp(0.0, 1.0),
         (1.0 - (pointer.y - bounds.y) / bounds.height).clamp(0.0, 1.0),
@@ -62,7 +67,8 @@ pub fn point_fraction(pointer: Point, bounds: Rectangle) -> [f32; 2] {
 }
 
 /// Fraction snapping is a host decision; this helper gives consistent 0..1 rounding for fields.
-pub fn round_fraction(value: f32, decimals: u32) -> f32 {
+#[cfg(test)]
+pub(crate) fn round_fraction(value: f32, decimals: u32) -> f32 {
     let scale = 10_f32.powi(decimals.min(6) as i32);
     (value.clamp(0.0, 1.0) * scale).round() / scale
 }

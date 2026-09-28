@@ -31,12 +31,14 @@ pub struct GridField<'a, M> {
 }
 
 /// How many rows `fields` fields take.
-pub const fn field_grid_rows(fields: usize) -> usize {
+#[cfg(test)]
+pub(crate) const fn field_grid_rows(fields: usize) -> usize {
     fields.div_ceil(2)
 }
 
 /// The grid's height for `fields` fields with no invalid message showing, its padding included.
-pub fn field_grid_height(fields: usize) -> f32 {
+#[cfg(test)]
+pub(crate) fn field_grid_height(fields: usize) -> f32 {
     let rows = field_grid_rows(fields);
     if rows == 0 {
         return 0.0;

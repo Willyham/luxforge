@@ -19,11 +19,11 @@ use iced::widget::text::{LineHeight, Shaping, Wrapping};
 use iced::{Color, Element, Font, Length, Pixels, Rectangle, Renderer, Size, Theme, alignment};
 
 /// The mark appended to a truncated string.
-pub const ELLIPSIS: &str = "\u{2026}";
+pub(crate) const ELLIPSIS: &str = "\u{2026}";
 
 /// How much of a string fits on one line, from [`fit_one_line`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fit {
+pub(crate) enum Fit {
     /// The whole string fits and is drawn unchanged.
     Whole,
     /// The first `n` bytes (a character boundary) followed by [`ELLIPSIS`] fit. `n` may be 0, in
@@ -39,7 +39,7 @@ pub enum Fit {
 /// candidate prefixes with [`ELLIPSIS`] appended, which are built in `scratch` so a caller can
 /// reuse one buffer. The search is binary over character boundaries (it assumes a longer prefix is
 /// never narrower), and a prefix's trailing whitespace is dropped before the ellipsis.
-pub fn fit_one_line(
+pub(crate) fn fit_one_line(
     content: &str,
     available: f32,
     mut measure: impl FnMut(&str) -> f32,
@@ -88,6 +88,9 @@ fn boundary_between(content: &str, lo: usize, hi: usize) -> Option<usize> {
 }
 
 /// One line of text truncated with an ellipsis to the width its parent leaves it.
+///
+/// Public only because [`truncated_text`] returns it; the crate does not export it, so no caller
+/// outside can name it.
 pub struct TruncatedText {
     content: String,
     size: f32,

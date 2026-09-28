@@ -124,7 +124,7 @@ fn tool<'a, M: Clone + 'a>(
 }
 
 /// What a tool's tooltip says: its name, and its letter when it has one ("Crop (R)").
-pub fn tooltip_text(label: &str, shortcut: &Option<String>) -> String {
+pub(crate) fn tooltip_text(label: &str, shortcut: &Option<String>) -> String {
     match shortcut {
         Some(key) => format!("{label} ({key})"),
         None => label.to_owned(),

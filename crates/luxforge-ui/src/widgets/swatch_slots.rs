@@ -145,7 +145,7 @@ pub struct SwatchSlotsModel {
 }
 
 /// How many empty slots follow the held swatches.
-pub fn empty_slots(held: usize, limit: usize) -> usize {
+pub(crate) fn empty_slots(held: usize, limit: usize) -> usize {
     limit.saturating_sub(held)
 }
 

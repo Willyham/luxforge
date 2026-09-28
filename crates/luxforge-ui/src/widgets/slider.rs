@@ -10,8 +10,8 @@ use crate::geometry::{self, Side};
 use crate::theme;
 use crate::widgets::double_click::double_click_when;
 use crate::widgets::number_field::{NumberFieldModel, field_header};
-use crate::widgets::slider_guard::SliderGuard;
 use crate::widgets::text::error_caption;
+use crate::widgets::{decorator::decorate, slider_guard::SliderGuard};
 use iced::widget::canvas::gradient;
 use iced::widget::{canvas, column, container, slider as iced_slider, stack};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
@@ -149,19 +149,20 @@ pub(crate) fn rail_line<'a, M: Clone + 'a>(
     .on_release(on_release.clone())
     .height(theme::SLIDER_RAIL_HEIGHT)
     .style(theme::slider_style(rail.dragging));
-    let handle: Element<'a, M> = SliderGuard {
-        content: handle.into(),
-        enabled: rail.enabled,
-        value,
-        min: soft_min,
-        max: soft_max,
-        fine_step: rail.fine_step,
-        on_fine: Box::new(move |v| {
-            fine_change(geometry::fraction_from_value(soft_min, soft_max, v))
-        }),
-        on_release,
-    }
-    .into();
+    let handle = decorate(
+        handle,
+        SliderGuard {
+            enabled: rail.enabled,
+            value,
+            min: soft_min,
+            max: soft_max,
+            fine_step: rail.fine_step,
+            on_fine: Box::new(move |v| {
+                fine_change(geometry::fraction_from_value(soft_min, soft_max, v))
+            }),
+            on_release,
+        },
+    );
     // Always wrapped, and told whether to listen, so the tree keeps one shape: a rail disabled for
     // a moment between the two presses of a double-click keeps the first press.
     let handle = double_click_when(handle, on_reset, rail.enabled);

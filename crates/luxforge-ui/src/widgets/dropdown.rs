@@ -3,12 +3,11 @@
 //!
 //! The menu is a [`theme::MENU_WIDTH`] list of [`theme::MENU_ITEM_HEIGHT`] items — an icon, a
 //! label and a right-aligned key or tag (`L`, `model`) — with separators between groups and
-//! disabled items in tertiary ink, each carrying its refusal as a tooltip. [`dropdown`] drops it under its button through
-//! [`crate::popover`]; [`menu_list`] is the list alone, for a menu the caller anchors itself, such
-//! as a row's.
+//! disabled items in tertiary ink, each carrying its refusal as a tooltip. [`menu_list`] is the
+//! list alone; the caller drops it under [`dropdown_button`], or anchors it to a row, through
+//! [`crate::popover`].
 
 use super::icon_button::{Icon, icon, with_tooltip};
-use super::popover::popover;
 use crate::theme;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, Space, button, container, row, text};
@@ -106,22 +105,6 @@ pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M
         .into()
 }
 
-/// The button with its menu dropped under it while `entries` is `Some`. A press on the button
-/// publishes `on_toggle` (the caller opens or closes the menu); a press elsewhere publishes
-/// `on_dismiss`.
-pub fn dropdown<'a, M: Clone + 'a>(
-    model: &DropdownButtonModel,
-    on_toggle: M,
-    entries: Option<Vec<MenuEntry<M>>>,
-    on_dismiss: M,
-) -> Element<'a, M> {
-    popover(
-        dropdown_button(model, Some(on_toggle)),
-        entries.map(menu_list),
-        on_dismiss,
-    )
-}
-
 fn menu_item<'a, M: Clone + 'a>(item: MenuItem<M>) -> Element<'a, M> {
     let enabled = item.on_press.is_some();
     let ink = if enabled {
@@ -197,8 +180,7 @@ mod tests {
                     reason: Some("Selection model not installed".into()),
                 }),
             ];
-            let _: Element<'_, u8> = dropdown(&model, 0, Some(entries.clone()), 9);
-            let _: Element<'_, u8> = dropdown(&model, 0, None, 9);
+            let _: Element<'_, u8> = dropdown_button(&model, Some(0));
             let _: Element<'_, u8> = menu_list(entries);
         }
     }

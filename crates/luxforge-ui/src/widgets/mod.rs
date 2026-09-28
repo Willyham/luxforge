@@ -11,6 +11,7 @@ mod color_picker;
 mod color_swatch;
 mod coverage_thumbnail;
 mod curve_editor;
+mod decorator;
 mod disclosure_heading;
 mod double_click;
 mod dropdown;
@@ -48,40 +49,30 @@ mod truncated_text;
 
 pub use badge::{BadgeModel, badge};
 pub use button_row::{
-    ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, button_row_height,
-    equal_button_row, icon_button_row, labelled_button, row_icon_button, text_button,
+    ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, equal_button_row,
+    icon_button_row, labelled_button, row_icon_button, text_button,
 };
 pub use chip::{ChipModel, chip, chip_row, chip_wrap, compact_chip};
 pub use color_picker::{
-    ColorPickerEvent, ColorPickerModel, color_picker, hex_to_rgb, hsv_to_rgb, hue_fraction,
-    plane_fraction, rgb_to_hex, rgb_to_hsv,
+    ColorPickerEvent, ColorPickerModel, color_picker, hex_to_rgb, hsv_to_rgb, rgb_to_hex,
+    rgb_to_hsv,
 };
 pub use color_swatch::{ColorSwatchModel, color_swatch};
-pub use coverage_thumbnail::{
-    CoverageThumbnailModel, THUMBNAIL_CELLS, coverage_thumbnail, row_runs, thumbnail_grid,
-};
-pub use curve_editor::{
-    CurveEditorEvent, CurveEditorModel, CurvePointRow, POINT_HIT_RADIUS, curve_editor, hit_test,
-    point_fraction, round_fraction,
-};
+pub use coverage_thumbnail::CoverageThumbnailModel;
+pub use curve_editor::{CurveEditorEvent, CurveEditorModel, CurvePointRow, curve_editor};
 pub use disclosure_heading::disclosure_heading;
-pub use double_click::double_click;
-pub use dropdown::{
-    DropdownButtonModel, MenuEntry, MenuItem, dropdown, dropdown_button, menu_list,
-};
-pub use field_grid::{GridField, field_grid, field_grid_height, field_grid_rows};
-pub use floating_bar::{DraftBarModel, DraftFinish, DraftSubject, draft_bar, floating_bar};
+pub use dropdown::{DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list};
+pub use field_grid::{GridField, field_grid};
+pub use floating_bar::{DraftBarModel, DraftFinish, DraftSubject, draft_bar};
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
-    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
-    histogram_inspector, polygon_points, triangle_ink, triangle_points,
+    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, histogram_inspector,
 };
 pub use icon_button::{
-    Icon, IconButtonModel, header_icon_button, icon, icon_button, title_bar_icon_button,
-    with_tooltip,
+    Icon, IconButtonModel, header_icon_button, icon_button, title_bar_icon_button, with_tooltip,
 };
 pub use inline_menu::inline_menu;
-pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
+pub use job_row::{JobRowModel, job_row};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{
     ComponentRowMessages, ComponentRowModel, DropEdge, MaskRowMessages, MaskRowModel,
@@ -90,35 +81,38 @@ pub use mask_row::{
 };
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
-pub use mode_control::{CombineMode, ModeControlModel, mode_control, mode_control_width, mode_ink};
-pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip, tooltip_text};
+pub use mode_control::{CombineMode, ModeControlModel, mode_control};
+pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, compact_number_field, label_line,
     number_field, value_input,
 };
-pub use overlay_control::{
-    OverlayControlModel, OverlayMode, OverlayTint, overlay_control, tints_enabled,
-};
-pub use popover::{POPOVER_GAP, popover};
+pub use overlay_control::{OverlayControlModel, OverlayMode, OverlayTint, overlay_control};
+pub use popover::popover;
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
-pub use readout_card::{readout_card, readout_card_height};
-pub use section_header::{
-    SectionHeaderModel, band_header, collapsed_section_height, expanded_section_height,
-    module_section, section_body, section_header,
-};
+pub use readout_card::readout_card;
+pub use section_header::{SectionHeaderModel, band_header, module_section};
 pub use segmented::{SegmentedModel, segment, segment_track, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};
-pub use sparkline::{SparklineModel, sparkline, sparkline_points};
-pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper, stepper_rail_width};
+pub use sparkline::SparklineModel;
+pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper};
 pub use sub_group_header::{
-    GroupRuleModel, SubGroupHeaderModel, group_rule, sub_group_header, sub_group_header_height,
+    GroupRuleModel, SubGroupHeaderModel, group_rule, sub_group_header,
     sub_group_header_with_actions,
 };
-pub use swatch_slots::{SwatchSlotsModel, empty_slots, swatch_slots};
-pub use tab_row::{Tab, TabRowModel, tab_row, tab_row_height};
-pub use text::{
-    caption, control_label, error_caption, group_label, label, section_label, title, value_text,
-};
-pub use toggle::{ToggleModel, compact_toggle, knob_center, toggle};
-pub use truncated_text::{ELLIPSIS, Fit, TruncatedText, fit_one_line, truncated_text};
+pub use swatch_slots::{SwatchSlotsModel, swatch_slots};
+pub use tab_row::{Tab, TabRowModel, tab_row};
+pub use text::{caption, error_caption, label, section_label, title};
+pub use toggle::{ToggleModel, compact_toggle, toggle};
+pub use truncated_text::truncated_text;
+
+// Used only inside the crate: by its composed widgets and the components board.
+pub(crate) use coverage_thumbnail::coverage_thumbnail;
+pub(crate) use double_click::double_click;
+pub(crate) use floating_bar::floating_bar;
+pub(crate) use histogram::clip_triangle;
+pub(crate) use icon_button::icon;
+pub(crate) use popover::POPOVER_GAP;
+pub(crate) use section_header::section_header;
+pub(crate) use text::value_text;

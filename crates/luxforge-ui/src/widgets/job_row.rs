@@ -32,7 +32,8 @@ pub struct JobRowModel {
 
 /// The height a job row takes: its label line, plus its detail line and its progress bar when it
 /// has them.
-pub fn job_row_height(model: &JobRowModel) -> f32 {
+#[cfg(test)]
+pub(crate) fn job_row_height(model: &JobRowModel) -> f32 {
     let detail = if model.detail.is_some() {
         theme::CAPTION_LINE_HEIGHT
     } else {
@@ -48,7 +49,7 @@ pub fn job_row_height(model: &JobRowModel) -> f32 {
 
 /// The fraction of the progress bar that is filled: `progress` clamped into `0.0..=1.0`, and zero
 /// for a non-finite value, so a caller's arithmetic can never overfill the rail.
-pub fn progress_fraction(progress: f32) -> f32 {
+pub(crate) fn progress_fraction(progress: f32) -> f32 {
     if progress.is_finite() {
         progress.clamp(0.0, 1.0)
     } else {

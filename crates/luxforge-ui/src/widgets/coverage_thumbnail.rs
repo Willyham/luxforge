@@ -34,12 +34,12 @@ pub struct CoverageThumbnailModel {
 }
 
 /// The most cells the thumbnail draws across and down: one per point.
-pub const THUMBNAIL_CELLS: (usize, usize) = (
+pub(crate) const THUMBNAIL_CELLS: (usize, usize) = (
     theme::THUMBNAIL_WIDTH as usize,
     theme::THUMBNAIL_HEIGHT as usize,
 );
 
-pub fn coverage_thumbnail<'a, M: 'a>(model: &CoverageThumbnailModel) -> Element<'a, M> {
+pub(crate) fn coverage_thumbnail<'a, M: 'a>(model: &CoverageThumbnailModel) -> Element<'a, M> {
     canvas(Thumbnail {
         model: model.clone(),
     })
@@ -51,7 +51,7 @@ pub fn coverage_thumbnail<'a, M: 'a>(model: &CoverageThumbnailModel) -> Element<
 /// The cells to draw and their grid size: the caller's grid, sampled down by nearest neighbour to
 /// at most [`THUMBNAIL_CELLS`] when it is finer. `None` when the grid is missing, empty or its
 /// length does not match its size.
-pub fn thumbnail_grid(
+pub(crate) fn thumbnail_grid(
     cells: Option<&[u8]>,
     width: usize,
     height: usize,
@@ -77,7 +77,7 @@ pub fn thumbnail_grid(
 }
 
 /// One row's runs of equal cells, as `(first cell, length, value)`, left to right.
-pub fn row_runs(row: &[u8]) -> Vec<(usize, usize, u8)> {
+pub(crate) fn row_runs(row: &[u8]) -> Vec<(usize, usize, u8)> {
     let mut runs: Vec<(usize, usize, u8)> = Vec::new();
     for (index, &value) in row.iter().enumerate() {
         match runs.last_mut() {

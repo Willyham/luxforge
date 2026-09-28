@@ -9,7 +9,7 @@ use iced::{Alignment, Element, Length, Theme};
 
 /// Renders a floating, bordered bar holding `children` laid out in a row, in order: the canvas
 /// chrome's surface, [`theme::DRAFT_BAR_HEIGHT`] tall.
-pub fn floating_bar<'a, M: Clone + 'a>(children: Vec<Element<'a, M>>) -> Element<'a, M> {
+pub(crate) fn floating_bar<'a, M: Clone + 'a>(children: Vec<Element<'a, M>>) -> Element<'a, M> {
     let mut content = Row::new()
         .spacing(theme::DRAFT_BAR_SPACING)
         .align_y(Alignment::Center)

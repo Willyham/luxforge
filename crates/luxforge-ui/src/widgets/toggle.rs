@@ -79,7 +79,7 @@ fn switch<'a, M: Clone + 'a>(
 
 /// The knob's centre, in points from the switch's left edge: inset at the left when off and at the
 /// right when on.
-pub fn knob_center(width: f32, on: bool) -> f32 {
+pub(crate) fn knob_center(width: f32, on: bool) -> f32 {
     let travel = theme::SWITCH_INSET + theme::SWITCH_KNOB / 2.0;
     if on { width - travel } else { travel }
 }
