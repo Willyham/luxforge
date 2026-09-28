@@ -24,7 +24,7 @@ use crate::{
 use iced::{
     Alignment, ContentFit, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
     alignment::{Horizontal, Vertical},
-    mouse::Cursor,
+    mouse::{self, Cursor},
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
@@ -393,8 +393,11 @@ fn plain<'a>(
                     )))
                 });
                 area = area.on_exit(Message::Pointer(PointerMessage::Moved(None)));
-                if picking && let Some((x, y)) = pointer {
-                    area = area.on_press(Message::Pointer(PointerMessage::Picked { x, y }));
+                if picking {
+                    area = area.interaction(mouse::Interaction::Crosshair);
+                    if let Some((x, y)) = pointer {
+                        area = area.on_press(Message::Pointer(PointerMessage::Picked { x, y }));
+                    }
                 }
                 area.into()
             })
@@ -402,82 +405,80 @@ fn plain<'a>(
         }
         ZoomView::Percent(value) => {
             let scale = value / 100.0 / model.scale_factor;
-            let (box_width, box_height) = (
-                Length::Fixed(width as f32 * scale),
-                Length::Fixed(height as f32 * scale),
-            );
-            // `Fill` rather than a fit: the box is the exact stage's displayed size and the texture
-            // may be the display proxy, which is smaller. Filling stretches it to exactly that box,
-            // and the overlays with it, whichever texture is on screen. The box may be far larger
-            // than the window; the surface hands the renderer only its visible part.
-            let photo: Element<'a, Message> =
-                if surfaces.region.is_none() && surfaces.photo_content.is_none() {
-                    // A whole-output proxy is still a valid percentage frame, including at 50% and
-                    // when a region request named a fallback. It is not an exact full texture slot.
-                    match raster {
-                        Some(raster) => luxforge_ui::photo_surface(
-                            raster,
+            let size = Size::new(width as f32 * scale, height as f32 * scale);
+            let surfaces = *surfaces;
+            scrolled(size, move || {
+                let (box_width, box_height) =
+                    (Length::Fixed(size.width), Length::Fixed(size.height));
+                // `Fill` rather than a fit: the box is the exact stage's displayed size and the
+                // texture may be the display proxy, which is smaller. Filling stretches it to
+                // exactly that box, and the overlays with it, whichever texture is on screen. The
+                // box may be far larger than the window; the surface hands the renderer only its
+                // visible part.
+                let photo: Element<'a, Message> =
+                    if surfaces.region.is_none() && surfaces.photo_content.is_none() {
+                        // A whole-output proxy is still a valid percentage frame, including at 50%
+                        // and when a region request named a fallback. It is not an exact full
+                        // texture slot.
+                        match raster {
+                            Some(raster) => luxforge_ui::photo_surface(
+                                raster,
+                                luxforge_ui::Placement::Fill,
+                                box_width,
+                                box_height,
+                            )
+                            .overlays(clipping, coverage)
+                            .into(),
+                            None => empty("Rendering photograph…"),
+                        }
+                    } else {
+                        let whole = surfaces.region.is_none();
+                        luxforge_ui::viewport_surface(
+                            raster.zip(surfaces.photo_content),
+                            surfaces.region,
+                            surfaces.current_content,
+                            (width, height),
                             luxforge_ui::Placement::Fill,
                             box_width,
                             box_height,
                         )
-                        .overlays(clipping, coverage)
-                        .into(),
-                        None => empty("Rendering photograph…"),
-                    }
-                } else {
-                    luxforge_ui::viewport_surface(
-                        raster.zip(surfaces.photo_content),
-                        surfaces.region,
-                        surfaces.current_content,
-                        (width, height),
-                        luxforge_ui::Placement::Fill,
-                        box_width,
-                        box_height,
-                    )
-                    .overlays(
-                        if surfaces.region.is_some() {
-                            None
-                        } else {
-                            clipping
-                        },
-                        if surfaces.region.is_some() {
-                            None
-                        } else {
-                            coverage
-                        },
-                    )
-                    .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
-                    .into()
+                        .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
+                        .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
+                        .into()
+                    };
+                let handles = mask_draft
+                    .zip(mask_map)
+                    .zip(CanvasView::percent(value, model.scale_factor));
+                let layered: Element<'a, Message> = match handles {
+                    Some(((draft, map), view)) => stack([
+                        photo,
+                        canvas(MaskCanvas::new(draft, Placement { map, view }))
+                            .width(box_width)
+                            .height(box_height)
+                            .into(),
+                    ])
+                    .into(),
+                    None => photo,
                 };
-            let handles = mask_draft
-                .zip(mask_map)
-                .zip(CanvasView::percent(value, model.scale_factor));
-            let layered: Element<'a, Message> = match handles {
-                Some(((draft, map), view)) => stack([
-                    photo,
-                    canvas(MaskCanvas::new(draft, Placement { map, view }))
-                        .width(box_width)
-                        .height(box_height)
-                        .into(),
-                ])
-                .into(),
-                None => photo,
-            };
-            // Inside the scrollable the reported point is already content-space: the scrollable
-            // translates the cursor by its offset before its content sees it.
-            let mut area = mouse_area(layered).on_move(move |point| {
-                Message::Pointer(PointerMessage::Moved(percent_pick(
-                    (width, height),
-                    scale,
-                    point,
-                )))
-            });
-            area = area.on_exit(Message::Pointer(PointerMessage::Moved(None)));
-            if picking && let Some((x, y)) = pointer {
-                area = area.on_press(Message::Pointer(PointerMessage::Picked { x, y }));
-            }
-            scrolled(area.into())
+                // Inside the scrollable the reported point is already content-space: the
+                // scrollable translates the cursor by its offset before its content sees it, and
+                // the mouse area reports it relative to its own, centred bounds.
+                let mut area = mouse_area(layered).on_move(move |point| {
+                    Message::Pointer(PointerMessage::Moved(percent_pick(
+                        (width, height),
+                        scale,
+                        point,
+                    )))
+                });
+                area = area.on_exit(Message::Pointer(PointerMessage::Moved(None)));
+                if picking {
+                    area = area.interaction(mouse::Interaction::Crosshair);
+                    if let Some((x, y)) = pointer {
+                        area = area.on_press(Message::Pointer(PointerMessage::Picked { x, y }));
+                    }
+                }
+                area.into()
+            })
         }
     }
 }
@@ -531,19 +532,34 @@ fn crop_surface<'a>(
                     .center(Length::Fill)
                     .into();
             };
-            let frame = parts(
-                view,
-                Length::Fixed(box_size.0 as f32 * view.scale),
-                Length::Fixed(box_size.1 as f32 * view.scale),
+            let size = Size::new(
+                box_size.0 as f32 * view.scale,
+                box_size.1 as f32 * view.scale,
             );
-            scrolled(frame.into())
+            scrolled(size, move || {
+                parts(view, Length::Fixed(size.width), Length::Fixed(size.height)).into()
+            })
         }
     }
 }
 
 /// The one scrollable the photo surface uses, so a Space drag can scroll it while drafting.
-fn scrolled(content: Element<'_, Message>) -> Element<'_, Message> {
-    scrollable(container(content).center(Length::Shrink))
+///
+/// A scrollable lays its content out unbounded along both axes, so a `Fill` would shrink to the
+/// content and leave a photograph smaller than the surface in the top-left corner. The content is
+/// centred in a box of at least the surface's size instead: on an axis where the photograph is
+/// smaller it sits in the middle and nothing scrolls; where it is larger the box is exactly the
+/// photograph and the scroll offset is the pan, as before.
+fn scrolled<'a>(
+    content: Size,
+    build: impl Fn() -> Element<'a, Message> + 'a,
+) -> Element<'a, Message> {
+    responsive(move |available| {
+        scrollable(
+            container(build())
+                .center_x(Length::Fixed(content.width.max(available.width)))
+                .center_y(Length::Fixed(content.height.max(available.height))),
+        )
         .id(SURFACE_ID)
         .direction(scrollable::Direction::Both {
             vertical: scrollable::Scrollbar::default(),
@@ -554,6 +570,8 @@ fn scrolled(content: Element<'_, Message>) -> Element<'_, Message> {
             Message::View(ViewMessage::Panned(offset.x, offset.y))
         })
         .into()
+    })
+    .into()
 }
 
 /// Where the toolkit draws a contained image inside `available`, matching the image widget's own

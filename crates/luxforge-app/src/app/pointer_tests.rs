@@ -174,6 +174,56 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
     finish(editor, catalog);
 }
 
+/// A module's pick is one-shot: once its answer is committed the pick mode is left the way Escape
+/// leaves it, so a pick made on a mask goes back to the Masks panel rather than staying armed.
+#[test]
+fn a_committed_module_pick_puts_itself_away() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+    let (mode, _, action) = sample_mode(&editor);
+    let mask = luxforge_core::MaskId::new();
+    *editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+        entry_id: editor.displayed_entry().expect("a displayed entry"),
+        masks: vec![luxforge_core::mask::commands::MaskReport {
+            id: mask.clone(),
+            index: 0,
+            name: "Sky".into(),
+            amount: 100.0,
+            invert: false,
+            components: Vec::new(),
+            layers: Vec::new(),
+        }],
+    });
+    editor.selected_mask = Some(mask);
+    editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
+    let _ = editor.update(Message::View(super::message::ViewMessage::SetMode(
+        mode.clone(),
+    )));
+    editor.session.workspace.mode = mode;
+    assert!(editor.pick_on_mask);
+    assert_eq!(editor.leave_to().as_deref(), Some(luxforge_core::MASK_MODE));
+
+    let declared = tools::declared_action(&editor.modules, &action)
+        .expect("the declared action")
+        .clone();
+    let field = declared.parameters[0].name.clone();
+    let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
+        entry: editor.displayed_entry().expect("a displayed entry"),
+        action,
+        point: (100, 42),
+        result: Ok(json!({ field: -12.0 })),
+    }));
+    assert!(
+        editor.busy,
+        "the answer was not submitted: {}",
+        editor.status
+    );
+    assert!(
+        !editor.pick_on_mask,
+        "the pick is still armed after committing its answer"
+    );
+    finish(editor, catalog);
+}
+
 /// A refused query commits nothing and shows the core's own reason, whose prefix names why.
 #[test]
 fn a_refused_sample_shows_its_reason_and_commits_nothing() {

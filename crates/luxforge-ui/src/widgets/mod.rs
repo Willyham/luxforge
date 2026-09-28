@@ -61,7 +61,9 @@ pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
     histogram_inspector, polygon_points, triangle_ink, triangle_points,
 };
-pub use icon_button::{Icon, IconButtonModel, header_icon_button, icon, icon_button};
+pub use icon_button::{
+    Icon, IconButtonModel, header_icon_button, icon, icon_button, title_bar_icon_button,
+};
 pub use inline_menu::inline_menu;
 pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};

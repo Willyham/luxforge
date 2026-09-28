@@ -65,6 +65,9 @@ pub(crate) struct TitleBarModel {
     /// Both clipping overlays are on, so the bar's Clipping toggle reads as selected. `J` and this
     /// button drive the pair together; the two triangles drive them one at a time.
     pub(crate) clipping_on: bool,
+    /// The window fills the screen, so the bar starts at its ordinary inset: macOS hides the
+    /// traffic lights there.
+    pub(crate) fullscreen: bool,
 }
 
 /// A percentage as the view control and the status bar print it: whole above 10%, where a tenth
@@ -163,6 +166,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         compare_held: inputs.compare_held,
         clipping_on: inputs.session.workspace.clip_shadows
             && inputs.session.workspace.clip_highlights,
+        fullscreen: inputs.fullscreen,
     }
 }
 

@@ -34,6 +34,26 @@ fn compare_remembers_the_selection_it_replaced() {
     finish(editor, catalog);
 }
 
+/// Shift+\ holds the whole, uncropped Original through the same hold: it remembers the selection
+/// it replaced, a second press while held changes nothing, and the one release ends either hold.
+#[test]
+fn the_uncropped_compare_is_the_same_hold() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+    editor.original_entry = Some(luxforge_core::EntryId::new());
+    let _ = editor.update(Message::History(HistoryMessage::CompareUncropped));
+    assert_eq!(editor.compare_return, Some(HistorySelection::Current));
+    assert!(editor.workspace.title.compare_held);
+    let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
+    assert_eq!(
+        editor.compare_return,
+        Some(HistorySelection::Current),
+        "one hold at a time"
+    );
+    let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
+    assert!(editor.compare_return.is_none());
+    finish(editor, catalog);
+}
+
 /// Compare selects the Original entry, which would pause an open draft. The rule is simple and
 /// explicit: it is refused with a reason, and the release that follows a refused hold does
 /// nothing at all rather than restoring a selection Compare never took.

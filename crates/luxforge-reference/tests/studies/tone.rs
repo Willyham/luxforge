@@ -195,12 +195,12 @@ fn combined_extremes_stay_finite_and_monotone_on_an_extended_ramp() {
 ///
 /// The minimum slope actually observed over this exact grid is **not**
 /// bounded by 0.02: it is `~2.03e-7`, at the corner
-/// `(contrast=100, highlights=-100, shadows=-100, whites=100, blacks=100)`,
+/// `(contrast=100, highlights=-100, shadows=-100, whites=100, blacks=-100)`,
 /// x close to the domain's right edge. This is not a property of the
 /// Highlights/Shadows family -- isolated, its own worst-case slope over this
 /// same extended domain is `~0.224`, far above 0.02 (see
 /// `highlights_shadows_stage_alone_has_a_strong_worst_case_slope` below). The
-/// bottleneck is positive Contrast: at Whites = Blacks = +100 the endpoint
+/// bottleneck is positive Contrast: at Whites = +100, Blacks = -100 the endpoint
 /// remap's gap is only 0.5 (a 2x amplification), which combined with
 /// Contrast = +100 (alpha = 6) pushes the value Contrast receives far enough
 /// from the pivot (past x = 3 in the curve domain) that the logistic
@@ -208,7 +208,7 @@ fn combined_extremes_stay_finite_and_monotone_on_an_extended_ramp() {
 /// documented in "Contrast". Negative Contrast has no such saturation: its
 /// slope never falls below `1 / sigma` (`~0.603` at -100), and the smallest
 /// slope over the grid among combinations with Contrast < 0 is `~0.118`, at
-/// `(contrast=-100, highlights=-100, shadows=100, whites=-100, blacks=-100)`.
+/// `(contrast=-100, highlights=-100, shadows=100, whites=-100, blacks=100)`.
 /// Restricted to the primary `[0, 1]` working domain (still all 312
 /// combinations, still the same dense grid density), the minimum observed
 /// slope is `~0.0328`, clearing 0.02, at the same positive corner as the
@@ -1025,17 +1025,17 @@ fn build_tone_cases() -> Vec<ToneCase> {
             );
         }
     }
-    // The endpoint remap's steepest corner (Whites = Blacks = +100) feeding Contrast values far
-    // outside [0, 1], on both sides of Contrast.
+    // The endpoint remap's steepest corner (Whites = +100, Blacks = -100) feeding Contrast values
+    // far outside [0, 1], on both sides of Contrast.
     for amount in [-100.0, 100.0] {
         for (region, input) in [("near-black", near_black), ("past-white", past_white)] {
             push(
-                format!("contrast-sign/{amount}/whites-blacks-100/{region}"),
+                format!("contrast-sign/{amount}/whites-100-blacks--100/{region}"),
                 input,
                 ToneParams {
                     contrast: amount,
                     whites: 100.0,
-                    blacks: 100.0,
+                    blacks: -100.0,
                     ..ToneParams::NEUTRAL
                 },
             );
