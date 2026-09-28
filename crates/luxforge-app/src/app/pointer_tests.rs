@@ -96,7 +96,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
     let (mode, query, action) = sample_mode(&editor);
     let mask = luxforge_core::MaskId::new();
     // The panel holds that mask, as `mask.list` reported it.
-    *editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+    editor.masks = Some(luxforge_core::mask::commands::MaskListing {
         entry_id: editor.displayed_entry().expect("a displayed entry"),
         masks: vec![luxforge_core::mask::commands::MaskReport {
             id: mask.clone(),
@@ -181,7 +181,7 @@ fn a_committed_module_pick_puts_itself_away() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let (mode, _, action) = sample_mode(&editor);
     let mask = luxforge_core::MaskId::new();
-    *editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+    editor.masks = Some(luxforge_core::mask::commands::MaskListing {
         entry_id: editor.displayed_entry().expect("a displayed entry"),
         masks: vec![luxforge_core::mask::commands::MaskReport {
             id: mask.clone(),

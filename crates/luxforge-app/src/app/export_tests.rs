@@ -193,6 +193,7 @@ fn a_destination_that_exists_is_refused_in_the_status_bar() {
 #[test]
 fn the_palette_lists_both_exports_for_export_jpeg() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    let _ = editor.update(Message::Palette(crate::app::message::PaletteMessage::Open));
     let _ = editor.update(Message::Palette(
         crate::app::message::PaletteMessage::Query("export".into()),
     ));

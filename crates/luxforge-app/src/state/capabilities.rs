@@ -288,8 +288,6 @@ pub(crate) struct ModuleCapabilities {
     pub(crate) profile_label: String,
     /// Owner requests in flight for this module.
     pub(crate) pending: u32,
-    /// Increases on every change, so the module's section is re-derived exactly when this does.
-    pub(crate) version: u64,
 }
 
 impl ModuleCapabilities {
@@ -396,11 +394,9 @@ impl CapabilityStore {
             .collect()
     }
 
-    /// One module's state, created on first use, with its version bumped: every caller changes it.
-    pub(crate) fn touch(&mut self, module: &str) -> &mut ModuleCapabilities {
-        let state = self.modules.entry(module.to_owned()).or_default();
-        state.version += 1;
-        state
+    /// One module's state, created on first use.
+    pub(crate) fn module_mut(&mut self, module: &str) -> &mut ModuleCapabilities {
+        self.modules.entry(module.to_owned()).or_default()
     }
 }
 

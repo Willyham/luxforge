@@ -1000,10 +1000,10 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
     finish(editor, catalog);
 }
 
-/// A drag re-derives the section whose action it drafts and leaves every other section exactly
-/// as it was, which is the per-section version rule the panel is built on.
+/// A drag changes the section whose action it drafts and leaves every other section exactly as it
+/// was.
 #[test]
-fn a_drag_re_derives_only_the_drafting_modules_section() {
+fn a_drag_changes_only_the_drafting_modules_section() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     editor.developer = true;
     editor.rederive();
@@ -1015,52 +1015,44 @@ fn a_drag_re_derives_only_the_drafting_modules_section() {
         .expect("the declaring module")
         .id
         .clone();
-    let versions = |editor: &Editor| -> BTreeMap<String, u64> {
+    let sections = |editor: &Editor| -> BTreeMap<String, crate::state::tools::SectionModel> {
         editor
             .workspace
             .tools
             .all()
-            .map(|section| (section.module_id.clone(), section.version))
+            .map(|section| (section.module_id.clone(), section.clone()))
             .collect()
     };
-    let before = versions(&editor);
+    let before = sections(&editor);
     assert!(before.len() > 1, "more than one section is on screen");
     // The preset library disables its rows while any draft is open, so opening the gesture
-    // re-derives that section once; nothing else outside the drafting module moves.
+    // changes that section once; nothing else outside the drafting module moves.
     let library = crate::state::presets::presets_control(&editor.modules)
         .map(|(module, _)| module.id.clone())
         .expect("the presets control");
 
     let _ = testing::slide(&mut editor, &action, &parameter, 0.5);
-    let opened = versions(&editor);
-    for (module, version) in &before {
+    let opened = sections(&editor);
+    for (module, section) in &before {
         if module == &owner || module == &library {
-            assert!(
-                opened[module] > *version,
-                "{module} follows the gesture: {version} to {}",
-                opened[module]
-            );
+            assert_ne!(&opened[module], section, "{module} follows the gesture");
         } else {
             assert_eq!(
-                opened[module], *version,
-                "{module} was re-derived by a drag in another module"
+                &opened[module], section,
+                "{module} was changed by a drag in another module"
             );
         }
     }
 
     let _ = testing::slide(&mut editor, &action, &parameter, 0.7);
-    let after = versions(&editor);
-    for (module, version) in &opened {
+    let after = sections(&editor);
+    for (module, section) in &opened {
         if module == &owner {
-            assert!(
-                after[module] > *version,
-                "{module} follows its own field: {version} to {}",
-                after[module]
-            );
+            assert_ne!(&after[module], section, "{module} follows its own field");
         } else {
             assert_eq!(
-                after[module], *version,
-                "{module} was re-derived by a move in another module"
+                &after[module], section,
+                "{module} was changed by a move in another module"
             );
         }
     }

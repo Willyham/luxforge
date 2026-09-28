@@ -891,7 +891,7 @@
     {
       "id": "TASK-012",
       "description": "Measure what deriving every workspace region on every message costs, and remove the per-region keys if it stays under about 0.2 ms; otherwise key only the heavy region, on one value.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -910,12 +910,6 @@
           "label": "Post-consolidation design",
           "target": "docs/design/post-consolidation.md",
           "relevance": "Constraints, waves and the order across groups."
-        },
-        {
-          "kind": "file",
-          "label": "Tracked stamps",
-          "target": "crates/luxforge-app/src/state/tracked.rs",
-          "relevance": "`Tracked<T>`, the stamp wrapper to delete if derivation is cheap."
         },
         {
           "kind": "file",

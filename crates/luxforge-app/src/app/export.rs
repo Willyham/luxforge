@@ -123,8 +123,8 @@ impl Editor {
     }
 
     fn close_export_menu(&mut self) {
-        if matches!(*self.menu, Some(MenuTarget::Export)) {
-            *self.menu = None;
+        if matches!(self.menu, Some(MenuTarget::Export)) {
+            self.menu = None;
         }
     }
 

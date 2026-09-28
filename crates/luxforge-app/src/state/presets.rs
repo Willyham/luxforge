@@ -33,8 +33,6 @@ pub(crate) struct PresetLibrary {
     pub(crate) presets: Option<Vec<PresetSummary>>,
     /// Why the last listing failed, until a newer one succeeds.
     pub(crate) error: Option<String>,
-    /// Advanced by every adopted answer, so the section re-derives exactly when the library did.
-    pub(crate) version: u64,
     /// The owner's event sequence the adopted listing was read at. Answers can complete out of
     /// order, so one read at an older sequence never replaces a newer one.
     pub(crate) sequence: u64,
@@ -52,14 +50,12 @@ impl PresetLibrary {
         self.presets = Some(presets);
         self.sequence = sequence;
         self.error = None;
-        self.version += 1;
         true
     }
 
     /// The listing failed. What was listed before stays on screen with the reason beside it.
     pub(crate) fn failed(&mut self, error: String) {
         self.error = Some(error);
-        self.version += 1;
     }
 
     /// The first listing has answered, successfully or not, so a captured frame shows the library

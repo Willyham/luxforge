@@ -312,16 +312,9 @@ impl Editor {
         self.adopt_thumbnails(done.masks);
     }
 
-    /// Hold `masks` as the panel's thumbnails, moving their version only when they differ from the
-    /// ones held, so an unchanged delivery derives nothing again.
+    /// Hold `masks` as the panel's thumbnails.
     fn adopt_thumbnails(&mut self, masks: Vec<(MaskId, Option<Thumbnail>)>) {
-        if self.thumbnails.masks == masks {
-            return;
-        }
-        self.thumbnails = MaskThumbnails {
-            version: self.thumbnails.version + 1,
-            masks,
-        };
+        self.thumbnails = MaskThumbnails { masks };
     }
 }
 
@@ -638,7 +631,7 @@ mod tests {
             stack.recipe().clone(),
             None,
         );
-        *editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+        editor.masks = Some(luxforge_core::mask::commands::MaskListing {
             entry_id: editor.displayed_entry().expect("a displayed entry"),
             masks: [&sky, &face]
                 .iter()
@@ -711,14 +704,14 @@ mod tests {
             0,
             "the worker releases the stack with its job"
         );
-        let version = editor.thumbnails.version;
+        let held = editor.thumbnails.masks.clone();
 
         // The same settled stack again starts nothing.
         let (again, _) = fresh_stack(&stack);
         editor.request_preview(PreviewJob::new(again).expect("a job"));
         assert!(!editor.thumbnail_queue.is_busy());
         idle(&mut editor);
-        assert_eq!(editor.thumbnails.version, version);
+        assert_eq!(editor.thumbnails.masks, held);
 
         // In Mask mode a new settled stack goes to the worker as its frame is requested, and is
         // released with the job that reads it.

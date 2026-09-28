@@ -1,6 +1,5 @@
-//! The tools panel model: the descriptor-to-control mapping and one section per registered module.
-//! A section keeps an input digest and a version, so a field change in one module re-derives that
-//! module alone and leaves every other section untouched.
+//! The tools panel model: the descriptor-to-control mapping and one section per registered module,
+//! derived again after every message.
 use crate::{
     crop_draft::{AspectPreset, CropDraft, committed_aspect},
     state::{
@@ -161,8 +160,7 @@ pub(crate) enum SectionLayout {
     },
 }
 
-/// One registered module's section. `version` increases only when the section's own inputs change.
-#[allow(dead_code)]
+/// One registered module's section.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SectionModel {
     pub(crate) module_id: String,
@@ -189,12 +187,9 @@ pub(crate) struct SectionModel {
     /// chip: set on a maskable module's section while the sections are bound to an open mask, and
     /// `None` everywhere else, so leaving Mask mode drops it.
     pub(crate) scope: Option<String>,
-    pub(crate) version: u64,
     pub(crate) enabled: bool,
     /// Why editing is disabled, in the words the status bar would use.
     pub(crate) disabled_reason: Option<String>,
-    /// The inputs this section was derived from.
-    digest: u64,
 }
 
 impl SectionModel {
@@ -632,72 +627,58 @@ pub(crate) struct CropSectionModel {
     pub(crate) enabled: bool,
 }
 
-impl ToolsModel {
-    /// Recompute every section whose inputs changed and leave the rest exactly as they were.
-    pub(crate) fn refresh(&mut self, inputs: &Inputs<'_>) {
-        self.menu = inputs.menu.cloned();
-        self.status = match (inputs.modules.is_empty(), inputs.modules_ready) {
-            (true, false) => ToolsStatus::Loading,
-            (true, true) => ToolsStatus::Empty,
-            (false, _) => ToolsStatus::Ready,
-        };
-        let mut sections = Vec::new();
-        let mut developer = Vec::new();
-        // Mask mode replaces the module sections with the Masks panel and the adjustments that can
-        // apply through a mask: a module with no maskable effect has nothing to offer a mask, so
-        // offering its controls there would be offering an edit the mask cannot carry.
-        // A pick taken on a mask keeps the mask workspace: the target stays bound to that mask.
-        let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode)
-            || inputs.target.is_some();
-        for module in inputs.modules {
-            if masking && !module.effects.iter().any(|effect| effect.maskable) {
-                continue;
-            }
-            if !applies(module, inputs.state) {
-                continue;
-            }
-            if !draws_section(module) {
-                continue;
-            }
-            if module.developer && !inputs.developer {
-                continue;
-            }
-            let target = if module.developer {
-                &mut developer
-            } else {
-                &mut sections
-            };
-            // The section's last model is taken rather than copied: an unchanged one is moved
-            // back as it is.
-            let previous = self
-                .sections
-                .iter()
-                .position(|section| section.module_id == module.id)
-                .map(|index| self.sections.swap_remove(index))
-                .or_else(|| {
-                    self.developer
-                        .iter()
-                        .position(|section| section.module_id == module.id)
-                        .map(|index| self.developer.swap_remove(index))
-                });
-            target.push(section(module, inputs, previous));
+/// The tools panel for these inputs: one section per registered module that applies and draws one.
+pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
+    let status = match (inputs.modules.is_empty(), inputs.modules_ready) {
+        (true, false) => ToolsStatus::Loading,
+        (true, true) => ToolsStatus::Empty,
+        (false, _) => ToolsStatus::Ready,
+    };
+    let mut sections = Vec::new();
+    let mut developer = Vec::new();
+    // Mask mode replaces the module sections with the Masks panel and the adjustments that can
+    // apply through a mask: a module with no maskable effect has nothing to offer a mask, so
+    // offering its controls there would be offering an edit the mask cannot carry.
+    // A pick taken on a mask keeps the mask workspace: the target stays bound to that mask.
+    let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode)
+        || inputs.target.is_some();
+    for module in inputs.modules {
+        if masking && !module.effects.iter().any(|effect| effect.maskable) {
+            continue;
         }
-        self.sections = sections;
-        self.developer = developer;
+        if !applies(module, inputs.state) {
+            continue;
+        }
+        if !draws_section(module) {
+            continue;
+        }
+        if module.developer && !inputs.developer {
+            continue;
+        }
+        let target = if module.developer {
+            &mut developer
+        } else {
+            &mut sections
+        };
+        target.push(section(module, inputs));
     }
+    ToolsModel {
+        sections,
+        developer,
+        status,
+        menu: inputs.menu.cloned(),
+    }
+}
 
+impl ToolsModel {
     /// Every section in registry order, developer sections last.
     pub(crate) fn all(&self) -> impl Iterator<Item = &SectionModel> {
         self.sections.iter().chain(self.developer.iter())
     }
 }
 
-/// One module's section, re-derived only when its own inputs changed.
-fn section(
-    module: &ModuleDescriptor,
-    inputs: &Inputs<'_>,
-    previous: Option<SectionModel>,
-) -> SectionModel {
+/// One module's section.
+fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let expanded = expanded(module, inputs);
     let unavailable = match &module.availability {
         luxforge_core::Availability::Available => None,
@@ -708,12 +689,6 @@ fn section(
     let active = active(module, inputs);
     let layout = section_layout(module, inputs);
     let scope = scope(module, inputs);
-    let digest = digest(module, inputs, expanded, enabled, active, layout, scope);
-    let version = match previous {
-        Some(previous) if previous.digest == digest => return previous,
-        Some(previous) => previous.version + 1,
-        None => 1,
-    };
     let mut controls = Vec::new();
     // A declared crop frame is a host interaction, not a control: the host renders its draft panel
     // here and the module's own controls, Reset crop included, still come below.
@@ -771,10 +746,8 @@ fn section(
         layout,
         status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
         scope: scope.map(str::to_owned),
-        version,
         enabled,
         disabled_reason,
-        digest,
     }
 }
 
@@ -898,7 +871,6 @@ fn edits(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         .any(|row| module.effects.iter().any(|effect| effect.id == row.effect) && !row.neutral)
 }
 
-/// Everything this section is derived from, so an unrelated change leaves its version alone.
 /// The name of the mask the generated sections are bound to, as the displayed entry's listing
 /// names it, or `None` when they are bound to the global layer. A target the listing does not hold
 /// (a selection a moment before the listing catches up) names nothing rather than an id.
@@ -920,217 +892,6 @@ fn scope<'a>(module: &ModuleDescriptor, inputs: &Inputs<'a>) -> Option<&'a str> 
         return None;
     }
     bound_mask_name(inputs)
-}
-
-fn digest(
-    module: &ModuleDescriptor,
-    inputs: &Inputs<'_>,
-    expanded: bool,
-    enabled: bool,
-    active: bool,
-    layout: SectionLayout,
-    scope: Option<&str>,
-) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    module.id.hash(&mut hasher);
-    scope.hash(&mut hasher);
-    format!("{:?}", module.availability).hash(&mut hasher);
-    (expanded, enabled, active, inputs.developer).hash(&mut hasher);
-    // The reason a disabled section shows changes while it stays disabled, such as from a
-    // historical preview to a request in flight.
-    inputs.edit_refusal.hash(&mut hasher);
-    // Which controls apply depends on the photo's kind and the target, and a control a variant
-    // provides reads its providing module's fields, layers and canvas, so those are this section's
-    // inputs too.
-    source_kind(inputs.state).hash(&mut hasher);
-    let providers = providers(module, inputs);
-    for provider in &providers[1..] {
-        provider.id.hash(&mut hasher);
-        format!("{:?}", provider.availability).hash(&mut hasher);
-    }
-    match layout {
-        SectionLayout::Stacked => 0u8.hash(&mut hasher),
-        SectionLayout::Tabs { selected } => (1u8, selected).hash(&mut hasher),
-    }
-    // Sampled curves may depend on the query's entry context even when their point fields are
-    // unchanged. Other modules retain their section version across an unrelated entry switch.
-    if contains_curve(&module.controls) {
-        inputs.display_entry.hash(&mut hasher);
-        inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
-    }
-    for action in providers
-        .iter()
-        .flat_map(|provider| provider.actions.iter())
-    {
-        action.id.hash(&mut hasher);
-        for parameter in &action.parameters {
-            inputs
-                .fields
-                .get(&action.id, &parameter.name)
-                .hash(&mut hasher);
-        }
-        // Which of this module's fields is being typed or dragged changes only this section.
-        for target in [inputs.editing, inputs.dragging] {
-            target
-                .filter(|(declared, _)| *declared == action.id)
-                .map(|(declared, parameter)| (declared.as_str(), parameter.as_str()))
-                .hash(&mut hasher);
-        }
-        // A slider gesture belongs to the module whose action it drafts, so its conflict state
-        // reaches that section alone.
-        inputs
-            .slider_draft
-            .filter(|draft| draft.action == action.id)
-            .map(|draft| (draft.parameter, draft.conflicted))
-            .hash(&mut hasher);
-        for ((curve_action, first_parameter), selected) in &inputs.control_ui.curve_channels {
-            if curve_action == &action.id {
-                (first_parameter, selected).hash(&mut hasher);
-            }
-        }
-        for ((curve_action, first_parameter), selected) in &inputs.control_ui.curve_points {
-            if curve_action == &action.id {
-                (first_parameter, selected).hash(&mut hasher);
-            }
-        }
-        for ((sample_action, parameter), samples) in &inputs.control_ui.curve_samples {
-            if sample_action == &action.id {
-                parameter.hash(&mut hasher);
-                samples.version.hash(&mut hasher);
-            }
-        }
-        for ((edit_action, parameter, point, axis), text) in &inputs.control_ui.curve_edits {
-            if edit_action == &action.id {
-                (parameter, point, axis, text).hash(&mut hasher);
-            }
-        }
-        for ((open_action, parameter), open) in &inputs.control_ui.color_open {
-            if open_action == &action.id {
-                (parameter, open).hash(&mut hasher);
-            }
-        }
-        for ((hex_action, parameter), text) in &inputs.control_ui.color_hex {
-            if hex_action == &action.id {
-                (parameter, text).hash(&mut hasher);
-            }
-        }
-        for ((edit_action, parameter, channel), text) in &inputs.control_ui.color_channels {
-            if edit_action == &action.id {
-                (parameter, channel, text).hash(&mut hasher);
-            }
-        }
-        for ((picker_action, parameter), picker) in &inputs.control_ui.picker_hsv {
-            if picker_action == &action.id {
-                (parameter, picker.rgb).hash(&mut hasher);
-                for fraction in picker.hsv {
-                    fraction.to_bits().hash(&mut hasher);
-                }
-            }
-        }
-    }
-    for (key, value) in &inputs.control_ui.group_expanded {
-        if key
-            .strip_prefix(&module.id)
-            .is_some_and(|rest| rest.starts_with('/'))
-        {
-            (key, value).hash(&mut hasher);
-        }
-    }
-    // The bound target is part of what this section is derived from: opening another mask changes
-    // which layer its controls represent, so the section must re-derive even though nothing else
-    // moved. Only the layers of that target are hashed, for the same reason.
-    inputs.target.map(MaskId::as_str).hash(&mut hasher);
-    if let Some(state) = inputs.state {
-        for layer in &state.current_entry.snapshot.recipe.layers {
-            if layer.mask.as_ref() == inputs.target
-                && providers
-                    .iter()
-                    .flat_map(|provider| provider.effects.iter())
-                    .any(|effect| effect.id == layer.effect_id)
-            {
-                layer.id.as_str().hash(&mut hasher);
-                layer.payload.to_string().hash(&mut hasher);
-            }
-        }
-    }
-    // What the desktop knows about this module's capabilities changes this section alone: its
-    // version moves on every answer, the consent notice names one module, and a task's run belongs
-    // to the asset it was started for.
-    if capabilities::declares(module) {
-        inputs
-            .capabilities
-            .modules
-            .get(&module.id)
-            .map(|state| state.version)
-            .hash(&mut hasher);
-        inputs
-            .capabilities
-            .consent
-            .as_ref()
-            .is_some_and(|open| open.consent.module_id == module.id)
-            .hash(&mut hasher);
-        inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
-    }
-    // The preset library, the create form and whether a draft holds the rows back reach the one
-    // section that renders them, and no other.
-    if contains_presets(&module.controls) {
-        let presets = inputs.presets;
-        (presets.version, presets.pending).hash(&mut hasher);
-        inputs.preset_form.hash(&mut hasher);
-        (
-            &inputs.preset_refusal,
-            inputs.display_entry,
-            inputs.state.is_some(),
-            inputs.session.preview.can_edit(),
-            inputs.busy,
-        )
-            .hash(&mut hasher);
-    }
-    // This module's picker reads selected while its own canvas mode is active, so entering and
-    // leaving that mode re-derives this section and nothing else; a picker a variant provides
-    // reads its providing module's mode.
-    for provider in &providers {
-        owns_mode(provider, inputs).hash(&mut hasher);
-    }
-    if owns_mode(module, inputs)
-        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
-    {
-        let frame = crop_frame(inputs.modules).filter(|frame| frame.module.id == module.id);
-        draft_digest(frame.as_ref(), inputs).hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
-fn contains_presets(controls: &[Control]) -> bool {
-    walk(controls).any(|control| matches!(control, Control::Presets { .. }))
-}
-
-fn contains_curve(controls: &[Control]) -> bool {
-    walk(controls).any(|control| matches!(control, Control::Curve { .. }))
-}
-
-/// Everything the crop section shows, as one string. The draft is transient state, so a section
-/// that owns the canvas mode follows it; idle, the section reads the displayed entry's committed
-/// crop and shows the same fields, so it follows those instead.
-fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
-    let fields = format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{:?}",
-        frame.and_then(|frame| inputs.fields.get(frame.action, frame.angle)),
-        inputs.editing,
-        inputs.crop_custom.0,
-        inputs.crop_custom.1,
-        inputs.crop_guide,
-        inputs.session.preview.can_edit(),
-        inputs.gesture_conflicted,
-        inputs.apply_refusal,
-    );
-    match inputs.draft {
-        Some(draft) => format!("{}|{}|{fields}", draft.summary(), draft.preset),
-        None => format!(
-            "none|{:?}|{fields}",
-            frame.map(|frame| committed_crop(frame, inputs)),
-        ),
-    }
 }
 
 /// One declared control as the panel models it. `owner` says whose declarations resolve its
