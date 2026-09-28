@@ -1958,6 +1958,8 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | Cancel a task stalled inside its request to `cancelled` (the cancel shuts the request's socket down; measured 2026-09-27 on the [`ureq` transport](#transport-on-ureqs-agent), load 35 to 39) | 0.28 / 0.89 ms | 10 |
 | Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |
 
+The two request rows were measured through the real transport against the loopback proof endpoint. Since the transport moved to `luxforge-net`, `capability_timing` sends through the core's in-memory transport, which checks a cancel every millisecond, so a new run of those two rows measures the host around the request, not the network path; the real transport's cancel latency is the one in the [module capabilities design](../design/module-capabilities.md#transport).
+
 Discovery, registration and catalog reopen start no worker thread and create no directory: `schema.list` and `module.list` against a fresh data root leave it empty, and the owner tests assert that no lane has started and the secret store saw no call. The two lanes block on their channels while idle.
 
 ### Editor before and after
@@ -1986,6 +1988,18 @@ Release builds (`cargo xtask build --release`) of `cdd5667`, whose transport fra
 | `Cargo.lock` packages | 509 | 488: `ureq` and `utf8-zero` become normal dependencies, and the 21 packages of the ICU4X normalizer behind `idna_adapter` 1.2.2 go |
 
 The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference.
+
+### The transport outside the core
+
+`cargo test -p luxforge-core --no-run --locked` on the M4 Pro (14 cores), Rust 1.94.0, dev profile, 2026-09-28, before (`494beb2b`, the transport and Keychain store in the core) and after (the change moving them to `luxforge-net`), one run each in the order before, after, after, before, in one worktree on a host shared with other sessions: the one-minute load average was 13 to 27 across these runs, so the wall times vary by more than any difference between the builds, and CPU time (user, from `/usr/bin/time`) is the steadier figure. "Cold" is a fresh target directory, every dependency built; "clean core" is `cargo clean -p luxforge-core` over built dependencies, which rebuilds the core and `luxforge-testkit`.
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| Packages compiled, cold | 105 | 86: `rustls`, its pki types and webpki, `ring`, the platform verifier, `security-framework` and its `-sys`, `ureq`, `ureq-proto`, `http`, `httparse`, `base64`, `utf8-zero`, `log`, `once_cell`, `subtle`, `untrusted`, `getrandom` 0.2 and `bytes` go |
+| Cold, wall / user CPU | 86.0 s / 436 s; 140.3 s / 483 s | 97.3 s / 402 s; 85.3 s / 401 s |
+| Clean core, wall / user CPU | 56.8 s / 295 s; 54.4 s / 307 s | 68.1 s / 314 s; 56.4 s / 295 s |
+
+A new worktree's first build of the core's tests compiles 19 fewer packages and spends about 35 to 80 s less CPU, 8 to 17 percent. Rebuilding the core alone shows no difference outside the noise: the transport was a small part of the core's own code, and the dependencies it no longer links were already built. The core's normal dependency tree (`cargo tree -p luxforge-core -e normal`) went from 80 packages to 61.
 
 ## Performance section, activity board and resource counters
 
