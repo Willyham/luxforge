@@ -1342,6 +1342,8 @@ struct PaintPhaseSample {
     generation: u64,
     phase: &'static str,
     proxy: bool,
+    /// When the frame was presented, on the run's own clock.
+    displayed_ms: f64,
     input_to_presented_ms: f64,
     owner_round_trip_ms: f64,
     executor_wait_ms: f64,
@@ -1354,11 +1356,8 @@ struct PaintPhaseSample {
     result_to_surface_ms: f64,
 }
 
-/// Pair one measured paint input with its owner round-trip, worker result and presented frame.
-fn paced_stroke_phase_samples(
-    events: &[Value],
-    positions: usize,
-) -> Result<(usize, Vec<PaintPhaseSample>)> {
+/// The run's events from its paced stroke step on.
+fn paced_stroke_events(events: &[Value], positions: usize) -> Result<&[Value]> {
     let stroke_step = events
         .iter()
         .position(|event| {
@@ -1370,7 +1369,15 @@ fn paced_stroke_phase_samples(
                     .is_some_and(|points| points.len() == positions)
         })
         .ok_or("The event stream has no paced stroke step matching this run")?;
-    let events = &events[stroke_step..];
+    Ok(&events[stroke_step..])
+}
+
+/// Pair one measured paint input with its owner round-trip, worker result and presented frame.
+fn paced_stroke_phase_samples(
+    events: &[Value],
+    positions: usize,
+) -> Result<(usize, Vec<PaintPhaseSample>)> {
+    let events = paced_stroke_events(events, positions)?;
     let mut pending: Option<f64> = None;
     let mut inputs: Vec<(f64, u64, [f64; 4])> = Vec::new();
     for event in events {
@@ -1455,6 +1462,7 @@ fn paced_stroke_phase_samples(
             generation,
             phase,
             proxy,
+            displayed_ms,
             input_to_presented_ms,
             owner_round_trip_ms,
             executor_wait_ms: owner_legs[0],
@@ -1468,6 +1476,43 @@ fn paced_stroke_phase_samples(
         });
     }
     Ok((inputs.len(), samples))
+}
+
+/// The paced stroke's press, as drag mode's press rows read a slider's: from the stroke's first
+/// `mask_stroke_position`, logged in the update that hands the press to the desktop, to the first
+/// `mask_draft_set` after it and to the first of the stroke's frames presented. Every later position
+/// is timed from its own `draft.set`, so these are the only figures that include whatever the press
+/// waits for before its first `draft.set` goes. One stroke is one press, so a run adds one sample to
+/// each; a first frame is `None` when no frame of the stroke reached the screen.
+fn stroke_press(
+    events: &[Value],
+    positions: usize,
+    samples: &[PaintPhaseSample],
+) -> Result<(f64, Option<f64>)> {
+    let events = paced_stroke_events(events, positions)?;
+    let press = events
+        .iter()
+        .find(|event| {
+            event["event"] == json!("mask_stroke_position")
+                && event["detail"]["index"].as_u64() == Some(0)
+        })
+        .ok_or("The paced stroke logged no press")?;
+    let press = elapsed(press)?;
+    let first_set = events
+        .iter()
+        .filter(|event| event["event"] == json!("mask_draft_set"))
+        .map(elapsed)
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .find(|at| *at >= press)
+        .ok_or("The press sent no mask draft.set")?;
+    let first_frame = samples
+        .iter()
+        .map(|sample| sample.displayed_ms)
+        .filter(|at| *at >= press)
+        .reduce(f64::min)
+        .map(|at| at - press);
+    Ok((first_set - press, first_frame))
 }
 
 /// One paced stroke's input-to-presented-frame samples, paired out of a run's own events.
@@ -1644,6 +1689,13 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     for (metric, phase) in phases {
         rows.push(stats::row(metric, "ms", phase_samples.iter().map(phase)));
     }
+    let (press_to_set, press_to_frame) = stroke_press(&events, options.samples, &phase_samples)?;
+    rows.push(stats::row("press_to_first_draft_set", "ms", [press_to_set]));
+    rows.push(stats::row(
+        "press_to_first_presented_frame",
+        "ms",
+        press_to_frame,
+    ));
     rows.extend(resource_rows(&usage, last));
 
     let mut result = json!({
@@ -1682,6 +1734,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "measured_p95_ms":input_p95,
             "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
         "rows":rows,
+        "press_note":"press_to_first_draft_set and press_to_first_presented_frame start at the stroke's first mask_stroke_position, logged in the update that hands the press to the desktop, and end at its first mask draft.set and at the first preview_displayed of any of the stroke's own frames; they are the only rows that include what a press waits for before its first draft.set. A stroke has one press, so each run adds one sample to each.",
         "load":launch::load(load_start),
         "load_average_1m_end":load_end,
         "phase_samples":phase_samples.iter().map(|sample| json!({
@@ -2772,6 +2825,42 @@ mod tests {
         assert_eq!(sample.before_worker_result_ms, 1.0);
         assert_eq!(sample.result_to_surface_ms, 2.0);
         assert_eq!(sample.input_to_presented_ms, 15.0);
+    }
+
+    #[test]
+    fn a_strokes_press_is_timed_to_its_first_set_and_its_first_frame() {
+        let events = vec![
+            json!({"event":"mask_draft_set","elapsed_ms":1.0}),
+            json!({"event":"script_step","elapsed_ms":9.0,"detail":{"request":{"mask":{"stroke":{
+                "interval_ms":24,"points":[[0.2,0.5],[0.3,0.5]]
+            }}}}}),
+            json!({"event":"mask_stroke_position","elapsed_ms":12.0,"detail":{"index":0}}),
+            json!({"event":"mask_draft_begin","elapsed_ms":12.5}),
+            json!({"event":"mask_draft_set","elapsed_ms":13.0}),
+            json!({"event":"mask_stroke_position","elapsed_ms":36.0,"detail":{"index":1}}),
+            json!({"event":"mask_draft_set","elapsed_ms":36.5}),
+        ];
+        let sample = |displayed_ms| PaintPhaseSample {
+            generation: 1,
+            phase: "proxy",
+            proxy: true,
+            displayed_ms,
+            input_to_presented_ms: 0.0,
+            owner_round_trip_ms: 0.0,
+            executor_wait_ms: 0.0,
+            draft_set_ms: 0.0,
+            preview_job_ms: 0.0,
+            return_to_queue_ms: 0.0,
+            queue_wait_ms: 0.0,
+            worker_render_ms: 0.0,
+            before_worker_result_ms: 0.0,
+            result_to_surface_ms: 0.0,
+        };
+        let (set, frame) =
+            stroke_press(&events, 2, &[sample(40.0), sample(22.0)]).expect("a press");
+        assert_eq!(set, 1.0);
+        assert_eq!(frame, Some(10.0), "the earliest of the stroke's frames");
+        assert_eq!(stroke_press(&events, 2, &[]).expect("a press").1, None);
     }
 
     /// One `slider_draft_set`/`slider_draft_preview`/`preview_displayed` triple, the same shape
