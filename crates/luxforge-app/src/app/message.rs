@@ -630,8 +630,8 @@ pub(crate) enum ViewMessage {
     /// the view names whole.
     OpenMenu(MenuTarget),
     /// Open a generated control's Copy as JSON request menu. The update builds its target
-    /// ([`MenuTarget::control`]), which reads the method the request carries from the host's command
-    /// table once rather than on every view.
+    /// ([`MenuTarget::control`]), which reads the method the request carries from the host's
+    /// command table once rather than on every view.
     OpenControlMenu {
         action: String,
         parameter: Option<String>,

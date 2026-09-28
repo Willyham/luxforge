@@ -30,9 +30,9 @@ pub(crate) const FIT_INSET_BOTTOM: f32 = 56.0;
 pub(crate) const FIT_INSET: (f32, f32) = (2.0 * FIT_INSET_EDGE, FIT_INSET_EDGE + FIT_INSET_BOTTOM);
 
 /// The photo surface's logical size for one window and panel configuration: the window minus the
-/// title bar, the status bar, whichever panels are open and the rules beside them. It is arithmetic
-/// over the layout constants, not a measurement, so the overlay's cell grid and the proxy bounds can
-/// be decided before a frame is laid out.
+/// title bar, the status bar, whichever panels are open and the rules beside them. It is
+/// arithmetic over the layout constants, not a measurement, so the overlay's cell grid and the
+/// proxy bounds can be decided before a frame is laid out.
 pub(crate) fn photo_surface(
     window: (f32, f32),
     state_panel: bool,

@@ -5,9 +5,9 @@
 //! every question the draft, the canvas and the panel ask of a shape: its declared numbers, its
 //! handles and where they sit, what a press, a drag and a sweep do, what a typed number is allowed
 //! to be, which host method the release commits through and what the figure looks like. The draft
-//! ([`super::MaskDraft`]) and the canvas ([`crate::view::mask_canvas`]) hold a [`DrawnShape`] and never ask
-//! which kind it is: they call its [`ShapeEditor`], and the one place a kind is matched is
-//! [`DrawnShape`]'s dereference below. Adding a drawn kind whose geometry is named numbers is one
+//! ([`super::MaskDraft`]) and the canvas ([`crate::view::mask_canvas`]) hold a [`DrawnShape`] and
+//! never ask which kind it is: they call its [`ShapeEditor`], and the one place a kind is matched
+//! is [`DrawnShape`]'s dereference below. Adding a drawn kind whose geometry is named numbers is one
 //! module beside [`super::linear`], [`super::radial`] and [`super::brush`], one variant, one row of
 //! [`DRAWN_KINDS`] and a [`MaskHandle`] variant for each new handle. A kind whose geometry is not
 //! numbers, or whose gesture is neither a handle drag nor a paint, needs more: the editor's values
