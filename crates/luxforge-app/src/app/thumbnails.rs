@@ -8,9 +8,10 @@
 //!
 //! **What starts one.** The stack of every settled full-stack preview job — not a truncated crop
 //! input, and not the interactive frames of a drag, whose 16 ms ticks send exactly what they sent
-//! before thumbnails existed — is kept as the thumbnails' source. While Mask mode is on screen a new
-//! source asks for one job; outside it nothing runs, and entering Mask mode asks for the source
-//! kept meanwhile.
+//! before thumbnails existed — is kept as the thumbnails' source when it holds a mask. While Mask
+//! mode is on screen a new source asks for one job; outside it nothing runs, and entering Mask mode
+//! asks for the source kept meanwhile. A stack without masks keeps nothing and clears the
+//! thumbnails, so a RAW development that no mask needs is never held here.
 //!
 //! **What bounds it.** The worker is the preview's own primitive, [`Latest`]: one persistent
 //! thread, one running job and one replaceable pending job. A job covers at most
@@ -198,6 +199,15 @@ impl Editor {
         if job.layer_count.is_some() || job.intent == PreviewIntent::Interactive {
             return;
         }
+        // A stack without masks has no thumbnail to describe, so nothing of it is kept: a kept
+        // stack holds its source, and a RAW source's developed planes hold the source worker's
+        // memory gate, which would keep the next development from starting.
+        if job.evaluation.recipe().masks.is_empty() {
+            self.thumbnail_source = ThumbnailSource::default();
+            self.thumbnail_queue.cancel();
+            self.adopt_thumbnails(Vec::new());
+            return;
+        }
         if self
             .thumbnail_source
             .latest
@@ -234,12 +244,6 @@ impl Editor {
             return;
         }
         self.thumbnail_source.requested = Some(identity.clone());
-        if evaluation.recipe().masks.is_empty() {
-            // Nothing to describe, and no job to start for it.
-            self.thumbnail_queue.cancel();
-            self.adopt_thumbnails(Vec::new());
-            return;
-        }
         let evaluation = evaluation.clone();
         self.thumbnail_queue.request(evaluation);
     }
@@ -552,8 +556,8 @@ mod tests {
     }
 
     /// Through the editor: a settled preview job's stack is kept, nothing runs outside Mask mode,
-    /// entering Mask mode asks for it once, the delivered thumbnails reach each mask's row, and the
-    /// same stack again asks for nothing.
+    /// entering Mask mode asks for it once, the delivered thumbnails reach each mask's row, the
+    /// same stack again asks for nothing, and a stack without masks is not kept.
     #[test]
     fn mask_mode_thumbnails_every_listed_mask_from_the_settled_stack_once() {
         use crate::app::message::{Message, PreviewMessage};
@@ -629,6 +633,25 @@ mod tests {
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         assert!(!editor.thumbnail_queue.is_busy());
         assert_eq!(editor.thumbnails.version, version);
+
+        // A settled stack without masks keeps nothing, so no source it holds outlives its frame,
+        // and the thumbnails of the stack before it are gone.
+        let bare = Evaluation::new(
+            stack.registry().clone(),
+            stack.context().clone(),
+            stack.source().clone(),
+            stack.entry().clone(),
+            Recipe {
+                format: RECIPE_FORMAT,
+                ..Recipe::default()
+            },
+            None,
+        );
+        editor.request_preview(PreviewJob::new(bare).expect("a job"));
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        assert!(editor.thumbnail_source.latest.is_none());
+        assert!(!editor.thumbnail_queue.is_busy());
+        assert!(editor.thumbnails.masks.is_empty());
         crate::app::testing::finish(editor, catalog);
     }
 
