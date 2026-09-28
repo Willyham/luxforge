@@ -311,8 +311,9 @@ impl PreviewSource {
     /// pixels in that window, bit for bit: each is the same weights over the same source samples in
     /// the same order, and only the source rows and columns the window covers are read.
     ///
-    /// This is frame work: it runs on the caller's thread and puts its two passes on the shared
-    /// Rayon pool above the one-megapixel threshold. Never call it on the catalog owner thread.
+    /// This is frame work: it runs on the caller's thread and puts its bands of output rows on the
+    /// shared Rayon pool above the one-megapixel threshold, each worker holding one band's
+    /// intermediate of about 1 MiB. Never call it on the catalog owner thread.
     pub fn proxy(&self, plan: ProxyPlan) -> Result<PreviewSource, Error> {
         self.proxy_cancellable(plan, &Cancel::never())
     }
@@ -324,13 +325,26 @@ impl PreviewSource {
         plan: ProxyPlan,
         cancel: &Cancel,
     ) -> Result<PreviewSource, Error> {
+        self.proxy_in_bands(plan, cancel, BAND_BYTES)
+    }
+
+    /// The proxy build with bands of about `band_bytes` of intermediate each. The pixels do not
+    /// depend on the band size ([`BoxDownscale`]); the tests pass small bands to prove it.
+    fn proxy_in_bands(
+        &self,
+        plan: ProxyPlan,
+        cancel: &Cancel,
+        band_bytes: usize,
+    ) -> Result<PreviewSource, Error> {
         cancel.check()?;
         let (source_width, source_height) = self.dimensions();
         check_plan(plan, source_width, source_height)?;
         match self {
-            Self::Jpeg(image) => Ok(PreviewSource::Jpeg(downscale_jpeg(image, plan, cancel)?)),
+            Self::Jpeg(image) => Ok(PreviewSource::Jpeg(downscale_jpeg(
+                image, plan, cancel, band_bytes,
+            )?)),
             Self::Raw { image, settings } => Ok(PreviewSource::Raw {
-                image: downscale_linear(image, plan, cancel)?,
+                image: downscale_linear(image, plan, cancel, band_bytes)?,
                 settings: *settings,
             }),
         }
@@ -447,68 +461,139 @@ impl Coverage {
     }
 }
 
+/// The intermediate one band of the box downscale holds: about 1 MiB of horizontally averaged rows
+/// per worker, whatever the source's size.
+const BAND_BYTES: usize = 1 << 20;
+
 /// The one separable area average every proxy source is built with, whatever the source's pixels
-/// are: a horizontal pass that reads each source pixel once, in linear light, into one intermediate
-/// row per source row, and a vertical pass that averages those rows into each output pixel.
+/// are: a horizontal pass that reads each source pixel in linear light into one intermediate row
+/// per source row, and a vertical pass that averages those rows into each output pixel.
 ///
 /// Both passes accumulate in f64 with the [`Coverage`] weights, so an output pixel is the exact mean
 /// over its source rectangle up to the one f32 store between the passes. The two source kinds differ
 /// only in how a source pixel is read — a JPEG code decoded through the render path's own sRGB
 /// table, a RAW value read through its view — and in how the output is stored, which each caller
-/// does in the closure it hands [`Self::row`]; the arithmetic is this one implementation.
+/// does in the closure it hands [`Self::band`]; the arithmetic is this one implementation.
 ///
-/// Allocations: the intermediate of `window width × source rows the window reads × 3` f32, bounded
-/// by the 512 MiB frame limit. Every source pixel the window reads is read exactly once, so no
-/// per-row scratch exists at all.
+/// The window's output rows run in bands. A band runs the horizontal pass over only the source rows
+/// its output rows average, into the intermediate its worker holds, then the vertical pass over
+/// them. Two neighbouring bands share at most the one source row that straddles their boundary,
+/// which each averages horizontally with the same weights in the same order, so it is the same f32
+/// row in both; and each output pixel's vertical sum runs over its own span in the same order in
+/// whatever band it falls. A band boundary therefore changes no sum, and the proxy is the same
+/// bytes at any band size.
+///
+/// Allocations: one intermediate per worker, of `window width × 3` f32 per source row a band
+/// reads. A band holds as many output rows as keep that near [`BAND_BYTES`], and at least one, so
+/// the intermediate is about 1 MiB, or one output row's source rows when that is larger — about
+/// one source row's worth of pixels, since the proxy keeps the source's aspect. Every source pixel
+/// the window reads is read once, besides the shared boundary rows, so no other scratch exists.
 struct BoxDownscale {
+    horizontal: Coverage,
     vertical: Coverage,
-    /// The intermediate rows: `width × 3` values per source row the window reads, from source row
-    /// `first_row` on.
-    rows: Vec<f32>,
-    first_row: u32,
-    /// The window's first output row, which output row `0` of [`Self::row`] is.
-    window_y: u32,
-    stride: usize,
+    window: ProxyWindow,
+    /// Output rows per band; the last band may hold fewer.
+    band_rows: usize,
     parallel: bool,
 }
 
 impl BoxDownscale {
-    /// Run the horizontal pass. `row(y)` is source row `y`'s reader, taken once per row, and the
-    /// reader's `read(x)` is one of its pixels in linear light; it is only asked for coordinates
-    /// inside the source. Resolving the row once lets a reader index one row's slice rather than
-    /// the whole source for every pixel.
-    fn new<Read: Fn(u32) -> [f32; 3]>(
+    /// The coverage tables and band size for `plan` over a `source_width × source_height` source,
+    /// with bands of about `band_bytes` of intermediate. `O(source + output)`, and reads no pixel.
+    fn new(
         source_width: u32,
         source_height: u32,
         plan: ProxyPlan,
-        cancel: &Cancel,
-        row: impl Fn(u32) -> Read + Sync,
+        band_bytes: usize,
     ) -> Result<Self, Error> {
         let window = window_of(plan);
         let horizontal = Coverage::new(source_width, plan.width);
         let vertical = Coverage::new(source_height, plan.height);
-        // The source rows the window's output rows average, and nothing else.
-        let first_row = vertical.span(window.y as usize).0;
-        let (last_first, last_weights) = vertical.span((window.y + window.height - 1) as usize);
-        let end_row = last_first + last_weights.len() as u32;
-        let source_rows = end_row - first_row;
-        let intermediate_len =
-            float_values(window.width, source_rows, "proxy downscale intermediate")?;
+        let stride_bytes = window.width as usize * 3 * std::mem::size_of::<f32>();
+        // `n` output rows read at most `n · ratio + 2` source rows, so a band of this many output
+        // rows reads about `band_bytes` of them.
+        let ratio = f64::from(source_height) / f64::from(plan.height);
+        let budget_rows = (band_bytes / stride_bytes).max(1);
+        let band_rows = (((budget_rows as f64 - 2.0) / ratio).floor() as usize)
+            .clamp(1, window.height as usize);
+        let downscale = Self {
+            horizontal,
+            vertical,
+            window,
+            band_rows,
+            parallel: false,
+        };
+        // The largest band's intermediate, refused past the frame limit like any frame.
+        let widest = (0..downscale.bands())
+            .map(|band| {
+                let (first, end) = downscale.source_rows(band);
+                end - first
+            })
+            .max()
+            .unwrap_or(0);
+        float_values(window.width, widest, "proxy downscale intermediate")?;
         // The source pixels the window reads, which is the work: the whole source for a whole
         // proxy, and about the window's share of it for a windowed one.
-        let (column_first, _) = horizontal.span(window.x as usize);
-        let (column_last, column_weights) = horizontal.span((window.x + window.width - 1) as usize);
+        let (first_row, _) = downscale.source_rows(0);
+        let (_, end_row) = downscale.source_rows(downscale.bands() - 1);
+        let (column_first, _) = downscale.horizontal.span(window.x as usize);
+        let (column_last, column_weights) = downscale
+            .horizontal
+            .span((window.x + window.width - 1) as usize);
         let read_columns = column_last + column_weights.len() as u32 - column_first;
-        let parallel =
-            u64::from(read_columns) * u64::from(source_rows) >= luxforge_raw::PARALLEL_PIXELS;
+        Ok(Self {
+            parallel: u64::from(read_columns) * u64::from(end_row - first_row)
+                >= luxforge_raw::PARALLEL_PIXELS,
+            ..downscale
+        })
+    }
+
+    /// How many bands the window's output rows make.
+    fn bands(&self) -> usize {
+        (self.window.height as usize).div_ceil(self.band_rows)
+    }
+
+    /// The half-open range of source rows band `band`'s output rows average, and nothing else.
+    fn source_rows(&self, band: usize) -> (u32, u32) {
+        let first = self.window.y as usize + band * self.band_rows;
+        let last = (first + self.band_rows).min((self.window.y + self.window.height) as usize) - 1;
+        let (last_first, last_weights) = self.vertical.span(last);
+        (
+            self.vertical.span(first).0,
+            last_first + last_weights.len() as u32,
+        )
+    }
+
+    /// Both passes for band `band`, in `rows`, the intermediate its worker holds: the horizontal
+    /// pass over the band's source rows, then hands `store(y, x, sum)` the weighted mean of each
+    /// output pixel's column of intermediate rows, in f64, where `y` counts from the band's first
+    /// output row. `row(y)` is source row `y`'s reader, taken once per row, and the reader's
+    /// `read(x)` is one of its pixels in linear light; it is only asked for coordinates inside the
+    /// source. Resolving the row once lets a reader index one row's slice rather than the whole
+    /// source for every pixel. `cancel` is checked once per source row and once per output row.
+    fn band<Read: Fn(u32) -> [f32; 3]>(
+        &self,
+        band: usize,
+        rows: &mut Vec<f32>,
+        cancel: &Cancel,
+        row: &impl Fn(u32) -> Read,
+        mut store: impl FnMut(usize, usize, [f64; 3]),
+    ) -> Result<(), Error> {
+        let window = self.window;
         let stride = window.width as usize * 3;
-        let mut rows = vec![0f32; intermediate_len];
-        let pass = |(y, out): (usize, &mut [f32])| -> Result<(), Error> {
+        let (first_row, end_row) = self.source_rows(band);
+        let len = (end_row - first_row) as usize * stride;
+        // Every value of the band's rows is written below before it is read, so a held buffer is
+        // only grown, never cleared.
+        if rows.len() < len {
+            rows.resize(len, 0.0);
+        }
+        let rows = &mut rows[..len];
+        for (y, out) in rows.chunks_exact_mut(stride).enumerate() {
             cancel.check()?;
             let read = row(first_row + y as u32);
             for column in 0..window.width as usize {
-                let index = window.x as usize + column;
-                let (first, weights) = horizontal.span(index);
+                let (first, weights) = self.horizontal.span(window.x as usize + column);
                 let mut sum = [0f64; 3];
                 for (offset, weight) in weights.iter().enumerate() {
                     let linear = read(first + offset as u32);
@@ -520,45 +605,30 @@ impl BoxDownscale {
                     out[column * 3 + channel] = *value as f32;
                 }
             }
-            Ok(())
-        };
-        if parallel {
-            rows.par_chunks_exact_mut(stride)
-                .enumerate()
-                .try_for_each(pass)?;
-        } else {
-            rows.chunks_exact_mut(stride)
-                .enumerate()
-                .try_for_each(pass)?;
         }
-        Ok(Self {
-            vertical,
-            rows,
-            first_row,
-            window_y: window.y,
-            stride,
-            parallel,
-        })
-    }
-
-    /// The vertical pass for output row `y`: hands `store(x, sum)` the weighted mean of each output
-    /// pixel's column of intermediate rows, in f64, for the caller to store. The row's span and
-    /// its slice of the intermediate are resolved once per row, not once per pixel.
-    #[inline]
-    fn row(&self, y: usize, mut store: impl FnMut(usize, [f64; 3])) {
-        let (first, weights) = self.vertical.span(self.window_y as usize + y);
-        let start = (first - self.first_row) as usize * self.stride;
-        let rows = &self.rows[start..start + weights.len() * self.stride];
-        for x in 0..self.stride / 3 {
-            let mut sum = [0f64; 3];
-            for (offset, weight) in weights.iter().enumerate() {
-                let at = offset * self.stride + x * 3;
-                for (channel, value) in sum.iter_mut().enumerate() {
-                    *value += f64::from(rows[at + channel]) * weight;
+        let first_output = window.y as usize + band * self.band_rows;
+        let count = self
+            .band_rows
+            .min((window.y + window.height) as usize - first_output);
+        for y in 0..count {
+            cancel.check()?;
+            // The row's span and its slice of the intermediate are resolved once per row, not
+            // once per pixel.
+            let (first, weights) = self.vertical.span(first_output + y);
+            let start = (first - first_row) as usize * stride;
+            let span = &rows[start..start + weights.len() * stride];
+            for x in 0..window.width as usize {
+                let mut sum = [0f64; 3];
+                for (offset, weight) in weights.iter().enumerate() {
+                    let at = offset * stride + x * 3;
+                    for (channel, value) in sum.iter_mut().enumerate() {
+                        *value += f64::from(span[at + channel]) * weight;
+                    }
                 }
+                store(y, x, sum);
             }
-            store(x, sum);
         }
+        Ok(())
     }
 }
 
@@ -570,6 +640,7 @@ fn downscale_jpeg(
     source: &SourceImage,
     plan: ProxyPlan,
     cancel: &Cancel,
+    band_bytes: usize,
 ) -> Result<SourceImage, Error> {
     let (width, height) = plan.source_dimensions();
     let source_len = Raster::expected_len(source.width, source.height)?;
@@ -580,39 +651,40 @@ fn downscale_jpeg(
     }
     let output_len = Raster::expected_len(width, height)?;
     let source_stride = source.width as usize * 4;
-    let downscale = BoxDownscale::new(source.width, source.height, plan, cancel, |y| {
+    let read_row = |y: u32| {
         let start = y as usize * source_stride;
         let bytes = &source.rgba[start..start + source_stride];
-        move |x| {
+        move |x: u32| {
             let at = x as usize * 4;
             decode_pixel([bytes[at], bytes[at + 1], bytes[at + 2]])
         }
-    })?;
+    };
+    let downscale = BoxDownscale::new(source.width, source.height, plan, band_bytes)?;
     let mut frame = zeroed_frame(output_len);
     {
         let output = frame_mut(&mut frame);
-        let pass = |(y, row): (usize, &mut [u8])| -> Result<(), Error> {
-            cancel.check()?;
-            downscale.row(y, |x, sum| {
-                let pixel = &mut row[x * 4..x * 4 + 4];
+        let output_stride = width as usize * 4;
+        let pass = |rows: &mut Vec<f32>, (band, out): (usize, &mut [u8])| {
+            downscale.band(band, rows, cancel, &read_row, |y, x, sum| {
+                let pixel = &mut out[y * output_stride + x * 4..][..4];
                 for (channel, value) in sum.iter().enumerate() {
                     pixel[channel] = quantize_channel(*value);
                 }
                 pixel[3] = 255;
-            });
-            Ok(())
+            })
         };
-        let output_stride = width as usize * 4;
+        let band_len = downscale.band_rows * output_stride;
         if downscale.parallel {
             output
-                .par_chunks_exact_mut(output_stride)
+                .par_chunks_mut(band_len)
                 .enumerate()
-                .try_for_each(pass)?;
+                .try_for_each_init(Vec::new, pass)?;
         } else {
+            let mut rows = Vec::new();
             output
-                .chunks_exact_mut(output_stride)
+                .chunks_mut(band_len)
                 .enumerate()
-                .try_for_each(pass)?;
+                .try_for_each(|band| pass(&mut rows, band))?;
         }
     }
 
@@ -626,10 +698,10 @@ fn downscale_jpeg(
     })
 }
 
-/// One output row of the three planes, as the zipped chunk iterators hand it over: the row index
-/// and its red, green and blue slices. The serial and parallel iterators yield the same shape, so
-/// one closure serves both.
-type PlanarRow<'a> = (usize, ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]));
+/// One band of output rows of the three planes, as the zipped chunk iterators hand it over: the
+/// band index and its red, green and blue slices. The serial and parallel iterators yield the same
+/// shape, so one closure serves both.
+type PlanarBand<'a> = (usize, ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]));
 
 /// The area average of a prepared RAW source's planes, read through its view.
 ///
@@ -641,6 +713,7 @@ fn downscale_linear(
     image: &LinearImage,
     plan: ProxyPlan,
     cancel: &Cancel,
+    band_bytes: usize,
 ) -> Result<LinearImage, Error> {
     let (width, height) = plan.source_dimensions();
     let reader = image.reader();
@@ -648,36 +721,37 @@ fn downscale_linear(
     let plane_values = float_values(width, height, "proxy linear source")?;
     let plane_len = plane_values / 3;
     // Inside the view by construction: the coverage never leaves the source.
-    let downscale = BoxDownscale::new(source_width, source_height, plan, cancel, |y| {
+    let read_row = |y: u32| {
         let reader = &reader;
-        move |x| reader.pixel(x, y).unwrap_or([0.0; 3])
-    })?;
+        move |x: u32| reader.pixel(x, y).unwrap_or([0.0; 3])
+    };
+    let downscale = BoxDownscale::new(source_width, source_height, plan, band_bytes)?;
     let mut planes = vec![0f32; plane_values];
     {
         let (red, rest) = planes.split_at_mut(plane_len);
         let (green, blue) = rest.split_at_mut(plane_len);
-        let pass = |(y, ((red, green), blue)): PlanarRow<'_>| -> Result<(), Error> {
-            cancel.check()?;
-            downscale.row(y, |x, sum| {
-                red[x] = sum[0] as f32;
-                green[x] = sum[1] as f32;
-                blue[x] = sum[2] as f32;
-            });
-            Ok(())
-        };
         let row = width as usize;
+        let pass = |rows: &mut Vec<f32>, (band, ((red, green), blue)): PlanarBand<'_>| {
+            downscale.band(band, rows, cancel, &read_row, |y, x, sum| {
+                red[y * row + x] = sum[0] as f32;
+                green[y * row + x] = sum[1] as f32;
+                blue[y * row + x] = sum[2] as f32;
+            })
+        };
+        let band_len = downscale.band_rows * row;
         if downscale.parallel {
-            red.par_chunks_exact_mut(row)
-                .zip(green.par_chunks_exact_mut(row))
-                .zip(blue.par_chunks_exact_mut(row))
+            red.par_chunks_mut(band_len)
+                .zip(green.par_chunks_mut(band_len))
+                .zip(blue.par_chunks_mut(band_len))
                 .enumerate()
-                .try_for_each(pass)?;
+                .try_for_each_init(Vec::new, pass)?;
         } else {
-            red.chunks_exact_mut(row)
-                .zip(green.chunks_exact_mut(row))
-                .zip(blue.chunks_exact_mut(row))
+            let mut rows = Vec::new();
+            red.chunks_mut(band_len)
+                .zip(green.chunks_mut(band_len))
+                .zip(blue.chunks_mut(band_len))
                 .enumerate()
-                .try_for_each(pass)?;
+                .try_for_each(|band| pass(&mut rows, band))?;
         }
     }
 
@@ -1638,21 +1712,35 @@ mod tests {
     // The photo-sized measurement
     // -----------------------------------------------------------------------------------------
 
-    /// The proxy build on a real 24 MP source, which is the only input that says anything about
-    /// cost. It is ignored by default because it needs a generated fixture and because timing gates
-    /// do not belong in CI:
+    /// The proxy build on the generated 24 MP and 60 MP sources, which are the only inputs that
+    /// say anything about cost. It is ignored by default because it needs the generated fixtures
+    /// and because timing gates do not belong in CI. For the peak memory of one size, set
+    /// `LUXFORGE_PROXY_BUILD_SOURCE` to that fixture's path and wrap the run in `/usr/bin/time -l`;
+    /// `LUXFORGE_PROXY_BUILDS=0` decodes the source and builds nothing, which is the floor the
+    /// build's own peak is read against:
     ///
     /// ```text
     /// cargo run --release --locked --package xtask -- generate-fixtures --output fixtures/generated
-    /// cargo test --release --package luxforge-core --lib proxy:: -- --ignored --nocapture
+    /// LUXFORGE_PROXY_BUILD_SOURCE=fixtures/generated/60mp.jpg /usr/bin/time -l \
+    ///   cargo test --release --package luxforge-core --lib measure_the_proxy_build -- --ignored --nocapture
     /// ```
+    ///
+    /// Each line ends with a hash of the last proxy's bytes, so two builds of the code can be
+    /// compared for identical output on photo-sized sources as well as for cost.
     #[test]
-    #[ignore = "needs fixtures/generated/24mp.jpg and is a measurement, not a gate"]
-    fn measure_the_proxy_build_on_a_24_megapixel_source() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/generated/24mp.jpg");
-        let source =
-            PreviewSource::Jpeg(crate::open_source(&path).expect("the generated 24 MP fixture"));
+    #[ignore = "needs fixtures/generated and is a measurement, not a gate"]
+    fn measure_the_proxy_build_on_photo_sized_sources() {
+        use std::hash::{Hash, Hasher};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let sources: Vec<std::path::PathBuf> = match std::env::var("LUXFORGE_PROXY_BUILD_SOURCE") {
+            Ok(path) => vec![root.join(path)],
+            Err(_) => ["24mp.jpg", "60mp.jpg"]
+                .iter()
+                .map(|name| root.join("fixtures/generated").join(name))
+                .collect(),
+        };
+        let builds = std::env::var("LUXFORGE_PROXY_BUILDS")
+            .map_or(15, |count| count.parse().expect("a build count"));
         let registry = ModuleRegistry::builtin();
         let stack = recipe(vec![basic_layer(
             json!({ "exposure": 0.5, "contrast": 20 }),
@@ -1661,32 +1749,50 @@ mod tests {
             width: 2880,
             height: 1800,
         };
-        let plan = source
-            .proxy_plan(&registry, &stack, bounds)
-            .expect("a plan")
-            .expect("a 24 MP source needs a proxy at this size");
-        let mut samples = Vec::new();
-        for _ in 0..15 {
-            let start = std::time::Instant::now();
-            let proxy = source.proxy(plan).expect("a proxy");
-            samples.push(start.elapsed().as_secs_f64() * 1000.0);
-            assert_eq!(proxy.dimensions(), (plan.width, plan.height));
+        for path in sources {
+            let source = PreviewSource::Jpeg(
+                crate::open_source(&path).expect("a generated fixture: run generate-fixtures"),
+            );
+            let plan = source
+                .proxy_plan(&registry, &stack, bounds)
+                .expect("a plan")
+                .expect("a photo-sized source needs a proxy at this size");
+            let mut samples = Vec::new();
+            let mut hash = None;
+            for _ in 0..builds {
+                let start = std::time::Instant::now();
+                let proxy = source.proxy(plan).expect("a proxy");
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(proxy.dimensions(), (plan.width, plan.height));
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                jpeg_of(&proxy).rgba.hash(&mut hasher);
+                hash = Some(hasher.finish());
+            }
+            let (width, height) = source.dimensions();
+            let Some(cold) = samples.first().copied() else {
+                println!(
+                    "{} {width}x{height}: decoded, no proxy built",
+                    path.display()
+                );
+                continue;
+            };
+            // The first build carries the Rayon pool's first use and the first touch of fresh
+            // buffers, which is what the first job after a window resize actually pays; the rest
+            // is the steady-state cost of rebuilding one.
+            let ms = luxforge_testbase::Distribution::of(samples).expect("builds ran");
+            println!(
+                "{} proxy build {width}x{height} -> {}x{}: cold {cold:.2} ms, warm p50 {:.2} ms, \
+                 p95 {:.2} ms, min {:.2} ms, max {:.2} ms, {builds} builds, bytes {:016x}",
+                path.display(),
+                plan.width,
+                plan.height,
+                ms.p50,
+                ms.p95,
+                ms.min,
+                ms.max,
+                hash.unwrap_or_default()
+            );
         }
-        // The first build carries the Rayon pool's first use and the first touch of the two fresh
-        // buffers, which is what the first job after a window resize actually pays; the rest is
-        // the steady-state cost of rebuilding one.
-        let cold = samples[0];
-        let ms = luxforge_testbase::Distribution::of(samples).expect("builds ran");
-        println!(
-            "24 MP proxy build {}x{} -> {}x{}: cold {cold:.2} ms, warm p50 {:.2} ms, min {:.2} ms, max {:.2} ms",
-            source.dimensions().0,
-            source.dimensions().1,
-            plan.width,
-            plan.height,
-            ms.p50,
-            ms.min,
-            ms.max
-        );
     }
 
     /// What a **mask** costs the proxy phase on photo-sized sources: the render a drag presents,
@@ -1922,5 +2028,107 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The band size never changes a proxy: bands of one output row, which split every straddled
+    /// source row between two bands, and bands of a few rows build the same bytes as one band over
+    /// the whole window, which is one intermediate of every source row the window reads. For both
+    /// source kinds, at fractional scales, whole and windowed, and on the parallel path with a
+    /// source above the one-megapixel threshold.
+    #[test]
+    fn a_proxy_is_the_same_bytes_at_any_band_size() {
+        let pixels = |width: u32, height: u32| -> Vec<[u8; 3]> {
+            (0..width * height)
+                .map(|index| {
+                    [
+                        (index * 37 % 251) as u8,
+                        (index * 11 % 239) as u8,
+                        (index * 5 % 241) as u8,
+                    ]
+                })
+                .collect()
+        };
+        let (width, height) = (53u32, 41u32);
+        let floats: Vec<[f32; 3]> = pixels(width, height)
+            .iter()
+            .map(|code| code.map(|value| f32::from(value) / 97.0 - 0.3))
+            .collect();
+        let (large_width, large_height) = (1100u32, 1000u32);
+        let sources = [
+            jpeg_source(width, height, &pixels(width, height)),
+            PreviewSource::Raw {
+                image: raw_source(width, height, &floats)
+                    .with_view([2, 1, 49, 38], 6)
+                    .expect("a view"),
+                settings: LinearSettings::default(),
+            },
+            jpeg_source(
+                large_width,
+                large_height,
+                &pixels(large_width, large_height),
+            ),
+        ];
+        let bits = |source: &PreviewSource| -> Vec<u32> {
+            match source {
+                PreviewSource::Jpeg(image) => image.rgba.iter().map(|&code| code.into()).collect(),
+                PreviewSource::Raw { image, .. } => {
+                    image.planes().iter().map(|value| value.to_bits()).collect()
+                }
+            }
+        };
+        for source in &sources {
+            let (source_width, source_height) = source.dimensions();
+            let whole = plan(source_width * 3 / 7, source_height * 5 / 9, (1, 1));
+            let windows = [
+                None,
+                Some(ProxyWindow {
+                    x: 3,
+                    y: 2,
+                    width: 7,
+                    height: whole.height - 4,
+                }),
+            ];
+            for window in windows {
+                let plan = ProxyPlan { window, ..whole };
+                let stride = plan.source_dimensions().0 as usize * 3 * std::mem::size_of::<f32>();
+                let one_band = source
+                    .proxy_in_bands(plan, &Cancel::never(), usize::MAX)
+                    .expect("one band");
+                assert_eq!(
+                    BoxDownscale::new(source_width, source_height, plan, usize::MAX)
+                        .expect("a downscale")
+                        .bands(),
+                    1
+                );
+                for band_bytes in [1, stride * 3, stride * 5, stride * 11] {
+                    let downscale =
+                        BoxDownscale::new(source_width, source_height, plan, band_bytes)
+                            .expect("a downscale");
+                    assert!(
+                        downscale.bands() > 1,
+                        "{band_bytes} bytes splits the window"
+                    );
+                    let banded = source
+                        .proxy_in_bands(plan, &Cancel::never(), band_bytes)
+                        .expect("a banded proxy");
+                    assert_eq!(banded.dimensions(), one_band.dimensions());
+                    assert!(
+                        bits(&banded) == bits(&one_band),
+                        "{source_width}x{source_height} to {plan:?} in bands of {band_bytes} bytes"
+                    );
+                }
+            }
+        }
+        // The large source is read on the parallel path, the small ones serially.
+        assert!(
+            BoxDownscale::new(
+                large_width,
+                large_height,
+                plan(471, 555, (1, 1)),
+                BAND_BYTES
+            )
+            .expect("a downscale")
+            .parallel
+        );
     }
 }
