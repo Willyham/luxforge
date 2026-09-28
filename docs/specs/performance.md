@@ -1370,7 +1370,7 @@ The core render of the generated 24 MP and 60 MP JPEGs with one Presence layer a
 
 On the previous build the process used at most one core per tile in flight whatever the host's load (182 to 192% for two tiles, at one-minute loads from 5 to 29 across the investigation), which is what the Performance section showed as 135 to 190%; the batches themselves were 93% efficient and the one Dehaze reduction took 6 to 34 ms, so neither was the cause. Where a batch is as wide as the pool (Texture or Dehaze alone) its tiles keep their passes serial, and the two builds agree within 5% in both orders at a target wide enough to make every batch fill the pool. The Clarity row, whose eight-tile batches now spread over the pool, moved by about 5% in either direction across runs. The cost is CPU time: the two runs of this build used 697 and 700 CPU-seconds against 370 and 360 for the previous one over the same renders, because fourteen workers on two tiles' memory-bound passes each run slower and the pool spins between short passes.
 
-Two alternatives were measured and not taken. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes on these fixtures and the previous build's CPU time, and are the owner's decision, tracked in the [rendering plan](../../tasks/rendering.json), because a point sample through the layer evaluates the whole tile: 217 ms against 105 ms with all three at 60 MP, on the catalog owner.
+Two alternatives were measured and not taken, and a third was adopted later. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes on these fixtures and the previous build's CPU time; an operation whose summed halo passes 128 px now runs in them ([tile size by summed halo](#tile-size-by-summed-halo)), and the figures below are the current build's.
 
 #### Tiles written back by row
 
@@ -1394,6 +1394,69 @@ A spatial tile's output is produced in the frame's own row layout on the worker 
 | 60 MP All three | 448 px | 3090 · 3739 ms, 1038% · 847% | 2955 · 3484 ms, 1107% · 972% |
 
 Every frame had the same SHA-256 before and after, for all fourteen stacks, in this pass and in an earlier pass (before, after, after, before) whose load moved between 17 and 73 and whose times are not quoted. A single field, whose batches run many tiles with serial passes, renders 4 to 24% faster with 10 to 20% more of the pool busy: the write the pool used to wait for is gone. Two or three fields, whose batches the target holds to a few tiles with pooled passes, render 3 to 15% faster at 60 MP; at 24 MP, where the write is a smaller share of the render, the pairs lie within the runs' own spread (11% faster to 19% slower). A point sample through the layer is unchanged: it evaluates its tile with an empty scratch slot as before.
+
+#### Tile size by summed halo
+
+`presence_tile_sizes` (`cargo test --release --locked -p luxforge-core --lib presence_tile_sizes -- --ignored --nocapture`, with `LUXFORGE_PRESENCE_SOURCES` naming the sources), native Apple M4 Pro, release `--locked`, 28 September 2026, holding the host-wide timing lock on a host shared with other sessions: the one-minute load was 11 to 36 around the runs. Each row renders one Presence layer at +100 in the fields it names, with a warm source and warm estimates, in 512 px and in 1024 px tiles, alternating which size goes first. A figure is the p50 of 5 renders per size (7 on the synthetic stages and in each row's second figure), with the process's CPU time over the render as a percentage of one core, and the p50 of 9 interior point samples at each size, each equal to the rendered byte. Every row's frame had the same SHA-256 in both sizes. The synthetic stages are the test's textured frames, sized to put halos between the fixtures'. The Tile column is the side `luxforge_raw::spatial_tile` now chooses.
+
+| Stage | Stack | Summed halo | Tile | 512 px: render, CPU · sample | 1024 px: render, CPU · sample | 1024 px against 512 px |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1440 × 960 (presence fixture) | Texture | 4 px | 512 px | 11 ms, 1013% · 9.6 ms | 12 ms, 998% · 38.8 ms | +9% |
+| 6000 × 4000 (24 MP JPEG) | Texture | 8 px | 512 px | 142 ms, 824% · 9.3 ms | 156 ms, 1011% · 37.1 ms | +10% |
+| 10000 × 6000 (60 MP JPEG) | Texture | 14 px | 512 px | 332 ms, 837% · 9.4 ms | 380 ms, 1107% · 36.5 ms | +14% |
+| 1440 × 960 (presence fixture) | Dehaze | 27 px | 512 px | 5 ms, 1045% · 3.8 ms | 4 ms, 1064% · 15.0 ms | -20% |
+| 1440 × 960 (presence fixture) | Texture, Dehaze | 31 px | 512 px | 14 ms, 1066% · 11.4 ms | 14 ms, 1047% · 46.5 ms | +0% |
+| 3800 × 2533 (synthetic) | Dehaze | 47 px | 512 px | 30 ms, 878% · 5.0 ms | 26 ms, 994% · 17.4 ms | -13% |
+| 3800 × 2533 (synthetic) | Texture, Dehaze | 53 px | 512 px | 118 ms, 1067% · 15.2 ms | 109 ms, 1072% · 58.6 ms | -8% |
+| 1440 × 960 (presence fixture) | Clarity | 55 px | 512 px | 6 ms, 1001% · 6.8 ms | 6 ms, 952% · 24.3 ms | +0% |
+| 4400 × 2933 (synthetic) | Dehaze | 55 px | 512 px | 38 ms, 848% · 5.2 ms | 37 ms, 1074% · 17.6 ms | -3% |
+| 1440 × 960 (presence fixture) | Texture, Clarity | 59 px | 512 px | 19 ms, 1088% · 16.9 ms | 16 ms, 1075% · 59.1 ms | -16% |
+| 5200 × 3467 (synthetic) | Dehaze | 59 px | 512 px | 53 ms, 826% · 5.2 ms | 53 ms, 1065% · 18.2 ms | +0% |
+| 4400 × 2933 (synthetic) | Texture, Dehaze | 61 px | 512 px | 146 ms, 1160% · 15.4 ms | 140 ms, 1136% · 58.2 ms | -4% |
+| 5200 × 3467 (synthetic) | Texture, Dehaze | 65 px | 512 px | 200 ms, 1129% · 15.4 ms | 191 ms, 1133% · 59.8 ms | -5% |
+| 6000 × 4000 (24 MP JPEG) | Dehaze | 67 px | 512 px | 70 ms, 809% · 5.4 ms / 73 ms, 832% · 5.5 ms | 69 ms, 977% · 18.7 ms / 66 ms, 1052% · 18.9 ms | -1% / -10% |
+| 6000 × 4000 (24 MP JPEG) | Texture, Dehaze | 75 px | 512 px | 227 ms, 1158% · 13.3 ms / 240 ms, 1159% · 13.4 ms | 200 ms, 1133% · 50.3 ms / 224 ms, 1114% · 50.2 ms | -12% / -7% |
+| 1440 × 960 (presence fixture) | Clarity, Dehaze | 82 px | 512 px | 9 ms, 1071% · 9.1 ms | 9 ms, 1064% · 32.2 ms | +0% |
+| 1440 × 960 (presence fixture) | All three | 86 px | 512 px | 24 ms, 926% · 18.7 ms | 21 ms, 936% · 65.3 ms | -12% |
+| 10000 × 6000 (60 MP JPEG) | Dehaze | 107 px | 512 px | 221 ms, 728% · 6.7 ms / 187 ms, 824% · 6.5 ms | 223 ms, 803% · 21.8 ms / 162 ms, 1087% · 20.7 ms | +1% / -13% |
+| 12000 × 5333 (synthetic) | Dehaze | 107 px | 512 px | 207 ms, 820% · 7.2 ms | 183 ms, 1049% · 24.3 ms | -12% |
+| 10000 × 6000 (60 MP JPEG) | Texture, Dehaze | 121 px | 512 px | 1806 ms, 410% · 15.8 ms / 537 ms, 1216% · 14.9 ms | 732 ms, 815% · 54.6 ms / 492 ms, 1179% · 52.9 ms | -59% / -8% |
+| 12000 × 5333 (synthetic) | Texture, Dehaze | 121 px | 512 px | 701 ms, 1153% · 17.2 ms | 640 ms, 1137% · 62.0 ms | -9% |
+| 3800 × 2533 (synthetic) | Clarity | 127 px | 512 px | 64 ms, 796% · 11.0 ms | 55 ms, 897% · 34.0 ms | -14% |
+| 4400 × 2933 (synthetic) | Clarity | 151 px | 1024 px | 74 ms, 888% · 11.9 ms | 61 ms, 1093% · 34.5 ms | -18% |
+| 5200 × 3467 (synthetic) | Clarity | 175 px | 1024 px | 107 ms, 1165% · 12.9 ms | 89 ms, 1119% · 38.3 ms | -17% |
+| 6000 × 4000 (24 MP JPEG) | Clarity | 199 px | 1024 px | 125 ms, 1050% · 12.3 ms / 133 ms, 1086% · 12.3 ms | 90 ms, 1017% · 32.9 ms / 97 ms, 1029% · 32.2 ms | -28% / -27% |
+| 6000 × 4000 (24 MP JPEG) | Texture, Clarity | 207 px | 1024 px | 561 ms, 1044% · 36.1 ms | 350 ms, 1074% · 95.0 ms | -38% |
+| 6000 × 4000 (24 MP JPEG) | Clarity, Dehaze | 266 px | 1024 px | 252 ms, 1120% · 22.3 ms | 157 ms, 1107% · 54.9 ms | -38% |
+| 6000 × 4000 (24 MP JPEG) | All three | 274 px | 1024 px | 714 ms, 1079% · 47.2 ms | 546 ms, 972% · 121.0 ms | -24% |
+| 10000 × 6000 (60 MP JPEG) | Clarity | 327 px | 1024 px | 697 ms, 663% · 23.1 ms / 402 ms, 1195% · 18.9 ms | 359 ms, 829% · 55.0 ms / 256 ms, 1131% · 42.2 ms | -48% / -36% |
+| 12000 × 5333 (synthetic) | Clarity | 327 px | 1024 px | 551 ms, 1103% · 20.1 ms | 360 ms, 1095% · 49.6 ms | -35% |
+| 10000 × 6000 (60 MP JPEG) | Texture, Clarity | 341 px | 1024 px | 3030 ms, 768% · 60.5 ms | 1476 ms, 940% · 144.6 ms | -51% |
+| 10000 × 6000 (60 MP JPEG) | Clarity, Dehaze | 434 px | 1024 px | 1285 ms, 954% · 38.1 ms | 697 ms, 929% · 79.3 ms | -46% |
+| 10000 × 6000 (60 MP JPEG) | All three | 448 px | 1024 px | 3508 ms, 965% · 79.6 ms | 2323 ms, 770% · 171.3 ms | -34% |
+
+The first 512 px figure of the 60 MP Texture and Dehaze row (1806 ms at 410%) was taken while the host was loaded; the second pass gave 537 ms. Up to a summed halo of 128 px the 1024 px tile renders Texture alone 9 to 14% slower, and every other stack as fast or at most 14% faster on a stage of 10 MP or more, while its sample costs three to four times as much. Past 128 px it renders every stack 17 to 51% faster. That is the bound the rule takes ([decisions](../decisions.md#post-consolidation-review)). The frames' identity across the two sizes rests on these hashes rather than on construction, because the box passes' running sums start at each rectangle's edge.
+
+The rule's effect on the whole render, from the release probe of [tiles written back by row](#tiles-written-back-by-row), built at the row write-back (512 px tiles for every stack) and with the rule: runs back to back and reversed (the rule, 512 px, 512 px, the rule) at a one-minute load of 12 to 20, 5 renders per stack and run, and the p50 of 9 interior point samples per run, each equal to the rendered byte. Each cell is the p50 of each run, paired in the order the runs went; every stack's frame had the same SHA-256 in both builds, in this pass and in an earlier one at load 17 to 73.
+
+| Stack | Summed halo | 512 px tiles | By summed halo | Sample, 512 px | Sample, by summed halo | Tile |
+| --- | --- | --- | --- | --- | --- | --- |
+| 24 MP Texture | 8 px | 141 · 144 ms, 860% · 874% | 396 · 149 ms, 328% · 810% | 9.1 · 9.5 ms | 11.0 · 9.2 ms | 512 px |
+| 24 MP Clarity | 199 px | 131 · 129 ms, 1069% · 1101% | 306 · 91 ms, 287% · 1066% | 12.2 · 12.5 ms | 46.0 · 33.1 ms | 1024 px |
+| 24 MP Dehaze | 67 px | 71 · 73 ms, 822% · 829% | 76 · 73 ms, 781% · 815% | 5.5 · 5.5 ms | 7.8 · 5.3 ms | 512 px |
+| 24 MP Texture, Clarity | 207 px | 536 · 636 ms, 1133% · 963% | 357 · 420 ms, 1138% · 919% | 36.1 · 37.2 ms | 93.9 · 94.6 ms | 1024 px |
+| 24 MP Texture, Dehaze | 75 px | 241 · 325 ms, 1141% · 856% | 239 · 333 ms, 1157% · 803% | 13.6 · 13.5 ms | 16.1 · 13.2 ms | 512 px |
+| 24 MP Clarity, Dehaze | 266 px | 252 · 288 ms, 1141% · 1033% | 161 · 165 ms, 1126% · 1111% | 22.5 · 22.6 ms | 56.8 · 56.6 ms | 1024 px |
+| 24 MP All three | 274 px | 685 · 788 ms, 1137% · 990% | 521 · 616 ms, 1067% · 920% | 46.8 · 46.9 ms | 116.8 · 118.7 ms | 1024 px |
+| 60 MP Texture | 14 px | 337 · 338 ms, 820% · 827% | 338 · 422 ms, 830% · 698% | 9.5 · 9.7 ms | 9.5 · 9.6 ms | 512 px |
+| 60 MP Clarity | 327 px | 447 · 531 ms, 1083% · 926% | 264 · 279 ms, 1097% · 1088% | 18.8 · 18.9 ms | 42.5 · 43.1 ms | 1024 px |
+| 60 MP Dehaze | 107 px | 213 · 192 ms, 729% · 808% | 199 · 201 ms, 767% · 782% | 7.2 · 6.7 ms | 6.7 · 6.7 ms | 512 px |
+| 60 MP Texture, Clarity | 341 px | 2122 · 2475 ms, 1116% · 964% | 1535 · 1409 ms, 888% · 971% | 59.1 · 60.1 ms | 154.8 · 134.8 ms | 1024 px |
+| 60 MP Texture, Dehaze | 121 px | 601 · 701 ms, 1078% · 974% | 1776 · 671 ms, 372% · 985% | 15.5 · 16.3 ms | 15.6 · 16.9 ms | 512 px |
+| 60 MP Clarity, Dehaze | 434 px | 1060 · 1233 ms, 1125% · 975% | 552 · 520 ms, 1138% · 1190% | 38.0 · 41.8 ms | 82.8 · 77.4 ms | 1024 px |
+| 60 MP All three | 448 px | 2955 · 3484 ms, 1107% · 972% | 1633 · 1460 ms, 1058% · 1166% | 79.3 · 81.9 ms | 172.7 · 167.5 ms | 1024 px |
+
+Three first-pass figures of the rule's build ran at about 300% CPU while another process held the cores (24 MP Texture and Clarity, 60 MP Texture and Dehaze); their second passes are the comparison, and the 60 MP Texture row's second pass (422 ms at 698%) runs the same 512 px tiles as the build before it. Every stack that now runs in 1024 px tiles renders 22 to 58% faster at about the same share of the pool, so its CPU time falls in proportion: all three fields at 60 MP take 1.5 to 1.6 s instead of 3.0 to 3.5 s. Its point samples cost 1.9 to 3.8 times as much, 33 to 46 ms with Clarity alone at 24 MP and 168 to 173 ms with all three at 60 MP. Texture alone, Dehaze alone and Texture with Dehaze keep 512 px tiles, and their renders and samples are unchanged.
 
 ### Desktop slider-to-presented-frame
 
@@ -1521,6 +1584,19 @@ Exactness on the real files is the ignored core test, run in release with `LUXFO
 The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduced the whole stage once, which added 23 to 113 ms across the three files. That reduction is paid only for a unit that declares an estimate key: Clarity and Texture never pay it, and a new Dehaze amount prepares from the stored atmospheric light.
 
 A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel) showed every readout in the status bar with no render error, each hover step settling within 75 ms of the one before it.
+
+#### In tiles sized by the summed halo
+
+A sample evaluates the tile the render uses, and an operation whose summed halo passes 128 px now runs in 1024 px tiles ([tile size by summed halo](#tile-size-by-summed-halo)). Clarity's halo passes it on all three RAW sources, so its samples evaluate a 1024 px tile there. The ignored RAW test above, which now samples each stack in the production tiling and in 512 px tiles and asserts both against the one render, run in release on 28 September 2026 at a one-minute load of 13 to 15, holding the timing lock (41 samples per stack and tiling, p50 ms; each sample equal to the rendered byte in both tilings):
+
+| Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
+| --- | --- | --- | --- |
+| Point sample, production tiling (1024 px) | 47.1 · 67.5 | 46.2 · 75.2 | 40.3 · 59.5 |
+| Point sample, 512 px tiles | 19.0 · 31.2 | 18.0 · 32.3 | 14.5 · 24.5 |
+| The spatial frame alone, production tiling | 161 · 245 | 265 · 532 | 125 · 192 |
+| The spatial frame alone, 512 px tiles | 223 · 387 | 400 · 731 | 166 · 285 |
+
+On the generated JPEGs a sample through Clarity alone takes 33 to 46 ms at 24 MP and 43 ms at 60 MP in 1024 px tiles, against 12 and 19 ms in 512 px tiles, and through all three fields 117 to 119 and 168 to 173 ms against 47 and 80 to 82 ms ([tile size by summed halo](#tile-size-by-summed-halo)). A stack of Texture, Dehaze or both keeps 512 px tiles and its samples are unchanged: 9 to 10, 6 to 7 and 13 to 16 ms. The point worker answers these samples off the catalog owner, so the longer wait is the sampling client's own and delays no other client.
 
 ## Preset import parse
 

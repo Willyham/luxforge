@@ -9,7 +9,7 @@ scheduling and memory targets. Photo-sized costs and their measurement scope are
 **Presence.** `Plane::get` carries an ordinary inline hint. The release compiler can fold its
 coordinate clamps and address arithmetic into the callers; the M4 comparison found no remaining
 out-of-line calls to this accessor. Edge clamping, pixel arithmetic, f64 filter accumulation,
-512 px tiles, parallelism and scratch bounds stay the same. The change adds no specialized
+the tiling, parallelism and scratch bounds stay the same. The change adds no specialized
 assembly or architecture-specific path.
 
 **RAW terminal conversion.** Finite values are clamped at the existing terminal boundary and
