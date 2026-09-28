@@ -3,7 +3,7 @@
 //! was typed and commits nothing.
 use crate::state::control_tree::walk;
 use crate::state::number::{NumberSpec, number_text};
-use crate::state::tools::{ControlOwner, Rendered, classify};
+use crate::state::tools::ControlOwner;
 use luxforge_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, check_value,
 };
@@ -104,60 +104,44 @@ impl Fields {
 
 fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fields) {
     for control in walk(controls) {
-        match classify(control) {
-            Rendered::Number {
-                action, parameter, ..
+        let mut seed = |action: &str, parameter: &str| {
+            if let Some(declared) = owner.parameter(action, parameter) {
+                fields.set(action, parameter, seed_text(declared));
             }
-            | Rendered::Color {
-                action, parameter, ..
-            }
-            | Rendered::Toggle {
-                action, parameter, ..
-            }
-            | Rendered::Choice {
-                action, parameter, ..
-            } => {
-                if let Some(declared) = owner.parameter(action, parameter) {
-                    fields.set(action, parameter, seed_text(declared));
-                }
-            }
-            Rendered::Curve {
-                action, channels, ..
-            } => {
-                for channel in channels {
-                    if let Some(declared) = owner.parameter(action, &channel.parameter) {
-                        fields.set(action, &channel.parameter, seed_text(declared));
-                    }
+        };
+        match control {
+            Control::Number(number) => seed(&number.action, &number.parameter),
+            Control::Color(color) => seed(&color.action, &color.parameter),
+            Control::Toggle(toggle) => seed(&toggle.action, &toggle.parameter),
+            Control::Choice(choice) => seed(&choice.action, &choice.parameter),
+            Control::Curve(curve) => {
+                for channel in &curve.channels {
+                    seed(&curve.action, &channel.parameter);
                 }
             }
             // A band's edges and shoulders are its own number fields, seeded as any field is.
-            Rendered::Range {
-                action,
-                low,
-                high,
-                low_feather,
-                high_feather,
-                ..
-            } => {
-                for parameter in [Some(low), Some(high), low_feather, high_feather]
-                    .into_iter()
-                    .flatten()
+            Control::Range(range) => {
+                for parameter in [
+                    Some(&range.low),
+                    Some(&range.high),
+                    range.low_feather.as_ref(),
+                    range.high_feather.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
                 {
-                    if let Some(declared) = owner.parameter(action, parameter) {
-                        fields.set(action, parameter, seed_text(declared));
-                    }
+                    seed(&range.action, parameter);
                 }
             }
             // None carries a field of its own: a group's fields are its children's, an action
             // button submits the fields already seeded, a picker only enters its module's canvas
             // mode, a preset row submits a library preset's own settings, name and identity, and a
             // task sends the open asset and a profile.
-            Rendered::Group { .. }
-            | Rendered::Action { .. }
-            | Rendered::Picker { .. }
-            | Rendered::Presets { .. }
-            | Rendered::Task { .. }
-            | Rendered::Unsupported(_) => {}
+            Control::Group(_)
+            | Control::Action(_)
+            | Control::Picker(_)
+            | Control::Presets(_)
+            | Control::Task(_) => {}
         }
     }
 }
@@ -429,10 +413,6 @@ pub(crate) fn undeclared_label(action: &str, parameter: &str) -> String {
     format!("Unsupported control: {action} declares no parameter {parameter}")
 }
 
-pub(crate) fn unsupported_label(kind: &str) -> String {
-    format!("Unsupported control: {kind}")
-}
-
 /// The request fields for one action.
 ///
 /// A **patch** action sends exactly the fields it was given and nothing else: a generated control
@@ -543,12 +523,8 @@ pub(crate) fn field_reset(
 }
 
 fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<String, Value>> {
-    walk(controls).find_map(|control| match classify(control) {
-        Rendered::Action {
-            action: declared,
-            preset,
-            ..
-        } if declared == action => Some(preset),
+    walk(controls).find_map(|control| match control {
+        Control::Action(button) if button.action == action => Some(&button.preset),
         _ => None,
     })
 }
@@ -556,7 +532,7 @@ fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::tools::{control_kind, declared_action, point_pick};
+    use crate::state::tools::{declared_action, point_pick};
     use serde_json::json;
 
     fn decimals_for(parameter: &ParameterDescriptor) -> usize {
@@ -854,12 +830,10 @@ mod tests {
         let mut checked = 0;
         for module in &modules {
             for control in walk(&module.controls) {
-                let Rendered::Number {
-                    action, parameter, ..
-                } = classify(control)
-                else {
+                let Control::Number(number) = control else {
                     continue;
                 };
+                let (action, parameter) = (&number.action, &number.parameter);
                 let declared = ControlOwner::Module(module)
                     .parameter(action, parameter)
                     .expect("a generated control names a declared parameter");
@@ -976,11 +950,12 @@ mod tests {
         };
         for module in &modules {
             for control in &module.controls {
-                let Rendered::Group { controls, .. } = classify(control) else {
+                let Control::Group(group) = control else {
                     continue;
                 };
-                for child in controls {
-                    if let Rendered::Action { action, preset, .. } = classify(child) {
+                for child in &group.controls {
+                    if let Control::Action(button) = child {
+                        let (action, preset) = (&button.action, &button.preset);
                         assert!(
                             runnable(action, preset),
                             "{action} is not runnable from its declared control"
@@ -1014,19 +989,15 @@ mod tests {
             .iter()
             .find(|module| module.id == "luxforge.transform")
             .expect("the transform module");
-        let Some(Rendered::Action { action, preset, .. }) =
-            choice.controls.first().map(classify).map(|control| {
-                let Rendered::Group { controls, .. } = control else {
-                    unreachable!("transform controls are grouped")
-                };
-                classify(&controls[0])
-            })
-        else {
+        let Some(Control::Group(group)) = choice.controls.first() else {
+            unreachable!("transform controls are grouped")
+        };
+        let Control::Action(button) = &group.controls[0] else {
             unreachable!("the first transform control invokes an action")
         };
         assert_eq!(
-            submit_preset(&modules, action, None, &fields).as_ref(),
-            Ok(preset)
+            submit_preset(&modules, &button.action, None, &fields).as_ref(),
+            Ok(&button.preset)
         );
         assert!(submit_preset(&modules, "no-such-action", None, &fields).is_err());
     }
@@ -1193,67 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrenderable_control_kind_is_named_not_dropped() {
-        assert_eq!(
-            unsupported_label("gradient"),
-            "Unsupported control: gradient"
-        );
-        let controls = [
-            Control::Group(luxforge_core::GroupControl {
-                label: "Group".into(),
-                controls: Vec::new(),
-                reset: None,
-                collapsed: false,
-                variants: Vec::new(),
-            }),
-            Control::Number(luxforge_core::NumberControl {
-                action: "act".into(),
-                parameter: "x".into(),
-                label: "X".into(),
-                style: luxforge_core::NumberStyle::Slider,
-                rail: None,
-                reset: None,
-                variants: Vec::new(),
-            }),
-            Control::Color(luxforge_core::ColorControl {
-                action: "act".into(),
-                parameter: "rgb".into(),
-                label: "RGB".into(),
-                style: luxforge_core::ColorStyle::Fields,
-            }),
-            Control::Action(luxforge_core::ActionControl {
-                action: "act".into(),
-                label: "Apply".into(),
-                preset: Map::new(),
-                style: luxforge_core::ActionStyle::Default,
-                icon: None,
-                variants: Vec::new(),
-            }),
-        ];
-        for (control, kind) in controls.iter().zip(["group", "number", "color", "action"]) {
-            assert_eq!(control_kind(control), kind);
-            assert!(
-                !matches!(classify(control), Rendered::Unsupported(_)),
-                "{kind} is rendered"
-            );
-        }
-        // The host renders the preset library where a module declares its presets control.
-        let presets = Control::Presets(luxforge_core::PresetsControl {
-            action: "apply-preset".into(),
-        });
-        assert_eq!(control_kind(&presets), "presets");
-        assert!(matches!(
-            classify(&presets),
-            Rendered::Presets { action } if action == "apply-preset"
-        ));
-        // Every control the registered modules declare has a real rendering.
-        for module in descriptors() {
-            for control in walk(&module.controls) {
-                if let Rendered::Unsupported(kind) = classify(control) {
-                    panic!("{} declares {kind}", module.id);
-                }
-            }
-        }
+    fn a_control_naming_an_undeclared_parameter_is_named_not_dropped() {
         assert_eq!(
             undeclared_label("act", "z"),
             "Unsupported control: act declares no parameter z"

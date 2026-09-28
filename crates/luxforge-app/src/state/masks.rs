@@ -17,11 +17,11 @@ use crate::{
     state::{
         Inputs,
         number::NumberSpec,
-        tools::{ControlModel, ControlOwner, Rendered, classify, control_model},
+        tools::{ControlModel, ControlOwner, control_model},
     },
 };
 use luxforge_core::{
-    ComponentId, ComponentMode, MaskId, MaskOverlayColour, MaskOverlayMode,
+    ComponentId, ComponentMode, Control, MaskId, MaskOverlayColour, MaskOverlayMode,
     mask::{
         commands::{self, ComponentReport, MaskReport, SampleOp},
         rules,
@@ -29,7 +29,6 @@ use luxforge_core::{
 };
 
 /// One mask's row in the list.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MaskRow {
     pub(crate) id: MaskId,
@@ -171,7 +170,6 @@ impl MaskThumbnails {
 }
 
 /// One component's row inside the open mask.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComponentRow {
     pub(crate) id: ComponentId,
@@ -197,7 +195,6 @@ pub(crate) struct ComponentRow {
     /// frozen when it was created.
     pub(crate) mode_options: Vec<String>,
     pub(crate) mode_selected: usize,
-    pub(crate) mode_label: String,
     /// This row's own invert toggle, labelled as the host's control declares it.
     pub(crate) invert_label: String,
     /// The kind's own number fields, shown beneath the row while it is selected, so no gesture is
@@ -264,7 +261,6 @@ pub(crate) struct ComponentRow {
 ///
 /// The swatch is the stored linear triple shown as the 8-bit codes a person can read; the panel
 /// converts nothing else and invents nothing — the numbers are the ones `mask.list` reports.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SampleRow {
     pub(crate) index: usize,
@@ -284,7 +280,6 @@ pub(crate) struct SampleRow {
 /// entry and removes only that stroke, leaving everything committed after it exactly where it is —
 /// which is a different thing from undo, and the row says so rather than leaving the two to look
 /// alike.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StrokeRow {
     /// The content address, which is what the delete addresses it by.
@@ -371,7 +366,6 @@ pub(crate) struct DraftField {
 }
 
 /// The open shape gesture, as the panel and the draft bar read it.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MaskDraftModel {
     /// The gesture's own declared fields, each editable as a number.
@@ -912,21 +906,18 @@ fn host_controls(
 
 /// The action one declared control submits, for the filters above. A control kind that submits none
 /// belongs to no mask command and is never offered here.
-fn control_action(control: &luxforge_core::Control) -> Option<&str> {
-    match classify(control) {
-        Rendered::Number { action, .. }
-        | Rendered::Toggle { action, .. }
-        | Rendered::Choice { action, .. }
-        | Rendered::Color { action, .. }
-        | Rendered::Curve { action, .. }
-        | Rendered::Range { action, .. }
-        | Rendered::Action { action, .. }
-        | Rendered::Presets { action } => Some(action),
+fn control_action(control: &Control) -> Option<&str> {
+    match control {
+        Control::Number(number) => Some(&number.action),
+        Control::Toggle(toggle) => Some(&toggle.action),
+        Control::Choice(choice) => Some(&choice.action),
+        Control::Color(color) => Some(&color.action),
+        Control::Curve(curve) => Some(&curve.action),
+        Control::Range(range) => Some(&range.action),
+        Control::Action(button) => Some(&button.action),
+        Control::Presets(presets) => Some(&presets.action),
         // A group, a picker and a module worker task submit no mask command, so none is offered here.
-        Rendered::Group { .. }
-        | Rendered::Picker { .. }
-        | Rendered::Task { .. }
-        | Rendered::Unsupported(_) => None,
+        Control::Group(_) | Control::Picker(_) | Control::Task(_) => None,
     }
 }
 
@@ -970,7 +961,6 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                     .iter()
                     .position(|option| option == component.mode.as_str())
                     .unwrap_or(0),
-                mode_label: control_label("mask.set-component-mode", "mode"),
                 invert_label: control_label("mask.set-component-invert", "invert"),
                 fields: if selected {
                     kind_fields(inputs, &component.kind, enabled && component.available)
@@ -1202,7 +1192,6 @@ fn stroke_summary(
 /// along one stroke, which would make coverage depend on stamp spacing and therefore on resolution,
 /// so it is left out and the [user guide](../../../docs/user-guide.md) says why rather than the
 /// panel implying it exists.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BrushModel {
     pub(crate) fields: Vec<DraftField>,

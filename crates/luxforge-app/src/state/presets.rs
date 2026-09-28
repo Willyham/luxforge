@@ -7,12 +7,7 @@
 //! request it can send is that control's action with the preset's settings, name and identity.
 //! The parameter names are read from the action's descriptor by kind, and the only module-specific
 //! rule here is the create form's white-balance default.
-use crate::state::{
-    Inputs,
-    control_tree::walk,
-    palette::PaletteAction,
-    tools::{Rendered, classify, is_patch},
-};
+use crate::state::{Inputs, control_tree::walk, palette::PaletteAction, tools::is_patch};
 use luxforge_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterKind, PresetSummary, ReportCounts,
     USER_PRESET_GROUP,
@@ -177,35 +172,32 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
     let mut groups: Vec<(Vec<usize>, usize)> = Vec::new();
     let mut controls = walk(&module.controls);
     while let Some(control) = controls.next() {
-        let fields: Vec<(&str, &str)> = match classify(control) {
-            Rendered::Group { label, .. } => {
+        let fields: Vec<(&str, &str)> = match control {
+            Control::Group(group) => {
                 entries.push(PresettableGroup {
-                    label: format!("{} \u{00b7} {label}", module.title),
+                    label: format!("{} \u{00b7} {}", module.title, group.label),
                     fields: Vec::new(),
                     default_checked: true,
                 });
                 groups.push((controls.path(), entries.len() - 1));
                 continue;
             }
-            Rendered::Number {
-                action, parameter, ..
-            }
-            | Rendered::Toggle {
-                action, parameter, ..
-            }
-            | Rendered::Choice {
-                action, parameter, ..
-            }
-            | Rendered::Color {
-                action, parameter, ..
-            } => vec![(action, parameter)],
-            Rendered::Curve {
-                action, channels, ..
-            } => channels
+            Control::Number(number) => vec![(&number.action, &number.parameter)],
+            Control::Toggle(toggle) => vec![(&toggle.action, &toggle.parameter)],
+            Control::Choice(choice) => vec![(&choice.action, &choice.parameter)],
+            Control::Color(color) => vec![(&color.action, &color.parameter)],
+            Control::Curve(curve) => curve
+                .channels
                 .iter()
-                .map(|channel| (action, channel.parameter.as_str()))
+                .map(|channel| (curve.action.as_str(), channel.parameter.as_str()))
                 .collect(),
-            _ => Vec::new(),
+            // A band's fields are presettable through the number controls that declare them, and
+            // no other kind carries a field.
+            Control::Range(_)
+            | Control::Action(_)
+            | Control::Picker(_)
+            | Control::Task(_)
+            | Control::Presets(_) => Vec::new(),
         };
         if fields.is_empty() {
             continue;
