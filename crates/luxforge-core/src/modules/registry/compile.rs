@@ -7,7 +7,7 @@ use crate::{
     artifacts::ArtifactTable,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, Stage, ToolModule,
+        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, Provider, Stage,
     },
     render::{
         Compiled, Entry, Segment,
@@ -61,18 +61,6 @@ impl ModuleRegistry {
             }
         }
         Ok(())
-    }
-
-    /// Whether this stored layer changes nothing, by its available provider's own rule
-    /// ([`ToolModule::is_neutral`]). A layer whose provider is missing or unavailable, or whose
-    /// payload the provider cannot read, is not neutral: nothing can say it changes nothing.
-    /// Reading the payload only.
-    pub fn layer_neutral(&self, layer: &Layer) -> bool {
-        self.provider(&layer.effect_id).is_some_and(|module| {
-            module
-                .is_neutral(&layer.effect_id, layer.effect_format, &layer.payload)
-                .unwrap_or(false)
-        })
     }
 
     /// Structural validation stays in the model; effect availability, whether the effect may
@@ -503,7 +491,7 @@ impl ModuleRegistry {
     /// the recipe was bound with. Reads no pixels.
     fn compile_layer(
         &self,
-        module: &dyn ToolModule,
+        module: Provider<'_>,
         layer: &Layer,
         stage: Stage,
         artifacts: &ArtifactTable,

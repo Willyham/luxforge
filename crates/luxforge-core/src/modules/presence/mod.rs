@@ -160,11 +160,14 @@ mod tests {
             (json!({"clarity": -20.0}), "Clarity -20"),
             (json!({"dehaze": 15.0}), "Dehaze +15"),
         ] {
-            let label = module.label(&ActionInput {
-                action_id: SET_PRESENCE.to_owned(),
-                parameters: parameters.as_object().cloned().unwrap(),
-            });
-            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+            let label = module.label(
+                module.descriptor().action(SET_PRESENCE).unwrap(),
+                &ActionInput {
+                    action_id: SET_PRESENCE.to_owned(),
+                    parameters: parameters.as_object().cloned().unwrap(),
+                },
+            );
+            assert_eq!(label, expected, "{parameters}");
         }
     }
 

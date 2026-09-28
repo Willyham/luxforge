@@ -5,8 +5,8 @@ use crate::{
     LayerId, Mask, Orientation, RECIPE_FORMAT, Recipe, SnapshotId,
     artifacts::ArtifactTable,
     modules::{
-        ActionInput, ActionPlan, Availability, CropPayload, EffectStage, MAX_MASKED_SPATIAL_LAYERS,
-        ModuleDescriptor, StageContext,
+        ActionInput, ActionPlan, Availability, CapabilityModule, CropPayload, EffectStage,
+        MAX_MASKED_SPATIAL_LAYERS, ModuleDescriptor, Processing, Stage, StageContext,
     },
     render::{
         Entry,
@@ -89,7 +89,9 @@ fn a_layer_is_neutral_by_its_own_modules_rule() {
     ];
     for (layer, neutral) in cases {
         assert_eq!(
-            registry.layer_neutral(&layer),
+            registry
+                .layer_report(&layer)
+                .is_ok_and(|report| report.neutral),
             neutral,
             "{} {}",
             layer.effect_id,
@@ -100,7 +102,10 @@ fn a_layer_is_neutral_by_its_own_modules_rule() {
     unavailable
         .register_unavailable(Arc::new(super::BasicModule::new()), "switched off")
         .unwrap();
-    assert!(!unavailable.layer_neutral(&layer(BASIC_EFFECT, json!({}))));
+    assert_eq!(
+        unavailable.layer_report(&layer(BASIC_EFFECT, json!({}))),
+        Err("unavailable: switched off".to_owned())
+    );
 }
 
 #[test]
@@ -818,8 +823,8 @@ impl ToolModule for BoundModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok("bound".into())
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new("bound"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::neutral()))

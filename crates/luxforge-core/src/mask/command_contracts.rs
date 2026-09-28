@@ -1508,7 +1508,6 @@ impl crate::ToolModule for Colliding {
                     id: "mask.create-linear".into(),
                     title: "Create".into(),
                     notes: String::new(),
-                    summary: None,
                     patch: false,
                     parameters: Vec::new(),
                 }],
@@ -1537,8 +1536,8 @@ impl crate::ToolModule for Colliding {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok(String::new())
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::default())
     }
     fn compile(
         &self,

@@ -435,7 +435,7 @@ pub struct LayerDescription {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactId>,
     /// Whether the stored layer changes nothing, as its provider answers
-    /// ([`crate::ModuleRegistry::layer_neutral`]): a neutral field patch, a whole-image crop, the
+    /// ([`crate::ModuleRegistry::layer_report`]): a neutral field patch, a whole-image crop, the
     /// identity orientation or a RAW development at As shot and 0 EV. False for a layer whose
     /// provider is missing or unavailable or whose payload it cannot read. A client's "edited" mark
     /// reads this rather than parsing a payload.

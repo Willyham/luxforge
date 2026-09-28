@@ -203,10 +203,6 @@ pub fn payloads(
     sources: &Sources,
 ) -> Checked<Value> {
     let stage = sources.stage();
-    let provider = registry
-        .module(&module.id)
-        .ok_or("the module is not registered")?;
-    let effect = &module.effect;
     let identity = render_linear(
         registry,
         &sources.linear,
@@ -222,20 +218,19 @@ pub fn payloads(
         registry
             .validate_layer(&layer)
             .map_err(|error| format!("{what} {payload} was refused: {error}"))?;
+        let report = registry
+            .layer_report(&layer)
+            .map_err(|reason| format!("{what} was not described: {reason}"))?;
         ensure(
-            registry.layer_neutral(&layer),
+            report.neutral,
             format!("{what} {payload} is not reported neutral"),
         )?;
-        let described = provider
-            .describe_layer(&effect.id, effect.format, &payload)
-            .map_err(|error| format!("{what} was not described: {error}"))?;
+        let described = report.summary;
         ensure(
             described == "Neutral",
             format!("{what} {payload} is described as {described:?}, not Neutral"),
         )?;
-        let values = provider
-            .values(&effect.id, effect.format, &payload)
-            .map_err(|error| format!("{what} reported no values: {error}"))?;
+        let values = report.values;
         for field in &module.fields {
             ensure(
                 field.same(values.get(&field.name), &field.default),
@@ -278,17 +273,16 @@ pub fn payloads(
         registry
             .validate_layer(&layer)
             .map_err(|error| format!("{payload} was refused: {error}"))?;
-        let is_neutral = registry.layer_neutral(&layer);
-        let described = provider
-            .describe_layer(&effect.id, effect.format, &payload)
-            .map_err(|error| format!("{payload} was not described: {error}"))?;
+        let report = registry
+            .layer_report(&layer)
+            .map_err(|reason| format!("{payload} was not described: {reason}"))?;
+        let is_neutral = report.neutral;
+        let described = report.summary;
         ensure(
             described != "Neutral",
             format!("{payload} moves a field but is described as Neutral"),
         )?;
-        let values = provider
-            .values(&effect.id, effect.format, &payload)
-            .map_err(|error| format!("{payload} reported no values: {error}"))?;
+        let values = report.values;
         for other in &module.fields {
             let expected = if other.name == field.name {
                 field.high()
@@ -340,7 +334,9 @@ pub fn payloads(
     for payload in [module.full_high(), module.full_low()] {
         let layer = layer(module, &payload);
         ensure(
-            !registry.layer_neutral(&layer),
+            !registry
+                .layer_report(&layer)
+                .is_ok_and(|report| report.neutral),
             format!("{payload} moves every field but is reported neutral"),
         )?;
         let units = compiled_units(registry, module, &payload, stage)?;
@@ -467,7 +463,7 @@ pub fn refuses_as_ambiguous(
         .filter(|layer| layer.effect_id == module.effect.id)
     {
         provider
-            .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
+            .describe(&layer.effect_id, layer.effect_format, &layer.payload)
             .map_err(|error| format!("a refused stack's layer is unreadable: {error}"))?;
     }
     Ok(json!({"error": rendered.to_string()}))

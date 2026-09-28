@@ -9,8 +9,8 @@ use super::{
     shape::{Field, FieldPatch, Label},
 };
 use luxforge_core::{
-    ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Stage, StageContext,
-    StageQuestions, ToolModule, check_parameters,
+    ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Provider, Stage,
+    StageContext, StageQuestions, check_parameters,
 };
 use serde_json::{Map, Value, json};
 
@@ -32,7 +32,7 @@ impl StageQuestions for Fixed {
 struct Rules<'a> {
     registry: &'a ModuleRegistry,
     module: &'a FieldPatch,
-    provider: &'a dyn ToolModule,
+    provider: Provider<'a>,
     stage: Stage,
 }
 
@@ -103,11 +103,21 @@ impl Rules<'_> {
         }
     }
 
-    fn label(&self, action: &str, parameters: &Map<String, Value>) -> Option<String> {
-        self.provider.label(&ActionInput {
-            action_id: action.to_owned(),
-            parameters: parameters.clone(),
-        })
+    /// The label the host stores for this request: the module's, with the requested action's
+    /// title as its default.
+    fn label(&self, action: &str, parameters: &Map<String, Value>) -> Checked<String> {
+        let declared = self
+            .provider
+            .descriptor()
+            .action(action)
+            .ok_or_else(|| format!("{action} is not declared"))?;
+        Ok(self.provider.label(
+            declared,
+            &ActionInput {
+                action_id: action.to_owned(),
+                parameters: parameters.clone(),
+            },
+        ))
     }
 
     fn validate(&self, format: u32, payload: &Value) -> Result<(), Error> {
@@ -194,12 +204,8 @@ fn stored_payloads(rules: &Rules<'_>) -> Checked<Value> {
             "described",
             rules
                 .provider
-                .describe_layer(&effect.id, future, &json!({}))
+                .describe(&effect.id, future, &json!({}))
                 .err(),
-        ),
-        (
-            "read for its values",
-            rules.provider.values(&effect.id, future, &json!({})).err(),
         ),
     ] {
         let error = refused.ok_or_else(|| format!("an undeclared format was {what}"))?;
@@ -224,7 +230,8 @@ fn lead(rules: &Rules<'_>) -> Checked<usize> {
         .position(|field| {
             !rules
                 .registry
-                .layer_neutral(&rules.layer(json!({field.name.clone(): field.high()})))
+                .layer_report(&rules.layer(json!({field.name.clone(): field.high()})))
+                .is_ok_and(|report| report.neutral)
         })
         .ok_or_else(|| "no single field changes the image".to_owned())
 }
@@ -376,7 +383,10 @@ fn every_field(rules: &Rules<'_>) -> Checked<Value> {
     for field in &module.fields {
         let named = |value: Value| json!({field.name.clone(): value});
         let high = named(field.high());
-        let neutral = rules.registry.layer_neutral(&rules.layer(high.clone()));
+        let neutral = rules
+            .registry
+            .layer_report(&rules.layer(high.clone()))
+            .is_ok_and(|report| report.neutral);
         match rules.planned(set, high.clone(), &[])? {
             ActionPlan::NoOp if neutral => {}
             ActionPlan::Commit(new) if !neutral && new.payload == high => {}
@@ -440,24 +450,28 @@ fn labels(rules: &Rules<'_>) -> Checked<Value> {
     let mut shown = Vec::new();
     for patch in patches {
         let expected = module.expected_label(&patch)?;
-        let label = rules
-            .label(&module.set, &patch)
-            .ok_or_else(|| format!("{patch:?} has no label"))?;
+        let label = rules.label(&module.set, &patch)?;
         ensure(
             expected.matches(&label),
             format!("{patch:?} is labelled {label:?}, not {expected:?}"),
         )?;
         shown.push(label);
     }
-    let reset = rules.label(&module.reset, &Map::new());
+    let reset = rules.label(&module.reset, &Map::new())?;
     ensure(
-        reset.as_deref() == Some(format!("Reset {}", module.title).as_str()),
+        reset == format!("Reset {}", module.title),
         format!("the module reset is labelled {reset:?}"),
     )?;
-    let empty = rules.label(&module.set, &Map::new());
+    let empty = rules.label(&module.set, &Map::new())?;
+    let title = &rules
+        .provider
+        .descriptor()
+        .action(&module.set)
+        .ok_or("the set action is not declared")?
+        .title;
     ensure(
-        empty.is_none(),
-        format!("an empty patch is labelled {empty:?}"),
+        empty == *title,
+        format!("an empty patch is labelled {empty:?}, not the action's title"),
     )?;
     Ok(json!(shown))
 }
@@ -472,10 +486,11 @@ fn described(rules: &Rules<'_>) -> Checked<Value> {
         return Ok(Value::Null);
     };
     let payload = json!({lead.name.clone(): lead.high(), other.name.clone(): other.high()});
-    let values = rules
+    let report = rules
         .provider
-        .values(&effect.id, effect.format, &payload)
-        .map_err(|error| format!("{payload} reported no values: {error}"))?;
+        .describe(&effect.id, effect.format, &payload)
+        .map_err(|error| format!("{payload} was not described: {error}"))?;
+    let values = report.values;
     ensure(
         values.len() == module.fields.len(),
         format!("{payload} reported {} values", values.len()),
@@ -497,10 +512,7 @@ fn described(rules: &Rules<'_>) -> Checked<Value> {
             ),
         )?;
     }
-    let described = rules
-        .provider
-        .describe_layer(&effect.id, effect.format, &payload)
-        .map_err(|error| format!("{payload} was not described: {error}"))?;
+    let described = report.summary;
     let mut moved = [(lead, lead.high()), (other, other.high())];
     moved.sort_by_key(|(field, _)| {
         module

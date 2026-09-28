@@ -82,8 +82,8 @@ impl ToolModule for HeldModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok("held render".into())
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<luxforge_core::LayerReport, Error> {
+        Ok(luxforge_core::LayerReport::new("held render"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         let unit: Arc<dyn PointwiseColor> = Arc::new(HeldUnit(self.gate.clone()));

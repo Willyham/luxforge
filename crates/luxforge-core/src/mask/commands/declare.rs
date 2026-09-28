@@ -61,7 +61,6 @@ static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| {
             notes: "every mask of one stack with its components, values, amount, invert and the \
                     layers bound to it; read-only, writes no history and emits no event"
                 .to_owned(),
-            summary: None,
             patch: false,
             parameters: Vec::new(),
         },
@@ -76,7 +75,6 @@ static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| {
                     be a different colour. The position is a pixel of the stage that operation's \
                     layer receives, and one outside it is refused rather than clamped"
                 .to_owned(),
-            summary: None,
             patch: false,
             parameters: vec![
                 mask_parameter(true),
@@ -232,10 +230,9 @@ fn command(
             id: method.to_owned(),
             title: title.to_owned(),
             notes: notes.to_owned(),
-            // A mask label names the objects it touched and the mask it belongs to, which no
-            // template over declared parameters can render; `plan` renders it at commit and the
-            // entry stores it, exactly as a module's rendered `summary` is stored.
-            summary: None,
+            // A mask label names the objects it touched and the mask it belongs to, which only the
+            // plan knows; `plan` renders it at commit and the entry stores it, exactly as a
+            // module's label is stored.
             patch,
             parameters: addressed(mask, component, parameters),
         },
@@ -526,7 +523,6 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                     snapped to the stored grid and decimated there before it is stored, so the same \
                     posted path always produces the same stored stroke"
                 .to_owned(),
-            summary: None,
             patch: false,
             // Where the stroke lands is the two optional identities: neither draws a new mask,
             // a mask alone puts a further brush on it, and both append to that brush.
@@ -621,7 +617,6 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                     appends one entry, so a stroke made ten entries ago goes while everything after \
                     it stays. A component's last stroke is not deletable; delete the component"
                 .to_owned(),
-            summary: None,
             patch: false,
             parameters: addressed(
                 true,

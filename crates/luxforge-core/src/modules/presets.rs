@@ -10,8 +10,9 @@
 //! deduplication and a copied request each describe exactly what was applied, and the module needs
 //! no access to the catalog.
 use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, Control, ModuleDescriptor,
-    ModuleLayout, ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, Availability, Control, LayerReport,
+    ModuleDescriptor, ModuleLayout, ParameterDescriptor, Processing, Stage, StageContext,
+    ToolModule,
     descriptor::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS},
 };
 use crate::Error;
@@ -69,7 +70,6 @@ impl PresetsModule {
                              An unknown, non-patch or unavailable action, or a field its action \
                              refuses, refuses the whole preset and writes nothing."
                         .into(),
-                    summary: None,
                     patch: false,
                     parameters: vec![
                         ParameterDescriptor::settings(PRESET_SETTINGS)
@@ -160,19 +160,19 @@ impl ToolModule for PresetsModule {
             .map(ActionPlan::Compose)
     }
 
-    fn label(&self, input: &ActionInput) -> Option<String> {
-        input
-            .parameters
-            .get(PRESET_NAME)
-            .and_then(Value::as_str)
-            .map(|name| format!("Preset: {name}"))
+    /// `Preset: <name>`.
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
+        match input.parameters.get(PRESET_NAME).and_then(Value::as_str) {
+            Some(name) => format!("Preset: {name}"),
+            None => action.title.clone(),
+        }
     }
 
     fn validate_payload(&self, effect_id: &str, _: u32, _: &Value) -> Result<(), Error> {
         Err(no_effects(effect_id))
     }
 
-    fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
+    fn describe(&self, effect_id: &str, _: u32, _: &Value) -> Result<LayerReport, Error> {
         Err(no_effects(effect_id))
     }
 
@@ -214,7 +214,6 @@ mod tests {
         assert_eq!(action["id"], json!("apply-preset"));
         assert_eq!(action["title"], json!("Apply preset"));
         assert_eq!(action["patch"], json!(false));
-        assert_eq!(action["summary"], json!(null));
         let parameters = action["parameters"].as_array().expect("parameters");
         let shape = |parameter: &Value| {
             json!({
@@ -268,7 +267,7 @@ mod tests {
         let parsed = module.parse(APPLY_PRESET, &checked).expect("parsed");
         assert_eq!(parsed.action_id, APPLY_PRESET);
         assert_eq!(parsed.parameters, fields(sent));
-        assert_eq!(module.label(&parsed).as_deref(), Some("Preset: Soft film"));
+        assert_eq!(module.label(action, &parsed), "Preset: Soft film");
         // The library identity is optional and nothing fills it in.
         let without = json!({"settings": {"set-basic": {"exposure": 0.35}}, "name": "Soft"});
         let checked = check_parameters(action, &without).expect("no preset-id");
@@ -375,7 +374,7 @@ mod tests {
                 .validate_payload("luxforge.presets.any", 1, &json!({}))
                 .unwrap_err(),
             module
-                .describe_layer("luxforge.presets.any", 1, &json!({}))
+                .describe("luxforge.presets.any", 1, &json!({}))
                 .unwrap_err(),
             module
                 .compile("luxforge.presets.any", 1, &json!({}), stage)

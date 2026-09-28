@@ -339,7 +339,10 @@ pub fn journey(
     let mut lead = None;
     for (field, payload) in module.single_field_payloads() {
         let layer = pixels::layer(module, &payload);
-        if registry.layer_neutral(&layer) {
+        if registry
+            .layer_report(&layer)
+            .is_ok_and(|report| report.neutral)
+        {
             continue;
         }
         let raster = pixels::raster(&registry, sources, &pixels::stack(vec![layer]))?;
@@ -507,7 +510,11 @@ pub fn journey(
         let neutral_by_rule = module
             .single_field_payloads()
             .into_iter()
-            .filter(|(_, payload)| registry.layer_neutral(&pixels::layer(module, payload)))
+            .filter(|(_, payload)| {
+                registry
+                    .layer_report(&pixels::layer(module, payload))
+                    .is_ok_and(|report| report.neutral)
+            })
             .map(|(field, payload)| {
                 (
                     format!("{} alone, neutral by the module's rule", field.name),

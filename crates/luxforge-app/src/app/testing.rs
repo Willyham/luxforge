@@ -266,25 +266,24 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
         .recipe
         .layers
         .iter()
-        .map(|layer| luxforge_core::LayerDescription {
-            id: layer.id.clone(),
-            effect: layer.effect_id.clone(),
-            module: Some(module.descriptor().id.clone()),
-            title: Some(module.descriptor().title.clone()),
-            summary: module
-                .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
-                .expect("a RAW summary"),
-            values: module
-                .values(&layer.effect_id, layer.effect_format, &layer.payload)
-                .expect("RAW values"),
-            available: true,
-            mask: layer.mask.clone(),
-            artifacts: layer.artifacts.clone(),
-            neutral: module
-                .is_neutral(&layer.effect_id, layer.effect_format, &layer.payload)
-                .expect("RAW neutrality"),
-            input_stage: None,
-            input_orientation: None,
+        .map(|layer| {
+            let report = module
+                .describe(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("a RAW layer describes itself");
+            luxforge_core::LayerDescription {
+                id: layer.id.clone(),
+                effect: layer.effect_id.clone(),
+                module: Some(module.descriptor().id.clone()),
+                title: Some(module.descriptor().title.clone()),
+                summary: report.summary,
+                values: report.values,
+                available: true,
+                mask: layer.mask.clone(),
+                artifacts: layer.artifacts.clone(),
+                neutral: report.neutral,
+                input_stage: None,
+                input_orientation: None,
+            }
         })
         .collect();
     refresh

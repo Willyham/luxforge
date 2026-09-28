@@ -907,11 +907,11 @@ fn reject_superseded_fields(
             };
             let values = match &values {
                 Some(values) => values,
-                None => values.insert(module.values(
-                    &layer.effect_id,
-                    layer.effect_format,
-                    &layer.payload,
-                )?),
+                None => values.insert(
+                    module
+                        .describe(&layer.effect_id, layer.effect_format, &layer.payload)?
+                        .values,
+                ),
             };
             if let Some(value) = values.get(field.parameter)
                 && Some(value) != parameter.default.as_ref()

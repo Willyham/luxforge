@@ -8,8 +8,9 @@ pub mod lightroom_white_balance;
 pub mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    ControlVariant, EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor,
-    ParameterDescriptor, Processing, ResetAction, Stage, StageContext, ToolModule,
+    ControlVariant, EffectDescriptor, EffectStage, ExactGeometry, LayerReport, LayerUpdate,
+    ModuleDescriptor, ParameterDescriptor, Processing, ResetAction, Stage, StageContext,
+    ToolModule, decode_parameters,
 };
 use crate::{Error, Layer, LayerId, SourceTag};
 use serde::{Deserialize, Serialize};
@@ -294,10 +295,22 @@ fn action(id: &str, title: &str, parameters: Vec<ParameterDescriptor>) -> Action
         id: id.into(),
         title: title.into(),
         notes: "updates the required RAW source layer through ordinary history".into(),
-        summary: None,
         patch: false,
         parameters,
     }
+}
+
+/// A gain request, which the generic check has already validated.
+#[derive(Deserialize)]
+struct Gain {
+    gain: f32,
+}
+
+/// A neutral pick's upright content coordinate, which the generic check has already validated.
+#[derive(Deserialize)]
+struct Point {
+    x: u32,
+    y: u32,
 }
 
 /// A field-patch request's number, which the generic check has already validated.
@@ -353,7 +366,6 @@ impl RawModule {
                                 beside temperature or tint; as-shot beside either, and custom \
                                 alone, are refused"
                             .into(),
-                        summary: None,
                         patch: true,
                         parameters: vec![
                             ParameterDescriptor::number(
@@ -522,27 +534,15 @@ impl ToolModule for RawModule {
                 }
             }
             SET_RED | SET_BLUE => {
-                let gain = input
-                    .parameters
-                    .get("gain")
-                    .and_then(Value::as_f64)
-                    .ok_or_else(|| Error::validation("missing gain"))?
-                    as f32;
+                let Gain { gain } = decode_parameters(&input.action_id, &input.parameters)?;
                 payload.gains[if input.action_id == SET_RED { 0 } else { 2 }] = gain;
                 payload.wb_mode = WhiteBalanceMode::Custom;
                 payload.temperature_kelvin = None;
                 payload.tint = None;
             }
             PICK_NEUTRAL => {
-                let coordinate = |name: &str| {
-                    input
-                        .parameters
-                        .get(name)
-                        .and_then(Value::as_u64)
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or_else(|| Error::validation(format!("missing neutral {name}")))
-                };
-                payload.gains = stage.sensor_neutral(coordinate("x")?, coordinate("y")?)?;
+                let Point { x, y } = decode_parameters(&input.action_id, &input.parameters)?;
+                payload.gains = stage.sensor_neutral(x, y)?;
                 payload.temperature_kelvin = None;
                 payload.tint = None;
                 payload.wb_mode = WhiteBalanceMode::Custom;
@@ -563,72 +563,64 @@ impl ToolModule for RawModule {
         RawPayload::from_value(effect_id, format, value).map(|_| ())
     }
 
-    /// The Original's development, As shot ([`RawPayload::is_neutral`]). Every RAW recipe holds
-    /// this layer from its Original on.
-    fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
-        Ok(RawPayload::from_value(effect_id, format, value)?.is_neutral())
-    }
-
     /// `As shot`, or the custom white balance as its controls name it: `Temperature 5500 K · Tint
     /// +12`, the equivalent of gains a pick or an explicit gain set, and `Custom gains` for gains no
-    /// temperature and tint in range reproduce.
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
+    /// temperature and tint in range reproduce. Its values are the white balance in force, named as
+    /// `set-raw`'s parameters, so a client seeds Basic's RAW variants from the displayed entry
+    /// without reading the payload: `white-balance` (`as-shot` or `custom`), and the `temperature`
+    /// and `tint` the controls show — under As shot and after a pick, their equivalent
+    /// ([`RawPayload::white_balance_controls`]); the explicit gains have no control and are not
+    /// reported. It is neutral at the Original's development, As shot
+    /// ([`RawPayload::is_neutral`]), which every RAW recipe holds from its Original on.
+    fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
         let payload = RawPayload::from_value(effect_id, format, value)?;
-        if payload.is_neutral() {
-            return Ok(AS_SHOT_LABEL.into());
-        }
-        Ok(match payload.equivalent() {
-            Some([kelvin, tint]) => {
-                format!("{} · {}", temperature_label(kelvin), tint_label(tint))
+        let neutral = payload.is_neutral();
+        let [kelvin, tint] = payload.white_balance_controls();
+        let summary = if neutral {
+            AS_SHOT_LABEL.into()
+        } else {
+            match payload.equivalent() {
+                Some([kelvin, tint]) => {
+                    format!("{} · {}", temperature_label(kelvin), tint_label(tint))
+                }
+                None => "Custom gains".into(),
             }
-            None => "Custom gains".into(),
+        };
+        let mode = match payload.wb_mode {
+            WhiteBalanceMode::AsShot => AS_SHOT,
+            WhiteBalanceMode::Custom => CUSTOM,
+        };
+        Ok(LayerReport {
+            summary,
+            values: Map::from_iter([
+                (WHITE_BALANCE.to_owned(), Value::from(mode)),
+                (TEMPERATURE.to_owned(), Value::from(kelvin)),
+                (TINT.to_owned(), Value::from(tint)),
+            ]),
+            neutral,
         })
     }
 
     /// The labels Basic's white balance uses for the same controls: `Temperature 5500 K` and `Tint
     /// +12` for one field, `White balance` for both and for a neutral pick, and `Reset White
     /// balance` for As shot, which is the White balance group's reset.
-    fn label(&self, input: &ActionInput) -> Option<String> {
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
         match input.action_id.as_str() {
             SET_RAW => {
                 let parameters = &input.parameters;
                 if parameters.get(WHITE_BALANCE).and_then(Value::as_str) == Some(AS_SHOT) {
-                    return Some(format!("Reset {GROUP_LABEL}"));
+                    return format!("Reset {GROUP_LABEL}");
                 }
                 match (number(parameters, TEMPERATURE), number(parameters, TINT)) {
-                    (Some(kelvin), None) => Some(temperature_label(kelvin)),
-                    (None, Some(tint)) => Some(tint_label(tint)),
-                    (Some(_), Some(_)) => Some(GROUP_LABEL.into()),
-                    (None, None) => None,
+                    (Some(kelvin), None) => temperature_label(kelvin),
+                    (None, Some(tint)) => tint_label(tint),
+                    (Some(_), Some(_)) => GROUP_LABEL.into(),
+                    (None, None) => action.title.clone(),
                 }
             }
-            PICK_NEUTRAL => Some(GROUP_LABEL.into()),
-            _ => None,
+            PICK_NEUTRAL => GROUP_LABEL.into(),
+            _ => action.title.clone(),
         }
-    }
-
-    /// The white balance in force, named as `set-raw`'s parameters, so a client seeds Basic's RAW
-    /// variants from the displayed entry without reading the payload: `white-balance` (`as-shot` or
-    /// `custom`), and the `temperature` and `tint` the controls show — under As shot and after a
-    /// pick, their equivalent ([`RawPayload::white_balance_controls`]). The explicit gains have no
-    /// control and are not reported.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let payload = RawPayload::from_value(effect_id, format, value)?;
-        let [kelvin, tint] = payload.white_balance_controls();
-        let mode = match payload.wb_mode {
-            WhiteBalanceMode::AsShot => AS_SHOT,
-            WhiteBalanceMode::Custom => CUSTOM,
-        };
-        Ok(Map::from_iter([
-            (WHITE_BALANCE.to_owned(), Value::from(mode)),
-            (TEMPERATURE.to_owned(), Value::from(kelvin)),
-            (TINT.to_owned(), Value::from(tint)),
-        ]))
     }
 
     /// What a preset captures: `{white-balance: as-shot}` under As shot, so the preset applies each
@@ -716,12 +708,15 @@ mod tests {
         }
     }
 
-    fn label_of(action: &str, params: Value) -> Option<String> {
+    fn label_of(action: &str, params: Value) -> String {
         let module = RawModule::new();
         let input = module
             .parse(action, params.as_object().expect("an object"))
             .expect("a parsed request");
-        module.label(&input)
+        module.label(
+            module.descriptor().action(action).expect("declared"),
+            &input,
+        )
     }
 
     const IDENTITY: [[f32; 3]; 4] = [
@@ -743,8 +738,9 @@ mod tests {
     fn values_of(payload: &RawPayload) -> Map<String, Value> {
         let layer = payload.layer(LayerId::new());
         RawModule::new()
-            .values(&layer.effect_id, layer.effect_format, &layer.payload)
+            .describe(&layer.effect_id, layer.effect_format, &layer.payload)
             .expect("a valid RAW payload reports its values")
+            .values
     }
 
     fn settings_of(payload: &RawPayload) -> Map<String, Value> {
@@ -757,8 +753,9 @@ mod tests {
     fn described(payload: &RawPayload) -> String {
         let layer = payload.layer(LayerId::new());
         RawModule::new()
-            .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
+            .describe(&layer.effect_id, layer.effect_format, &layer.payload)
             .expect("a valid RAW payload describes itself")
+            .summary
     }
 
     /// The module declares one field patch, the two gain actions and the sensor pick, no controls,
@@ -1201,8 +1198,9 @@ mod tests {
             let stored = edited.layer(layer.id.clone());
             assert!(
                 !module
-                    .is_neutral(&stored.effect_id, stored.effect_format, &stored.payload)
+                    .describe(&stored.effect_id, stored.effect_format, &stored.payload)
                     .unwrap()
+                    .neutral
             );
             let back = planned(&stored, SET_RAW, json!({"white-balance": "as-shot"})).unwrap();
             assert_eq!(back, original, "{action}");
@@ -1229,33 +1227,29 @@ mod tests {
             (
                 SET_RAW,
                 json!({"temperature": 5500.0}),
-                Some("Temperature 5500 K"),
+                "Temperature 5500 K",
             ),
-            (SET_RAW, json!({"tint": 12.0}), Some("Tint +12")),
-            (SET_RAW, json!({"tint": -7.0}), Some("Tint -7")),
+            (SET_RAW, json!({"tint": 12.0}), "Tint +12"),
+            (SET_RAW, json!({"tint": -7.0}), "Tint -7"),
             (
                 SET_RAW,
                 json!({"white-balance": "custom", "temperature": 3200.0}),
-                Some("Temperature 3200 K"),
+                "Temperature 3200 K",
             ),
             (
                 SET_RAW,
                 json!({"temperature": 5500.0, "tint": 12.0}),
-                Some("White balance"),
+                "White balance",
             ),
             (
                 SET_RAW,
                 json!({"white-balance": "as-shot"}),
-                Some("Reset White balance"),
+                "Reset White balance",
             ),
-            (PICK_NEUTRAL, json!({"x": 1, "y": 2}), Some("White balance")),
-            (SET_RED, json!({"gain": 2.0}), None),
+            (PICK_NEUTRAL, json!({"x": 1, "y": 2}), "White balance"),
+            (SET_RED, json!({"gain": 2.0}), "Red gain"),
         ] {
-            assert_eq!(
-                label_of(action, request.clone()).as_deref(),
-                label,
-                "{request}"
-            );
+            assert_eq!(label_of(action, request.clone()), label, "{request}");
         }
     }
 

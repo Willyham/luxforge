@@ -1119,7 +1119,6 @@ fn validate_settings_refuses_an_unavailable_provider() {
             id: "set-away".into(),
             title: "Set away".into(),
             notes: "test".into(),
-            summary: None,
             patch: true,
             parameters: vec![parameter],
         }],

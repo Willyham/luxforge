@@ -7,12 +7,11 @@ use super::{
 };
 use crate::{
     AssetId, Draft, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId, LinearImage,
-    LinearSettings, MaskId, ModuleRegistry, Mutation, Recipe, SkippedSetting, ToolModule,
-    Transform,
+    LinearSettings, MaskId, ModuleRegistry, Mutation, Provider, Recipe, SkippedSetting, Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
-        StageContext, StageQuestions, action_label, check_parameters, check_target, not_applicable,
+        StageContext, StageQuestions, check_parameters, check_target, not_applicable,
     },
     render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
@@ -62,13 +61,10 @@ impl<'r> Prepared<'r> {
                     take_mask_target(registry, Targeted::Action(action_id), &mut parameters)?;
                 let checked = check_parameters(declared, &parameters)?;
                 let input = module.parse(action_id, &checked)?;
-                // The module labels a request its template cannot describe, such as a field patch;
-                // the fallback comes from the action that was requested, which is not always the
-                // durable action identity the entry stores: `transform` renders the label,
-                // `rotate-left` is stored.
-                let label = module
-                    .label(&input)
-                    .unwrap_or_else(|| action_label(declared, &input.parameters));
+                // Labelled from the action that was requested, which is not always the durable
+                // action identity the entry stores: `transform` is requested and its title the
+                // fallback, `rotate-left` is stored.
+                let label = module.label(declared, &input);
                 Ok(Self {
                     action,
                     input,
@@ -229,7 +225,7 @@ impl EditorService {
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
-        module: &dyn ToolModule,
+        module: Provider<'_>,
         input: &ActionInput,
         mask: Option<&MaskId>,
     ) -> Result<Resolved, Error> {
@@ -263,7 +259,7 @@ impl EditorService {
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
-        module: &dyn ToolModule,
+        module: Provider<'_>,
         input: Option<&ActionInput>,
         mask: Option<&MaskId>,
         view: TargetView,
@@ -710,7 +706,7 @@ enum TargetView {
 /// [`EditorService::ask`] and a draft's [`EditorService::check_draft`] run.
 fn check_askable(
     registry: &ModuleRegistry,
-    module: &dyn ToolModule,
+    module: Provider<'_>,
     kind: crate::SourceTag,
     mask: Option<&MaskId>,
     input: Option<&ActionInput>,

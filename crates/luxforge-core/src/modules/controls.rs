@@ -171,7 +171,6 @@ impl FieldPatch for Controls {
             id: SAMPLE_CONTROLS_CURVE.into(),
             title: "Sample controls curve".into(),
             notes: "257 linearly interpolated fractions from the one submitted channel".into(),
-            summary: None,
             patch: false,
             parameters: CURVES
                 .map(|(name, _, monotone)| curve(name, monotone))

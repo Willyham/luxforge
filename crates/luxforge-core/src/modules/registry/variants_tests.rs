@@ -395,36 +395,36 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
     let before = [
         (
             "luxforge.presets",
-            "d9bf90fa13c2984c0dd46801348b4237a55beb1382a6d8dffb73a346303f2344",
+            "c60ad4b917dc0e4c7b0668b964711a835009fedd746bea1fd8510da256a39f7a",
         ),
         (
             "luxforge.pixel",
-            "474f81b0aade1f469d9cb78c15a5830a6c9e2c62dbdfe7d7399bffe02cac120f",
+            "d971294242b2a28ec0a5bc14965689d8ba21bfced2770418b19baf0f6f4f579b",
         ),
         (
             "luxforge.presence",
-            "ceb02b79f0aa3743aca36078f10688d4f1404012a1f8e0cc95411f4e19b9c62f",
+            "23aa2adfbc18684f6787d5b7c637291cf1b911db0bd956384c0c291261ff82ea",
         ),
         (
             "luxforge.mixer",
-            "5ad4f07b97095076b1c13099c8396a956d68fa70db1a44d3087c3faefda6b793",
+            "06c0c14b6a241dbd0affed3bf25f99bceecd55c262208a8d18a6be5cd844b469",
         ),
         (
             "luxforge.transform",
-            "71c64ac37eb36b99704e5abe840570b0caf88acefff238fb3eda234769539790",
+            "d78f86ba56ee33bc84de8a0583fd97592ec80ce23e68e544e2302efbf16d2b38",
         ),
         (
             "luxforge.crop",
             // Its angle declares `step` 0.5 and `fine_step` 0.05, which the stepper reads.
-            "5228d635a38c778ce21190d208254544795f47c05f30182ff065ed5ad22638e6",
+            "7eafaccc88aeb0774e8ea617cfe589d742c5e6475202b34c1c5f9f03e09f0269",
         ),
         (
             "luxforge.vignette",
-            "c49168d6b83789af082ad435952fab7ba88fb7eec2d99573b7644c7610292206",
+            "09ae86380463efe753399f7d8a9fb2465b84f73ea0ce2918e72229b37fecafaf",
         ),
         (
             "luxforge.masks",
-            "dfecdf028f8eb04a72efd22abb21b675168f5e337ab1de594cdd94d13497ca27",
+            "ad8a452ea02d47580d2d9f93595baa308bcbf8ad4976cacebdb3bd2e5ee23d27",
         ),
     ];
     let listed: Vec<&ModuleDescriptor> = registry

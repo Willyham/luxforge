@@ -205,7 +205,6 @@ impl FieldPatch for Basic {
                 id: NEUTRAL_SAMPLE.into(),
                 title: "Neutral sample".into(),
                 notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
-                summary: None,
                 patch: false,
                 // The neutral picker's coordinates, in the content stage the Basic layer's input
                 // addresses; a point outside that stage is refused when it is asked.
@@ -399,11 +398,14 @@ mod tests {
             (json!({"temperature": 25.0}), "Temperature +25"),
             (json!({"tint": -15.0}), "Tint -15"),
         ] {
-            let label = module.label(&ActionInput {
-                action_id: SET_BASIC.to_owned(),
-                parameters: parameters.as_object().cloned().unwrap(),
-            });
-            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+            let label = module.label(
+                module.descriptor().action(SET_BASIC).unwrap(),
+                &ActionInput {
+                    action_id: SET_BASIC.to_owned(),
+                    parameters: parameters.as_object().cloned().unwrap(),
+                },
+            );
+            assert_eq!(label, expected, "{parameters}");
         }
     }
 
@@ -429,11 +431,14 @@ mod tests {
                 "Basic (2 fields)",
             ),
         ] {
-            let label = module.label(&ActionInput {
-                action_id: SET_BASIC.to_owned(),
-                parameters: parameters.as_object().cloned().unwrap(),
-            });
-            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+            let label = module.label(
+                module.descriptor().action(SET_BASIC).unwrap(),
+                &ActionInput {
+                    action_id: SET_BASIC.to_owned(),
+                    parameters: parameters.as_object().cloned().unwrap(),
+                },
+            );
+            assert_eq!(label, expected, "{parameters}");
         }
     }
 
@@ -478,7 +483,10 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(module.label(&reset).as_deref(), Some("Reset Basic"));
+        assert_eq!(
+            module.label(module.descriptor().action(RESET_BASIC).unwrap(), &reset),
+            "Reset Basic"
+        );
 
         let jpeg = crate::modules::FixedStage::new(STAGE);
         assert!(matches!(

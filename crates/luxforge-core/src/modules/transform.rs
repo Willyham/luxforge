@@ -6,12 +6,14 @@
 //! photograph.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
-    EffectStage, ExactGeometry, LayerEdit, LayerUpdate, ModuleDescriptor, NewLayer,
+    EffectStage, ExactGeometry, LayerEdit, LayerReport, LayerUpdate, ModuleDescriptor, NewLayer,
     ParameterDescriptor, Processing, Stage, StageContext, ToolModule, crop::stored_payload,
+    decode_parameters, label_value,
 };
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{CROP_EFFECT, EFFECT_FORMAT, Error, Layer, Orientation, Transform};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// The transform module's one geometry effect: the composed exact orientation of the stage ahead of
@@ -200,7 +202,6 @@ impl TransformModule {
                     id: TRANSFORM_ACTION.into(),
                     title: "Transform".into(),
                     notes: "exact quarter turns and reflections; integer mappings with no interpolation".into(),
-                    summary: Some("{transform}".into()),
                     patch: false,
 parameters: vec![
                         ParameterDescriptor::enumeration(
@@ -238,12 +239,14 @@ parameters: vec![
     }
 }
 
+/// A `transform` request, which the generic check has already validated.
+#[derive(Deserialize)]
+struct Request {
+    transform: Transform,
+}
+
 fn transform_value(parameters: &Map<String, Value>) -> Result<Transform, Error> {
-    let value = parameters.get("transform").ok_or_else(|| {
-        Error::validation("missing required parameter transform for action transform")
-    })?;
-    serde_json::from_value(value.clone())
-        .map_err(|error| Error::validation(format!("invalid transform: {error}")))
+    decode_parameters::<Request>(TRANSFORM_ACTION, parameters).map(|request| request.transform)
 }
 
 /// A stored orientation layer's payload, checked exactly as the transform module checks its own,
@@ -416,13 +419,22 @@ impl ToolModule for TransformModule {
         payload(effect_id, format, value).map(|_| ())
     }
 
-    /// The identity orientation, which is what four quarter turns leave behind.
-    fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
-        Ok(payload(effect_id, format, value)? == Orientation::NEUTRAL)
+    /// The orientation the layer holds ([`describe`]), neutral at the identity orientation, which
+    /// is what four quarter turns leave behind.
+    fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
+        let orientation = payload(effect_id, format, value)?;
+        Ok(LayerReport {
+            neutral: orientation == Orientation::NEUTRAL,
+            ..LayerReport::new(describe(orientation))
+        })
     }
 
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
-        Ok(describe(payload(effect_id, format, value)?))
+    /// The transform requested, as its option reads: `Rotate left`, `Mirror horizontal`.
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
+        match input.parameters.get("transform") {
+            Some(transform) => label_value(transform),
+            None => action.title.clone(),
+        }
     }
 
     fn compile(

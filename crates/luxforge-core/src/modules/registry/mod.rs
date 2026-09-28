@@ -27,9 +27,9 @@ pub use placement::insertion_index_among;
 pub use variants::Superseded;
 
 use super::{
-    BasicModule, CanvasInteraction, CapabilitiesProofModule, CapabilityModule, ControlsModule,
-    CropModule, MixerModule, ModuleDescriptor, PixelModule, PresenceModule, PresetsModule,
-    Processing, RawModule, Stage, ToolModule, TransformModule, VignetteModule,
+    BasicModule, CanvasInteraction, CapabilitiesProofModule, ControlsModule, CropModule,
+    MixerModule, ModuleDescriptor, PixelModule, PresenceModule, PresetsModule, RawModule,
+    ToolModule, TransformModule, VignetteModule,
 };
 use crate::Error;
 #[cfg(test)]
@@ -97,105 +97,66 @@ impl RegistryOptions<'_> {
     }
 }
 
-/// A provider registered unavailable: the module's own descriptor with its availability replaced,
-/// and every other answer the module's own.
+/// One registered module: the module, and, for one registered unavailable, the descriptor the
+/// registry publishes for it in place of its own — the module's own with that availability.
 ///
-/// The host never plans, runs a query or task, or compiles through an unavailable
-/// provider — `apply_action`, `run_query`, the capability host and every compile check
-/// availability first — so its effects stay readable and a stack that holds one is reported rather
-/// than rendered without it. Forwarding every call keeps that a property of the host's checks, not
-/// of what this adapter happens to implement.
-struct Unavailable {
-    inner: Arc<dyn ToolModule>,
-    descriptor: ModuleDescriptor,
+/// Availability is the registry's: every lookup hands out a [`Provider`] carrying the entry's
+/// descriptor, and the host checks that availability before it plans, runs a query or task
+/// or compiles through a module — `apply_action`, `run_query`, the capability host and
+/// every compile do — so an unavailable module's effects stay readable and a stack that holds one
+/// is reported rather than rendered without it, and none of its methods runs.
+struct Entry {
+    module: Arc<dyn ToolModule>,
+    unavailable: Option<ModuleDescriptor>,
 }
 
-impl ToolModule for Unavailable {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
+impl Entry {
+    fn provider(&self) -> Provider<'_> {
+        Provider {
+            module: self.module.as_ref(),
+            descriptor: self
+                .unavailable
+                .as_ref()
+                .unwrap_or_else(|| self.module.descriptor()),
+        }
     }
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<super::ActionInput, Error> {
-        self.inner.parse(action_id, parameters)
+}
+
+/// A registered module as the registry serves it: the module, whose methods it dereferences to,
+/// and the descriptor the registry publishes for it, whose availability is the registry's. A module
+/// registered unavailable reports that here whatever its own descriptor declares, so a caller that
+/// checks [`Provider::descriptor`]'s availability before calling the module reads the registry's
+/// answer.
+#[derive(Clone, Copy)]
+pub struct Provider<'r> {
+    module: &'r dyn ToolModule,
+    descriptor: &'r ModuleDescriptor,
+}
+
+impl<'r> Provider<'r> {
+    /// The descriptor the registry publishes for this module, with the availability it was
+    /// registered with.
+    pub fn descriptor(&self) -> &'r ModuleDescriptor {
+        self.descriptor
     }
-    fn plan(
-        &self,
-        input: &super::ActionInput,
-        context: &super::StageContext<'_>,
-    ) -> Result<super::ActionPlan, Error> {
-        self.inner.plan(input, context)
+
+    /// The module itself, for a caller that keeps it past this handle.
+    pub fn module(&self) -> &'r dyn ToolModule {
+        self.module
     }
-    fn validate_payload(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-    ) -> Result<(), Error> {
-        self.inner.validate_payload(effect_id, format, payload)
-    }
-    fn describe_layer(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-    ) -> Result<String, Error> {
-        self.inner.describe_layer(effect_id, format, payload)
-    }
-    fn is_neutral(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-    ) -> Result<bool, Error> {
-        self.inner.is_neutral(effect_id, format, payload)
-    }
-    fn label(&self, input: &super::ActionInput) -> Option<String> {
-        self.inner.label(input)
-    }
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
-        self.inner.values(effect_id, format, payload)
-    }
-    fn settings(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
-        self.inner.settings(effect_id, format, payload)
-    }
-    fn query(
-        &self,
-        query_id: &str,
-        parameters: &serde_json::Map<String, serde_json::Value>,
-        context: &super::StageContext<'_>,
-    ) -> Result<serde_json::Value, Error> {
-        self.inner.query(query_id, parameters, context)
-    }
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-        stage: Stage,
-    ) -> Result<Processing, Error> {
-        self.inner.compile(effect_id, format, payload, stage)
-    }
-    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
-        self.inner.capabilities()
+}
+
+impl<'r> std::ops::Deref for Provider<'r> {
+    type Target = dyn ToolModule + 'r;
+
+    fn deref(&self) -> &Self::Target {
+        self.module
     }
 }
 
 #[derive(Default)]
 pub struct ModuleRegistry {
-    modules: Vec<Arc<dyn ToolModule>>,
+    entries: Vec<Entry>,
     module_ids: HashSet<String>,
     /// Effect identity to (module, effect) position.
     effects: HashMap<String, (usize, usize)>,
@@ -217,9 +178,9 @@ impl std::fmt::Debug for ModuleRegistry {
             .field(
                 "modules",
                 &self
-                    .modules
+                    .entries
                     .iter()
-                    .map(|module| module.descriptor().id.as_str())
+                    .map(|entry| entry.provider().descriptor().id.as_str())
                     .collect::<Vec<_>>(),
             )
             .finish()
@@ -301,16 +262,24 @@ impl ModuleRegistry {
             },
             ..module.descriptor().clone()
         };
-        self.register(Arc::new(Unavailable {
-            inner: module,
-            descriptor,
-        }))
+        self.insert(Entry {
+            module,
+            unavailable: Some(descriptor),
+        })
     }
 
     /// Validate a descriptor and index its effects and actions. Identities are unique across the
     /// whole registry, so discovery and dispatch can never resolve to two providers.
     pub fn register(&mut self, module: Arc<dyn ToolModule>) -> Result<(), Error> {
-        let descriptor = module.descriptor();
+        self.insert(Entry {
+            module,
+            unavailable: None,
+        })
+    }
+
+    fn insert(&mut self, entry: Entry) -> Result<(), Error> {
+        let provider = entry.provider();
+        let descriptor = provider.descriptor();
         // A mask command lives in the host's own namespace, as `history.*` and `version.*` do, and
         // its identity carries a dot, which `valid_name` forbids inside an action identity. So the
         // two families cannot collide however either grows — and the rule is checked here rather
@@ -327,7 +296,7 @@ impl ModuleRegistry {
             }
         }
         descriptor.validate()?;
-        if module.capabilities().is_none()
+        if provider.capabilities().is_none()
             && let Some(declared) = super::capability::needs_capabilities(descriptor)
         {
             return Err(Error::validation(format!(
@@ -347,7 +316,7 @@ impl ModuleRegistry {
                 return Err(Error::validation(format!(
                     "effect {} is already provided by {}",
                     effect.id,
-                    self.modules[*existing].descriptor().id
+                    self.entries[*existing].provider().descriptor().id
                 )));
             }
         }
@@ -356,7 +325,7 @@ impl ModuleRegistry {
                 return Err(Error::validation(format!(
                     "action {} is already provided by {}",
                     action.id,
-                    self.modules[*existing].descriptor().id
+                    self.entries[*existing].provider().descriptor().id
                 )));
             }
         }
@@ -365,7 +334,7 @@ impl ModuleRegistry {
                 return Err(Error::validation(format!(
                     "query {} is already provided by {}",
                     query.id,
-                    self.modules[*existing].descriptor().id
+                    self.entries[*existing].provider().descriptor().id
                 )));
             }
         }
@@ -375,7 +344,7 @@ impl ModuleRegistry {
                     "task {} of module {} is already provided by {}",
                     task.id,
                     descriptor.id,
-                    self.modules[*existing].descriptor().id
+                    self.entries[*existing].provider().descriptor().id
                 )));
             }
         }
@@ -388,10 +357,10 @@ impl ModuleRegistry {
         {
             return Err(Error::validation(format!(
                 "canvas shortcut {letter} is already claimed by {}",
-                self.modules[*existing].descriptor().id
+                self.entries[*existing].provider().descriptor().id
             )));
         }
-        let index = self.modules.len();
+        let index = self.entries.len();
         if let Some(letter) = shortcut {
             self.shortcuts.insert(letter.to_owned(), index);
         }
@@ -408,7 +377,7 @@ impl ModuleRegistry {
         for (position, task) in descriptor.tasks.iter().enumerate() {
             self.tasks.insert(task.id.clone(), (index, position));
         }
-        self.modules.push(module);
+        self.entries.push(entry);
         Ok(())
     }
 }

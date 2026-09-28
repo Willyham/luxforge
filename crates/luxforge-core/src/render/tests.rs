@@ -200,8 +200,10 @@ impl ToolModule for GeometryTestModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok(format!("test geometry {effect_id}"))
+    fn describe(&self, effect_id: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new(format!(
+            "test geometry {effect_id}"
+        )))
     }
     fn compile(
         &self,
@@ -556,8 +558,8 @@ impl ToolModule for ColorTestModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
-        Ok(format!("test colour {payload}"))
+    fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new(format!("test colour {payload}")))
     }
     fn compile(&self, _: &str, _: u32, payload: &Value, stage: Stage) -> Result<Processing, Error> {
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();

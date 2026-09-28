@@ -4,10 +4,9 @@ use super::{
     entries::Head,
 };
 use crate::{
-    AssetId, EntryId, Error, HistoryEntry, ModuleRegistry, ORIENTATION_EFFECT, Orientation,
-    StageSize, modules::stored_orientation,
+    AssetId, EntryId, Error, HistoryEntry, Layer, LayerReport, ModuleRegistry, ORIENTATION_EFFECT,
+    Orientation, StageSize, modules::stored_orientation,
 };
-use serde_json::Map;
 
 impl EditorState {
     /// The state a cached head and its current entry describe: a copy of both.
@@ -120,69 +119,29 @@ impl ModuleRegistry {
                         .map(|next| ahead.followed_by(next))
                 });
             }
-            let described = match self.effect(&layer.effect_id) {
-                None => LayerDescription {
-                    id: layer.id.clone(),
-                    effect: layer.effect_id.clone(),
-                    module: None,
-                    title: None,
-                    summary: "no provider".into(),
-                    values: Map::new(),
-                    available: false,
-                    mask: layer.mask.clone(),
-                    artifacts: layer.artifacts.clone(),
-                    neutral: false,
-                    input_stage,
-                    input_orientation,
-                },
-                Some((module, _)) => {
-                    let descriptor = module.descriptor();
-                    let unreadable = |error: Error| {
-                        (
-                            format!("unreadable payload: {}", error.detail),
-                            Map::new(),
-                            false,
-                        )
-                    };
-                    let (summary, values, available) = match &descriptor.availability {
-                        crate::Availability::Unavailable { reason } => {
-                            (format!("unavailable: {reason}"), Map::new(), false)
-                        }
-                        // A payload the provider cannot read is reported on its own row; the
-                        // rest of the stack is still described.
-                        crate::Availability::Available => match module.describe_layer(
-                            &layer.effect_id,
-                            layer.effect_format,
-                            &layer.payload,
-                        ) {
-                            Ok(summary) => match module.values(
-                                &layer.effect_id,
-                                layer.effect_format,
-                                &layer.payload,
-                            ) {
-                                Ok(values) => (summary, values, true),
-                                Err(error) => unreadable(error),
-                            },
-                            Err(error) => unreadable(error),
-                        },
-                    };
-                    LayerDescription {
-                        id: layer.id.clone(),
-                        effect: layer.effect_id.clone(),
-                        module: Some(descriptor.id.clone()),
-                        title: Some(descriptor.title.clone()),
-                        summary,
-                        values,
-                        available,
-                        mask: layer.mask.clone(),
-                        artifacts: layer.artifacts.clone(),
-                        neutral: self.layer_neutral(layer),
-                        input_stage,
-                        input_orientation,
-                    }
-                }
+            let descriptor = self
+                .effect(&layer.effect_id)
+                .map(|(provider, _)| provider.descriptor());
+            // A layer the registry cannot describe is listed with the reason, never omitted, and
+            // the rest of the stack is still described.
+            let (report, available) = match self.layer_report(layer) {
+                Ok(report) => (report, true),
+                Err(reason) => (LayerReport::new(reason), false),
             };
-            layers.push(described);
+            layers.push(LayerDescription {
+                id: layer.id.clone(),
+                effect: layer.effect_id.clone(),
+                module: descriptor.map(|descriptor| descriptor.id.clone()),
+                title: descriptor.map(|descriptor| descriptor.title.clone()),
+                summary: report.summary,
+                values: report.values,
+                available,
+                mask: layer.mask.clone(),
+                artifacts: layer.artifacts.clone(),
+                neutral: report.neutral,
+                input_stage,
+                input_orientation,
+            });
         }
         let output_stage = size(recipe.layers.len());
         RecipeDescription {
@@ -191,6 +150,22 @@ impl ModuleRegistry {
             output_stage,
             output_orientation: output_stage.and(orientation),
         }
+    }
+
+    /// One stored layer as its available provider describes it ([`crate::ToolModule::describe`]),
+    /// or, as the summary its recipe row shows instead, why nothing can: `no provider`,
+    /// `unavailable: <reason>` or `unreadable payload: <detail>`. Such a layer is not neutral,
+    /// since nothing can say it changes nothing. Reading the payload only.
+    pub fn layer_report(&self, layer: &Layer) -> Result<LayerReport, String> {
+        let (provider, _) = self
+            .effect(&layer.effect_id)
+            .ok_or_else(|| "no provider".to_owned())?;
+        if let crate::Availability::Unavailable { reason } = &provider.descriptor().availability {
+            return Err(format!("unavailable: {reason}"));
+        }
+        provider
+            .describe(&layer.effect_id, layer.effect_format, &layer.payload)
+            .map_err(|error| format!("unreadable payload: {}", error.detail))
     }
 }
 
