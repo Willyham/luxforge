@@ -660,7 +660,7 @@
     {
       "id": "TASK-009",
       "description": "Run `draft.begin`, `draft.cancel` and `draft.reapply` synchronously on the desktop thread, like `draft.set`, keeping only `draft.commit` as an owner task.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -738,7 +738,7 @@
     {
       "id": "TASK-010",
       "description": "Hold an armed brush as view state and open its core draft at the press, so no empty draft exists between strokes.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-009"
       ],
