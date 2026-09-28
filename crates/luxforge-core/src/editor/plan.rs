@@ -3126,4 +3126,258 @@ mod tests {
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
+
+    /// The history label every built-in action stores, for representative parameters: each field
+    /// patch's one field, whole group, group reset, several fields and empty patch, each reset, each
+    /// transform, each crop angle and aspect, a preset and the proofs' own. The table is what the
+    /// entries already in the owner's catalogs say, so a change to how a label is made keeps every
+    /// row byte for byte, and every action the developer registry declares has a row.
+    #[test]
+    fn every_built_in_action_stores_the_label_of_this_table() {
+        let registry = ModuleRegistry::developer();
+        let table: [(&str, Value, &str); 76] = [
+            (
+                "apply-preset",
+                json!({"name":"Soft film","settings":{"set-basic":{"exposure":1.0}}}),
+                "Preset: Soft film",
+            ),
+            (
+                "apply-preset",
+                json!({"name":"Soft Film","preset-id":"soft","settings":{"set-basic":{"exposure":1.0}}}),
+                "Preset: Soft Film",
+            ),
+            (
+                "set-raw",
+                json!({"temperature":5500.0}),
+                "Temperature 5500 K",
+            ),
+            ("set-raw", json!({"temperature":4200}), "Temperature 4200 K"),
+            ("set-raw", json!({"tint":12.0}), "Tint +12"),
+            ("set-raw", json!({"tint":-7.4}), "Tint -7"),
+            (
+                "set-raw",
+                json!({"temperature":5000.0,"tint":3.0}),
+                "White balance",
+            ),
+            (
+                "set-raw",
+                json!({"white-balance":"as-shot"}),
+                "Reset White balance",
+            ),
+            (
+                "set-raw",
+                json!({"tint":5.0,"white-balance":"custom"}),
+                "Tint +5",
+            ),
+            ("set-raw", json!({}), "Set RAW white balance"),
+            ("set-raw-red-gain", json!({"gain":1.5}), "Red gain"),
+            ("set-raw-blue-gain", json!({"gain":0.75}), "Blue gain"),
+            ("pick-raw-neutral", json!({"x":3,"y":4}), "White balance"),
+            ("set-basic", json!({"exposure":1.0}), "Exposure +1.00 EV"),
+            ("set-basic", json!({"exposure":-0.5}), "Exposure -0.50 EV"),
+            ("set-basic", json!({"temperature":40.0}), "Temperature +40"),
+            ("set-basic", json!({"tint":-12.0}), "Tint -12"),
+            ("set-basic", json!({"contrast":25.0}), "Contrast +25"),
+            ("set-basic", json!({"vibrance":25}), "Vibrance +25"),
+            (
+                "set-basic",
+                json!({"temperature":10.0,"tint":5.0}),
+                "White balance",
+            ),
+            (
+                "set-basic",
+                json!({"temperature":0.0,"tint":0.0}),
+                "Reset White balance",
+            ),
+            (
+                "set-basic",
+                json!({"saturation":0.0,"vibrance":0.0}),
+                "Reset Colour",
+            ),
+            (
+                "set-basic",
+                json!({"contrast":10.0,"exposure":1.0,"shadows":5.0}),
+                "Basic (3 fields)",
+            ),
+            ("set-basic", json!({}), "Set Basic"),
+            ("reset-basic", json!({}), "Reset Basic"),
+            ("set-presence", json!({"texture":100.0}), "Texture +100"),
+            ("set-presence", json!({"dehaze":-100.0}), "Dehaze -100"),
+            (
+                "set-presence",
+                json!({"clarity":20.0,"dehaze":30.0,"texture":10.0}),
+                "Presence",
+            ),
+            (
+                "set-presence",
+                json!({"clarity":0.0,"dehaze":0.0,"texture":0.0}),
+                "Reset Presence",
+            ),
+            (
+                "set-presence",
+                json!({"clarity":20.0,"texture":10.0}),
+                "Presence (2 fields)",
+            ),
+            ("set-presence", json!({}), "Set Presence"),
+            ("reset-presence", json!({}), "Reset Presence"),
+            ("set-mixer", json!({"red-hue":90.0}), "Red hue +90"),
+            (
+                "set-mixer",
+                json!({"aqua-saturation":-40.0}),
+                "Aqua saturation -40",
+            ),
+            (
+                "set-mixer",
+                json!({"blue-luminance":15.0}),
+                "Blue luminance +15",
+            ),
+            (
+                "set-mixer",
+                json!({"blue-hue":20.0,"red-hue":10.0}),
+                "Colour mixer (2 fields)",
+            ),
+            ("set-mixer", json!({}), "Set Colour mixer"),
+            ("reset-mixer", json!({}), "Reset Colour mixer"),
+            (
+                "set-vignette",
+                json!({"amount":-60.0}),
+                "Vignette amount -60",
+            ),
+            (
+                "set-vignette",
+                json!({"roundness":100.0}),
+                "Vignette roundness +100",
+            ),
+            ("set-vignette", json!({"feather":0.0}), "Vignette feather 0"),
+            (
+                "set-vignette",
+                json!({"feather":75.0,"midpoint":25.0}),
+                "Vignette (2 fields)",
+            ),
+            ("set-vignette", json!({}), "Set Vignette"),
+            ("reset-vignette", json!({}), "Reset Vignette"),
+            (
+                "transform",
+                json!({"transform":"rotate-left"}),
+                "Rotate left",
+            ),
+            (
+                "transform",
+                json!({"transform":"rotate-right"}),
+                "Rotate right",
+            ),
+            (
+                "transform",
+                json!({"transform":"mirror-horizontal"}),
+                "Mirror horizontal",
+            ),
+            (
+                "transform",
+                json!({"transform":"flip-vertical"}),
+                "Flip vertical",
+            ),
+            (
+                "crop",
+                json!({"height":0.5,"width":0.5,"x":0.1,"y":0.1}),
+                "Crop 0°",
+            ),
+            (
+                "crop",
+                json!({"angle":7.0,"height":0.5,"width":0.5,"x":0.1,"y":0.1}),
+                "Crop 7°",
+            ),
+            (
+                "crop",
+                json!({"angle":7.5,"height":0.5,"width":0.5,"x":0.1,"y":0.1}),
+                "Crop 7.5°",
+            ),
+            (
+                "crop",
+                json!({"angle":-2.4,"height":0.5,"width":0.5,"x":0.1,"y":0.1}),
+                "Crop -2.4°",
+            ),
+            (
+                "crop",
+                json!({"angle":3,"height":1,"width":1,"x":0,"y":0}),
+                "Crop 3°",
+            ),
+            ("crop-fit", json!({}), "Crop Free"),
+            ("crop-fit", json!({"aspect":"16:9"}), "Crop 16:9"),
+            (
+                "crop-fit",
+                json!({"angle":5.0,"aspect":"1:1","center-x":0.4,"center-y":0.6}),
+                "Crop 1:1",
+            ),
+            ("crop-fit", json!({"aspect":"original"}), "Crop Original"),
+            (
+                "crop-fit",
+                json!({"aspect":"custom","aspect-height":4.0,"aspect-width":5.0}),
+                "Crop Custom",
+            ),
+            ("crop-reset", json!({}), "Reset crop"),
+            (
+                "set-pixel",
+                json!({"rgb":[1,2,3],"x":360,"y":240}),
+                "Pixel 360, 240",
+            ),
+            (
+                "set-pixel",
+                json!({"rgb":[255,255,255],"x":0,"y":0}),
+                "Pixel 0, 0",
+            ),
+            ("set-controls", json!({"amount":1.5}), "Amount +1.50"),
+            ("set-controls", json!({"coordinate":20.0}), "Coordinate 20"),
+            ("set-controls", json!({"count":3}), "Count 3"),
+            ("set-controls", json!({"enabled":true}), "Enabled on"),
+            ("set-controls", json!({"mode":"two"}), "Mode Two"),
+            (
+                "set-controls",
+                json!({"mode-chips":"four"}),
+                "Mode chips Four",
+            ),
+            (
+                "set-controls",
+                json!({"mode-menu":"five"}),
+                "Mode menu Five",
+            ),
+            ("set-controls", json!({"rgb":[1,2,3]}), "Colour 1,2,3"),
+            (
+                "set-controls",
+                json!({"rgb-fields":[4,5,6]}),
+                "RGB fields 4,5,6",
+            ),
+            (
+                "set-controls",
+                json!({"master":[[0.0,0.0],[0.5,0.6],[1.0,1.0]]}),
+                "Master 3 points",
+            ),
+            (
+                "set-controls",
+                json!({"red":[[0.0,0.0],[0.5,0.6],[1.0,1.0]]}),
+                "Red 3 points",
+            ),
+            ("set-controls", json!({"amount":0.0}), "Amount +0.00"),
+            (
+                "set-controls",
+                json!({"amount":1.0,"count":2}),
+                "Controls (2 fields)",
+            ),
+            ("set-controls", json!({}), "Set Controls"),
+            ("reset-controls", json!({}), "Reset Controls"),
+        ];
+        for (action, parameters, label) in &table {
+            let prepared = Prepared::new(&registry, action, parameters.clone())
+                .unwrap_or_else(|error| panic!("{action} {parameters}: {error}"));
+            assert_eq!(prepared.label, *label, "{action} {parameters}");
+        }
+        for descriptor in registry.descriptors() {
+            for declared in &descriptor.actions {
+                assert!(
+                    table.iter().any(|(action, _, _)| *action == declared.id),
+                    "{} has no row in the label table",
+                    declared.id
+                );
+            }
+        }
+    }
 }
