@@ -1,13 +1,13 @@
 //! Bounded neutral-patch sampling directly from the retained sensor mosaic.
 //!
 //! [`RawSource::neutral_gains_at`] maps an upright default-crop point to the sensor through the
-//! crop and orientation, reads one fixed 13×13 neighbourhood, applies the decoder's CFA and
-//! per-site black calibration, and returns green-normalised sensor gains. It never demosaics or
+//! crop and orientation, reads one fixed 13×13 neighbourhood, applies the decoder's CFA and the
+//! development's per-site black model, and returns green-normalised sensor gains. It never demosaics or
 //! builds a frame. The mosaic and calibration it reads were validated once at decode, so the
 //! sampler checks only what a patch itself can get wrong: its bounds, dark or clipped sites, and
 //! the gains it solves.
 
-use crate::{MAX_GAIN, MosaicCorrection, RawError, RawSource};
+use crate::{MAX_GAIN, MosaicCorrection, RawError, RawSource, normalize::BlackLevels};
 
 /// The radius of the fixed sensor-space neutral-patch neighbourhood.
 const PATCH_RADIUS: u32 = 6;
@@ -38,14 +38,8 @@ struct Mosaic<'a> {
     cfa_height: u8,
     /// Red, green and blue are 0, 1 and 2.
     cfa: &'a [u8],
-    /// Native CFA site IDs that select per-site black calibration; Bayer green sites stay
-    /// distinct (usually IDs 1 and 3).
-    black_cfa: &'a [u8],
-    black_base: f32,
-    black_channels: [f32; 4],
-    black_repeat_width: u8,
-    black_repeat_height: u8,
-    black_repeat: &'a [f32],
+    /// The per-site black levels development subtracts.
+    black: BlackLevels<'a>,
     sensor_white: f32,
 }
 
@@ -88,12 +82,7 @@ impl RawSource {
             cfa_width: metadata.cfa_width,
             cfa_height: metadata.cfa_height,
             cfa: &metadata.cfa,
-            black_cfa: &metadata.black_cfa,
-            black_base: metadata.black_base,
-            black_channels: metadata.black_channels,
-            black_repeat_width: metadata.black_repeat_width,
-            black_repeat_height: metadata.black_repeat_height,
-            black_repeat: &metadata.black_repeat,
+            black: BlackLevels::of(metadata),
             sensor_white: metadata.sensor_white,
         };
         let (corrected_x, corrected_y) = (crop.x + sx, crop.y + sy);
@@ -121,17 +110,6 @@ impl RawSource {
             )
         }
     }
-}
-
-fn black_at(source: &Mosaic<'_>, x: u32, y: u32, black_channel: usize) -> f64 {
-    let mut black = f64::from(source.black_base) + f64::from(source.black_channels[black_channel]);
-    if source.black_repeat_width != 0 {
-        let repeat_x = (x % u32::from(source.black_repeat_width)) as usize;
-        let repeat_y = (y % u32::from(source.black_repeat_height)) as usize;
-        let index = repeat_y * usize::from(source.black_repeat_width) + repeat_x;
-        black += f64::from(source.black_repeat[index]);
-    }
-    black
 }
 
 /// Sample one 13×13 patch around a sensor point in corrected coordinates. Each site is mapped for
@@ -172,10 +150,7 @@ fn neutral_gains(
             let channel = usize::from(source.cfa[cfa_index]);
             let (mapped_x, mapped_y) = map_at(x, y, channel)?;
             let (sample_x, sample_y) = nearest_site(source, mapped_x, mapped_y, channel)?;
-            let sample_cfa_index =
-                ((sample_y % cfa_height) * cfa_width + (sample_x % cfa_width)) as usize;
-            let black_channel = usize::from(source.black_cfa[sample_cfa_index]);
-            let black = black_at(source, sample_x, sample_y, black_channel);
+            let black = f64::from(source.black.at(sample_x as usize, sample_y as usize));
             let sample_index = (sample_y as usize) * (source.width as usize) + sample_x as usize;
             let sample = f64::from(
                 match source
@@ -330,12 +305,16 @@ mod tests {
             cfa_width,
             cfa_height,
             cfa,
-            black_cfa: if cfa_width == 2 { &BAYER_BLACK } else { cfa },
-            black_base: 10.0,
-            black_channels: [2.0, 3.0, 4.0, 5.0],
-            black_repeat_width: 2,
-            black_repeat_height: 2,
-            black_repeat,
+            black: BlackLevels {
+                cfa_width: usize::from(cfa_width),
+                cfa_height: usize::from(cfa_height),
+                black_cfa: if cfa_width == 2 { &BAYER_BLACK } else { cfa },
+                base: 10.0,
+                channels: [2.0, 3.0, 4.0, 5.0],
+                repeat_width: 2,
+                repeat_height: 2,
+                repeat: black_repeat,
+            },
             sensor_white,
         }
     }
@@ -486,12 +465,16 @@ mod tests {
             cfa_width: 2,
             cfa_height: 2,
             cfa: &BAYER,
-            black_cfa: &BAYER,
-            black_base: 0.0,
-            black_channels: [0.0; 4],
-            black_repeat_width: 0,
-            black_repeat_height: 0,
-            black_repeat: &[],
+            black: BlackLevels {
+                cfa_width: 2,
+                cfa_height: 2,
+                black_cfa: &BAYER,
+                base: 0.0,
+                channels: [0.0; 4],
+                repeat_width: 0,
+                repeat_height: 0,
+                repeat: &[],
+            },
             sensor_white: 65_535.0,
         };
         let calls = std::cell::Cell::new(0);
@@ -559,7 +542,7 @@ mod tests {
         malformed.sensor_white = f32::NAN;
         assert!(unmapped(&malformed, 9, 9).is_err());
         malformed = view;
-        malformed.black_repeat = &[f32::NAN, 2.0, 3.0, 4.0];
+        malformed.black.repeat = &[f32::NAN, 2.0, 3.0, 4.0];
         assert!(unmapped(&malformed, 9, 9).is_err());
     }
 }
