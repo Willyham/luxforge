@@ -19,7 +19,7 @@
 //! ([`SpatialEntry`], [`spatial_entry`], which both drivers materialize a spatial operation
 //! through), the replacements and colour runs applied to rows of a segment's output
 //! ([`segment_pass`]) and the terminal conversion a sample and a grid share. The rectangle a
-//! resample reads is [`super::Resample::reads`], beside the resample's own mapping.
+//! resample reads is [`crate::modules::Resample::reads`], beside the resample's own mapping.
 //!
 //! What stays with each domain's rasterizer is which frames it materializes. The byte driver
 //! ([`super::rasterize`]) writes every segment's output as a byte frame, because a byte frame is
@@ -33,15 +33,15 @@
 //! those, as a render always has.
 
 use super::{
-    Cancel, ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows,
-    color_runs, mapped_replacements,
+    ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows, color_runs,
+    mapped_replacements,
     spatial::{
         PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
         run_batches, run_tile,
     },
 };
 use crate::{
-    Error,
+    Cancel, Error,
     modules::{Global, Parallelism, Reduction, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
@@ -68,12 +68,6 @@ pub(crate) trait PixelDomain: Sync {
     /// the prefix hash. The linear path's also depends on the development, the view and the
     /// settings, none of which the recipe names.
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str>;
-
-    /// Refuse a compilation this domain cannot evaluate. Nothing is refused unless a domain says
-    /// so; the linear path evaluates at most one resample.
-    fn check(&self, _compiled: &Compiled) -> Result<(), Error> {
-        Ok(())
-    }
 
     /// Refuse an output stage this domain cannot produce, before a point is answered in it.
     /// Nothing is refused unless a domain says so; the linear path has its own output limit.
@@ -126,6 +120,10 @@ pub(crate) trait PixelDomain: Sync {
 
     /// A pixel as a spatial operation reads it, in linear `f32`.
     fn spatial_input(pixel: Self::Pixel) -> [f32; 3];
+
+    /// A pixel in linear light, as a mask's value-based component reads the input of the layer it
+    /// modulates.
+    fn linear(pixel: Self::Pixel) -> [f64; 3];
 
     /// A spatial operation's output value as a pixel.
     fn spatial_output(rgb: [f32; 3]) -> Result<Self::Pixel, Error>;
@@ -213,7 +211,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         cancel: &Cancel,
         context: &'a RenderContext,
     ) -> Result<Self, Error> {
-        domain.check(&compiled)?;
         let mut evaluation = Self {
             domain,
             compiled,
@@ -364,11 +361,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 
     /// The stage spatial segment `index` reads, which is the stage it writes.
     fn spatial_stage(&self, index: usize) -> Stage {
-        let previous = &self.compiled.segments[index - 1];
-        Stage {
-            width: previous.width,
-            height: previous.height,
-        }
+        self.compiled.segments[index - 1].stage()
     }
 
     /// Segment `index`'s output over `region`, row-major, into `out`: exactly the values
@@ -751,8 +744,8 @@ pub(super) trait SegmentRows: Sync {
 /// The chunks run on the shared Rayon pool when the segment's geometry, its colour runs or its
 /// heavy colour runs reach their own threshold (`super::parallel`); smaller passes stay serial.
 /// No full-frame float buffer exists at any point: each chunk reserves its float scratch from
-/// `budget` before it uses it, in a buffer its worker allocates once and reuses. `cancel` is read
-/// once per chunk, before the reservation.
+/// `budget` before it uses it, in a buffer allocated once per Rayon split and reused by that
+/// split's chunks. `cancel` is read once per chunk, before the reservation.
 ///
 /// Pointwise operations are independent per pixel and a unit is handed one row at a time with its
 /// row and first column, so applying the phases chunk by chunk is the same arithmetic in the same

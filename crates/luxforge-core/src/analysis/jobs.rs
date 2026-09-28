@@ -12,7 +12,7 @@
 //! reduction happen on the worker, which wakes the owner through its own channel, so no timer and
 //! no polling loop is involved.
 
-use super::{DOMAIN, Report, deserialize_domain, reduce_raster_cancellable};
+use super::{DOMAIN, Report, deserialize_domain, reduce};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
@@ -295,7 +295,7 @@ fn analyse(
         .exact(cancel)
         .and_then(|render| render.frame(identity.snapshot_id.clone()))
         .and_then(|raster| {
-            let report = reduce_raster_cancellable(&raster, cancel);
+            let report = reduce(&raster.rgba, raster.width, raster.height, cancel);
             // No per-result raster is retained: the frame is released here, before the bounded
             // report travels back to the owner.
             drop(raster);

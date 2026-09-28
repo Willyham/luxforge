@@ -75,6 +75,24 @@ pub struct Region {
 }
 
 impl Region {
+    /// The region that holds no pixel.
+    pub const EMPTY: Self = Self {
+        x0: 0,
+        y0: 0,
+        width: 0,
+        height: 0,
+    };
+
+    /// Every pixel of `stage`.
+    pub fn whole(stage: Stage) -> Self {
+        Self {
+            x0: 0,
+            y0: 0,
+            width: stage.width,
+            height: stage.height,
+        }
+    }
+
     /// The column after the last one this region holds.
     pub fn x1(self) -> u32 {
         self.x0.saturating_add(self.width)

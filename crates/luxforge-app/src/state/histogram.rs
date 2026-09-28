@@ -472,7 +472,8 @@ mod tests {
     /// A report over a tiny hand-built raster, so every count below is countable by hand.
     fn report(pixels: &[[u8; 4]], width: u32, height: u32) -> Report {
         let rgba: Vec<u8> = pixels.iter().flatten().copied().collect();
-        analysis::reduce(&rgba, width, height).expect("a reducible raster")
+        analysis::reduce(&rgba, width, height, &luxforge_core::Cancel::never())
+            .expect("a reducible raster")
     }
 
     #[test]

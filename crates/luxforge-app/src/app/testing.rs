@@ -784,7 +784,9 @@ pub(crate) fn analysed(
     height: u32,
 ) -> (Analysis, Arc<luxforge_core::Raster>) {
     let rgba: Vec<u8> = pixels.iter().flatten().copied().collect();
-    let report = luxforge_core::analysis::reduce(&rgba, width, height).expect("a reduction");
+    let report =
+        luxforge_core::analysis::reduce(&rgba, width, height, &luxforge_core::Cancel::never())
+            .expect("a reduction");
     let entry_id = editor.displayed_entry().expect("a displayed entry");
     let state = editor.state.as_ref().expect("an open asset");
     let identity = luxforge_core::analysis::AnalysisIdentity {

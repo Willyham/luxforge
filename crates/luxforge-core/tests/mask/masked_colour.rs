@@ -107,7 +107,7 @@ fn the_mask_endpoints_are_byte_identical_to_the_unmasked_frames_on_both_paths() 
 /// against a stepwise `f64` evaluation: decode, the global exposure everywhere, the masked exposure
 /// blended against its own input at the reference's coverage, and one quantization at the end.
 /// Nothing is clamped or quantized in between, on either path. That an *unmasked* operation after the
-/// masked one is equally unaffected is asserted in `render.rs`, where a test module may hold three
+/// masked one is equally unaffected is asserted in `render/mask_tests.rs`, where a test module may hold three
 /// colour layers of one effect.
 #[test]
 fn a_half_covered_frame_matches_the_stepwise_reference_on_both_paths() {

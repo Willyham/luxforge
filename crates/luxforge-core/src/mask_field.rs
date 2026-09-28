@@ -146,12 +146,7 @@ impl MaskField {
         let x1 = (bounds_x0 + bounds.width).min(placed.x1());
         let y1 = (bounds_y0 + bounds.height).min(placed.y1());
         let bounds = if bounds.is_empty() || x1 <= x0 || y1 <= y0 {
-            Region {
-                x0: 0,
-                y0: 0,
-                width: 0,
-                height: 0,
-            }
+            Region::EMPTY
         } else {
             Region {
                 x0: x0 - placed.x0,
@@ -271,12 +266,7 @@ fn doubled(stage: Stage) -> Option<Stage> {
 /// runs past it describes pixels no pass visits.
 fn halved(region: Region, stage: Stage) -> Region {
     if region.is_empty() {
-        return Region {
-            x0: 0,
-            y0: 0,
-            width: 0,
-            height: 0,
-        };
+        return Region::EMPTY;
     }
     let x0 = (region.x0 / 2).min(stage.width);
     let y0 = (region.y0 / 2).min(stage.height);

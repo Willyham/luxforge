@@ -52,8 +52,9 @@ The source path is integrated into the existing M4/Develop editor. JPEG Basic, e
 | --- | --- |
 | `luxforge-raw` | Private pinned LibRaw/librtprocess adapter; validated metadata, immutable u16 mosaic, float development and typed failures |
 | Core `source.rs` / `editor/source.rs` | Typed prepared sources, one signature-verified cache, source interpretation persistence and RAW development identity |
+| Core `source/linear.rs` | The retained float32 linear sRGB planes (`LinearImage`) and their crop and orientation views |
 | Core `api/owner.rs` | Bounded asynchronous source jobs; worker read/hash/unpack/develop, owner-only catalog transactions and client adoption |
-| Core `render/linear.rs` | Retained float32 linear sRGB, exact geometry and linear crop interpolation, bounded sampling and terminal display conversion |
+| Core `render/linear.rs` | The linear pixel domain: exact geometry and linear crop interpolation, bounded sampling and terminal display conversion |
 | Core `modules/raw.rs` | Required source-stage RAW layer (effect format 2), the `set-raw` white-balance patch, explicit gains and the sensor pick, the controls Basic's White balance group declares as its RAW variants, the reported control values including the as-shot equivalent, preset settings, and neutrality |
 | App `app/` / `state/` | Source readiness, current/historical control values, stale-result rejection and displayed frame identity |
 | `xtask raw-corpus`, the `raw-editor` smoke scenario | Source integrity and correlated real-editor evidence |

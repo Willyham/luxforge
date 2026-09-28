@@ -24,8 +24,8 @@
 //! - **A resample** reads the previous segment's window: its continuous input coordinate is
 //!   translated by the window's integer origin after the resample's own arithmetic, which is exact in
 //!   `f64` (an integer subtracted from a non-negative coordinate below 2^52 is representable), so
-//!   every tap is the same pixel with the same weight. The window is [`super::Resample::reads`]:
-//!   every tap the output reads plus [`super::TAP_MARGIN`] pixels, clamped to the stage edge where
+//!   every tap is the same pixel with the same weight. The window is [`crate::modules::Resample::reads`]:
+//!   every tap the output reads plus [`super::geometry::TAP_MARGIN`] pixels, clamped to the stage edge where
 //!   a tap is clamped to it.
 //! - **A spatial operation** runs over the previous segment's window as its own stage: the rectangle
 //!   the next segment reads, grown by the operation's summed halo and clamped to the stage, with its
@@ -47,10 +47,10 @@
 //! a spatial operation. With a spatial operation, its exact whole-stage estimate is retained. The tests below
 //! and in `preview::tests` prove these contracts.
 
-use super::{Compiled, Entry, ExactGeometry, Segment, spatial::Tiling};
+use super::{Compiled, Entry, Segment, spatial::Tiling};
 use crate::{
     Error,
-    modules::{Global, Region, SpatialOperation, Stage},
+    modules::{ExactGeometry, Global, Region, SpatialOperation, Stage},
 };
 use std::sync::Arc;
 
@@ -99,22 +99,6 @@ pub(crate) struct WindowPlan {
     outputs: Vec<Region>,
 }
 
-fn whole(stage: Stage) -> Region {
-    Region {
-        x0: 0,
-        y0: 0,
-        width: stage.width,
-        height: stage.height,
-    }
-}
-
-fn output_stage(segment: &Segment) -> Stage {
-    Stage {
-        width: segment.width,
-        height: segment.height,
-    }
-}
-
 /// The stage segment `index` reads: the source for the first, a resample's output stage, or the
 /// stage a spatial operation receives and writes.
 fn input_stage(segments: &[Segment], index: usize, source: Stage) -> Stage {
@@ -124,7 +108,7 @@ fn input_stage(segments: &[Segment], index: usize, source: Stage) -> Stage {
             width: resample.output_width,
             height: resample.output_height,
         },
-        Some(Entry::Spatial { .. }) => output_stage(&segments[index - 1]),
+        Some(Entry::Spatial { .. }) => segments[index - 1].stage(),
     }
 }
 
@@ -143,10 +127,10 @@ impl WindowPlan {
     /// global estimate behind another spatial operation. `O(segments)`, and reads
     /// no pixel.
     pub(crate) fn of(compiled: &Compiled, source: (u32, u32)) -> Option<Self> {
-        let requested = whole(output_stage(compiled.segments.last()?));
+        let requested = Region::whole(compiled.segments.last()?.stage());
         let plan = Self::of_rect(compiled, source, requested).ok()?;
         (plan.source
-            != whole(Stage {
+            != Region::whole(Stage {
                 width: source.0,
                 height: source.1,
             }))
@@ -170,11 +154,11 @@ impl WindowPlan {
         if count == 0 || requested.is_empty() {
             return Err(RegionFallback::Empty);
         }
-        let output = output_stage(&segments[count - 1]);
+        let output = segments[count - 1].stage();
         if requested.x1() > output.width || requested.y1() > output.height {
             return Err(RegionFallback::UnplannableGeometry);
         }
-        let mut outputs = vec![whole(output_stage(&segments[count - 1])); count];
+        let mut outputs = vec![Region::whole(segments[count - 1].stage()); count];
         // What the segment being walked must produce, in its output stage's coordinates.
         let mut needed = requested;
         let mut read_source = None;
@@ -184,7 +168,7 @@ impl WindowPlan {
                 return Err(RegionFallback::UnplannableGeometry);
             }
             outputs[index] = needed;
-            let cut = needed != whole(output_stage(segment));
+            let cut = needed != Region::whole(segment.stage());
             if cut && segment.has_pixels {
                 return Err(RegionFallback::PointReplacement);
             }
@@ -212,7 +196,7 @@ impl WindowPlan {
                 }
                 Some(Entry::Resample(resample)) => {
                     needed = resample
-                        .reads((0, 0), read, output_stage(&segments[index - 1]))
+                        .reads((0, 0), read, segments[index - 1].stage())
                         .ok_or(RegionFallback::UnplannableGeometry)?;
                 }
             }
@@ -284,7 +268,7 @@ impl WindowPlan {
                         globals: handed,
                         ..
                     }) => {
-                        if previous != whole(whole_input)
+                        if previous != Region::whole(whole_input)
                             && let Some(mask) = operation.mask()
                         {
                             let windowed = mask.windowed(previous);
@@ -299,7 +283,7 @@ impl WindowPlan {
             }
             let segment = &mut compiled.segments[index];
             if let Some(window) = window
-                && window != whole(whole_input)
+                && window != Region::whole(whole_input)
             {
                 // Place the window at its origin in the whole stage, ahead of everything the
                 // segment composed: an integer translation, so the composition stays exact.
@@ -312,7 +296,7 @@ impl WindowPlan {
                 segment.geometry = place.then(segment.geometry);
             }
             let kept = self.outputs[index];
-            if kept != whole(output_stage(segment)) {
+            if kept != Region::whole(segment.stage()) {
                 segment.output_origin = (kept.x0, kept.y0);
                 let cut = ExactGeometry::crop(
                     i64::from(kept.x0),
@@ -342,11 +326,11 @@ impl WindowPlan {
 mod tests {
     use super::*;
     use crate::{
-        BASIC_EFFECT, Component, ComponentMode, CropPayload, EFFECT_FORMAT, Layer, LayerId,
+        BASIC_EFFECT, Cancel, Component, ComponentMode, CropPayload, EFFECT_FORMAT, Layer, LayerId,
         LinearImage, LinearSettings, Mask, ModuleRegistry, Orientation, PRESENCE_EFFECT,
         PreviewSource, ProxyBounds, ProxyPlan, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
         VIGNETTE_EFFECT,
-        render::{Cancel, Render, RenderContext, RenderOptions, render},
+        render::{Render, RenderContext, RenderOptions, render},
     };
     use serde_json::{Value, json};
 
@@ -1629,7 +1613,7 @@ mod tests {
                     let (sin, cos) = angle.to_radians().sin_cos();
                     let reach = |a: u32, b: u32| {
                         (f64::from(a) * cos + f64::from(b) * sin).ceil() as u32
-                            + 2 * (super::super::TAP_MARGIN + 2)
+                            + 2 * (super::super::geometry::TAP_MARGIN + 2)
                     };
                     assert!(
                         width <= reach(out_width, out_height)

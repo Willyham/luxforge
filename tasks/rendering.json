@@ -968,7 +968,7 @@
     {
       "id": "TASK-014",
       "description": "Split render.rs by concept into separate files with no logic change, and fold in shared region and segment constructors, one Cancel module, LinearImage beside SourceImage, and the small clean-ups listed below.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-013"
       ],
@@ -1056,7 +1056,7 @@
     {
       "id": "TASK-015",
       "description": "Prove each rendering property once: one render-equals-sample table over every stack shape and both pixel domains, preview tests that stop re-proving the latest-job worker, injectable thresholds instead of multi-megapixel unit-test frames, and no stale diagnostics.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001",
         "TASK-014"

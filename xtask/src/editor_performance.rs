@@ -1,6 +1,6 @@
 use crate::*;
 use luxforge_core::{
-    BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, Layer, LayerId,
+    BASIC_EFFECT, CROP_EFFECT, Cancel, CropPayload, CropStage, EditorService, Layer, LayerId,
     ModuleRegistry, Mutation, PRESENCE_EFFECT, PreviewSource, ProxyBounds, Raster, Recipe,
     RenderContext, RenderOptions, SnapshotId, Transform, analysis, render,
 };
@@ -226,7 +226,7 @@ fn render_samples(
     Ok(timings)
 }
 
-/// Reduction cost alone: `analysis::reduce_raster` over an already-rendered raster, with no
+/// Reduction cost alone: `analysis::reduce` over an already-rendered raster, with no
 /// decode or render work inside the timed section, so this measures the histogram reducer
 /// separately from `render_samples` above.
 fn reduce_samples(raster: &Raster, samples: usize) -> Result<Vec<f64>> {
@@ -234,7 +234,7 @@ fn reduce_samples(raster: &Raster, samples: usize) -> Result<Vec<f64>> {
     let expected_pixels = u64::from(raster.width) * u64::from(raster.height);
     for _ in 0..samples {
         let started = Instant::now();
-        let report = analysis::reduce_raster(raster)?;
+        let report = analysis::reduce(&raster.rgba, raster.width, raster.height, &Cancel::never())?;
         ensure(
             report.pixel_count() == expected_pixels,
             "Performance reduction pixel count mismatch",
@@ -746,7 +746,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         "checks":[
             "Decoded source is cached after import",
             "Original render dimensions are exact",
-            "analysis::reduce_raster's pixel_count matches the rendered raster on every sample",
+            "analysis::reduce's pixel_count matches the rendered raster on every sample",
             "One +1 EV Basic exposure layer alone renders the upright source's own dimensions",
             "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",

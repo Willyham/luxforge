@@ -485,12 +485,12 @@ const SOURCE_RULES: &[SourceRule] = &[
         tokens: &["- 0.5).floor()"],
         scope: &["crates/luxforge-core/src"],
         types: &["rs"],
-        allowed: &["crates/luxforge-core/src/render.rs"],
+        allowed: &["crates/luxforge-core/src/render/geometry.rs"],
         mode: Match::Whole,
         tests: false,
         once: true,
-        reason: "a resample's read rectangle is written once, as Resample::reads in render.rs; \
-                 read it through that",
+        reason: "a resample's read rectangle is written once, as Resample::reads in \
+                 render/geometry.rs; read it through that",
     },
     SourceRule {
         name: "one-spatial-entry",
@@ -2405,7 +2405,7 @@ mod tests {
         // Each home writes its token once; the trait's declarations, the windowed proxy's own halo
         // and tile rule (`WindowPlan::of_rect`), test items and test-only modules are not copies.
         for (file, text) in [
-            (core.join("render.rs"), floor.to_owned()),
+            (core.join("render/geometry.rs"), floor.to_owned()),
             (
                 core.join("render/pipeline.rs"),
                 format!(
@@ -2441,11 +2441,11 @@ mod tests {
             (core.join("render/window.rs"), floor),
             (core.join("render/linear.rs"), floor),
             (
-                core.join("render.rs"),
+                core.join("render/byte.rs"),
                 "    let start = (top - 0.5).floor() - 2.0;\n",
             ),
             (
-                core.join("render.rs"),
+                core.join("render/byte.rs"),
                 "                                &domain.estimate_prefix(prefix_hash),\n",
             ),
         ] {
