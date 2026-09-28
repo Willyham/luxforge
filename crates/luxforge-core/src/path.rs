@@ -35,7 +35,10 @@ use crate::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// The reserved payload field a stored payload lists its stroke references in.
 ///
@@ -678,6 +681,14 @@ struct Resolved {
     origin: String,
     strokes: BTreeMap<StrokeId, Arc<Stroke>>,
     faults: BTreeMap<StrokeId, StrokeFault>,
+    /// Ids of `strokes` already known to be durable in the catalog's content-addressed store: read
+    /// from there ([`StrokeTable::insert_stored`]) or written there since ([`StrokeTable::mark_stored`]).
+    /// A commit writes every referenced id **outside** this set, rather than trying to track which
+    /// ones a stroke command captured fresh — the table is shared and copied by every plan, draft and
+    /// cached entry, and a set that answered "known stored" is safe under all of them by
+    /// construction: hydrating a recipe from the store marks everything it resolves, so a table that
+    /// has ever been read out of the catalog carries only its own fresh strokes unmarked.
+    stored: BTreeSet<StrokeId>,
 }
 
 impl StrokeTable {
@@ -686,6 +697,7 @@ impl StrokeTable {
             origin: origin.into(),
             strokes: BTreeMap::new(),
             faults: BTreeMap::new(),
+            stored: BTreeSet::new(),
         })))
     }
 
@@ -707,16 +719,50 @@ impl StrokeTable {
                 origin: String::new(),
                 strokes: BTreeMap::new(),
                 faults: BTreeMap::new(),
+                stored: BTreeSet::new(),
             })
         }))
     }
 
-    /// Record a resolved stroke under its own address. The address is recomputed rather than
-    /// trusted, so a table cannot hold a stroke under a name that is not its content's.
+    /// Record a resolved stroke under its own address, **not** yet known to be in the catalog's
+    /// store: a stroke a paint command just captured, or anything else that produced one fresh. The
+    /// address is recomputed rather than trusted, so a table cannot hold a stroke under a name that
+    /// is not its content's. A commit writes every such id until it is [`Self::mark_stored`] or the
+    /// recipe is read back out of the catalog.
     pub fn insert(&mut self, stroke: Stroke) -> StrokeId {
         let id = stroke.id();
         self.held().strokes.insert(id.clone(), Arc::new(stroke));
         id
+    }
+
+    /// Record a stroke already verified against `id` and already known to be durable in the
+    /// catalog's store, because it was just read from there. Trusts `id` rather than recomputing it
+    /// from the stroke's bytes: the caller has already hashed the stored bytes once to check them
+    /// against it ([`Stroke::from_stored`]), and re-deriving the same address from the same bytes a
+    /// second time here would hash every hydrated stroke twice for nothing.
+    pub(crate) fn insert_stored(&mut self, id: StrokeId, stroke: Stroke) {
+        let held = self.held();
+        held.strokes.insert(id.clone(), Arc::new(stroke));
+        held.stored.insert(id);
+    }
+
+    /// Whether `id` is already known to be durable in the catalog's store, so a commit need not
+    /// write it again.
+    pub(crate) fn is_known_stored(&self, id: &StrokeId) -> bool {
+        self.0.as_ref().is_some_and(|held| held.stored.contains(id))
+    }
+
+    /// Mark `id` as now durable in the catalog's store, once a caller has written it there. Lets a
+    /// caller that keeps writing through one table — a measured session, for instance — model the
+    /// same fact a fresh hydration would record on its own, without paying to re-read what it just
+    /// wrote.
+    ///
+    /// Every production write path re-reads its recipe through [`Self::insert_stored`] before it
+    /// plans the next command ([`crate::editor`]'s entry cache), so nothing there needs this; it
+    /// exists for a harness that builds entries directly and has to say so itself.
+    #[cfg(test)]
+    pub(crate) fn mark_stored(&mut self, id: StrokeId) {
+        self.held().stored.insert(id);
     }
 
     /// Record that a reference could not be resolved. The reason is kept so the refusal can say
