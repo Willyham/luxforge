@@ -1220,7 +1220,7 @@ pub(crate) struct Byte<'a>(pub(crate) &'a SourceImage);
 impl PixelDomain for Byte<'_> {
     type Pixel = [u8; 4];
     type SpatialFrame = Arc<[u8]>;
-    /// A tile's quantized RGB, row-major; alpha is copied when the tile is placed.
+    /// A tile's RGBA rows, quantized and with the input's alpha, exactly as the frame holds them.
     type TileOutput = Vec<u8>;
 
     fn fingerprint(&self) -> &str {
@@ -1295,27 +1295,38 @@ impl PixelDomain for Byte<'_> {
         )?))
     }
 
-    /// Quantized through the same exact thresholds as a colour run's end, on the pool under
-    /// [`Parallelism::Pool`].
+    /// Quantized through the same exact thresholds as a colour run's end, with the input's alpha
+    /// beside each pixel, into RGBA rows of the tile's width: on the pool under
+    /// [`Parallelism::Pool`], and otherwise on the worker that ran the tile.
     fn tile_output(
         region: Region,
         values: Vec<f32>,
         tile: Region,
         parallelism: Parallelism,
+        alpha: &(impl Fn(u32, u32) -> u8 + Sync),
     ) -> Vec<u8> {
-        let mut bytes = vec![0; (tile.pixels() * 3) as usize];
+        let mut bytes = vec![0; (tile.pixels() * 4) as usize];
+        let plane = region.pixels() as usize;
+        let width = tile.width as usize;
         let row = |(row, bytes): (usize, &mut [u8])| {
             let y = tile.y0 + row as u32;
-            for (column, x) in (tile.x0..tile.x1()).enumerate() {
+            // The tile's row inside each of the last unit's planes.
+            let from =
+                (y - region.y0) as usize * region.width as usize + (tile.x0 - region.x0) as usize;
+            let [red, green, blue] = [0, 1, 2].map(|channel| {
+                let start = channel * plane + from;
+                &values[start..start + width]
+            });
+            for (column, pixel) in bytes.chunks_exact_mut(4).enumerate() {
                 // `quantize_pixel` channel by channel, written out so this hot loop does not
                 // depend on the array map being inlined into it.
-                let rgb = spatial::plane_pixel(region, &values, x, y);
-                for (channel, value) in rgb.into_iter().enumerate() {
-                    bytes[column * 3 + channel] = quantize_channel(f64::from(value));
-                }
+                pixel[0] = quantize_channel(f64::from(red[column]));
+                pixel[1] = quantize_channel(f64::from(green[column]));
+                pixel[2] = quantize_channel(f64::from(blue[column]));
+                pixel[3] = alpha(tile.x0 + column as u32, y);
             }
         };
-        let row_bytes = tile.width as usize * 3;
+        let row_bytes = width * 4;
         match parallelism {
             Parallelism::Pool => bytes.par_chunks_mut(row_bytes).enumerate().for_each(row),
             Parallelism::Serial => bytes.chunks_mut(row_bytes).enumerate().for_each(row),
@@ -1323,21 +1334,13 @@ impl PixelDomain for Byte<'_> {
         bytes
     }
 
-    fn write_tile(
-        frame: &mut Arc<[u8]>,
-        stage: Stage,
-        tile: Region,
-        bytes: Vec<u8>,
-        alpha: &impl Fn(u32, u32) -> u8,
-    ) {
+    fn write_tile(frame: &mut Arc<[u8]>, stage: Stage, tile: Region, bytes: Vec<u8>) {
         let output = frame_mut(frame);
+        let row_bytes = tile.width as usize * 4;
         for (row, y) in (tile.y0..tile.y1()).enumerate() {
-            for (column, x) in (tile.x0..tile.x1()).enumerate() {
-                let to = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
-                let from = (row * tile.width as usize + column) * 3;
-                output[to..to + 3].copy_from_slice(&bytes[from..from + 3]);
-                output[to + 3] = alpha(x, y);
-            }
+            let to = ((u64::from(y) * u64::from(stage.width) + u64::from(tile.x0)) * 4) as usize;
+            output[to..to + row_bytes]
+                .copy_from_slice(&bytes[row * row_bytes..(row + 1) * row_bytes]);
         }
     }
 

@@ -56,7 +56,8 @@ pub(crate) trait PixelDomain: Sync {
     type Pixel: Copy + Send + Sync;
     /// One spatial operation's output over its whole stage.
     type SpatialFrame: Send + Sync;
-    /// One evaluated tile, as the parallel half of [`spatial_entry`] hands it to the serial write.
+    /// One evaluated tile, as the parallel half of [`spatial_entry`] hands it to the serial write:
+    /// rows already in the frame's own layout, so the write copies whole rows.
     type TileOutput: Send;
 
     /// The fingerprint a global estimate is keyed by.
@@ -143,23 +144,23 @@ pub(crate) trait PixelDomain: Sync {
     /// An empty spatial frame of `stage`, inside the domain's frame limit.
     fn spatial_frame(stage: Stage) -> Result<Self::SpatialFrame, Error>;
 
-    /// One tile's output, from the rectangle `region` its last unit wrote, in the form
-    /// [`Self::write_tile`] places.
+    /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
+    /// rows in the layout the frame holds it in, computed in the parallel phase. `alpha` reads the
+    /// operation's input alpha, which the byte frame carries and the linear planes do not hold.
     fn tile_output(
         region: Region,
         values: Vec<f32>,
         tile: Region,
         parallelism: Parallelism,
+        alpha: &(impl Fn(u32, u32) -> u8 + Sync),
     ) -> Self::TileOutput;
 
-    /// Place one tile's output into the frame. `alpha` reads the operation's input alpha, which
-    /// the byte frame copies and the linear planes do not hold.
+    /// Place one tile's output into the frame of `stage`, one `copy_from_slice` per row and plane.
     fn write_tile(
         frame: &mut Self::SpatialFrame,
         stage: Stage,
         tile: Region,
         output: Self::TileOutput,
-        alpha: &impl Fn(u32, u32) -> u8,
     );
 
     /// One pixel of a spatial frame of `stage`.
@@ -724,19 +725,20 @@ pub(super) fn spatial_entry<D: PixelDomain>(
         &plan,
         context.spatial(),
         cancel,
-        |tile, parallelism| {
+        |tile, parallelism, scratch| {
             let (region, values) = run_tile(
                 &plan,
                 operation,
                 &globals,
                 tile,
                 parallelism,
+                scratch,
                 |region, planes| fill(region, planes, parallelism),
             )?;
-            Ok(D::tile_output(region, values, tile, parallelism))
+            Ok(D::tile_output(region, values, tile, parallelism, &alpha))
         },
         |tile, output| {
-            D::write_tile(&mut frame, stage, tile, output, &alpha);
+            D::write_tile(&mut frame, stage, tile, output);
             Ok(())
         },
     )?;

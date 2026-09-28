@@ -18,7 +18,10 @@ use crate::{
     RenderOptions, SnapshotId, SourceImage,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
-        spatial::{Cancel, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_tile},
+        spatial::{
+            Cancel, SpatialPlan, TileScratch, build_reduction, fill_planes, resolve_globals,
+            run_tile,
+        },
         testing::{frame_in, render_tiled, sample_in},
     },
 };
@@ -174,6 +177,9 @@ fn evaluate(
         .map(|unit| unit.prepare(&reduction))
         .collect();
     let mut output = vec![[0.0_f32; 3]; pixels.len()];
+    // One slot's scratch for every tile, as a render's batch slot reuses it, so the frozen
+    // tolerance is checked against units that find the previous tile's values in it.
+    let mut scratch = TileScratch::default();
     for tile in plan.tiles() {
         let (region, values) = run_tile(
             &plan,
@@ -181,6 +187,7 @@ fn evaluate(
             &globals,
             tile,
             Parallelism::Serial,
+            &mut scratch,
             |region, planes| fill_planes(region, planes, Parallelism::Serial, read),
         )?;
         for y in tile.y0..tile.y1() {
@@ -716,6 +723,7 @@ fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
                     &globals,
                     tile,
                     parallelism,
+                    &mut TileScratch::default(),
                     |region, planes| fill_planes(region, planes, parallelism, read),
                 )
                 .expect("a tile")
