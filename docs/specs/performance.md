@@ -860,6 +860,49 @@ with the 60 MP image open, a miss of the 1% target in the same range as the 1.29
 before this work, with the histogram and the surface primitive both drawn on each redraw and the
 500 ms sync still in place; no timer was added and none remains for previews or gestures.
 
+#### The proxy build's memory and time
+
+The proxy's box downscale runs in bands of output rows, each worker holding one intermediate of
+about 1 MiB, where it held one intermediate of every source row the window reads
+([instant previews](../design/instant-preview.md#render-what-the-display-can-show)). Measured with
+the ignored `measure_the_proxy_build_on_photo_sized_sources` test in `proxy.rs`: one process per
+run decodes the generated JPEG, then builds its proxy for the owner's 2880 × 1800 display bounds 30
+times, and `/usr/bin/time -l` reports the process's maximum resident set size. The same run with
+`LUXFORGE_PROXY_BUILDS=0` decodes and builds nothing, which is the floor the build's peak is read
+against. Native Apple M4 Pro (14 cores), macOS 26.5.2, Rust 1.94.0, release test binaries of the
+base commit (`ec132e71`, with the same measurement test) and of this work, warm filesystem cache.
+Two rounds, before-after-after-before then after-before-before-after, one-minute load average
+13.4–13.7 and 11.6–12.6 with other sessions building. Both builds' proxies hash to the same bytes at
+both sizes.
+
+| Maximum resident set size (MiB) | 24 MP, 6000 × 4000 → 2700 × 1800 | 60 MP, 10000 × 6000 → 2880 × 1728 |
+| --- | --- | --- |
+| Decode only, both builds | 102.2–102.4 | 240.8–240.9 |
+| Before, four runs | 246.1–246.2 | 459.1–459.3 |
+| After, four runs | 148.1–155.4 | 290.8–294.7 |
+| The build above the decode floor, before / after | 143.9 / 45.9–53.2 | 218.3 / 49.9–53.8 |
+
+Before, the build's peak is the whole-window intermediate (123.6 MiB at 24 MP, 197.8 MiB at 60 MP)
+plus the 18.5 or 19.0 MiB proxy; after, it is the proxy plus the pool workers' band intermediates
+and the allocator's retention of them, and it no longer grows with the source. Peak footprint
+(`/usr/bin/time -l`'s other figure) moves the same way: 238.3 to 141.2 MiB at 24 MP and 451.4 to
+283.0 MiB at 60 MP in the first round.
+
+| Build time, 30 builds per run (ms) | Before | After |
+| --- | --- | --- |
+| 24 MP, first build of the process | 13.2, 13.0, 14.3, 47.8 | 7.9, 7.7, 12.0, 13.9 |
+| 24 MP, p50 | 8.1, 8.2, 7.9, 54.8 | 7.4, 7.1, 8.3, 14.5 |
+| 60 MP, first build of the process | 18.2, 18.1, 21.1, 20.3 | 14.2, 13.5, 20.2, 13.2 |
+| 60 MP, p50 | 14.5, 16.6, 16.2, 15.5 | 13.0, 15.3, 16.4, 13.2 |
+
+Each cell lists the first round's two runs, then the second round's two, in run order. The first
+build of a process, which touches its buffers for the first time, is lower after in every pair of
+both rounds; the steady p50 is lower after in the first round and not in the second, so no change
+in the steady build time is claimed. The second round's second pair at 24 MP ran through a load
+burst (before p95 162.8 ms, after 43.5 ms) and is kept for completeness. A job with a proxy phase also compiles
+its stack once at the proxy stage now, where the plan and the render each compiled it; that saves
+one `O(layers)` compile per proxy-phase job and is not separately timed.
+
 ### Native viewport-region qualification
 
 The current release executable is SHA-256
