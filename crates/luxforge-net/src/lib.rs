@@ -5,21 +5,15 @@
 //! (`luxforge_core::capabilities::{transport, secrets}`) and links neither, so its own tests and
 //! every build that does not ship them compile no TLS, HTTP or Keychain code. See
 //! `docs/design/module-capabilities.md#transport`.
-mod address;
-mod agent;
-mod connect;
 #[cfg(target_os = "macos")]
 mod keychain;
 mod secrets;
-#[cfg(test)]
-mod tests;
-mod tls;
 mod transport;
 
-pub use connect::{Connect, Resolve, SystemConnector, SystemResolver};
 pub use rustls::pki_types::CertificateDer;
 #[cfg(target_os = "macos")]
 pub use secrets::KeychainSecretStore;
 pub use secrets::{SECRET_SERVICE, platform_secret_store};
-pub use tls::TlsTrust;
-pub use transport::{HttpTransport, TransportConfig};
+pub use transport::{
+    Connect, HttpTransport, Resolve, SystemConnector, SystemResolver, TlsTrust, TransportConfig,
+};

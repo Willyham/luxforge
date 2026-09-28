@@ -11,7 +11,7 @@
 //! error instead. `ureq`'s timeouts are per phase, and a zero remaining timeout reads as one
 //! second, so the socket applies the transport's own deadlines: the idle wait for any progress and
 //! the whole request's deadline, both checked with the job's cancel before every read and write.
-use crate::{
+use super::{
     connect::{self, Connect, Resolve},
     tls,
 };
@@ -38,10 +38,10 @@ use ureq::{
 };
 
 /// The response head, interim responses each counted on their own, is at most this many bytes.
-pub(crate) const MAX_HEAD_BYTES: usize = 64 * 1024;
+pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
 
 /// What bounds one connection besides sizes: the job whose cancel stops it and its deadlines.
-pub(crate) struct Pace {
+pub(super) struct Pace {
     /// The host, for messages.
     pub name: String,
     pub control: Arc<JobControl>,
@@ -82,7 +82,7 @@ impl Pace {
     /// Map an agent failure back onto the transport's error kinds: a cancel wins over whatever the
     /// shut-down socket reported, and a refusal of the transport's own comes back as itself.
     /// Messages name the fault, never a header value or the body.
-    pub(crate) fn error(&self, error: ureq::Error) -> Error {
+    pub(super) fn error(&self, error: ureq::Error) -> Error {
         if self.control.is_cancelled() {
             return self.control.cancelled_error();
         }
@@ -97,7 +97,7 @@ impl Pace {
                 "the response head from {name} is larger than {MAX_HEAD_BYTES} bytes"
             )),
             ureq::Error::Protocol(ureq_proto::Error::HttpParseTooManyHeaders) => {
-                crate::transport::too_many_fields(name)
+                super::too_many_fields(name)
             }
             ureq::Error::Protocol(error) => {
                 Error::file_access(format!("the response from {name} is malformed: {error}"))
@@ -365,7 +365,7 @@ impl Transport for TlsTransport {
 /// One request's agent for `endpoint`: the policy resolver, connector and TLS, and every agent
 /// behaviour the transport does not want switched off. The request supplies `Host`, `User-Agent`,
 /// `Accept-Encoding` and `Connection` itself, so the agent adds only a `POST`'s `Content-Length`.
-pub(crate) fn agent(
+pub(super) fn agent(
     endpoint: &Endpoint,
     tls: &Arc<ClientConfig>,
     resolve: &Arc<dyn Resolve>,

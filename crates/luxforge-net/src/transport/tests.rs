@@ -1,6 +1,7 @@
 //! End-to-end transport tests against loopback servers, a fake resolver and a connector that routes
 //! chosen public addresses to those servers. Nothing here leaves the machine.
-use crate::{CertificateDer, Connect, HttpTransport, Resolve, TlsTrust, TransportConfig};
+use super::{Connect, HttpTransport, Resolve, TlsTrust, TransportConfig};
+use crate::CertificateDer;
 use luxforge_core::{
     Error,
     capabilities::{
