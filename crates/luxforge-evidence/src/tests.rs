@@ -480,6 +480,9 @@ fn every_mask_verb_round_trips_its_script() {
         {"mask":{"row":{"component":0,"delete_stroke":1}}},
         {"mask":{"row":{"component":{"name":"Brush 1"},"delete_stroke":{"name":"Stroke 2"}}}},
         {"mask":{"row":{"component":0,"delete_stroke":"01JA0000000000000000000B"}}},
+        {"mask":{"eye":{"name":"Foreground"}}},
+        {"mask":{"menu":"new-mask"}},
+        {"mask":{"menu":"add-component"}},
     ]));
     assert_eq!(steps[0], MaskStep::Select(Reference::Index(0)).into());
     assert_eq!(steps[1], MaskStep::Select(Reference::name("Mask 1")).into());
@@ -530,6 +533,12 @@ fn every_mask_verb_round_trips_its_script() {
         steps[30],
         MaskStep::Row(MaskRow::new(0, RowStep::DeleteStroke(Reference::Index(1)))).into()
     );
+    assert_eq!(
+        steps[33],
+        MaskStep::Eye(Reference::name("Foreground")).into()
+    );
+    assert_eq!(steps[34], MaskStep::Menu(KindMenuStep::NewMask).into());
+    assert_eq!(steps[35], MaskStep::Menu(KindMenuStep::AddComponent).into());
     // A stroke is released unless it says otherwise.
     assert_eq!(
         parse(r#"[{"mask":{"stroke":{"points":[[0.5,0.5]]}}}]"#).unwrap()[0],
@@ -640,6 +649,10 @@ fn every_mask_verb_round_trips_its_script() {
             json!({"mask":{"row":{"component":0,"delete_stroke":true}}}),
             "position in the list",
         ),
+        (json!({"mask":{"eye":null}}), "position in the list"),
+        (json!({"mask":{"eye":{"name":""}}}), "non-empty string"),
+        (json!({"mask":{"menu":"mask"}}), "unknown variant `mask`"),
+        (json!({"mask":{"menu":true}}), "invalid type: boolean"),
     ] {
         refused(json!([script]), expected);
     }

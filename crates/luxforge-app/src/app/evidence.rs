@@ -265,10 +265,10 @@ pub(crate) struct PacedStroke {
 /// xtask writes them, so a step has one spelling on both ends.
 pub(crate) use luxforge_evidence::{
     CapabilityAction, CapabilitySection, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent,
-    DoubleClickStep, DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, MaskRow, MaskStep,
-    PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep,
-    Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step,
-    TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
+    DoubleClickStep, DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, KindMenuStep,
+    MaskRow, MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
+    PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
+    SliderStep, Step, TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -1150,6 +1150,37 @@ impl Editor {
                 Err(reason) => return self.fail_step(reason),
             },
             MaskStep::Hover(None) => (Message::Mask(MaskMessage::Hover(None)), hovering),
+            // The eye changes what the overlay draws and nothing else. Whether a grid follows
+            // depends on the press itself — hiding the open mask's overlay asks for none — so the
+            // step settles on what the overlay asks for once the press has run.
+            MaskStep::Eye(reference) => {
+                let id = match self.resolve_mask(&reference) {
+                    Ok(id) => id,
+                    Err(reason) => return self.fail_step(reason),
+                };
+                let task = self.dispatch(Message::Mask(MaskMessage::ToggleVisible(id)));
+                if self.mask_overlay_request().is_some() {
+                    self.await_step(Settle::MaskOverlay);
+                } else {
+                    self.capture_next_frame();
+                }
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                return task;
+            }
+            // A kind menu is view state its button opens: it sends nothing and renders no pixel,
+            // so its frame is the next redraw.
+            MaskStep::Menu(menu) => {
+                let target = match menu {
+                    KindMenuStep::NewMask => MenuTarget::NewMask,
+                    KindMenuStep::AddComponent => {
+                        if self.selected_mask.is_none() {
+                            return self.fail_step("the Add component menu needs an open mask");
+                        }
+                        MenuTarget::AddComponent
+                    }
+                };
+                (Message::View(ViewMessage::OpenMenu(target)), Expect::Redraw)
+            }
             MaskStep::EditShape(reference) => match self.resolve_component(None, &reference) {
                 Ok(id) => (Message::Mask(MaskMessage::EditShape(id)), Expect::Gesture),
                 Err(reason) => return self.fail_step(reason),
