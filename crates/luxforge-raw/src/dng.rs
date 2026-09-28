@@ -1529,6 +1529,23 @@ mod tests {
         }
     }
 
+    /// The owner's DJI Air 2S DNG answers the neutral picker's bounded point queries through its
+    /// corrections: a positive gain and a finite sensor location.
+    #[test]
+    #[ignore = "requires explicit local authentic DJI DNG"]
+    fn owner_dji_dng_answers_corrected_point_queries() {
+        let owner = std::env::var("LUXFORGE_RAW_OWNER_DIR").expect("owner fixture directory");
+        let bytes = std::fs::read(format!("{owner}/mavic_air_2s.DNG")).expect("read DJI DNG");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d"
+        );
+        let raw = crate::RawSource::decode(bytes, &AtomicBool::new(false)).expect("decode DJI DNG");
+        assert!(raw.gain_at_corrected_sensor(2840.0, 1800.0, 1).unwrap() > 0.0);
+        let corrected = raw.corrected_sensor_sample_location(100, 4, 0).unwrap();
+        assert!(corrected.0.is_finite() && corrected.1.is_finite());
+    }
+
     #[test]
     fn identity_warp_and_cubic_sampling() {
         let warp = Warp {

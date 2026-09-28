@@ -306,7 +306,7 @@ pub(crate) fn synthetic_raw_metadata() -> luxforge_raw::RawMetadata {
     RawMetadata {
         make: "Test".into(),
         model: "Camera".into(),
-        mode: RawMode::NikonZ6Lossless14,
+        mode: RawMode::from_id("NikonZ6Lossless14").unwrap(),
         sensor_width: 32,
         sensor_height: 32,
         active_area: rect,

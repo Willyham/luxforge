@@ -1253,7 +1253,7 @@ mod tests {
         );
         assert!(spelled["metadata"].get("dng_corrections").is_none());
         let mut dng = metadata.clone();
-        dng.mode = RawMode::DjiAir2sDng16;
+        dng.mode = RawMode::from_id("DjiAir2sDng16").unwrap();
         dng.dng_corrections = Some(luxforge_raw::DngCorrectionMetadata {
             interpretation: "test-stage3-v1".into(),
             applied: [9_u32, 1]
