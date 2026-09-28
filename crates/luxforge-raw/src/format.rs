@@ -5,24 +5,38 @@ use super::profiles::{Camera, Catalog, CompressionProbe, Dng, DngCalibration, Dn
 use super::{DngCalibrationMetadata, NativeMetadata, RawError, RawRect};
 use sha2::{Digest, Sha256};
 
+/// The most IFDs one [`Tiff::walk`] visits: the root chain, its SubIFDs and theirs.
+const MAX_IFDS: usize = 16;
+/// The most IFD offsets one SubIFDs entry lists.
+const MAX_SUB_IFDS: u32 = 8;
+
+/// The crate's one set of bounded byte readers: every container and DNG opcode field is read
+/// through these, `None` when it runs past the buffer.
 #[derive(Clone, Copy)]
-enum Endian {
+pub(crate) enum Endian {
     Little,
     Big,
 }
-fn u16_at(b: &[u8], p: usize, e: Endian) -> Option<u16> {
+pub(crate) fn u16_at(b: &[u8], p: usize, e: Endian) -> Option<u16> {
     let a = b.get(p..p.checked_add(2)?)?;
     Some(match e {
         Endian::Little => u16::from_le_bytes([a[0], a[1]]),
         Endian::Big => u16::from_be_bytes([a[0], a[1]]),
     })
 }
-fn u32_at(b: &[u8], p: usize, e: Endian) -> Option<u32> {
+pub(crate) fn u32_at(b: &[u8], p: usize, e: Endian) -> Option<u32> {
     let a = b.get(p..p.checked_add(4)?)?;
     Some(match e {
         Endian::Little => u32::from_le_bytes(a.try_into().ok()?),
         Endian::Big => u32::from_be_bytes(a.try_into().ok()?),
     })
+}
+pub(crate) fn f64_at(b: &[u8], p: usize, e: Endian) -> Option<f64> {
+    let a = b.get(p..p.checked_add(8)?)?;
+    Some(f64::from_bits(match e {
+        Endian::Little => u64::from_le_bytes(a.try_into().ok()?),
+        Endian::Big => u64::from_be_bytes(a.try_into().ok()?),
+    }))
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +114,53 @@ impl<'a> Tiff<'a> {
             4 => Some(e.value),
             _ => None,
         }
+    }
+
+    /// Visit every IFD reachable from `first` through next-IFD links and SubIFDs (tag 330),
+    /// each once and at most [`MAX_IFDS`] of them, with its offset and entries. An IFD's SubIFDs
+    /// are visited before its next link, the last listed first. A next link of zero ends its
+    /// chain. The first IFD and every SubIFD offset must be nonzero, and a SubIFDs entry must
+    /// list one to [`MAX_SUB_IFDS`] LONG offsets inside the file: anything else fails the walk
+    /// rather than being skipped, as does an IFD that cannot be read.
+    fn walk(
+        &self,
+        first: u32,
+        mut visit: impl FnMut(u32, &[Entry]) -> Result<(), RawError>,
+    ) -> Result<(), RawError> {
+        if first == 0 {
+            return Err(RawError::InvalidInput("DNG IFD offset"));
+        }
+        let mut queue = vec![first];
+        let mut seen = Vec::new();
+        while let Some(rel) = queue.pop() {
+            if seen.contains(&rel) {
+                continue;
+            }
+            if seen.len() >= MAX_IFDS {
+                return Err(RawError::ResourceLimit("DNG IFD count"));
+            }
+            seen.push(rel);
+            let (entries, next) = self.entries(rel).ok_or(RawError::InvalidInput("DNG IFD"))?;
+            if next != 0 {
+                queue.push(next);
+            }
+            for entry in entries.iter().copied().filter(|e| e.tag == 330) {
+                if entry.kind != 4 || entry.count == 0 || entry.count > MAX_SUB_IFDS {
+                    return Err(RawError::InvalidInput("DNG SubIFD type/count"));
+                }
+                let offsets = self
+                    .payload(entry)
+                    .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
+                for i in 0..entry.count as usize {
+                    match u32_at(offsets, i * 4, self.endian) {
+                        Some(0) | None => return Err(RawError::InvalidInput("DNG SubIFD offset")),
+                        Some(offset) => queue.push(offset),
+                    }
+                }
+            }
+            visit(rel, &entries)?;
+        }
+        Ok(())
     }
 }
 
@@ -200,113 +261,93 @@ pub(super) struct DngOpcode {
 /// required operation cannot be silently accepted at the wrong stage.
 pub(super) fn dng_opcodes(bytes: &[u8]) -> Result<Vec<DngOpcode>, RawError> {
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
-    let mut queue = vec![first];
-    let mut seen = Vec::new();
     let mut opcodes = Vec::new();
     let mut aggregate_opcode_bytes = 0usize;
-    while let Some(rel) = queue.pop() {
-        if seen.contains(&rel) {
-            continue;
-        }
-        if seen.len() >= 16 {
-            return Err(RawError::ResourceLimit("DNG IFD count"));
-        }
-        seen.push(rel);
-        let (entries, next) = tiff.entries(rel).ok_or(RawError::InvalidInput("DNG IFD"))?;
-        if next != 0 {
-            queue.push(next);
-        }
-        for entry in entries {
-            if entry.tag == 330 {
-                let values = tiff
-                    .payload(entry)
-                    .ok_or(RawError::InvalidInput("DNG SubIFDs"))?;
-                if entry.kind != 4 || entry.count > 8 {
-                    return Err(RawError::InvalidInput("DNG SubIFD type/count"));
+    tiff.walk(first, |rel, entries| {
+        for &entry in entries {
+            if !matches!(entry.tag, OPCODE_LIST1 | OPCODE_LIST2 | OPCODE_LIST3) {
+                continue;
+            }
+            if entry.kind != 7 {
+                return Err(RawError::InvalidInput("DNG opcode list type"));
+            }
+            // An empty UNDEFINED field carries no operations (observed in
+            // native DNGs alongside a populated later-stage list). A
+            // nonempty truncated count still fails below.
+            if entry.count == 0 {
+                continue;
+            }
+            let data = tiff
+                .payload(entry)
+                .ok_or(RawError::InvalidInput("DNG opcode list bounds"))?;
+            aggregate_opcode_bytes = aggregate_opcode_bytes
+                .checked_add(data.len())
+                .ok_or(RawError::ResourceLimit("DNG opcode aggregate size"))?;
+            if aggregate_opcode_bytes > 1024 * 1024 {
+                return Err(RawError::ResourceLimit("DNG opcode aggregate size"));
+            }
+            let count = u32_at(data, 0, Endian::Big)
+                .ok_or(RawError::InvalidInput("DNG opcode count"))?
+                as usize;
+            if count > 256 {
+                return Err(RawError::ResourceLimit("DNG opcode count"));
+            }
+            let mut p = 4usize;
+            for _ in 0..count {
+                if opcodes.len() >= 256 {
+                    return Err(RawError::ResourceLimit("DNG opcode aggregate count"));
                 }
-                for chunk in values.chunks_exact(4) {
-                    let v = match tiff.endian {
-                        Endian::Little => u32::from_le_bytes(chunk.try_into().unwrap()),
-                        Endian::Big => u32::from_be_bytes(chunk.try_into().unwrap()),
-                    };
-                    queue.push(v);
-                }
-            } else if matches!(entry.tag, OPCODE_LIST1 | OPCODE_LIST2 | OPCODE_LIST3) {
-                if entry.kind != 7 {
-                    return Err(RawError::InvalidInput("DNG opcode list type"));
-                }
-                // An empty UNDEFINED field carries no operations (observed in
-                // native DNGs alongside a populated later-stage list). A
-                // nonempty truncated count still fails below.
-                if entry.count == 0 {
-                    continue;
-                }
-                let data = tiff
-                    .payload(entry)
-                    .ok_or(RawError::InvalidInput("DNG opcode list bounds"))?;
-                aggregate_opcode_bytes = aggregate_opcode_bytes
-                    .checked_add(data.len())
-                    .ok_or(RawError::ResourceLimit("DNG opcode aggregate size"))?;
-                if aggregate_opcode_bytes > 1024 * 1024 {
-                    return Err(RawError::ResourceLimit("DNG opcode aggregate size"));
-                }
-                let count = u32_at(data, 0, Endian::Big)
-                    .ok_or(RawError::InvalidInput("DNG opcode count"))?
+                let id =
+                    u32_at(data, p, Endian::Big).ok_or(RawError::InvalidInput("DNG opcode ID"))?;
+                let version = u32_at(data, p + 4, Endian::Big)
+                    .ok_or(RawError::InvalidInput("DNG opcode version"))?;
+                let flags = u32_at(data, p + 8, Endian::Big)
+                    .ok_or(RawError::InvalidInput("DNG opcode flags"))?;
+                let len = u32_at(data, p + 12, Endian::Big)
+                    .ok_or(RawError::InvalidInput("DNG opcode length"))?
                     as usize;
-                if count > 256 {
-                    return Err(RawError::ResourceLimit("DNG opcode count"));
+                let start = p
+                    .checked_add(16)
+                    .ok_or(RawError::ResourceLimit("DNG opcode size"))?;
+                p = start
+                    .checked_add(len)
+                    .ok_or(RawError::ResourceLimit("DNG opcode size"))?;
+                if p > data.len() {
+                    return Err(RawError::InvalidInput("truncated DNG opcode"));
                 }
-                let mut p = 4usize;
-                for _ in 0..count {
-                    if opcodes.len() >= 256 {
-                        return Err(RawError::ResourceLimit("DNG opcode aggregate count"));
-                    }
-                    let id = u32_at(data, p, Endian::Big)
-                        .ok_or(RawError::InvalidInput("DNG opcode ID"))?;
-                    let version = u32_at(data, p + 4, Endian::Big)
-                        .ok_or(RawError::InvalidInput("DNG opcode version"))?;
-                    let flags = u32_at(data, p + 8, Endian::Big)
-                        .ok_or(RawError::InvalidInput("DNG opcode flags"))?;
-                    let len = u32_at(data, p + 12, Endian::Big)
-                        .ok_or(RawError::InvalidInput("DNG opcode length"))?
-                        as usize;
-                    let start = p
-                        .checked_add(16)
-                        .ok_or(RawError::ResourceLimit("DNG opcode size"))?;
-                    p = start
-                        .checked_add(len)
-                        .ok_or(RawError::ResourceLimit("DNG opcode size"))?;
-                    if p > data.len() {
-                        return Err(RawError::InvalidInput("truncated DNG opcode"));
-                    }
-                    opcodes.push(DngOpcode {
-                        ifd: rel,
-                        list: entry.tag,
-                        id,
-                        version,
-                        flags,
-                        data: data[start..p].to_vec(),
-                    });
-                }
-                if p != data.len() {
-                    return Err(RawError::InvalidInput("DNG opcode trailing data"));
-                }
+                opcodes.push(DngOpcode {
+                    ifd: rel,
+                    list: entry.tag,
+                    id,
+                    version,
+                    flags,
+                    data: data[start..p].to_vec(),
+                });
+            }
+            if p != data.len() {
+                return Err(RawError::InvalidInput("DNG opcode trailing data"));
             }
         }
-    }
+        Ok(())
+    })?;
     Ok(opcodes)
 }
 
-/// IDs of DNG opcodes whose optional flag is unset. Malformed lists fail.
-pub fn required_dng_opcodes(bytes: &[u8]) -> Result<Vec<u32>, RawError> {
-    let mut required: Vec<_> = dng_opcodes(bytes)?
+/// The sorted, distinct IDs of `opcodes` whose optional flag is unset.
+pub(crate) fn required_ids<'a>(opcodes: impl IntoIterator<Item = &'a DngOpcode>) -> Vec<u32> {
+    let mut ids: Vec<_> = opcodes
         .into_iter()
         .filter(|opcode| opcode.flags & 1 == 0)
         .map(|opcode| opcode.id)
         .collect();
-    required.sort_unstable();
-    required.dedup();
-    Ok(required)
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// IDs of DNG opcodes whose optional flag is unset. Malformed lists fail.
+pub fn required_dng_opcodes(bytes: &[u8]) -> Result<Vec<u32>, RawError> {
+    Ok(required_ids(&dng_opcodes(bytes)?))
 }
 
 #[derive(Clone, Copy)]
@@ -351,35 +392,8 @@ pub(super) fn dng_container(
     decoder_active_bottom_trim: u32,
 ) -> Result<DngSensorContainer, RawError> {
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
-    let mut queue = vec![first];
-    let mut seen = Vec::new();
     let mut candidate = None;
-    while let Some(rel) = queue.pop() {
-        if rel == 0 || seen.contains(&rel) {
-            continue;
-        }
-        if seen.len() >= 16 {
-            return Err(RawError::ResourceLimit("DNG sensor IFD count"));
-        }
-        seen.push(rel);
-        let (entries, next) = tiff
-            .entries(rel)
-            .ok_or(RawError::InvalidInput("DNG sensor IFD"))?;
-        queue.push(next);
-        for entry in entries.iter().copied().filter(|e| e.tag == 330) {
-            if entry.kind != 4 || entry.count == 0 || entry.count > 8 {
-                return Err(RawError::InvalidInput("DNG SubIFD count/type"));
-            }
-            let offsets = tiff
-                .payload(entry)
-                .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
-            for i in 0..entry.count as usize {
-                queue.push(
-                    u32_at(offsets, i * 4, tiff.endian)
-                        .ok_or(RawError::InvalidInput("DNG SubIFD offset"))?,
-                );
-            }
-        }
+    tiff.walk(first, |rel, entries| {
         for (i, entry) in entries.iter().enumerate() {
             if entries[..i]
                 .iter()
@@ -398,7 +412,7 @@ pub(super) fn dng_container(
             || scalar(277) != Some(1)
             || scalar(284).unwrap_or(1) != 1
         {
-            continue;
+            return Ok(());
         }
         if *strategy == DngContainer::UncompressedU16SingleStrip
             && (native.raw_bps != 16 || scalar(259) != Some(1))
@@ -556,7 +570,8 @@ pub(super) fn dng_container(
             active_area: source_active,
             default_crop: crop,
         });
-    }
+        Ok(())
+    })?;
     candidate.ok_or(RawError::UnsupportedMode("DNG raw encoding".into()))
 }
 
@@ -572,7 +587,7 @@ pub(super) fn dng_color_calibration(
 ) -> Result<([[f32; 3]; 4], DngCalibrationMetadata), RawError> {
     let DngCalibration::RootFixedMatrix = settings.calibration;
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
-    let (root, root_next) = tiff
+    let (root, _) = tiff
         .entries(first)
         .ok_or(RawError::InvalidInput("DNG root IFD"))?;
     for (i, entry) in root.iter().enumerate() {
@@ -617,35 +632,8 @@ pub(super) fn dng_color_calibration(
     }
     // The root supplies this file's calibration. Do not combine it with a
     // second calibration attached to any preview, linked or sensor IFD.
-    let mut queue = vec![root_next];
-    if let Some(sub) = get(330) {
-        if sub.kind != 4 || sub.count == 0 || sub.count > 8 {
-            return Err(RawError::InvalidInput("DNG SubIFD type/count"));
-        }
-        let offsets = tiff
-            .payload(sub)
-            .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
-        for i in 0..sub.count as usize {
-            queue.push(
-                u32_at(offsets, i * 4, tiff.endian)
-                    .ok_or(RawError::InvalidInput("DNG SubIFD offset"))?,
-            );
-        }
-    }
-    let mut seen = vec![first];
-    while let Some(rel) = queue.pop() {
-        if rel == 0 || seen.contains(&rel) {
-            continue;
-        }
-        if seen.len() >= 16 {
-            return Err(RawError::ResourceLimit("DNG calibration IFD count"));
-        }
-        seen.push(rel);
-        let (entries, next) = tiff
-            .entries(rel)
-            .ok_or(RawError::InvalidInput("DNG calibration IFD"))?;
-        queue.push(next);
-        if entries.iter().any(|e| {
+    tiff.walk(first, |rel, entries| {
+        let calibration = |e: &Entry| {
             matches!(
                 e.tag,
                 50721
@@ -662,25 +650,12 @@ pub(super) fn dng_color_calibration(
                     | 52525
                     | 52526
             )
-        }) {
+        };
+        if rel != first && entries.iter().any(calibration) {
             return Err(RawError::InvalidInput("DNG calibration outside root IFD"));
         }
-        for entry in entries.into_iter().filter(|e| e.tag == 330) {
-            if entry.kind != 4 || entry.count > 8 {
-                return Err(RawError::InvalidInput("DNG nested SubIFD type/count"));
-            }
-            let payload = tiff
-                .payload(entry)
-                .ok_or(RawError::InvalidInput("DNG nested SubIFD offsets"))?;
-            for chunk in payload.chunks_exact(4) {
-                let nested = match tiff.endian {
-                    Endian::Little => u32::from_le_bytes(chunk.try_into().unwrap()),
-                    Endian::Big => u32::from_be_bytes(chunk.try_into().unwrap()),
-                };
-                queue.push(nested);
-            }
-        }
-    }
+        Ok(())
+    })?;
     if tiff.scalar(get(50778).ok_or(RawError::MissingCalibration("DNG illuminant 1"))?)
         != Some(settings.illuminants[0] as u32)
         || tiff.scalar(get(50779).ok_or(RawError::MissingCalibration("DNG illuminant 2"))?)
@@ -749,11 +724,7 @@ pub(super) fn dng_color_calibration(
                 *coefficient = value as f32;
             }
         }
-        let m = matrix;
-        let det = m[0][0] as f64
-            * (m[1][1] as f64 * m[2][2] as f64 - m[1][2] as f64 * m[2][1] as f64)
-            - m[0][1] as f64 * (m[1][0] as f64 * m[2][2] as f64 - m[1][2] as f64 * m[2][0] as f64)
-            + m[0][2] as f64 * (m[1][0] as f64 * m[2][1] as f64 - m[1][1] as f64 * m[2][0] as f64);
+        let det = crate::mat3::determinant([0, 1, 2].map(|row| matrix[row].map(f64::from)));
         let norms = (0..3)
             .map(|row| {
                 matrix[row]
@@ -1201,7 +1172,13 @@ mod tests {
             bytes[132 + i * 8..136 + i * 8].copy_from_slice(&1_u32.to_le_bytes());
         }
         let native = RawSource::blank_native();
-        let settings = Dng {
+        assert!(
+            matches!(dng_color_calibration(&bytes, &native, &test_dng()), Err(RawError::UnsupportedMode(message)) if message == "DNG nonidentity CameraCalibration")
+        );
+    }
+
+    fn test_dng() -> Dng {
+        Dng {
             container: DngContainer::IntegerCfaSingleSegment,
             calibration: DngCalibration::RootFixedMatrix,
             illuminants: [17, 21],
@@ -1211,9 +1188,72 @@ mod tests {
             interpretation: "test".into(),
             required_opcodes: Vec::new().into(),
             decoder_active_bottom_trim: 0,
+        }
+    }
+
+    /// The opcode, sensor-container and calibration walks share one bounds policy: a SubIFDs
+    /// entry lists one to eight nonzero LONG offsets and a walk visits at most sixteen IFDs.
+    /// Anything else fails each of them the same explicit way, where they once disagreed on a
+    /// zero offset or a zero count.
+    #[test]
+    fn every_container_walk_fails_the_same_malformed_ifds_explicitly() {
+        let walks = |bytes: &[u8]| -> [Result<(), RawError>; 3] {
+            let native = RawSource::blank_native();
+            [
+                dng_opcodes(bytes).map(drop),
+                dng_container(bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0).map(drop),
+                dng_color_calibration(bytes, &native, &test_dng()).map(drop),
+            ]
         };
-        assert!(
-            matches!(dng_color_calibration(&bytes, &native, &settings), Err(RawError::UnsupportedMode(message)) if message == "DNG nonidentity CameraCalibration")
+        // A root IFD whose one entry lists `count` SubIFDs from `value`; an empty IFD at 64.
+        let sub_ifds = |count: u32, value: u32| {
+            let mut bytes = vec![0_u8; 128];
+            bytes[..8].copy_from_slice(b"II*\0\x08\0\0\0");
+            bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
+            put_entry(&mut bytes, 8, 0, 330, 4, count, value);
+            bytes
+        };
+        for (bytes, error) in [
+            (sub_ifds(0, 64), "DNG SubIFD type/count"),
+            (sub_ifds(9, 64), "DNG SubIFD type/count"),
+            (sub_ifds(1, 0), "DNG SubIFD offset"),
+        ] {
+            for result in walks(&bytes) {
+                assert_eq!(result, Err(RawError::InvalidInput(error)));
+            }
+        }
+        let mut short_type = sub_ifds(1, 64);
+        short_type[12..14].copy_from_slice(&3_u16.to_le_bytes());
+        for result in walks(&short_type) {
+            assert_eq!(result, Err(RawError::InvalidInput("DNG SubIFD type/count")));
+        }
+        let [opcodes, container, calibration] = walks(&sub_ifds(1, 64));
+        assert_eq!(opcodes, Ok(()));
+        assert!(matches!(container, Err(RawError::UnsupportedMode(_))));
+        assert_eq!(
+            calibration,
+            Err(RawError::MissingCalibration("DNG illuminant 1"))
+        );
+
+        // A chain of empty IFDs, each six bytes: sixteen walk, seventeen do not.
+        let chain = |ifds: usize| {
+            let mut bytes = vec![0_u8; 8 + ifds * 6];
+            bytes[..8].copy_from_slice(b"II*\0\x08\0\0\0");
+            for ifd in 0..ifds - 1 {
+                let next = (8 + (ifd + 1) * 6) as u32;
+                bytes[8 + ifd * 6 + 2..8 + ifd * 6 + 6].copy_from_slice(&next.to_le_bytes());
+            }
+            bytes
+        };
+        assert_eq!(walks(&chain(16))[0], Ok(()));
+        for result in walks(&chain(17)) {
+            assert_eq!(result, Err(RawError::ResourceLimit("DNG IFD count")));
+        }
+        let mut no_root = chain(1);
+        no_root[4..8].fill(0);
+        assert_eq!(
+            dng_opcodes(&no_root).map(drop),
+            Err(RawError::InvalidInput("DNG IFD offset"))
         );
     }
 }

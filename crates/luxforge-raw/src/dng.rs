@@ -2,11 +2,17 @@
 //! the public source still exposes full-sensor planes and absolute sensor crop.
 //!
 //! The numeric layout and mapping follow Adobe DNG 1.4 opcodes (DNG 1.7.1
-//! specification, pp. 105-116) and the Adobe SDK's dng_gain_map.cpp and
-//! dng_lens_correction.cpp. The SDK clips after both opcodes; Luxforge keeps
-//! signed/highlight camera values until its terminal display conversion.
+//! specification, pp. 105-116) and the Adobe SDK's dng_gain_map.cpp,
+//! dng_lens_correction.cpp and dng_bad_pixels.cpp. The SDK clips after both
+//! opcodes; Luxforge keeps signed/highlight camera values until its terminal
+//! display conversion. Unknown or unsupported layouts fail.
 
-use crate::{PlanarRgb, RawError, RawRect, format::DngOpcode, native_tiles, opcodes::Opcode};
+use crate::{
+    PlanarRgb, RawError, RawRect,
+    format::{DngOpcode, Endian, f64_at, u32_at},
+    native_tiles,
+    opcodes::Opcode,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -89,23 +95,13 @@ pub(crate) struct DngCorrection {
 enum Stage3 {
     Gain(GainMap),
     Warp(Warp),
-    Vignette(super::dng_ops::VignetteRadial),
+    Vignette(VignetteRadial),
 }
 
 #[derive(Debug, Clone)]
 enum SensorRepair {
     Constant(u32, u32),
-    Listed(super::dng_ops::BadPixels),
-}
-
-fn opcode_error(error: super::dng_ops::OpcodeError) -> RawError {
-    use super::dng_ops::OpcodeError;
-    match error {
-        OpcodeError::Truncated => RawError::InvalidInput("truncated DNG correction"),
-        OpcodeError::Invalid(message) => RawError::InvalidInput(message),
-        OpcodeError::Unsupported(message) => RawError::UnsupportedMode(message.into()),
-        OpcodeError::Resource(message) => RawError::ResourceLimit(message),
-    }
+    Listed(BadPixels),
 }
 
 #[derive(Debug, Clone)]
@@ -131,22 +127,17 @@ struct Warp {
     norm_radius: f64,
 }
 
+/// A big-endian opcode field, through the crate's one reader set.
 fn be_u32(bytes: &[u8], p: usize) -> Result<u32, RawError> {
-    let a: [u8; 4] = bytes
-        .get(p..p + 4)
-        .ok_or(RawError::InvalidInput("truncated DNG opcode"))?
-        .try_into()
-        .unwrap();
-    Ok(u32::from_be_bytes(a))
+    u32_at(bytes, p, Endian::Big).ok_or(RawError::InvalidInput("truncated DNG opcode"))
+}
+fn be_i32(bytes: &[u8], p: usize) -> Result<i32, RawError> {
+    Ok(be_u32(bytes, p)? as i32)
 }
 fn be_f64(bytes: &[u8], p: usize) -> Result<f64, RawError> {
-    let a: [u8; 8] = bytes
-        .get(p..p + 8)
-        .ok_or(RawError::InvalidInput("truncated DNG opcode"))?
-        .try_into()
-        .unwrap();
-    Ok(f64::from_bits(u64::from_be_bytes(a)))
+    f64_at(bytes, p, Endian::Big).ok_or(RawError::InvalidInput("truncated DNG opcode"))
 }
+
 fn checked_rect(
     top: u32,
     left: u32,
@@ -487,6 +478,386 @@ impl Warp {
     }
 }
 
+// FixVignetteRadial (3), FixBadPixelsConstant (4) and FixBadPixelsList (5). The
+// caller decides the opcode list and stage; nothing here holds catalog policy.
+
+const MAX_PAYLOAD: usize = 1 << 20;
+const MAX_BAD_POINTS: usize = 65_536;
+
+#[derive(Debug, Clone, PartialEq)]
+struct VignetteRadial {
+    coefficients: [f64; 5],
+    /// Normalized horizontal and vertical optical center.
+    center: [f64; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BadPixels {
+    bayer_phase: u32,
+    points: Vec<(i32, i32)>,
+    rectangles: Vec<(i32, i32, i32, i32)>,
+}
+
+impl VignetteRadial {
+    /// Evaluate the DNG gain at an image-local pixel center.  The caller maps
+    /// its `RawRect` to `(width, height)` and can apply this lazily per plane.
+    fn gain(&self, x: f64, y: f64, width: usize, height: usize) -> Result<f64, RawError> {
+        if width == 0 || height == 0 || !x.is_finite() || !y.is_finite() {
+            return Err(RawError::InvalidInput("vignette coordinates"));
+        }
+        // DNG normalizes the optical center and radius against the outer
+        // pixel coordinates, so an N-pixel axis spans 0..N-1 (not pixel
+        // edges or pixel centers).
+        let last_x = (width - 1) as f64;
+        let last_y = (height - 1) as f64;
+        let cx = self.center[0] * last_x;
+        let cy = self.center[1] * last_y;
+        let radius = (cx.max(last_x - cx).powi(2) + cy.max(last_y - cy).powi(2)).sqrt();
+        if radius == 0.0 || !radius.is_finite() {
+            return Err(RawError::InvalidInput("vignette radius"));
+        }
+        let r2 = (((x - cx).powi(2) + (y - cy).powi(2)).sqrt() / radius).powi(2);
+        let mut gain = 0.0;
+        for coefficient in self.coefficients.iter().rev() {
+            gain = r2 * (coefficient + gain);
+        }
+        let gain = gain + 1.0;
+        if gain.is_finite() {
+            Ok(gain)
+        } else {
+            Err(RawError::InvalidInput("vignette gain"))
+        }
+    }
+}
+
+impl BadPixels {
+    /// Compute one replacement from an immutable source mosaic.  This is the
+    /// integration point for a decoder that must retain the exact original
+    /// mosaic: callers can use the value only for the current development
+    /// pass and leave source/history bytes untouched.
+    #[cfg(test)]
+    fn replacement(
+        &self,
+        source: &[u16],
+        width: usize,
+        height: usize,
+        y: usize,
+        x: usize,
+    ) -> Result<Option<u16>, RawError> {
+        if !self.rectangles.is_empty() {
+            return Err(RawError::UnsupportedMode(
+                "clustered FixBadPixelsList rectangles".into(),
+            ));
+        }
+        if width == 0
+            || height == 0
+            || width.checked_mul(height) != Some(source.len())
+            || y >= height
+            || x >= width
+        {
+            return Err(RawError::InvalidInput("bad-pixel source coordinates"));
+        }
+        let listed = self
+            .points
+            .iter()
+            .any(|&(row, col)| row == y as i32 && col == x as i32);
+        if !listed {
+            return Ok(None);
+        }
+        let listed_bad = |yy: usize, xx: usize| {
+            self.points
+                .iter()
+                .any(|&(row, col)| row == yy as i32 && col == xx as i32)
+        };
+        Ok(estimate_same_color(
+            source,
+            width,
+            height,
+            y,
+            x,
+            self.bayer_phase,
+            listed_bad,
+        ))
+    }
+
+    /// Compute all listed replacements from one immutable source pass.  The
+    /// result is sorted and duplicate coordinates are emitted once; malformed
+    /// coordinates and clustered rectangles fail. The returned unresolved
+    /// count follows Adobe's behavior of leaving points with no usable
+    /// same-colour neighbour unchanged.
+    #[cfg(test)]
+    fn replacements(
+        &self,
+        source: &[u16],
+        width: usize,
+        height: usize,
+    ) -> Result<Vec<(usize, u16)>, RawError> {
+        self.replacements_with_unresolved(source, width, height)
+            .map(|(patches, _)| patches)
+    }
+
+    fn replacements_with_unresolved(
+        &self,
+        source: &[u16],
+        width: usize,
+        height: usize,
+    ) -> Result<(Vec<(usize, u16)>, usize), RawError> {
+        if !self.rectangles.is_empty() {
+            return Err(RawError::UnsupportedMode(
+                "clustered FixBadPixelsList rectangles".into(),
+            ));
+        }
+        if width == 0 || height == 0 || width.checked_mul(height) != Some(source.len()) {
+            return Err(RawError::InvalidInput("bad-pixel source dimensions"));
+        }
+        let mut points = self.points.clone();
+        points.sort_unstable();
+        points.dedup();
+        if points.len() > MAX_BAD_POINTS {
+            return Err(RawError::ResourceLimit("bad pixel replacements"));
+        }
+        let mut out = Vec::with_capacity(points.len());
+        let mut unresolved = 0;
+        for &(y, x) in &points {
+            if y < 0 || x < 0 || y as usize >= height || x as usize >= width {
+                return Err(RawError::InvalidInput("bad pixel outside image"));
+            }
+            let y = y as usize;
+            let x = x as usize;
+            // The list can contain 65,536 entries. Repeated linear membership
+            // scans would make a valid dense list quadratic to decode.
+            let listed_bad =
+                |yy: usize, xx: usize| points.binary_search(&(yy as i32, xx as i32)).is_ok();
+            if let Some(value) =
+                estimate_same_color(source, width, height, y, x, self.bayer_phase, listed_bad)
+            {
+                out.push((y * width + x, value));
+            } else {
+                unresolved += 1;
+            }
+        }
+        Ok((out, unresolved))
+    }
+}
+
+/// Immutable counterpart for opcode 4.  Use this during each develop pass
+/// when the retained mosaic must remain byte-for-byte identical.
+fn bad_pixel_constant_replacement(
+    source: &[u16],
+    width: usize,
+    height: usize,
+    y: usize,
+    x: usize,
+    constant: u32,
+    phase: u32,
+) -> Result<Option<u16>, RawError> {
+    if constant > u16::MAX as u32
+        || width == 0
+        || height == 0
+        || width.checked_mul(height) != Some(source.len())
+        || y >= height
+        || x >= width
+    {
+        return Err(RawError::InvalidInput("bad-pixel source coordinates"));
+    }
+    let bad = constant as u16;
+    if source[y * width + x] != bad {
+        return Ok(None);
+    }
+    Ok(estimate_same_color(
+        source,
+        width,
+        height,
+        y,
+        x,
+        phase,
+        |yy, xx| source[yy * width + xx] == bad,
+    ))
+}
+
+/// Scan once and return sparse replacements, leaving `source` untouched.
+#[cfg(test)]
+fn bad_pixel_constant_replacements(
+    source: &[u16],
+    width: usize,
+    height: usize,
+    constant: u32,
+    phase: u32,
+) -> Result<Vec<(usize, u16)>, RawError> {
+    bad_pixel_constant_replacements_with_unresolved(source, width, height, constant, phase)
+        .map(|(patches, _)| patches)
+}
+
+fn bad_pixel_constant_replacements_with_unresolved(
+    source: &[u16],
+    width: usize,
+    height: usize,
+    constant: u32,
+    phase: u32,
+) -> Result<(Vec<(usize, u16)>, usize), RawError> {
+    if constant > u16::MAX as u32
+        || width == 0
+        || height == 0
+        || width.checked_mul(height) != Some(source.len())
+    {
+        return Err(RawError::InvalidInput("bad-pixel source dimensions/value"));
+    }
+    let bad = constant as u16;
+    let mut out = Vec::new();
+    let mut unresolved = 0;
+    for y in 0..height {
+        for x in 0..width {
+            if source[y * width + x] == bad {
+                if let Some(value) =
+                    bad_pixel_constant_replacement(source, width, height, y, x, constant, phase)?
+                {
+                    out.push((y * width + x, value));
+                } else {
+                    unresolved += 1;
+                }
+                if out.len() > MAX_BAD_POINTS {
+                    return Err(RawError::ResourceLimit("bad pixel replacements"));
+                }
+            }
+        }
+    }
+    Ok((out, unresolved))
+}
+
+fn checked_payload(data: &[u8]) -> Result<&[u8], RawError> {
+    if data.len() > MAX_PAYLOAD {
+        return Err(RawError::ResourceLimit("opcode payload"));
+    }
+    Ok(data)
+}
+
+/// Parse opcode 3.  Adobe defines five coefficients followed by H/V center.
+fn parse_vignette_radial(data: &[u8]) -> Result<VignetteRadial, RawError> {
+    let p = checked_payload(data)?;
+    if p.len() != 56 {
+        return Err(RawError::InvalidInput("FixVignetteRadial parameter length"));
+    }
+    let finite = |at| {
+        let value = be_f64(p, at)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(RawError::InvalidInput("non-finite opcode coefficient"))
+        }
+    };
+    let mut coefficients = [0.0; 5];
+    for (index, value) in coefficients.iter_mut().enumerate() {
+        *value = finite(index * 8)?;
+    }
+    let center = [finite(40)?, finite(48)?];
+    if center.iter().any(|v| !(0.0..=1.0).contains(v)) {
+        return Err(RawError::InvalidInput("FixVignetteRadial center"));
+    }
+    Ok(VignetteRadial {
+        coefficients,
+        center,
+    })
+}
+
+/// Parse opcode 4's bare parameter payload: `constant, bayerPhase`.
+fn parse_bad_pixels_constant(data: &[u8]) -> Result<(u32, u32), RawError> {
+    let p = checked_payload(data)?;
+    if p.len() != 8 {
+        return Err(RawError::InvalidInput(
+            "FixBadPixelsConstant parameter length",
+        ));
+    }
+    let phase = be_u32(p, 4)?;
+    if phase > 3 {
+        return Err(RawError::InvalidInput("FixBadPixelsConstant Bayer phase"));
+    }
+    Ok((be_u32(p, 0)?, phase))
+}
+
+/// Parse opcode 5's bare parameter payload: `bayerPhase, pointCount,
+/// rectangleCount`, followed by image-local coordinates.
+fn parse_bad_pixels_list(data: &[u8]) -> Result<BadPixels, RawError> {
+    let p = checked_payload(data)?;
+    if p.len() < 12 {
+        return Err(RawError::InvalidInput("truncated DNG correction"));
+    }
+    let phase = be_u32(p, 0)?;
+    let point_count = be_u32(p, 4)? as usize;
+    let rect_count = be_u32(p, 8)? as usize;
+    if phase > 3 || point_count > MAX_BAD_POINTS || rect_count > MAX_BAD_POINTS {
+        return Err(RawError::ResourceLimit("FixBadPixelsList entries"));
+    }
+    let expected = 12usize
+        .checked_add(
+            point_count
+                .checked_mul(8)
+                .ok_or(RawError::ResourceLimit("bad pixel points"))?,
+        )
+        .and_then(|v| v.checked_add(rect_count.checked_mul(16)?))
+        .ok_or(RawError::ResourceLimit("bad pixel list size"))?;
+    if p.len() != expected {
+        return Err(RawError::InvalidInput("FixBadPixelsList parameter length"));
+    }
+    let mut at = 12;
+    let mut points = Vec::with_capacity(point_count);
+    for _ in 0..point_count {
+        points.push((be_i32(p, at)?, be_i32(p, at + 4)?));
+        at += 8;
+    }
+    let mut rectangles = Vec::with_capacity(rect_count);
+    for _ in 0..rect_count {
+        rectangles.push((
+            be_i32(p, at)?,
+            be_i32(p, at + 4)?,
+            be_i32(p, at + 8)?,
+            be_i32(p, at + 12)?,
+        ));
+        at += 16;
+    }
+    Ok(BadPixels {
+        bayer_phase: phase,
+        points,
+        rectangles,
+    })
+}
+
+fn estimate_same_color<F: Fn(usize, usize) -> bool>(
+    pixels: &[u16],
+    width: usize,
+    height: usize,
+    y: usize,
+    x: usize,
+    phase: u32,
+    bad: F,
+) -> Option<u16> {
+    // DNG's phase IDs are 0=top-left red, 1=green on the red row,
+    // 2=green on the blue row, 3=top-left blue.  In all four layouts the
+    // green samples are the diagonal parity selected by this expression;
+    // phase 0/3 therefore use axial neighbours and phase 1/2 diagonals.
+    let green = ((y as u32 + x as u32 + phase + (phase >> 1)) & 1) == 1;
+    let offsets: &[(isize, isize)] = if green {
+        &[(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    } else {
+        &[(-2, 0), (2, 0), (0, -2), (0, 2)]
+    };
+    let mut sum = 0u32;
+    let mut n = 0u32;
+    for &(dy, dx) in offsets {
+        let yy = y as isize + dy;
+        let xx = x as isize + dx;
+        if yy < 0 || xx < 0 || yy >= height as isize || xx >= width as isize {
+            continue;
+        }
+        let yy = yy as usize;
+        let xx = xx as usize;
+        if !bad(yy, xx) {
+            sum += pixels[yy * width + xx] as u32;
+            n += 1;
+        }
+    }
+    (n > 0).then(|| ((sum + n / 2) / n) as u16)
+}
+
 fn provenance(opcode: &DngOpcode) -> DngOpcodeProvenance {
     DngOpcodeProvenance {
         list: opcode.list,
@@ -540,19 +911,15 @@ impl DngCorrection {
                 Some(Opcode::WarpRectilinear) => {
                     stages.push(Stage3::Warp(Warp::parse(&op.data, active)?))
                 }
-                Some(Opcode::FixVignetteRadial) => stages.push(Stage3::Vignette(
-                    super::dng_ops::parse_vignette_radial(&op.data).map_err(opcode_error)?,
-                )),
+                Some(Opcode::FixVignetteRadial) => {
+                    stages.push(Stage3::Vignette(parse_vignette_radial(&op.data)?))
+                }
                 Some(repair) if repair.repairs_sensor() && sensor_repair.is_none() => {
                     sensor_repair = Some(if repair == Opcode::FixBadPixelsConstant {
-                        let (constant, phase) = super::dng_ops::parse_bad_pixels_constant(&op.data)
-                            .map_err(opcode_error)?;
+                        let (constant, phase) = parse_bad_pixels_constant(&op.data)?;
                         SensorRepair::Constant(constant, phase)
                     } else {
-                        SensorRepair::Listed(
-                            super::dng_ops::parse_bad_pixels_list(&op.data)
-                                .map_err(opcode_error)?,
-                        )
+                        SensorRepair::Listed(parse_bad_pixels_list(&op.data)?)
                     });
                 }
                 _ => return Err(RawError::UnsupportedRequiredOpcodes(vec![op.id])),
@@ -598,15 +965,14 @@ impl DngCorrection {
         let (patches, unresolved) = match &self.sensor_repair {
             None => return Ok((Vec::new(), 0)),
             Some(SensorRepair::Constant(value, phase)) => {
-                super::dng_ops::bad_pixel_constant_replacements_with_unresolved(
+                bad_pixel_constant_replacements_with_unresolved(
                     source, width, height, *value, *phase,
                 )
             }
             Some(SensorRepair::Listed(list)) => {
                 list.replacements_with_unresolved(source, width, height)
             }
-        }
-        .map_err(opcode_error)?;
+        }?;
         Ok((
             patches
                 .into_iter()
@@ -645,14 +1011,12 @@ impl DngCorrection {
                     point = warp.source(point.0, point.1, channel, self.active)?
                 }
                 Stage3::Vignette(radial) => {
-                    gain *= radial
-                        .gain(
-                            point.0 - self.active.x as f64,
-                            point.1 - self.active.y as f64,
-                            self.active.width as usize,
-                            self.active.height as usize,
-                        )
-                        .map_err(opcode_error)?
+                    gain *= radial.gain(
+                        point.0 - self.active.x as f64,
+                        point.1 - self.active.y as f64,
+                        self.active.width as usize,
+                        self.active.height as usize,
+                    )?
                 }
             }
         }
@@ -730,9 +1094,7 @@ impl DngCorrection {
                         let rows = &mut plane[first..first + area_h * width];
                         correction_rows(rows, width, lanes, cancel, |yy, row| {
                             for (xx, pixel) in row[left..left + area_w].iter_mut().enumerate() {
-                                let gain = radial
-                                    .gain(xx as f64, yy as f64, area_w, area_h)
-                                    .map_err(opcode_error)?;
+                                let gain = radial.gain(xx as f64, yy as f64, area_w, area_h)?;
                                 *pixel = (*pixel as f64 * gain) as f32;
                             }
                             Ok(())
@@ -892,7 +1254,7 @@ mod tests {
             stages: vec![
                 Stage3::Gain(gain),
                 Stage3::Warp(warp),
-                Stage3::Vignette(super::super::dng_ops::VignetteRadial {
+                Stage3::Vignette(VignetteRadial {
                     coefficients: [0.1, -0.02, 0.03, 0.0, 0.01],
                     center: [0.45, 0.53],
                 }),
@@ -1383,5 +1745,150 @@ mod tests {
         let expected_y = offcenter["value"][0].as_f64().unwrap();
         assert!((actual_x - expected_x).abs() < 1e-8);
         assert!((actual_y - expected_y).abs() < 1e-8);
+    }
+
+    #[test]
+    fn parses_and_applies_radial_gain() {
+        let mut p = Vec::new();
+        for _ in 0..5 {
+            p.extend_from_slice(&0.0f64.to_be_bytes());
+        }
+        p.extend_from_slice(&0.5f64.to_be_bytes());
+        p.extend_from_slice(&0.5f64.to_be_bytes());
+        let params = parse_vignette_radial(&p).unwrap();
+        assert!((params.gain(0.0, 0.0, 3, 3).unwrap() - 1.0).abs() < 1e-12);
+        let mut q = Vec::new();
+        for value in [0.5f64, 0.0, 0.0, 0.0, 0.0] {
+            q.extend_from_slice(&value.to_be_bytes());
+        }
+        q.extend_from_slice(&0.5f64.to_be_bytes());
+        q.extend_from_slice(&0.5f64.to_be_bytes());
+        let curved = parse_vignette_radial(&q).unwrap();
+        assert!((curved.gain(0.0, 0.0, 3, 3).unwrap() - 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn constant_bad_pixel_uses_same_colour_neighbours() {
+        let mut px = vec![100u16; 25];
+        px[12] = 0;
+        let replacements = bad_pixel_constant_replacements(&px, 5, 5, 0, 0).unwrap();
+        assert_eq!(replacements, vec![(12, 100)]);
+    }
+
+    #[test]
+    fn clustered_list_is_explicitly_rejected() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&1u32.to_be_bytes());
+        for n in [1i32, 1, 2, 2] {
+            p.extend_from_slice(&n.to_be_bytes());
+        }
+        let list = parse_bad_pixels_list(&p).unwrap();
+        assert!(matches!(
+            list.replacement(&[1; 25], 5, 5, 2, 2),
+            Err(RawError::UnsupportedMode(_))
+        ));
+    }
+
+    #[test]
+    fn listed_replacements_are_sorted_deduplicated_and_preserve_source() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&3u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        for (y, x) in [(3i32, 3i32), (2, 2), (3, 3)] {
+            p.extend_from_slice(&y.to_be_bytes());
+            p.extend_from_slice(&x.to_be_bytes());
+        }
+        let list = parse_bad_pixels_list(&p).unwrap();
+        let source = vec![100u16; 49];
+        let result = list.replacements(&source, 7, 7).unwrap();
+        assert_eq!(result, vec![(16, 100), (24, 100)]);
+        assert!(source.iter().all(|v| *v == 100));
+    }
+
+    #[test]
+    fn listed_border_uses_available_neighbours_and_out_of_bounds_fails() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&1u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        for n in [1i32, 1] {
+            p.extend_from_slice(&n.to_be_bytes());
+        }
+        let list = parse_bad_pixels_list(&p).unwrap();
+        assert_eq!(list.replacements(&[1; 25], 5, 5).unwrap(), vec![(6, 1)]);
+        let mut q = Vec::new();
+        q.extend_from_slice(&0u32.to_be_bytes());
+        q.extend_from_slice(&1u32.to_be_bytes());
+        q.extend_from_slice(&0u32.to_be_bytes());
+        for n in [9i32, 9] {
+            q.extend_from_slice(&n.to_be_bytes());
+        }
+        let out = parse_bad_pixels_list(&q).unwrap();
+        assert!(matches!(
+            out.replacements(&[1; 25], 5, 5),
+            Err(RawError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn maximum_dense_list_has_no_usable_neighbours() {
+        let list = BadPixels {
+            bayer_phase: 0,
+            points: (0..256)
+                .rev()
+                .flat_map(|y| (0..256).map(move |x| (y, x)))
+                .collect(),
+            rectangles: vec![],
+        };
+        let source = vec![100; MAX_BAD_POINTS];
+        let (patches, unresolved) = list
+            .replacements_with_unresolved(&source, 256, 256)
+            .unwrap();
+        assert!(patches.is_empty());
+        assert_eq!(unresolved, MAX_BAD_POINTS);
+    }
+
+    #[test]
+    fn listed_point_with_no_available_same_colour_is_reported() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&1u32.to_be_bytes());
+        p.extend_from_slice(&5u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        for (y, x) in [(2i32, 2i32), (1, 1), (1, 3), (3, 1), (3, 3)] {
+            p.extend_from_slice(&y.to_be_bytes());
+            p.extend_from_slice(&x.to_be_bytes());
+        }
+        let list = parse_bad_pixels_list(&p).unwrap();
+        let (patches, unresolved) = list.replacements_with_unresolved(&[1; 25], 5, 5).unwrap();
+        assert_eq!(patches.len(), 4);
+        assert_eq!(unresolved, 1);
+    }
+
+    #[test]
+    fn phase_selects_axial_or_diagonal_same_colour_neighbours() {
+        let mut source = vec![0u16; 49];
+        source[7 + 3] = 10;
+        source[5 * 7 + 3] = 20;
+        source[3 * 7 + 1] = 30;
+        source[3 * 7 + 5] = 40;
+        source[2 * 7 + 2] = 1;
+        source[2 * 7 + 4] = 2;
+        source[4 * 7 + 2] = 3;
+        source[4 * 7 + 4] = 4;
+        let axial = BadPixels {
+            bayer_phase: 0,
+            points: vec![(3, 3)],
+            rectangles: vec![],
+        };
+        let diagonal = BadPixels {
+            bayer_phase: 1,
+            points: vec![(3, 3)],
+            rectangles: vec![],
+        };
+        assert_eq!(axial.replacement(&source, 7, 7, 3, 3).unwrap(), Some(25));
+        assert_eq!(diagonal.replacement(&source, 7, 7, 3, 3).unwrap(), Some(3));
     }
 }

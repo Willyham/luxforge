@@ -3,6 +3,9 @@
 #[path = "src/limits.rs"]
 #[allow(dead_code)]
 mod limits;
+// The catalog's calibration determinant.
+#[path = "src/mat3.rs"]
+mod mat3;
 // The catalog is validated against the one opcode allowlist; the list tags it also names are for
 // the library's container parser.
 #[path = "src/opcodes.rs"]
@@ -348,6 +351,7 @@ fn main() {
     build.compile("luxforge_raw_native");
     println!("cargo:rerun-if-changed=data/cameras.json");
     println!("cargo:rerun-if-changed=src/profiles.rs");
+    println!("cargo:rerun-if-changed=src/mat3.rs");
     println!("cargo:rerun-if-changed=src/opcodes.rs");
     println!("cargo:rerun-if-changed=src/limits.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
