@@ -11,6 +11,11 @@
 //! for the modifier, the `precision` a field shows, and the `soft_min`/`soft_max` a slider spans
 //! when the legal range is wider than the range a person works in. A hint is a hint: the host
 //! validates it is finite and positive and stores it, and never rounds a request to it.
+//!
+//! Each precision is the fewest decimals that still show the shape's `step`, so a field reads the
+//! way a person writes the number — `0.52`, `0.180`, `−12`, `60` — and a key press always changes
+//! what it shows. A fine nudge below the precision is still sent and stored exactly, and the field
+//! shows the extra digits while the value carries them.
 use super::{DISTANCE_MAX, DISTANCE_MIN, POSITION_MAX, POSITION_MIN};
 use crate::ParameterDescriptor;
 
@@ -24,7 +29,7 @@ pub(super) fn position(name: &str, required: bool, notes: &str) -> ParameterDesc
         .notes(notes)
         .unit("frame")
         .step(0.01)
-        .precision(4)
+        .precision(2)
         .soft_min(0.0)
         .soft_max(1.0)
         .fine_step(0.001)
@@ -40,7 +45,7 @@ pub(super) fn distance(name: &str, required: bool, notes: &str) -> ParameterDesc
         .notes(notes)
         .unit("h")
         .step(0.01)
-        .precision(4)
+        .precision(3)
         .soft_min(0.01)
         .soft_max(1.0)
         .fine_step(0.001)
@@ -60,7 +65,7 @@ pub(super) fn angle(
         .notes(notes)
         .unit("deg")
         .step(1.0)
-        .precision(2)
+        .precision(0)
         .fine_step(0.1)
         .zero(0.0)
 }
@@ -79,7 +84,7 @@ pub(super) fn percentage(
         .notes(notes)
         .unit("%")
         .step(1.0)
-        .precision(1)
+        .precision(0)
         .fine_step(0.1)
         .zero(zero)
 }

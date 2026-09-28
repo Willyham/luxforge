@@ -2395,6 +2395,25 @@ fn deleting_a_stroke_is_a_forward_edit_the_panel_names_as_its_own() {
         held,
         "the row lists the component's own strokes, in the order they compose"
     );
+    // Each row reads the settings `mask.list` reports from the stroke store, the size at the brush
+    // size's display precision and the feather whole — the neutral brush, three times.
+    let listed = masking.listing().masks[0].components[0].strokes.clone();
+    assert_eq!(listed.len(), 3);
+    assert!(
+        listed.iter().all(
+            |stroke| stroke.settings.as_ref().is_some_and(|held| !held.erase
+                && held.feather == 50.0
+                && held.flow == 100.0
+                && held.colour.is_none())
+        ),
+        "the listing reports each stroke's stored settings: {listed:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.summary.as_str())
+            .collect::<Vec<_>>(),
+        ["add \u{b7} 0.100 \u{b7} f50"; 3]
+    );
     let edit = RowEdit::DeleteStroke {
         component: component.as_str().to_owned(),
         stroke: held[1].clone(),

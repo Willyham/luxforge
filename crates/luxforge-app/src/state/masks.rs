@@ -290,8 +290,13 @@ pub(crate) struct StrokeRow {
     /// The content address, which is what the delete addresses it by.
     pub(crate) stroke: String,
     pub(crate) index: usize,
-    /// What the row reads: `Stroke 1`, and its position in the fold.
+    /// The stroke's name, `Stroke 1`, by its position in the fold: what a script and a tooltip call
+    /// it.
     pub(crate) label: String,
+    /// What the row reads: the settings the stroke was drawn with, as `mask.list` reports them from
+    /// the stroke store — `add · 0.060 · f50`, `erase · 0.040 · f30 · colour-held` — with the size
+    /// at the brush size's own display precision and the feather whole.
+    pub(crate) summary: String,
     /// Why this stroke cannot be removed, when it cannot: a component with no stroke covers nothing,
     /// so its last stroke goes by removing the component.
     pub(crate) delete_reason: Option<String>,
@@ -531,6 +536,7 @@ impl MasksModel {
                 "strokes": row.strokes.iter().map(|stroke| serde_json::json!({
                     "stroke": stroke.stroke,
                     "index": stroke.index,
+                    "summary": stroke.summary,
                     "delete_reason": stroke.delete_reason,
                 })).collect::<Vec<_>>(),
                 "samples": row.samples.iter().map(|sample| serde_json::json!({
@@ -991,7 +997,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                     && crate::mask_draft::drawable(&component.kind),
                 painted: crate::mask_draft::paintable(&component.kind),
                 strokes: if selected {
-                    stroke_rows(&component.payload, &component.name, enabled)
+                    stroke_rows(&component.strokes, &component.name, enabled)
                 } else {
                     Vec::new()
                 },
@@ -1131,24 +1137,62 @@ fn code(linear: f64) -> u8 {
     (255.0 * encoded.clamp(0.0, 1.0) + 0.5).floor() as u8
 }
 
-/// The strokes one component's stored payload references, read through the host's own reserved
-/// field so the panel parses no payload of its own. A payload that carries none — every gradient's —
-/// gives no rows, and a malformed one gives none rather than a guess.
-fn stroke_rows(payload: &serde_json::Value, component: &str, enabled: bool) -> Vec<StrokeRow> {
-    let held = luxforge_core::path::references(payload, component).unwrap_or_default();
+/// The strokes one component references, as `mask.list` reports them: each with its content
+/// address and the settings the stroke store holds for it. A component that references none — every
+/// gradient — gives no rows.
+fn stroke_rows(
+    held: &[luxforge_core::mask::commands::StrokeReport],
+    component: &str,
+    enabled: bool,
+) -> Vec<StrokeRow> {
+    let size = luxforge_core::mask::commands::find(ADD_STROKE)
+        .and_then(|command| command.action.parameter("size"))
+        .and_then(NumberSpec::of);
     held.iter()
         .enumerate()
         .map(|(index, stroke)| StrokeRow {
-            stroke: stroke.as_str().to_owned(),
+            stroke: stroke.id.as_str().to_owned(),
             index,
             label: format!("Stroke {}", index + 1),
+            summary: stroke_summary(stroke.settings.as_ref(), size.as_ref()),
             delete_reason: if !enabled {
                 Some("Waiting for the last request".into())
             } else {
-                reason(rules::delete_stroke(stroke.as_str(), component, held.len()))
+                reason(rules::delete_stroke(
+                    stroke.id.as_str(),
+                    component,
+                    held.len(),
+                ))
             },
         })
         .collect()
+}
+
+/// One stroke's settings as its row reads them: `add · 0.060 · f50`, with `· flow 80` when the
+/// stroke was drawn below full flow and `· colour-held` when it is limited to a colour. A reference
+/// the store does not hold says so rather than inventing settings.
+fn stroke_summary(
+    settings: Option<&luxforge_core::mask::commands::StrokeSettings>,
+    size: Option<&NumberSpec>,
+) -> String {
+    let Some(settings) = settings else {
+        return "not in the stroke store".to_owned();
+    };
+    let mut parts = vec![
+        if settings.erase { "erase" } else { "add" }.to_owned(),
+        size.map_or_else(
+            || format!("{:.3}", settings.size),
+            |spec| spec.format(settings.size),
+        ),
+        format!("f{:.0}", settings.feather),
+    ];
+    if settings.flow < 100.0 {
+        parts.push(format!("flow {:.0}", settings.flow));
+    }
+    if settings.colour.is_some() {
+        parts.push("colour-held".to_owned());
+    }
+    parts.join(" \u{b7} ")
 }
 
 /// The brush the next stroke will be drawn with, as the panel offers it.
@@ -1406,4 +1450,47 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         apply_reason,
         painted: draft.brush().is_some(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_core::mask::commands::{StrokeColour, StrokeSettings};
+
+    #[test]
+    fn a_stroke_row_reads_its_stored_settings() {
+        let size = luxforge_core::mask::commands::find(ADD_STROKE)
+            .and_then(|command| command.action.parameter("size"))
+            .and_then(NumberSpec::of);
+        let add = StrokeSettings {
+            erase: false,
+            // A stored radius is a grid step, a hair off the number the brush showed.
+            size: 0.05999755859375,
+            feather: 50.0,
+            flow: 100.0,
+            colour: None,
+        };
+        assert_eq!(
+            stroke_summary(Some(&add), size.as_ref()),
+            "add \u{b7} 0.060 \u{b7} f50"
+        );
+        let erase = StrokeSettings {
+            erase: true,
+            size: 0.04,
+            feather: 30.0,
+            flow: 80.0,
+            colour: Some(StrokeColour {
+                seed: [10, 20, 30],
+                refine: 50.0,
+            }),
+        };
+        assert_eq!(
+            stroke_summary(Some(&erase), size.as_ref()),
+            "erase \u{b7} 0.040 \u{b7} f30 \u{b7} flow 80 \u{b7} colour-held"
+        );
+        assert_eq!(
+            stroke_summary(None, size.as_ref()),
+            "not in the stroke store"
+        );
+    }
 }
