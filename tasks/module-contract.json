@@ -490,7 +490,7 @@
     {
       "id": "TASK-007",
       "description": "Build the vignette's per-row and per-column falloff tables lazily on first use instead of in the unit's constructor, and measure owner-thread time per slider tick with a shaped vignette at 60 MP.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed.",
