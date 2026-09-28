@@ -1167,7 +1167,6 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             id: "set-sketch".into(),
             title: "Set sketch".into(),
             notes: "a field patch with one parameter that declares no default".into(),
-            summary: None,
             patch: true,
             parameters: vec![
                 parameter("weight", None),

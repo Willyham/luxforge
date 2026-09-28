@@ -29,7 +29,6 @@ fn one_query_identity_resolves_to_one_provider_across_the_registry() {
             id: query.into(),
             title: "Test query".into(),
             notes: "test".into(),
-            summary: None,
             patch: false,
             parameters: Vec::new(),
         }];
@@ -174,8 +173,9 @@ fn a_patch_action_is_checked_field_by_field_and_fills_no_defaults() {
     assert_eq!(parsed.parameters, input.parameters);
     assert_eq!(
         module
-            .values(PATCH_EFFECT, EFFECT_FORMAT, &json!({"red": 12.0}))
-            .unwrap(),
+            .describe(PATCH_EFFECT, EFFECT_FORMAT, &json!({"red": 12.0}))
+            .unwrap()
+            .values,
         json!({"red": 12.0, "green": 0.0})
             .as_object()
             .unwrap()
@@ -183,17 +183,20 @@ fn a_patch_action_is_checked_field_by_field_and_fills_no_defaults() {
         "a stored layer reports every parameter it represents, neutral fields included"
     );
     assert_eq!(
-        module.label(&parsed).as_deref(),
-        Some("Patch red 12"),
+        module.label(action, &parsed),
+        "Patch red 12",
         "one changed field labels its own entry"
     );
     assert_eq!(
-        module.label(&ActionInput {
-            action_id: PATCH_ACTION.into(),
-            parameters: json!({"red": 1, "green": 2}).as_object().unwrap().clone(),
-        }),
-        None,
-        "a module that has nothing to add leaves the label to the host"
+        module.label(
+            action,
+            &ActionInput {
+                action_id: PATCH_ACTION.into(),
+                parameters: json!({"red": 1, "green": 2}).as_object().unwrap().clone(),
+            }
+        ),
+        "Set patch",
+        "a module that has nothing to add labels the entry with the action's title"
     );
 }
 
@@ -203,8 +206,9 @@ fn built_in_modules_describe_their_stored_layers() {
     let described = |layer: &Layer| -> String {
         let (module, _) = registry.effect(&layer.effect_id).expect("a provider");
         module
-            .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
+            .describe(&layer.effect_id, layer.effect_format, &layer.payload)
             .expect("a stored payload")
+            .summary
     };
     assert_eq!(
         described(&Layer::pixel(3, 4, [1, 2, 3])),

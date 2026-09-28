@@ -20,7 +20,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Delete mask"
           },
           {
@@ -51,7 +50,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Rename mask"
           },
           {
@@ -93,7 +91,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Rename component"
           },
           {
@@ -113,7 +110,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Duplicate mask"
           },
           {
@@ -145,7 +141,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Amount"
           },
           {
@@ -175,7 +170,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Invert mask"
           },
           {
@@ -207,7 +201,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Move mask"
           },
           {
@@ -253,7 +246,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Component mode"
           },
           {
@@ -294,7 +286,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Invert component"
           },
           {
@@ -325,7 +316,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Delete component"
           },
           {
@@ -368,7 +358,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Move component"
           },
           {
@@ -497,7 +486,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Paint"
           },
           {
@@ -539,7 +527,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Delete stroke"
           },
           {
@@ -608,7 +595,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "New linear mask"
           },
           {
@@ -703,7 +689,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Add linear"
           },
           {
@@ -794,7 +779,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Update linear"
           },
           {
@@ -891,7 +875,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "New radial mask"
           },
           {
@@ -1014,7 +997,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Add radial"
           },
           {
@@ -1133,7 +1115,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Update radial"
           },
           {
@@ -1196,7 +1177,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "New luminance range mask"
           },
           {
@@ -1285,7 +1265,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Add luminance range"
           },
           {
@@ -1370,7 +1349,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Update luminance range"
           },
           {
@@ -1393,7 +1371,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "New colour range mask"
           },
           {
@@ -1442,7 +1419,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Add colour range"
           },
           {
@@ -1487,7 +1463,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Update colour range"
           },
           {
@@ -1563,7 +1538,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Sample colour range"
           },
           {
@@ -1606,7 +1580,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Remove colour range sample"
           }
         ],
@@ -1783,7 +1756,6 @@
             "notes": "every mask of one stack with its components, values, amount, invert and the layers bound to it; read-only, writes no history and emits no event",
             "parameters": [],
             "patch": false,
-            "summary": null,
             "title": "Masks"
           },
           {
@@ -1827,7 +1799,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Sample input"
           }
         ],
@@ -1876,7 +1847,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Apply preset"
           }
         ],
@@ -1946,7 +1916,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Set RAW white balance"
           },
           {
@@ -1967,7 +1936,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Red gain"
           },
           {
@@ -1988,7 +1956,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Blue gain"
           },
           {
@@ -2021,7 +1988,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Pick neutral patch"
           }
         ],
@@ -2186,7 +2152,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Set Basic"
           },
           {
@@ -2194,7 +2159,6 @@
             "notes": "returns the stack's one Basic layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
             "parameters": [],
             "patch": false,
-            "summary": null,
             "title": "Reset Basic"
           }
         ],
@@ -2452,7 +2416,6 @@
               }
             ],
             "patch": false,
-            "summary": null,
             "title": "Neutral sample"
           }
         ],
@@ -2509,7 +2472,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Set Presence"
           },
           {
@@ -2517,7 +2479,6 @@
             "notes": "returns the stack's one Presence layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
             "parameters": [],
             "patch": false,
-            "summary": null,
             "title": "Reset Presence"
           }
         ],
@@ -2901,7 +2862,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Set Colour mixer"
           },
           {
@@ -2909,7 +2869,6 @@
             "notes": "returns the stack's one Colour mixer layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
             "parameters": [],
             "patch": false,
-            "summary": null,
             "title": "Reset Colour mixer"
           }
         ],
@@ -3632,7 +3591,6 @@
               }
             ],
             "patch": false,
-            "summary": "{transform}",
             "title": "Transform"
           }
         ],
@@ -3771,7 +3729,6 @@
               }
             ],
             "patch": false,
-            "summary": "Crop {angle}°",
             "title": "Crop"
           },
           {
@@ -3860,7 +3817,6 @@
               }
             ],
             "patch": false,
-            "summary": "Crop {aspect}",
             "title": "Fit crop to a ratio"
           },
           {
@@ -3868,7 +3824,6 @@
             "notes": "returns an existing crop layer to the neutral payload; a no-op without one",
             "parameters": [],
             "patch": false,
-            "summary": null,
             "title": "Reset crop"
           }
         ],
@@ -3969,7 +3924,6 @@
               }
             ],
             "patch": true,
-            "summary": null,
             "title": "Set Vignette"
           },
           {
@@ -3977,7 +3931,6 @@
             "notes": "returns the stack's one Vignette layer to its all-default payload, keeping its identity and position; a no-op without one and when it is already all default.",
             "parameters": [],
             "patch": false,
-            "summary": null,
             "title": "Reset Vignette"
           }
         ],

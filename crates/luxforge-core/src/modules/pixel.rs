@@ -4,8 +4,8 @@
 //! module, as its descriptor's `developer` says, so only a developer run registers it.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, EffectStage, MAX_COORDINATE, ModuleDescriptor, NewLayer, ParameterDescriptor,
-    Processing, Stage, StageContext, ToolModule,
+    EffectDescriptor, EffectStage, LayerReport, ModuleDescriptor, NewLayer, ParameterDescriptor,
+    Processing, Stage, StageContext, ToolModule, decode_parameters, label_value,
 };
 use crate::{EFFECT_FORMAT, Error, Layer, PixelReplace};
 use serde_json::{Map, Value, json};
@@ -58,7 +58,6 @@ impl PixelModule {
                     id: SET_PIXEL.into(),
                     title: "Set pixel".into(),
                     notes: "replaces one pixel of the content stage, the source after EXIF orientation; later rotations, reflections and the crop carry the edit, and replacing a pixel with its current value is a reported no-op".into(),
-                    summary: Some("Pixel {x}, {y}".into()),
                     patch: false,
 parameters: vec![
                         ParameterDescriptor::pixel_coordinate("x").notes(
@@ -107,35 +106,6 @@ parameters: vec![
     }
 }
 
-fn coordinate_value(parameters: &Map<String, Value>, name: &str) -> Result<u32, Error> {
-    parameters
-        .get(name)
-        .and_then(Value::as_i64)
-        .filter(|value| (0..=MAX_COORDINATE).contains(value))
-        .map(|value| value as u32)
-        .ok_or_else(|| {
-            Error::validation(format!(
-                "parameter {name} must be an integer within 0..={MAX_COORDINATE}"
-            ))
-        })
-}
-
-fn color_value(parameters: &Map<String, Value>) -> Result<[u8; 3], Error> {
-    let channels = parameters
-        .get("rgb")
-        .and_then(Value::as_array)
-        .filter(|channels| channels.len() == 3)
-        .ok_or_else(|| Error::validation("parameter rgb must be three sRGB channels 0..=255"))?;
-    let mut rgb = [0u8; 3];
-    for (slot, channel) in rgb.iter_mut().zip(channels) {
-        *slot = u8::try_from(channel.as_u64().ok_or_else(|| {
-            Error::validation("parameter rgb must be three sRGB channels 0..=255")
-        })?)
-        .map_err(|_| Error::validation("parameter rgb must be three sRGB channels 0..=255"))?;
-    }
-    Ok(rgb)
-}
-
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<PixelReplace, Error> {
     if effect_id != PIXEL_EFFECT {
         return Err(Error::unavailable_effect(effect_id, &[]));
@@ -162,23 +132,15 @@ impl ToolModule for PixelModule {
         if action_id != SET_PIXEL {
             return Err(Error::validation(format!("unknown action {action_id}")));
         }
-        let x = coordinate_value(parameters, "x")?;
-        let y = coordinate_value(parameters, "y")?;
-        let rgb = color_value(parameters)?;
-        let mut stored = Map::new();
-        stored.insert("x".into(), Value::from(x));
-        stored.insert("y".into(), Value::from(y));
-        stored.insert("rgb".into(), Value::from(rgb.to_vec()));
+        // The generic check has admitted exactly the three required fields, in range.
         Ok(ActionInput {
             action_id: SET_PIXEL.into(),
-            parameters: stored,
+            parameters: parameters.clone(),
         })
     }
 
     fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let x = coordinate_value(&input.parameters, "x")?;
-        let y = coordinate_value(&input.parameters, "y")?;
-        let rgb = color_value(&input.parameters)?;
+        let PixelReplace { x, y, rgb } = decode_parameters(SET_PIXEL, &input.parameters)?;
         // The coordinates address the stage this layer will be inserted at, not the output stage:
         // a pixel outside a crop is still a pixel of the photograph, and replacing one with the
         // value the content already holds is a no-op whatever a later resample shows there.
@@ -207,12 +169,25 @@ impl ToolModule for PixelModule {
         payload(effect_id, format, value).map(|_| ())
     }
 
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
+    fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
         let pixel = payload(effect_id, format, value)?;
-        Ok(format!(
+        Ok(LayerReport::new(format!(
             "Pixel {}, {} → {},{},{}",
             pixel.x, pixel.y, pixel.rgb[0], pixel.rgb[1], pixel.rgb[2]
-        ))
+        )))
+    }
+
+    /// `Pixel 360, 240`: the coordinates the request replaces.
+    fn label(&self, _: &ActionDescriptor, input: &ActionInput) -> String {
+        let x = input
+            .parameters
+            .get("x")
+            .map_or_else(String::new, label_value);
+        let y = input
+            .parameters
+            .get("y")
+            .map_or_else(String::new, label_value);
+        format!("Pixel {x}, {y}")
     }
 
     fn compile(

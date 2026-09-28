@@ -38,15 +38,14 @@ pub use descriptor::{
     Control, ControlVariant, CurveBackground, CurveChannel, EffectDescriptor, EffectStage,
     IdentityKind, MAX_COORDINATE, MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS,
     MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor,
-    ParameterKind, RailDecoration, ResetAction, ResolvedControl, ResolvedReset, action_label,
-    check_parameters, check_value, render_summary, resolve_control, resolve_group_reset,
-    valid_identity, valid_name,
+    ParameterKind, RailDecoration, ResetAction, ResolvedControl, ResolvedReset, check_parameters,
+    check_value, resolve_control, resolve_group_reset, valid_identity, valid_name,
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
-    check_settings, check_target,
+    check_settings, check_target, decode_parameters,
 };
-pub(crate) use descriptor::{not_applicable, summary_value, title_case};
+pub(crate) use descriptor::{label_value, not_applicable, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
 pub use pixel::{PIXEL_EFFECT, PixelModule};
 pub use presence::{PRESENCE_EFFECT, PresenceModule};
@@ -69,7 +68,8 @@ pub(crate) use registry::tests::{
     STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{
-    ActionRef, ModuleRegistry, QueryRef, RegistryOptions, Superseded, insertion_index_among,
+    ActionRef, ModuleRegistry, Provider, QueryRef, RegistryOptions, Superseded,
+    insertion_index_among,
 };
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
@@ -349,6 +349,32 @@ impl StageQuestions for FixedStage {
     }
 }
 
+/// What a stored layer is, as its module reads it from the payload alone: what `recipe.describe`
+/// reports on the layer's row.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LayerReport {
+    /// One short line describing what the layer does.
+    pub summary: String,
+    /// The parameter values the layer represents, named as the module's action parameters are, so
+    /// a client can seed its controls from the displayed entry. Empty for a module that reports
+    /// none.
+    pub values: Map<String, Value>,
+    /// Whether the layer changes nothing, so a client need not show it as an edit: a field patch
+    /// at its neutral values, a whole-image crop, the identity orientation, a RAW development at As
+    /// shot. `false` for a payload with no neutral form, which is always an edit.
+    pub neutral: bool,
+}
+
+impl LayerReport {
+    /// A layer described by `summary` alone: no values, and an edit.
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            ..Self::default()
+        }
+    }
+}
+
 pub trait ToolModule: Send + Sync {
     fn descriptor(&self) -> &ModuleDescriptor;
     /// Normalize an already schema-checked request into its durable action identity and stored
@@ -359,54 +385,33 @@ pub trait ToolModule: Send + Sync {
     fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error>;
     /// Accept or reject a persisted payload structurally.
     fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error>;
-    /// One short line describing what this stored layer does, for the recipe row. Reading a
+    /// What this stored layer is, for its row of `recipe.describe`: a one-line summary, the
+    /// parameter values it represents and whether it changes nothing ([`LayerReport`]). Reading a
     /// payload only: it never renders, samples or touches the source.
-    fn describe_layer(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<String, Error>;
-    /// Whether this stored layer changes nothing, so a client need not show it as an edit: a field
-    /// patch at its neutral values, a whole-image crop, the identity orientation, a RAW development
-    /// at As shot and 0 EV. `recipe.describe` reports it on the layer's row. Reading a payload only,
-    /// like [`ToolModule::describe_layer`]: no render, no sample, no source. The default is `false`,
-    /// because a payload with no neutral form is always an edit.
-    fn is_neutral(&self, effect_id: &str, format: u32, payload: &Value) -> Result<bool, Error> {
-        let _ = (effect_id, format, payload);
-        Ok(false)
-    }
-    /// The history label this request deserves, when the rendered `summary` template cannot say it:
-    /// a patch naming the one field it changed, or a reset naming the group it cleared. The host
-    /// consults this before the template and the title. Reading the request only.
-    fn label(&self, input: &ActionInput) -> Option<String> {
+    fn describe(&self, effect_id: &str, format: u32, payload: &Value)
+    -> Result<LayerReport, Error>;
+    /// The history label this request stores: the action's title unless the module says more, as
+    /// a patch names the one field it changed, a reset the group it cleared, a transform the
+    /// orientation it applies and a crop its angle or ratio. `action` is the action that was
+    /// requested, which is not always the durable identity `input` carries: `transform` is
+    /// requested, `rotate-left` stored. Reading the request only.
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
         let _ = input;
-        None
-    }
-    /// The parameter values a stored layer represents, reported on the layer's row of
-    /// `recipe.describe` so a client can seed its controls from the displayed entry. Reading a
-    /// payload only, like [`ToolModule::describe_layer`]: no render, no sample, no source.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let _ = (effect_id, format, payload);
-        Ok(Map::new())
+        action.title.clone()
     }
     /// What a preset captures of a stored layer: the fields, named as the module's patch action's
     /// parameters, that reproduce this layer's state when applied to another photo. The default is
-    /// [`ToolModule::values`]; a module whose values report more than a preset should carry narrows
-    /// it, as the RAW development captures `{white-balance: as-shot}` under As shot rather than
-    /// this camera's equivalent temperature. Reading a payload only.
+    /// the values [`ToolModule::describe`] reports; a module whose values report more than a
+    /// preset should carry narrows it, as the RAW development captures `{white-balance: as-shot}`
+    /// under As shot rather than this camera's equivalent temperature. Reading a payload only.
     fn settings(
         &self,
         effect_id: &str,
         format: u32,
         payload: &Value,
     ) -> Result<Map<String, Value>, Error> {
-        self.values(effect_id, format, payload)
+        self.describe(effect_id, format, payload)
+            .map(|report| report.values)
     }
     /// Answer one declared read-only query about the current stack.
     ///

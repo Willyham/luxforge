@@ -83,8 +83,8 @@ impl ToolModule for Publisher {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok("none".into())
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new("none"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         Err(Error::internal("the publisher never renders"))

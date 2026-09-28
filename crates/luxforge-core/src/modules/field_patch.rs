@@ -31,9 +31,9 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, ChoiceStyle,
     ColorOperation, ColorStyle, Control, ControlVariant, EffectDescriptor, EffectStage,
-    LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, NumberStyle, ParameterDescriptor,
-    ParameterKind, Processing, RailDecoration, ResetAction, SpatialOperation, Stage, StageContext,
-    ToolModule, check_value, summary_value,
+    LayerReport, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, NumberStyle,
+    ParameterDescriptor, ParameterKind, Processing, RailDecoration, ResetAction, SpatialOperation,
+    Stage, StageContext, ToolModule, check_value, label_value,
 };
 use crate::{EFFECT_FORMAT, Error, SourceTag};
 use serde_json::{Map, Number, Value};
@@ -343,7 +343,7 @@ impl Field {
                 (ParameterKind::Curve { .. }, Value::Array(points)) => {
                     format!("{} points", points.len())
                 }
-                _ => summary_value(value),
+                _ => label_value(value),
             },
         };
         match &self.parameter.unit {
@@ -667,7 +667,6 @@ impl Spec {
                     id: self.set.id.clone(),
                     title: self.set.title.clone(),
                     notes: self.set.notes.clone(),
-                    summary: None,
                     patch: true,
                     parameters: self
                         .fields
@@ -679,7 +678,6 @@ impl Spec {
                     id: self.reset.id.clone(),
                     title: self.reset.title.clone(),
                     notes: self.reset.notes.clone(),
-                    summary: None,
                     patch: false,
                     parameters: Vec::new(),
                 },
@@ -1054,46 +1052,52 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         self.read(effect_id, format, payload).map(|_| ())
     }
 
-    /// The module's own neutrality rule over the payload's canonical values: every field at its
-    /// default, or the vignette's amount of 0.
-    fn is_neutral(&self, effect_id: &str, format: u32, payload: &Value) -> Result<bool, Error> {
-        let values = self.read(effect_id, format, payload)?;
-        Ok(self.module.is_neutral(&values))
-    }
-
     /// `Neutral` for the all-default payload, and otherwise every field that differs from its
-    /// default, as its history label names it.
-    fn describe_layer(
+    /// default, as its history label names it; every field's canonical value, defaults filled,
+    /// named exactly as the patch's parameters are, so a client seeds its controls from the
+    /// displayed entry; and neutral by the module's own rule over those values: every field at its
+    /// default, or the vignette's amount of 0.
+    fn describe(
         &self,
         effect_id: &str,
         format: u32,
         payload: &Value,
-    ) -> Result<String, Error> {
+    ) -> Result<LayerReport, Error> {
         let values = self.read(effect_id, format, payload)?;
-        if values.is_default() {
-            return Ok("Neutral".into());
-        }
-        Ok(self
-            .spec
-            .fields
-            .iter()
-            .zip(&values.values)
-            .filter(|(field, value)| *value != field.default_value())
-            .map(|(field, value)| field.label(value))
-            .collect::<Vec<_>>()
-            .join(", "))
+        let fields = &self.spec.fields;
+        let summary = if values.is_default() {
+            "Neutral".into()
+        } else {
+            fields
+                .iter()
+                .zip(&values.values)
+                .filter(|(field, value)| *value != field.default_value())
+                .map(|(field, value)| field.label(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let neutral = self.module.is_neutral(&values);
+        Ok(LayerReport {
+            summary,
+            values: fields
+                .iter()
+                .zip(values.values)
+                .map(|(field, value)| (field.name().to_owned(), value))
+                .collect(),
+            neutral,
+        })
     }
 
-    /// The history label a request the action's title cannot describe deserves: the one field a
-    /// control moved, the group a reset cleared, the group a patch of exactly its fields set, a
-    /// count of the fields a larger patch set, or the module's own reset.
-    fn label(&self, input: &ActionInput) -> Option<String> {
+    /// The one field a control moved, the group a reset cleared, the group a patch of exactly its
+    /// fields set, a count of the fields a larger patch set, or the module's own reset. An empty
+    /// patch changes nothing and commits no entry, so it keeps the action's title.
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
         let spec = &self.spec;
         if input.action_id == spec.reset.id {
-            return Some(format!("Reset {}", spec.title));
+            return format!("Reset {}", spec.title);
         }
         if input.action_id != spec.set.id {
-            return None;
+            return action.title.clone();
         }
         let sent: Vec<(&String, Value)> = input
             .parameters
@@ -1106,39 +1110,19 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
             })
             .collect();
         if let Some(group) = self.reset_group(&sent) {
-            return Some(format!("Reset {group}"));
+            return format!("Reset {group}");
         }
         if let ([_, _, ..], Some(group)) = (sent.as_slice(), self.whole_group(&sent)) {
-            return Some(group.to_owned());
+            return group.to_owned();
         }
         match sent.as_slice() {
-            [(name, value)] => Some(match spec.field(name) {
+            [(name, value)] => match spec.field(name) {
                 Some(field) => field.label(value),
                 None => format!("{} {name}", spec.title),
-            }),
-            // An empty patch changes nothing and commits no entry; the host falls back to the
-            // action's own title if it ever asks.
-            [] => None,
-            fields => Some(format!("{} ({} fields)", spec.title, fields.len())),
+            },
+            [] => action.title.clone(),
+            fields => format!("{} ({} fields)", spec.title, fields.len()),
         }
-    }
-
-    /// Every field's canonical value, defaults filled, named exactly as the patch's parameters
-    /// are, so a client seeds its controls from the displayed entry.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let values = self.read(effect_id, format, payload)?;
-        Ok(self
-            .spec
-            .fields
-            .iter()
-            .zip(values.values)
-            .map(|(field, value)| (field.name().to_owned(), value))
-            .collect())
     }
 
     fn query(
@@ -1397,7 +1381,12 @@ mod tests {
             json!({"level": 1.0, "mode": "two", "curve": [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]]})
         );
         assert_eq!(
-            Value::Object(ToolModule::values(&module, EFFECT, EFFECT_FORMAT, &json!({})).unwrap()),
+            Value::Object(
+                module
+                    .describe(EFFECT, EFFECT_FORMAT, &json!({}))
+                    .unwrap()
+                    .values
+            ),
             json!({"level": 0.0, "midpoint": 50.0, "on": false, "mode": "one", "tint": [0, 0, 0], "curve": [[0.0, 0.0], [1.0, 1.0]]})
         );
     }
@@ -1430,23 +1419,25 @@ mod tests {
             (json!({"on": true, "mode": "two"}), "Test patch (2 fields)"),
         ] {
             assert_eq!(
-                module.label(&set(parameters.clone())).as_deref(),
-                Some(expected),
+                module.label(&module.descriptor().actions[0], &set(parameters.clone())),
+                expected,
                 "{parameters}"
             );
         }
         let described = module
-            .describe_layer(
+            .describe(
                 EFFECT,
                 EFFECT_FORMAT,
                 &json!({"curve": [[0, 1], [1, 0]], "on": true, "mode": "two", "midpoint": 50}),
             )
-            .unwrap();
+            .unwrap()
+            .summary;
         assert_eq!(described, "Enabled on, Mode Two, Curve 2 points");
         assert_eq!(
             module
-                .describe_layer(EFFECT, EFFECT_FORMAT, &json!({"midpoint": 50, "on": false}))
-                .unwrap(),
+                .describe(EFFECT, EFFECT_FORMAT, &json!({"midpoint": 50, "on": false}))
+                .unwrap()
+                .summary,
             "Neutral"
         );
     }

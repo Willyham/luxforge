@@ -220,11 +220,14 @@ mod tests {
             (json!({"roundness": 20.0}), "Vignette roundness +20"),
             (json!({"feather": 40.0}), "Vignette feather 40"),
         ] {
-            let label = module.label(&ActionInput {
-                action_id: SET_VIGNETTE.to_owned(),
-                parameters: parameters.as_object().cloned().unwrap(),
-            });
-            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+            let label = module.label(
+                module.descriptor().action(SET_VIGNETTE).unwrap(),
+                &ActionInput {
+                    action_id: SET_VIGNETTE.to_owned(),
+                    parameters: parameters.as_object().cloned().unwrap(),
+                },
+            );
+            assert_eq!(label, expected, "{parameters}");
         }
     }
 
@@ -233,7 +236,7 @@ mod tests {
     // ------------------------------------------------------------------------------------------
 
     // ------------------------------------------------------------------------------------------
-    // describe_layer / compile
+    // describe / compile
     // ------------------------------------------------------------------------------------------
 
     #[test]

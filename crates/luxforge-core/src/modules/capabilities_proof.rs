@@ -8,8 +8,8 @@
 //! harness started (`luxforge-testkit`'s `ProofEndpoint`, which ships in no binary). See
 //! `docs/design/module-capabilities.md#proof-module`.
 use super::{
-    ActionInput, ActionPlan, CapabilityModule, ColorOperation, LayerUpdate, ModuleDescriptor,
-    NewLayer, PointwiseColor, Processing, Stage, StageContext, ToolModule,
+    ActionInput, ActionPlan, CapabilityModule, ColorOperation, LayerReport, LayerUpdate,
+    ModuleDescriptor, NewLayer, PointwiseColor, Processing, Stage, StageContext, ToolModule,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -400,29 +400,20 @@ impl ToolModule for CapabilitiesProofModule {
         Self::payload(effect_id, format, payload).map(|_| ())
     }
 
-    fn describe_layer(
+    /// `Proof tint` and the artifact it is evaluated with, or `Proof tint (neutral)` with none.
+    fn describe(
         &self,
         effect_id: &str,
         format: u32,
         payload: &Value,
-    ) -> Result<String, Error> {
+    ) -> Result<LayerReport, Error> {
         Ok(match Self::payload(effect_id, format, payload)? {
-            Some(_) => "Proof tint".into(),
-            None => "Proof tint (neutral)".into(),
+            Some(artifact) => LayerReport {
+                values: Map::from_iter([("artifact".into(), json!(artifact.as_str()))]),
+                ..LayerReport::new("Proof tint")
+            },
+            None => LayerReport::new("Proof tint (neutral)"),
         })
-    }
-
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let mut values = Map::new();
-        if let Some(artifact) = Self::payload(effect_id, format, payload)? {
-            values.insert("artifact".into(), json!(artifact.as_str()));
-        }
-        Ok(values)
     }
 
     /// A neutral payload is no processing at all. A tint needs its artifact's bytes, which only

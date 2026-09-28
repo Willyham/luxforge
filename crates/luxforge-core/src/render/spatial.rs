@@ -1729,8 +1729,8 @@ mod tests {
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
         }
-        fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
-            Ok(format!("test spatial {payload}"))
+        fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
+            Ok(crate::LayerReport::new(format!("test spatial {payload}")))
         }
         fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
             let mut units: Vec<Arc<dyn SpatialUnit>> = Vec::new();

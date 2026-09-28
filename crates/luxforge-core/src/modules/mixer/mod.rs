@@ -244,11 +244,14 @@ mod tests {
                 "Magenta saturation -100",
             ),
         ] {
-            let label = module.label(&ActionInput {
-                action_id: SET_MIXER.to_owned(),
-                parameters: parameters.as_object().cloned().unwrap(),
-            });
-            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+            let label = module.label(
+                module.descriptor().action(SET_MIXER).unwrap(),
+                &ActionInput {
+                    action_id: SET_MIXER.to_owned(),
+                    parameters: parameters.as_object().cloned().unwrap(),
+                },
+            );
+            assert_eq!(label, expected, "{parameters}");
         }
     }
 

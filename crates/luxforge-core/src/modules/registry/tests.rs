@@ -5,7 +5,10 @@ use crate::modules::raw::RAW_EFFECT;
 use crate::{
     ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, Component, ComponentMode, EFFECT_FORMAT,
     EffectDescriptor, Layer, LayerId, Mask, PIXEL_EFFECT, Recipe, SourceImage,
-    modules::{ActionInput, ActionPlan, Availability, EffectStage, ModuleDescriptor, StageContext},
+    modules::{
+        ActionInput, ActionPlan, Availability, CapabilityModule, EffectStage, ModuleDescriptor,
+        Processing, Stage, StageContext,
+    },
 };
 use luxforge_testbase::Gate;
 use serde_json::{Map, Value, json};
@@ -33,7 +36,6 @@ impl TestModule {
                 id: action.into(),
                 title: "Test action".into(),
                 notes: "test".into(),
-                summary: None,
                 patch: false,
                 parameters: Vec::new(),
             }],
@@ -78,8 +80,10 @@ impl ToolModule for TestModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok(format!("test layer of {effect_id}"))
+    fn describe(&self, effect_id: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new(format!(
+            "test layer of {effect_id}"
+        )))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         Err(Error::internal("test module never renders"))
@@ -133,7 +137,6 @@ impl PatchModule {
                 id: PATCH_ACTION.into(),
                 title: "Set patch".into(),
                 notes: "merges the named channels into the one patch layer".into(),
-                summary: Some("Patch {red} {green}".into()),
                 patch: true,
                 parameters: vec![channel("red"), channel("green")],
             }],
@@ -201,12 +204,12 @@ impl ToolModule for PatchModule {
         }
     }
     /// One changed field names itself, so a slider's history row says what moved.
-    fn label(&self, input: &ActionInput) -> Option<String> {
-        match input.parameters.len() {
-            1 => input.parameters.iter().next().map(|(name, value)| {
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
+        match input.parameters.iter().next() {
+            Some((name, value)) if input.parameters.len() == 1 => {
                 format!("Patch {name} {}", value.as_f64().unwrap_or_default())
-            }),
-            _ => None,
+            }
+            _ => action.title.clone(),
         }
     }
     fn validate_payload(&self, _: &str, format: u32, payload: &Value) -> Result<(), Error> {
@@ -229,16 +232,15 @@ impl ToolModule for PatchModule {
         }
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
+    fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
         let [red, green] = Self::channels(payload);
-        Ok(format!("Patch {red}, {green}"))
-    }
-    fn values(&self, _: &str, _: u32, payload: &Value) -> Result<Map<String, Value>, Error> {
-        let [red, green] = Self::channels(payload);
-        Ok(json!({"red": red, "green": green})
-            .as_object()
-            .expect("an object")
-            .clone())
+        Ok(crate::LayerReport {
+            values: json!({"red": red, "green": green})
+                .as_object()
+                .expect("an object")
+                .clone(),
+            ..crate::LayerReport::new(format!("Patch {red}, {green}"))
+        })
     }
     fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
         let [red, green] = Self::channels(payload);
@@ -286,7 +288,6 @@ impl StageModule {
                 id: action.into(),
                 title: "Set stage".into(),
                 notes: "commits one layer of this module's effect".into(),
-                summary: None,
                 patch: false,
                 parameters: Vec::new(),
             }],
@@ -322,8 +323,10 @@ impl ToolModule for StageModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok(format!("stage layer of {effect_id}"))
+    fn describe(&self, effect_id: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new(format!(
+            "stage layer of {effect_id}"
+        )))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::neutral()))
@@ -384,7 +387,6 @@ impl HeldModule {
                     id: HELD_ACTION.into(),
                     title: "Hold render".into(),
                     notes: "commits one colour layer whose render waits for the test's gate".into(),
-                    summary: None,
                     patch: false,
                     parameters: Vec::new(),
                 }],
@@ -422,8 +424,8 @@ impl ToolModule for HeldModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok("held render".into())
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new("held render"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::new(vec![
@@ -924,7 +926,7 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .filter(|descriptor| {
             !descriptor.effects.is_empty() && descriptor.effects.iter().all(|e| e.id != RAW_EFFECT)
         })
-        .map(|descriptor| registry.module(&descriptor.id).unwrap())
+        .map(|descriptor| registry.module(&descriptor.id).unwrap().module())
         .collect();
     assert_eq!(
         modules.len(),

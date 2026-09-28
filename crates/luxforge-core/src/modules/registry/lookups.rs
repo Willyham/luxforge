@@ -1,13 +1,12 @@
 //! Resolving an identity to what provides it: a registered module's effect, action, query or task,
 //! or one of the host's own `mask.*` actions and queries, and the declarations those carry. Every
 //! lookup is a hash probe or a scan of a handful of modules; none reads a stack.
-use super::ModuleRegistry;
+use super::{ModuleRegistry, Provider};
 use crate::{
     Error,
     capabilities::descriptor::TaskDescriptor,
     modules::{
         ActionDescriptor, CapabilityModule, EffectDescriptor, EffectStage, ModuleDescriptor,
-        ToolModule,
     },
 };
 
@@ -19,7 +18,7 @@ use crate::{
 /// plans a `mask.*` command's change to the mask table ([`crate::mask::commands`]).
 #[derive(Clone, Copy)]
 pub enum ActionRef<'r> {
-    Module(&'r dyn ToolModule, &'r ActionDescriptor),
+    Module(Provider<'r>, &'r ActionDescriptor),
     Host(&'static crate::mask::commands::MaskCommand),
 }
 
@@ -46,7 +45,7 @@ impl<'r> ActionRef<'r> {
 /// the host answers about its own objects.
 #[derive(Clone, Copy)]
 pub enum QueryRef<'r> {
-    Module(&'r dyn ToolModule, &'r ActionDescriptor),
+    Module(Provider<'r>, &'r ActionDescriptor),
     Host(&'static ActionDescriptor),
 }
 
@@ -70,17 +69,24 @@ impl<'r> QueryRef<'r> {
 }
 
 impl ModuleRegistry {
+    /// Every registered module's descriptor, as the registry publishes it: with the availability
+    /// each was registered with.
     pub fn descriptors(&self) -> Vec<&ModuleDescriptor> {
-        self.modules
+        self.entries
             .iter()
-            .map(|module| module.descriptor())
+            .map(|entry| entry.provider().descriptor())
             .collect()
     }
 
-    pub fn action(&self, id: &str) -> Option<(&dyn ToolModule, &ActionDescriptor)> {
+    /// The registered module at `index`, which an identity index names.
+    fn provider_at(&self, index: usize) -> Provider<'_> {
+        self.entries[index].provider()
+    }
+
+    pub fn action(&self, id: &str) -> Option<(Provider<'_>, &ActionDescriptor)> {
         let (module, position) = self.actions.get(id)?;
-        let module = self.modules[*module].as_ref();
-        Some((module, &module.descriptor().actions[*position]))
+        let provider = self.provider_at(*module);
+        Some((provider, &provider.descriptor().actions[*position]))
     }
 
     /// The one answer to "is this a presettable action": registered, declared `patch: true` and
@@ -96,7 +102,7 @@ impl ModuleRegistry {
     /// unavailable `incompatible: unavailable module <module>` — the one refusal of the three a
     /// composite plan defers until it knows the step applies to the photo. A hash probe; it
     /// allocates only the refusal.
-    pub fn patch_action(&self, id: &str) -> Result<(&dyn ToolModule, &ActionDescriptor), Error> {
+    pub fn patch_action(&self, id: &str) -> Result<(Provider<'_>, &ActionDescriptor), Error> {
         let (module, action) = self
             .action(id)
             .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
@@ -161,26 +167,26 @@ impl ModuleRegistry {
     /// The module that answers this read-only query, and the query's declared parameters. An
     /// unavailable provider keeps its identity here exactly as it does for actions and effects; the
     /// caller reports that rather than silently answering nothing.
-    pub fn query(&self, id: &str) -> Option<(&dyn ToolModule, &ActionDescriptor)> {
+    pub fn query(&self, id: &str) -> Option<(Provider<'_>, &ActionDescriptor)> {
         let (module, position) = self.queries.get(id)?;
-        let module = self.modules[*module].as_ref();
-        Some((module, &module.descriptor().queries[*position]))
+        let provider = self.provider_at(*module);
+        Some((provider, &provider.descriptor().queries[*position]))
     }
 
     /// The module that offers this worker task, and the task's declaration.
-    pub fn task(&self, id: &str) -> Option<(&dyn ToolModule, &TaskDescriptor)> {
+    pub fn task(&self, id: &str) -> Option<(Provider<'_>, &TaskDescriptor)> {
         let (module, position) = self.tasks.get(id)?;
-        let module = self.modules[*module].as_ref();
-        Some((module, &module.descriptor().tasks[*position]))
+        let provider = self.provider_at(*module);
+        Some((provider, &provider.descriptor().tasks[*position]))
     }
 
     /// The registered module with this identity. A linear scan: a registry holds a handful of
     /// modules, and the capability methods that ask are not on a per-pixel path.
-    pub fn module(&self, id: &str) -> Option<&dyn ToolModule> {
-        self.modules
+    pub fn module(&self, id: &str) -> Option<Provider<'_>> {
+        self.entries
             .iter()
-            .map(AsRef::as_ref)
-            .find(|module| module.descriptor().id == id)
+            .map(|entry| entry.provider())
+            .find(|provider| provider.descriptor().id == id)
     }
 
     /// The capability hooks of the registered module with this identity, which the capability
@@ -188,13 +194,13 @@ impl ModuleRegistry {
     /// module whose declarations need them and that provides none, so `None` means the module is
     /// not registered or declares nothing that needs them.
     pub fn capabilities(&self, id: &str) -> Option<&dyn CapabilityModule> {
-        self.module(id)?.capabilities()
+        self.module(id)?.module().capabilities()
     }
 
-    pub fn effect(&self, id: &str) -> Option<(&dyn ToolModule, &EffectDescriptor)> {
+    pub fn effect(&self, id: &str) -> Option<(Provider<'_>, &EffectDescriptor)> {
         let (module, position) = self.effects.get(id)?;
-        let module = self.modules[*module].as_ref();
-        Some((module, &module.descriptor().effects[*position]))
+        let provider = self.provider_at(*module);
+        Some((provider, &provider.descriptor().effects[*position]))
     }
 
     /// The stage an effect's payload addresses, or `None` when no provider declares it.
@@ -227,7 +233,7 @@ impl ModuleRegistry {
         let Some((module, _)) = self.actions.get(action_id) else {
             return false;
         };
-        self.modules[*module]
+        self.provider_at(*module)
             .descriptor()
             .effects
             .iter()
@@ -241,7 +247,7 @@ impl ModuleRegistry {
         let Some((module, _)) = self.queries.get(query_id) else {
             return false;
         };
-        self.modules[*module]
+        self.provider_at(*module)
             .descriptor()
             .effects
             .iter()
@@ -250,8 +256,8 @@ impl ModuleRegistry {
 
     /// The provider that can evaluate this effect, or `None` when none is registered or the
     /// registered one reports itself unavailable.
-    pub(super) fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {
-        let (module, _) = self.effect(effect_id)?;
-        module.descriptor().is_available().then_some(module)
+    pub(super) fn provider(&self, effect_id: &str) -> Option<Provider<'_>> {
+        let (provider, _) = self.effect(effect_id)?;
+        provider.descriptor().is_available().then_some(provider)
     }
 }

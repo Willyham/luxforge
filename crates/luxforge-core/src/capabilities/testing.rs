@@ -101,7 +101,6 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 id: "apply-test-tint".into(),
                 title: "Apply tint".into(),
                 notes: "test".into(),
-                summary: None,
                 patch: false,
                 parameters: vec![
                     ParameterDescriptor::artifact("tint")
@@ -113,7 +112,6 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 id: "reset-test-tint".into(),
                 title: "Reset tint".into(),
                 notes: "test".into(),
-                summary: None,
                 patch: false,
                 parameters: Vec::new(),
             },
@@ -284,8 +282,10 @@ impl ToolModule for LifecycleModule {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Ok(())
     }
-    fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok(format!("test layer of {effect_id}"))
+    fn describe(&self, effect_id: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new(format!(
+            "test layer of {effect_id}"
+        )))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         Err(Error::internal("the lifecycle module never renders"))

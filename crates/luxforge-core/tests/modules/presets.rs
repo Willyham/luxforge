@@ -523,7 +523,6 @@ impl Composer {
                     id: "compose-steps".into(),
                     title: "Compose steps".into(),
                     notes: "composes count Basic exposure steps".into(),
-                    summary: None,
                     patch: false,
                     parameters: vec![parameter(
                         "count",
@@ -534,7 +533,6 @@ impl Composer {
                     id: "set-nested".into(),
                     title: "Set nested".into(),
                     notes: "a field patch whose plan is a composite".into(),
-                    summary: None,
                     patch: true,
                     parameters: vec![parameter(
                         "exposure",
@@ -596,7 +594,7 @@ impl ToolModule for Composer {
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
         Err(Error::validation("no effects"))
     }
-    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<luxforge_core::LayerReport, Error> {
         Err(Error::validation("no effects"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {

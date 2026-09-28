@@ -147,12 +147,12 @@ impl ToolModule for TintModule {
             Err(Error::validation("a tint payload is {}"))
         }
     }
-    fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Ok(if effect_id == TINT_EFFECT {
-            "Tint".into()
+    fn describe(&self, effect_id: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new(if effect_id == TINT_EFFECT {
+            "Tint"
         } else {
-            "Plain".into()
-        })
+            "Plain"
+        }))
     }
     fn compile(&self, effect_id: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         if effect_id == TINT_EFFECT {

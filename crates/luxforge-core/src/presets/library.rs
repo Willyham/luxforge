@@ -623,7 +623,9 @@ impl EditorService {
                         .collect(),
                 ),
                 (Some(layer), Some(names)) => (
-                    module.values(&layer.effect_id, layer.effect_format, &layer.payload)?,
+                    module
+                        .describe(&layer.effect_id, layer.effect_format, &layer.payload)?
+                        .values,
                     names,
                 ),
                 (None, Some(names)) => (Map::new(), names),
@@ -659,7 +661,7 @@ impl EditorService {
         registry: &'r ModuleRegistry,
         action_id: &str,
         kind: crate::SourceTag,
-    ) -> Result<(&'r dyn crate::ToolModule, &'r crate::ActionDescriptor), Error> {
+    ) -> Result<(crate::Provider<'r>, &'r crate::ActionDescriptor), Error> {
         let (module, action) = registry.patch_action(action_id)?;
         module.descriptor().check_applies_to(kind)?;
         Ok((module, action))

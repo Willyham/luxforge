@@ -2548,11 +2548,9 @@ mod tests {
         );
         assert_eq!(raw["canvas"]["title"], json!("Neutral picker"));
         assert_eq!(raw["canvas"]["shortcut"], json!(null));
-        assert_eq!(pixel["actions"][0]["summary"], json!("Pixel {x}, {y}"));
         let transform = module("luxforge.transform");
         assert_eq!(transform["hint"], json!("Rotate, mirror and flip"));
         assert_eq!(transform["developer"], json!(false));
-        assert_eq!(transform["actions"][0]["summary"], json!("{transform}"));
         let crop = module("luxforge.crop");
         assert_eq!(crop["hint"], json!("Frame, ratio and angle"));
         assert_eq!(crop["reset"], json!({"action": "crop-reset", "preset": {}}));
@@ -3152,8 +3150,8 @@ mod tests {
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
         }
-        fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-            Ok("Angle".into())
+        fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+            Ok(crate::LayerReport::new("Angle"))
         }
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
             Err(Error::internal("test module never renders"))
@@ -3182,7 +3180,6 @@ mod tests {
                     id: "test-angle".into(),
                     title: "Set angle".into(),
                     notes: "test".into(),
-                    summary: Some("Angle {angle}".into()),
                     patch: false,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
@@ -3274,7 +3271,6 @@ mod tests {
                     id: MARK_ACTION.into(),
                     title: "Mark".into(),
                     notes: "test".into(),
-                    summary: None,
                     patch: false,
                     parameters: Vec::new(),
                 }],
@@ -3316,8 +3312,8 @@ mod tests {
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
         }
-        fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-            Ok("Marked".into())
+        fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+            Ok(crate::LayerReport::new("Marked"))
         }
         fn compile(&self, _: &str, _: u32, _: &Value, stage: Stage) -> Result<Processing, Error> {
             Ok(Processing::ExactGeometry(ExactGeometry {
@@ -4099,7 +4095,7 @@ mod tests {
         assert_eq!(again["revision"], json!(2));
         assert_eq!(again["created_entry_id"], json!(null));
 
-        // A patch the module has nothing to say about falls back to the summary template.
+        // A patch the module has nothing to say about is labelled with the action's title.
         let both = patch(
             &mut service,
             &mut session,
@@ -4109,7 +4105,7 @@ mod tests {
         );
         assert_eq!(
             entry_of(&mut service, &mut session, &asset, &both)["label"],
-            json!("Patch 1 2")
+            json!("Set patch")
         );
 
         // The crop module reports its frame the same way, so a client seeds its controls from the

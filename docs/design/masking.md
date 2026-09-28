@@ -259,7 +259,7 @@ A component is the durable object; a stroke, a handle drag and a slider are edit
 
 So `history.undo` walks back one stroke at a time, because each stroke is one entry and each entry already stores the complete recipe. Nothing special is needed for that: it falls out of the delivered snapshot model. Rendering never sees the entries — it sees one component whose strokes are already combined into one coverage field, and one mask whose components are already combined into one `M`, so fifty strokes cost one masked operation and not fifty.
 
-A `mask.*` command's label names the mask and the component (`Mask 2 · Update Brush 1`) when more than one mask exists, because a history list shared with every other module cannot afford `Update Brush 1` alone. A masked **module** edit names its mask always, even with one, because its label is the module's own summary and is therefore exactly what that module's *global* edit writes: one mask is already enough for two entries a history row cannot tell apart. The label is rendered at commit and stored with the entry, exactly as a module's `summary` template is.
+A `mask.*` command's label names the mask and the component (`Mask 2 · Update Brush 1`) when more than one mask exists, because a history list shared with every other module cannot afford `Update Brush 1` alone. A masked **module** edit names its mask always, even with one, because its label is the module's own summary and is therefore exactly what that module's *global* edit writes: one mask is already enough for two entries a history row cannot tell apart. The label is rendered at commit and stored with the entry, exactly as a module's `label()` is.
 
 Two things follow from strokes being objects rather than events:
 

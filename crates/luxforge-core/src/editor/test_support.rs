@@ -148,7 +148,6 @@ impl ShrinkModule {
             id: id.into(),
             title: "Shrink".into(),
             notes: "test".into(),
-            summary: Some("Shrink {width}x{height}".into()),
             patch: false,
             parameters: vec![extent("width"), extent("height")],
         };
@@ -263,9 +262,11 @@ impl ToolModule for ShrinkModule {
         Self::extents(payload).map(|_| ())
     }
 
-    fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
+    fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
         let (width, height) = Self::extents(payload)?;
-        Ok(format!("Shrink to {width}x{height}"))
+        Ok(crate::LayerReport::new(format!(
+            "Shrink to {width}x{height}"
+        )))
     }
 
     fn compile(&self, _: &str, _: u32, payload: &Value, stage: Stage) -> Result<Processing, Error> {

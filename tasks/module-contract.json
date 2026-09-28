@@ -564,7 +564,7 @@
     {
       "id": "TASK-008",
       "description": "Trim ToolModule to one describe hook in place of three always-together methods, collapse to one history-label mechanism, stop parse re-validating already-declared ranges, and remove the always-unreachable Unavailable forwarding wrapper.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -662,7 +662,7 @@
     {
       "id": "TASK-009",
       "description": "Delete the prebuilt JSON-descriptor parse path, give each Control variant its own struct so a wrong builder call is a compile error, add EffectDescriptor and ActionDescriptor constructors, and split descriptor.rs by concern.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-008"
       ],

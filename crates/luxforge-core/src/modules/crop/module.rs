@@ -10,10 +10,12 @@ use crate::{
     EFFECT_FORMAT, Error, Layer,
     modules::{
         ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction,
-        EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor, NewLayer,
-        ParameterDescriptor, Processing, Resample, ResetAction, Stage, StageContext, ToolModule,
+        EffectDescriptor, EffectStage, ExactGeometry, LayerReport, LayerUpdate, ModuleDescriptor,
+        NewLayer, ParameterDescriptor, Processing, Resample, ResetAction, Stage, StageContext,
+        ToolModule, decode_parameters, label_value,
     },
 };
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// The crop module's one geometry effect: straightening and a rectangle over the crop layer's own
@@ -163,7 +165,6 @@ impl CropModule {
                         id: CROP_ACTION.into(),
                         title: "Crop".into(),
                         notes: "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected".into(),
-                        summary: Some("Crop {angle}°".into()),
                         patch: false,
 parameters: vec![
                             angle_parameter(),
@@ -189,7 +190,6 @@ parameters: vec![
                         id: CROP_FIT_ACTION.into(),
                         title: "Fit crop to a ratio".into(),
                         notes: "commits the largest covered rectangle with the chosen ratio about the chosen center".into(),
-                        summary: Some("Crop {aspect}".into()),
                         patch: false,
 parameters: vec![
                             ParameterDescriptor::enumeration("aspect", aspect_options())
@@ -209,7 +209,6 @@ parameters: vec![
                         id: CROP_RESET_ACTION.into(),
                         title: "Reset crop".into(),
                         notes: "returns an existing crop layer to the neutral payload; a no-op without one".into(),
-                        summary: None,
                         patch: false,
 parameters: Vec::new(),
                     },
@@ -244,38 +243,6 @@ parameters: Vec::new(),
     }
 }
 
-fn optional_number(parameters: &Map<String, Value>, name: &str) -> Result<Option<f64>, Error> {
-    match parameters.get(name) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .map(Some)
-            .ok_or_else(|| Error::validation(format!("parameter {name} must be a number"))),
-    }
-}
-
-fn bounded(name: &str, value: f64, min: f64, max: f64) -> Result<f64, Error> {
-    if value < min || value > max {
-        return Err(Error::validation(format!(
-            "parameter {name} must be a number within {min}..={max}"
-        )));
-    }
-    Ok(value)
-}
-
-fn required_number(
-    parameters: &Map<String, Value>,
-    name: &str,
-    action: &str,
-) -> Result<f64, Error> {
-    optional_number(parameters, name)?.ok_or_else(|| {
-        Error::validation(format!(
-            "missing required parameter {name} for action {action}"
-        ))
-    })
-}
-
 fn stored(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String, Value> {
     pairs
         .into_iter()
@@ -283,18 +250,25 @@ fn stored(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String,
         .collect()
 }
 
-/// The `crop` request: exactly the persisted payload.
+/// The `crop` request: exactly the persisted payload, whose own rule refuses a rectangle that
+/// leaves the rotated box.
 fn crop_payload(parameters: &Map<String, Value>) -> Result<CropPayload, Error> {
-    let angle = optional_number(parameters, "angle")?.unwrap_or(0.0);
-    let payload = CropPayload {
-        angle: bounded("angle", angle, MIN_ANGLE, MAX_ANGLE)?,
-        x: required_number(parameters, "x", CROP_ACTION)?,
-        y: required_number(parameters, "y", CROP_ACTION)?,
-        width: required_number(parameters, "width", CROP_ACTION)?,
-        height: required_number(parameters, "height", CROP_ACTION)?,
-    };
+    let payload: CropPayload = decode_parameters(CROP_ACTION, parameters)?;
     payload.validate()?;
     Ok(payload)
+}
+
+/// The `crop-fit` fields as the generic check admitted them: each in its declared range, `aspect`
+/// one of its declared options, and `aspect` and `angle` defaulted.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct FitFields {
+    aspect: String,
+    aspect_width: Option<f64>,
+    aspect_height: Option<f64>,
+    angle: f64,
+    center_x: Option<f64>,
+    center_y: Option<f64>,
 }
 
 /// The `crop-fit` request after the cross-parameter checks that the generic schema cannot express.
@@ -309,26 +283,19 @@ struct FitRequest {
 
 impl FitRequest {
     fn parse(parameters: &Map<String, Value>) -> Result<Self, Error> {
-        let aspect = match parameters.get("aspect") {
-            None | Some(Value::Null) => FREE.to_owned(),
-            Some(value) => value
-                .as_str()
-                .ok_or_else(|| Error::validation("parameter aspect must be a string"))?
-                .to_owned(),
-        };
-        let Some(kind) = CropAspect::parse(&aspect) else {
-            return Err(Error::validation(format!(
-                "parameter aspect must be one of {}",
-                aspect_options().join(", ")
-            )));
-        };
-        let width = optional_number(parameters, "aspect-width")?;
-        let height = optional_number(parameters, "aspect-height")?;
-        let custom = match (kind == CropAspect::Custom, width, height) {
-            (true, Some(width), Some(height)) => Some((
-                bounded("aspect-width", width, MIN_ASPECT_SIDE, MAX_ASPECT_SIDE)?,
-                bounded("aspect-height", height, MIN_ASPECT_SIDE, MAX_ASPECT_SIDE)?,
-            )),
+        let fields: FitFields = decode_parameters(CROP_FIT_ACTION, parameters)?;
+        let aspect = fields.aspect;
+        let kind = CropAspect::parse(&aspect).ok_or_else(|| {
+            Error::validation(format!(
+                "invalid parameters for action crop-fit: aspect {aspect}"
+            ))
+        })?;
+        let custom = match (
+            kind == CropAspect::Custom,
+            fields.aspect_width,
+            fields.aspect_height,
+        ) {
+            (true, Some(width), Some(height)) => Some((width, height)),
             (true, _, _) => {
                 return Err(Error::validation(
                     "action crop-fit needs both aspect-width and aspect-height when aspect is custom",
@@ -341,21 +308,9 @@ impl FitRequest {
                 )));
             }
         };
-        let angle = bounded(
-            "angle",
-            optional_number(parameters, "angle")?.unwrap_or(0.0),
-            MIN_ANGLE,
-            MAX_ANGLE,
-        )?;
-        let center = match (
-            optional_number(parameters, "center-x")?,
-            optional_number(parameters, "center-y")?,
-        ) {
+        let center = match (fields.center_x, fields.center_y) {
             (None, None) => None,
-            (Some(x), Some(y)) => Some((
-                bounded("center-x", x, 0.0, 1.0)?,
-                bounded("center-y", y, 0.0, 1.0)?,
-            )),
+            (Some(x), Some(y)) => Some((x, y)),
             _ => {
                 return Err(Error::validation(
                     "action crop-fit needs both center-x and center-y or neither",
@@ -366,7 +321,7 @@ impl FitRequest {
             aspect,
             kind,
             custom,
-            angle,
+            angle: fields.angle,
             center,
         })
     }
@@ -561,48 +516,57 @@ impl ToolModule for CropModule {
         payload(effect_id, format, value)?.validate()
     }
 
-    /// The whole image, unstraightened: the payload `crop-reset` writes.
-    fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
-        Ok(payload(effect_id, format, value)?.is_neutral())
-    }
-
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
+    /// `Whole image`, or the frame's size and angle; the frame this layer holds, named exactly as
+    /// the `crop` action's parameters are, so a client can seed its controls from the displayed
+    /// entry without parsing the payload itself; and neutral for the whole image, unstraightened,
+    /// the payload `crop-reset` writes.
+    fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
         let crop = payload(effect_id, format, value)?;
         crop.validate()?;
-        if crop.is_neutral() {
-            return Ok("Whole image".into());
-        }
-        let percent = |fraction: f64| (fraction * 100.0).round();
-        let angle = crop.angle;
-        let straightened = if angle == 0.0 {
-            String::new()
+        let neutral = crop.is_neutral();
+        let summary = if neutral {
+            "Whole image".into()
         } else {
-            format!(" at {angle}°")
+            let percent = |fraction: f64| (fraction * 100.0).round();
+            let angle = crop.angle;
+            let straightened = if angle == 0.0 {
+                String::new()
+            } else {
+                format!(" at {angle}°")
+            };
+            format!(
+                "{}% × {}%{straightened}",
+                percent(crop.width),
+                percent(crop.height)
+            )
         };
-        Ok(format!(
-            "{}% × {}%{straightened}",
-            percent(crop.width),
-            percent(crop.height)
-        ))
+        Ok(LayerReport {
+            summary,
+            values: stored([
+                ("angle", Value::from(crop.angle)),
+                ("x", Value::from(crop.x)),
+                ("y", Value::from(crop.y)),
+                ("width", Value::from(crop.width)),
+                ("height", Value::from(crop.height)),
+            ]),
+            neutral,
+        })
     }
 
-    /// The frame this layer holds, named exactly as the `crop` action's parameters are, so a client
-    /// can seed its controls from the displayed entry without parsing the payload itself.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let crop = payload(effect_id, format, value)?;
-        crop.validate()?;
-        Ok(stored([
-            ("angle", Value::from(crop.angle)),
-            ("x", Value::from(crop.x)),
-            ("y", Value::from(crop.y)),
-            ("width", Value::from(crop.width)),
-            ("height", Value::from(crop.height)),
-        ]))
+    /// `Crop 7.5°` for a frame, by its angle, and `Crop 16:9` for a fit, by its aspect option.
+    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
+        let named = match input.action_id.as_str() {
+            CROP_ACTION => input
+                .parameters
+                .get("angle")
+                .map(|angle| format!("Crop {}°", label_value(angle))),
+            CROP_FIT_ACTION => input
+                .parameters
+                .get("aspect")
+                .map(|aspect| format!("Crop {}", label_value(aspect))),
+            _ => None,
+        };
+        named.unwrap_or_else(|| action.title.clone())
     }
 
     fn compile(
@@ -811,16 +775,6 @@ mod tests {
         );
         assert_eq!(descriptor.hint.as_deref(), Some("Frame, ratio and angle"));
         assert!(!descriptor.developer);
-        assert_eq!(crop.summary.as_deref(), Some("Crop {angle}°"));
-        assert_eq!(fit.summary.as_deref(), Some("Crop {aspect}"));
-        assert_eq!(
-            descriptor
-                .action(CROP_RESET_ACTION)
-                .expect("the reset action")
-                .summary,
-            None,
-            "the reset label is its title"
-        );
     }
 
     #[test]
@@ -828,12 +782,13 @@ mod tests {
         let module = CropModule::new();
         let described = |payload: CropPayload| {
             module
-                .describe_layer(
+                .describe(
                     CROP_EFFECT,
                     EFFECT_FORMAT,
                     &serde_json::to_value(payload).unwrap(),
                 )
                 .expect("a stored crop payload")
+                .summary
         };
         assert_eq!(described(CropPayload::NEUTRAL), "Whole image");
         assert_eq!(
@@ -858,7 +813,7 @@ mod tests {
         );
         assert_eq!(
             module
-                .describe_layer(ORIENTATION_EFFECT, EFFECT_FORMAT, &json!({}))
+                .describe(ORIENTATION_EFFECT, EFFECT_FORMAT, &json!({}))
                 .unwrap_err()
                 .kind,
             ErrorKind::Incompatible
