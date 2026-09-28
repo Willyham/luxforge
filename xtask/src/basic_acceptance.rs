@@ -435,7 +435,7 @@ fn described_basic(described: &Value) -> Result<(String, usize, Value)> {
 /// Render one recipe in this process. The raster is the subject of the checks below, never the
 /// oracle: every expected value comes from the f64 reference above.
 pub(crate) fn render(source: &SourceImage, recipe: &Recipe) -> Result<luxforge_core::Raster> {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let context = luxforge_core::RenderContext::new();
     let options = luxforge_core::RenderOptions::default();
     Ok(core_render(&registry, source, recipe, options, &context)?.frame(SnapshotId::new())?)
@@ -493,7 +493,9 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     };
     let total = Instant::now();
 
-    let (owner, join) = OwnerHandle::start(&catalog)?;
+    // The journey commits `edit.set-pixel`, whose pixel proof only a developer registry serves.
+    let (owner, join) =
+        OwnerHandle::start_with(&catalog, std::sync::Arc::new(ModuleRegistry::developer()))?;
     let mut join = Some(join);
     let outcome = (|| -> Result<Value> {
         let editor = owner.register();

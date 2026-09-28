@@ -200,9 +200,10 @@ impl ShrinkModule {
         Ok((read("width")?, read("height")?))
     }
 
-    /// The registry the update tests use: the built-ins plus this module.
+    /// The registry the update tests use: the developer registry, whose pixel proof they edit with,
+    /// plus this module.
     pub(super) fn registry() -> Arc<ModuleRegistry> {
-        let mut registry = ModuleRegistry::builtin();
+        let mut registry = ModuleRegistry::developer();
         registry.register(Arc::new(Self::new())).unwrap();
         Arc::new(registry)
     }

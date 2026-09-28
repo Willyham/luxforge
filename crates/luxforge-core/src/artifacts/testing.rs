@@ -69,9 +69,9 @@ impl TintModule {
         Arc::new(Self(descriptor))
     }
 
-    /// The built-in providers and this module.
+    /// The developer registry, whose pixel proof the artifact tests edit with, and this module.
     pub(crate) fn registry() -> Arc<ModuleRegistry> {
-        let mut registry = ModuleRegistry::builtin();
+        let mut registry = ModuleRegistry::developer();
         registry.register(Self::shared()).unwrap();
         Arc::new(registry)
     }

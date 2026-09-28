@@ -169,7 +169,7 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
         orientation: 1,
         capture: Default::default(),
     };
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     assert_eq!(file.cases.len(), 4, "every committed case is exercised");
     for (name, case) in &file.cases {
         let layers: Vec<Layer> = case
@@ -206,7 +206,11 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
 #[test]
 fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update_it() {
     let path = fixtures::temp_catalog("basic-place");
-    let mut service = EditorService::open(&path).expect("a catalog");
+    let mut service = EditorService::open_with(
+        &path,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::developer()),
+    )
+    .expect("a catalog");
     let asset = service
         .import(&fixtures::jpeg())
         .expect("an import")

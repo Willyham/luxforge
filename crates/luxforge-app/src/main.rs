@@ -33,7 +33,8 @@ struct Config {
     catalog: Option<PathBuf>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
-    /// List proof and diagnostic modules; the default workspace stays a photo editor.
+    /// Serve the test modules and show the components gallery; the default workspace stays a photo
+    /// editor.
     developer: bool,
     /// Built-in module identities to register as unavailable, so an unavailable provider can be
     /// rendered and reported without removing it from the catalog's readable effects.
@@ -44,6 +45,15 @@ struct Config {
 }
 
 impl Config {
+    /// What this run's registry serves, for the one assembly `luxforge-json` shares.
+    fn registry_options(&self) -> luxforge_core::RegistryOptions<'_> {
+        luxforge_core::RegistryOptions {
+            disabled: &self.disabled,
+            developer: self.developer,
+            proof_endpoint: self.proof_endpoint.as_deref(),
+        }
+    }
+
     /// Structured events are wanted when a data root or evidence directory was requested, even
     /// if the log file could not be created; they then fall back to stderr.
     fn wants_events(&self) -> bool {
@@ -120,14 +130,15 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer shows the components gallery and proof modules (automatic in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery (automatic in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
                 );
                 std::process::exit(0)
             }
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
-    check_proof_endpoint(&config)?;
+    // Refused here, before an evidence directory or log exists; the assembly refuses it again.
+    config.registry_options().check()?;
     if config.files.len() > 16 {
         return Err("At most 16 evidence requests are supported per run".into());
     }
@@ -186,14 +197,6 @@ fn arguments() -> Result<Config, String> {
     Ok(config)
 }
 
-/// The capability proof is a developer fixture: it never joins a photo-editing workspace.
-fn check_proof_endpoint(config: &Config) -> Result<(), String> {
-    if config.proof_endpoint.is_some() && !config.developer {
-        return Err("--proof-endpoint requires developer mode (--developer)".into());
-    }
-    Ok(())
-}
-
 fn main() {
     let config = arguments().unwrap_or_else(|error| {
         eprintln!("{error}");
@@ -219,16 +222,18 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            check_proof_endpoint(&proof).unwrap_err(),
+            proof.registry_options().check().unwrap_err(),
             "--proof-endpoint requires developer mode (--developer)"
         );
         assert!(
-            check_proof_endpoint(&Config {
+            Config {
                 developer: true,
                 ..proof
-            })
+            }
+            .registry_options()
+            .check()
             .is_ok()
         );
-        assert!(check_proof_endpoint(&Config::default()).is_ok());
+        assert!(Config::default().registry_options().check().is_ok());
     }
 }

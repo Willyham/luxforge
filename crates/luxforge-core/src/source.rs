@@ -1532,7 +1532,7 @@ mod jpeg_tests {
                 .append(Layer::pixel(source.width - 1, source.height - 1, [1, 2, 3]))
                 .unwrap();
             let raster = render(
-                &ModuleRegistry::builtin(),
+                &ModuleRegistry::developer(),
                 &source,
                 snapshot.id,
                 &snapshot.recipe,

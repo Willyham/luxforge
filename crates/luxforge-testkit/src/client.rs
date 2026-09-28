@@ -7,7 +7,7 @@
 //! same code runs as a test (which panics with the message) and inside `cargo xtask
 //! editor-acceptance` (which records it as evidence).
 use luxforge_core::{
-    ApiRequest, ApiResponse, ClientId, ModuleRegistry, OwnerHandle, Recipe, builtin_modules,
+    ApiRequest, ApiResponse, ClientId, ModuleRegistry, OwnerHandle, Recipe, RegistryOptions,
 };
 use luxforge_testbase::try_wait_for;
 use serde_json::{Value, json};
@@ -335,17 +335,11 @@ impl std::ops::Deref for Owner {
     }
 }
 
-/// The built-in registry with the one module `module_id` registered unavailable, exactly as the
-/// desktop's `--disable-module` does.
+/// The built-in registry with the one module `module_id` registered unavailable, through the one
+/// assembly the desktop's and `luxforge-json`'s `--disable-module` use.
 pub fn registry_without(module_id: &str) -> Checked<ModuleRegistry> {
-    let mut registry = ModuleRegistry::new();
-    for module in builtin_modules() {
-        if module.descriptor().id == module_id {
-            registry.register_unavailable(module, "disabled by a test")
-        } else {
-            registry.register(module)
-        }
-        .map_err(|error| format!("a built-in module did not register: {error}"))?;
-    }
-    Ok(registry)
+    ModuleRegistry::assemble(&RegistryOptions {
+        disabled: &[module_id.to_owned()],
+        ..RegistryOptions::default()
+    })
 }

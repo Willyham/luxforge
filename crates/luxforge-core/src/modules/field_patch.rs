@@ -14,7 +14,7 @@
 //! and building a spec refuses a malformed table — a field its control cannot draw, a missing or
 //! invalid default, a group entry that names no field, a field in no group or in two — when the
 //! module is constructed, so registering a built-in field-patch module is its own directory and
-//! one line in [`crate::builtin_modules`].
+//! one line in the registry's `linked_modules`.
 //!
 //! Every comparison is between canonical values, never between JSON spellings, so `{}` and a
 //! payload that spells a default out (`{"exposure": 0}`, `{"midpoint": 50}`) are the same state and

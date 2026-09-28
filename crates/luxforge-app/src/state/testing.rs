@@ -275,7 +275,7 @@ pub(crate) fn described(entry: &HistoryEntry) -> RecipeDescription {
 /// [`described`] for an asset of `source` extents, with each row's input stage and orientation and
 /// the stack's output as the core's own stage fold reports them, as the owner does.
 pub(crate) fn described_at(entry: &HistoryEntry, source: (u32, u32)) -> RecipeDescription {
-    luxforge_core::ModuleRegistry::builtin().describe_recipe(source.0, source.1, entry)
+    luxforge_core::ModuleRegistry::developer().describe_recipe(source.0, source.1, entry)
 }
 
 /// The Nikon Z6's camera matrix and as-shot gains, from the supplied NEF's metadata: a real camera
@@ -342,9 +342,10 @@ pub(crate) fn raw_entry(
     entry
 }
 
-/// The descriptors the desktop would fetch through `module.list` from the linked registry.
+/// The descriptors a developer run of the desktop, as a debug build is, would fetch through
+/// `module.list`: every linked module, the pixel and controls proofs included.
 pub(crate) fn descriptors() -> Vec<ModuleDescriptor> {
-    luxforge_core::ModuleRegistry::builtin()
+    luxforge_core::ModuleRegistry::developer()
         .descriptors()
         .into_iter()
         .cloned()

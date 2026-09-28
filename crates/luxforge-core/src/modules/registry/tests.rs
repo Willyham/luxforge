@@ -456,10 +456,11 @@ pub(super) fn source() -> SourceImage {
 
 #[test]
 fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
-    // Every built-in module registers with every action and effect it declares; which ones those
-    // are is the committed descriptor snapshot's (`tests/modules/descriptors.rs`).
-    let mut registry = ModuleRegistry::builtin();
-    let builtin = builtin_modules();
+    // Every linked module, the test modules included, registers with every action and effect it
+    // declares; which ones those are is the committed descriptor snapshot's
+    // (`tests/modules/descriptors.rs`) and the developer registry's.
+    let mut registry = ModuleRegistry::developer();
+    let builtin = linked_modules(true);
     for module in &builtin {
         let descriptor = module.descriptor();
         for action in &descriptor.actions {
@@ -736,6 +737,116 @@ fn one_canvas_shortcut_letter_selects_one_mode_across_the_registry() {
     assert_eq!(error.kind, ErrorKind::Validation);
 }
 
+/// The one assembly both binaries use: the test modules — the pixel and controls proofs, whose
+/// descriptors declare `developer` — join only a developer run, in their linked places, and the
+/// capability proof only a developer run that names a proof endpoint. `--disable-module` registers
+/// a served module unavailable and refuses one the run does not serve, and a proof endpoint outside
+/// developer mode is refused in the words both binaries print.
+#[test]
+fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
+    let assemble = |disabled: &[&str], developer: bool, proof_endpoint: Option<&str>| {
+        let disabled: Vec<String> = disabled.iter().map(|id| (*id).to_owned()).collect();
+        ModuleRegistry::assemble(&RegistryOptions {
+            disabled: &disabled,
+            developer,
+            proof_endpoint,
+        })
+    };
+    let ids = |registry: &ModuleRegistry| {
+        registry
+            .descriptors()
+            .iter()
+            .map(|module| module.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let available = |registry: &ModuleRegistry, id: &str| {
+        registry
+            .descriptors()
+            .iter()
+            .find(|module| module.id == id)
+            .unwrap_or_else(|| panic!("{id} is registered"))
+            .is_available()
+    };
+
+    let ordinary = assemble(&[], false, None).unwrap();
+    assert_eq!(ids(&ordinary), ids(&ModuleRegistry::builtin()));
+    assert!(
+        ordinary
+            .descriptors()
+            .iter()
+            .all(|module| !module.developer)
+    );
+    assert!(ordinary.action("set-pixel").is_none());
+    assert!(ordinary.effect(PIXEL_EFFECT).is_none());
+
+    let developer = assemble(&[], true, None).unwrap();
+    assert_eq!(ids(&developer), ids(&ModuleRegistry::developer()));
+    assert_eq!(
+        ids(&developer),
+        [
+            "luxforge.presets",
+            "luxforge.pixel",
+            "luxforge.raw",
+            "luxforge.basic",
+            "luxforge.presence",
+            "luxforge.mixer",
+            "luxforge.transform",
+            "luxforge.crop",
+            "luxforge.vignette",
+            "luxforge.controls",
+        ]
+    );
+    let tests: Vec<String> = ids(&developer)
+        .into_iter()
+        .filter(|id| !ids(&ordinary).contains(id))
+        .collect();
+    assert_eq!(tests, ["luxforge.pixel", "luxforge.controls"]);
+    for id in &tests {
+        assert!(developer.module(id).unwrap().descriptor().developer, "{id}");
+    }
+    assert!(!ids(&developer).contains(&"luxforge.capabilities".to_owned()));
+
+    assert_eq!(
+        assemble(&["luxforge.controls"], false, None).unwrap_err(),
+        "--disable-module names no registered module: luxforge.controls"
+    );
+    assert!(!available(
+        &assemble(&["luxforge.controls"], true, None).unwrap(),
+        "luxforge.controls"
+    ));
+    let disabled = assemble(&["luxforge.raw"], false, None).unwrap();
+    assert!(!available(&disabled, "luxforge.raw"));
+    assert_eq!(
+        disabled
+            .module("luxforge.raw")
+            .unwrap()
+            .descriptor()
+            .availability,
+        Availability::Unavailable {
+            reason: DISABLED_REASON.into()
+        }
+    );
+
+    // The capability proof joins a developer run that names a proof endpoint, and no other.
+    let proof = assemble(&[], true, Some("http://127.0.0.1:9")).unwrap();
+    let proof_module = proof
+        .descriptors()
+        .into_iter()
+        .find(|module| module.id == "luxforge.capabilities")
+        .expect("the capability proof is registered");
+    assert!(proof_module.developer);
+    assert_eq!(
+        proof_module.resources[0].url,
+        "http://127.0.0.1:9/proof-palette.bin"
+    );
+    assert_eq!(
+        assemble(&[], false, Some("http://127.0.0.1:9")).unwrap_err(),
+        "--proof-endpoint requires developer mode (--developer)"
+    );
+    let refused = assemble(&[], true, Some("http://example.com")).unwrap_err();
+    assert!(refused.contains("proof-palette"), "{refused}");
+}
+
 /// One list of built-in modules serves every registry, and registering one of them unavailable
 /// keeps everything it declares, with the reason on its availability: its action is refused by
 /// name and a stack holding its effect is reported rather than rendered without it.
@@ -747,14 +858,14 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
             .map(|descriptor| descriptor.id.clone())
             .collect::<Vec<_>>()
     };
-    let listed: Vec<Arc<dyn ToolModule>> = builtin_modules();
+    let listed: Vec<Arc<dyn ToolModule>> = linked_modules(false);
     assert_eq!(
         ids(ModuleRegistry::builtin().descriptors()),
         ids(listed.iter().map(|module| module.descriptor()).collect()),
     );
 
     let mut registry = ModuleRegistry::new();
-    for module in builtin_modules() {
+    for module in linked_modules(false) {
         if module.descriptor().id == "luxforge.basic" {
             registry.register_unavailable(module, "switched off")
         } else {
@@ -805,7 +916,7 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
 /// RAW source layer and the presets module as one it has no effect for; neither is this refusal.
 #[test]
 fn every_payload_check_names_a_foreign_effect_in_its_data() {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let proof = crate::CapabilitiesProofModule::new("http://127.0.0.1:9/");
     let mut modules: Vec<&dyn ToolModule> = registry
         .descriptors()
@@ -817,8 +928,8 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        7,
-        "basic, presence, mixer, vignette, pixel, transform, crop"
+        8,
+        "basic, presence, mixer, vignette, pixel, transform, crop, controls"
     );
     modules.push(&proof);
     for module in modules {
@@ -874,10 +985,11 @@ pub(crate) const SPATIAL_EFFECT: &str = "test.spatial.effect";
 
 pub(crate) const FINISH_EFFECT: &str = "test.finish.effect";
 
-/// The built-ins plus one colour effect of order 10, one spatial effect and one finish effect,
-/// which is every stage and two orders within the colour stage.
+/// The developer registry, whose pixel proof is the pixel stage, plus one colour effect of order
+/// 10, one spatial effect and one finish effect, which is every stage and two orders within the
+/// colour stage.
 pub(crate) fn staged_registry() -> ModuleRegistry {
-    let mut registry = ModuleRegistry::builtin();
+    let mut registry = ModuleRegistry::developer();
     for (id, effect, action, stage, order) in [
         (
             "test.mixer",

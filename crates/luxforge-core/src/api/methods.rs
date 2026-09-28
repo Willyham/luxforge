@@ -2238,7 +2238,8 @@ mod tests {
     fn host_and_generated_methods_are_unique_complete_and_match_the_schema() {
         let catalog =
             std::env::temp_dir().join(format!("luxforge-methods-{}.sqlite", std::process::id()));
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let mut session = ClientSession::default();
         let names: HashSet<&str> = METHODS.iter().map(|spec| spec.name).collect();
         assert_eq!(names.len(), METHODS.len(), "duplicate method names");
@@ -3716,7 +3717,8 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&catalog);
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let mut session = ClientSession::default();
         assert_eq!(
             ok(&mut service, &mut session, "session.state", json!({}))["workspace"],

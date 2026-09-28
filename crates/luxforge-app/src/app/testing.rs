@@ -233,7 +233,7 @@ pub(crate) fn refresh_for(
         original: None,
         // The histogram is a later task; this preview asks for no reduction.
         job: PreviewJob::new(Evaluation::new(
-            Arc::new(luxforge_core::ModuleRegistry::builtin()),
+            Arc::new(luxforge_core::ModuleRegistry::developer()),
             luxforge_core::RenderContext::new(),
             luxforge_core::PreviewSource::Jpeg(SourceImage {
                 width: 1,

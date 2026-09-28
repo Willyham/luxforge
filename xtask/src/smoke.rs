@@ -415,6 +415,8 @@ pub static SCENARIOS: &[Scenario] = &[
         about: "The histogram, its clipping overlays, the pointer readout and a drafted frame",
         launches: &[LaunchSpec {
             plan: histogram::plan,
+            // The scenario commits an `edit.set-pixel`, and the pixel proof is a test module.
+            developer: true,
             ..APP
         }],
         verify: histogram::verify,

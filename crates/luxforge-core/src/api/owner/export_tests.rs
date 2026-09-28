@@ -24,7 +24,7 @@ impl Harness {
     fn start(name: &str) -> Self {
         let dir = temp_dir(&format!("export-{name}")).canonicalize().unwrap();
         let catalog = dir.join("catalog.sqlite");
-        Self::open(dir, catalog, Arc::new(ModuleRegistry::builtin()))
+        Self::open(dir, catalog, Arc::new(ModuleRegistry::developer()))
     }
 
     fn open(dir: PathBuf, catalog: PathBuf, registry: Arc<ModuleRegistry>) -> Self {

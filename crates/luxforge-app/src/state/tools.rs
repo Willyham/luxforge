@@ -2945,7 +2945,7 @@ mod tests {
 
     #[test]
     fn a_canvas_mode_routes_only_to_its_own_declared_pick() {
-        let modules: Vec<_> = luxforge_core::ModuleRegistry::builtin()
+        let modules: Vec<_> = luxforge_core::ModuleRegistry::developer()
             .descriptors()
             .into_iter()
             .cloned()

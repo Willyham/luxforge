@@ -757,7 +757,9 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let modules = editor.modules.clone();
     let mut groups = 0usize;
-    for module in &modules {
+    // The product modules' groups hold number controls only; the controls proof's one group holds
+    // every control kind, and `proof_controls_tests` proves its reset.
+    for module in modules.iter().filter(|module| !module.developer) {
         for (index, control) in module.controls.iter().enumerate() {
             let luxforge_core::Control::Group {
                 label,

@@ -123,6 +123,68 @@ fn the_built_in_descriptors_match_the_committed_snapshot() {
     );
 }
 
+/// The snapshot is of an ordinary run, which serves no test module. Outside developer mode
+/// `schema.list` names no method a developer-only module generates; a developer run lists every
+/// ordinary method unchanged and adds exactly the test modules' ones.
+#[test]
+fn schema_list_names_developer_only_methods_only_in_developer_mode() {
+    let listed = |registry: ModuleRegistry, name: &str| -> Map<String, Value> {
+        let catalog = fixtures::temp_catalog(name);
+        let owner = Owner::start(&catalog, registry, "developer-methods").expect("an owner");
+        let client = owner.client();
+        let schema = owner
+            .call(client, "schema.list", json!({}))
+            .expect("schema.list");
+        owner.close().expect("the owner stops");
+        let _ = std::fs::remove_file(&catalog);
+        schema["methods"].as_object().expect("a method map").clone()
+    };
+    let ordinary = listed(ModuleRegistry::builtin(), "schema-ordinary");
+    let developer = listed(ModuleRegistry::developer(), "schema-developer");
+
+    let registry = ModuleRegistry::developer();
+    let mut generated = Vec::new();
+    for descriptor in registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.developer)
+    {
+        generated.extend(descriptor.actions.iter().map(|action| {
+            registry
+                .resolve_action(&action.id)
+                .expect("a registered action")
+                .method()
+        }));
+        generated.extend(descriptor.queries.iter().map(|query| {
+            registry
+                .resolve_query(&query.id)
+                .expect("a registered query")
+                .method()
+        }));
+        generated.extend(
+            descriptor
+                .tasks
+                .iter()
+                .map(|task| format!("{TASK_PREFIX}{}", task.id)),
+        );
+    }
+    assert!(
+        generated.contains(&"edit.set-pixel".to_owned()),
+        "{generated:?}"
+    );
+    for method in &generated {
+        assert!(
+            !ordinary.contains_key(method),
+            "{method} outside developer mode"
+        );
+        assert!(developer.contains_key(method), "{method} in developer mode");
+    }
+    for (method, schema) in &ordinary {
+        assert_eq!(developer.get(method), Some(schema), "{method}");
+    }
+    assert_eq!(developer.len(), ordinary.len() + generated.len());
+}
+
 #[test]
 #[ignore = "writes the committed snapshot; run it only after an intended descriptor change"]
 fn generate_builtin_descriptor_snapshot() {

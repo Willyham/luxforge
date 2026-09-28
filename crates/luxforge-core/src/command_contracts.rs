@@ -1,12 +1,15 @@
 //! Current command contracts across the core service and the JSON API.
 use crate::{
-    ApiRequest, AssetId, ClientId, EditorService, ErrorKind, Mutation, MutationOutcome,
-    OwnerHandle, Transform,
+    ApiRequest, AssetId, ClientId, EditorService, ErrorKind, ModuleRegistry, Mutation,
+    MutationOutcome, OwnerHandle, Transform,
 };
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -119,7 +122,8 @@ fn stacks(entries: &[Value]) -> Vec<Value> {
 const PROBES: [(u32, u32); 4] = [(0, 0), (2, 1), (1, 0), (479, 319)];
 
 fn direct_journey(catalog: &Path, source: &Path, wrappers: bool) -> (Vec<Value>, Vec<Value>) {
-    let mut service = EditorService::open(catalog).unwrap();
+    let mut service =
+        EditorService::open_with(catalog, Arc::new(ModuleRegistry::developer())).unwrap();
     let asset = service.import(source).unwrap().asset.id;
     if wrappers {
         service
@@ -174,7 +178,8 @@ fn direct_journey(catalog: &Path, source: &Path, wrappers: bool) -> (Vec<Value>,
 }
 
 fn api_journey(catalog: &Path, source: &Path) -> (Vec<Value>, Vec<Value>, Value) {
-    let (owner, join) = OwnerHandle::start(catalog).unwrap();
+    let (owner, join) =
+        OwnerHandle::start_with(catalog, Arc::new(ModuleRegistry::developer())).unwrap();
     let client = owner.register();
     let call = |client: ClientId, method: &str, params: Value| -> Value {
         let response = owner
@@ -267,7 +272,11 @@ fn wrappers_actions_and_the_api_produce_identical_entries_pixels_and_errors() {
     );
 
     // One malformed request reports the same structured error everywhere.
-    let mut service = EditorService::open(&dir.join("errors.sqlite")).unwrap();
+    let mut service = EditorService::open_with(
+        &dir.join("errors.sqlite"),
+        Arc::new(ModuleRegistry::developer()),
+    )
+    .unwrap();
     let asset = service.import(&source).unwrap().asset.id;
     let direct = service
         .apply_action(
@@ -295,7 +304,11 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     let source = dir.join("orientation-1.jpg");
     std::fs::copy(fixture("orientation-1.jpg"), &source).unwrap();
     let bytes = std::fs::read(&source).unwrap();
-    let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
+    let (owner, join) = OwnerHandle::start_with(
+        &dir.join("catalog.sqlite"),
+        Arc::new(ModuleRegistry::developer()),
+    )
+    .unwrap();
     let client = owner.register();
     let request = |method: &str, params: Value| -> Result<Value, Value> {
         let response = owner
@@ -626,7 +639,11 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
     let bytes = std::fs::read(&source).unwrap();
 
     // Through the core's one action path.
-    let mut service = EditorService::open(&dir.join("actions.sqlite")).unwrap();
+    let mut service = EditorService::open_with(
+        &dir.join("actions.sqlite"),
+        Arc::new(ModuleRegistry::developer()),
+    )
+    .unwrap();
     let asset = service.import(&source).unwrap().asset.id;
     for (revision, request, action, raw) in CROP_JOURNEY {
         let result = service
@@ -660,7 +677,11 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
     drop(service);
 
     // Through the JSON API, including discovery.
-    let (owner, join) = OwnerHandle::start(&dir.join("api.sqlite")).unwrap();
+    let (owner, join) = OwnerHandle::start_with(
+        &dir.join("api.sqlite"),
+        Arc::new(ModuleRegistry::developer()),
+    )
+    .unwrap();
     let client = owner.register();
     let call = |method: &str, params: Value| -> Value {
         let response = owner

@@ -363,6 +363,7 @@ mod tests {
     use rusqlite::{Connection, params};
     use serde_json::json;
     use std::path::Path;
+    use std::sync::Arc;
 
     /// An action's and a query's `mask` target take the one target check: taken out of the request
     /// so the module never sees it, checked as an identity, and refused by name where the action or
@@ -494,7 +495,8 @@ mod tests {
     #[test]
     fn masks_ride_in_the_stored_snapshot_and_reopen_unchanged() {
         let catalog = temp("masks.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         service
             .apply_action(
@@ -510,7 +512,8 @@ mod tests {
         drop(service);
         plant(&catalog, &entry);
 
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let reopened = service.state(&asset).unwrap();
         assert_eq!(
             reopened.current_entry, entry,
@@ -611,7 +614,8 @@ mod tests {
     #[test]
     fn the_mask_target_commits_updates_and_orders_one_layer_per_target() {
         let catalog = temp("mask-target.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         // One global Basic layer first, so the ordering rule has something to place a mask after.
         service
@@ -629,7 +633,8 @@ mod tests {
         let planted = planted_masks(&state, vec![first.clone(), second.clone()]);
         drop(service);
         plant(&catalog, &planted);
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
 
         fn revision(service: &EditorService, asset: &AssetId) -> u64 {
             service.state(asset).unwrap().revision
@@ -809,7 +814,8 @@ mod tests {
     #[test]
     fn a_stored_layer_naming_a_missing_mask_is_refused_on_every_path_and_left_as_it_is() {
         let catalog = temp("dangling-mask.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         service
             .apply_action(
@@ -836,7 +842,8 @@ mod tests {
         plant(&catalog, &dangling);
         let before = stored_entry_json(&catalog, &dangling.id);
 
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         service
             .prepare(&service.entry_needs(&asset, None).unwrap())
             .unwrap();

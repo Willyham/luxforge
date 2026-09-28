@@ -523,7 +523,7 @@ fn a_delete_applies_then_is_a_no_op() {
 /// `--disable-module` does, or not registered at all.
 fn without_presence(disabled: bool) -> Arc<ModuleRegistry> {
     let mut registry = ModuleRegistry::new();
-    for module in crate::builtin_modules() {
+    for module in crate::modules::linked_modules(false) {
         let registered = match module.descriptor().id.as_str() {
             "luxforge.presence" if disabled => {
                 registry.register_unavailable(module, "disabled by --disable-module")

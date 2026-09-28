@@ -220,6 +220,7 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModuleRegistry;
     use luxforge_testkit::fixtures::{jpeg as fixture, temp_path as temp};
     use serde_json::{Value, json};
     use std::io::Cursor;
@@ -233,10 +234,13 @@ mod tests {
         // This test focuses on independent history queries; prepare the source before the owner
         // starts so a one-shot JSON stream does not discard its client-scoped import job at EOF.
         let asset = {
-            let mut service = crate::EditorService::open(&catalog).unwrap();
+            let mut service =
+                crate::EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer()))
+                    .unwrap();
             service.import(&fixture()).unwrap().asset.id.to_string()
         };
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let preparer = owner.register();
         let queued = owner
             .call(

@@ -1154,7 +1154,7 @@ fn an_import_refuses_a_setting_whose_target_is_not_presettable_with_the_registry
         (false, "unknown action set-presence"),
     ] {
         let mut registry = ModuleRegistry::new();
-        for module in crate::builtin_modules() {
+        for module in crate::modules::linked_modules(false) {
             match module.descriptor().id.as_str() {
                 "luxforge.presence" if disabled => {
                     registry.register_unavailable(module, "disabled by --disable-module")

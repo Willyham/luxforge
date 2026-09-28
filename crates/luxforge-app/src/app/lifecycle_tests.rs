@@ -1,12 +1,14 @@
 //! The registry a run serves and where the capability host keeps its state.
-use super::lifecycle::{host_config, registry};
+use super::lifecycle::host_config;
 use crate::Config;
 use luxforge_core::ModuleRegistry;
 
+/// The desktop's `--disable-module`, `--developer` and `--proof-endpoint` reach the one assembly
+/// the core owns; what that assembly serves for each is the core's own test
+/// (`the_one_assembly_serves_test_modules_only_in_developer_mode`).
 #[test]
 fn desktop_registry_contains_every_core_builtin_including_raw() {
-    let desktop = registry(&[], false, None).unwrap();
-    let core = ModuleRegistry::builtin();
+    let registry = |config: Config| ModuleRegistry::assemble(&config.registry_options());
     let ids = |registry: &ModuleRegistry| {
         registry
             .descriptors()
@@ -14,48 +16,31 @@ fn desktop_registry_contains_every_core_builtin_including_raw() {
             .map(|module| module.id.clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(ids(&desktop), ids(&core));
-    assert!(!ids(&desktop).contains(&"luxforge.controls".to_owned()));
-    let developer = registry(&[], true, None).unwrap();
-    assert!(ids(&developer).contains(&"luxforge.controls".to_owned()));
-    assert!(!ids(&developer).contains(&"luxforge.capabilities".to_owned()));
-    assert!(registry(&["luxforge.controls".into()], false, None).is_err());
+    let desktop = registry(Config::default()).unwrap();
+    assert_eq!(ids(&desktop), ids(&ModuleRegistry::builtin()));
+    assert!(ids(&desktop).contains(&"luxforge.raw".to_owned()));
+    let developer = registry(Config {
+        developer: true,
+        proof_endpoint: Some("http://127.0.0.1:9".into()),
+        disabled: vec!["luxforge.raw".into()],
+        ..Config::default()
+    })
+    .unwrap();
+    for id in [
+        "luxforge.pixel",
+        "luxforge.controls",
+        "luxforge.capabilities",
+    ] {
+        assert!(ids(&developer).contains(&id.to_owned()), "{id}");
+    }
     assert!(
-        !registry(&["luxforge.controls".into()], true, None)
-            .unwrap()
-            .descriptors()
-            .iter()
-            .find(|module| module.id == "luxforge.controls")
-            .unwrap()
-            .is_available()
-    );
-    let disabled = registry(&["luxforge.raw".into()], false, None).unwrap();
-    assert!(
-        !disabled
+        !developer
             .descriptors()
             .iter()
             .find(|module| module.id == "luxforge.raw")
             .unwrap()
             .is_available()
     );
-    // The capability proof joins a developer run that names a proof endpoint, and no other.
-    let proof = registry(&[], true, Some("http://127.0.0.1:9")).unwrap();
-    let proof_module = proof
-        .descriptors()
-        .into_iter()
-        .find(|module| module.id == "luxforge.capabilities")
-        .expect("the capability proof is registered");
-    assert!(proof_module.developer);
-    assert_eq!(
-        proof_module.resources[0].url,
-        "http://127.0.0.1:9/proof-palette.bin"
-    );
-    assert!(
-        !ids(&registry(&[], false, Some("http://127.0.0.1:9")).unwrap())
-            .contains(&"luxforge.capabilities".to_owned())
-    );
-    let refused = registry(&[], true, Some("http://example.com")).unwrap_err();
-    assert!(refused.contains("proof-palette"), "{refused}");
 }
 
 #[test]
