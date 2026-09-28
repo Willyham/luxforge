@@ -1973,6 +1973,70 @@ mod tests {
         }
     }
 
+    /// One owner RAW's production development, timed in two parts per observation: the
+    /// retained-mosaic development, then its DNG stage-3 corrections, if its profile has any. File
+    /// read and decode, the digest of the corrected planes (which must not change between
+    /// observations) and drop are outside both clocks. One warm-up observation is discarded. A
+    /// measurement, not a gate:
+    ///
+    /// ```text
+    /// LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=mavic_air_2s.DNG \
+    ///   [LUXFORGE_RAW_SAMPLES=30] cargo test --release -p luxforge-raw --locked --lib -- \
+    ///   --ignored --exact tests::owner_development_timing --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate; run alone in release"]
+    fn owner_development_timing() {
+        use sha2::{Digest, Sha256};
+        use std::time::Instant;
+        let owner = std::env::var("LUXFORGE_RAW_OWNER_DIR").expect("owner RAW fixture directory");
+        let name = std::env::var("LUXFORGE_RAW_PROFILE_SOURCE").expect("one owner source name");
+        let samples: usize = std::env::var("LUXFORGE_RAW_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(30);
+        let cancel = AtomicBool::new(false);
+        let bytes = std::fs::read(format!("{owner}/{name}")).expect("read owner RAW");
+        let raw = RawSource::decode(Arc::from(bytes), &cancel).expect("decode owner RAW");
+        let gains = raw.metadata.as_shot_gains;
+        let (mut develop, mut correct, mut digest) = (Vec::new(), Vec::new(), None);
+        for trial in 0..=samples {
+            let start = Instant::now();
+            let mut image = raw.develop_uncorrected(gains, &cancel).unwrap();
+            let develop_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let start = Instant::now();
+            if let Some(correction) = &raw.dng_correction {
+                correction.apply(&mut image, &cancel).unwrap();
+            }
+            let correct_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let mut hash = Sha256::new();
+            for value in &image.data {
+                hash.update(value.to_bits().to_le_bytes());
+            }
+            let hash = format!("{:x}", hash.finalize());
+            assert_eq!(digest.get_or_insert_with(|| hash.clone()), &hash);
+            if trial > 0 {
+                develop.push(develop_ms);
+                correct.push(correct_ms);
+            }
+        }
+        let summary = |values: Vec<f64>| {
+            let distribution = luxforge_testbase::Distribution::of(values).expect("samples >= 1");
+            [distribution.p50, distribution.p95]
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "source": name,
+                "samples": samples,
+                "workers": rayon::current_num_threads(),
+                "develop_p50_p95_ms": summary(develop),
+                "correction_p50_p95_ms": raw.dng_correction.is_some().then(|| summary(correct)),
+                "corrected_planes_sha256": digest,
+            })
+        );
+    }
+
     #[test]
     fn absent_or_singular_camera_response_is_not_render_support() {
         assert!(matches!(
