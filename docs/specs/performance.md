@@ -1770,6 +1770,57 @@ A sample evaluates the tile the render uses, and an operation whose summed halo 
 
 On the generated JPEGs a sample through Clarity alone takes 33 to 46 ms at 24 MP and 43 ms at 60 MP in 1024 px tiles, against 12 and 19 ms in 512 px tiles, and through all three fields 117 to 119 and 168 to 173 ms against 47 and 80 to 82 ms ([tile size by summed halo](#tile-size-by-summed-halo)). A stack of Texture, Dehaze or both keeps 512 px tiles and its samples are unchanged: 9 to 10, 6 to 7 and 13 to 16 ms. The point worker answers these samples off the catalog owner, so the longer wait is the sampling client's own and delays no other client.
 
+#### The stage read by rows
+
+A point query's tile input and every global estimate's reduction read the stage the spatial layer reads through the pipeline's row reader, the one a frame's tiles use: the colour layers before the spatial layer run over whole rows instead of once per pixel, on both pixel domains, and the reduction sums every 16 × 16 block in the one order either way. Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release `--locked`, 28 September 2026, on a host shared with other sessions: every figure here was taken at a one-minute load of 10 to 29, far above the 8 at which a figure is compared against a budget, so these are relative figures. "Before" is the base `6b876dd4`, "after" this change, each built once and run back to back and reversed (before, after, after, before), each pass holding the host-wide timing lock.
+
+**Identity.** An uncommitted release probe rendered Exposure +0.4, Contrast +20, Vibrance +30 then Dehaze +30 from a cold estimate store and read the Dehaze estimate back, then reduced the same stage from a cold store through a point query. On the generated 24 MP JPEG (byte path), the Z6 and the X100VI (linear path), three rounds each, the frame's SHA-256 and the three estimate values' `f64` bits were the same before and after, and the point query's estimate equalled the frame's in both builds.
+
+**Point samples and a cold reduction.** The same probe, per source and stack, with and without that Basic layer before Presence at Clarity +60 and Dehaze +30: the p50 of 21 samples beside a warm store (20 spread points and the far corner), each equal to the rendered byte, and the p50 of three cold point reductions. Each cell is before (runs 1, 4) → after (runs 2, 3):
+
+| Source | Stack | Sample, no colour before | Sample, behind Basic | Cold point reduction, behind Basic |
+| --- | --- | --- | --- | --- |
+| 24 MP JPEG | Clarity | 35.1 · 33.6 → 31.7 · 29.5 ms | 349.8 · 344.4 → 104.9 · 102.0 ms | none (no estimate) |
+| 24 MP JPEG | Clarity, Dehaze | 65.4 · 56.8 → 67.4 · 52.5 ms | 452.9 · 435.4 → 153.7 · 139.2 ms | 369.1 · 376.9 → 113.1 · 108.7 ms |
+| 24 MP JPEG | Dehaze | 5.7 · 5.6 → 5.3 · 5.3 ms | 85.3 · 71.0 → 20.6 · 21.1 ms | 373.8 · 376.2 → 114.3 · 106.0 ms |
+| 60 MP JPEG | Clarity | 38.5 · 39.9 → 40.1 · 40.2 ms | 473.4 · 564.3 → 139.4 · 149.9 ms | none (no estimate) |
+| 60 MP JPEG | Clarity, Dehaze | 87.4 · 69.9 → 81.0 · 61.5 ms | 616.3 · 618.2 → 219.7 · 167.0 ms | 957.1 · 1702.3 → 331.1 · 258.4 ms |
+| 60 MP JPEG | Dehaze | 7.3 · 6.5 → 6.5 · 6.1 ms | 87.5 · 88.9 → 24.4 · 24.7 ms | 1094.7 · 916.0 → 421.3 · 257.5 ms |
+| Z6 | Clarity | 57.9 · 48.4 → 46.0 · 47.6 ms | 355.6 · 328.4 → 108.8 · 110.7 ms | none (no estimate) |
+| Z6 | Clarity, Dehaze | 77.3 · 68.5 → 81.2 · 67.9 ms | 401.5 · 421.6 → 140.6 · 149.3 ms | 414.9 · 376.4 → 139.5 · 130.3 ms |
+| Z6 | Dehaze | 8.5 · 8.9 → 8.1 · 7.6 ms | 66.7 · 65.0 → 22.0 · 21.1 ms | 423.4 · 566.9 → 137.5 · 140.5 ms |
+| X100VI | Clarity | 45.6 · 45.4 → 44.1 · 45.0 ms | 408.4 · 326.2 → 111.0 · 212.8 ms | none (no estimate) |
+| X100VI | Clarity, Dehaze | 82.2 · 66.9 → 67.7 · 111.3 ms | 495.2 · 408.4 → 158.0 · 226.6 ms | 599.4 · 546.0 → 199.8 · 227.4 ms |
+| X100VI | Dehaze | 8.1 · 7.6 → 7.8 · 7.0 ms | 94.4 · 73.1 → 25.2 · 25.6 ms | 785.9 · 556.9 → 219.3 · 340.4 ms |
+
+Behind a colour layer a sample through Clarity costs about a third of what it did, 102 to 150 ms against 326 to 564 ms, and a Dehaze sample a quarter to a third; the cold reduction a Dehaze estimate is prepared from costs 2.4 to 4.5 times less, comparing each row's mean before and after. The X100VI's 212.8 and 340.4 ms were taken at a load of 19.5. With nothing before the spatial layer a pull is a source read and there is no colour to batch: those samples are unchanged, and so are the committed ignored tests' figures, which sample Presence alone. `a_raw_point_sample_through_presence_equals_the_render` gave, in the production tiling, 49.2 · 47.4 → 47.3 · 50.2 ms with Clarity and 72.3 · 68.3 → 68.2 · 70.0 ms with Dehaze added on the Z6, and 56.2 · 46.6 → 50.4 · 47.6 and 78.3 · 75.9 → 90.7 · 77.3 ms on the X100VI (41 samples, each equal to the render); `presence_tile_sizes` gave 42.1 · 33.1 → 32.2 · 34.2 ms for a 24 MP Clarity sample and 82.9 · 78.8 → 78.0 · 131.4 ms for 60 MP Clarity and Dehaze in 1024 px tiles (9 samples). The two to four times that 1024 px tiles added to a Presence-only sample ([in tiles sized by the summed halo](#in-tiles-sized-by-the-summed-halo)) is the unit chain over the larger tile, which reading rows does not touch.
+
+**A RAW Presence exact render.** The same probe's exact render of the Basic-then-Presence stack on each RAW, with a cold store (reducing the stage for Dehaze) and with a warm one, p50 of 3 per run, before (runs 1, 4) and after (runs 2, 3):
+
+| Source | Stack behind Basic | Cold store, before | Cold store, after | Warm store, before | Warm store, after |
+| --- | --- | --- | --- | --- | --- |
+| Z6 | Dehaze | 908 · 1183 ms | 466 · 473 ms | 430 · 335 ms | 350 · 326 ms |
+| Z6 | Clarity, Dehaze | 1061 · 865 ms | 661 · 602 ms | 684 · 550 ms | 485 · 478 ms |
+| X100VI | Dehaze | 1598 · 1119 ms | 929 · 1514 ms | 586 · 585 ms | 598 · 1012 ms |
+| X100VI | Clarity, Dehaze | 1859 · 1533 ms | 1148 · 1302 ms | 1200 · 949 ms | 906 · 3169 ms |
+
+The difference between a cold and a warm render is the reduction: about 300 to 850 ms on the Z6 before against 115 to 180 ms after. On the X100VI run 3 started at a load of 19.5 and its renders took up to three times as long as run 2's, so only the cold renders of runs 1, 2 and 4 are compared there: with Dehaze 1119 to 1598 ms before against 929 ms after, and with Clarity and Dehaze 1533 to 1859 against 1148 ms. The byte path's frame reads its materialized input and was already cheap; its renders did not change.
+
+**A Basic drag over Presence on RAW.** `editor-latency --source RAW --mode drag --presence --samples 17` at Fit: a Presence layer with all three fields at +100 committed, then a Basic Exposure drag, one launch per run, the four runs back to back at a load of 10.5 to 13.7. The Fit proxy (1716 × 1144 on the X100VI) is rendered whole, so each drag frame reduces the proxy stage for Dehaze, not the exact stage; no window hands it the exact stage's estimate. Seventeen inputs per run, because 30 fail before a frame is measured (below).
+
+| Run | X100VI input to presented frame p50 / p95 | X100VI release to settled histogram (2) | Z6 input to presented frame p50 / p95 | Z6 release to settled histogram (2) |
+| --- | --- | --- | --- | --- |
+| Before 1 | 45.6 / 52.8 ms | 1353, 1374 ms | 32.4 / 37.0 ms | 775, 804 ms |
+| After 1 | 44.9 / 52.1 ms | 1323, 1447 ms | 30.1 / 35.2 ms | 755, 762 ms |
+| After 2 | 46.8 / 110.5 ms | 1356, 1388 ms | 31.0 / 43.4 ms | 746, 763 ms |
+| Before 2 | 48.0 / 52.9 ms | 1375, 1386 ms | 32.7 / 39.3 ms | 770, 771 ms |
+
+The drag frame is about 2 ms faster at p50 on the Z6 and about 1 ms on the X100VI, in both orders; the settled histogram, which waits for the exact render and its reduction, came 1 to 5% sooner on the Z6 in both orders and did not move beyond the runs' spread on the X100VI. A proxy frame's reduction reads under 2 MP, and an Exposure-only draft's colour is one unit, so there was little per-pixel cost left to remove in this drag. `--basic`, the full Basic layer that would add every colour unit, is refused on RAW, and the default 30-input drag fails on its 19th value (both below), so neither was measured.
+
+**The editor diagnostic.** `editor-performance --source` on the generated 24 MP JPEG (10 samples per recipe), whose stacks hold no spatial layer, ran before, after, after, before at a one-minute load of 9.6 to 15: every row stayed within its runs' spread, for example the full Basic layer at 55.35 · 58.13 → 55.99 · 56.89 ms p50 and its 2880 × 1800 proxy at 32.75 · 34.49 → 34.10 · 33.90 ms.
+
+Two defects in the measuring tool, found here and not fixed: `editor-latency`'s default drag sends `0.5700000000000001`, which the desktop's rail refuses (`set-basic.exposure has no rail fraction for 0.5700000000000001`), so any drag of more than 18 inputs fails on both builds; and `--basic` commits Temperature and Tint in its Basic layer, which a RAW photo refuses (`on a RAW photo, Temperature is the source development's`), so `--basic` cannot run over a RAW `--source`.
+
 ## Preset import parse
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, in memory, 20 runs each: `cargo test --release --package luxforge-core --lib measure_preset_parse -- --ignored --nocapture`. Each synthetic document is filled to the 1 MiB request limit in the shape that presses one bound, and `inspect_preset` runs detection, parsing, mapping and the report. It reads no file and renders nothing.
