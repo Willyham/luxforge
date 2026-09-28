@@ -1943,6 +1943,36 @@ LUXFORGE_RAW_TIMING_OUTPUT=/path/to/z6.csv \
   tests::bayer_normalization_release_abba_profile
 ```
 
+### DNG GainMap taps
+
+A GainMap stage derives each active row's and each active column's bilinear taps (two map indices
+and a weight) once, then weighs every pixel of every channel by the same f64 expression in the same
+order, so the corrected planes are unchanged by construction. The Air 2S's complete corrected-plane
+digest is the same before and after, in every observation.
+
+Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026,
+before at `ec132e71` with only the timing test added. Each run is the crate's
+`owner_development_timing`: one discarded warm-up, then 30 observations of the production
+development followed by its corrections, in one fresh process. Correction time covers GainMap,
+WarpRectilinear and the copy back, over the three camera planes developed in that observation;
+file read, decode, development, hashing and drop are outside it. The two builds ran before, after,
+after, before, twice, on a shared host at one-minute load 6.4 to 18.4, so these are relative figures.
+
+| Pass, order before-after-after-before | Before p50 / p95 (load) | After p50 / p95 (load) |
+| --- | ---: | ---: |
+| First | 164.5 / 403.7 ms (6.4), 112.6 / 141.5 ms (10.5) | 86.5 / 89.7 ms (13.9), 86.7 / 93.7 ms (11.9) |
+| Second | 132.7 / 391.8 ms (10.6), 167.3 / 333.7 ms (13.6) | 92.8 / 100.3 ms (18.4), 95.0 / 262.6 ms (14.4) |
+
+The least-disturbed pair, before at load 10.5 and after at 11.9 in the first pass, gives a
+correction p50 of 112.6 against 86.7 ms, 23% less; every after p50 is below every before p50.
+To repeat, run each build once per order:
+
+```sh
+LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=mavic_air_2s.DNG \
+  cargo test --release -p luxforge-raw --locked --lib -- --ignored --exact \
+  tests::owner_development_timing --nocapture
+```
+
 ### RAW colour row batching
 
 The production RAW renderer writes its last segment in the row chunks the JPEG colour pass uses
