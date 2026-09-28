@@ -30,14 +30,15 @@
 //! The luminance axis and the Oklab conversion are the **delivered** ones, read from the Basic
 //! module's own `f64` constants rather than copied here, so the editor keeps one definition of
 //! luminance and one colour space.
-use super::{Binding, ComponentField, Field, smooth};
+use super::{Binding, ComponentField, Field, parameters::check_declared, smooth};
 use crate::{
     Component, Control, Error, ParameterDescriptor, RailDecoration,
     colour::{luma::rec709_f64, oklab::lab_f64, srgb},
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use serde_json::json;
+use std::sync::{Arc, LazyLock};
 
 /// The token a stored luminance-range component carries.
 pub(super) const LUMINANCE_KIND: &str = "luminance-range";
@@ -205,8 +206,16 @@ fn feather(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
         .default(FEATHER_DEFAULT)
 }
 
+/// [`luminance_parameters`], declared once for the parser to check a stored payload against.
+static LUMINANCE_DECLARED: LazyLock<Vec<ParameterDescriptor>> =
+    LazyLock::new(|| luminance_parameters(true));
+
 /// Parse and range-check one stored `luminance-range` payload. Nothing here depends on a stage: the
 /// band's numbers are on an axis the picture defines, not on the frame.
+///
+/// Each number is checked against its own declaration; what a declared range cannot say is checked
+/// after it: a shoulder is exactly `0` or at least [`RANGE_FEATHER_MIN`], and the low edge is not
+/// above the high one.
 pub(super) fn parse_luminance(component: &Component) -> Result<LuminanceRange, Error> {
     let range: LuminanceRange =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
@@ -215,27 +224,23 @@ pub(super) fn parse_luminance(component: &Component) -> Result<LuminanceRange, E
                 component.name
             ))
         })?;
+    check_declared(
+        component,
+        LUMINANCE_KIND,
+        &LUMINANCE_DECLARED,
+        &component.payload,
+    )?;
     let refuse = |field: &str, what: String| {
         Err(Error::validation(format!(
             "component {} {LUMINANCE_KIND} {field} {what}",
             component.name
         )))
     };
-    for (field, value) in [("low", range.low), ("high", range.high)] {
-        if !value.is_finite() || !(LEVEL_MIN..=LEVEL_MAX).contains(&value) {
-            return refuse(
-                field,
-                format!("must be a number within {LEVEL_MIN:.0}..={LEVEL_MAX:.0}"),
-            );
-        }
-    }
     for (field, value) in [
         ("low_feather", range.low_feather),
         ("high_feather", range.high_feather),
     ] {
-        if !value.is_finite()
-            || !(value == 0.0 || (RANGE_FEATHER_MIN..=RANGE_FEATHER_MAX).contains(&value))
-        {
+        if value != 0.0 && value < RANGE_FEATHER_MIN {
             return refuse(
                 field,
                 format!(
@@ -276,7 +281,11 @@ impl CompiledLuminance {
             hi_feather: stored.high_feather / 100.0,
         }
     }
+}
 
+// A value-based component ignores the position instead, and its rectangle and feature are the
+// stated ones below: the whole stage, drawn or inverted, and no feature a pixel grid can miss.
+impl ComponentField for CompiledLuminance {
     /// Coverage for one linear-sRGB pixel, as the study froze it:
     ///
     /// ```text
@@ -300,7 +309,7 @@ impl CompiledLuminance {
     ///
     /// The hard branch follows the radial's `span == 0` discipline: a feather of exactly zero, and
     /// only that, takes it, so a vanishing shoulder is never divided by.
-    pub(super) fn coverage(&self, rgb: [f64; 3]) -> f64 {
+    fn coverage(&self, _u: f64, _v: f64, rgb: [f64; 3]) -> f64 {
         let e = luminance_axis(rgb);
         let rise = if self.lo_feather == 0.0 {
             if e >= self.lo { 1.0 } else { 0.0 }
@@ -313,6 +322,18 @@ impl CompiledLuminance {
             smooth((((self.hi - e) / self.hi_feather) + 1.0).clamp(0.0, 1.0))
         };
         rise.min(fall)
+    }
+
+    fn reads_pixels(&self) -> bool {
+        true
+    }
+
+    fn support(&self, stage: Stage, _inverted: bool) -> Region {
+        value_support(stage)
+    }
+
+    fn feature_px(&self, stage: Stage) -> f64 {
+        value_feature_px(stage)
     }
 }
 
@@ -422,7 +443,19 @@ pub(super) fn colour_sample_parameters() -> Vec<ParameterDescriptor> {
         .collect()
 }
 
+/// [`colour_parameters`], declared once for the parser to check a stored payload against.
+static COLOUR_DECLARED: LazyLock<Vec<ParameterDescriptor>> =
+    LazyLock::new(|| colour_parameters(true));
+
+/// [`colour_sample_parameters`], declared once for the parser to check each stored sample against.
+static SAMPLE_DECLARED: LazyLock<Vec<ParameterDescriptor>> =
+    LazyLock::new(colour_sample_parameters);
+
 /// Parse and range-check one stored `colour-range` payload.
+///
+/// The refine is checked against its own declaration and each sample against what one sampled
+/// colour declares; what a declared range cannot say is the sample count, refused by the kind's
+/// limit.
 pub(super) fn parse_colour(component: &Component) -> Result<ColourRange, Error> {
     let range: ColourRange =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
@@ -431,18 +464,7 @@ pub(super) fn parse_colour(component: &Component) -> Result<ColourRange, Error> 
                 component.name
             ))
         })?;
-    let refuse = |field: &str, what: String| {
-        Err(Error::validation(format!(
-            "component {} {COLOUR_KIND} {field} {what}",
-            component.name
-        )))
-    };
-    if !range.refine.is_finite() || !(REFINE_MIN..=REFINE_MAX).contains(&range.refine) {
-        return refuse(
-            "refine",
-            format!("must be a number within {REFINE_MIN:.0}..={REFINE_MAX:.0}"),
-        );
-    }
+    check_declared(component, COLOUR_KIND, &COLOUR_DECLARED, &component.payload)?;
     if range.samples.len() > MAX_SAMPLES {
         return Err(Error::resource_limit(format!(
             "component {} has {} samples; the limit is {MAX_SAMPLES} samples per \
@@ -451,17 +473,13 @@ pub(super) fn parse_colour(component: &Component) -> Result<ColourRange, Error> 
             range.samples.len()
         )));
     }
-    for sample in &range.samples {
-        for value in sample {
-            if !value.is_finite() || !(SAMPLE_MIN..=SAMPLE_MAX).contains(value) {
-                return refuse(
-                    "samples",
-                    format!(
-                        "must each be three linear-sRGB numbers within {SAMPLE_MIN:.0}..={SAMPLE_MAX:.0}"
-                    ),
-                );
-            }
-        }
+    for [r, g, b] in &range.samples {
+        check_declared(
+            component,
+            &format!("{COLOUR_KIND} sample"),
+            &SAMPLE_DECLARED,
+            &json!({"r": r, "g": g, "b": b}),
+        )?;
     }
     Ok(range)
 }
@@ -619,26 +637,9 @@ pub(super) fn compile_colour(
     Ok(Arc::new(CompiledColour::new(&parse_colour(component)?)))
 }
 
-// A value-based component ignores the position instead, and its rectangle and feature are the
-// stated ones above: the whole stage, drawn or inverted, and no feature a pixel grid can miss.
-impl ComponentField for CompiledLuminance {
-    fn coverage(&self, _u: f64, _v: f64, rgb: [f64; 3]) -> f64 {
-        CompiledLuminance::coverage(self, rgb)
-    }
-
-    fn reads_pixels(&self) -> bool {
-        true
-    }
-
-    fn support(&self, stage: Stage, _inverted: bool) -> Region {
-        value_support(stage)
-    }
-
-    fn feature_px(&self, stage: Stage) -> f64 {
-        value_feature_px(stage)
-    }
-}
-
+// The colour range's value-only falloff stays its own method, because the brush's colour limit
+// evaluates it too ([`similarity`]); the kind's field reads it, and states the same rectangle and
+// feature the luminance band does.
 impl ComponentField for CompiledColour {
     fn coverage(&self, _u: f64, _v: f64, rgb: [f64; 3]) -> f64 {
         CompiledColour::coverage(self, rgb)
@@ -701,7 +702,7 @@ mod tests {
         // Between the edges both ramps are exactly one, whatever the feathers.
         for e in [0.3, 0.4, 0.5, 0.7] {
             let linear = linear_grey(e);
-            let c = band.coverage([linear, linear, linear]);
+            let c = ComponentField::coverage(&band, 0.0, 0.0, [linear, linear, linear]);
             assert!(c > 0.999_999, "coverage {c} at e = {e}");
         }
     }

@@ -809,6 +809,41 @@ fn whole_stage(stage: Stage) -> Region {
     }
 }
 
+/// The conservative pixel rectangle of the real pixel-index box `[min_x, max_x] x [min_y, max_y]`,
+/// clipped to the stage: the one tail every closed-form support shares, whatever its own box was
+/// computed from — a half-plane's clipped corners, a radial's ellipse, a brush's grown strokes.
+///
+/// The box is grown by one pixel on every side, which is the second of the two slacks that keep a
+/// rectangle computed in floating point conservative (each caller takes the first, a few ulps of its
+/// own magnitudes, before it gets here). A non-finite bound answers the whole stage, which is always
+/// a correct rectangle, and a box that misses the stage answers the empty one.
+fn region_from_bounds(stage: Stage, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> Region {
+    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
+        return whole_stage(stage);
+    }
+    let grow_low = |value: f64, limit: u32| -> u32 {
+        let index = value.floor() as i64 - 1;
+        index.clamp(0, i64::from(limit)) as u32
+    };
+    let grow_high = |value: f64, limit: u32| -> u32 {
+        let index = value.floor() as i64 + 2;
+        index.clamp(0, i64::from(limit)) as u32
+    };
+    let x0 = grow_low(min_x, stage.width);
+    let y0 = grow_low(min_y, stage.height);
+    let x1 = grow_high(max_x, stage.width);
+    let y1 = grow_high(max_y, stage.height);
+    if x1 <= x0 || y1 <= y0 {
+        return empty_region();
+    }
+    Region {
+        x0,
+        y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    }
+}
+
 /// The composed conservative rectangle, folded in the same order coverage is.
 fn compose_bounds(
     components: &[CompiledComponent],
@@ -932,27 +967,7 @@ fn half_plane_bounds(stage: Stage, inside: impl Fn(f64, f64) -> f64) -> Region {
             extend(x0 + s * (x1 - x0), y0 + s * (y1 - y0));
         }
     }
-    let grow_low = |value: f64, limit: u32| -> u32 {
-        let index = value.floor() as i64 - 1;
-        index.clamp(0, i64::from(limit)) as u32
-    };
-    let grow_high = |value: f64, limit: u32| -> u32 {
-        let index = value.floor() as i64 + 2;
-        index.clamp(0, i64::from(limit)) as u32
-    };
-    let x0 = grow_low(min_x, stage.width);
-    let y0 = grow_low(min_y, stage.height);
-    let x1 = grow_high(max_x, stage.width);
-    let y1 = grow_high(max_y, stage.height);
-    if x1 <= x0 || y1 <= y0 {
-        return empty_region();
-    }
-    Region {
-        x0,
-        y0,
-        width: x1 - x0,
-        height: y1 - y0,
-    }
+    region_from_bounds(stage, min_x, max_x, min_y, max_y)
 }
 
 #[cfg(test)]
@@ -1182,12 +1197,12 @@ mod tests {
             (
                 gradient(-1.5, 0.0, 0.5, 0.5),
                 ErrorKind::Validation,
-                "validation: component Linear 1 linear x0 must be a number within -1..=2",
+                "validation: component Linear 1 linear parameter x0 must be a number within -1..=2",
             ),
             (
                 gradient(0.0, 2.5, 0.5, 0.5),
                 ErrorKind::Validation,
-                "validation: component Linear 1 linear y0 must be a number within -1..=2",
+                "validation: component Linear 1 linear parameter y0 must be a number within -1..=2",
             ),
             (
                 json!({"x0": 0.0, "y0": 0.0, "x1": 1.0}),

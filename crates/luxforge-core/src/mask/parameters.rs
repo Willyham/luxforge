@@ -16,8 +16,38 @@
 //! way a person writes the number — `0.52`, `0.180`, `−12`, `60` — and a key press always changes
 //! what it shows. A fine nudge below the precision is still sent and stored exactly, and the field
 //! shows the extra digits while the value carries them.
+//!
+//! A kind checks a stored payload against the same declarations ([`check_declared`]), through the
+//! generic check a request's parameters take, so what a parser refuses and what a request is refused
+//! for are one rule. A kind's parser keeps only what a declared range cannot say.
 use super::{DISTANCE_MAX, DISTANCE_MIN, POSITION_MAX, POSITION_MIN};
-use crate::ParameterDescriptor;
+use crate::{Component, Error, ParameterDescriptor, check_value};
+use serde_json::Value;
+
+/// Check the fields of one stored payload, `payload`, against the parameters `declared` for them,
+/// with the generic check ([`check_value`]) and in declaration order. The refusal is that check's,
+/// prefixed with the component and `what` it is: `component Radial 1 radial parameter angle must be a
+/// number within -180..=180`.
+///
+/// A declared field the payload lacks is refused as a value that is not a number: a kind parses its
+/// payload's shape before it checks it, so that would be a declaration the parser does not read.
+pub(super) fn check_declared(
+    component: &Component,
+    what: &str,
+    declared: &[ParameterDescriptor],
+    payload: &Value,
+) -> Result<(), Error> {
+    for parameter in declared {
+        let value = payload.get(&parameter.name).unwrap_or(&Value::Null);
+        check_value(parameter, value).map_err(|error| {
+            Error::validation(format!(
+                "component {} {what} {}",
+                component.name, error.detail
+            ))
+        })?;
+    }
+    Ok(())
+}
 
 /// One normalized stored position: a fraction of the content stage, with one stage extent of
 /// overshoot legal on each side, because a gradient dragged from off the canvas and a radial centred

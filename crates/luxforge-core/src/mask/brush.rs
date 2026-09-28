@@ -545,7 +545,9 @@ impl Compiled {
             narrowest_band,
         })
     }
+}
 
+impl ComponentField for Compiled {
     /// Coverage at a mask-space point, as the study froze it:
     ///
     /// ```text
@@ -567,7 +569,11 @@ impl Compiled {
     /// whole stroke would give: a segment the cell omits cannot reach the pixel, so it cannot be the
     /// nearest one unless every present segment is also out of reach — in which case both answers
     /// give exactly `0.0`.
-    pub(super) fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
+    ///
+    /// A brush ignores `rgb` for every stroke that is not limited to a colour, and a limited one
+    /// multiplies its own coverage by the similarity frozen in
+    /// `docs/design/mask-study.md#the-colour-constraint`.
+    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
         let listed = self.index.at(u, v);
         if listed.is_empty() {
             return 0.0;
@@ -602,7 +608,7 @@ impl Compiled {
     /// coverage overlay has to read the masked operation's input to draw such a mask at all, and what
     /// a limited stroke paints moves when a layer ahead of the masked one changes that input. Its **geometric** feature width is
     /// unaffected, because a colour test draws no ramp across the frame for a pixel grid to miss.
-    pub(super) fn reads_pixels(&self) -> bool {
+    fn reads_pixels(&self) -> bool {
         self.strokes.iter().any(|stroke| stroke.colour.is_some())
     }
 
@@ -615,7 +621,7 @@ impl Compiled {
     /// where `c` is exactly `1` — the strokes' cores — and non-zero over the whole of the rest of the
     /// stage, so the whole stage is the honest conservative answer, exactly as an inverted radial and
     /// a whole-mask inversion answer it.
-    pub(super) fn support(&self, stage: Stage, inverted: bool) -> Region {
+    fn support(&self, stage: Stage, inverted: bool) -> Region {
         if inverted {
             return super::whole_stage(stage);
         }
@@ -633,13 +639,18 @@ impl Compiled {
     /// no pixel grid resolves it at any size, and the proxy path is told that rather than given a
     /// width the edge does not have. A component with no add stroke draws no feature and answers
     /// `INFINITY`, which is what an empty mask answers.
-    pub(super) fn feature_px(&self, stage: Stage) -> f64 {
+    fn feature_px(&self, stage: Stage) -> f64 {
         self.narrowest_band * f64::from(stage.height)
+    }
+
+    /// The densest cell of this component's index.
+    fn densest_cell(&self) -> usize {
+        self.index.densest()
     }
 
     /// The segments a pixel at this mask-space point tests: the length of the one cell list it falls
     /// in, which is the whole of its per-pixel cost beyond one `sqrt` and one profile per stroke.
-    pub(super) fn segments_at(&self, u: f64, v: f64) -> usize {
+    fn segments_at(&self, u: f64, v: f64) -> usize {
         self.index.at(u, v).len()
     }
 }
@@ -681,35 +692,6 @@ pub(super) fn compile(component: &Component, binding: &Binding<'_>) -> Result<Fi
     )?))
 }
 
-impl ComponentField for Compiled {
-    // A brush ignores `rgb` for every stroke that is not limited to a colour, and a limited one
-    // multiplies its own coverage by the similarity frozen in
-    // `docs/design/mask-study.md#the-colour-constraint`.
-    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
-        Compiled::coverage(self, u, v, rgb)
-    }
-
-    fn reads_pixels(&self) -> bool {
-        Compiled::reads_pixels(self)
-    }
-
-    fn support(&self, stage: Stage, inverted: bool) -> Region {
-        Compiled::support(self, stage, inverted)
-    }
-
-    fn feature_px(&self, stage: Stage) -> f64 {
-        Compiled::feature_px(self, stage)
-    }
-
-    fn densest_cell(&self) -> usize {
-        self.index.densest()
-    }
-
-    fn segments_at(&self, u: f64, v: f64) -> usize {
-        Compiled::segments_at(self, u, v)
-    }
-}
-
 /// One stroke's segments in mask space, through the **stored position** spelling.
 ///
 /// A stroke of `n >= 2` positions has `n - 1` segments; a one-point stroke has the single degenerate
@@ -728,48 +710,23 @@ fn segments_of(stroke: &Stroke, aspect: f64) -> Vec<Segment> {
 
 /// The conservative pixel rectangle of a mask-space box, clipped to the stage.
 ///
-/// Closed form, so a component's rectangle costs `O(1)`. It takes the same two deliberate slacks
-/// [`super::half_plane_bounds`] and the radial's `ellipse_bounds` take, which is what "exactly zero
-/// outside" demands of a rectangle computed in floating point: the box is widened by a few ulps of
-/// the magnitudes involved, and the rectangle is then grown by one pixel on every side. A non-finite
-/// value anywhere answers the whole stage, which is always a correct rectangle.
+/// Closed form, so a component's rectangle costs `O(1)`. The box is widened by a few ulps of the
+/// magnitudes involved, as the radial's `ellipse_bounds` widens its own, and
+/// [`super::region_from_bounds`] takes the rest: the pixel indices, the one pixel of growth on every
+/// side and the whole stage for a non-finite value.
 ///
 /// Mask space to pixel indices inverts the pixel-centre spelling: `u = (px + 0.5) / H`, so
 /// `px = u · H - 0.5`.
 fn box_bounds(stage: Stage, u0: f64, v0: f64, u1: f64, v1: f64) -> Region {
-    if !u0.is_finite() || !v0.is_finite() || !u1.is_finite() || !v1.is_finite() {
-        return super::whole_stage(stage);
-    }
     let height = f64::from(stage.height);
     let slack = |low: f64, high: f64| 16.0 * f64::EPSILON * (low.abs() + high.abs());
     let su = slack(u0, u1);
     let sv = slack(v0, v1);
-    let min_x = (u0 - su) * height - 0.5;
-    let max_x = (u1 + su) * height - 0.5;
-    let min_y = (v0 - sv) * height - 0.5;
-    let max_y = (v1 + sv) * height - 0.5;
-    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-        return super::whole_stage(stage);
-    }
-    let grow_low = |value: f64, limit: u32| -> u32 {
-        let index = value.floor() as i64 - 1;
-        index.clamp(0, i64::from(limit)) as u32
-    };
-    let grow_high = |value: f64, limit: u32| -> u32 {
-        let index = value.floor() as i64 + 2;
-        index.clamp(0, i64::from(limit)) as u32
-    };
-    let x0 = grow_low(min_x, stage.width);
-    let y0 = grow_low(min_y, stage.height);
-    let x1 = grow_high(max_x, stage.width);
-    let y1 = grow_high(max_y, stage.height);
-    if x1 <= x0 || y1 <= y0 {
-        return super::empty_region();
-    }
-    Region {
-        x0,
-        y0,
-        width: x1 - x0,
-        height: y1 - y0,
-    }
+    super::region_from_bounds(
+        stage,
+        (u0 - su) * height - 0.5,
+        (u1 + su) * height - 0.5,
+        (v0 - sv) * height - 0.5,
+        (v1 + sv) * height - 0.5,
+    )
 }

@@ -723,47 +723,47 @@ fn radial_validation_errors_name_the_field() {
     let cases = [
         (
             with("x", json!(-1.5)),
-            "validation: component Radial 1 radial x must be a number within -1..=2",
+            "validation: component Radial 1 radial parameter x must be a number within -1..=2",
         ),
         (
             with("y", json!(2.5)),
-            "validation: component Radial 1 radial y must be a number within -1..=2",
+            "validation: component Radial 1 radial parameter y must be a number within -1..=2",
         ),
         (
             with("radius_x", json!(0.0)),
-            "validation: component Radial 1 radial radius_x must be a number within 1e-4..=64 \
-             mask-space units",
+            "validation: component Radial 1 radial parameter radius_x must be a number within \
+             0.0001..=64",
         ),
         (
             with("radius_y", json!(5e-5)),
-            "validation: component Radial 1 radial radius_y must be a number within 1e-4..=64 \
-             mask-space units",
+            "validation: component Radial 1 radial parameter radius_y must be a number within \
+             0.0001..=64",
         ),
         (
             with("radius_x", json!(64.5)),
-            "validation: component Radial 1 radial radius_x must be a number within 1e-4..=64 \
-             mask-space units",
+            "validation: component Radial 1 radial parameter radius_x must be a number within \
+             0.0001..=64",
         ),
         (
             with("radius_y", json!(-0.3)),
-            "validation: component Radial 1 radial radius_y must be a number within 1e-4..=64 \
-             mask-space units",
+            "validation: component Radial 1 radial parameter radius_y must be a number within \
+             0.0001..=64",
         ),
         (
             with("angle", json!(181.0)),
-            "validation: component Radial 1 radial angle must be a number within -180..=180 degrees",
+            "validation: component Radial 1 radial parameter angle must be a number within -180..=180",
         ),
         (
             with("angle", json!(-180.5)),
-            "validation: component Radial 1 radial angle must be a number within -180..=180 degrees",
+            "validation: component Radial 1 radial parameter angle must be a number within -180..=180",
         ),
         (
             with("feather", json!(100.5)),
-            "validation: component Radial 1 radial feather must be a number within 0..=100",
+            "validation: component Radial 1 radial parameter feather must be a number within 0..=100",
         ),
         (
             with("feather", json!(-1.0)),
-            "validation: component Radial 1 radial feather must be a number within 0..=100",
+            "validation: component Radial 1 radial parameter feather must be a number within 0..=100",
         ),
         (
             json!({"x": 0.5, "y": 0.5, "radius_x": 0.3, "radius_y": 0.2, "angle": 12.0}),

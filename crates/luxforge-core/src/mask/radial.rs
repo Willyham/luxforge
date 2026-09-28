@@ -33,16 +33,16 @@
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
 use super::{
-    Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, POSITION_MAX, POSITION_MIN,
-    parameters::{angle, distance, percentage, position},
-    smooth,
+    Binding, ComponentField, Field,
+    parameters::{angle, check_declared, distance, percentage, position},
+    region_from_bounds, smooth,
 };
 use crate::{
     Component, Error, ParameterDescriptor,
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "radial";
@@ -120,12 +120,15 @@ pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
     ]
 }
 
+/// [`parameters`], declared once for the parser to check a stored payload against.
+static DECLARED: LazyLock<Vec<ParameterDescriptor>> = LazyLock::new(|| parameters(true));
+
 /// Parse and range-check one stored `radial` payload, without a stage.
 ///
 /// Every field of a radial is checkable without a stage, unlike the linear gradient's axis length:
 /// a radius is a mask-space distance as stored, so the study's `[DISTANCE_MIN, DISTANCE_MAX]` rule
-/// applies to the number itself and does not wait on an aspect ratio. Each refusal names the
-/// component and the field.
+/// applies to the number itself and does not wait on an aspect ratio. So the payload's shape and its
+/// own declarations are the whole check, and each refusal names the component and the field.
 pub(super) fn parse(component: &Component) -> Result<RadialGradient, Error> {
     let radial: RadialGradient =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
@@ -134,42 +137,7 @@ pub(super) fn parse(component: &Component) -> Result<RadialGradient, Error> {
                 component.name
             ))
         })?;
-    let refuse = |field: &str, what: String| {
-        Err(Error::validation(format!(
-            "component {} {KIND} {field} {what}",
-            component.name
-        )))
-    };
-    for (field, value) in [("x", radial.x), ("y", radial.y)] {
-        if !value.is_finite() || !(POSITION_MIN..=POSITION_MAX).contains(&value) {
-            return refuse(
-                field,
-                format!("must be a number within {POSITION_MIN:.0}..={POSITION_MAX:.0}"),
-            );
-        }
-    }
-    for (field, value) in [("radius_x", radial.radius_x), ("radius_y", radial.radius_y)] {
-        if !value.is_finite() || !(DISTANCE_MIN..=DISTANCE_MAX).contains(&value) {
-            return refuse(
-                field,
-                format!(
-                    "must be a number within {DISTANCE_MIN:e}..={DISTANCE_MAX:.0} mask-space units"
-                ),
-            );
-        }
-    }
-    if !radial.angle.is_finite() || !(ANGLE_MIN..=ANGLE_MAX).contains(&radial.angle) {
-        return refuse(
-            "angle",
-            format!("must be a number within {ANGLE_MIN:.0}..={ANGLE_MAX:.0} degrees"),
-        );
-    }
-    if !radial.feather.is_finite() || !(FEATHER_MIN..=FEATHER_MAX).contains(&radial.feather) {
-        return refuse(
-            "feather",
-            format!("must be a number within {FEATHER_MIN:.0}..={FEATHER_MAX:.0}"),
-        );
-    }
+    check_declared(component, KIND, &DECLARED, &component.payload)?;
     Ok(radial)
 }
 
@@ -222,7 +190,9 @@ impl Compiled {
             hard: span == 0.0,
         }
     }
+}
 
+impl ComponentField for Compiled {
     /// Coverage at a mask-space point, as the study froze it:
     ///
     /// ```text
@@ -241,7 +211,10 @@ impl Compiled {
     ///
     /// The `hard` branch is the `feather = 0` hard edge taken as an explicit case, so the divisor
     /// `span` is only ever reached where the constructor has already established it is not zero.
-    pub(super) fn coverage(&self, u: f64, v: f64) -> f64 {
+    ///
+    /// A geometric component ignores `rgb`: the same expressions on the same `(u, v)`, so its
+    /// coverage is bit-identical to the frozen reference whatever pixel it is handed.
+    fn coverage(&self, u: f64, v: f64, _rgb: [f64; 3]) -> f64 {
         let du = u - self.cu;
         let dv = v - self.cv;
         let a = self.ca * du + self.sa * dv;
@@ -254,6 +227,10 @@ impl Compiled {
         } else {
             smooth(((1.0 - r) / self.span).clamp(0.0, 1.0))
         }
+    }
+
+    fn reads_pixels(&self) -> bool {
+        false
     }
 
     /// A conservative pixel rectangle of this component's support.
@@ -274,7 +251,7 @@ impl Compiled {
     /// inner ellipse `r <= r0` — and non-zero over the whole of the rest of the stage. The
     /// complement of an ellipse is not a rectangle, so the whole stage is the honest conservative
     /// answer, exactly as a whole-mask inversion answers it.
-    pub(super) fn support(&self, stage: Stage, inverted: bool) -> Region {
+    fn support(&self, stage: Stage, inverted: bool) -> Region {
         if inverted {
             return super::whole_stage(stage);
         }
@@ -299,7 +276,7 @@ impl Compiled {
     /// A hard edge has no ramp at all and answers `0.0`: no pixel grid resolves it, at proxy size or
     /// at full size, and the proxy path is told that rather than given a width the edge does not
     /// have.
-    pub(super) fn feature_px(&self, stage: Stage) -> f64 {
+    fn feature_px(&self, stage: Stage) -> f64 {
         self.span * self.radius_x.min(self.radius_y) * f64::from(stage.height)
     }
 }
@@ -317,75 +294,29 @@ pub(super) fn compile(component: &Component, binding: &Binding<'_>) -> Result<Fi
     Ok(Arc::new(Compiled::new(parse(component)?, binding.stage)))
 }
 
-impl ComponentField for Compiled {
-    // A geometric component ignores `rgb`: the same expressions on the same `(u, v)`, so its coverage
-    // is bit-identical to the frozen reference whatever pixel it is handed.
-    fn coverage(&self, u: f64, v: f64, _rgb: [f64; 3]) -> f64 {
-        Compiled::coverage(self, u, v)
-    }
-
-    fn reads_pixels(&self) -> bool {
-        false
-    }
-
-    fn support(&self, stage: Stage, inverted: bool) -> Region {
-        Compiled::support(self, stage, inverted)
-    }
-
-    fn feature_px(&self, stage: Stage) -> f64 {
-        Compiled::feature_px(self, stage)
-    }
-}
-
 /// The conservative pixel rectangle of the axis-aligned box `[cu ± ex] x [cv ± ey]` of mask space,
 /// clipped to the stage.
 ///
-/// Closed form, so a component's rectangle costs `O(1)` rather than a scan of the stage's side. Two
-/// deliberate slacks make the result conservative against its own arithmetic, which is what "exactly
-/// zero outside" demands of a rectangle computed in floating point, and they are the same two
-/// [`super::half_plane_bounds`] takes: the half-extent is widened by a few ulps of the magnitudes
-/// involved, so a pixel whose exact extent is a hair larger than the computed one is kept rather
-/// than excluded; and the rectangle is then grown by one pixel on every side. A non-finite value
-/// anywhere answers the whole stage, which is always a correct rectangle.
+/// Closed form, so a component's rectangle costs `O(1)` rather than a scan of the stage's side. The
+/// half-extent is widened by a few ulps of the magnitudes involved, so a pixel whose exact extent is
+/// a hair larger than the computed one is kept rather than excluded, and [`region_from_bounds`]
+/// takes the rest: the pixel indices, the one pixel of growth on every side and the whole stage for
+/// a non-finite value.
 ///
 /// Mask space to pixel indices inverts the pixel-centre spelling: `u = (px + 0.5) / H`, so
 /// `px = u · H - 0.5`.
 fn ellipse_bounds(stage: Stage, cu: f64, cv: f64, ex: f64, ey: f64) -> Region {
-    if !cu.is_finite() || !cv.is_finite() || !ex.is_finite() || !ey.is_finite() {
-        return super::whole_stage(stage);
-    }
     let height = f64::from(stage.height);
     // A few ulps of the magnitudes the extent was built from, so the slack is in the arithmetic
     // rather than a fixed coverage threshold.
     let slack = |centre: f64, extent: f64| 16.0 * f64::EPSILON * (centre.abs() + extent);
     let su = ex + slack(cu, ex);
     let sv = ey + slack(cv, ey);
-    let min_x = (cu - su) * height - 0.5;
-    let max_x = (cu + su) * height - 0.5;
-    let min_y = (cv - sv) * height - 0.5;
-    let max_y = (cv + sv) * height - 0.5;
-    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-        return super::whole_stage(stage);
-    }
-    let grow_low = |value: f64, limit: u32| -> u32 {
-        let index = value.floor() as i64 - 1;
-        index.clamp(0, i64::from(limit)) as u32
-    };
-    let grow_high = |value: f64, limit: u32| -> u32 {
-        let index = value.floor() as i64 + 2;
-        index.clamp(0, i64::from(limit)) as u32
-    };
-    let x0 = grow_low(min_x, stage.width);
-    let y0 = grow_low(min_y, stage.height);
-    let x1 = grow_high(max_x, stage.width);
-    let y1 = grow_high(max_y, stage.height);
-    if x1 <= x0 || y1 <= y0 {
-        return super::empty_region();
-    }
-    Region {
-        x0,
-        y0,
-        width: x1 - x0,
-        height: y1 - y0,
-    }
+    region_from_bounds(
+        stage,
+        (cu - su) * height - 0.5,
+        (cu + su) * height - 0.5,
+        (cv - sv) * height - 0.5,
+        (cv + sv) * height - 0.5,
+    )
 }
