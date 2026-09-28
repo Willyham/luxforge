@@ -32,26 +32,27 @@ enum ProxyStep {
 
 /// Whether this job has a proxy phase, and against which source.
 ///
+/// `recipe` is the stack the job renders and `exact` its one compilation at the exact stage: the
+/// whole stack, or for a truncated job its layer prefix, which is planned exactly as a whole stack
+/// of those layers would be. A crop draft's input stage is such a prefix, and the prefix before a
+/// crop holds no crop, so its proxy is the whole proxy stage. The cache key is the source's
+/// identity and the plan: it holds downscaled source pixels, never a rendered stack, so a prefix
+/// and a whole stack that plan the same proxy share its pixels correctly, and ones that plan
+/// different proxies have different keys.
+///
 /// Cost is `O(layers)`: `proxy_eligible` reads stages, the plan reads the output stage of the job's
 /// exact compilation, and the window compiles the stack once at the proxy stage, which the proxy
 /// frame then renders, to walk back what its output reads. None of them reads a pixel. It runs on
 /// the preview worker, as does building the proxy itself.
-fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep {
+fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Error>) -> ProxyStep {
     if job.intent == PreviewIntent::Settle {
         return ProxyStep::Skipped;
     }
     let Some(bounds) = job.proxy else {
         return ProxyStep::Skipped;
     };
-    if job.layer_count.is_some() {
-        // A truncated job renders a layer prefix, and the plan describes the whole stack's output
-        // stage, so the prefix has no proxy phase at all.
-        return ProxyStep::Declined(
-            "a truncated preview renders a layer prefix, which has no proxy phase".into(),
-        );
-    }
     let evaluation = &job.evaluation;
-    if let Err(error) = evaluation.registry().proxy_eligible(evaluation.recipe()) {
+    if let Err(error) = evaluation.registry().proxy_eligible(recipe) {
         return ProxyStep::Declined(error.detail);
     }
     let exact = match exact {
@@ -62,7 +63,7 @@ fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep 
         Some(plan) => {
             // A cropped stack's proxy holds only the window of the proxy stage its output reads,
             // so its size follows the display bounds and not the crop's tightness.
-            let stage = exact.proxy_window(evaluation.registry(), evaluation.recipe(), plan);
+            let stage = exact.proxy_window(evaluation.registry(), recipe, plan);
             ProxyStep::Planned(
                 ProxyKey {
                     identity: evaluation.source().identity(),
@@ -169,7 +170,7 @@ pub(super) fn run(
     // Whether a proxy frame has already carried the job's coverage grid, so the exact phase does
     // not fill it a second time.
     let mut overlay_delivered = false;
-    let declined = match plan_proxy(&job, &exact) {
+    let declined = match plan_proxy(&job, recipe, &exact) {
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
         ProxyStep::Planned(key, stage) => {

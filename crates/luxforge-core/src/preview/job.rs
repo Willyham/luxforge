@@ -120,7 +120,8 @@ pub(super) fn one_component(mask: &Mask, component: &ComponentId) -> Option<Mask
 /// How much work the one preview lane may do for this request. An interactive request produces
 /// visible pixels only; the desktop asks for settlement once its shared quiet gate opens or the
 /// gesture commits. A normal request preserves the existing two-phase path for callers that need
-/// its full result immediately, including the crop input stage.
+/// its full result immediately. A crop draft's input stage is asked for interactively whenever it
+/// has bounds, since nothing is reduced from it, and without bounds as a normal exact-only job.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreviewIntent {
     #[default]

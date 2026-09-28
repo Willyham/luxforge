@@ -1318,23 +1318,111 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
         .expect("a reason");
     assert!(reason.contains("scale is 1"), "{reason}");
 
-    // A truncated job renders a layer prefix, which has no proxy phase. It is never analysed
-    // either: the owner refuses to plan a job that is both truncated and analysing, because the
-    // prefix is not the stack the job's identity describes.
-    let mut truncated = stacked(64, 48, eligible_layers(64, 48), Some(bounds(8, 8)));
+    // A truncated job is judged on the prefix it renders: an ineligible layer inside the prefix
+    // declines its proxy exactly as it declines a whole stack's.
+    let mut pixel = vec![Layer::pixel(0, 0, [9, 9, 9])];
+    pixel.extend(eligible_layers(64, 48));
+    let mut truncated = stacked(64, 48, pixel, Some(bounds(8, 8)));
     truncated.layer_count = Some(1);
     let result = only(&mut queue, truncated);
     let reason = result
         .exact()
         .and_then(|exact| exact.proxy_declined.clone())
         .expect("a reason");
-    assert!(reason.contains("truncated"), "{reason}");
+    assert!(reason.contains(PIXEL_EFFECT), "{reason}");
+}
+
+/// A truncated job that offers bounds — a crop draft's input stage at Fit — has a proxy phase of
+/// its own layer prefix: planned from the prefix's output stage and judged on the prefix's layers,
+/// so a layer after the prefix that would decline the whole stack's proxy declines nothing here.
+/// Its proxy frame is the prefix rendered over the exact downscale of the source, byte for byte,
+/// and its exact frame the prefix at full resolution. Asked for interactively, it renders the
+/// proxy alone, which is how the desktop asks for the stage at Fit. It is never analysed: the
+/// owner refuses a job that is both truncated and analysing.
+#[test]
+fn a_truncated_job_with_bounds_has_its_prefixs_own_proxy_phase() {
+    let display = bounds(40, 40);
+    // The crop's input stage is the orientation and the Basic layer ahead of the crop; a pixel
+    // layer after the crop makes the whole stack ineligible for a proxy.
+    let mut layers = eligible_layers(64, 48);
+    layers.push(Layer::pixel(0, 0, [9, 9, 9]));
+    let count = 2;
+    let mut job = stacked(64, 48, layers, Some(display));
+    job.layer_count = Some(count);
+    let registry = job.evaluation.registry().clone();
+    let source = job.evaluation.source().clone();
+    let whole = job.evaluation.recipe().clone();
     assert!(
-        result
+        registry.proxy_eligible(&whole).is_err(),
+        "the whole stack has no proxy"
+    );
+    let prefix = Recipe {
+        layers: whole.layers[..count].to_vec(),
+        ..whole.clone()
+    };
+    let snapshot = job.evaluation.entry().snapshot.id.clone();
+    let plan = source
+        .proxy_plan(&registry, &prefix, display)
+        .expect("a plan")
+        .expect("a proxy is worthwhile");
+
+    let mut queue = PreviewQueue::default();
+    queue.request(job.clone());
+    let results = drain_all(&mut queue);
+    assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
+    let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+    assert_eq!(proxy.phase(), PreviewPhase::Proxy);
+    assert_eq!(
+        exact.exact().and_then(|exact| exact.proxy_declined.clone()),
+        None,
+        "the proxy phase ran"
+    );
+    assert!(
+        exact
             .exact()
             .and_then(|exact| exact.report.clone())
             .is_none(),
         "a truncated job carries no report"
+    );
+    // The prefix holds no crop, so its proxy is the whole proxy stage.
+    assert_eq!(
+        proxy.proxy().map(|proxy| proxy.dimensions),
+        Some((plan.width, plan.height))
+    );
+    let reference = source
+        .proxy(plan)
+        .expect("the exact downscale")
+        .render(&registry, snapshot.clone(), &prefix)
+        .expect("the prefix renders at proxy size");
+    let frame = proxy.into_raster().expect("a proxy frame");
+    assert_eq!(
+        (frame.width, frame.height),
+        (reference.width, reference.height)
+    );
+    assert_eq!(
+        frame.rgba.as_ref(),
+        reference.rgba.as_ref(),
+        "the proxy frame is the prefix over the exact downscale"
+    );
+    assert!(frame.width <= display.width && frame.height <= display.height);
+    let reference = source
+        .render(&registry, snapshot, &prefix)
+        .expect("the exact prefix");
+    let full = exact.into_raster().expect("an exact frame");
+    assert_eq!((full.width, full.height), (48, 64), "the turned stage");
+    assert_eq!(full.rgba.as_ref(), reference.rgba.as_ref());
+
+    // Interactively, the proxy is the job's one frame, and the next job at the same bounds reads
+    // the proxy source already in hand.
+    job.intent = PreviewIntent::Interactive;
+    queue.request(job);
+    let results = drain_all(&mut queue);
+    assert_eq!(results.len(), 1, "the proxy frame alone");
+    assert_eq!(results[0].phase(), PreviewPhase::Proxy);
+    assert!(!results[0].proxy().is_some_and(|proxy| proxy.built));
+    assert_eq!(
+        results[0].raster().expect("a proxy frame").rgba.as_ref(),
+        frame.rgba.as_ref()
     );
 }
 
