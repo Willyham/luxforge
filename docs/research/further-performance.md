@@ -1,7 +1,8 @@
 # Further performance opportunities
 
-Status: guarded RAW colour-row batching and Bayer normalization batching are implemented and
-measured on the owner's M4 Pro, 14 cores and 48 GiB. Mask-paint phase attribution is implemented;
+Status: guarded RAW colour-row batching is implemented and measured on the owner's M4 Pro, 14
+cores and 48 GiB; the native Bayer normalization batching measured here is superseded by the Rust
+normalization on the development executor. Mask-paint phase attribution is implemented;
 its worker and surface costs are small relative to queue and result-delivery tails, so no
 renderer-kernel change is justified yet. Bayer RCD runs contiguous tile jobs that reproduce the
 serial raster exactly. Other items remain research opportunities. The
@@ -15,7 +16,7 @@ have different scopes; do not add their savings.
 | --- | --- | --- | --- | --- |
 | 1 | Batch RAW Basic/Mixer colour rows | The production path reduces Z6/X100VI Full Basic p50 by 63–66% and Mixer by 43–45%; whole-buffer checks pass. Under continuous exact work, the Fit-proxy p95 falls 67% versus the generic renderer. See results below. | Keep eligibility narrow and correlate core gains with a presented generation when the hidden runner works; track the remaining contended proxy tail. | Small contained core change. Masks, geometry, replacements and spatial recipes retain the generic path. The core contention probe does not measure UI or GPU presentation. |
 | 2 | Reduce mask-paint queue and delivery tails | On one bare masked layer, 30 positions at low host load yield input-to-presented p95 40.7 ms at 24 MP and 35.1 ms at 60 MP. Worker render p95 is 5.4/4.5 ms; queue wait is 18.2/17.4 ms and pre-result residual 20.3/22.4 ms. | Repeat with a phase sweep that separates active-job handoff from desktop event-loop delivery; preserve the one-active/one-pending bound and cancellation. | Diagnostic is complete. No compute-kernel rewrite is supported by the measured cost. |
-| 3 | Bayer mosaic normalization batching (implemented) | Exact owner Z6/Air 2S output; retained-development p50 falls 31.9/32.3 ms, with process CPU rising 7.9%. Same-pool Fit proxy p50 is flat and p95 rises 1.34 ms; no UI presentation measurement is available. | Keep the Bayer-only, >1 MP threshold and eight-callback cap. Recheck presented-frame latency and RAW completion under app-level contention when the hidden launch runner reaches a view. | Small native adapter change. No per-worker scratch; measured with RCD serial. Gains exclude DNG correction warp, source read/decode, GPU and presentation. |
+| 3 | Bayer mosaic normalization batching (superseded: normalization now runs in Rust for Bayer and X-Trans; see [performance](../specs/performance.md#mosaic-normalization)) | Exact owner Z6/Air 2S output; retained-development p50 falls 31.9/32.3 ms, with process CPU rising 7.9%. Same-pool Fit proxy p50 is flat and p95 rises 1.34 ms; no UI presentation measurement is available. | Keep the Bayer-only, >1 MP threshold and eight-callback cap. Recheck presented-frame latency and RAW completion under app-level contention when the hidden launch runner reaches a view. | Small native adapter change. No per-worker scratch; measured with RCD serial. Gains exclude DNG correction warp, source read/decode, GPU and presentation. |
 | 4 | Parallelize Bayer RCD tiles (implemented) | Exact owner Z6/Air 2S output against pre-change digests and at every worker count. Preliminary loaded-host retained development p50 falls from 244–252 to 79–80 ms on Z6 and from 206 to 63–64 ms on Air 2S, for about 10% more process CPU. | Requalify on a quiet host; measure same-pool Fit proxies while a pooled RCD development runs. | Local patch to the vendored RCD; scratch under the shared eight-slot cap. Preview contention is unmeasured. |
 | 5 | Attribute source-open and startup time | Existing copied-bundle launches are 764–809 ms p95 across empty, 24 and 60 MP cases; those totals include bundle copying and event polling. A phase probe reaches `Editor::new` about 142 ms after process entry but has not reached first view. | Restore a working hidden launch on this host; then separate bundle launch, app boot, read/hash/decode, source adoption, proxy raster and surface assignment on a stable bundle. | Small instrumentation, no optimization justified yet. Do not use the failed current launches as latency samples. |
 | 6 | Measure GPU texture upload separately | The isolated `Vec<u8>` → `Arc<[u8]>` probe costs 1.49/1.79 ms p50/p95 at 24 MP and 3.72/3.82 ms at 60 MP, but production decode and render paths already allocate an `Arc<[u8]>` frame and write directly into it; `PhotoRaster` retains the same Arc. The remaining `queue.write_texture` is a distinct GPU transfer. | Keep the current CPU ownership path. Measure texture upload only if an end-to-end profile identifies it as material. | No publication API change is justified; broad ownership churn would not remove the separate GPU transfer. |
@@ -149,9 +150,11 @@ bit for bit on odd edges and on the authentic Z6 and Air 2S. The preliminary bef
 
 ## Bayer normalization batching
 
-The production path batches 16 rows through the existing shared executor for Bayer mosaics above
-one megapixel, before the RCD call. It adds no per-worker scratch and checks
-cancellation per row. X-Trans normalization remains serial. Complete normalized mosaics and complete
+This section records the native batching that preceded the current Rust normalization, which runs
+Bayer and X-Trans alike on the development executor ([current measurements](../specs/performance.md#mosaic-normalization)).
+The native path batched 16 rows through the existing shared executor for Bayer mosaics above
+one megapixel, before the RCD call. It added no per-worker scratch and checked
+cancellation per row. X-Trans normalization stayed serial. Complete normalized mosaics and complete
 RGB planes match the serial path bit for bit on the authentic Nikon Z6 and Air 2S Bayer fixtures.
 The Z6 raw mosaic is 6064 × 4040 (24.5 MP); the Air 2S sensor mosaic is 5568 × 3648 (20.3 MP).
 
