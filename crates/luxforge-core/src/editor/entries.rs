@@ -442,8 +442,9 @@ mod tests {
 
         let first = service.state(&asset).unwrap();
         // The asset's interpretation, its redo list and the entry, then each of the two strokes
-        // parsed once and hashed twice: once against its address, once as the table keys it.
-        assert_eq!(read_counts::take(), (5, 4), "the first read");
+        // parsed once and hashed once, against the address it was read under; hydration trusts that
+        // address for the table rather than re-deriving it from the stroke's bytes a second time.
+        assert_eq!(read_counts::take(), (5, 2), "the first read");
         assert_eq!(strokes(&first.current_entry).len(), 2);
         // Warm the source cache, which is not the catalog's, so what follows counts only reads.
         service

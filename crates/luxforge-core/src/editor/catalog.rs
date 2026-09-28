@@ -281,15 +281,28 @@ pub(super) fn insert_entry(
     artifact_store::link_artifacts(tx, artifact_root, entry)
 }
 
-/// Write this recipe's strokes to the content-addressed store, once each.
+/// Write this recipe's **fresh** strokes to the content-addressed store: the ones its table does
+/// not already know are durable there.
 ///
 /// The address is the content's, so a stroke a later entry references again is already there and
 /// the insert does nothing: that is the whole of "stored once", and it needs no reference count and
 /// no check of what else points at it. The entry's own JSON carries only the addresses, so nothing
 /// written here is ever written into an entry.
 ///
+/// Before this only bought correctness — `INSERT OR IGNORE` made a repeat write a no-op — every
+/// commit still re-serialized and issued one for every reference the whole mask table carries, most
+/// of which an ordinary painting session already wrote in an earlier commit: `O(references)` SQL
+/// that is a no-op for everything but the strokes this command captured, and `O(references)` again
+/// each commit after, `O(n²)` CPU over a session. `recipe.strokes` answers "is this one already
+/// durable" for nothing — hydrating a recipe out of the catalog marks every stroke it resolves, and
+/// nothing else populates the table except a fresh insert this command made — so writing only the
+/// references it does not already know that of is exact and not a heuristic: see
+/// [`crate::path::StrokeTable`].
+///
 /// A reference the recipe could not resolve writes nothing and is not an error at this boundary: an
-/// unresolvable reference is retained data, and the paths that would *draw* it refuse it by name.
+/// unresolvable reference is retained data, and the paths that would *draw* it refuse it by name. A
+/// reference repeated within the one recipe — two components sharing a stroke, or a duplicated mask
+/// sitting beside the mask it copied — is written at most once here too.
 fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
     let references = recipe.stroke_references()?;
     if references.is_empty() {
@@ -297,18 +310,24 @@ fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
     }
     let mut statement =
         tx.prepare("INSERT OR IGNORE INTO strokes (id,stroke_json) VALUES (?1,?2)")?;
+    let mut issued = std::collections::BTreeSet::new();
     for (_, id) in &references {
+        if recipe.strokes.is_known_stored(id) || !issued.insert(id.clone()) {
+            continue;
+        }
         let Some(stroke) = recipe.strokes.get(id) else {
             continue;
         };
         let text = String::from_utf8(stroke.canonical())
             .map_err(|e| Error::internal(format!("cannot store stroke: {e}")))?;
         statement.execute(params![id.as_str(), text])?;
+        #[cfg(test)]
+        super::stroke_writes::written();
     }
     Ok(())
 }
 
-/// Resolve this recipe's stroke references against the store, one lookup each.
+/// Resolve this recipe's stroke references against the store, one lookup and one hash each.
 ///
 /// Nothing is replayed and no earlier entry is read: an entry is a complete snapshot, and this is
 /// the lookup that turns its addresses back into the strokes they name. A reference the store does
@@ -316,6 +335,11 @@ fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
 /// rather than raised here, so reading, listing, undoing and carrying the stack forward keep
 /// working; the refusal happens where the recipe is compiled, which is every path that would draw
 /// it.
+///
+/// Every stroke this resolves is durable by construction — it was just read from the store — so it
+/// goes in through [`crate::path::StrokeTable::insert_stored`], which trusts the address
+/// [`crate::path::Stroke::from_stored`] already checked the stored bytes against, and marks it known
+/// stored: a later commit built on this recipe writes only what it captures fresh, never these.
 fn hydrate_strokes(
     connection: &Connection,
     recipe: &mut Recipe,
@@ -337,9 +361,7 @@ fn hydrate_strokes(
         match stored {
             None => table.fault(id, crate::path::StrokeFault::Missing),
             Some(text) => match crate::path::Stroke::from_stored(&id, text.as_bytes()) {
-                Ok(stroke) => {
-                    table.insert(stroke);
-                }
+                Ok(stroke) => table.insert_stored(id, stroke),
                 Err(_) => table.fault(id, crate::path::StrokeFault::Corrupt),
             },
         }
@@ -472,8 +494,11 @@ mod tests {
     use crate::editor::test_support::{
         brushed, commit, fixture, mutation, next_entry, stored_entry_json, stroke, temp,
     };
-    use crate::{Component, ComponentMode, Mask, ModuleRegistry, Snapshot, SnapshotId};
-    use serde_json::json;
+    use crate::{
+        Component, ComponentMode, Draft, Mask, ModuleRegistry, Snapshot, SnapshotId,
+        mask::commands::{self, MaskTarget},
+    };
+    use serde_json::{Value, json};
     use std::time::Instant;
 
     #[test]
@@ -776,6 +801,243 @@ mod tests {
         }
     }
 
+    /// A commit writes only the strokes its command captured fresh, not the whole mask table's
+    /// references: painting a second stroke onto a mask a first stroke already committed issues one
+    /// insert, not two, because the current recipe's stroke table was read back from the catalog
+    /// before the second command planned against it, and a fresh hydration knows every stroke it
+    /// resolved is already durable.
+    #[test]
+    fn a_commit_writes_only_the_strokes_it_captured_fresh() {
+        let catalog = temp("fresh-stroke-writes.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+
+        let stroke_request = |points: Value| {
+            json!({
+                "points": points,
+                "size": 0.1,
+                "feather": 50.0,
+                "flow": 100.0,
+                "erase": false,
+            })
+        };
+
+        crate::editor::stroke_writes::take();
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "paint-1"),
+                commands::ADD_STROKE,
+                MaskTarget::default().request(stroke_request(json!([[0.2, 0.2], [0.4, 0.4]]))),
+            )
+            .unwrap();
+        assert_eq!(
+            crate::editor::stroke_writes::take(),
+            1,
+            "the first stroke of a new mask: one row written"
+        );
+
+        let recipe = service
+            .state(&asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe;
+        let target = MaskTarget {
+            mask: Some(recipe.masks[0].id.clone()),
+            component: Some(recipe.masks[0].components[0].id.clone()),
+            ..MaskTarget::default()
+        };
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "paint-2"),
+                commands::ADD_STROKE,
+                target.request(stroke_request(json!([[0.6, 0.6], [0.7, 0.5]]))),
+            )
+            .unwrap();
+        assert_eq!(
+            crate::editor::stroke_writes::take(),
+            1,
+            "the second stroke: one row written, and not the first stroke again"
+        );
+
+        // Undo, then redo: neither writes an entry, so neither issues a stroke row either.
+        let revision = service.revision(&asset).unwrap();
+        service.undo(&asset, mutation(revision, "undo")).unwrap();
+        let revision = service.revision(&asset).unwrap();
+        service.redo(&asset, mutation(revision, "redo")).unwrap();
+        assert_eq!(
+            crate::editor::stroke_writes::take(),
+            0,
+            "undo and redo navigate the existing history and write no entry"
+        );
+
+        drop(service);
+        assert_eq!(
+            stored_strokes(&catalog),
+            2,
+            "both strokes ended up in the store, whichever commit wrote each one"
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Every way a stroke can enter a recipe, in one session: painting, undo onto an older entry
+    /// then painting again — a new branch — a copied recipe (`mask.duplicate`, which references
+    /// existing strokes under new component identities and stores nothing new), and a draft's
+    /// commit carrying stroke data through the same `mask.add-stroke` request a hand-drawn stroke
+    /// takes.
+    ///
+    /// `store_strokes` now writes only what a table does not already know is stored, rather than
+    /// every reference the recipe carries; this proves that shortcut never skips a stroke that was
+    /// only ever *referenced*, not stored, by reopening the catalog afterwards and resolving every
+    /// entry's every reference, whichever path put it there.
+    #[test]
+    fn a_reopened_catalog_resolves_every_stroke_across_every_way_one_enters_a_recipe() {
+        let catalog = temp("every-stroke-entry-path.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+
+        let stroke_request = |points: Value| {
+            json!({
+                "points": points,
+                "size": 0.1,
+                "feather": 50.0,
+                "flow": 100.0,
+                "erase": false,
+            })
+        };
+
+        // Painting: the first stroke starts a mask, the second lands in the same component.
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "paint-a"),
+                commands::ADD_STROKE,
+                MaskTarget::default().request(stroke_request(json!([[0.1, 0.1], [0.2, 0.2]]))),
+            )
+            .unwrap();
+        let after_a = service.state(&asset).unwrap();
+        let brush = MaskTarget {
+            mask: Some(after_a.current_entry.snapshot.recipe.masks[0].id.clone()),
+            component: Some(
+                after_a.current_entry.snapshot.recipe.masks[0].components[0]
+                    .id
+                    .clone(),
+            ),
+            ..MaskTarget::default()
+        };
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "paint-b"),
+                commands::ADD_STROKE,
+                brush
+                    .clone()
+                    .request(stroke_request(json!([[0.3, 0.3], [0.4, 0.4]]))),
+            )
+            .unwrap();
+
+        // Undo back onto the first stroke's own entry, then paint a third: a new branch off an
+        // entry this session already committed and cached, not the latest one.
+        let revision = service.revision(&asset).unwrap();
+        service.undo(&asset, mutation(revision, "undo")).unwrap();
+        assert_eq!(
+            service.state(&asset).unwrap().current_entry.id,
+            after_a.current_entry.id,
+            "undo landed back on the first stroke's entry"
+        );
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "paint-c-branch"),
+                commands::ADD_STROKE,
+                brush.request(stroke_request(json!([[0.5, 0.1], [0.6, 0.2]]))),
+            )
+            .unwrap();
+
+        // A copied recipe: `mask.duplicate` references the branch's existing strokes under new
+        // component identities rather than storing anything new.
+        let branched = service.state(&asset).unwrap();
+        let source_mask = branched.current_entry.snapshot.recipe.masks[0].id.clone();
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "duplicate"),
+                "mask.duplicate",
+                MaskTarget {
+                    mask: Some(source_mask),
+                    ..MaskTarget::default()
+                }
+                .request(json!({})),
+            )
+            .unwrap();
+
+        // A draft's commit: the same `mask.add-stroke` request an agent's `draft.set` would carry,
+        // targeting the duplicate's own component.
+        let duplicated = service.state(&asset).unwrap();
+        let copy = &duplicated.current_entry.snapshot.recipe.masks[1];
+        let mut draft = Draft::new(commands::ADD_STROKE, asset.clone(), duplicated.revision);
+        draft.target = Some(MaskTarget {
+            mask: Some(copy.id.clone()),
+            component: Some(copy.components[0].id.clone()),
+            ..MaskTarget::default()
+        });
+        draft.merge(
+            stroke_request(json!([[0.7, 0.7], [0.8, 0.6]]))
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let revision = service.revision(&asset).unwrap();
+        service
+            .run_action(
+                &asset,
+                mutation(revision, "draft-commit"),
+                &draft.action,
+                Value::Object(draft.request()),
+            )
+            .unwrap();
+        drop(service);
+
+        // Reopen fresh and walk the whole history: every entry's referenced strokes resolve, none
+        // faulted, whatever path put them in the recipe.
+        let service = EditorService::open(&catalog).unwrap();
+        let page = service.history(&asset, None, 50).unwrap();
+        assert_eq!(
+            page.entries.len(),
+            6,
+            "the Original plus the five commits above, including the undone branch's own entry"
+        );
+        for row in &page.entries {
+            let entry = service.entry(&asset, &row.id).unwrap();
+            assert!(
+                !entry.snapshot.recipe.strokes.has_missing(),
+                "entry {} ({}) references a stroke the store cannot resolve",
+                row.sequence,
+                row.label,
+            );
+            for (_, id) in entry.snapshot.recipe.stroke_references().unwrap() {
+                if let Err(error) = entry.snapshot.recipe.strokes.resolve(&id) {
+                    panic!("entry {} ({}) stroke {id}: {error}", row.sequence, row.label);
+                }
+            }
+        }
+        drop(service);
+        assert_eq!(
+            stored_strokes(&catalog),
+            4,
+            "four distinct strokes: the duplicate and the draft referenced rather than storing again"
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// Strokes per mask in the measured session below: the smaller of what the points-per-mask
     /// limit admits at 100 positions a stroke (81) and the brush component's own declared 64 strokes
     /// per component. It is why the 200-stroke session paints four masks — 200 strokes of 100
@@ -965,6 +1227,10 @@ mod tests {
         /// What the same entries would have cost with each stroke's positions written into its
         /// payload instead of its address: the shape the store exists to avoid.
         embedded: usize,
+        /// The mean owner-thread time of one commit's write transaction — `insert_entry` plus the
+        /// head update — over the strokes since the previous sample, in milliseconds. Not a byte
+        /// count, so it is the one field here a shared host's load bears on.
+        commit_ms: f64,
     }
 
     impl Growth {
@@ -1039,10 +1305,22 @@ mod tests {
     }
 
     /// Paint `count` strokes into `catalog` over `source`, one stroke per history entry written
-    /// through the production write path, sampling the stored cost every `every` strokes.
+    /// through the production write path, sampling the stored cost and the mean commit time every
+    /// `every` strokes.
     ///
     /// The strokes are packed by [`packed`], so the session is the densest one the declared limits
     /// admit and its cost is the worst case rather than an arrangement chosen to be cheap.
+    ///
+    /// When `mark_fresh_as_stored`, `table` is marked [`crate::path::StrokeTable::mark_stored`] for
+    /// the one stroke each commit captured, right after that commit lands, which is what a fresh
+    /// hydration of the entry this harness just wrote would mark on its own: this session builds its
+    /// recipes directly rather than through `mask.add-stroke` and a re-read, so it has to say so
+    /// itself, once, for the same reason `insert_entry` is still the real one — the point is to time
+    /// the production write path, not a harness that happens to look like it. Passing `false`
+    /// leaves every stroke this session ever captured unmarked, so `store_strokes` treats the whole
+    /// mask table's references as fresh on every commit, exactly as it did before this task: the
+    /// controlled counterfactual `docs/specs/performance.md`'s commit-time figure is measured
+    /// against, isolating the one thing that changed without needing a second binary.
     ///
     /// The returned asset is the painted one, so a caller can time reopening the catalog it left.
     fn painting_session(
@@ -1050,6 +1328,7 @@ mod tests {
         source: &Path,
         count: usize,
         every: usize,
+        mark_fresh_as_stored: bool,
     ) -> (Vec<Growth>, AssetId) {
         let mut service = EditorService::open(catalog).unwrap();
         let asset = service.import(source).unwrap().asset.id;
@@ -1074,12 +1353,14 @@ mod tests {
         let mut embedded = 0_usize;
         let mut lengths: Vec<usize> = Vec::with_capacity(count);
         let mut curve = Vec::new();
+        let mut commit_window: Vec<f64> = Vec::with_capacity(every);
         for index in 0..count {
             let one = stroke(index);
             drawn += one.canonical().len() + 1;
             embedded += drawn;
             lengths.push(one.point_count());
-            addresses.push(table.insert(one).to_string());
+            let id = table.insert(one);
+            addresses.push(id.to_string());
             let masks = packed(&addresses, &lengths)
                 .expect("this session is past the per-recipe mask ceiling and is not a recipe");
             let entry = HistoryEntry {
@@ -1101,8 +1382,9 @@ mod tests {
                 ..previous.clone()
             };
             revision += 1;
-            let tx = connection.transaction().unwrap();
             registry.validate_recipe(&entry.snapshot.recipe).unwrap();
+            let started = Instant::now();
+            let tx = connection.transaction().unwrap();
             insert_entry(&tx, &default_artifact_root(catalog), &entry).unwrap();
             tx.execute(
                 "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
@@ -1110,6 +1392,13 @@ mod tests {
             )
             .unwrap();
             tx.commit().unwrap();
+            commit_window.push(started.elapsed().as_secs_f64() * 1e3);
+            // This stroke is durable now: the next commit's fresh hydration would mark it stored on
+            // its own, and this harness has to say so itself because it never re-reads the entry it
+            // just wrote.
+            if mark_fresh_as_stored {
+                table.mark_stored(id);
+            }
             previous = entry;
             if (index + 1).is_multiple_of(every) || index + 1 == count {
                 let entries: i64 = connection
@@ -1128,7 +1417,9 @@ mod tests {
                     store: store as usize,
                     catalog: std::fs::metadata(catalog).map(|m| m.len()).unwrap_or(0),
                     embedded: entries as usize + embedded,
+                    commit_ms: commit_window.iter().sum::<f64>() / commit_window.len() as f64,
                 });
+                commit_window.clear();
             }
         }
         drop(connection);
@@ -1220,21 +1511,24 @@ mod tests {
         );
         for (name, source) in &sources {
             let catalog = temp("mask-growth-measured.sqlite");
-            let (curve, asset) = painting_session(&catalog, source, CEILING, 50);
+            let (curve, asset) = painting_session(&catalog, source, CEILING, 50, true);
             println!(
                 "\n{name}: strokes, stored entries + store (MB), catalog file (MB), embedded \
-                 counterfactual (MB), factor"
+                 counterfactual (MB), factor, mean commit ms (of the 50 since the last row, this \
+                 build's fresh-only write)"
             );
             for point in &curve {
                 println!(
-                    "  {:>4}  {:>8.3}  {:>8.3}  {:>9.3}  {:>5.1}x",
+                    "  {:>4}  {:>8.3}  {:>8.3}  {:>9.3}  {:>5.1}x  {:>6.3} ms",
                     point.strokes,
                     point.stored() as f64 / 1e6,
                     point.catalog as f64 / 1e6,
                     point.embedded as f64 / 1e6,
                     point.embedded as f64 / point.stored() as f64,
+                    point.commit_ms,
                 );
             }
+            println!("  load average after this session: {:.2}", load_average());
             let (a, b, c) = quadratic_fit(&curve);
             let at = |n: usize| {
                 curve
@@ -1275,6 +1569,43 @@ mod tests {
                 );
             }
             std::fs::remove_file(&catalog).unwrap();
+
+            // The controlled counterfactual for TASK-006's commit-time claim: the same build, the
+            // same session, the one thing that changed toggled by hand — whether a fresh insert
+            // this session made is ever marked stored, which is what a real fresh hydration would
+            // do on its own between commits. With it off, `store_strokes` treats every reference
+            // the whole mask table carries as needing a write on every commit, which is this
+            // build's own record of the behavior before this task; with it on, only what each
+            // commit actually captured is written. A binary built before this task carries no
+            // commit-time instrumentation to compare against directly, so this is measured as an
+            // A/B within the one binary instead, in reversed order (after, before, before, after)
+            // so a difference has to survive the reversal to be attributed to the toggle.
+            let near_ceiling = |mark_fresh_as_stored: bool| -> f64 {
+                let catalog = temp("mask-growth-commit-time.sqlite");
+                let (curve, _) = painting_session(&catalog, source, CEILING, 50, mark_fresh_as_stored);
+                std::fs::remove_file(&catalog).unwrap();
+                curve.last().expect("at least one sample").commit_ms
+            };
+            let after_1 = near_ceiling(true);
+            let load_after_1 = load_average();
+            let before_1 = near_ceiling(false);
+            let load_before_1 = load_average();
+            let before_2 = near_ceiling(false);
+            let load_before_2 = load_average();
+            let after_2 = near_ceiling(true);
+            let load_after_2 = load_average();
+            println!(
+                "  commit time near the {CEILING}-stroke ceiling, this build only, mean of the \
+                 last 50 commits, reversed order (ms at one-minute load):"
+            );
+            println!(
+                "    fresh-only (after):        {after_1:.3} at {load_after_1:.2}, {after_2:.3} at \
+                 {load_after_2:.2}"
+            );
+            println!(
+                "    every reference (before):  {before_1:.3} at {load_before_1:.2}, {before_2:.3} \
+                 at {load_before_2:.2}"
+            );
         }
     }
 
@@ -1295,7 +1626,7 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated/24mp.jpg");
         let source = if source.exists() { source } else { fixture() };
         let catalog = temp("quadratic-growth.sqlite");
-        let (curve, _) = painting_session(&catalog, &source, 400, 100);
+        let (curve, _) = painting_session(&catalog, &source, 400, 100, true);
         std::fs::remove_file(&catalog).unwrap();
         let at = |n: usize| {
             curve
@@ -1391,7 +1722,7 @@ mod tests {
     #[test]
     fn a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was() {
         let catalog = temp("serialized-mask-bound.sqlite");
-        let (_, asset) = painting_session(&catalog, &fixture(), 4, 4);
+        let (_, asset) = painting_session(&catalog, &fixture(), 4, 4, true);
 
         // The durable state the refusal must not touch: the catalog's own bytes, and what a reopen
         // reads back out of them.

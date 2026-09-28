@@ -119,6 +119,27 @@ pub(crate) mod read_counts {
     }
 }
 
+/// How many stroke rows a commit issued to the content-addressed store, counted per thread, for the
+/// test that proves a commit writes only the strokes captured since the entry's recipe was last
+/// read — not the whole mask table's references, most of which are already durable.
+#[cfg(test)]
+pub(crate) mod stroke_writes {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WRITTEN: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn written() {
+        WRITTEN.with(|count| count.set(count.get() + 1));
+    }
+
+    /// The stroke rows written this thread since it last asked.
+    pub(crate) fn take() -> u64 {
+        WRITTEN.with(|count| count.replace(0))
+    }
+}
+
 /// How many stacks were validated against the registry, counted per thread, for the test that proves
 /// a commit validates the stack it writes once.
 #[cfg(test)]
