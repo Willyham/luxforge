@@ -521,7 +521,7 @@
     {
       "id": "TASK-008",
       "description": "Read tile rows instead of one pixel at a time for point queries through a spatial segment and for the global-estimate reduction that feeds units such as Dehaze.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
