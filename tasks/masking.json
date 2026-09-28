@@ -451,7 +451,7 @@
     {
       "id": "TASK-006",
       "description": "Write only the strokes captured since the entry's recipe was last read on each commit, and hash a hydrated stroke once instead of twice.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed. A byte-identical speedup with its own before-and-after figure.",

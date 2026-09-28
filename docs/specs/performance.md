@@ -1394,6 +1394,27 @@ Least squares over the 37 sampled counts gives `S(n) = 19.30·n² + 1623·n + 25
 | 60 MP | 21.2 / 21.1 / 21.0 ms | 20.8 | 651 MiB | 647 MiB |
 
 Peak memory is the whole test process, which imports and decodes the fixture. Both processes wrote the identical 66 MB catalog, so the 380 MiB between the two rows is the 36 MP between the two images and nothing else: the history itself is not resident, because entries are written and read one at a time and never held together. Reopen resolves all 1809 stroke references and grows by about 7 ms between the two sizes, which is the source decode and not the store.
+
+### Commit time: writing only fresh strokes
+
+Before this change, `store_strokes` re-wrote every stroke the whole mask table referenced on every commit, an `O(references)` SQL cost per commit and `O(n²)` CPU over a session, almost all of it a no-op `INSERT OR IGNORE` for a stroke an earlier commit already wrote. After, it writes only the references a recipe's stroke table does not already know are durable — known because a fresh hydration marked them, or because an earlier commit built on the same table already wrote them — so a long session's later commits pay only for the strokes each one actually captured.
+
+A binary built before this task carries no commit-time instrumentation to compare against, so the figure below is a controlled A/B within this one binary instead: the same 1809-stroke ceiling session (`painting_session`, beside `measure_mask_growth_across_a_painting_session`), with `mark_fresh_as_stored` toggled off — this build's own record of the write pattern before this task, since every reference is then treated as needing a write on every commit — and on, the fresh-only write this task lands. Run in reversed order (after, before, before, after) so a difference has to survive the reversal, on a host shared with other sessions.
+
+Scope: the mean write-transaction time (`insert_entry` plus the asset-state update) of the last 50 of the 1809 commits, native Apple M4 Pro, release `--locked`, `luxforge-core`'s own catalog, on the generated 24 MP and 60 MP fixtures. Catalog bytes are unchanged — the table above — because `INSERT OR IGNORE` still guards every write; this changes only how much SQL a commit issues.
+
+| Source | fresh-only (after), ms | every reference (before), ms | one-minute load |
+| --- | --- | --- | --- |
+| 24 MP | 0.824, 0.815 | 3.114, 3.586 | 11.37 → 10.16 |
+| 60 MP | 0.816, 0.993 | 3.022, 3.307 | 7.16 → 6.83 |
+
+The difference survives the reversal on both fixtures: about 3.7–4.4× faster near the ceiling, from roughly 3.0–3.6 ms down to 0.8–1.0 ms of write-transaction time per commit. The saving is expected to widen over a longer session, since the earlier cost was one write per reference the whole mask table carries — which grows with the session — while the fresh-only cost is one write per stroke the commit itself captured, which does not.
+
+```text
+LUXFORGE_MASK_GROWTH_SOURCE=fixtures/generated/24mp.jpg \
+  cargo test --release --locked --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture
+```
+
 ### Point samples through a spatial layer
 
 Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, on a host shared with other sessions. `render.sample` through the live API of a `develop --background` editor with an isolated catalog and no photograph in its window, at random stage points with the estimate store warm, p50 / p95 over 29 samples after the first. "Before" is the previous build, which built the spatial operation's whole float frame for every RAW sample: the one-minute load moved between 4 and 28 while it was measured, so its p50 range over three runs is given too. "After" ran at load 4 to 5.
