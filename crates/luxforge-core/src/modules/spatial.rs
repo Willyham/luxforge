@@ -11,9 +11,12 @@ use crate::ErrorKind;
 use crate::{Error, mask_field::MaskField, modules::Stage};
 use std::{borrow::Cow, sync::Arc};
 
-/// The side of one output tile the host streams. The stage is covered by tiles of this size
-/// anchored at the stage origin, with partial tiles at the right and bottom edges.
-/// [`luxforge_raw::SPATIAL_TILE`] under this contract's own name.
+/// The side of the output tiles the host streams an operation with a small summed halo in. The
+/// stage is covered by square tiles anchored at the stage origin, with partial tiles at the right
+/// and bottom edges; the host chooses their side from the operation's summed halo at the stage
+/// ([`luxforge_raw::spatial_tile`]): this, or [`luxforge_raw::SPATIAL_WIDE_TILE`] once the halo
+/// passes [`luxforge_raw::SPATIAL_WIDE_HALO`]. A unit is tile invariant, so it never depends on
+/// which. [`luxforge_raw::SPATIAL_TILE`] under this contract's own name.
 pub const SPATIAL_TILE: u32 = luxforge_raw::SPATIAL_TILE;
 
 /// The largest summed halo, in input pixels, one operation may declare at a stage. An operation

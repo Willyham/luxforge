@@ -16,7 +16,7 @@ use super::{
     StageSize, StageTransform, check_source, grid_centres,
     linear::{self, Linear, LinearImage, LinearSettings},
     rasterize,
-    spatial::SPATIAL_TILE,
+    spatial::Tiling,
     transform_of,
     window::{RegionFallback, WindowPlan},
 };
@@ -95,9 +95,9 @@ pub struct RenderOptions {
     /// Read once per row or chunk by every rasterizing pass and once per batch of spatial tiles. A
     /// token already cancelled when a frame is asked for costs no frame.
     pub cancel: Cancel,
-    /// The spatial tile size: [`SPATIAL_TILE`] everywhere but in the tests that prove a frame
-    /// and a sample do not depend on it.
-    pub(crate) tile: u32,
+    /// How each spatial operation is cut into tiles: [`Tiling::Halo`] everywhere but in the tests
+    /// that prove a frame and a sample do not depend on it.
+    pub(crate) tiling: Tiling,
 }
 
 impl Default for RenderOptions {
@@ -105,7 +105,7 @@ impl Default for RenderOptions {
         Self {
             phase: RenderPhase::Exact,
             cancel: Cancel::never(),
-            tile: SPATIAL_TILE,
+            tiling: Tiling::Halo,
         }
     }
 }
@@ -131,7 +131,7 @@ impl RenderOptions {
     /// The same options at another spatial tile size.
     #[cfg(test)]
     pub(crate) fn with_tile(mut self, tile: u32) -> Self {
-        self.tile = tile;
+        self.tiling = Tiling::Fixed(tile);
         self
     }
 }
@@ -349,7 +349,7 @@ impl<'a> Render<'a> {
                 &self.compiled,
                 snapshot_id,
                 cancel,
-                self.options.tile,
+                self.options.tiling,
                 self.context,
             ),
             RenderSource::Linear { image, settings } => {
@@ -736,7 +736,7 @@ impl<'a> Render<'a> {
             RenderSource::Byte(image) => Evaluation::new(
                 Byte(image),
                 Cow::Borrowed(&*self.compiled),
-                self.options.tile,
+                self.options.tiling,
                 SpatialMode::Point,
                 cancel,
                 self.context,
@@ -745,7 +745,7 @@ impl<'a> Render<'a> {
             RenderSource::Linear { image, settings } => Evaluation::new(
                 Linear::new(image, settings)?,
                 Cow::Borrowed(&*self.compiled),
-                self.options.tile,
+                self.options.tiling,
                 SpatialMode::Point,
                 cancel,
                 self.context,
@@ -768,7 +768,7 @@ impl<'a> Render<'a> {
         Evaluation::new(
             domain,
             Cow::Borrowed(&*self.compiled),
-            self.options.tile,
+            self.options.tiling,
             mode,
             &self.options.cancel,
             self.context,
@@ -864,10 +864,10 @@ pub(crate) fn layer_input<'a>(
         &recipe.artifacts,
     )?;
     if compiled.evaluates_spatial() {
-        return Err(Error::resource_limit(format!(
+        return Err(Error::resource_limit(
             "a spatial layer before the masked one means reading the pixel it receives \
-                 evaluates a {SPATIAL_TILE} px tile per grid cell"
-        )));
+             evaluates a spatial tile per grid cell",
+        ));
     }
     match source {
         RenderSource::Byte(image) => {
@@ -893,7 +893,7 @@ fn point<'a, D: PixelDomain>(
     Evaluation::new(
         domain,
         Cow::Owned(compiled),
-        SPATIAL_TILE,
+        Tiling::Halo,
         SpatialMode::Point,
         &Cancel::never(),
         context,

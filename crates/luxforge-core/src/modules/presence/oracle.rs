@@ -19,8 +19,8 @@ use crate::{
     modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
         spatial::{
-            Cancel, SpatialPlan, TileScratch, build_reduction, fill_planes, resolve_globals,
-            run_tile,
+            Cancel, SpatialPlan, TileScratch, Tiling, build_reduction, fill_planes,
+            resolve_globals, run_tile,
         },
         testing::{frame_in, render_tiled, sample_in},
     },
@@ -165,11 +165,11 @@ fn evaluate(
     operation: &SpatialOperation,
     stage: Stage,
     pixels: &[[f32; 3]],
-    tile_size: u32,
+    tiling: Tiling,
 ) -> Result<Vec<[f32; 3]>, Error> {
     let read =
         |x: u32, y: u32| -> Result<[f32; 3], Error> { Ok(pixels[(y * stage.width + x) as usize]) };
-    let plan = SpatialPlan::new(operation, stage, tile_size)?;
+    let plan = SpatialPlan::new(operation, stage, tiling)?;
     let reduction = build_reduction(stage, read)?;
     let globals: Vec<Option<Global>> = operation
         .units()
@@ -237,7 +237,7 @@ fn production_matches_every_oracle_case_within_the_frozen_tolerance() {
         let (width, height, pixels) = build_image(&case["image"]);
         let stage = Stage { width, height };
         let operation = compiled(case);
-        let output = evaluate(&operation, stage, &pixels, crate::modules::SPATIAL_TILE)
+        let output = evaluate(&operation, stage, &pixels, Tiling::Halo)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let expected = case["expected"].as_array().expect("the expected output");
         assert_eq!(expected.len(), output.len(), "{name}: pixel count");
@@ -276,9 +276,10 @@ fn a_tiled_evaluation_agrees_with_the_whole_frame_at_every_tile_size() {
         let (width, height, pixels) = build_image(&case["image"]);
         let stage = Stage { width, height };
         let operation = compiled(case);
-        let whole = evaluate(&operation, stage, &pixels, 512).expect("the whole frame");
+        let whole =
+            evaluate(&operation, stage, &pixels, Tiling::Fixed(512)).expect("the whole frame");
         for tile in [4_u32, 7, 16] {
-            let tiled = evaluate(&operation, stage, &pixels, tile)
+            let tiled = evaluate(&operation, stage, &pixels, Tiling::Fixed(tile))
                 .unwrap_or_else(|error| panic!("{name} at tile {tile}: {error}"));
             for (index, (tiled, whole)) in tiled.iter().zip(&whole).enumerate() {
                 for channel in 0..3 {
@@ -349,7 +350,7 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
         else {
             panic!("a spatial operation");
         };
-        let plan = SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE)
+        let plan = SpatialPlan::new(&operation, stage, Tiling::Halo)
             .unwrap_or_else(|error| panic!("{width}x{height}: {error}"));
         assert!(
             plan.working_set() <= context.spatial().target(),
@@ -387,7 +388,7 @@ fn a_tiles_rectangles_follow_the_declared_halos() {
     let long_side = 2000;
     let summed = presence_halo(long_side) as u32;
     assert_eq!(operation.summed_halo(stage), summed);
-    let plan = SpatialPlan::new(&operation, stage, 512).expect("a plan");
+    let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(512)).expect("a plan");
     let tile = Region {
         x0: 512,
         y0: 512,
@@ -714,7 +715,7 @@ fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
             .iter()
             .map(|unit| unit.prepare(&reduction))
             .collect();
-        let plan = SpatialPlan::new(&operation, stage, 256).expect("a plan");
+        let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(256)).expect("a plan");
         for tile in plan.tiles() {
             let [serial, pooled] = [Parallelism::Serial, Parallelism::Pool].map(|parallelism| {
                 run_tile(
@@ -775,8 +776,7 @@ fn presence_timing() {
             else {
                 panic!("a spatial operation");
             };
-            let plan =
-                SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE).expect("a plan");
+            let plan = SpatialPlan::new(&operation, stage, Tiling::Halo).expect("a plan");
             // Warm the source and the estimate store, then measure.
             let context = RenderContext::new();
             let render = || {
@@ -808,7 +808,7 @@ fn presence_timing() {
             let cpu = luxforge_testbase::Distribution::of(cpu).expect("runs ran");
             println!(
                 "{width}x{height} presence {name}: p50 {:.0} ms, p95 {:.0} ms over {} runs, \
-                 CPU p50 {:.0}% of one core; halo {} px, tiles {}, working set {:.1} MiB, \
+                 CPU p50 {:.0}% of one core; halo {} px, {} tiles of {} px, working set {:.1} MiB, \
                  concurrency {}, budget peak {:.1} MiB, target {:.1} MiB",
                 ms.p50,
                 ms.p95,
@@ -816,10 +816,155 @@ fn presence_timing() {
                 cpu.p50,
                 operation.summed_halo(stage),
                 plan.tiles().len(),
+                plan.tile(),
                 plan.working_set() as f64 / mib,
                 context.spatial().concurrency(plan.working_set()),
                 context.spatial().peak() as f64 / mib,
                 context.spatial().target() as f64 / mib,
+            );
+        }
+    }
+}
+
+/// Release-only measurement behind the tile-size rule, run explicitly over photo-sized JPEGs:
+///
+/// ```sh
+/// LUXFORGE_PRESENCE_SOURCES=fixtures/generated/24mp.jpg,fixtures/generated/60mp.jpg \
+///   cargo test --release --locked --package luxforge-core --lib presence_tile_sizes \
+///   -- --ignored --nocapture
+/// ```
+///
+/// For every Presence combination at `+100` (or those `LUXFORGE_PRESENCE_STACKS` names, as
+/// comma-separated field lists such as `dehaze,texture dehaze`), the exact render in 512 px and in
+/// 1024 px tiles, alternating which goes first from round to round (`LUXFORGE_PRESENCE_ROUNDS`, 5
+/// by default), with each render's wall time and the process's CPU time over it; the SHA-256 of
+/// both frames, which must agree; and 9 interior point samples at each size, each equal to the
+/// rendered byte, with their time. It prints the side [`Tiling::Halo`] chooses for the operation's
+/// summed halo. A source written `WIDTHxHEIGHT` is the synthetic textured frame of that size,
+/// which places the halos between the generated fixtures'.
+#[test]
+#[ignore = "measurement, run explicitly in release over photo-sized sources"]
+fn presence_tile_sizes() {
+    use sha2::{Digest, Sha256};
+    let sources = std::env::var("LUXFORGE_PRESENCE_SOURCES").expect("LUXFORGE_PRESENCE_SOURCES");
+    let rounds: usize = std::env::var("LUXFORGE_PRESENCE_ROUNDS")
+        .map_or(5, |rounds| rounds.parse().expect("a round count"));
+    let stacks = std::env::var("LUXFORGE_PRESENCE_STACKS").ok();
+    let registry = ModuleRegistry::builtin();
+    let ms = |start: std::time::Instant| start.elapsed().as_secs_f64() * 1e3;
+    let mut sampler = luxforge_process::Sampler::new();
+    for path in sources.split(',') {
+        let source = match path.split_once('x').map(|(w, h)| (w.parse(), h.parse())) {
+            Some((Ok(width), Ok(height))) => textured_source(width, height),
+            _ => crate::open_source(std::path::Path::new(path)).expect("a source"),
+        };
+        let stage = Stage {
+            width: source.width,
+            height: source.height,
+        };
+        for (name, payload) in [
+            ("texture", json!({"texture": 100.0})),
+            ("clarity", json!({"clarity": 100.0})),
+            ("dehaze", json!({"dehaze": 100.0})),
+            (
+                "texture clarity",
+                json!({"texture": 100.0, "clarity": 100.0}),
+            ),
+            ("texture dehaze", json!({"texture": 100.0, "dehaze": 100.0})),
+            ("clarity dehaze", json!({"clarity": 100.0, "dehaze": 100.0})),
+            (
+                "all three",
+                json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}),
+            ),
+        ] {
+            if stacks
+                .as_ref()
+                .is_some_and(|stacks| stacks.split(',').all(|stack| stack != name))
+            {
+                continue;
+            }
+            let stack = presence_recipe(payload.clone());
+            let operation = operation(&payload, stage);
+            let sides = [512_u32, 1024];
+            let contexts = sides.map(|_| RenderContext::new());
+            let render = |side: usize| {
+                frame_in(
+                    &contexts[side],
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &stack,
+                    RenderOptions::default().with_tile(sides[side]),
+                )
+                .expect("a render")
+            };
+            // Warm each context's estimates, and keep each frame to hash and sample against.
+            let frames = [render(0), render(1)];
+            let hashes = frames
+                .each_ref()
+                .map(|frame| format!("{:x}", Sha256::digest(&frame.rgba[..])));
+            let mut wall = [Vec::new(), Vec::new()];
+            let mut cpu = [Vec::new(), Vec::new()];
+            for round in 0..rounds {
+                let order = if round % 2 == 0 { [0, 1] } else { [1, 0] };
+                for side in order {
+                    let before = sampler.read().cpu_time_ns.expect("this process's CPU time");
+                    let started = std::time::Instant::now();
+                    let frame = render(side);
+                    let elapsed = started.elapsed();
+                    let after = sampler.read().cpu_time_ns.expect("this process's CPU time");
+                    assert_eq!(frame.rgba, frames[side].rgba, "{name}: renders agree");
+                    wall[side].push(elapsed.as_secs_f64() * 1e3);
+                    cpu[side].push((after - before) as f64 / elapsed.as_nanos() as f64 * 100.0);
+                }
+            }
+            let mut points = [Vec::new(), Vec::new()];
+            for j in 1..=3 {
+                for i in 1..=3 {
+                    let (x, y) = (stage.width * i / 4 + 37, stage.height * j / 4 + 29);
+                    for side in 0..2 {
+                        let started = std::time::Instant::now();
+                        let sample = sample_in(
+                            &contexts[side],
+                            &registry,
+                            &source,
+                            &stack,
+                            RenderOptions::default().with_tile(sides[side]),
+                            x,
+                            y,
+                        )
+                        .expect("a sample");
+                        points[side].push(ms(started));
+                        assert_eq!(
+                            sample.rgba,
+                            frames[side].pixel(x, y),
+                            "{name} at ({x}, {y})"
+                        );
+                    }
+                }
+            }
+            let distribution = |values: &Vec<f64>| {
+                luxforge_testbase::Distribution::of(values.clone()).expect("runs ran")
+            };
+            println!(
+                "{}x{} {name}: halo {} px, rule {} px; 512 px {:.0} ms at {:.0}%, sample {:.1} ms; \
+                 1024 px {:.0} ms at {:.0}%, sample {:.1} ms; p50 of {rounds} renders and 9 \
+                 samples; frames {}",
+                stage.width,
+                stage.height,
+                operation.summed_halo(stage),
+                Tiling::Halo.tile(&operation, stage),
+                distribution(&wall[0]).p50,
+                distribution(&cpu[0]).p50,
+                distribution(&points[0]).p50,
+                distribution(&wall[1]).p50,
+                distribution(&cpu[1]).p50,
+                distribution(&points[1]).p50,
+                if hashes[0] == hashes[1] {
+                    format!("identical, sha256 {}", hashes[0])
+                } else {
+                    format!("DIFFER: 512 px {} against 1024 px {}", hashes[0], hashes[1])
+                },
             );
         }
     }

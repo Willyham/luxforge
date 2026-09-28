@@ -11,9 +11,6 @@ pub(crate) use super::Cancel;
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
 #[cfg(test)]
 use crate::ErrorKind;
-/// The production tile size, re-exported under this module's path so a sibling driver does not
-/// have to name [`crate::modules`] for it.
-pub(crate) use crate::modules::SPATIAL_TILE;
 use crate::{
     Error,
     mask_field::{MaskField, MaskSampling},
@@ -30,6 +27,38 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 const MIB: f64 = (1024 * 1024) as f64;
+
+/// How the host cuts a spatial operation's stage into tiles: the one knob every render, sample and
+/// plan is handed, and the one place a tile's side is decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tiling {
+    /// Production: the side [`luxforge_raw::spatial_tile`] gives the operation's summed halo at its
+    /// stage, 512 px for a small halo and 1024 px past the bound, so an operation whose halo would
+    /// be recomputed around every small tile runs in fewer, larger ones.
+    Halo,
+    /// Every operation in tiles of this side, for the tests that prove a frame and a sample do not
+    /// depend on the tiling, and the measurement that compares two sides.
+    #[cfg(test)]
+    Fixed(u32),
+}
+
+// No halo the host accepts is wider than the tile it runs in, which is what bounds a point
+// query's reads to the 3 × 3 tiles around its own.
+const _: () = assert!(
+    luxforge_raw::SPATIAL_WIDE_HALO <= luxforge_raw::SPATIAL_TILE
+        && MAX_SPATIAL_HALO <= luxforge_raw::SPATIAL_WIDE_TILE
+);
+
+impl Tiling {
+    /// The side of the tiles `operation` runs in at `stage`.
+    pub(crate) fn tile(self, operation: &SpatialOperation, stage: Stage) -> u32 {
+        match self {
+            Self::Halo => luxforge_raw::spatial_tile(operation.summed_halo(stage)),
+            #[cfg(test)]
+            Self::Fixed(tile) => tile.max(1),
+        }
+    }
+}
 
 /// Everything about running one operation over one stage that does not depend on the pixels: the
 /// tiling, the halos and what one tile costs. How many tiles may run at once is the budget's
@@ -50,14 +79,14 @@ pub(crate) struct SpatialPlan {
 }
 
 impl SpatialPlan {
-    /// The plan for this operation at this stage with this tile size, or the error that refuses
-    /// its declarations. What one tile costs never refuses it: a tile larger than the budget's
-    /// target runs alone. `tile` is [`SPATIAL_TILE`] in production; a test passes another size to
-    /// prove the result does not depend on it.
+    /// The plan for this operation at this stage in the tiles `tiling` gives it, or the error that
+    /// refuses its declarations. What one tile costs never refuses it: a tile larger than the
+    /// budget's target runs alone. `tiling` is [`Tiling::Halo`] in production; a test fixes the
+    /// side to prove the result does not depend on it.
     pub(crate) fn new(
         operation: &SpatialOperation,
         stage: Stage,
-        tile: u32,
+        tiling: Tiling,
     ) -> Result<Self, Error> {
         operation.validate()?;
         // **Where the mask is read.** A masked colour operation lives inside a segment, so more
@@ -89,7 +118,7 @@ impl SpatialPlan {
                 "spatial halo {summed_halo} px exceeds the {MAX_SPATIAL_HALO} px bound"
             )));
         }
-        let tile = tile.max(1);
+        let tile = tiling.tile(operation, stage);
         let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
         Ok(Self {
             stage,
@@ -103,6 +132,12 @@ impl SpatialPlan {
     #[cfg(test)]
     pub(crate) fn working_set(&self) -> u64 {
         self.working_set
+    }
+
+    /// The side of this plan's tiles.
+    #[cfg(test)]
+    pub(crate) fn tile(&self) -> u32 {
+        self.tile
     }
 
     /// Every output tile of the stage, in row-major order, aligned to the stage origin with
@@ -709,8 +744,9 @@ const POINT_TILES_FLOOR: usize = 16;
 /// resample blends, the points of a grid and a reduction of a stage behind a spatial segment share
 /// them. Nothing is materialized.
 ///
-/// **The bound.** The cache holds at most as many tiles as the spatial target has bytes for — 85
-/// production tiles of 3 MiB — and never fewer than [`POINT_TILES_FLOOR`]; each is charged to the
+/// **The bound.** The cache holds at most as many tiles as the spatial target has bytes for, counted
+/// in the largest tile any segment of the query has used — 85 tiles of 3 MiB at 512 px, 21 of 12 MiB
+/// at 1024 px — and never fewer than [`POINT_TILES_FLOOR`]; each is charged to the
 /// budget while held, so a render running beside the query paces itself around it, and all of them
 /// are released with the query. Past that the least recently read tile is released, and a later
 /// read evaluates it again: slower, never refused. While what a query reads fits, each (segment,
@@ -724,7 +760,7 @@ const POINT_TILES_FLOOR: usize = 16;
 /// point's own halo reads after the reduction, which it may have released by then, and, behind two
 /// spatial segments, the tiles of the earlier one, which a walk keeps reading across three of its
 /// tile rows and so holds only while those rows and the walked row fit the cap: on stages up to
-/// about 10,700 px wide, 60 MP included.
+/// about 10,700 px wide in 512 px tiles, 60 MP included, and about 5,300 px wide in 1024 px tiles.
 ///
 /// Evaluating a tile reserves one working set while it runs, released before the tile is held; a
 /// tile whose fill reads an earlier segment's missing tile holds its own reservation while that one
@@ -735,8 +771,7 @@ const POINT_TILES_FLOOR: usize = 16;
 /// through this cache itself and its global estimate may reduce a stage on the pool.
 pub(crate) struct PointTiles<'a> {
     budget: &'a SpatialBudget,
-    tile: u32,
-    capacity: usize,
+    tiling: Tiling,
     state: Mutex<PointState<'a>>,
     /// Every (segment, tile) this query evaluated, in order.
     #[cfg(test)]
@@ -746,6 +781,8 @@ pub(crate) struct PointTiles<'a> {
 #[derive(Default)]
 struct PointState<'a> {
     prepared: Vec<Arc<Prepared>>,
+    /// The largest tile side of any segment prepared so far, which sets the cap.
+    largest: u32,
     /// The held tiles, most recently read first.
     held: Vec<HeldTile<'a>>,
 }
@@ -779,23 +816,12 @@ impl PointState<'_> {
 }
 
 impl<'a> PointTiles<'a> {
-    /// An empty cache for one query evaluated in tiles of `tile` pixels, holding at most what
-    /// `budget`'s target has bytes for.
-    pub(crate) fn new(tile: u32, budget: &'a SpatialBudget) -> Self {
-        let tile_bytes = Region {
-            x0: 0,
-            y0: 0,
-            width: tile.max(1),
-            height: tile.max(1),
-        }
-        .plane_bytes();
-        let capacity = usize::try_from(budget.target() / tile_bytes)
-            .unwrap_or(usize::MAX)
-            .max(POINT_TILES_FLOOR);
+    /// An empty cache for one query whose segments are cut into tiles by `tiling`, holding at most
+    /// what `budget`'s target has bytes for.
+    pub(crate) fn new(tiling: Tiling, budget: &'a SpatialBudget) -> Self {
         Self {
             budget,
-            tile,
-            capacity,
+            tiling,
             state: Mutex::default(),
             #[cfg(test)]
             evaluated: Mutex::default(),
@@ -806,6 +832,21 @@ impl<'a> PointTiles<'a> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many tiles the query may hold: as many of the largest tile its segments have used so far
+    /// as the target has bytes for, and never fewer than [`POINT_TILES_FLOOR`].
+    fn capacity(&self, largest: u32) -> usize {
+        let tile_bytes = Region {
+            x0: 0,
+            y0: 0,
+            width: largest.max(1),
+            height: largest.max(1),
+        }
+        .plane_bytes();
+        usize::try_from(self.budget.target() / tile_bytes)
+            .unwrap_or(usize::MAX)
+            .max(POINT_TILES_FLOOR)
     }
 
     /// One pixel of the output of spatial segment `segment`, whose operation reads and writes
@@ -839,10 +880,12 @@ impl<'a> PointTiles<'a> {
             None => {
                 let prepared = Arc::new(Prepared {
                     segment,
-                    plan: SpatialPlan::new(operation, stage, self.tile)?,
+                    plan: SpatialPlan::new(operation, stage, self.tiling)?,
                     globals: globals()?,
                 });
-                self.lock().prepared.push(prepared.clone());
+                let mut state = self.lock();
+                state.largest = state.largest.max(prepared.plan.tile);
+                state.prepared.push(prepared.clone());
                 prepared
             }
         };
@@ -877,7 +920,8 @@ impl<'a> PointTiles<'a> {
             .iter()
             .any(|held| held.segment == segment && held.tile == tile)
         {
-            state.held.truncate(self.capacity - 1);
+            let capacity = self.capacity(state.largest);
+            state.held.truncate(capacity - 1);
             let bytes = tile.plane_bytes();
             state.held.insert(
                 0,
@@ -893,20 +937,20 @@ impl<'a> PointTiles<'a> {
     }
 
     /// The reduction of `stage` a global estimate of this query is prepared from, on a store miss.
-    /// When the stage comes through an earlier spatial segment (`through_tiles`) it is read tile by
-    /// tile on this thread through this cache, so each of that segment's tiles is evaluated once;
-    /// otherwise it is read as a render reads it, on the pool above the parallel threshold.
+    /// When the stage comes through an earlier spatial segment, whose tile side is `through`, it is
+    /// read on this thread through this cache one of that segment's tiles at a time, so each of
+    /// them is evaluated once; otherwise it is read as a render reads it, on the pool above the
+    /// parallel threshold.
     pub(crate) fn reduce(
         &self,
         stage: Stage,
-        through_tiles: bool,
+        through: Option<u32>,
         cancel: &Cancel,
         fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
     ) -> Result<Reduction, Error> {
-        if through_tiles {
-            build_reduction_by_tiles(stage, self.tile, cancel, fetch)
-        } else {
-            build_reduction_cancellable(stage, cancel, fetch)
+        match through {
+            Some(tile) => build_reduction_by_tiles(stage, tile, cancel, fetch),
+            None => build_reduction_cancellable(stage, cancel, fetch),
         }
     }
 
@@ -1191,7 +1235,7 @@ mod tests {
         modules::ESTIMATE_STORE_ENTRIES,
         modules::{
             ActionInput, ActionPlan, Availability, EffectDescriptor, EffectStage, ModuleDescriptor,
-            Processing, SpatialUnit, StageContext, ToolModule,
+            Processing, SPATIAL_TILE, SpatialUnit, StageContext, ToolModule,
         },
         render::{
             testing::{
@@ -1406,6 +1450,49 @@ mod tests {
         }
     }
 
+    /// A unit that declares a halo of `halo` pixels and copies its input: a declared halo is how far
+    /// a unit may read, so this is a legal unit that lets a test reach a large summed halo without
+    /// paying for a filter that wide.
+    #[derive(Debug)]
+    struct Reach {
+        halo: u32,
+    }
+
+    impl SpatialUnit for Reach {
+        fn halo(&self, _: Stage) -> u32 {
+            self.halo
+        }
+
+        fn scratch_bytes(&self, _: Stage) -> u64 {
+            0
+        }
+
+        fn apply(
+            &self,
+            input: &Planes<'_>,
+            output: &mut PlanesMut<'_>,
+            _: Option<&Global>,
+            _: &mut [f32],
+            _: Parallelism,
+        ) -> Result<(), Error> {
+            let out = output.region();
+            for y in out.y0..out.y1() {
+                for x in out.x0..out.x1() {
+                    output.set(x, y, input.sample(i64::from(x), i64::from(y)));
+                }
+            }
+            Ok(())
+        }
+
+        fn is_finite(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> String {
+            format!("reach {}", self.halo)
+        }
+    }
+
     /// A unit with no neighbourhood that lifts every value by a quarter and counts its own
     /// evaluations, once per tile its operation evaluated, so what a mask saves is counted by the
     /// unit that would have done the work.
@@ -1597,6 +1684,9 @@ mod tests {
                 units.push(match unit.split_once(':') {
                     Some(("blur", radius)) => Arc::new(BoxBlur {
                         radius: radius.parse().expect("a radius"),
+                    }),
+                    Some(("reach", halo)) => Arc::new(Reach {
+                        halo: halo.parse().expect("a halo"),
                     }),
                     None if unit == "shift" => Arc::new(MeanShift {
                         prepared: self.prepared.clone(),
@@ -2581,7 +2671,7 @@ mod tests {
                 &linear,
                 &stack,
                 LinearSettings::default(),
-                tile,
+                Tiling::Fixed(tile),
                 crate::render::SpatialMode::Point,
             )
             .unwrap();
@@ -2665,7 +2755,7 @@ mod tests {
                 width: 600,
                 height: 400,
             },
-            SPATIAL_TILE,
+            Tiling::Halo,
         )
         .unwrap();
         let context = RenderContext::new();
@@ -2701,7 +2791,7 @@ mod tests {
                 width: 600,
                 height: 400,
             },
-            SPATIAL_TILE,
+            Tiling::Halo,
         )
         .unwrap();
         let context = RenderContext::new();
@@ -2761,7 +2851,7 @@ mod tests {
         };
         assert_eq!(operation.summed_halo(stage), 8);
         assert_eq!(operation.halos(stage), vec![3, 0, 5]);
-        let plan = SpatialPlan::new(&operation, stage, 32).unwrap();
+        let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(32)).unwrap();
         let regions = plan.regions(Region {
             x0: 32,
             y0: 32,
@@ -2796,7 +2886,7 @@ mod tests {
             width: 1100,
             height: 600,
         };
-        let plan = SpatialPlan::new(&operation, stage, SPATIAL_TILE).unwrap();
+        let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(SPATIAL_TILE)).unwrap();
         let tiles = plan.tiles();
         assert_eq!(tiles.len(), 3 * 2, "three columns and two rows");
         assert_eq!(tiles[0].x0, 0);
@@ -2805,6 +2895,118 @@ mod tests {
         assert_eq!(plan.tile_containing(700, 300).x0, 512);
         assert_eq!(plan.tile_containing(700, 300).y0, 0);
         assert_eq!(plan.tile_containing(1099, 599), tiles[5]);
+    }
+
+    /// The production tiling takes the tile's side from the operation's summed halo: the small
+    /// tile up to the bound and the wide one past it, up to the largest halo the host accepts. A
+    /// fixed tiling ignores the halo.
+    #[test]
+    fn the_tile_side_follows_the_summed_halo() {
+        use luxforge_raw::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
+        let stage = Stage {
+            width: 3000,
+            height: 2000,
+        };
+        let plan = |halo: u32, tiling: Tiling| {
+            let operation = SpatialOperation::new(vec![Arc::new(Reach { halo })]).unwrap();
+            SpatialPlan::new(&operation, stage, tiling).unwrap()
+        };
+        assert_eq!(plan(0, Tiling::Halo).tile(), SPATIAL_TILE);
+        assert_eq!(plan(SPATIAL_WIDE_HALO, Tiling::Halo).tile(), SPATIAL_TILE);
+        assert_eq!(
+            plan(SPATIAL_WIDE_HALO + 1, Tiling::Halo).tile(),
+            SPATIAL_WIDE_TILE
+        );
+        assert_eq!(
+            plan(MAX_SPATIAL_HALO, Tiling::Halo).tile(),
+            SPATIAL_WIDE_TILE
+        );
+        let wide = plan(MAX_SPATIAL_HALO, Tiling::Halo);
+        assert_eq!(wide.tiles().len(), 3 * 2);
+        assert_eq!(wide.tile_containing(2999, 1999).x0, 2 * SPATIAL_WIDE_TILE);
+        assert_eq!(plan(MAX_SPATIAL_HALO, Tiling::Fixed(64)).tile(), 64);
+    }
+
+    /// Past the bound a render runs in wide tiles. On both paths its frame is the frame of the
+    /// small tiles and of the wide ones fixed, and every sample, on either side of a wide tile's
+    /// seam and a small one's, is the rendered byte, evaluated in the wide tile that holds it.
+    #[test]
+    fn a_wide_halo_renders_and_samples_in_wide_tiles_on_both_paths() {
+        use luxforge_raw::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
+        let registry = spatial_registry();
+        // Wider and taller than one wide tile, above the parallel threshold.
+        let (width, height) = (1300_u32, 1100_u32);
+        let reach = format!("reach:{}", SPATIAL_WIDE_HALO + 1 - 3);
+        let stack = recipe(vec![spatial_layer(&["blur:3", &reach])]);
+        let source = gradient(width, height);
+        let floats = linear_source(width, height);
+        let settings = LinearSettings::default();
+        let context = RenderContext::new();
+        let byte = byte_in(&context, &registry, &source, &stack);
+        let linear = linear_in(&context, &registry, &floats, &stack, settings);
+        for tile in [SPATIAL_TILE, SPATIAL_WIDE_TILE] {
+            let fixed = tiled_in(&context, &registry, &source, &stack, tile).unwrap();
+            assert_eq!(fixed.rgba, byte.rgba, "byte path in {tile} px tiles");
+            let floats = crate::render::testing::linear(&floats, settings);
+            let fixed = tiled_in(&context, &registry, floats, &stack, tile).unwrap();
+            assert_eq!(fixed.rgba, linear.rgba, "linear path in {tile} px tiles");
+        }
+        let bytes = evaluation(&context, &registry, &source, &stack).unwrap();
+        let planes = linear_evaluation(
+            &context,
+            &registry,
+            &floats,
+            &stack,
+            settings,
+            Tiling::Halo,
+            crate::render::SpatialMode::Point,
+        )
+        .unwrap();
+        for (x, y) in [
+            (0, 0),
+            (511, 511),
+            (512, 512),
+            (1023, 700),
+            (1024, 700),
+            (700, 1023),
+            (700, 1024),
+            (width - 1, height - 1),
+        ] {
+            assert_eq!(
+                bytes.pixel(x, y).unwrap(),
+                byte.pixel(x, y),
+                "byte sample at ({x}, {y})"
+            );
+            assert_eq!(
+                planes.terminal(x, y).unwrap(),
+                linear.pixel(x, y),
+                "linear sample at ({x}, {y})"
+            );
+        }
+        let evaluated: Vec<Region> = [bytes.point_tiles(), planes.point_tiles()]
+            .into_iter()
+            .flat_map(|tiles| tiles.evaluated().into_iter().map(|(_, tile)| tile))
+            .collect();
+        assert_eq!(
+            evaluated.len(),
+            2 * 4,
+            "each path evaluates the four wide tiles once"
+        );
+        for tile in evaluated {
+            assert_eq!(
+                (tile.x0 % SPATIAL_WIDE_TILE, tile.y0 % SPATIAL_WIDE_TILE),
+                (0, 0),
+                "{tile:?} is on the wide grid"
+            );
+            assert_eq!(
+                (tile.width, tile.height),
+                (
+                    SPATIAL_WIDE_TILE.min(width - tile.x0),
+                    SPATIAL_WIDE_TILE.min(height - tile.y0)
+                ),
+                "{tile:?} is a whole wide tile"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2885,7 +3087,8 @@ mod tests {
         let (width, height, tile) = (200_u32, 150_u32, 32_u32);
         let stack = recipe(vec![spatial_layer(&["blur:3"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 3 })]).unwrap();
-        let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
+        let plan =
+            SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile)).unwrap();
         let context = RenderContext::new();
         let budget = context.spatial();
         assert!(
@@ -2948,7 +3151,7 @@ mod tests {
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 })]).unwrap();
         let context = RenderContext::with_spatial_target(1024);
         let budget = context.spatial();
-        let plan = SpatialPlan::new(&operation, Stage { width, height }, tile)
+        let plan = SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile))
             .expect("what a tile costs never refuses a plan");
         assert!(plan.working_set() > budget.target());
         assert_eq!(budget.concurrency(plan.working_set()), 1);
@@ -3473,7 +3676,7 @@ mod tests {
                     &linear,
                     &stack,
                     LinearSettings::default(),
-                    POINT_TILE,
+                    Tiling::Fixed(POINT_TILE),
                     SpatialMode::Point,
                 )
                 .unwrap();
@@ -3563,7 +3766,7 @@ mod tests {
             &linear,
             &stack,
             LinearSettings::default(),
-            POINT_TILE,
+            Tiling::Fixed(POINT_TILE),
             SpatialMode::Point,
         )
         .unwrap();
@@ -3847,7 +4050,7 @@ mod tests {
             ])
             .unwrap()
             .with_mask(field.clone());
-            let plan = SpatialPlan::new(&operation, stage, tile_size).unwrap();
+            let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(tile_size)).unwrap();
             let bounds = field.bounds();
             let outside = plan
                 .tiles()
@@ -4067,7 +4270,7 @@ mod tests {
                 width: 2000,
                 height: 1500,
             },
-            SPATIAL_TILE,
+            Tiling::Halo,
         )
         .unwrap();
         assert!(plan.tiles().len() > 4, "several batches of one tile");
@@ -4151,7 +4354,8 @@ mod tests {
             Arc::new(MeanShift::default()),
         ])
         .unwrap();
-        let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
+        let plan =
+            SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile)).unwrap();
         let mut frames = Vec::new();
         // One working set: batches of one tile, pooled. Unbounded: batches as wide as the pool,
         // serial.
@@ -4199,7 +4403,7 @@ mod tests {
             let source = gradient(width, height);
             let stack = recipe(vec![spatial_layer(&[&format!("blur:{radius}")])]);
             let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius })]).unwrap();
-            let plan = SpatialPlan::new(&operation, Stage { width, height }, SPATIAL_TILE).unwrap();
+            let plan = SpatialPlan::new(&operation, Stage { width, height }, Tiling::Halo).unwrap();
             // Warm the source and the estimate store, then measure.
             let context = RenderContext::new();
             byte_in(&context, &registry, &source, &stack);
