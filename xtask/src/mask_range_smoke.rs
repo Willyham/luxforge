@@ -701,6 +701,14 @@ fn refused(launch: &Checked) -> Vec<Value> {
 fn overlay_answers(events: &[Value]) -> Vec<Value> {
     events
         .iter()
+        // A tint a shape gesture showed of its own accord, over a setting of `off`, is not an
+        // answer to the overlay the script asked for: the gesture forces it while a handle is
+        // dragged and drops it after, so it is left out of the count either way it went.
+        .filter(|event| {
+            let detail = &event["detail"];
+            detail["forced"] != json!(true)
+                && (detail["setting"].is_null() || detail["setting"] == detail["mode"])
+        })
         .filter_map(|event| match event["event"].as_str() {
             Some("mask_overlay") => Some(json!({"drawn":true,
                 "component":event["detail"]["component"].clone(),
