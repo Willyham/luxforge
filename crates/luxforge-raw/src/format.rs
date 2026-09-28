@@ -345,11 +345,6 @@ pub(crate) fn required_ids<'a>(opcodes: impl IntoIterator<Item = &'a DngOpcode>)
     ids
 }
 
-/// IDs of DNG opcodes whose optional flag is unset. Malformed lists fail.
-pub fn required_dng_opcodes(bytes: &[u8]) -> Result<Vec<u32>, RawError> {
-    Ok(required_ids(&dng_opcodes(bytes)?))
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct DngSensorContainer {
     pub raw_ifd: u32,
@@ -808,6 +803,11 @@ pub(super) fn classify_mode<'a>(
 mod tests {
     use super::*;
     use crate::{RawSource, profiles::DngCorrections};
+
+    /// IDs of DNG opcodes whose optional flag is unset. Malformed lists fail.
+    fn required_dng_opcodes(bytes: &[u8]) -> Result<Vec<u32>, RawError> {
+        Ok(required_ids(&dng_opcodes(bytes)?))
+    }
     #[test]
     fn truncated_inputs_are_rejected() {
         assert_eq!(raf_default_crop(b"FUJIFILM"), None);
@@ -861,6 +861,20 @@ mod tests {
             Err(RawError::InvalidInput(_))
         ));
     }
+    /// The owner's DJI Air 2S DNG requires exactly WarpRectilinear (1) and GainMap (9).
+    #[test]
+    #[ignore = "requires explicit local authentic DJI DNG"]
+    fn owner_dji_dng_requires_warp_and_gain_map() {
+        use sha2::{Digest, Sha256};
+        let owner = std::env::var("LUXFORGE_RAW_OWNER_DIR").expect("owner fixture directory");
+        let bytes = std::fs::read(format!("{owner}/mavic_air_2s.DNG")).expect("read DJI DNG");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d"
+        );
+        assert_eq!(required_dng_opcodes(&bytes).unwrap(), vec![1, 9]);
+    }
+
     #[test]
     fn raf_camera_crop_bounds() {
         let mut b = vec![0_u8; 120];

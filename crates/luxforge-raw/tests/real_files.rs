@@ -1,6 +1,6 @@
 //! Local authentic-mode qualification. Set LUXFORGE_RAW_OWNER_DIR and
 //! LUXFORGE_RAW_PUBLIC_DIR, then run with --ignored; no fixture is committed.
-use luxforge_raw::{RawError, RawMode, RawSource, required_dng_opcodes};
+use luxforge_raw::{RawError, RawSource};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
@@ -39,7 +39,7 @@ fn authentic_owner_modes_preserve_sources_and_develop_float() {
         (
             owner.as_str(),
             "nikon_z6.NEF",
-            RawMode::NikonZ6Lossless14,
+            "NikonZ6Lossless14",
             6064,
             4040,
             "86c76c382dd4273e619a2dcc177a27b15c9e9b2d1187639c54d4d4c1336e8bfc",
@@ -47,7 +47,7 @@ fn authentic_owner_modes_preserve_sources_and_develop_float() {
         (
             owner.as_str(),
             "fujifilm_x100vi.RAF",
-            RawMode::FujifilmX100ViUncompressed14,
+            "FujifilmX100ViUncompressed14",
             7872,
             5196,
             "268eb98243c9a5b58fd57ed3ac79f0cc95101c20df26e0ac7ab241e594db1dce",
@@ -63,7 +63,7 @@ fn authentic_public_modes_preserve_sources_and_develop_float() {
         (
             public.as_str(),
             "z6-12-lossless.NEF",
-            RawMode::NikonZ6Lossless12,
+            "NikonZ6Lossless12",
             6064,
             4040,
             "f25f0aafd76a99f5f20cbe2a001f4620397be43de829010d5dbaf9255ce64424",
@@ -71,7 +71,7 @@ fn authentic_public_modes_preserve_sources_and_develop_float() {
         (
             public.as_str(),
             "z6-14-lossless.NEF",
-            RawMode::NikonZ6Lossless14,
+            "NikonZ6Lossless14",
             6064,
             4040,
             "9896187fd3e3e29922b5b051a62f24afedbbbb75ddf63b5879a2b28de896116c",
@@ -79,7 +79,7 @@ fn authentic_public_modes_preserve_sources_and_develop_float() {
         (
             public.as_str(),
             "x100vi-uncompressed.RAF",
-            RawMode::FujifilmX100ViUncompressed14,
+            "FujifilmX100ViUncompressed14",
             7872,
             5196,
             "2348feb3f5d01634e4e843671d20468337c760c6799ca83b619a81eb64945b03",
@@ -87,7 +87,7 @@ fn authentic_public_modes_preserve_sources_and_develop_float() {
         (
             public.as_str(),
             "x100vi-lossless.RAF",
-            RawMode::FujifilmX100ViLossless14,
+            "FujifilmX100ViLossless14",
             7872,
             5196,
             "f10be69db8c3731fdcacf3741fd188fcef2557efd5de79f84a22a34adf443283",
@@ -95,13 +95,13 @@ fn authentic_public_modes_preserve_sources_and_develop_float() {
     ]);
 }
 
-fn verify_authentic_modes(cases: &[(&str, &str, RawMode, u32, u32, &str)]) {
+fn verify_authentic_modes(cases: &[(&str, &str, &str, u32, u32, &str)]) {
     let cancel = AtomicBool::new(false);
     for &(dir, file, mode, w, h, expected_mosaic) in cases {
         let path = Path::new(dir).join(file);
         let (bytes, hash) = read_with_hash(&path);
         let raw = RawSource::decode(bytes, &cancel).unwrap_or_else(|e| panic!("{file}: {e}"));
-        assert_eq!(raw.metadata().mode, mode);
+        assert_eq!(raw.metadata().mode.id(), mode);
         assert_eq!(
             (raw.metadata().sensor_width, raw.metadata().sensor_height),
             (w, h)
@@ -125,7 +125,7 @@ fn verify_authentic_modes(cases: &[(&str, &str, RawMode, u32, u32, &str)]) {
             );
             assert_eq!(
                 raw.metadata().sensor_white,
-                if mode == RawMode::NikonZ6Lossless12 {
+                if mode == "NikonZ6Lossless12" {
                     4095.0
                 } else {
                     16383.0
@@ -190,9 +190,8 @@ fn required_dji_opcodes_are_applied_to_fc3411() {
         hash,
         "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d"
     );
-    assert_eq!(required_dng_opcodes(&bytes).unwrap(), vec![1, 9]);
     let raw = RawSource::decode(bytes, &AtomicBool::new(false)).expect("qualified FC3411 decode");
-    assert_eq!(raw.metadata().mode, RawMode::DjiAir2sDng16);
+    assert_eq!(raw.metadata().mode.id(), "DjiAir2sDng16");
     // This DNG's one uncompressed 16-bit strip independently hashes to this
     // value when read directly from TIFF bytes, before LibRaw touches it.
     assert_eq!(
@@ -271,9 +270,6 @@ fn required_dji_opcodes_are_applied_to_fc3411() {
         }
     }
     assert!(corrections.skipped_optional.is_empty());
-    assert!(raw.gain_at_corrected_sensor(2840.0, 1800.0, 1).unwrap() > 0.0);
-    let corrected = raw.corrected_sensor_sample_location(100, 4, 0).unwrap();
-    assert!(corrected.0.is_finite() && corrected.1.is_finite());
     let rgb = raw
         .develop(raw.metadata().as_shot_gains, &AtomicBool::new(false))
         .expect("required stage-three corrections");

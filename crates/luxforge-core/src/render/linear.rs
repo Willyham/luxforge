@@ -1842,7 +1842,7 @@ mod tests {
         let gains = prepared.gains;
         assert_eq!(
             raw.metadata().mode,
-            luxforge_raw::RawMode::NikonZ6Lossless14
+            luxforge_raw::RawMode::from_id("NikonZ6Lossless14").unwrap()
         );
         assert_eq!(
             (raw.metadata().sensor_width, raw.metadata().sensor_height),

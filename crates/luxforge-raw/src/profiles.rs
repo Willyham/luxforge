@@ -690,6 +690,7 @@ mod tests {
             for mode in camera.modes.iter() {
                 let public: crate::RawMode = serde_json::from_value(json!(mode.id)).unwrap();
                 assert_eq!(public.id(), mode.id);
+                assert_eq!(crate::RawMode::from_id(&mode.id), Some(public));
                 assert_eq!(public.requires_dng_corrections(), camera.dng.is_some());
                 assert_eq!(serde_json::to_value(public).unwrap(), json!(mode.id));
             }

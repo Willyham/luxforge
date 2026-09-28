@@ -3,7 +3,7 @@
 //! The native boundary is private to this crate. Source ownership, limits, and
 //! pointer lifetimes are enforced by the safe public API.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     ffi::{c_char, c_int, c_void},
     fmt,
@@ -27,7 +27,6 @@ mod profiles;
 #[doc(hidden)]
 pub use develop::{DevelopOptions, develop_with};
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
-pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
     MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES, PARALLEL_COLOUR_PIXELS,
@@ -37,7 +36,7 @@ pub use limits::{
 };
 use native_status::NativeStatus;
 pub use native_tiles::refill_each;
-use profiles::{Catalog, Crop};
+use profiles::{Catalog, Crop, Mode};
 
 /// The camera catalog as static data, which the build script generated from `data/cameras.json`
 /// after validating it: nothing is parsed at run time.
@@ -98,14 +97,61 @@ pub struct RawRect {
     pub height: u32,
 }
 
-include!(concat!(env!("OUT_DIR"), "/raw_modes.rs"));
+/// One recording mode of the camera catalog. It serializes as the mode's identifier, and only a
+/// mode the catalog declares deserializes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RawMode(&'static Mode);
 
 impl RawMode {
-    /// The correction record is required by the mode's processing capability.
+    /// The catalog's mode with identifier `id`.
+    pub fn from_id(id: &str) -> Option<Self> {
+        camera_catalog()
+            .cameras
+            .iter()
+            .flat_map(|camera| camera.modes.iter())
+            .find(|mode| mode.id == id)
+            .map(Self)
+    }
+
+    /// The mode's identifier, its serialized form.
+    pub fn id(self) -> &'static str {
+        &self.0.id
+    }
+
+    /// The correction record is required by the mode's camera's processing capability. The
+    /// catalog gives a DNG version to exactly the modes of cameras with DNG processing settings,
+    /// which its validation enforces, so the mode answers for its camera.
     pub fn requires_dng_corrections(self) -> bool {
-        camera_catalog().cameras.iter().any(|camera| {
-            camera.dng.is_some() && camera.modes.iter().any(|mode| mode.id == self.id())
-        })
+        self.0.dng_version.is_some()
+    }
+}
+
+impl fmt::Debug for RawMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+impl Serialize for RawMode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.id())
+    }
+}
+
+impl<'de> Deserialize<'de> for RawMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Id;
+        impl serde::de::Visitor<'_> for Id {
+            type Value = RawMode;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a recording mode of the camera catalog")
+            }
+            fn visit_str<E: serde::de::Error>(self, id: &str) -> Result<RawMode, E> {
+                RawMode::from_id(id)
+                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(id), &self))
+            }
+        }
+        deserializer.deserialize_str(Id)
     }
 }
 
@@ -144,9 +190,8 @@ pub struct RawMetadata {
 
 /// Sparse sensor repairs applied during development while retaining the exact
 /// decoded mosaic. Sorted unique offsets; at most 65,536 entries per source.
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct MosaicCorrection {
+pub(crate) struct MosaicCorrection {
     pub index: u32,
     pub value: u16,
 }
@@ -192,12 +237,6 @@ fn validate_camera_response(matrix: &[[f32; 3]; 4]) -> Result<(), RawError> {
 impl PlanarRgb {
     pub fn plane_len(&self) -> usize {
         self.width as usize * self.height as usize
-    }
-    pub fn planes(&self) -> (&[f32], &[f32], &[f32]) {
-        let n = self.plane_len();
-        let (red, rest) = self.data.split_at(n);
-        let (green, blue) = rest.split_at(n);
-        (red, green, blue)
     }
 }
 
@@ -363,9 +402,6 @@ impl RawSource {
     pub fn mosaic(&self) -> &[u16] {
         &self.mosaic
     }
-    pub fn mosaic_arc(&self) -> Arc<Vec<u16>> {
-        Arc::clone(&self.mosaic)
-    }
 
     /// Decode once on a bounded worker. The encoded bytes are read in place,
     /// never copied: the caller's buffer, a `Vec` read from the file or any
@@ -463,10 +499,6 @@ impl RawSource {
         })
     }
 
-    pub fn mosaic_corrections(&self) -> &[MosaicCorrection] {
-        &self.mosaic_corrections
-    }
-
     /// Demosaic with green-normalized camera-channel gains. These gains are
     /// applied to black-subtracted, sensor-white-normalized samples *before*
     /// the pinned demosaicer; changing WB reruns this stage from the mosaic.
@@ -498,7 +530,7 @@ impl RawSource {
     /// Map an absolute corrected-plane pixel to the uncorrected sensor
     /// coordinate used by the selected camera-color channel. Bounded point
     /// math only; this never develops or renders an image.
-    pub fn corrected_sensor_sample_location(
+    pub(crate) fn corrected_sensor_sample_location(
         &self,
         x: u32,
         y: u32,
@@ -515,7 +547,7 @@ impl RawSource {
 
     /// Combined opcode gain at an absolute corrected output coordinate.
     /// Gain placement before or after a warp follows the source opcode order.
-    pub fn gain_at_corrected_sensor(
+    pub(crate) fn gain_at_corrected_sensor(
         &self,
         x: f64,
         y: f64,
@@ -570,8 +602,7 @@ impl RawSource {
         let decoder = c_text(&native.decoder);
         let (profile, recording) =
             classify_mode(camera_catalog(), native, &make, &model, &decoder, bytes)?;
-        let mode = serde_json::from_value(serde_json::Value::String(recording.id.to_string()))
-            .expect("mode identifiers generated from the validated catalog");
+        let mode = RawMode(recording);
         reject_unhandled_required_opcodes(profile.dng.is_some(), opcodes)?;
         let rect = |x, y, width, height| RawRect {
             x,
@@ -1509,12 +1540,12 @@ mod tests {
         let (expected_hash, expected_mode, expected_dimensions) = match name.as_str() {
             "nikon_z6.NEF" => (
                 "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
-                RawMode::NikonZ6Lossless14,
+                RawMode::from_id("NikonZ6Lossless14").unwrap(),
                 (6064, 4040),
             ),
             "mavic_air_2s.DNG" => (
                 "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d",
-                RawMode::DjiAir2sDng16,
+                RawMode::from_id("DjiAir2sDng16").unwrap(),
                 (5568, 3648),
             ),
             _ => panic!("unsupported owner Bayer source: {name}"),
@@ -1715,9 +1746,9 @@ mod tests {
             assert_eq!(
                 raw.metadata.mode,
                 if name == "nikon_z6.NEF" {
-                    RawMode::NikonZ6Lossless14
+                    RawMode::from_id("NikonZ6Lossless14").unwrap()
                 } else {
-                    RawMode::DjiAir2sDng16
+                    RawMode::from_id("DjiAir2sDng16").unwrap()
                 }
             );
             assert_eq!(

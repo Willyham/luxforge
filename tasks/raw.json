@@ -527,7 +527,7 @@
     {
       "id": "TASK-008",
       "description": "Trim `luxforge-raw`'s public API to what `luxforge-core`, `xtask` and the crate's own example use, beside the limits module's shared items, and replace the generated 103-variant `RawMode` enum with a validated static reference into the camera catalog.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],

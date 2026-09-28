@@ -287,11 +287,6 @@ fn main() {
     let mut native = String::from(
         "// Generated from data/cameras.json; do not edit.\nstatic const struct { const char *make, *model; bool calibrated; double xyz_to_camera[9]; } lf_cameras[] = {\n",
     );
-    let mut rust = String::from(
-        "// Generated from data/cameras.json; do not edit.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\npub enum RawMode {\n",
-    );
-    let mut names =
-        String::from("impl RawMode { pub(crate) fn id(self) -> &'static str { match self {\n");
     for camera in catalog.cameras.iter() {
         let (calibrated, matrix) = camera
             .calibration
@@ -318,15 +313,8 @@ fn main() {
             "{{\"{}\", \"{}\", {}, {{{}}}}},\n",
             camera.make, camera.model, calibrated, matrix
         ));
-        for mode in camera.modes.iter() {
-            rust.push_str(&format!("{},\n", mode.id));
-            names.push_str(&format!("Self::{} => \"{}\",\n", mode.id, mode.id));
-        }
     }
     native.push_str("};\n");
-    rust.push_str("}\n");
-    names.push_str("} } }\n");
-    rust.push_str(&names);
     native.push_str(&format!(
         "\n#define LF_MAX_SOURCE_BYTES {}ull\n#define LF_MAX_PIXELS {}ull\n#define LF_MAX_SIDE {}u\n#define LF_MAX_RGB_BYTES {}ull\n",
         limits::MAX_SOURCE_BYTES, limits::MAX_PIXELS, limits::MAX_SIDE, limits::MAX_RGB_BYTES
@@ -341,7 +329,6 @@ fn main() {
     }
     native.push_str("};\n");
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
-    fs::write(out.join("raw_modes.rs"), rust).expect("write mode identifiers");
     fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
         .expect("write static camera catalog");
     let rt = out.join("librtprocess-9a858270");

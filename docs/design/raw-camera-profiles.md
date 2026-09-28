@@ -32,8 +32,10 @@ selectors, invalid dimensions, and unsupported capability combinations fail the
 build. The build then emits the validated catalog as static Rust data, so the
 library parses no JSON at all, and a test proves that data equals the parsed
 file. No runtime file lookup, environment override, download or JSON parsing is
-introduced. Build-generated native allowlist entries and Rust mode identifiers
-come from the same validated catalog. Unknown cameras still fail before unpack.
+introduced. Build-generated native allowlist entries come from the same
+validated catalog, and a public recording mode is a reference to one of its
+modes, serialized as the mode's identifier; an identifier the catalog does not
+declare fails to deserialize. Unknown cameras still fail before unpack.
 
 ## Field reference
 
