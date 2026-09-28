@@ -7,6 +7,7 @@
 //! ([`draft_set_now`]), and only its `draft.commit` is a task.
 use crate::{
     app::{
+        crop::StagePlan,
         draft::GestureId,
         message::{
             DraftMessage, EvidenceMessage, HistoryMessage, MaskMessage, Message,
@@ -926,9 +927,11 @@ pub(crate) struct RecipeRead {
 }
 
 /// The crop draft's only preview job: the stack truncated to the layers before the crop layer, which
-/// is exactly that layer's input stage. Starting a draft and reapplying it are the only two requests.
-/// A start's `draft.begin` is its own task, which cancels any draft the crop displaced first; this
-/// job reads the stored stack, not the session's draft, so it does not wait for either.
+/// is exactly that layer's input stage. A start and a Reapply plan it from the current entry
+/// ([`StagePlan::Open`]); a zoom that needs a phase of the stage on screen no held frame serves
+/// plans it again from that stage's entry ([`StagePlan::Zoom`]), because the desktop keeps no
+/// planned job. A start's `draft.begin` is its own task, which cancels any draft the crop displaced
+/// first; this job reads the stored stack, not the session's draft, so it does not wait for either.
 ///
 /// The job names the entry it truncated, and the desktop opens the draft on it only while that entry
 /// is still the current one it holds.
@@ -937,19 +940,37 @@ pub(crate) fn crop_preview_task(
     client: ClientId,
     asset_id: AssetId,
     layer_count: usize,
+    plan: StagePlan,
 ) -> Task<Message> {
+    let entry = match &plan {
+        StagePlan::Open => None,
+        StagePlan::Zoom(entry) => Some(entry.clone()),
+    };
     owner_task(
-        move || {
-            ready_preview_job(
-                &owner,
-                PreviewRequest::new(client, asset_id).layers(layer_count),
-            )
-        },
+        move || crop_preview(&owner, client, asset_id, entry, layer_count),
         |result| {
             Message::Crop(crate::app::message::CropMessage::PreviewReady(
+                plan,
                 result.map(Box::new),
             ))
         },
+    )
+}
+
+/// The plain calls [`crop_preview_task`] runs: `entry`'s stack, or the current one's, truncated to
+/// its first `layer_count` layers.
+pub(crate) fn crop_preview(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry: Option<EntryId>,
+    layer_count: usize,
+) -> Result<PreviewJob, String> {
+    ready_preview_job(
+        owner,
+        PreviewRequest::new(client, asset_id)
+            .entry(entry)
+            .layers(layer_count),
     )
 }
 

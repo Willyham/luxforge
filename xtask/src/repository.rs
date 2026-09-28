@@ -315,6 +315,33 @@ const SOURCE_RULES: &[SourceRule] = &[
                  development's planes hold the source worker's memory gate; only the thumbnail \
                  worker's job type (app/thumbnails.rs) names one",
     },
+    // Nor a planned preview job, which carries its stack. The desktop names `PreviewJob` only in
+    // the files that pass one straight through: the messages that carry it (app/message.rs), the
+    // owner tasks that plan and answer with it (app/tasks.rs), the preview request that hands it to
+    // the worker (app/preview.rs), and the two answers that read one on its way there, a
+    // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs). A crop draft keeps
+    // frames only; the editor, the view model and the other gestures name no job at all. A token
+    // rule reads names, not types: it cannot see a job kept inside one of those files, nor one
+    // kept inside a carrier type that holds one (`Refresh`, `PreviewPayload`).
+    SourceRule {
+        name: "desktop-keeps-no-preview-job",
+        tokens: &["PreviewJob"],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-app/src/app/message.rs",
+            "crates/luxforge-app/src/app/tasks.rs",
+            "crates/luxforge-app/src/app/preview.rs",
+            "crates/luxforge-app/src/app/gesture.rs",
+            "crates/luxforge-app/src/app/thumbnails.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the desktop keeps no planned preview job between messages: it holds its stack; \
+                 only the messages, the owner tasks, the preview request and the answers that \
+                 pass one straight to a worker name one",
+    },
     // One JPEG codec path: in shipped code only `luxforge-jpeg` names `mozjpeg` (and
     // `mozjpeg_sys`), and nothing decodes JPEG through `image`. Tests may, as an independent
     // decoder.
@@ -2160,6 +2187,83 @@ mod tests {
         );
         let error = refusal(root, &["desktop-keeps-no-stack"], "a kept stack");
         assert!(error.contains("thumbnails.rs:2"), "{error}");
+    }
+
+    #[test]
+    fn only_the_files_that_pass_a_preview_job_through_name_one_on_the_desktop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The messages, the owner tasks, the preview request and the two answers may, on as many
+        // lines as they need; so may a test file, a test item, a comment and a longer name.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-app/src/app/message.rs",
+                    "PreviewReady(StagePlan, Result<Box<PreviewJob>, String>),\n\
+                     ThumbnailSource(Result<Box<PreviewJob>, String>),\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/tasks.rs",
+                    "pub(crate) job: PreviewJob,\n) -> Result<PreviewJob, String> {\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/preview.rs",
+                    "pub(crate) fn request_preview(&mut self, job: PreviewJob) -> u64 {\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/gesture.rs",
+                    "result: Result<(Draft, Option<PreviewJob>, RoundTrip), String>,\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/thumbnails.rs",
+                    "fn note_thumbnail_source(&mut self, job: &PreviewJob) {\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/preview_tests.rs",
+                    "let job: PreviewJob = planned();\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/crop.rs",
+                    "// A PreviewJob holds its stack.\n#[cfg(test)]\nmod tests {\n    \
+                     use luxforge_core::PreviewJob;\n}\nlet plans = PreviewJobs::new();\n",
+                ),
+            ],
+        );
+        // Only the one file outside those homes is read: an allowed home is not.
+        assert_eq!(
+            read(root, &["desktop-keeps-no-preview-job"]).unwrap(),
+            (1, 0)
+        );
+        // A job kept in the crop draft, the editor or the view model is refused.
+        refuses_each(
+            root,
+            "desktop-keeps-no-preview-job",
+            &[
+                (
+                    "crates/luxforge-app/src/app/crop_stage.rs",
+                    "job: Option<Box<luxforge_core::PreviewJob>>,\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/mod.rs",
+                    "pending: Option<PreviewJob>,\n",
+                ),
+                (
+                    "crates/luxforge-app/src/state/canvas.rs",
+                    "stage: Vec<PreviewJob>,\n",
+                ),
+            ],
+            "the desktop keeps no planned preview job",
+        );
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/src/app/crop.rs",
+                "job: Option<Box<luxforge_core::PreviewJob>>,\n",
+            )],
+        );
+        let error = refusal(root, &["desktop-keeps-no-preview-job"], "a kept job");
+        assert!(error.contains("crop.rs:1"), "{error}");
     }
 
     #[test]

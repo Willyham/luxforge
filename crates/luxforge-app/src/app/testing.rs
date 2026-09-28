@@ -87,6 +87,31 @@ pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforg
     )
 }
 
+/// The same stack as `stack` — the same entry, recipe and source identity, so the same analysis
+/// identity — over a new allocation of its pixels, and a handle that says whether anything still
+/// holds that allocation: what a test needs to see that the desktop kept no stack. A RAW
+/// development's planes would hold the source worker's memory gate for as long.
+pub(crate) fn fresh_stack(stack: &Evaluation) -> (Evaluation, std::sync::Weak<Vec<u8>>) {
+    let luxforge_core::PreviewSource::Jpeg(image) = stack.source() else {
+        panic!("a JPEG stack");
+    };
+    let pixels = Arc::new(image.rgba.as_ref().clone());
+    let held = Arc::downgrade(&pixels);
+    let source = luxforge_core::PreviewSource::Jpeg(SourceImage {
+        rgba: pixels,
+        ..image.clone()
+    });
+    let evaluation = Evaluation::new(
+        stack.registry().clone(),
+        stack.context().clone(),
+        source,
+        stack.entry().clone(),
+        stack.recipe().clone(),
+        None,
+    );
+    (evaluation, held)
+}
+
 /// [`real_photo`] of the photograph at `fixture`. A RAW original is decoded and developed on the
 /// owner's own source worker before the editor opens it.
 pub(crate) fn real_photo_at(

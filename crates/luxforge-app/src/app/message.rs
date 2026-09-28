@@ -8,6 +8,7 @@ pub(crate) use crate::state::{
 use crate::{
     app::capabilities::Answer,
     app::controls::CurveSampleIdentity,
+    app::crop::StagePlan,
     app::draft::GestureId,
     app::export::ExportChoice,
     app::tasks::CallError,
@@ -363,8 +364,9 @@ pub(crate) enum CropMessage {
     /// Open a draft on the current stack. Apply, Cancel and Reapply are the one draft lifecycle's
     /// [`DraftMessage`]s, as they are for every other gesture.
     Start,
-    /// The truncated preview job for the input stage of a start or a reapply.
-    PreviewReady(Result<Box<PreviewJob>, String>),
+    /// The truncated preview job for the input stage of a start or a reapply, or for a zoom that
+    /// needs a phase of the stage on screen no held frame serves: which one the plan says.
+    PreviewReady(StagePlan, Result<Box<PreviewJob>, String>),
     Pointer(CropPointer),
     /// The index of one generated ratio preset.
     Preset(usize),

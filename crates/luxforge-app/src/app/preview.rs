@@ -778,9 +778,9 @@ impl Editor {
                     // update: nothing is uploaded through the runtime, so nothing waits for it.
                     // Like the photograph's, its proxy is the Fit view and its exact phase the
                     // percentage zoom's; neither is ever reduced, sampled or committed.
-                    let presented =
+                    let (presented, planned) =
                         self.crop_stage_ready(&raster, proxy, bounded, !proxy || interactive);
-                    return (Task::none(), presented);
+                    return (planned, presented);
                 }
                 // The dimensions every pick, every percent-zoom box and every overlay
                 // cell maps through are the **exact stage's**, whatever size the
@@ -1360,8 +1360,7 @@ impl Editor {
         // answered over the stage, and the photograph behind it asks for nothing that would
         // supersede the stage. The draft's end always brings a new photograph at the zoom then.
         if self.crop_stage_owns_view() {
-            self.present_crop_stage();
-            return Task::none();
+            return self.present_crop_stage();
         }
         let wants_proxy = self.proxy_bounds().is_some();
         // Nothing presented yet, or the texture on screen is already the one this zoom wants: a
