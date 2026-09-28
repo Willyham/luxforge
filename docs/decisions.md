@@ -219,6 +219,18 @@ Decided by the owner on 2026-09-27, who took every recommended default of the [s
 - **Presets store each kind's white balance separately.** Apply skips and reports a setting that does not apply to the photo's kind.
 - **Reset Basic on a RAW photo also returns the development to As shot**, as one history entry.
 
+## Masks panel
+
+Decided on 2026-09-28. The owner delegated the behaviour choices of the [Masks panel design](design/masking-workspace.md#decisions) and asked for the panel to match its boards; current behaviour is described there and in the [user guide](user-guide.md#masks).
+
+- The panel is the design's: rows at the module-panel density, a Masks band, one overlay row, New mask and Add component as kind menus, the Brush section only while a brush is armed or selected, and an accent scope chip on each band bound to the open mask.
+- Each component row carries its own `+ − ∩` mode control; the first component's shows `+` alone, dimmed, with the host's reason.
+- An overlay set to off shows the tint while a shape gesture reshapes an existing mask and returns afterwards; the stored setting never changes. A brush and a gesture creating a mask are not forced.
+- Renames happen in place, from the row's menu. A component rename is a host command, `mask.rename-component`, with `mask.rename`'s rules.
+- `mask.list` reports each stroke's settings so a stroke row can say what it painted.
+- The luminance range is drawn with a generic `range` control kind above its four fields.
+- The Polygon kind, model selections, the inference runtime and Refine edge stay proposals; the panel draws nothing for them.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
