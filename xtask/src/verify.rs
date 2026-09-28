@@ -150,7 +150,7 @@ struct Authentic {
 }
 
 /// The authentic RAW tests `raw-authentic` can run from a manifest alone: every ignored test in
-/// `luxforge-raw`'s `real_files` and `luxforge-app`'s `raw_json_cli` that needs nothing beyond one
+/// `luxforge-raw`'s `real_files` and `luxforge-cli`'s `raw_json_cli` that needs nothing beyond one
 /// `LUXFORGE_RAW_OWNER_DIR` directory of exactly-named files
 /// (`docs/engineering/development.md`). `real_files` also holds `authentic_public_modes_preserve_sources_and_develop_float`,
 /// which needs its own separate `LUXFORGE_RAW_PUBLIC_DIR` of CC0 fixtures no manifest here names, so
@@ -166,7 +166,7 @@ const AUTHENTIC: [Authentic; 2] = [
         ],
     },
     Authentic {
-        package: "luxforge-app",
+        package: "luxforge-cli",
         test: "raw_json_cli",
         filters: &[],
     },
@@ -1677,7 +1677,7 @@ mod tests {
                 "--release",
                 "--locked",
                 "--package",
-                "luxforge-app",
+                "luxforge-cli",
                 "--test",
                 "raw_json_cli",
                 "--",

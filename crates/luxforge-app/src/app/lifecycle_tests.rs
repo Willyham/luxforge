@@ -61,11 +61,13 @@ fn desktop_registry_contains_every_core_builtin_including_raw() {
 #[test]
 fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
     let evidence = std::env::temp_dir().join("luxforge-evidence-host-paths");
-    let host = host_config(&Config {
+    let mut config = Config {
         evidence: Some(evidence.clone()),
         data_root: Some(std::env::temp_dir().join("luxforge-ignored-root")),
         ..Config::default()
-    });
+    };
+    config.paths = config.resolve_paths();
+    let host = host_config(&config);
     assert_eq!(
         host.config_dir,
         Some(evidence.join("host").join("config").join("modules"))
@@ -82,10 +84,12 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
     );
     assert_eq!(host.secrets.name(), "in-memory secret store");
     let root = std::env::temp_dir().join("luxforge-data-root");
-    let host = host_config(&Config {
+    let mut config = Config {
         data_root: Some(root.clone()),
         ..Config::default()
-    });
+    };
+    config.paths = config.resolve_paths();
+    let host = host_config(&config);
     assert_eq!(host.config_dir, Some(root.join("config").join("modules")));
     assert_eq!(
         host.resource_dir,

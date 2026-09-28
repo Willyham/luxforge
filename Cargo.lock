@@ -1862,9 +1862,9 @@ version = "0.0.0"
 dependencies = [
  "iced",
  "image",
+ "luxforge-cli",
  "luxforge-core",
  "luxforge-evidence",
- "luxforge-reference",
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-ui",
@@ -1872,6 +1872,17 @@ dependencies = [
  "serde",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "luxforge-cli"
+version = "0.0.0"
+dependencies = [
+ "luxforge-core",
+ "luxforge-reference",
+ "luxforge-testbase",
+ "luxforge-testkit",
+ "serde_json",
 ]
 
 [[package]]

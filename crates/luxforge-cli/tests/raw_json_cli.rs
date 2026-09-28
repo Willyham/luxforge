@@ -2,7 +2,7 @@
 //!
 //! These tests deliberately stay ignored in normal CI. They need the owner's qualified RAW
 //! files and a release-built native RAW adapter. Run it with
-//! `LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release -p luxforge-app
+//! `LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release -p luxforge-cli
 //! --test raw_json_cli -- --ignored --nocapture`.
 
 use luxforge_testkit::{JsonProcess, client::request_id, fixtures};

@@ -1,6 +1,5 @@
 [package]
 name = "luxforge-app"
-default-run = "luxforge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +10,8 @@ publish.workspace = true
 name = "luxforge"
 path = "src/main.rs"
 
-[[bin]]
-name = "luxforge-json"
-path = "src/json.rs"
-
 [dependencies]
+luxforge-cli = { path = "../luxforge-cli" }
 luxforge-core = { path = "../luxforge-core" }
 luxforge-evidence = { path = "../luxforge-evidence" }
 luxforge-ui = { path = "../luxforge-ui" }
@@ -29,7 +25,6 @@ zeroize.workspace = true
 [dev-dependencies]
 # An independent JPEG decoder for the export tests.
 image = { workspace = true, features = ["jpeg"] }
-luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
 

@@ -14,7 +14,7 @@ After [developer setup](engineering/development.md), start an optimized build wi
 cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
 ```
 
-Omit `--catalog` to use the platform configuration directory. `--data-root DIRECTORY` isolates config, cache and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
+Omit `--catalog` to use the platform configuration directory. `--data-root DIRECTORY` isolates config, data and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
 
 `--developer` shows the pixel and controls proof modules under Developer. It also registers `luxforge.controls` and its API methods; without the flag that module is absent from both discovery and the workspace. The pixel proof remains discoverable through the API either way. `--disable-module luxforge.crop` (or another built-in id) registers that module as unavailable, which keeps its stored layers readable and reports them instead of rendering without them.
 
@@ -390,7 +390,7 @@ Missing or changed sources keep their catalog data and report why rendering is u
 
 ## JSON automation
 
-The headless owner reads one JSON request per line and writes one response per line. Diagnostics stay off stdout:
+The headless owner, `luxforge-json`, reads one JSON request per line and writes one response per line. Diagnostics stay off stdout. `cargo xtask build --release` builds it with the editor; `cargo build --release -p luxforge-cli` builds it alone:
 
 ```sh
 target/release/luxforge-json --catalog /path/to/catalog.sqlite

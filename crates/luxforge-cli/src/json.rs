@@ -1,14 +1,9 @@
-// The desktop reads every directory `Paths` names; this client needs only the module ones.
-#[allow(dead_code)]
-#[path = "paths.rs"]
-mod paths;
-
+use luxforge_cli::Paths;
 use luxforge_core::{
     CapabilitiesProofModule, ClientAuthority, HostConfig, ModuleRegistry, OwnerHandle,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
     serve_json_lines_with,
 };
-use paths::Paths;
 use std::{path::PathBuf, sync::Arc};
 
 const HELP: &str = "luxforge-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] [--proof-endpoint URL] < requests.jsonl

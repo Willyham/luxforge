@@ -22,7 +22,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Environment report | `cargo xtask doctor` |
 | Full local and CI checks: repository links and task plans, formatting, Clippy, tests | `cargo xtask check` |
 | A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
-| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` |
+| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` (the editor and the headless `luxforge-json`) |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
@@ -103,7 +103,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `project-name` | The old working name | Every text file under `crates/` and `xtask/` |
 | `srgb-transfer-function` | `12.92`, the sRGB transfer function's linear-branch slope, outside the core's production copy (`crates/luxforge-core/src/colour.rs`) and the one shared test reference (`luxforge_reference::srgb`); a decode/encode transcription is always found by its slope, whichever spelling of the threshold (`0.04045`/`0.0031308` or `0.040_45`/`0.003_130_8`) it uses | `crates/` and `xtask/`, tests included |
 
-`DEPENDENCY_RULES` says which crate may depend on what. A row names the dependencies it refuses (a crate, a name prefix, a crate with a feature, or any workspace crate: a `luxforge` name or any path), the manifests it reads (`""` for the workspace root, `crates/*` for every crate), the tables it reads (normal, dev, build or `workspace.dependencies`; a target-specific table counts as the table it names), the crates allowed to declare them, and its reason. A dependency is known by its key and by the package it renames, in any spelling: a key line, a dotted key, an inline table, a multi-line value or its own `[dependencies.name]` table.
+`DEPENDENCY_RULES` says which crate may depend on what. A row names the dependencies it refuses (a crate, any of a list of crates, a name prefix, a crate with a feature, or any workspace crate: a `luxforge` name or any path), the manifests it reads (`""` for the workspace root, `crates/*` for every crate), the tables it reads (normal, dev, build or `workspace.dependencies`; a target-specific table counts as the table it names), the crates allowed to declare them, and its reason. A dependency is known by its key and by the package it renames, in any spelling: a key line, a dotted key, an inline table, a multi-line value or its own `[dependencies.name]` table.
 
 | Rule | Refuses |
 | --- | --- |
@@ -113,6 +113,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
 | `core-free-test-base` | Any workspace crate or path in `luxforge-testbase`'s manifest, so the core's and the widget crate's tests can use its gate, wait and distribution |
 | `http-client-crates` | A dependency on `ureq` or `ureq-proto` from any crate but `luxforge-core`, whose module transport is the one HTTP client |
+| `headless-cli` | A normal dependency of `luxforge-cli` on the GUI stack (`iced`, `iced_wgpu`, `wgpu`, `rfd`, `luxforge-ui` or `luxforge-app`), so building the headless `luxforge-json` builds no window, renderer or dialog crate |
 
 `SENDER_RULES` says which messages product code must send. A row names a message enum and the file that declares it, the file whose `match` handles it, the directories read for senders and the scripted drivers whose constructions do not count. Every variant needs a sender: a production line (tests skipped as for a source rule) outside the drivers that holds `Enum::Variant` under the `Whole` matcher. In the handler, a line that begins with a variant is its match arm, not a sender; elsewhere rustfmt may begin a line with a construction, and it counts.
 
@@ -221,7 +222,7 @@ runs in `full` whether or not a manifest is given. Without a manifest, `full` li
 `raw-panel` or RAW `performance` components at all, since there is no source to run them over.
 `verify` reads the manifest through the one RAW manifest reader, so a manifest the `raw-editor`
 scenario would refuse is refused before anything runs. `raw-authentic` runs the
-`#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and `luxforge-app`'s
+`#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and `luxforge-cli`'s
 `raw_json_cli` (the ones that need only `LUXFORGE_RAW_OWNER_DIR`, not `real_files`'s separate
 CC0-fixture test) with that variable pointed at the directory the manifest's own sources live in.
 
@@ -346,9 +347,9 @@ were read with `sysctl -n vm.loadavg` immediately before each run.
 
 ## Running the application
 
-`cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, cache and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--proof-endpoint URL` (registers the developer capability proof against that endpoint; refused without developer mode), `--hidden-window`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--hidden-window` creates the window invisible: it owns a real surface and renders and captures through it exactly as a visible window does, but the window server never places it on screen. Every automated editor launch the harness makes passes it; `develop` in either mode never does. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
+`cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, data and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--proof-endpoint URL` (registers the developer capability proof against that endpoint; refused without developer mode), `--hidden-window`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--hidden-window` creates the window invisible: it owns a real surface and renders and captures through it exactly as a visible window does, but the window server never places it on screen. Every automated editor launch the harness makes passes it; `develop` in either mode never does. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
 
-The headless owner reads one JSON request per line:
+The headless owner, `luxforge-json`, reads one JSON request per line. It is the `luxforge-cli` crate's binary, which builds without the GUI stack: `cargo xtask build [--release]` builds it with the editor, and `cargo build --release --locked -p luxforge-cli` builds it alone.
 
 ```sh
 target/release/luxforge-json --catalog /path/to/catalog.sqlite < requests.jsonl
@@ -583,7 +584,7 @@ Native and JSON authentic-file tests are opt-in, ignored in the normal test suit
 
 ```sh
 LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw LUXFORGE_RAW_PUBLIC_DIR=/path/to/cc0/raw cargo test --release --locked -p luxforge-raw --test real_files -- --ignored --nocapture
-LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p luxforge-app --test raw_json_cli -- --ignored --nocapture
+LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p luxforge-cli --test raw_json_cli -- --ignored --nocapture
 ```
 
 The absence of private fixtures is a skip, not passing authentic-file evidence. Synthetic/reference tests remain normal CI checks.

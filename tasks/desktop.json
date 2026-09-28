@@ -1630,7 +1630,7 @@
     {
       "id": "TASK-020",
       "description": "Move the headless `luxforge-json` binary and its paths into a `luxforge-cli` crate that does not build the GUI stack.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",
@@ -1650,13 +1650,13 @@
         {
           "kind": "file",
           "label": "Headless JSON binary",
-          "target": "crates/luxforge-app/src/json.rs",
+          "target": "crates/luxforge-cli/src/json.rs",
           "relevance": "The headless binary, its `#[path]` include of `paths.rs` and its `#[allow(dead_code)]`."
         },
         {
           "kind": "file",
           "label": "Paths",
-          "target": "crates/luxforge-app/src/paths.rs",
+          "target": "crates/luxforge-cli/src/paths.rs",
           "relevance": "`Paths` and the unused `cache` field, to move and trim."
         },
         {
@@ -1674,14 +1674,14 @@
         {
           "kind": "file",
           "label": "JSON CLI test",
-          "target": "crates/luxforge-app/tests/json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli.rs",
           "relevance": "One of the three process tests that move with the binary."
         },
         {
           "kind": "file",
           "label": "Verify",
           "target": "xtask/src/verify.rs",
-          "relevance": "`AUTHENTIC`, which names `luxforge-app`'s `raw_json_cli`.",
+          "relevance": "`AUTHENTIC`, which names `luxforge-cli`'s `raw_json_cli`.",
           "locator": "AUTHENTIC"
         },
         {
@@ -1854,13 +1854,13 @@
         {
           "kind": "file",
           "label": "Preset CLI test",
-          "target": "crates/luxforge-app/tests/presets_json_cli.rs",
+          "target": "crates/luxforge-cli/tests/presets_json_cli.rs",
           "relevance": "The two-process preset re-proof to cut to a transport check."
         },
         {
           "kind": "file",
           "label": "JSON CLI test",
-          "target": "crates/luxforge-app/tests/json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli.rs",
           "relevance": "Already proves the process-transport layer the trimmed preset CLI test should rely on."
         },
         {

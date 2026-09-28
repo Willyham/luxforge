@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
+members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
 exclude = ["probes/raw"]
 resolver = "3"
 
