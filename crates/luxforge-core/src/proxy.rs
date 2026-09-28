@@ -246,26 +246,27 @@ pub struct ProxyCache {
 }
 
 impl ProxyCache {
-    /// The cached source for exactly this key, or `None`. A different identity, a different plan or
-    /// different bounds is a miss; the caller rebuilds on the worker.
-    pub fn get(&self, key: &ProxyKey) -> Option<&PreviewSource> {
-        self.entry
-            .as_ref()
-            .filter(|(cached, _)| cached == key)
-            .map(|(_, source)| source)
-    }
-
-    /// Release an old source before a new pan/scale builds its replacement. A matching entry stays
-    /// resident for reuse; an unrelated entry never sits beside the newly built source at peak.
-    pub fn evict_unless(&mut self, key: &ProxyKey) {
-        if self.entry.as_ref().is_some_and(|(held, _)| held != key) {
-            self.entry = None;
+    /// The proxy source for `key`: on a hit, the held one's pixels under the evaluation settings
+    /// of `job` ([`PreviewSource::with_settings_of`]) and `false`; on a miss, what `build` returns,
+    /// which the cache then holds, and `true`. A miss releases the held proxy before `build` runs,
+    /// so a replacement never sits beside the proxy it replaces at the build's peak. A build that
+    /// fails or is cancelled leaves the cache empty, which the next job reads as a miss and
+    /// rebuilds; nothing but the preview worker that owns the cache ever reads it.
+    pub fn source_for(
+        &mut self,
+        key: &ProxyKey,
+        job: &PreviewSource,
+        build: impl FnOnce() -> Result<PreviewSource, Error>,
+    ) -> Result<(PreviewSource, bool), Error> {
+        if let Some((held, source)) = &self.entry
+            && held == key
+        {
+            return Ok((source.with_settings_of(job), false));
         }
-    }
-
-    /// Hold this source under this key, replacing whatever was held before.
-    pub fn insert(&mut self, key: ProxyKey, source: PreviewSource) {
-        self.entry = Some((key, source));
+        self.entry = None;
+        let built = build()?;
+        self.entry = Some((key.clone(), built.clone()));
+        Ok((built, true))
     }
 }
 
@@ -1526,45 +1527,91 @@ mod tests {
     // 7. The cache
     // -----------------------------------------------------------------------------------------
 
+    /// The cache holds one proxy under one key: the same key hits and builds nothing, and a
+    /// resized window, a different plan or a different source is a miss. A miss releases the held
+    /// proxy's pixels before its replacement is built, so the two never coexist, and the cache
+    /// then holds the replacement alone. A build that is cancelled leaves the cache empty, which
+    /// the next job reads as a miss and rebuilds.
     #[test]
-    fn the_cache_holds_one_entry_keyed_by_identity_and_plan() {
+    fn the_cache_holds_one_entry_and_releases_it_before_building_its_replacement() {
         let source = jpeg_source(8, 6, &[[40, 80, 120]; 48]);
-        let key = |plan: ProxyPlan| ProxyKey {
+        let other = jpeg_source(8, 6, &[[40, 80, 120]; 48]);
+        let other = PreviewSource::Jpeg(SourceImage {
+            fingerprint: "sha256:other".into(),
+            ..jpeg_of(&other).clone()
+        });
+        let key = |source: &PreviewSource, plan: ProxyPlan| ProxyKey {
             identity: source.identity(),
             plan,
         };
-        let first = key(plan(4, 3, (4, 3)));
-        let proxy = source.proxy(first.plan).expect("a proxy");
-
+        let first = key(&source, plan(4, 3, (4, 3)));
         let mut cache = ProxyCache::default();
-        assert!(cache.get(&first).is_none(), "an empty cache never hits");
-        cache.insert(first.clone(), proxy);
-        assert!(cache.get(&first).is_some(), "the same key hits");
+        let (built, fresh) = cache
+            .source_for(&first, &source, || source.proxy(first.plan))
+            .expect("a proxy");
+        assert!(fresh, "an empty cache never hits");
+        let (hit, fresh) = cache
+            .source_for(&first, &source, || panic!("a hit builds nothing"))
+            .expect("the held proxy");
+        assert!(!fresh, "the same key hits");
+        assert!(std::sync::Arc::ptr_eq(
+            &jpeg_of(&hit).rgba,
+            &jpeg_of(&built).rgba
+        ));
+        drop((built, hit));
 
-        // A resized window is a miss even at the same rounded dimensions.
-        assert!(cache.get(&key(plan(4, 3, (5, 3)))).is_none());
-        // A different plan is a miss.
-        assert!(cache.get(&key(plan(2, 3, (4, 3)))).is_none());
-        // A different source identity is a miss.
-        let other = jpeg_source(8, 6, &[[40, 80, 120]; 48]);
-        let mut identity = other.identity();
-        if let ProxyIdentity::Jpeg { fingerprint, .. } = &mut identity {
-            *fingerprint = "sha256:other".into();
-        }
-        assert!(
-            cache
-                .get(&ProxyKey {
-                    identity,
-                    plan: first.plan
+        let misses = [
+            // A resized window is a miss even at the same rounded dimensions.
+            (key(&source, plan(4, 3, (5, 3))), &source),
+            // A different plan is a miss.
+            (key(&source, plan(2, 3, (4, 3))), &source),
+            // A different source identity is a miss.
+            (key(&other, first.plan), &other),
+        ];
+        for (miss, miss_source) in misses {
+            let (held, _) = cache
+                .source_for(&first, &source, || source.proxy(first.plan))
+                .expect("the first proxy");
+            let pixels = std::sync::Arc::downgrade(&jpeg_of(&held).rgba);
+            drop(held);
+            let (replacement, fresh) = cache
+                .source_for(&miss, miss_source, || {
+                    assert!(
+                        pixels.upgrade().is_none(),
+                        "the held proxy is released before its replacement is built"
+                    );
+                    miss_source.proxy(miss.plan)
                 })
-                .is_none()
-        );
+                .expect("the replacement");
+            assert!(fresh, "{:?} is a miss", miss.plan);
+            let (_, fresh) = cache
+                .source_for(&miss, miss_source, || panic!("the replacement is held"))
+                .expect("the held replacement");
+            assert!(!fresh);
+            drop(replacement);
+        }
+        let (_, fresh) = cache
+            .source_for(&first, &source, || source.proxy(first.plan))
+            .expect("the first proxy");
+        assert!(fresh, "the cache held one entry, the last replacement");
 
-        // A second insert replaces the first: the cache holds one proxy, never two.
-        let second = key(plan(2, 3, (2, 3)));
-        cache.insert(second.clone(), source.proxy(second.plan).expect("a proxy"));
-        assert!(cache.get(&second).is_some());
-        assert!(cache.get(&first).is_none(), "the cache holds one entry");
+        let cancelled = Cancel::new();
+        cancelled.cancel();
+        let second = key(&source, plan(2, 3, (2, 3)));
+        let refused = cache.source_for(&second, &source, || {
+            source.proxy_cancellable(second.plan, &cancelled)
+        });
+        assert_eq!(
+            refused.err().map(|error| error.kind),
+            Some(ErrorKind::Cancelled)
+        );
+        let (_, fresh) = cache
+            .source_for(&first, &source, || source.proxy(first.plan))
+            .expect("the first proxy");
+        assert!(
+            fresh,
+            "a cancelled build leaves the cache empty, so the next job rebuilds"
+        );
     }
 
     /// A JPEG proxy's pixels are written in the allocation the proxy source holds, with no copy

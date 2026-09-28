@@ -699,8 +699,11 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
 
 /// A job's stack is compiled once at each stage it renders at: once at the exact stage, by its
 /// evaluation when the job is built, whose compilation plans the proxy, renders the exact frame and
-/// gives the coverage grid its geometry, and once at the proxy stage, whose compilation renders the
-/// proxy frame and says whether it is approximate. A job without a proxy phase is compiled once.
+/// gives the coverage grid its geometry, and once at the proxy stage, by the plan that walks the
+/// window its output reads, whose compilation renders the proxy frame and says whether it is
+/// approximate. The count sees every compile the entry point makes, the proxy plan's included, over
+/// a whole-stage proxy and a tight crop's windowed one. A job without a proxy phase is compiled
+/// once.
 #[test]
 fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     let mask = gradient_mask(0.5);
@@ -712,23 +715,64 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         whole_cells_w: 8,
         whole_cells_h: 6,
     };
+    let mut cropped = masked_basic(&mask);
+    cropped.push(Layer::crop(crate::CropPayload {
+        angle: 3.0,
+        x: 0.55,
+        y: 0.45,
+        width: 0.2,
+        height: 0.2,
+    }));
+    let cases = [
+        (
+            "whole-stage proxy",
+            64,
+            48,
+            masked_basic(&mask),
+            Some(bounds(40, 40)),
+            2,
+            2,
+        ),
+        (
+            "windowed proxy",
+            400,
+            300,
+            cropped,
+            Some(bounds(40, 30)),
+            2,
+            2,
+        ),
+        ("no proxy", 64, 48, masked_basic(&mask), None, 1, 1),
+    ];
     let mut queue = PreviewQueue::default();
-    for (proxy, phases, compiles) in [(Some(bounds(40, 40)), 2, 2), (None, 1, 1)] {
+    for (name, width, height, layers, proxy, phases, compiles) in cases {
         let context = RenderContext::new();
         let job = rebuilt(
-            stacked_with_masks(64, 48, masked_basic(&mask), vec![mask.clone()], proxy),
+            stacked_with_masks(width, height, layers, vec![mask.clone()], proxy),
             |parts| parts.context = context.clone(),
         )
         .with_mask_overlay(request.clone())
         .expect("the stack holds the mask");
+        let source = job.evaluation.source().clone();
+        let recipe = job.evaluation.recipe().clone();
+        let registry = job.evaluation.registry().clone();
         queue.request(job);
         let results = drain_all(&mut queue);
-        assert_eq!(results.len(), phases, "{proxy:?}");
+        assert_eq!(results.len(), phases, "{name}");
         let exact = results.last().expect("an exact phase");
-        assert!(exact.raster().is_ok(), "{proxy:?}");
+        assert!(exact.raster().is_ok(), "{name}");
         let first = results.first().expect("a first phase");
-        assert!(first.mask_overlay().grid.is_some(), "{proxy:?}");
-        assert_eq!(context.compiles(), compiles, "{proxy:?}");
+        assert!(first.mask_overlay().grid.is_some(), "{name}");
+        if let Some(display) = proxy {
+            let plan = source
+                .proxy_plan(&registry, &recipe, display)
+                .unwrap()
+                .expect("a proxy is worthwhile");
+            let windowed =
+                first.proxy().expect("a proxy phase").dimensions != (plan.width, plan.height);
+            assert_eq!(windowed, name == "windowed proxy", "{name}");
+        }
+        assert_eq!(context.compiles(), compiles, "{name}");
     }
 }
 

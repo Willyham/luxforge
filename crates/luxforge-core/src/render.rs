@@ -26,11 +26,11 @@ mod pipeline;
 pub mod spatial;
 mod window;
 pub use context::{RenderContext, ScratchBudget, SpatialBudget};
-pub(crate) use entry::layer_input;
 pub use entry::{
     ProxyRegionPlan, RegionFrame, RegionRenderOutcome, Render, RenderOptions, RenderPhase,
     RenderSource, render,
 };
+pub(crate) use entry::{ProxyStage, layer_input};
 pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
 pub(crate) use pipeline::{Evaluation, PixelDomain, RowScratch, SpatialMode};
 use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};

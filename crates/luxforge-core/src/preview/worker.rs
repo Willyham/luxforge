@@ -14,6 +14,7 @@ use crate::{
     mask::CompiledMask,
     modules::Stage,
     render,
+    render::ProxyStage,
 };
 use std::time::Instant;
 
@@ -24,16 +25,17 @@ enum ProxyStep {
     Skipped,
     /// The job asked, and this is why it has none.
     Declined(String),
-    /// Render against the proxy source this key names, from the cache or built on a miss.
-    Planned(ProxyKey),
+    /// Render the stack's one compilation at the proxy stage against the proxy source this key
+    /// names, from the cache or built on a miss.
+    Planned(ProxyKey, ProxyStage),
 }
 
 /// Whether this job has a proxy phase, and against which source.
 ///
 /// Cost is `O(layers)`: `proxy_eligible` reads stages, the plan reads the output stage of the job's
-/// exact compilation, and the window compiles the stack once at the proxy stage to walk back what
-/// its output reads. None of them reads a pixel. It runs on the preview worker, as does building
-/// the proxy itself.
+/// exact compilation, and the window compiles the stack once at the proxy stage, which the proxy
+/// frame then renders, to walk back what its output reads. None of them reads a pixel. It runs on
+/// the preview worker, as does building the proxy itself.
 fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep {
     if job.intent == PreviewIntent::Settle {
         return ProxyStep::Skipped;
@@ -52,20 +54,26 @@ fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep 
     if let Err(error) = evaluation.registry().proxy_eligible(evaluation.recipe()) {
         return ProxyStep::Declined(error.detail);
     }
-    match exact.as_ref().map(|exact| exact.proxy_plan(bounds)) {
-        Ok(Some(plan)) => ProxyStep::Planned(ProxyKey {
-            identity: evaluation.source().identity(),
+    let exact = match exact {
+        Ok(exact) => exact,
+        Err(error) => return ProxyStep::Declined(error.detail.clone()),
+    };
+    match exact.proxy_plan(bounds) {
+        Some(plan) => {
             // A cropped stack's proxy holds only the window of the proxy stage its output reads,
             // so its size follows the display bounds and not the crop's tightness.
-            plan: exact
-                .as_ref()
-                .map(|exact| exact.proxy_window(evaluation.registry(), evaluation.recipe(), plan))
-                .unwrap_or(plan),
-        }),
-        Ok(None) => ProxyStep::Declined(
+            let stage = exact.proxy_window(evaluation.registry(), evaluation.recipe(), plan);
+            ProxyStep::Planned(
+                ProxyKey {
+                    identity: evaluation.source().identity(),
+                    plan: stage.plan(),
+                },
+                stage,
+            )
+        }
+        None => ProxyStep::Declined(
             "the proxy scale is 1: the stage already fits the display bounds".into(),
         ),
-        Err(error) => ProxyStep::Declined(error.detail.clone()),
     }
 }
 
@@ -164,39 +172,36 @@ pub(super) fn run(
     let declined = match plan_proxy(&job, &exact) {
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
-        ProxyStep::Planned(key) => {
+        ProxyStep::Planned(key, stage) => {
             if let Some(activity) = &activity {
                 activity.phase("proxy");
             }
             // The cache holds pixels; the settings a RAW development layer asks for come from this
-            // job's recipe, so a drafted exposure renders against the cached planes.
-            cache.evict_unless(&key);
-            let built = match cache.get(&key) {
-                Some(cached) => Ok((cached.with_settings_of(evaluation.source()), false)),
-                None => evaluation
+            // job's recipe, so a drafted exposure renders against the cached planes. The proxy this
+            // job builds belongs to the worker whether or not its frame is still wanted: the next
+            // job at the same bounds is a hit either way.
+            let built = cache.source_for(&key, evaluation.source(), || {
+                evaluation
                     .source()
                     .proxy_cancellable(key.plan, proxy_cancel)
-                    .map(|source| (source, true)),
-            };
+            });
             match built {
                 Err(error) => Some(error.detail),
                 Ok((source, fresh)) => {
                     // The source this frame is rendered against: the proxy stage's window when the
                     // plan has one, and the whole proxy stage otherwise.
                     let dimensions = source.dimensions();
-                    // The proxy stage's one compilation: the frame and the reason it is
-                    // approximate both come from it, so what is reported and what is drawn cannot
-                    // disagree. A windowed one is cut from it, and asks the job's exact
-                    // compilation for any spatial estimate the window cannot reduce.
+                    // The proxy stage's one compilation, the one the plan made: the frame and the
+                    // reason it is approximate both come from it, so what is reported and what is
+                    // drawn cannot disagree. A windowed one is cut from it, and asks the job's
+                    // exact compilation for any spatial estimate the window cannot reduce.
                     let rendered = exact
                         .as_ref()
                         .map_err(Clone::clone)
                         .and_then(|exact| {
                             exact.render_proxy(
-                                evaluation.registry(),
                                 source.input(),
-                                evaluation.recipe(),
-                                key.plan,
+                                stage,
                                 proxy_cancel,
                                 evaluation.context(),
                             )
@@ -204,11 +209,6 @@ pub(super) fn run(
                         .and_then(|proxy| {
                             Ok((proxy.frame(snapshot_id.clone())?, proxy.approximation()))
                         });
-                    // The proxy this job built belongs to the worker whether or not its frame is
-                    // still wanted: the next job at the same bounds is a hit either way.
-                    if fresh {
-                        cache.insert(key, source);
-                    }
                     match rendered {
                         Err(error) => Some(error.detail),
                         Ok((raster, proxy_approximation)) => {
@@ -393,33 +393,23 @@ fn run_viewport(
                         identity: evaluation.source().identity(),
                         plan: plan.proxy,
                     };
-                    // A cold pan can replace the one cached proxy window; free its retained
-                    // pixels before building the next one so two source windows never accumulate.
-                    cache.evict_unless(&key);
-                    let source = match cache.get(&key) {
-                        Some(held) => Ok((held.with_settings_of(evaluation.source()), false)),
-                        None => evaluation
-                            .source()
-                            .proxy_cancellable(plan.proxy, cancel)
-                            .map(|built| (built, true)),
-                    };
-                    match source {
-                        Ok((source, fresh)) => {
-                            let rendered = exact.render_proxy_region(
+                    // A cold pan can replace the one cached proxy window; the cache frees its
+                    // retained pixels before building the next one, so two source windows never
+                    // accumulate.
+                    cache
+                        .source_for(&key, evaluation.source(), || {
+                            evaluation.source().proxy_cancellable(plan.proxy, cancel)
+                        })
+                        .and_then(|(source, _)| {
+                            exact.render_proxy_region(
                                 evaluation.registry(),
                                 source.input(),
                                 evaluation.recipe(),
                                 plan,
                                 snapshot_id.clone(),
                                 evaluation.context(),
-                            );
-                            if fresh {
-                                cache.insert(key, source);
-                            }
-                            rendered
-                        }
-                        Err(error) => Err(error),
-                    }
+                            )
+                        })
                 }
                 Err(reason) => Ok(RegionRenderOutcome::Declined(reason)),
             }

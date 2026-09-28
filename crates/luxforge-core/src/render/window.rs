@@ -463,18 +463,12 @@ mod tests {
         bounds: ProxyBounds,
     ) -> (ProxyPlan, crate::Raster) {
         let plan = exact.proxy_plan(bounds).expect("a proxy is worthwhile");
-        let plan = exact.proxy_window(registry, stack, plan);
+        let stage = exact.proxy_window(registry, stack, plan);
+        let plan = stage.plan();
         let proxy = source.proxy(plan).expect("the windowed proxy source");
         assert_eq!(proxy.dimensions(), plan.source_dimensions());
         let frame = exact
-            .render_proxy(
-                registry,
-                proxy.input(),
-                stack,
-                plan,
-                &Cancel::never(),
-                context,
-            )
+            .render_proxy(proxy.input(), stage, &Cancel::never(), context)
             .expect("the windowed compilation")
             .frame(SnapshotId::new())
             .expect("the windowed proxy frame");
@@ -1462,7 +1456,7 @@ mod tests {
             &context,
         )
         .unwrap();
-        let plan = exact.proxy_window(
+        let stage = exact.proxy_window(
             &registry,
             &stack,
             exact
@@ -1472,6 +1466,7 @@ mod tests {
                 })
                 .unwrap(),
         );
+        let plan = stage.plan();
         assert!(
             plan.window.is_some(),
             "the proxy must need a cold exact estimate"
@@ -1480,14 +1475,7 @@ mod tests {
         exact_cancel.cancel();
         let proxy_cancel = Cancel::new();
         let frame = exact
-            .render_proxy(
-                &registry,
-                proxy.input(),
-                &stack,
-                plan,
-                &proxy_cancel,
-                &context,
-            )
+            .render_proxy(proxy.input(), stage, &proxy_cancel, &context)
             .unwrap()
             .frame(SnapshotId::new())
             .unwrap();
@@ -1501,7 +1489,7 @@ mod tests {
         let source = jpeg(1500, 1000);
         let stack = recipe(vec![crop(7.0, 0.42, 0.47, 0.14, 0.12)], Vec::new());
         let exact = exact(&context, &registry, &source, &stack);
-        let plan = exact.proxy_window(
+        let stage = exact.proxy_window(
             &registry,
             &stack,
             exact
@@ -1511,18 +1499,12 @@ mod tests {
                 })
                 .unwrap(),
         );
+        let plan = stage.plan();
         let window = plan.window.expect("tight rotated crop has a source window");
         let cut_source = source.proxy(plan).unwrap();
         let whole_source = source.proxy(plan.whole()).unwrap();
         let cut = exact
-            .render_proxy(
-                &registry,
-                cut_source.input(),
-                &stack,
-                plan,
-                &Cancel::never(),
-                &context,
-            )
+            .render_proxy(cut_source.input(), stage, &Cancel::never(), &context)
             .unwrap()
             .transform()
             .unwrap();
@@ -1587,7 +1569,7 @@ mod tests {
                 );
                 let exact = exact(&context, &registry, &source, &stack);
                 let plan = exact.proxy_plan(bounds).expect("a proxy is worthwhile");
-                let plan = exact.proxy_window(&registry, &stack, plan);
+                let plan = exact.proxy_window(&registry, &stack, plan).plan();
                 let (width, height) = plan.source_dimensions();
                 // The output the proxy phase presents: the whole proxy stage's output stage.
                 let whole = source.proxy(plan.whole()).unwrap();

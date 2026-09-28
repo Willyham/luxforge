@@ -148,6 +148,26 @@ pub struct Render<'a> {
     context: &'a RenderContext,
 }
 
+/// A job's proxy stage, planned by [`Render::proxy_window`] and rendered by
+/// [`Render::render_proxy`]: the stack's one compilation at the proxy stage, and the window of it
+/// the proxy source holds, so the render reuses what the plan compiled and walked.
+pub(crate) struct ProxyStage {
+    plan: ProxyPlan,
+    /// The compilation, or why the stack does not compile at the proxy stage, which the render
+    /// reports as the proxy phase's reason.
+    compiled: Result<Compiled, Error>,
+    /// The window walk over `compiled`, when the plan has a window.
+    windows: Option<WindowPlan>,
+}
+
+impl ProxyStage {
+    /// The plan the proxy source is built to and cached under: the fitted plan, with the window
+    /// the stack reads when it reads less than the whole stage.
+    pub(crate) fn plan(&self) -> ProxyPlan {
+        self.plan
+    }
+}
+
 /// At most 32 MiB of returned RGBA8 pixels in one viewport frame. Intermediate/source windows
 /// retain their existing, named frame and scratch limits; spatial halos can exceed this bound.
 const REGION_FRAME_BYTES: u64 = 32 * 1024 * 1024;
@@ -608,31 +628,34 @@ impl<'a> Render<'a> {
         ProxyPlan::fit(self.source.dimensions(), self.stage(), bounds)
     }
 
-    /// `plan`, fitted from this render's output stage ([`Self::proxy_plan`]), with the window of
-    /// its proxy stage that `recipe` reads, when it reads less than all of it: what a crop reads
-    /// through every boundary before it, plus the margins each boundary needs
-    /// ([`super::window`]). The plan comes back unchanged — a whole-stage proxy, which is always a
-    /// correct answer — when the stack reads the whole stage, cannot be cut, or does not compile
-    /// at the proxy stage into the segments it compiles to here. Compiles the stack once at the
-    /// proxy stage, `O(layers)`, and reads no pixel.
-    pub fn proxy_window(
+    /// The proxy stage of this render's stack for `plan`, fitted from this render's output stage
+    /// ([`Self::proxy_plan`]): the stack compiled once at the proxy stage, and the plan with the
+    /// window of that stage the stack reads, when it reads less than all of it — what a crop reads
+    /// through every boundary before it, plus the margins each boundary needs ([`super::window`]).
+    /// The plan is the whole stage — a whole-stage proxy, which is always a correct answer — when
+    /// the stack reads the whole stage, cannot be cut, or does not compile at the proxy stage into
+    /// the segments it compiles to here. [`Self::render_proxy`] renders this compilation, so a job
+    /// compiles its stack once at the proxy stage. `O(layers)`, and reads no pixel.
+    pub(crate) fn proxy_window(
         &self,
         registry: &ModuleRegistry,
         recipe: &Recipe,
         plan: ProxyPlan,
-    ) -> ProxyPlan {
-        let Ok(compiled) = registry.compile_sampled(
+    ) -> ProxyStage {
+        #[cfg(test)]
+        self.context.note_compile();
+        let compiled = registry.compile_sampled(
             plan.width,
             plan.height,
             recipe,
             RenderPhase::Proxy.sampling(),
-        ) else {
-            return plan;
-        };
-        if !same_segments(&compiled, &self.compiled) {
-            return plan;
-        }
-        match WindowPlan::of(&compiled, (plan.width, plan.height)) {
+        );
+        let windows = compiled
+            .as_ref()
+            .ok()
+            .filter(|compiled| same_segments(compiled, &self.compiled))
+            .and_then(|compiled| WindowPlan::of(compiled, (plan.width, plan.height)));
+        let plan = match &windows {
             Some(windows) => ProxyPlan {
                 window: Some(ProxyWindow {
                     x: windows.source.x0,
@@ -643,62 +666,55 @@ impl<'a> Render<'a> {
                 ..plan
             },
             None => plan.whole(),
+        };
+        ProxyStage {
+            plan,
+            compiled,
+            windows,
         }
     }
 
-    /// The proxy phase of this render's stack: `recipe` compiled at `plan`'s proxy stage against
-    /// `source`, the proxy source `plan` built, under `cancel`. Without a window this is
-    /// [`render`] at the proxy phase. With one, the compilation against the whole proxy stage is
-    /// cut to the window ([`super::window`]), and a spatial operation whose stage the window cuts
-    /// is handed the global estimates this render — the exact phase of the same job — resolves for
-    /// it, which the store then holds for the exact frame. `O(layers)` and no pixel, besides the
-    /// exact stage's one reduction per estimate the store does not hold.
-    pub fn render_proxy<'s>(
+    /// The proxy phase of this render's stack: `stage`'s compilation, from [`Self::proxy_window`],
+    /// against `source`, the proxy source its plan built, under `cancel`. Without a window this is
+    /// that compilation rendered at the proxy phase. With one, it is cut to the window
+    /// ([`super::window`]), and a spatial operation whose stage the window cuts is handed the
+    /// global estimates this render — the exact phase of the same job — resolves for it, which the
+    /// store then holds for the exact frame. Compiles nothing: `O(layers)` and no pixel, besides
+    /// the exact stage's one reduction per estimate the store does not hold.
+    pub(crate) fn render_proxy<'s>(
         &self,
-        registry: &ModuleRegistry,
         source: RenderSource<'s>,
-        recipe: &Recipe,
-        plan: ProxyPlan,
+        stage: ProxyStage,
         cancel: &Cancel,
         context: &'s RenderContext,
     ) -> Result<Render<'s>, Error> {
-        let options = RenderOptions::proxy(cancel);
-        let Some(window) = plan.window else {
-            return render(registry, source, recipe, options, context);
-        };
+        let ProxyStage {
+            plan,
+            compiled,
+            windows,
+        } = stage;
+        let compiled = compiled?;
         if let RenderSource::Byte(image) = source {
             check_source(image)?;
         }
-        if source.dimensions() != (window.width, window.height) {
+        if source.dimensions() != plan.source_dimensions() {
             return Err(Error::internal(format!(
-                "a proxy window of {}x{} was handed a {}x{} source",
-                window.width,
-                window.height,
+                "a proxy source of {}x{} was handed a {}x{} source",
+                plan.source_dimensions().0,
+                plan.source_dimensions().1,
                 source.dimensions().0,
                 source.dimensions().1
             )));
         }
-        #[cfg(test)]
-        context.note_compile();
-        let compiled =
-            registry.compile_sampled(plan.width, plan.height, recipe, options.phase.sampling())?;
-        let placed = Region {
-            x0: window.x,
-            y0: window.y,
-            width: window.width,
-            height: window.height,
+        let compiled = match windows {
+            None => compiled,
+            Some(windows) => windows.apply(compiled, (plan.width, plan.height), |index| {
+                // A cold estimate belongs to the proxy phase: superseding the exact phase must not
+                // cancel a proxy that can still be presented during an interactive sequence.
+                self.spatial_globals_with_cancel(index, cancel)
+            })?,
         };
-        let windows = WindowPlan::of(&compiled, (plan.width, plan.height))
-            .filter(|windows| windows.source == placed && same_segments(&compiled, &self.compiled))
-            .ok_or_else(|| {
-                Error::internal("a proxy window no longer matches the stack it was planned for")
-            })?;
-        let compiled = windows.apply(compiled, (plan.width, plan.height), |index| {
-            // A cold estimate belongs to the proxy phase: superseding the exact phase must not
-            // cancel a proxy that can still be presented during an interactive sequence.
-            self.spatial_globals_with_cancel(index, cancel)
-        })?;
-        Render::compiled(source, compiled, options, context)
+        Render::compiled(source, compiled, RenderOptions::proxy(cancel), context)
     }
 
     /// The global estimates the spatial operation entering segment `index` reads, resolved as a
