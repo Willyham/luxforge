@@ -351,44 +351,17 @@ impl LinearImage {
         self.planes.as_slice()
     }
 
-    /// Read one view pixel without allocating. This is also useful to a source-stage picker.
+    /// Read one view pixel without allocating. This is also useful to a source-stage picker. A
+    /// caller that reads many pixels takes [`Self::reader`] once instead.
     #[inline]
     pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
-        let (width, height) = self.view.output_dimensions();
-        if x >= width || y >= height {
-            return None;
-        }
-        let (base_x, base_y) = self.view.map(x, y)?;
-        let index =
-            usize::try_from(u64::from(base_y) * u64::from(self.base_width) + u64::from(base_x))
-                .ok()?;
-        let plane_len =
-            usize::try_from(u64::from(self.base_width) * u64::from(self.base_height)).ok()?;
-        Some([
-            self.planes[index],
-            self.planes[plane_len + index],
-            self.planes[2 * plane_len + index],
-        ])
-    }
-
-    #[inline(always)]
-    fn pixel_f64(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
-        let pixel = self.pixel(x, y).ok_or_else(|| {
-            Error::validation(format!(
-                "linear source coordinate ({x}, {y}) is outside the view"
-            ))
-        })?;
-        let pixel = pixel.map(f64::from);
-        if pixel.iter().all(|value| value.is_finite()) {
-            Ok(pixel)
-        } else {
-            Err(Error::render("linear source produced a non-finite pixel"))
-        }
+        self.reader().pixel(x, y)
     }
 }
 
 /// Reads viewed pixels of a [`LinearImage`] without recomputing its layout per access. It borrows
 /// the one immutable plane allocation and copies nothing.
+#[derive(Clone, Copy)]
 pub(crate) struct ViewReader<'a> {
     planes: &'a [f32],
     base_width: u32,
@@ -403,8 +376,9 @@ impl ViewReader<'_> {
         (self.width, self.height)
     }
 
-    /// One viewed pixel, or `None` outside the view: the same mapping and the same values as
-    /// [`LinearImage::pixel`], which is what makes a bulk read agree with a point read.
+    /// One viewed pixel, or `None` outside the view. [`LinearImage::pixel`] and the linear
+    /// domain's point path read through this, and [`Self::row`] walks the same mapping, which is
+    /// what makes a bulk read agree with a point read.
     #[inline]
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         if x >= self.width || y >= self.height {
@@ -547,32 +521,17 @@ fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
     value.map(srgb::decode_u8)
 }
 
-fn terminal_srgb(linear: f64) -> Result<u8, Error> {
+/// The terminal boundary for one channel: a finite value's forward rounding,
+/// `round(255 · encode(v))`, through the guarded threshold search of [`srgb::Quantizer::rounded`]
+/// (the byte resample's contract as well), and a render error for a non-finite one.
+#[inline]
+fn terminal_srgb(quantizer: &srgb::Quantizer, linear: f64) -> Result<u8, Error> {
     if !linear.is_finite() {
         return Err(Error::render(
             "linear evaluation produced a non-finite value",
         ));
     }
-    let linear = linear.clamp(0.0, 1.0);
-    let code = srgb::quantize_channel(linear);
-    // Inverting the half-code thresholds avoids a power function for ordinary values, but
-    // f64 encode/decode are not exact inverses. Keep the canonical forward evaluation close to
-    // either neighbouring threshold. This conservative guard is covered by native boundary
-    // tests; powf has no cross-platform ULP bound, so those tests remain part of platform
-    // qualification. The JPEG quantizer keeps its own contract.
-    const ROUNDING_GUARD: f64 = 1e-12;
-    let thresholds = &*srgb::CODE_THRESHOLDS;
-    let lower = thresholds[usize::from(code.saturating_sub(1))];
-    let upper = thresholds[usize::from(code.min(254))];
-    if (linear - lower).abs() > ROUNDING_GUARD && (linear - upper).abs() > ROUNDING_GUARD {
-        return Ok(code);
-    }
-    let encoded = srgb::encode(linear);
-    let rounded = (encoded * 255.0).round();
-    if !rounded.is_finite() || !(0.0..=255.0).contains(&rounded) {
-        return Err(Error::render("terminal sRGB conversion overflow"));
-    }
-    Ok(rounded as u8)
+    Ok(quantizer.rounded(linear))
 }
 
 /// Refuse a stack the linear path cannot evaluate: more than one resample stage.
@@ -598,6 +557,8 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
 #[derive(Clone, Copy)]
 pub(crate) struct Linear<'a> {
     source: &'a LinearImage,
+    /// The source's view resolved once, so a point read does not recompute its layout per pixel.
+    reader: ViewReader<'a>,
     /// Applied to each source pixel, when the settings carry one.
     white_balance: Option<WhiteBalanceApproximation>,
 }
@@ -607,6 +568,7 @@ impl<'a> Linear<'a> {
     pub(crate) fn new(source: &'a LinearImage, settings: LinearSettings) -> Result<Self, Error> {
         Ok(Self {
             source,
+            reader: source.reader(),
             white_balance: settings.white_balance,
         })
     }
@@ -669,9 +631,19 @@ impl PixelDomain for Linear<'_> {
         output_len(width, height).map(drop)
     }
 
+    /// One source pixel through the view resolved at construction. The planes need no finiteness
+    /// check here: `LinearImage::construct` scans every value unless the producer already
+    /// checked them, and the only such producer, the RAW camera conversion
+    /// (`convert_camera_planes` in `source.rs`), refuses a non-finite output. The planes are
+    /// immutable after that, so a source row reads them unchecked too.
     #[inline(always)]
     fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
-        self.adjust_source_pixel(self.source.pixel_f64(x, y)?)
+        let pixel = self.reader.pixel(x, y).ok_or_else(|| {
+            Error::validation(format!(
+                "linear source coordinate ({x}, {y}) is outside the view"
+            ))
+        })?;
+        self.adjust_source_pixel(pixel.map(f64::from))
     }
 
     fn source_alpha(&self, _: u32, _: u32) -> u8 {
@@ -835,10 +807,16 @@ impl PixelDomain for Linear<'_> {
 
 #[inline]
 pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
+    terminal_pixel_in(srgb::quantizer(), pixel)
+}
+
+/// [`terminal_pixel`] through a quantizer a row loop took once.
+#[inline]
+fn terminal_pixel_in(quantizer: &srgb::Quantizer, pixel: [f64; 3]) -> Result<[u8; 4], Error> {
     Ok([
-        terminal_srgb(pixel[0])?,
-        terminal_srgb(pixel[1])?,
-        terminal_srgb(pixel[2])?,
+        terminal_srgb(quantizer, pixel[0])?,
+        terminal_srgb(quantizer, pixel[1])?,
+        terminal_srgb(quantizer, pixel[2])?,
         255,
     ])
 }
@@ -869,13 +847,14 @@ pub(super) fn rasterize(
         && segment
             .geometry
             .is_identity(source.width(), source.height()))
-    .then(|| source.reader());
+    .then_some(evaluation.domain.reader);
     segment_pass(
         &LinearRows {
             evaluation,
             index,
             segment,
             reader,
+            quantizer: srgb::quantizer(),
             #[cfg(test)]
             context,
         },
@@ -913,6 +892,8 @@ struct LinearRows<'e, 'x, 's> {
     segment: &'e Segment,
     /// The source's rows, when the segment reads the source through the identity.
     reader: Option<ViewReader<'e>>,
+    /// The terminal boundary's quantizer, taken once for the pass rather than once per channel.
+    quantizer: &'static srgb::Quantizer,
     #[cfg(test)]
     context: &'e RenderContext,
 }
@@ -959,7 +940,8 @@ impl LinearRows<'_, '_, '_> {
         if self.segment.has_color {
             rows[offset] = pixel.map(|value| value as f32);
         } else {
-            chunk[offset * 4..offset * 4 + 4].copy_from_slice(&terminal_pixel(pixel)?);
+            chunk[offset * 4..offset * 4 + 4]
+                .copy_from_slice(&terminal_pixel_in(self.quantizer, pixel)?);
         }
         Ok(())
     }
@@ -1086,7 +1068,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
                     for (pixel, rgba) in Self::source_row(reader, y)?.zip(bytes.chunks_exact_mut(4))
                     {
                         let pixel = domain.adjust_source_pixel(pixel.map(f64::from))?;
-                        rgba.copy_from_slice(&terminal_pixel(pixel)?);
+                        rgba.copy_from_slice(&terminal_pixel_in(self.quantizer, pixel)?);
                     }
                 }
                 (None, true) => {
@@ -1099,7 +1081,10 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
                 }
                 (None, false) => {
                     for (x, rgba) in bytes.chunks_exact_mut(4).enumerate() {
-                        rgba.copy_from_slice(&terminal_pixel(self.entry(x as u32, y)?)?);
+                        rgba.copy_from_slice(&terminal_pixel_in(
+                            self.quantizer,
+                            self.entry(x as u32, y)?,
+                        )?);
                     }
                 }
             }
@@ -1141,7 +1126,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
     fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error> {
         if self.segment.has_color {
             for (rgba, pixel) in chunk.chunks_exact_mut(4).zip(scratch.rows.iter()) {
-                rgba.copy_from_slice(&terminal_pixel(pixel.map(f64::from))?);
+                rgba.copy_from_slice(&terminal_pixel_in(self.quantizer, pixel.map(f64::from))?);
             }
         }
         Ok(())
@@ -2529,7 +2514,7 @@ mod tests {
             for bits in bits - 128..=bits + 128 {
                 let value = f64::from_bits(bits);
                 assert_eq!(
-                    terminal_srgb(value).unwrap(),
+                    terminal_srgb(srgb::quantizer(), value).unwrap(),
                     reference_srgb(value),
                     "code {code}, bits {bits:#018x}"
                 );
@@ -2539,7 +2524,10 @@ mod tests {
             for delta in [-2e-12, -1e-12, -5e-13, 5e-13, 1e-12, 2e-12] {
                 let value = boundary + delta;
                 for value in [value.next_down(), value, value.next_up()] {
-                    assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+                    assert_eq!(
+                        terminal_srgb(srgb::quantizer(), value).unwrap(),
+                        reference_srgb(value)
+                    );
                 }
             }
         }
@@ -2565,11 +2553,17 @@ mod tests {
             32.0,
             f64::MAX,
         ] {
-            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+            assert_eq!(
+                terminal_srgb(srgb::quantizer(), value).unwrap(),
+                reference_srgb(value)
+            );
         }
         for step in 0..=40_000 {
             let value = f64::from(step) / 40_000.0;
-            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+            assert_eq!(
+                terminal_srgb(srgb::quantizer(), value).unwrap(),
+                reference_srgb(value)
+            );
         }
         // Deterministic bit-pattern coverage also visits the very dark/subnormal domain that
         // a uniform sweep misses, plus signed and extended-domain source values.
@@ -2578,11 +2572,14 @@ mod tests {
             bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
             let value = f64::from_bits(bits);
             if value.is_finite() {
-                assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+                assert_eq!(
+                    terminal_srgb(srgb::quantizer(), value).unwrap(),
+                    reference_srgb(value)
+                );
             }
         }
         for value in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let error = terminal_srgb(value).unwrap_err();
+            let error = terminal_srgb(srgb::quantizer(), value).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Render);
             assert_eq!(
                 error.detail,

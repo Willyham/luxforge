@@ -2,7 +2,10 @@
 use crate::ErrorKind;
 use crate::{
     Error, Recipe, SnapshotId, SourceImage,
-    colour::srgb::{decode_pixel, decode_table, linear_to_srgb, quantize_channel, quantize_pixel},
+    colour::srgb::{
+        Quantizer, decode_pixel, decode_pixel_in, decode_table, quantize_channel, quantize_pixel,
+        quantizer,
+    },
     mask_field::MaskField,
     modules::{
         ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
@@ -317,7 +320,13 @@ fn apply_operation(
 ) -> Result<(), Error> {
     for unit in operation.units() {
         unit.apply_row(y + origin.1, x0 + origin.0, pixels);
-        if !pixels.iter().flatten().all(|channel| channel.is_finite()) {
+        // The conjunction over every channel, without the short circuit `all` would take: the
+        // answer is the same, and a scan that never exits early vectorises.
+        let finite = pixels
+            .as_flattened()
+            .iter()
+            .fold(true, |finite, channel| finite & channel.is_finite());
+        if !finite {
             return Err(Error::resource_limit(NON_FINITE_COLOR));
         }
     }
@@ -373,8 +382,9 @@ fn apply_masked_operation(
 /// One pixel through one colour run: decode, every operation in order, clamp and quantize. The point
 /// sampler applies a run with this; the rasterizing pass applies the same three steps to a row of a
 /// chunk, calling `apply_row` once per row instead of once per pixel, which changes no arithmetic
-/// and gives a position-dependent unit the same coordinates. Both paths share `decode_pixel`,
-/// `apply_units` and `quantize_pixel`, so a sample cannot disagree with the byte that was rendered —
+/// and gives a position-dependent unit the same coordinates. Both paths share `decode_pixel_in`,
+/// `apply_units` and `Quantizer::pixel` (the rows take the table and the quantizer once rather than
+/// per pixel), so a sample cannot disagree with the byte that was rendered —
 /// including the mask coverage, which both reach through the one [`MaskPlacement::coverage`] call
 /// inside that shared function.
 fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 3], Error> {
@@ -385,19 +395,22 @@ fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 
 }
 
 /// One bilinear sample of a byte frame in linear light, through the taps [`Taps`] clamps to the
-/// frame's edge, quantized: the byte domain's resample.
+/// frame's edge, quantized by forward rounding, `round(255 · encode(v))`, through the guarded
+/// threshold search [`Quantizer::rounded`] the RAW terminal shares: the byte domain's resample.
 ///
 /// `fetch` reads one pixel of that frame; the rasterizing path reads a buffer and the point-query
-/// path evaluates the previous segment recursively, so both produce identical bytes.
+/// path evaluates the previous segment recursively, so both produce identical bytes. The decode
+/// table and the quantizer are the caller's, so a pass takes them once rather than per sample.
 #[inline]
 fn bilinear(
+    table: &[f32; 256],
+    quantizer: &Quantizer,
     u: f64,
     v: f64,
     width: u32,
     height: u32,
     mut fetch: impl FnMut(u32, u32) -> Result<[u8; 4], Error>,
 ) -> Result<[u8; 4], Error> {
-    let table = decode_table();
     let taps = Taps::new(u, v, width, height);
     let [top_left, top_right, bottom_left, bottom_right] = taps.corners;
     let [w0, w1, w2, w3] = taps.weights;
@@ -413,7 +426,7 @@ fn bilinear(
             .iter()
             .map(|(corner, weight)| weight * f64::from(table[corner[channel] as usize]))
             .sum();
-        *slot = linear_to_srgb(linear);
+        *slot = quantizer.rounded(linear);
     }
     // Alpha has no transfer function; it blends linearly.
     let alpha: f64 = corners
@@ -784,13 +797,14 @@ fn resample_frame(
         let pixel = &input[offset..offset + 4];
         Ok([pixel[0], pixel[1], pixel[2], pixel[3]])
     };
+    let (table, quantizer) = (decode_table(), quantizer());
     // One relaxed load per output row, ahead of that row's samples; the point sampler and the
     // bilinear blend are untouched.
     let sample_row = |out_y: usize, row: &mut [u8]| -> Result<(), Error> {
         cancel.check()?;
         for out_x in 0..width {
             let (u, v) = resample.input_from(origin, window.x0 + out_x, window.y0 + out_y as u32);
-            let pixel = bilinear(u, v, input_width, input_height, fetch)?;
+            let pixel = bilinear(table, quantizer, u, v, input_width, input_height, fetch)?;
             let to = out_x as usize * 4;
             row[to..to + 4].copy_from_slice(&pixel);
         }
@@ -1256,7 +1270,7 @@ impl PixelDomain for Byte<'_> {
         height: u32,
         fetch: impl FnMut(u32, u32) -> Result<[u8; 4], Error>,
     ) -> Result<[u8; 4], Error> {
-        bilinear(u, v, width, height, fetch)
+        bilinear(decode_table(), quantizer(), u, v, width, height, fetch)
     }
 
     #[inline]
@@ -1410,11 +1424,13 @@ impl SegmentRows for ByteRows<'_> {
     ) -> Result<(), Error> {
         let row_bytes = self.width * 4;
         let bytes = &mut chunk[rows.start * row_bytes..rows.end * row_bytes];
+        // The tables are taken once for the rows, not once per pixel.
+        let (table, quantizer) = (decode_table(), quantizer());
         linear.clear();
         linear.extend(
             bytes
                 .chunks_exact(4)
-                .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]])),
+                .map(|pixel| decode_pixel_in(table, [pixel[0], pixel[1], pixel[2]])),
         );
         // A chunk is a whole number of rows, so every unit is handed one row at a time, at the
         // coordinates of the stage this segment produces.
@@ -1422,7 +1438,7 @@ impl SegmentRows for ByteRows<'_> {
             apply_units(run, y0 + (rows.start + offset) as u32, 0, row, snapshot)?;
         }
         for (pixel, value) in bytes.chunks_exact_mut(4).zip(linear.iter()) {
-            pixel[..3].copy_from_slice(&quantize_pixel(*value));
+            pixel[..3].copy_from_slice(&quantizer.pixel(*value));
         }
         Ok(())
     }
@@ -1664,9 +1680,13 @@ pub(super) fn rasterize(
                     let offset = |x: u32, y: u32| {
                         ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize
                     };
+                    let table = decode_table();
                     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
                         let at = offset(x, y);
-                        Ok(decode_pixel([input[at], input[at + 1], input[at + 2]]))
+                        Ok(decode_pixel_in(
+                            table,
+                            [input[at], input[at + 1], input[at + 2]],
+                        ))
                     };
                     spatial_entry(
                         &domain,
@@ -4434,6 +4454,118 @@ mod tests {
                     "code {code} at {value}"
                 );
             }
+        }
+    }
+
+    /// The byte resample's contract: a clamped value's forward rounding, `round(255 · encode(v))`,
+    /// from the shared reference. This is what the sample computed with a power function per
+    /// channel before it quantized through the guarded threshold search.
+    fn forward_rounding_reference(linear: f64) -> u8 {
+        (srgb::encode_clamped(linear) * 255.0).round() as u8
+    }
+
+    /// One channel's linear value as `bilinear` blends it over a 2 × 2 frame whose corners, in
+    /// row order, hold `codes`: each tap's weight times its decoded code, summed in tap order.
+    fn bilinear_value(codes: [u8; 4], u: f64, v: f64) -> f64 {
+        let table = decode_table();
+        let taps = Taps::new(u, v, 2, 2);
+        taps.corners
+            .iter()
+            .zip(taps.weights)
+            .map(|(&(x, y), weight)| {
+                weight * f64::from(table[usize::from(codes[(y * 2 + x) as usize])])
+            })
+            .sum()
+    }
+
+    /// `bilinear` over a 2 × 2 frame whose three channels hold `codes`, checked channel by channel
+    /// against the forward rounding of the value it blends. Returns channel 0's blended value.
+    fn check_bilinear(codes: [[u8; 4]; 3], u: f64, v: f64) -> f64 {
+        let fetch = |x: u32, y: u32| {
+            let at = (y * 2 + x) as usize;
+            Ok([codes[0][at], codes[1][at], codes[2][at], 255])
+        };
+        let pixel = bilinear(decode_table(), quantizer(), u, v, 2, 2, fetch).unwrap();
+        for channel in 0..3 {
+            let linear = bilinear_value(codes[channel], u, v);
+            assert_eq!(
+                pixel[channel],
+                forward_rounding_reference(linear),
+                "codes {codes:?} at ({u:?}, {v:?}), channel {channel}, value {linear:?}"
+            );
+        }
+        bilinear_value(codes[0], u, v)
+    }
+
+    #[test]
+    fn bilinear_samples_round_forward_at_every_code_boundary() {
+        let table = decode_table();
+        // Values this close to a threshold take the forward evaluation; the next band out is
+        // answered by the threshold search alone. Both must be reached for the test to mean
+        // anything. Some blends here take the other code through the search alone, so the
+        // quantizer without its guard fails this test.
+        let (mut guarded, mut searched) = (0_u32, 0_u32);
+        for code in 1..=255_u8 {
+            let threshold = srgb::decode_encoded((f64::from(code) - 0.5) / 255.0);
+            for (low, high) in [
+                (code - 1, code),
+                (0, 255),
+                (code.saturating_sub(2), code.saturating_add(1)),
+            ] {
+                let (a, b) = (
+                    f64::from(table[usize::from(low)]),
+                    f64::from(table[usize::from(high)]),
+                );
+                assert!(
+                    a < threshold && threshold < b,
+                    "{low}..{high} around {code}"
+                );
+                // Horizontal blends at a row's centre, and the same blend spread over both rows,
+                // whose four products round differently.
+                for v in [0.5, 0.875] {
+                    for delta in [0.0, -2e-12, -1e-12, -5e-13, 5e-13, 1e-12, 2e-12] {
+                        let u = 0.5 + (threshold + delta - a) / (b - a);
+                        let bits = u.to_bits();
+                        for bits in bits - 32..=bits + 32 {
+                            let u = f64::from_bits(bits);
+                            let blended = check_bilinear(
+                                [[low, high, low, high], [high, low, high, low], [code; 4]],
+                                u,
+                                v,
+                            );
+                            let distance = (blended - threshold).abs();
+                            if distance <= 1e-12 {
+                                guarded += 1;
+                            } else if distance <= 1e-9 {
+                                searched += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            guarded > 0 && searched > 0,
+            "{guarded} guarded, {searched} searched"
+        );
+    }
+
+    #[test]
+    fn bilinear_samples_round_forward_across_random_frames_and_taps() {
+        let mut state = 0x0f1e_2d3c_4b5a_6978_u64;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            state
+        };
+        for _ in 0..200_000 {
+            let codes = std::array::from_fn(|_| {
+                let bits = next();
+                std::array::from_fn(|corner| (bits >> (16 * corner)) as u8)
+            });
+            // Inside the frame and past its edges, where the taps clamp.
+            let u = (next() >> 11) as f64 / (1_u64 << 53) as f64 * 4.0 - 1.0;
+            let v = (next() >> 11) as f64 / (1_u64 << 53) as f64 * 4.0 - 1.0;
+            check_bilinear(codes, u, v);
         }
     }
 
