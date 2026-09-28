@@ -210,7 +210,7 @@
         {
           "kind": "file",
           "label": "Mask commands",
-          "target": "crates/luxforge-core/src/mask/commands.rs",
+          "target": "crates/luxforge-core/src/mask/commands/declare.rs",
           "locator": "the points and size parameter declarations",
           "relevance": "Declares the posted-path bound and a second radius range."
         },
@@ -291,8 +291,8 @@
         {
           "kind": "file",
           "label": "Mask commands",
-          "target": "crates/luxforge-core/src/mask/commands.rs",
-          "locator": "CONTROLS, descriptor(), strokes_reach",
+          "target": "crates/luxforge-core/src/mask/commands/declare.rs",
+          "locator": "CONTROLS, descriptor(), and plan.rs's strokes_reach",
           "relevance": "Where controls are generated, the host descriptor is declared with method-name identities, and a stroke dispatches on BRUSH."
         },
         {
@@ -524,7 +524,7 @@
     {
       "id": "TASK-007",
       "description": "Dispatch every mask command through an exhaustive MaskOp enum instead of a method-string match, replace the five-value Planned tuple with a named struct, and split mask/commands.rs by concern.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -552,8 +552,8 @@
         {
           "kind": "file",
           "label": "Mask commands",
-          "target": "crates/luxforge-core/src/mask/commands.rs",
-          "locator": "plan, MaskCommand, GeometryOp, SampleOp, Planned, unknown_kind, MaskTarget::insert_into",
+          "target": "crates/luxforge-core/src/mask/commands/mod.rs",
+          "locator": "MaskOp, MaskCommand, GeometryOp, SampleOp, MaskTarget::insert_into, and plan.rs's plan and Planned",
           "relevance": "The string-dispatched match and the tuple this task types and splits."
         },
         {
@@ -768,7 +768,7 @@
     {
       "id": "TASK-010",
       "description": "Write one kind-conformance test suite driven by a per-kind adapter, delete the mask command-contract tests that now duplicate the field-patch conformance suite, and remove masked-edit tests it already proves.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-007"
       ],

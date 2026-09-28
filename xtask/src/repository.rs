@@ -2955,7 +2955,7 @@ mod tests {
         let mask = tmp.path().join("crates/luxforge-core/src/mask");
         let draft = tmp.path().join("crates/luxforge-app/src/mask_draft");
         let app = tmp.path().join("crates/luxforge-app/src/app");
-        for dir in [&mask, &draft, &app] {
+        for dir in [&mask.join("commands"), &draft, &app] {
             fs::create_dir_all(dir).unwrap();
         }
         // The kind table, each kind's own file, the desktop's drawn-kind table and its editors,
@@ -2987,7 +2987,7 @@ mod tests {
                 "use crate::mask_draft::BRUSH;\n",
             ),
             (
-                mask.join("commands.rs"),
+                mask.join("commands/plan.rs"),
                 "fn f(c: &Component) -> bool { component_geometry_is_drawn(&c.kind) }\n\
                  /// Never `BRUSH` by name.\nlet NEUTRAL_BRUSH = 1;\nlet state = json!({\"brush\": 1});\n\
                  #[cfg(test)]\nmod tests {\n    fn t() {\n        let k = super::BRUSH;\n    }\n}\n",
@@ -3003,7 +3003,7 @@ mod tests {
         // Anywhere else in product code every name is refused, a second kind dispatch included.
         for (file, text) in [
             (
-                mask.join("commands.rs"),
+                mask.join("commands/plan.rs"),
                 "#[cfg(test)]\nfn t() {\n}\nfn f(c: &Component) -> bool { c.kind != BRUSH }\n",
             ),
             (

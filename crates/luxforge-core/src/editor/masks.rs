@@ -50,7 +50,7 @@ impl EditorService {
         let seed = self.mask_colour_seed(asset, command, recipe, target, parameters)?;
         let outcome =
             crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)?;
-        if command.method == crate::mask::commands::ADD_STROKE
+        if command.op == crate::mask::commands::MaskOp::AddStroke
             && let MaskOutcome::Change(change) = &outcome
             && let (Some(mask), Some(component)) = (&change.mask, &change.component)
             && let Some(mask) = change.recipe.masks.iter().find(|held| &held.id == mask)

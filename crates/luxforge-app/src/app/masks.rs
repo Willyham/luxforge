@@ -369,18 +369,7 @@ impl Editor {
         let state = self.state.as_ref()?;
         let mut request = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
         let object = request.as_object_mut().expect("the envelope is an object");
-        if let Some(mask) = &target.mask {
-            object.insert("mask".into(), json!(mask));
-        }
-        if let Some(component) = &target.component {
-            object.insert("component".into(), json!(component));
-        }
-        if let Some(name) = &target.name {
-            object.insert("name".into(), json!(name));
-        }
-        if let Some(stroke) = &target.stroke {
-            object.insert("stroke".into(), json!(stroke.as_str()));
-        }
+        target.insert_into(object);
         for (name, value) in fields {
             object.insert(name.clone(), value.clone());
         }

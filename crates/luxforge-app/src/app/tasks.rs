@@ -1003,13 +1003,7 @@ pub(crate) fn draft_begin_now(
 /// two can disagree about where an identity goes.
 pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTarget) -> Value {
     let mut params = json!({"asset_id":asset_id,"action":action});
-    let object = params.as_object_mut().expect("the envelope is an object");
-    if let Some(mask) = target.mask {
-        object.insert("mask".into(), json!(mask));
-    }
-    if let Some(component) = target.component {
-        object.insert("component".into(), json!(component));
-    }
+    target.insert_into(params.as_object_mut().expect("the envelope is an object"));
     params
 }
 
