@@ -870,8 +870,8 @@ fn bound_registry() -> ModuleRegistry {
     registry
 }
 
-/// A module whose declarations need capability hooks — an artifact effect, a task, an
-/// activation or a resource — registers only when it provides them, and only such a module is
+/// A module whose declarations need capability hooks — an artifact effect, a task or a resource
+/// — registers only when it provides them, and only such a module is
 /// found by the capability lookup.
 #[test]
 fn a_module_that_declares_capabilities_registers_only_with_its_hooks() {
@@ -895,19 +895,10 @@ fn a_module_that_declares_capabilities_registers_only_with_its_hooks() {
     for (declares, descriptor) in [
         ("task", capable.clone()),
         (
-            "activation",
-            ModuleDescriptor {
-                tasks: Vec::new(),
-                controls: Vec::new(),
-                ..capable.clone()
-            },
-        ),
-        (
             "resource",
             ModuleDescriptor {
                 tasks: Vec::new(),
                 controls: Vec::new(),
-                activation: None,
                 ..capable.clone()
             },
         ),

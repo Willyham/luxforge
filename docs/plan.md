@@ -66,7 +66,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Extensibility
 
-**Shared module capabilities follow-ups** ([design](design/module-capabilities.md)). Settings and secrets, consent, the transport, activation and resources, tasks and derived artifacts are delivered on macOS.
+**Shared module capabilities follow-ups** ([design](design/module-capabilities.md)). Settings and secrets, consent, the transport, resources, tasks and derived artifacts are delivered on macOS; activation is deferred until a module needs `local-runtime`.
 - Owner review of the recorded defaults: per-asset photo consent, who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities))
 - Windows Credential Manager and Linux Secret Service for module secrets, verified natively; both refuse with `not-ready` today
 - Native Windows and Linux checks of the transport's certificate verification and of resource removal, which on Windows must release a module's files before deleting them

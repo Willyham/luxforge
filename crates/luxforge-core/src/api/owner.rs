@@ -1709,8 +1709,8 @@ pub(super) fn job_read(
 
 /// `job.cancel`, by the job's kind. A source or analysis job belongs to the clients that want it:
 /// the caller leaves it, and the work stops only when no other client wants it. A capability or
-/// export job belongs to no client: its cancel stops it for everyone, and a running deactivation is
-/// refused. Answers the job as `job.read` does afterwards.
+/// export job belongs to no client: its cancel stops it for everyone. Answers the job as `job.read`
+/// does afterwards.
 ///
 /// Every cancel converges, so it carries no mutation envelope and a retry needs no stored answer:
 /// a left job stays left, a cancelled one stays cancelled and a finished one is answered as it is.
@@ -4109,10 +4109,12 @@ mod tests {
         job
     }
 
-    /// `job.read` and `activity.list` agree about a job of every kind, while it runs and once it
-    /// ended: a source preparation and an export that complete, an analysis whose one client
-    /// cancelled it while it ran, and a capability activation. Each is held on its own worker at a
-    /// gate the test controls; the board keeps work of any length as recent.
+    /// `job.read` and `activity.list` agree about a job of every worker, while it runs and once it
+    /// ended: a source preparation and an export that complete, and an analysis whose one client
+    /// cancelled it while it ran. Each is held on its own worker at a gate the test controls; the
+    /// board keeps work of any length as recent. A capability job publishes through the same lane
+    /// path as an export, which `jobs::tests::a_capability_jobs_progress_and_activity_are_on_the_board`
+    /// proves at the table.
     #[test]
     fn activity_list_and_job_read_agree_about_a_job_of_every_kind() {
         let catalog = temp("agree.sqlite");
@@ -4124,17 +4126,10 @@ mod tests {
         let source_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let render_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let export_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
-        let probe = Arc::new(crate::capabilities::testing::Probe::default());
         let mut registry = ModuleRegistry::builtin();
         registry
             .register(crate::modules::HeldModule::shared(render_gate.clone()))
             .expect("a valid holding module");
-        registry
-            .register(crate::capabilities::testing::LifecycleModule::shared(
-                crate::capabilities::testing::lane_descriptor(0),
-                probe.clone(),
-            ))
-            .expect("a valid lifecycle module");
         let hold = source_gate.clone();
         let (owner, join) = OwnerHandle::start_observed(
             &catalog,
@@ -4272,37 +4267,6 @@ mod tests {
             "ready"
         );
 
-        // Capability: an activation held by its module on the module lane.
-        probe.hold.shut();
-        let activation = ok(
-            &owner,
-            client,
-            "activate",
-            "module.activate",
-            json!({"module_id": "test.lane0", "mutation": envelope()}),
-        )["job_id"]
-            .clone();
-        until_listed(&activation);
-        let running = agreeing(&owner, client, &activation, "module.activate");
-        assert_eq!(
-            (running["kind"].clone(), running["module_id"].clone()),
-            (json!("activate"), json!("test.lane0"))
-        );
-        probe.hold.open();
-        luxforge_testbase::wait_until("the activation to end", || {
-            ok(
-                &owner,
-                client,
-                "poll",
-                "job.read",
-                json!({"job_id": activation}),
-            )["status"]
-                != json!("running")
-        });
-        assert_eq!(
-            agreeing(&owner, client, &activation, "module.activate")["status"],
-            "ready"
-        );
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

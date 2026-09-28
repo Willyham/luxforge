@@ -1,16 +1,16 @@
 //! The capability host the catalog owner holds: where settings, grants and resources live, which
-//! secret store holds credentials, each module's activation, and the operations the
-//! owner-answered `module.*` methods call over all of them and over the capability jobs in the
-//! owner's one job table (`crate::jobs`), which each operation that touches jobs is handed. The
-//! method table in `api::methods` names each method, parses its parameters, declared beside the
-//! operation, and calls one of these operations; nothing here dispatches by method name. Every call
-//! is a short file, stat or secret-store attribute call; nothing hashes, downloads, loads module
-//! state or reads a secret's data on the owner. That work is queued on a lane, whose result comes
+//! secret store holds credentials, and the operations the owner-answered `module.*` methods call
+//! over all of them and over the capability jobs in the owner's one job table (`crate::jobs`),
+//! which each operation that touches jobs is handed. The method table in `api::methods` names each
+//! method, parses its parameters, declared beside the operation, and calls one of these operations;
+//! nothing here dispatches by method name. Every call is a short file, stat or secret-store
+//! attribute call; nothing hashes, downloads, loads module state or reads a secret's data on the
+//! owner. That work is queued on a lane, whose result comes
 //! back into the owner's channel. See `docs/design/module-capabilities.md`.
 //!
 //! This file holds the host itself, the settings methods, capability job cancels and `module.status`;
-//! [`activation`], [`permissions`], [`resources`] and [`tasks`] hold the other methods over the
-//! same [`CapabilityHost`].
+//! [`permissions`], [`resources`] and [`tasks`] hold the other methods over the same
+//! [`CapabilityHost`].
 use super::{
     descriptor::SettingDescriptor,
     grants::{Grant, GrantKind, GrantScope, GrantsStore, PermissionCounts},
@@ -18,7 +18,7 @@ use super::{
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
         CLEAR_SECRET, CREATE_PROFILE, FieldRead, REMOVE_PROFILE, RESET, SET, SET_SECRET,
-        SettingsRead, SettingsState, SettingsStore, SettingsWrite, WriteOutcome,
+        SettingsRead, SettingsStore, SettingsWrite, WriteOutcome,
     },
     transport::{Endpoint, TransportConfig, parse_endpoint},
 };
@@ -31,29 +31,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-mod activation;
 mod permissions;
 mod resources;
 mod tasks;
 
-use activation::Activation;
-pub(crate) use activation::ModuleChange;
-pub use activation::{ActivationRead, ActivationState};
 pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokeParams};
 pub(crate) use resources::{InstallParams, ResourceParams};
 pub use tasks::TASK_PREFIX;
 
-/// The lifecycle methods.
-pub const ACTIVATE: &str = "module.activate";
-pub const DEACTIVATE: &str = "module.deactivate";
+/// A module's capability status.
 pub const STATUS: &str = "module.status";
 
-/// Why grants are revoked or a module deactivated when something they depend on changes.
+/// Why grants are revoked when something they depend on changes.
 pub const ENDPOINT_CHANGED: &str = "endpoint changed";
 pub const PROFILE_REMOVED: &str = "profile removed";
 pub const SETTINGS_RESET: &str = "settings reset";
-pub const SETTINGS_CHANGED: &str = "settings changed";
-pub const RESOURCE_REMOVED: &str = "resource removed";
 
 /// Where the host keeps what it owns for modules. Tests and evidence runs point every directory at
 /// an isolated location, pass an in-memory secret store and inject their own transport, so they
@@ -221,28 +213,26 @@ impl<'de> Deserialize<'de> for SecretParam {
     }
 }
 
-/// One unmet requirement of an activation or a task.
+/// One unmet requirement of a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Requirement {
-    /// `setting`, `resource`, or for a task also `activation` and `profile`.
+    /// `resource` or `profile`.
     pub kind: String,
-    /// The setting, resource, module or profile identity.
+    /// The resource or profile identity.
     pub id: String,
-    /// `missing`, `invalid`, `incompatible` or `unavailable` for a setting; a resource state for a
-    /// resource; the module's activation state for an activation; a profile status for a profile.
+    /// A resource state for a resource; a profile status for a profile.
     pub state: String,
 }
 
-/// The owner's capability state: the configuration, the stores over its directories, each
-/// module's activation and what each live task reports back. Its jobs are records in the owner's
-/// one job table, run on that table's `transfer` and `module` lanes.
+/// The owner's capability state: the configuration, the stores over its directories and what
+/// each live task reports back. Its jobs are records in the owner's one job table, run on that
+/// table's `transfer` and `module` lanes.
 pub(crate) struct CapabilityHost {
     config: HostConfig,
     settings: Option<SettingsStore>,
     grants: Option<GrantsStore>,
     resources: Option<ResourceStore>,
     transport: Arc<SharedTransport>,
-    activations: HashMap<String, Activation>,
     /// Queued and running tasks, at most one lane's worth.
     tasks: HashMap<JobId, tasks::TaskRun>,
 }
@@ -254,7 +244,6 @@ impl CapabilityHost {
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),
             transport: Arc::new(SharedTransport::new(config.transport.clone())),
-            activations: HashMap::new(),
             tasks: HashMap::new(),
             config,
         }
@@ -296,28 +285,10 @@ impl CapabilityHost {
         let Some(done) = jobs.complete(job_id, result) else {
             return;
         };
-        let module_id = done.record.module().to_owned();
-        match done.record.kind {
-            JobKind::Activate => {
-                let changed = self.activation_finished(jobs, service.registry(), &done.record);
-                if changed && let Some(origin) = &done.origin {
-                    announce_once(announce, origin);
-                }
-            }
-            JobKind::Deactivate => {
-                if let Some(activation) = self.activations.get_mut(&module_id)
-                    && activation.job.as_ref() == Some(&done.record.job_id)
-                {
-                    activation.job = None;
-                }
-            }
-            _ => {
-                if done.record.status == JobStatus::Ready
-                    && let Some(origin) = &done.origin
-                {
-                    announce_once(announce, origin);
-                }
-            }
+        if done.record.status == JobStatus::Ready
+            && let Some(origin) = &done.origin
+        {
+            announce_once(announce, origin);
         }
     }
 
@@ -349,7 +320,7 @@ impl CapabilityHost {
             &request.values,
             &request.mutation,
         )?;
-        self.settings_written(jobs, registry, descriptor, SET, write, origin, announce)
+        self.settings_written(jobs, descriptor, SET, write, origin, announce)
     }
 
     /// `module.settings.set-secret`: the value was moved into a [`SecretValue`] as it was parsed.
@@ -370,9 +341,7 @@ impl CapabilityHost {
             &request.value.0,
             &request.mutation,
         )?;
-        self.settings_written(
-            jobs, registry, descriptor, SET_SECRET, write, origin, announce,
-        )
+        self.settings_written(jobs, descriptor, SET_SECRET, write, origin, announce)
     }
 
     /// `module.settings.clear-secret`.
@@ -392,15 +361,7 @@ impl CapabilityHost {
             &request.setting,
             &request.mutation,
         )?;
-        self.settings_written(
-            jobs,
-            registry,
-            descriptor,
-            CLEAR_SECRET,
-            write,
-            origin,
-            announce,
-        )
+        self.settings_written(jobs, descriptor, CLEAR_SECRET, write, origin, announce)
     }
 
     /// `module.settings.reset`.
@@ -416,7 +377,7 @@ impl CapabilityHost {
         let write = self
             .settings()?
             .reset(descriptor, self.secrets(), &request.mutation)?;
-        self.settings_written(jobs, registry, descriptor, RESET, write, origin, announce)
+        self.settings_written(jobs, descriptor, RESET, write, origin, announce)
     }
 
     /// `module.profile.create`.
@@ -435,15 +396,7 @@ impl CapabilityHost {
             &request.label,
             &request.mutation,
         )?;
-        self.settings_written(
-            jobs,
-            registry,
-            descriptor,
-            CREATE_PROFILE,
-            write,
-            origin,
-            announce,
-        )
+        self.settings_written(jobs, descriptor, CREATE_PROFILE, write, origin, announce)
     }
 
     /// `module.profile.remove`.
@@ -462,25 +415,15 @@ impl CapabilityHost {
             &request.profile_id,
             &request.mutation,
         )?;
-        self.settings_written(
-            jobs,
-            registry,
-            descriptor,
-            REMOVE_PROFILE,
-            write,
-            origin,
-            announce,
-        )
+        self.settings_written(jobs, descriptor, REMOVE_PROFILE, write, origin, announce)
     }
 
-    /// Every settings write: apply what a committed one implies for grants and activation, and
-    /// answer with its result and the module's settings as they read now. Neither holds a secret. A
-    /// retry never gets here: the owner's request table answers it with the first answer.
-    #[allow(clippy::too_many_arguments)]
+    /// Every settings write: apply what a committed one implies for grants, and answer with its
+    /// result and the module's settings as they read now. Neither holds a secret. A retry never
+    /// gets here: the owner's request table answers it with the first answer.
     fn settings_written(
         &mut self,
         jobs: &mut Jobs,
-        registry: &Arc<ModuleRegistry>,
         descriptor: &ModuleDescriptor,
         method: &str,
         write: SettingsWrite,
@@ -494,9 +437,7 @@ impl CapabilityHost {
             // reported beside the result rather than as the write's failure. Nothing it leaves
             // behind can be used: a grant names its exact path or endpoint origin, which the
             // settings no longer hold.
-            match self
-                .after_settings_write(jobs, registry, descriptor, method, &write, origin, announce)
-            {
+            match self.after_settings_write(jobs, descriptor, method, &write, origin, announce) {
                 Ok(revoked) if revoked.is_empty() => {}
                 Ok(revoked) => {
                     value["revoked"] = json!(
@@ -515,16 +456,13 @@ impl CapabilityHost {
         Ok(value)
     }
 
-    /// What a committed settings write implies. A changed field declared `invalidates_activation`
-    /// deactivates an active or activating module. Grants scoped to a value the write replaced or
+    /// What a committed settings write implies. Grants scoped to a value the write replaced or
     /// removed are revoked, and the jobs running under them are cancelled: a profile's remote
     /// grants when its endpoint changes or it is removed, and a reset's remote grants. Download
     /// grants name a pinned resource, not a setting, and survive a reset.
-    #[allow(clippy::too_many_arguments)]
     fn after_settings_write(
         &mut self,
         jobs: &mut Jobs,
-        registry: &Arc<ModuleRegistry>,
         descriptor: &ModuleDescriptor,
         method: &str,
         write: &SettingsWrite,
@@ -533,16 +471,6 @@ impl CapabilityHost {
     ) -> Result<Vec<Grant>, Error> {
         let module_id = descriptor.id.as_str();
         let result = &write.result;
-        if result.invalidates_activation {
-            self.deactivate(
-                jobs,
-                registry,
-                module_id,
-                Some(SETTINGS_CHANGED.to_owned()),
-                Some(origin),
-                announce,
-            )?;
-        }
         let Some(grants) = &self.grants else {
             return Ok(Vec::new());
         };
@@ -602,31 +530,23 @@ impl CapabilityHost {
     // Jobs.
 
     /// `job.cancel` of a capability job: any client may, since a capability job belongs to its
-    /// module, and the job stops for everyone. A deactivation releases what a module holds and is
-    /// never cancelled. A waiting job's removal is the job's own outcome, announced under the
-    /// request that started it.
+    /// module, and the job stops for everyone. A waiting job's removal is the job's own outcome,
+    /// announced under the request that started it.
     pub(crate) fn cancel(
         &mut self,
         jobs: &mut Jobs,
         job_id: &JobId,
         announce: &mut Vec<Origin>,
     ) -> Result<(), Error> {
-        let record = jobs
-            .read(job_id)
-            .ok_or_else(|| Error::validation(format!("unknown job {job_id}")))?;
-        if record.kind == JobKind::Deactivate && !record.status.is_finished() {
-            return Err(Error::conflict(
-                "a deactivation releases what the module holds and cannot be cancelled",
-            ));
+        if jobs.read(job_id).is_none() {
+            return Err(Error::validation(format!("unknown job {job_id}")));
         }
         let origin = jobs.origin(job_id).cloned();
         self.cancel_job(jobs, job_id, CANCELLED, origin.as_ref(), announce);
         Ok(())
     }
 
-    /// Cancel one job and apply what that means for its module: a waiting activation leaves the
-    /// module inactive at once; a running one ends inactive when it stops, and anything it loaded
-    /// is released. A waiting job's removal is announced; a running one's stop is announced when
+    /// Cancel one job. A waiting job's removal is announced; a running one's stop is announced when
     /// it finishes.
     fn cancel_job(
         &mut self,
@@ -642,36 +562,19 @@ impl CapabilityHost {
                 if record.kind == JobKind::Task {
                     self.forget_task(&record.job_id);
                 }
-                if record.kind == JobKind::Activate
-                    && let Some(activation) = self.activations.get_mut(record.module())
-                    && activation.job.as_ref() == Some(&record.job_id)
-                {
-                    activation.job = None;
-                    activation.set_inactive(None);
-                }
                 if let Some(origin) = origin {
                     announce_once(announce, origin);
                 }
                 Some(record)
             }
-            Cancelled::Requested(record) => {
-                if record.kind == JobKind::Activate
-                    && let Some(activation) = self.activations.get_mut(record.module())
-                    && activation.job.as_ref() == Some(&record.job_id)
-                    && activation.pending.is_none()
-                {
-                    activation.pending = Some(None);
-                }
-                Some(record)
-            }
-            Cancelled::Finished(record) => Some(record),
+            Cancelled::Requested(record) | Cancelled::Finished(record) => Some(record),
         }
     }
 
     // Status.
 
-    /// `module.status`: activation, settings validity, resources, grant and denial counts and this
-    /// module's jobs. A settings read, stats of installed markers and a grants file read; no
+    /// `module.status`: settings validity, resources, grant and denial counts and this module's
+    /// jobs. A settings read, stats of installed markers and a grants file read; no
     /// hashing. The grant and denial records are read through `module.permission.list`.
     pub(crate) fn status(
         &self,
@@ -680,10 +583,6 @@ impl CapabilityHost {
         request: ModuleParams,
     ) -> Result<Value, Error> {
         let descriptor = registered(registry, &request.module_id)?;
-        let activation = self
-            .activations
-            .get(&descriptor.id)
-            .map_or_else(|| Activation::default().read(), Activation::read);
         let settings = match &descriptor.settings {
             None => Value::Null,
             Some(_) => match self
@@ -715,39 +614,11 @@ impl CapabilityHost {
         };
         Ok(json!({
             "module_id": descriptor.id,
-            "activation": activation,
             "settings": settings,
             "resources": self.resource_rows(jobs, descriptor),
             "permissions": permissions,
             "jobs": jobs.of_module(&descriptor.id),
         }))
-    }
-}
-
-/// Which requirement a required setting fails, if any: `missing`, `invalid`, `incompatible` or
-/// `unavailable` (the secret store could not say).
-fn setting_requirement(read: Option<&SettingsRead>, id: &str) -> Option<&'static str> {
-    let Some(read) = read else {
-        return Some("unavailable");
-    };
-    if read.state == SettingsState::Incompatible {
-        return Some("incompatible");
-    }
-    match read.fields.get(id) {
-        None => Some("missing"),
-        Some(FieldRead::Value {
-            value: Value::Null, ..
-        }) => Some("missing"),
-        Some(FieldRead::Value { valid: false, .. }) => Some("invalid"),
-        Some(FieldRead::Secret {
-            secret_present: Some(false),
-            ..
-        }) => Some("missing"),
-        Some(FieldRead::Secret {
-            secret_present: None,
-            ..
-        }) => Some("unavailable"),
-        Some(_) => None,
     }
 }
 
@@ -1022,8 +893,6 @@ mod tests {
                 DENY,
                 REVOKE,
                 LIST,
-                ACTIVATE,
-                DEACTIVATE,
                 STATUS,
                 RESOURCE_LIST,
                 INSTALL,
@@ -1085,7 +954,6 @@ mod tests {
         assert_eq!(set["outcome"], json!("committed"));
         assert_eq!(set["revision"], json!(1));
         assert_eq!(set["changed"], json!(["label", "mode"]));
-        assert_eq!(set["invalidates_activation"], json!(true));
         assert_eq!(set["settings"]["state"], json!("ready"));
         assert_eq!(set["settings"]["fields"]["mode"]["value"], json!("fast"));
         let events = ok(

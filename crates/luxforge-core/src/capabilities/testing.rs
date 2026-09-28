@@ -1,13 +1,12 @@
 //! A module declaring every kind of capability, shared by the descriptor, settings and host tests;
-//! a module whose activation, deactivation and resource check the lifecycle tests steer; and a
+//! a module whose resource check the lifecycle tests steer; and a
 //! network that counts every lookup and connection, so a test can prove a path made none. The
 //! loopback servers the tests answer downloads with are `luxforge-testkit`'s.
 use super::{
-    context::ModuleContext,
     descriptor::{
-        ActivationDescriptor, AdapterAuth, AdapterCost, AdapterDescriptor, CapabilityDescriptor,
-        CapabilityKind, DataClass, ProfilesDescriptor, ResourceDescriptor, SettingDescriptor,
-        SettingsDescriptor, TaskApply, TaskDescriptor,
+        AdapterAuth, AdapterCost, AdapterDescriptor, CapabilityDescriptor, CapabilityKind,
+        DataClass, ProfilesDescriptor, ResourceDescriptor, SettingDescriptor, SettingsDescriptor,
+        TaskApply, TaskDescriptor,
     },
     transport::{Connect, EndpointClass, Resolve},
 };
@@ -16,15 +15,14 @@ use crate::{
     EffectStage, Error, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
     ToolModule,
 };
-use luxforge_testbase::Gate;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{self, Read},
+    io,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -78,9 +76,8 @@ pub(crate) fn adapter() -> AdapterDescriptor {
 }
 
 /// Every remaining setting kind at module level, a bearer adapter whose profiles hold an endpoint,
-/// a secret and a choice, the two implemented capabilities, one resource, an activation that needs
-/// a required setting and the resource, and one task that uses both capabilities and applies its
-/// artifact.
+/// a secret and a choice, the two implemented capabilities, one resource, and one task that uses
+/// both capabilities and applies its artifact.
 pub(crate) fn capability_descriptor() -> ModuleDescriptor {
     ModuleDescriptor {
         id: MODULE.into(),
@@ -136,8 +133,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 setting(ParameterDescriptor::integer("count", 1, 8).default(2)),
                 setting(ParameterDescriptor::boolean("enabled").default(true)),
                 setting(ParameterDescriptor::string("note", 16)),
-                setting(ParameterDescriptor::string("label", 32).required(true))
-                    .invalidates_activation(),
+                setting(ParameterDescriptor::string("label", 32).required(true)),
                 setting(ParameterDescriptor::endpoint(
                     "local-service",
                     [EndpointClass::Loopback],
@@ -155,8 +151,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                             [EndpointClass::Remote, EndpointClass::Loopback],
                         )
                         .required(true),
-                    )
-                    .invalidates_activation(),
+                    ),
                     setting(ParameterDescriptor::secret("api-key", 128).required(true)),
                     setting(
                         ParameterDescriptor::enumeration("model", ["small", "large"])
@@ -194,18 +189,12 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             provenance: "Generated for tests".into(),
             redirect_origins: vec!["https://cdn.example.com".into()],
         }],
-        activation: Some(ActivationDescriptor {
-            requires_settings: vec!["label".into()],
-            requires_resources: vec!["palette".into()],
-            notes: "Loads the palette.".into(),
-        }),
         tasks: vec![TaskDescriptor {
             id: TASK.into(),
             title: "Generate tint".into(),
             notes: "test".into(),
             asset: true,
             profile: true,
-            requires_active: true,
             uses: vec!["echo".into(), "palette".into()],
             parameters: vec![ParameterDescriptor::number("gain", 0.0, 2.0).notes("test")],
             apply: Some(TaskApply {
@@ -256,43 +245,14 @@ pub(crate) fn lifecycle_descriptor(palette_url: &str, swatch_url: &str) -> Modul
     descriptor
 }
 
-/// A module with an activation that requires nothing, for filling the module lane.
-pub(crate) fn lane_descriptor(index: usize) -> ModuleDescriptor {
-    ModuleDescriptor {
-        id: format!("test.lane{index}"),
-        title: format!("Lane test {index}"),
-        activation: Some(ActivationDescriptor {
-            requires_settings: Vec::new(),
-            requires_resources: Vec::new(),
-            notes: "Waits while held.".into(),
-        }),
-        ..ModuleDescriptor::default()
-    }
-}
-
-/// What a lifecycle test steers and observes of a [`LifecycleModule`].
+/// What a lifecycle test steers of a [`LifecycleModule`].
 #[derive(Default)]
 pub(crate) struct Probe {
-    /// Shut, it holds an activation after loading until it opens, while the activation checks its
-    /// context for a cancellation about once a millisecond.
-    pub hold: Gate,
-    /// An activation fails once it stops waiting.
-    pub fail: AtomicBool,
     /// `validate_resource` refuses the staged bytes.
     pub refuse: AtomicBool,
-    pub activations: AtomicUsize,
-    pub deactivations: AtomicUsize,
-    /// An activation is between its first and last instruction.
-    pub running: AtomicBool,
-    /// What the activation loaded: its required resources' bytes. `deactivate` drops it.
-    pub loaded: Mutex<Option<Vec<u8>>>,
-    /// The activation read the module's `token` secret through its context. The value itself is
-    /// never kept.
-    pub secret_read: AtomicBool,
 }
 
-/// A module whose activation loads its required resources and then waits while its probe holds
-/// it, so a test can observe and cancel it mid-way.
+/// A module whose resource check its probe steers.
 pub(crate) struct LifecycleModule {
     descriptor: ModuleDescriptor,
     probe: Arc<Probe>,
@@ -301,39 +261,6 @@ pub(crate) struct LifecycleModule {
 impl LifecycleModule {
     pub(crate) fn shared(descriptor: ModuleDescriptor, probe: Arc<Probe>) -> Arc<dyn ToolModule> {
         Arc::new(Self { descriptor, probe })
-    }
-
-    fn load(&self, context: &ModuleContext) -> Result<(), Error> {
-        let mut loaded = Vec::new();
-        for resource in self
-            .descriptor
-            .activation
-            .iter()
-            .flat_map(|activation| activation.requires_resources.iter())
-        {
-            let path = context.resource_path(resource)?;
-            std::fs::File::open(path)
-                .and_then(|mut file| file.read_to_end(&mut loaded))
-                .map_err(|error| Error::file_access(error.to_string()))?;
-        }
-        *self.probe.loaded.lock().unwrap() = Some(loaded);
-        if let Ok(secret) = context.secret("token") {
-            self.probe
-                .secret_read
-                .store(!secret.expose().is_empty(), Ordering::SeqCst);
-        }
-        context.progress(Some(0.5), "loaded");
-        let mut checked = Ok(());
-        self.probe.hold.pass_unless(|| {
-            checked = context.checkpoint();
-            checked.is_err()
-        });
-        checked?;
-        context.checkpoint()?;
-        if self.probe.fail.load(Ordering::SeqCst) {
-            return Err(Error::decode("the palette is corrupt"));
-        }
-        Ok(())
     }
 }
 
@@ -365,17 +292,6 @@ impl ToolModule for LifecycleModule {
 }
 
 impl CapabilityModule for LifecycleModule {
-    fn activate(&self, context: &ModuleContext) -> Result<(), Error> {
-        self.probe.activations.fetch_add(1, Ordering::SeqCst);
-        self.probe.running.store(true, Ordering::SeqCst);
-        let result = self.load(context);
-        self.probe.running.store(false, Ordering::SeqCst);
-        result
-    }
-    fn deactivate(&self) {
-        self.probe.deactivations.fetch_add(1, Ordering::SeqCst);
-        *self.probe.loaded.lock().unwrap() = None;
-    }
     fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
         if self.probe.refuse.load(Ordering::SeqCst) {
             return Err(Error::validation(format!(

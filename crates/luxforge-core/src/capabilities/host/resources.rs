@@ -2,7 +2,7 @@
 //! install or removal queued on the transfer lane after consent, the quota and the lane bound are
 //! checked. The transfer itself is `capabilities::resources`. See
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
-use super::{CapabilityHost, ModuleParams, RESOURCE_REMOVED, registered};
+use super::{CapabilityHost, ModuleParams, registered};
 use crate::{
     Error, JobId, ModuleDescriptor, ModuleRegistry,
     api::{Origin, params::host_params},
@@ -13,7 +13,7 @@ use crate::{
         resources::{self as transfer, InstallJob, InstallSource, ResourceRow, ResourceState},
         transport::{EndpointClass, parse_endpoint},
     },
-    jobs::{Admission, JobControl, JobKind, JobRecord, JobStatus, Jobs, NewJob, Work},
+    jobs::{JobControl, JobKind, JobRecord, JobStatus, Jobs, NewJob, Work},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -207,7 +207,6 @@ impl CapabilityHost {
                 asset_id: None,
                 origin: Some(origin.clone()),
                 grants: vec![grant.grant_id],
-                admission: Admission::Bounded,
                 activity: None,
             },
             control,
@@ -217,14 +216,13 @@ impl CapabilityHost {
     }
 
     /// `module.resource.remove`: queue the removal of the installed version, joining one already
-    /// queued. A module that is active or activating and requires the resource is deactivated first.
+    /// queued.
     pub(crate) fn remove(
         &mut self,
         jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: ResourceParams,
         origin: &Origin,
-        announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
@@ -270,26 +268,11 @@ impl CapabilityHost {
                 asset_id: None,
                 origin: Some(origin.clone()),
                 grants: Vec::new(),
-                admission: Admission::Bounded,
                 activity: None,
             },
             control,
             work,
         )?;
-        let required = descriptor
-            .activation
-            .as_ref()
-            .is_some_and(|activation| activation.requires_resources.contains(&resource.id));
-        if required {
-            self.deactivate(
-                jobs,
-                registry,
-                &descriptor.id,
-                Some(RESOURCE_REMOVED.to_owned()),
-                Some(origin),
-                announce,
-            )?;
-        }
         Ok(answer(Some(&record), state))
     }
 }

@@ -184,7 +184,7 @@ impl ModuleRegistry {
     }
 
     /// The capability hooks of the registered module with this identity, which the capability
-    /// host calls to activate it, check its resources and run its tasks. Registration refused every
+    /// host calls to check its resources and run its tasks. Registration refused every
     /// module whose declarations need them and that provides none, so `None` means the module is
     /// not registered or declares nothing that needs them.
     pub fn capabilities(&self, id: &str) -> Option<&dyn CapabilityModule> {

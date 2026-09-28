@@ -241,20 +241,6 @@ fn perform(
             json!({"module_id": module_id, "resource_id": resource, "mutation": request()}),
             sent,
         ),
-        Operation::Activate => call(
-            owner,
-            client,
-            host::ACTIVATE,
-            json!({"module_id": module_id, "mutation": request()}),
-            sent,
-        ),
-        Operation::Deactivate => call(
-            owner,
-            client,
-            host::DEACTIVATE,
-            json!({"module_id": module_id, "mutation": request()}),
-            sent,
-        ),
         Operation::Cancel { job } => call(owner, client, JOB_CANCEL, json!({"job_id": job}), sent),
         Operation::Revoke { grant } => call(
             owner,
@@ -782,14 +768,6 @@ impl Editor {
                 return self
                     .capability_op(&module_id, Operation::RemoveProfile { profile, revision });
             }
-            CapabilityMessage::Activate { module_id, on } => {
-                let op = if on {
-                    Operation::Activate
-                } else {
-                    Operation::Deactivate
-                };
-                return self.capability_op(&module_id, op);
-            }
             CapabilityMessage::Install {
                 module_id,
                 resource,
@@ -1043,10 +1021,7 @@ impl Editor {
         match outcome {
             Outcome::Done(_) => {
                 state.message = None;
-                if matches!(
-                    op,
-                    Operation::Activate | Operation::Install { .. } | Operation::RunTask { .. }
-                ) {
+                if matches!(op, Operation::Install { .. } | Operation::RunTask { .. }) {
                     state.requirements.clear();
                 }
                 if let Some(key) = &field {
@@ -1413,7 +1388,6 @@ impl Editor {
                     resource,
                 }]
             }
-            CapabilityAction::Activate(on) => vec![CapabilityMessage::Activate { module_id, on }],
             CapabilityAction::Task(task) => vec![CapabilityMessage::RunTask { module_id, task }],
             CapabilityAction::Consent(allow) => {
                 if self

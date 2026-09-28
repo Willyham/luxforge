@@ -100,7 +100,7 @@ impl RegistryOptions<'_> {
 /// A provider registered unavailable: the module's own descriptor with its availability replaced,
 /// and every other answer the module's own.
 ///
-/// The host never plans, runs a query or task, activates or compiles through an unavailable
+/// The host never plans, runs a query or task, or compiles through an unavailable
 /// provider — `apply_action`, `run_query`, the capability host and every compile check
 /// availability first — so its effects stay readable and a stack that holds one is reported rather
 /// than rendered without it. Forwarding every call keeps that a property of the host's checks, not

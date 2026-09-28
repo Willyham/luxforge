@@ -4,9 +4,8 @@
 use crate::{
     app::message::{CapabilityMessage, MenuTarget, Message, ViewMessage},
     state::capabilities::{
-        ActivationRow, CapabilityModel, CapabilityView, FieldKindModel, FieldModel,
-        PermissionsModel, ResourceAction, ResourceRowModel, SettingsModel, TaskControl,
-        TaskControlState,
+        CapabilityModel, CapabilityView, FieldKindModel, FieldModel, PermissionsModel,
+        ResourceAction, ResourceRowModel, SettingsModel, TaskControl, TaskControlState,
     },
 };
 use iced::{
@@ -74,9 +73,6 @@ fn status_view(model: &CapabilityModel) -> Element<'_, Message> {
         ]
         .align_y(Alignment::Center),
     );
-    if let Some(activation) = &model.activation {
-        body = body.push(activation_view(module_id, activation, model.enabled));
-    }
     for resource in &model.resources {
         body = body.push(resource_view(module_id, resource, model.enabled));
     }
@@ -95,34 +91,6 @@ fn status_view(model: &CapabilityModel) -> Element<'_, Message> {
         body = body.push(error_caption(message.clone()));
     }
     body.into()
-}
-
-fn activation_view<'a>(
-    module_id: &str,
-    activation: &ActivationRow,
-    enabled: bool,
-) -> Element<'a, Message> {
-    let (text, on) = if activation.activate {
-        ("Activate", true)
-    } else {
-        ("Deactivate", false)
-    };
-    row![
-        label(activation.text.clone()),
-        fill(),
-        text_button(
-            text,
-            false,
-            enabled.then(|| {
-                capability(CapabilityMessage::Activate {
-                    module_id: module_id.to_owned(),
-                    on,
-                })
-            }),
-        ),
-    ]
-    .align_y(Alignment::Center)
-    .into()
 }
 
 fn resource_view<'a>(

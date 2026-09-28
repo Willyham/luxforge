@@ -392,7 +392,7 @@
     {
       "id": "TASK-006",
       "description": "Defer the activation lifecycle until a module needs `local-runtime`, deleting `module.activate`, `module.deactivate` and their job kinds, admission rules and hooks.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. Activation's only real consumer is preloading a local model using a cancellable worker (docs/design/corrections.md), which is the `local-runtime` capability the owner's decisions already defer until its first consumer.",
@@ -445,12 +445,6 @@
         },
         {
           "kind": "file",
-          "label": "Activation state machine",
-          "target": "crates/luxforge-core/src/capabilities/host/activation.rs",
-          "relevance": "The state machine this task deletes."
-        },
-        {
-          "kind": "file",
           "label": "Module context",
           "target": "crates/luxforge-core/src/capabilities/context.rs",
           "locator": "ModuleContext::resource_path",
@@ -485,7 +479,7 @@
     {
       "id": "TASK-007",
       "description": "Trim the desktop capability surface to the consent notice, the task control, one resource row and a settings form built from the tool panel's controls, with a per-module 'Revoke all'.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-006"
       ],
@@ -673,7 +667,7 @@
     {
       "id": "TASK-009",
       "description": "Clear the capability leftovers: a typed requirement kind, the removed file-kind remnants, write results nobody reads, duplicated formatting and parsing, and stale documentation.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001",
         "TASK-006"

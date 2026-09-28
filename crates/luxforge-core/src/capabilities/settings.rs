@@ -116,9 +116,6 @@ pub struct WriteResult {
     /// The fields whose value or secret changed, in the addressed scope.
     #[serde(default)]
     pub changed: Vec<String>,
-    /// Whether any changed field declares `invalidates_activation`.
-    #[serde(default)]
-    pub invalidates_activation: bool,
 }
 
 /// A write as the host sees it: the result a client receives, and what the host needs to revoke
@@ -544,7 +541,6 @@ struct Applied {
     profile_id: Option<String>,
     profile: Option<ProfileSummary>,
     changed: Vec<String>,
-    invalidates_activation: bool,
     previous: Map<String, Value>,
     removed: Vec<StoredProfile>,
 }
@@ -556,7 +552,6 @@ impl Applied {
             profile_id: profile_id.map(str::to_owned),
             profile: None,
             changed: Vec::new(),
-            invalidates_activation: false,
             previous: Map::new(),
             removed: Vec::new(),
         }
@@ -565,7 +560,6 @@ impl Applied {
     fn change(&mut self, field: &SettingDescriptor) {
         self.outcome = WriteOutcome::Committed;
         self.changed.push(field.id().to_owned());
-        self.invalidates_activation |= field.invalidates_activation;
     }
 }
 
@@ -938,7 +932,6 @@ impl SettingsStore {
                     profile_id: applied.profile_id,
                     profile: applied.profile,
                     changed: applied.changed,
-                    invalidates_activation: applied.invalidates_activation,
                 },
                 previous: applied.previous,
                 removed: applied.removed,
@@ -1124,10 +1117,6 @@ mod tests {
                 "strength"
             ]
         );
-        assert!(
-            write.result.invalidates_activation,
-            "label invalidates activation"
-        );
         assert!(write.previous.values().all(Value::is_null));
         let read = fixture.read();
         assert_eq!(read.revision, 1);
@@ -1151,7 +1140,6 @@ mod tests {
             .unwrap();
         assert_eq!(write.result.changed, ["strength"]);
         assert_eq!(write.previous, values(json!({"strength": 0.25})));
-        assert!(!write.result.invalidates_activation);
         assert_eq!(
             value_of(&fixture.read(), "strength"),
             (json!(0.5), ValueSource::Default, true)
@@ -1576,10 +1564,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(write.result.changed, ["endpoint", "model"]);
-        assert!(
-            write.result.invalidates_activation,
-            "the endpoint invalidates activation"
-        );
         assert_eq!(write.result.profile_id.as_deref(), Some(id.as_str()));
         let refused = fixture
             .set(

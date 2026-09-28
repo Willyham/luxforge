@@ -204,8 +204,8 @@ impl SyncResult {
     }
 }
 
-/// A capability method's event: it changes a module's settings, grants, resources, activation or
-/// jobs, never an asset's history.
+/// A capability method's event: it changes a module's settings, grants, resources or jobs, never an
+/// asset's history.
 pub(crate) fn capability_event(method: &str) -> bool {
     method.starts_with("module.") || method.starts_with("task.")
 }
@@ -263,7 +263,7 @@ pub(crate) fn mutation(revision: u64) -> Mutation {
 }
 
 /// The envelope of every other change: the preset library, versions, an import, and module
-/// permissions, activation, resources and jobs.
+/// permissions, resources and jobs.
 pub(crate) fn request() -> MutationRequest {
     MutationRequest {
         request_id: request_id(),

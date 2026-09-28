@@ -176,7 +176,7 @@ pub(crate) struct SectionModel {
     /// [`GroupControl`] carries it, but a `ResetGroup` naming the group still runs it.
     pub(crate) headerless_reset: Option<ResetRef>,
     /// The module's status and settings, above its controls, when it declares settings,
-    /// resources, an activation or tasks.
+    /// resources or tasks.
     pub(crate) capability: Option<CapabilityModel>,
     pub(crate) controls: Vec<ControlModel>,
     pub(crate) layout: SectionLayout,

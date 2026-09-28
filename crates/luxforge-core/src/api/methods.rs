@@ -24,8 +24,8 @@ use crate::{
         grants,
         host::{
             self, ClearSecretParams, CreateProfileParams, DenyParams, GrantParams, InstallParams,
-            ModuleChange, ModuleParams, PermissionList, RemoveProfileParams, ResetParams,
-            ResourceParams, RevokeParams, SetParams, SetSecretParams, TASK_PREFIX,
+            ModuleParams, PermissionList, RemoveProfileParams, ResetParams, ResourceParams,
+            RevokeParams, SetParams, SetSecretParams, TASK_PREFIX,
         },
         resources, settings,
     },
@@ -283,7 +283,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         JOB_READ,
         owner::JobParams,
         owner::job_read,
-        "{job_id, kind, status, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, activate, deactivate, install, remove and task (capability work) or export; status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; a source or analysis job is read by the clients that requested it, and a capability or export job by any client; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
+        "{job_id, kind, status, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work) or export; status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; a source or analysis job is read by the clients that requested it, and a capability or export job by any client; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
     ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
@@ -303,7 +303,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         JOB_CANCEL,
         owner::JobParams,
         owner::job_cancel,
-        "a source or analysis job: this client leaves it and still reads its outcome, and the work stops only when no other client wants it; a capability or export job: stops it for every client, a queued job never starts and a running one stops at its next checkpoint (an export removes its temporary file), and a running deactivation is refused with conflict; a finished job is unchanged, so a repeated cancel changes nothing; returns the job as job.read does"
+        "a source or analysis job: this client leaves it and still reads its outcome, and the work stops only when no other client wants it; a capability or export job: stops it for every client, a queued job never starts and a running one stops at its next checkpoint (an export removes its temporary file); a finished job is unchanged, so a repeated cancel changes nothing; returns the job as job.read does"
     ),
     owner!(
         "source.prepare",
@@ -388,7 +388,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 &mut owner.announced,
             )
         },
-        "validates the named non-secret fields against their declared parameters (a module's settings.fields and settings.profiles.fields are parameter descriptors, checked exactly as an action's are) and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}",
+        "validates the named non-secret fields against their declared parameters (a module's settings.fields and settings.profiles.fields are parameter descriptors, checked exactly as an action's are) and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, settings}",
         retries: Owner,
     ),
     owner!(
@@ -466,8 +466,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile",
         retries: Owner,
     ),
-    // Permissions, activation, resources and capability jobs are answered by the catalog owner
-    // too: grants live beside the settings, and the jobs, lanes and activation state live there.
+    // Permissions, resources and capability jobs are answered by the catalog owner too: grants
+    // live beside the settings, and the jobs and lanes live there.
     owner!(
         grants::GRANT,
         GrantParams,
@@ -521,41 +521,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "{grants, denials}: every grant, revoked ones with {revoked: {ms, reason}}, and every recorded denial; none holds a secret"
     ),
     owner!(
-        host::ACTIVATE,
-        ModuleChange,
-        |owner, call, params| {
-            owner.host.activate(
-                &mut owner.jobs,
-                owner.service.registry(),
-                params,
-                &call.origin,
-            )
-        },
-        "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?, deduplicated}; an active module answers activation: active with no job",
-        retries: Owner,
-    ),
-    owner!(
-        host::DEACTIVATE,
-        ModuleChange,
-        |owner, call, params| {
-            owner.host.deactivate_request(
-                &mut owner.jobs,
-                owner.service.registry(),
-                params,
-                &call.origin,
-                &mut owner.announced,
-            )
-        },
-        "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?, deduplicated}",
-        retries: Owner,
-    ),
-    owner!(
         host::STATUS,
         ModuleParams,
         |owner, _, params| owner
             .host
             .status(&owner.jobs, owner.service.registry(), params),
-        "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs}; state is inactive, activating, active or failed; permissions counts the module's grants and denials, whose records module.permission.list returns; reads settings, stats installed markers and reads grants, and loads nothing"
+        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs}; permissions counts the module's grants and denials, whose records module.permission.list returns; reads settings, stats installed markers and reads grants, and loads nothing"
     ),
     owner!(
         resources::RESOURCE_LIST,
@@ -588,10 +559,9 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 owner.service.registry(),
                 params,
                 &call.origin,
-                &mut owner.announced,
             )
         },
-        "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
+        "queues a transfer-lane job that deletes the installed version; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
         retries: Owner,
     ),
     mutating!(
@@ -2517,7 +2487,6 @@ mod tests {
             ("catalog.import", "request"),
             ("artifact.collect", "request"),
             ("module.permission.grant", "request"),
-            ("module.activate", "request"),
             ("module.resource.install", "request"),
             ("export.jpeg", "request"),
         ] {

@@ -3,8 +3,8 @@
 //! (`module.settings.read`, `module.status`, `job.read`, a `consent-required` failure), the
 //! text a person is typing, and which sub-view of a section is open. Nothing here calls the owner,
 //! and nothing decides what the host accepts: every value is validated by the core when it is sent.
-//! The section is generated from the descriptor, so any module that declares settings, resources,
-//! an activation or tasks gets the same surface.
+//! The section is generated from the descriptor, so any module that declares settings, resources
+//! or tasks gets the same surface.
 use crate::state::{
     Inputs,
     canvas::{Notice, NoticeAction, NoticeIcon, NoticeTone},
@@ -15,7 +15,7 @@ use luxforge_core::{
         consent::Disclosure,
         descriptor::{AdapterCost, SettingDescriptor},
         grants::{Denial, Grant, GrantKind, GrantList, PermissionCounts},
-        host::{ActivationRead, ActivationState, Requirement},
+        host::Requirement,
         resources::{ResourceRow, ResourceState},
         settings::{FieldRead, ProfileStatus, SettingsRead, SettingsState},
         transport::{EndpointClass, parse_endpoint},
@@ -30,13 +30,9 @@ use zeroize::Zeroizing;
 /// The most jobs one module's state keeps; finished ones go first.
 const MAX_TRACKED: usize = 16;
 
-/// A module the capability surface applies to: it declares settings, resources, an activation or
-/// tasks.
+/// A module the capability surface applies to: it declares settings, resources or tasks.
 pub(crate) fn declares(module: &ModuleDescriptor) -> bool {
-    module.settings.is_some()
-        || !module.resources.is_empty()
-        || module.activation.is_some()
-        || !module.tasks.is_empty()
+    module.settings.is_some() || !module.resources.is_empty() || !module.tasks.is_empty()
 }
 
 /// Text typed into a secret's masked Replace field. It is zeroed when dropped, prints as
@@ -69,13 +65,12 @@ impl PartialEq for SecretText {
     }
 }
 
-/// `module.status` as the desktop reads it: the activation, every declared resource, how many grants
-/// and denials are recorded, and the module's recent jobs. The settings summary it also carries is
+/// `module.status` as the desktop reads it: every declared resource, how many grants and denials
+/// are recorded, and the module's recent jobs. The settings summary it also carries is
 /// read in full through `module.settings.read` instead, and the grants and denials themselves
 /// through `module.permission.list`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub(crate) struct ModuleStatus {
-    pub(crate) activation: ActivationRead,
     #[serde(default)]
     pub(crate) resources: Vec<ResourceRow>,
     #[serde(default)]
@@ -159,8 +154,6 @@ pub(crate) enum Operation {
     Remove {
         resource: String,
     },
-    Activate,
-    Deactivate,
     Cancel {
         job: String,
     },
@@ -194,8 +187,6 @@ impl Operation {
             Self::RemoveProfile { .. } => "remove-profile",
             Self::Install { .. } => "install",
             Self::Remove { .. } => "remove",
-            Self::Activate => "activate",
-            Self::Deactivate => "deactivate",
             Self::Cancel { .. } => "cancel",
             Self::Revoke { .. } => "revoke",
             Self::RunTask { .. } => "task",
@@ -413,20 +404,11 @@ pub(crate) struct CapabilityModel {
     pub(crate) enabled: bool,
     /// A read failed or the last operation failed with no field to blame.
     pub(crate) message: Option<String>,
-    pub(crate) activation: Option<ActivationRow>,
     pub(crate) resources: Vec<ResourceRowModel>,
     pub(crate) permissions: PermissionsModel,
     /// What a `not-ready` answer said is missing, by name.
     pub(crate) requirements: Vec<String>,
     pub(crate) settings: Option<SettingsModel>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ActivationRow {
-    /// `Inactive`, `Activating 40%`, `Active` or `Failed: <reason>`.
-    pub(crate) text: String,
-    /// Activate while inactive or failed, Deactivate while activating or active.
-    pub(crate) activate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -589,20 +571,6 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
         .get(&module.id)
         .unwrap_or(&empty);
     let status = state.status.as_ref();
-    let activation = module.activation.as_ref().map(|_| {
-        let read = status.map(|status| &status.activation);
-        ActivationRow {
-            text: read
-                .map(|read| activation_text(read, state))
-                .unwrap_or_else(|| "Inactive".into()),
-            activate: !read.is_some_and(|read| {
-                matches!(
-                    read.state,
-                    ActivationState::Active | ActivationState::Activating
-                )
-            }),
-        }
-    });
     let resources = module
         .resources
         .iter()
@@ -618,7 +586,6 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
         loading: state.settings.is_none() && state.status.is_none() && state.load_error.is_none(),
         enabled: state.pending == 0 && module.is_available(),
         message: state.load_error.clone().or_else(|| state.message.clone()),
-        activation,
         resources,
         permissions: permissions(module, state),
         requirements: state
@@ -653,24 +620,6 @@ fn job<'a>(state: &'a ModuleCapabilities, id: &str) -> Option<&'a JobRecord> {
                 .iter()
                 .find(|job| job.job_id.as_str() == id)
         })
-}
-
-fn activation_text(read: &ActivationRead, state: &ModuleCapabilities) -> String {
-    match read.state {
-        ActivationState::Inactive => match &read.reason {
-            Some(reason) => format!("Inactive · {reason}"),
-            None => "Inactive".into(),
-        },
-        ActivationState::Activating => {
-            let job = read.job_id.as_ref().and_then(|id| job(state, id.as_str()));
-            format!("Activating{}", progress_percent(job))
-        }
-        ActivationState::Active => "Active".into(),
-        ActivationState::Failed => match &read.error {
-            Some(error) => format!("Failed: {}", error.message),
-            None => "Failed".into(),
-        },
-    }
 }
 
 fn resource_row(
@@ -866,7 +815,6 @@ fn requirement_text(
             .as_ref()
             .and_then(|settings| settings.profile(&requirement.id))
             .map(|profile| format!("Profile {}", profile.label)),
-        "activation" => Some("Activation".into()),
         "grant" => module
             .capability(&requirement.id)
             .map(|capability| format!("Permission {}", capability.id)),
@@ -1298,7 +1246,7 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
 // ---- evidence -----------------------------------------------------------------------------------
 
 /// What a captured frame's state reports for every capability-declaring module: the settings as the
-/// panel shows them (a secret only as `set` or `not set`), profiles, activation, resources, jobs,
+/// panel shows them (a secret only as `set` or `not set`), profiles, resources, jobs,
 /// each task's newest run on the open asset, permissions and the open consent notice. It never
 /// holds a secret: none reaches this store except the masked field's text, which is left out.
 pub(crate) fn summary(
@@ -1460,11 +1408,6 @@ fn module_summary(
         "loaded": state.settings.is_some() || state.status.is_some(),
         "pending": state.pending,
         "settings": settings,
-        "activation": status.map(|status| json!({
-            "state": status.activation.state,
-            "reason": status.activation.reason,
-            "text": activation_text(&status.activation, state),
-        })),
         "resources": resources,
         "jobs": jobs,
         "tasks": tasks,

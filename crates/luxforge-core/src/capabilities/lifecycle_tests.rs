@@ -1,15 +1,16 @@
-//! Permissions, activation, capability jobs and resources driven through the catalog owner exactly
-//! as a client drives them, against loopback servers, isolated directories, an in-memory secret
-//! store and a network that counts every lookup and connection. Nothing here leaves the machine.
+//! Permissions, capability jobs, task requirements and resources driven through the catalog owner
+//! exactly as a client drives them, against loopback servers, isolated directories, an in-memory
+//! secret store and a network that counts every lookup and connection. Nothing here leaves the
+//! machine.
 use super::{
     descriptor::CapabilityKind,
     grants::{DENY, GRANT, GRANTS_FILE, LIST, REVOKE},
-    host::{ACTIVATE, DEACTIVATE, HostConfig, STATUS},
+    host::{HostConfig, STATUS, TASK_PREFIX},
     resources::{INSTALL, INSTALLED_FILE, REMOVE, RESOURCE_LIST, STAGING_DIR, faults},
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
     testing::{
-        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, enveloped, lane_descriptor,
+        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, TASK, enveloped,
         lifecycle_descriptor, sha256_hex, temp,
     },
     transport::{TlsTrust, TransportConfig},
@@ -17,7 +18,7 @@ use super::{
 use crate::{
     ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, EditorService, LocalServer,
     ModuleDescriptor, ModuleRegistry, OwnerHandle,
-    jobs::{JOB_CANCEL, JOB_READ, LANE_QUEUE},
+    jobs::{JOB_CANCEL, JOB_READ},
 };
 use luxforge_testbase::{Gate, wait_for};
 use luxforge_testkit::{TestServer, respond};
@@ -32,9 +33,6 @@ use std::{
     thread::JoinHandle,
 };
 
-/// How many lane-test modules each fixture registers: enough to fill the module lane and one more.
-const LANES: usize = LANE_QUEUE + 2;
-
 /// A catalog, a settings directory and a resource directory under one temporary root, and the
 /// registry the owner is started with.
 struct Fixture {
@@ -42,7 +40,6 @@ struct Fixture {
     secrets: Arc<MemorySecretStore>,
     net: Arc<CountingNet>,
     probe: Arc<Probe>,
-    lanes: Vec<Arc<Probe>>,
     descriptor: ModuleDescriptor,
     quota: u64,
 }
@@ -56,7 +53,6 @@ impl Fixture {
             secrets: Arc::new(MemorySecretStore::new()),
             net: Arc::new(CountingNet::default()),
             probe: Arc::new(Probe::default()),
-            lanes: (0..LANES).map(|_| Arc::new(Probe::default())).collect(),
             descriptor: lifecycle_descriptor(&server.url("/palette"), &server.url("/swatch")),
             quota: 1 << 20,
         }
@@ -91,14 +87,6 @@ impl Fixture {
                 self.probe.clone(),
             ))
             .unwrap();
-        for (index, probe) in self.lanes.iter().enumerate() {
-            registry
-                .register(LifecycleModule::shared(
-                    lane_descriptor(index),
-                    probe.clone(),
-                ))
-                .unwrap();
-        }
         Arc::new(registry)
     }
 
@@ -364,19 +352,6 @@ fn stalling() -> (TestServer, Arc<Gate>) {
     })
     .unwrap();
     (server, gate)
-}
-
-/// The latest release job in a module status. The status names it as the activation's job only
-/// while it runs, and a release is quick, so the job list is where a test finds it.
-fn release_job(status: &Value) -> Value {
-    status["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .rev()
-        .find(|job| job["kind"] == json!("deactivate"))
-        .expect("a release job")["job_id"]
-        .clone()
 }
 
 /// Every file under `root`, read whole.
@@ -829,177 +804,46 @@ fn a_grants_file_of_another_format_is_refused_and_kept() {
 }
 
 #[test]
-fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
-    let server = serving();
-    let fixture = Fixture::new("lane", &server);
-    for probe in &fixture.lanes {
-        probe.hold.shut();
-    }
-    let owner = fixture.start();
-    let activate = |index: usize| {
-        owner.call(
-            owner.edit,
-            ACTIVATE,
-            json!({"module_id": format!("test.lane{index}")}),
-        )
-    };
-    let first = activate(0).result.unwrap();
-    assert_eq!(first["activation"], json!("activating"));
-    fixture.lanes[0]
-        .hold
-        .wait_reached(1, "the first activation");
-    let waiting: Vec<Value> = (1..=LANE_QUEUE)
-        .map(|index| activate(index).result.unwrap())
-        .collect();
-    assert!(waiting.iter().all(|job| job["status"] == json!("queued")));
-    let refused = activate(LANE_QUEUE + 1).error.unwrap();
-    assert_eq!(refused.code, "resource-limit");
-    assert_eq!(refused.message, "the module lane is full");
-    assert_eq!(
-        owner.status(&format!("test.lane{}", LANE_QUEUE + 1))["activation"]["state"],
-        json!("inactive"),
-        "a refused activation changes nothing"
-    );
-    // A second request joins the waiting activation.
-    let joined = activate(1).result.unwrap();
-    assert_eq!(joined["job_id"], waiting[0]["job_id"]);
-    // Cancelling a waiting activation removes it; deactivating one supersedes it.
-    let cancelled = owner.ok(JOB_CANCEL, json!({"job_id": waiting[1]["job_id"]}));
-    assert_eq!(cancelled["status"], json!("cancelled"));
-    assert_eq!(
-        owner.status("test.lane2")["activation"]["state"],
-        json!("inactive")
-    );
-    let deactivated = owner.ok(DEACTIVATE, json!({"module_id": "test.lane3"}));
-    assert_eq!(deactivated["activation"], json!("inactive"));
-    assert_eq!(deactivated["status"], json!("superseded"));
-    assert_eq!(
-        owner.job(&waiting[2]["job_id"])["status"],
-        json!("superseded")
-    );
-    // The lane has room again.
-    let admitted = activate(LANE_QUEUE + 1).result.unwrap();
-    assert_eq!(admitted["status"], json!("queued"));
-    for probe in &fixture.lanes {
-        probe.hold.open();
-    }
-    for job in [&first, &waiting[0], &waiting[3], &admitted] {
-        assert_eq!(owner.finished(&job["job_id"])["status"], json!("ready"));
-    }
-    for (index, probe) in fixture.lanes.iter().enumerate() {
-        let expected = match index {
-            2 | 3 => 0,
-            _ => 1,
-        };
-        assert_eq!(
-            probe.activations.load(Ordering::SeqCst),
-            expected,
-            "lane {index}"
-        );
-    }
-    assert_eq!(owner.handle.lane_threads(), 1, "only the module lane ran");
-    owner.stop();
-}
-
-#[test]
-fn a_running_activation_stops_promptly_and_releases_what_it_loaded() {
-    let server = serving();
-    let fixture = Fixture::new("running-cancel", &server);
-    fixture.probe.hold.shut();
-    let owner = fixture.start();
-    owner.set(json!({"label": "tint"}));
-    owner.install_downloaded(&fixture, "palette");
-    let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    owner.until(&queued["job_id"], |job| {
-        job["progress"]["fraction"] == json!(0.5)
-    });
-    assert_eq!(
-        fixture.probe.loaded.lock().unwrap().as_deref(),
-        Some(PALETTE),
-        "the activation loaded the palette and holds it"
-    );
-    // The owner answers while the activation is held at the probe's gate, which stays shut to the
-    // end of the test: the worker never holds the owner.
-    let status = owner.status(MODULE);
-    let job = owner.job(&queued["job_id"]);
-    assert!(fixture.probe.hold.holding(), "the activation is still held");
-    assert_eq!(status["activation"]["state"], json!("activating"));
-    assert_eq!(status["activation"]["job_id"], queued["job_id"]);
-    assert_eq!(job["status"], json!("running"));
-    assert_eq!(
-        job["progress"],
-        json!({"fraction": 0.5, "message": "loaded"})
-    );
-    let cancelling = owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
-    assert_eq!(
-        cancelling["status"],
-        json!("running"),
-        "it stops at its checkpoint"
-    );
-    // The gate is still shut, so the job ended at its checkpoint, not by being let through.
-    let stopped = owner.finished(&queued["job_id"]);
-    assert!(fixture.probe.hold.is_shut());
-    assert_eq!(stopped["status"], json!("cancelled"));
-    assert_eq!(stopped["error"]["code"], json!("cancelled"));
-    assert_eq!(
-        fixture.probe.loaded.lock().unwrap().as_deref(),
-        None,
-        "the host released what the activation had loaded"
-    );
-    assert_eq!(fixture.probe.deactivations.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        owner.status(MODULE)["activation"]["state"],
-        json!("inactive")
-    );
-    owner.stop();
-}
-
-#[test]
-fn activation_lists_every_missing_requirement_before_anything_is_queued() {
+fn a_task_lists_every_missing_requirement_before_anything_is_queued() {
     let server = serving();
     let fixture = Fixture::new("requirements", &server);
+    let asset = fixture.import_asset();
     let owner = fixture.start();
-    let refused = owner.fail(ACTIVATE, json!({"module_id": MODULE}));
+    let created = owner.ok(
+        CREATE_PROFILE,
+        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": mutation(owner.revision())}),
+    );
+    let profile = created["profile"]["id"].as_str().unwrap().to_owned();
+    let refused = owner.fail(
+        &format!("{TASK_PREFIX}{TASK}"),
+        json!({"asset_id": asset, "profile_id": profile}),
+    );
     assert_eq!(refused.code, "not-ready");
     assert_eq!(
         refused.data.unwrap()["requirements"],
         json!([
-            {"kind": "setting", "id": "label", "state": "missing"},
+            {"kind": "profile", "id": profile, "state": "incomplete"},
             {"kind": "resource", "id": "palette", "state": "not-installed"},
         ])
     );
     assert!(
-        refused
-            .message
-            .contains("setting label is missing, resource palette is not-installed")
+        refused.message.contains(&format!(
+            "profile {profile} is incomplete, resource palette is not-installed"
+        )),
+        "{}",
+        refused.message
     );
     assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
-    // A module that declares no activation, or an unknown one, is refused outright.
-    let error = owner.fail(ACTIVATE, json!({"module_id": "luxforge.basic"}));
-    assert_eq!(
-        (error.code.as_str(), error.message.as_str()),
-        ("validation", "module luxforge.basic declares no activation")
-    );
-    assert_eq!(
-        owner
-            .fail(ACTIVATE, json!({"module_id": "test.missing"}))
-            .message,
-        "unknown module test.missing"
-    );
-    assert_eq!(fixture.probe.activations.load(Ordering::SeqCst), 0);
+    assert_eq!(server.hits(), 0);
     owner.stop();
 }
 
 #[test]
-fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
+fn status_reports_settings_resources_permissions_and_jobs() {
     let server = serving();
-    let fixture = Fixture::new("activate", &server);
+    let fixture = Fixture::new("status", &server);
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
-    owner.ok(
-        SET_SECRET,
-        json!({"module_id": MODULE, "setting": "token", "value": "worker-only", "mutation": mutation(owner.revision())}),
-    );
     let grant = owner.grant_download(&fixture, "palette", "palette");
     let installed = owner.finished(
         &owner.ok(
@@ -1008,27 +852,13 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
         )["job_id"],
     );
     assert_eq!(installed["status"], json!("ready"));
-    let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(queued["activation"], json!("activating"));
-    let activated = owner.finished(&queued["job_id"]);
-    assert_eq!(activated["status"], json!("ready"));
-    assert_eq!(activated["result"], json!({"activation": "active"}));
     assert_eq!(
-        activated["request_id"],
-        json!(queued_request(&owner, ACTIVATE))
-    );
-    assert_eq!(
-        fixture.probe.loaded.lock().unwrap().as_deref(),
-        Some(PALETTE),
-        "the module loaded the installed resource through its context"
-    );
-    assert!(
-        fixture.probe.secret_read.load(Ordering::SeqCst),
-        "the worker read the declared secret"
+        installed["request_id"],
+        json!(queued_request(&owner, INSTALL))
     );
     let status = owner.status(MODULE);
     assert_eq!(status["module_id"], json!(MODULE));
-    assert_eq!(status["activation"], json!({"state": "active"}));
+    assert!(status.get("activation").is_none());
     assert_eq!(status["settings"]["state"], json!("ready"));
     assert_eq!(status["settings"]["missing"], json!([]));
     assert_eq!(status["resources"][0]["state"], json!("installed"));
@@ -1048,31 +878,7 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
         .iter()
         .map(|job| job["kind"].as_str().unwrap())
         .collect();
-    assert_eq!(jobs, ["install", "activate"]);
-    // Activating an active module changes nothing.
-    assert_eq!(
-        owner.ok(ACTIVATE, json!({"module_id": MODULE})),
-        json!({"module_id": MODULE, "activation": "active", "deduplicated": false})
-    );
-    let deactivated = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(deactivated["activation"], json!("inactive"));
-    let released = owner.finished(&deactivated["job_id"]);
-    assert_eq!(released["kind"], json!("deactivate"));
-    assert_eq!(released["status"], json!("ready"));
-    assert_eq!(fixture.probe.loaded.lock().unwrap().as_deref(), None);
-    assert_eq!(
-        owner.status(MODULE)["activation"],
-        json!({"state": "inactive"})
-    );
-    assert!(
-        fixture.version_dir("palette").join(INSTALLED_FILE).exists(),
-        "deactivation deletes no resource"
-    );
-    assert_eq!(
-        owner.ok(DEACTIVATE, json!({"module_id": MODULE})),
-        json!({"module_id": MODULE, "activation": "inactive", "deduplicated": false}),
-        "deactivating an inactive module changes nothing"
-    );
+    assert_eq!(jobs, ["install"]);
     // Each change a job made is announced under the request that started it.
     let methods: Vec<String> = owner
         .events()
@@ -1080,7 +886,7 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
         .map(|(method, _)| method)
         .filter(|method| !method.starts_with("module.settings") && method != GRANT)
         .collect();
-    assert_eq!(methods, [INSTALL, ACTIVATE, DEACTIVATE]);
+    assert_eq!(methods, [INSTALL]);
     owner.stop();
 }
 
@@ -1093,63 +899,6 @@ fn queued_request(owner: &Owner, method: &str) -> String {
         .find(|(announced, _)| announced == method)
         .map(|(_, request_id)| request_id)
         .expect("the change was announced")
-}
-
-#[test]
-fn a_failed_activation_reads_failed_and_releases_its_partial_state() {
-    let server = serving();
-    let fixture = Fixture::new("failed", &server);
-    fixture.probe.fail.store(true, Ordering::SeqCst);
-    let owner = fixture.start();
-    owner.set(json!({"label": "tint"}));
-    owner.install_downloaded(&fixture, "palette");
-    let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    let failed = owner.finished(&queued["job_id"]);
-    assert_eq!(failed["status"], json!("failed"));
-    assert_eq!(
-        failed["error"],
-        json!({"code": "invalid-input", "message": "the palette is corrupt"})
-    );
-    let status = owner.status(MODULE);
-    assert_eq!(status["activation"]["state"], json!("failed"));
-    assert_eq!(
-        status["activation"]["error"]["message"],
-        json!("the palette is corrupt")
-    );
-    assert_eq!(fixture.probe.loaded.lock().unwrap().as_deref(), None);
-    assert_eq!(fixture.probe.deactivations.load(Ordering::SeqCst), 1);
-    // A failed module can be activated again.
-    fixture.probe.fail.store(false, Ordering::SeqCst);
-    let retried = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(owner.finished(&retried["job_id"])["status"], json!("ready"));
-    assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
-    owner.stop();
-}
-
-#[test]
-fn a_settings_change_that_invalidates_activation_deactivates_the_module() {
-    let server = serving();
-    let fixture = Fixture::new("invalidates", &server);
-    let owner = fixture.start();
-    owner.set(json!({"label": "tint"}));
-    owner.install_downloaded(&fixture, "palette");
-    let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    owner.finished(&queued["job_id"]);
-    // A field that does not invalidate activation leaves the module active.
-    owner.set(json!({"strength": 0.25}));
-    assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
-    let changed = owner.set(json!({"label": "other tint"}));
-    assert_eq!(changed["invalidates_activation"], json!(true));
-    let status = owner.status(MODULE);
-    assert_eq!(status["activation"]["state"], json!("inactive"));
-    assert_eq!(status["activation"]["reason"], json!("settings changed"));
-    assert_eq!(
-        owner.finished(&release_job(&status))["status"],
-        json!("ready")
-    );
-    assert_eq!(fixture.probe.loaded.lock().unwrap().as_deref(), None);
-    assert_eq!(fixture.probe.deactivations.load(Ordering::SeqCst), 1);
-    owner.stop();
 }
 
 #[test]
@@ -1385,12 +1134,6 @@ fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
         owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["resources"][0]["state"],
         json!("not-installed")
     );
-    owner.set(json!({"label": "tint"}));
-    let refused = owner.fail(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(
-        refused.data.unwrap()["requirements"],
-        json!([{"kind": "resource", "id": "palette", "state": "not-installed"}])
-    );
     let done = owner.install_downloaded(&fixture, "palette");
     assert_eq!(done["status"], json!("ready"));
     assert!(!stale.exists(), "the stale staging directory was removed");
@@ -1454,39 +1197,31 @@ fn an_install_takes_only_the_pinned_url_and_refuses_a_caller_path() {
 }
 
 #[test]
-fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_resource() {
+fn removing_a_resource_deletes_only_the_resource() {
     let server = serving();
     let fixture = Fixture::new("remove", &server);
     let owner = fixture.start();
-    owner.set(json!({"label": "tint"}));
     owner.install_downloaded(&fixture, "palette");
     owner.install_downloaded(&fixture, "swatch");
-    let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    owner.finished(&queued["job_id"]);
     let catalog = fs::read(fixture.catalog()).unwrap();
-    // Removing a resource the activation does not require leaves the module active.
+    // Removing one resource leaves the other installed.
     let swatch = owner.ok(
         REMOVE,
         json!({"module_id": MODULE, "resource_id": "swatch"}),
     );
     assert_eq!(owner.finished(&swatch["job_id"])["status"], json!("ready"));
-    assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
     assert!(!fixture.version_dir("swatch").exists());
+    assert!(fixture.version_dir("palette").join(INSTALLED_FILE).exists());
     let removal = owner.ok(
         REMOVE,
         json!({"module_id": MODULE, "resource_id": "palette"}),
     );
-    let status = owner.status(MODULE);
-    assert_eq!(status["activation"]["state"], json!("inactive"));
-    assert_eq!(status["activation"]["reason"], json!("resource removed"));
     let removed = owner.finished(&removal["job_id"]);
     assert_eq!(removed["status"], json!("ready"));
     assert_eq!(
         removed["result"],
         json!({"resource_id": "palette", "version": "1.0.0", "removed": true})
     );
-    owner.finished(&release_job(&status));
-    assert_eq!(fixture.probe.loaded.lock().unwrap().as_deref(), None);
     assert!(!fixture.version_dir("palette").exists());
     assert!(
         !fixture.resources().join(MODULE).exists(),
@@ -1513,14 +1248,10 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
         .events()
         .into_iter()
         .map(|(method, _)| method)
-        .filter(|method| method != SET && method != GRANT)
+        .filter(|method| method != GRANT)
         .collect();
-    // The palette's removal is announced twice: when it deactivated the module and when the
-    // resource was gone.
-    assert_eq!(
-        methods,
-        [INSTALL, INSTALL, ACTIVATE, REMOVE, REMOVE, REMOVE]
-    );
+    // Each removal is announced once, when the resource is gone.
+    assert_eq!(methods, [INSTALL, INSTALL, REMOVE, REMOVE]);
     owner.stop();
 }
 
@@ -1538,8 +1269,6 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
             DENY,
             REVOKE,
             LIST,
-            ACTIVATE,
-            DEACTIVATE,
             STATUS,
             RESOURCE_LIST,
             INSTALL,
@@ -1558,7 +1287,6 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
             "round {round}: discovery never asks the secret store"
         );
         let status = owner.status(MODULE);
-        assert_eq!(status["activation"], json!({"state": "inactive"}));
         assert_eq!(status["settings"]["state"], json!("incomplete"));
         assert_eq!(status["settings"]["missing"], json!(["label"]));
         assert_eq!(status["jobs"], json!([]));
@@ -1570,7 +1298,6 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
                 .code,
             "validation"
         );
-        owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
         assert_eq!(owner.handle.lane_threads(), 0, "round {round}");
         owner.stop();
     }
@@ -1581,11 +1308,10 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
         "no settings directory"
     );
     assert!(!fixture.root.join("data").exists(), "no resource directory");
-    assert_eq!(fixture.probe.activations.load(Ordering::SeqCst), 0);
 }
 
 #[test]
-fn a_sentinel_secret_reaches_the_worker_and_no_observable_surface() {
+fn a_sentinel_secret_reaches_no_observable_surface() {
     let server = serving();
     let fixture = Fixture::new("sentinel", &server);
     let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
@@ -1606,18 +1332,13 @@ fn a_sentinel_secret_reaches_the_worker_and_no_observable_surface() {
         json!({"module_id": MODULE, "resource_id": "palette"}),
     );
     owner.finished(&installed["job_id"]);
-    let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    owner.finished(&queued["job_id"]);
-    assert!(fixture.probe.secret_read.load(Ordering::SeqCst));
     owner.status(MODULE);
     owner.ok(LIST, json!({}));
     owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}));
-    let deactivated = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-    owner.finished(&deactivated["job_id"]);
     owner.events();
     let observed = owner.observed.borrow().clone();
     owner.stop();
-    assert!(observed.len() > 15);
+    assert!(observed.len() > 10);
     for text in &observed {
         assert!(
             !text.contains(&sentinel),
@@ -1634,7 +1355,7 @@ fn a_sentinel_secret_reaches_the_worker_and_no_observable_surface() {
 }
 
 /// Every capability family that carries the `{request_id, actor}` envelope — permissions,
-/// activation, resources and capability jobs — answers a retry from the owner's request table: the
+/// resources and capability jobs — answers a retry from the owner's request table: the
 /// first answer comes back marked `deduplicated`, nothing runs or is queued again and no event is
 /// recorded; the same `request_id` with other input is a conflict. Each request's own work is let
 /// finish before its retry, so an event its job announces is never mistaken for the retry's.
@@ -1643,11 +1364,6 @@ fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_ev
     let server = serving();
     let fixture = Fixture::new("retries", &server);
     let owner = fixture.start();
-    owner.set(json!({"label": "tint"}));
-    owner.ok(
-        SET_SECRET,
-        json!({"module_id": MODULE, "setting": "token", "value": "worker-only", "mutation": mutation(owner.revision())}),
-    );
     let envelope = |request_id: &str| json!({"request_id": request_id, "actor": "test"});
     let twice = |client: ClientId, method: &str, params: Value| -> Value {
         let first = owner.ok_as(client, method, params.clone());
@@ -1709,20 +1425,6 @@ fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_ev
     );
     assert_eq!(owner.job(&installed["job_id"])["status"], json!("ready"));
     assert_eq!(jobs("install"), 1, "the retry queued no second install");
-    let activating = twice(
-        owner.edit,
-        ACTIVATE,
-        json!({"module_id": MODULE, "mutation": envelope("activate-1")}),
-    );
-    assert_eq!(activating["activation"], json!("activating"));
-    assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
-    assert_eq!(jobs("activate"), 1, "the retry queued no second activation");
-    twice(
-        owner.edit,
-        DEACTIVATE,
-        json!({"module_id": MODULE, "mutation": envelope("deactivate-1")}),
-    );
-    assert_eq!(jobs("deactivate"), 1);
     // A cancel carries no envelope because it converges: sent again, it answers the same job and
     // records nothing.
     let announced = owner.events().len();

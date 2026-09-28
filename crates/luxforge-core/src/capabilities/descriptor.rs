@@ -1,11 +1,11 @@
 //! Plain-data capability declarations a module adds to its descriptor: typed settings and provider
-//! profiles, the capabilities it may be granted, the resources it may install, what activation
-//! requires and the worker tasks it offers. Registration validates them and does no I/O. See
+//! profiles, the capabilities it may be granted, the resources it may install and the worker tasks
+//! it offers. Registration validates them and does no I/O. See
 //! `docs/design/module-capabilities.md#configuration-contract`.
 //!
 //! A setting is a [`ParameterDescriptor`] with a label, serialized flat exactly as a parameter is:
 //! `{"name": "strength", "kind": "number", "min": 0, "max": 1, "required": false, …, "label":
-//! "Strength", "invalidates_activation": false}`. A capability is serialized flat the same way.
+//! "Strength"}`. A capability is serialized flat the same way.
 //! Flattening rules out `deny_unknown_fields` on those two types, so an unknown field there is
 //! ignored on read; every other capability type refuses unknown fields.
 use super::transport::{EndpointClass, parse_endpoint};
@@ -59,33 +59,21 @@ impl SettingsDescriptor {
 /// One setting, declared in the module parameter vocabulary: its parameter's name is the setting's
 /// identity, and its kind, `required`, default, hints and notes mean what they mean for an action's
 /// parameter. A missing or invalid value of a required setting makes the module or profile
-/// incomplete. What only a setting has sits beside the parameter: the label a settings view shows
-/// and whether changing it deactivates the module. A secret declares only its presence anywhere it
-/// is reported.
+/// incomplete. What only a setting has sits beside the parameter: the label a settings view shows.
+/// A secret declares only its presence anywhere it is reported.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingDescriptor {
     #[serde(flatten)]
     pub parameter: ParameterDescriptor,
     pub label: String,
-    /// Changing this field deactivates an active module, because what it loaded depends on it.
-    #[serde(default)]
-    pub invalidates_activation: bool,
 }
 
 impl SettingDescriptor {
-    /// A setting that leaves activation alone.
     pub fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
         Self {
             parameter,
             label: label.into(),
-            invalidates_activation: false,
         }
-    }
-
-    /// Changing this setting deactivates an active module.
-    pub fn invalidates_activation(mut self) -> Self {
-        self.invalidates_activation = true;
-        self
     }
 
     /// The setting's identity: its parameter's name.
@@ -252,19 +240,6 @@ pub struct ResourceDescriptor {
     pub redirect_origins: Vec<String>,
 }
 
-/// What `module.activate` requires before anything is queued.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ActivationDescriptor {
-    /// Module-level settings that must hold a valid value.
-    #[serde(default)]
-    pub requires_settings: Vec<String>,
-    /// Resources that must be installed.
-    #[serde(default)]
-    pub requires_resources: Vec<String>,
-    pub notes: String,
-}
-
 /// A worker task, reached through the generated `task.<id>` method.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -278,10 +253,8 @@ pub struct TaskDescriptor {
     /// The request names one provider profile.
     #[serde(default)]
     pub profile: bool,
-    /// The module must be active.
-    #[serde(default)]
-    pub requires_active: bool,
-    /// The capabilities the task may use; each needs its grant.
+    /// The capabilities the task may use: a remote request needs its grant, and a resource's
+    /// download capability needs the resource installed, whose path the task then reads.
     #[serde(default)]
     pub uses: Vec<String>,
     /// Declared and validated exactly like an action's parameters.
@@ -368,7 +341,7 @@ pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
 
 /// Every capability declaration of one module, checked against the rest of its descriptor. What is
 /// referred to is checked before what refers to it: settings and resources, then the capabilities
-/// over them, then activation and the tasks that use the capabilities.
+/// over them, then the tasks that use the capabilities.
 pub(crate) fn validate(module: &ModuleDescriptor) -> Result<(), Error> {
     let id = &module.id;
     if let Some(settings) = &module.settings {
@@ -381,9 +354,6 @@ pub(crate) fn validate(module: &ModuleDescriptor) -> Result<(), Error> {
     let mut capabilities = HashSet::with_capacity(module.capabilities.len());
     for capability in &module.capabilities {
         validate_capability(module, capability, &mut capabilities)?;
-    }
-    if let Some(activation) = &module.activation {
-        validate_activation(module, activation)?;
     }
     let mut tasks = HashSet::with_capacity(module.tasks.len());
     for task in &module.tasks {
@@ -681,48 +651,6 @@ fn https_origin(text: &str) -> bool {
         .is_ok_and(|url| url.scheme() == "https" && url.origin().ascii_serialization() == text)
 }
 
-fn validate_activation(
-    module: &ModuleDescriptor,
-    activation: &ActivationDescriptor,
-) -> Result<(), Error> {
-    let mut settings = HashSet::with_capacity(activation.requires_settings.len());
-    for setting in &activation.requires_settings {
-        if module
-            .settings
-            .as_ref()
-            .and_then(|settings| settings.field(setting))
-            .is_none()
-        {
-            return Err(Error::validation(format!(
-                "activation of module {} requires undeclared setting {setting}",
-                module.id
-            )));
-        }
-        if !settings.insert(setting.as_str()) {
-            return Err(Error::validation(format!(
-                "activation of module {} requires setting {setting} twice",
-                module.id
-            )));
-        }
-    }
-    let mut resources = HashSet::with_capacity(activation.requires_resources.len());
-    for resource in &activation.requires_resources {
-        if module.resource(resource).is_none() {
-            return Err(Error::validation(format!(
-                "activation of module {} requires undeclared resource {resource}",
-                module.id
-            )));
-        }
-        if !resources.insert(resource.as_str()) {
-            return Err(Error::validation(format!(
-                "activation of module {} requires resource {resource} twice",
-                module.id
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_task<'a>(
     module: &ModuleDescriptor,
     task: &'a TaskDescriptor,
@@ -768,12 +696,6 @@ fn validate_task<'a>(
     {
         return Err(Error::validation(format!(
             "task {id} takes a profile but module {} declares no profiles",
-            module.id
-        )));
-    }
-    if task.requires_active && module.activation.is_none() {
-        return Err(Error::validation(format!(
-            "task {id} requires activation but module {} declares none",
             module.id
         )));
     }
@@ -843,18 +765,17 @@ mod tests {
         let value = serde_json::to_value(&descriptor).unwrap();
         assert_eq!(ModuleDescriptor::parse(&value).unwrap(), descriptor);
         // A setting is a parameter, serialized exactly as an action's parameter is, with its label
-        // and activation flag beside it; a capability is flat the same way.
+        // beside it; a capability is flat the same way.
         let strength = &descriptor.settings.as_ref().unwrap().fields[0];
         let mut parameter = serde_json::to_value(&strength.parameter).unwrap();
         parameter["label"] = json!("strength");
-        parameter["invalidates_activation"] = json!(false);
         assert_eq!(value["settings"]["fields"][0], parameter);
         assert_eq!(
             value["settings"]["fields"][0],
             json!({
                 "name": "strength", "kind": "number", "min": 0.0, "max": 1.0,
                 "required": false, "default": 0.5, "unit": null, "step": 0.01, "precision": 2,
-                "notes": "", "label": "strength", "invalidates_activation": false,
+                "notes": "", "label": "strength",
             })
         );
         assert_eq!(
@@ -862,7 +783,7 @@ mod tests {
             json!({
                 "name": "api-key", "kind": "secret", "max_length": 128, "required": true,
                 "default": null, "unit": null, "step": null, "precision": null, "notes": "",
-                "label": "api key", "invalidates_activation": false,
+                "label": "api key",
             }),
             "a secret declares its presence and limit only"
         );
@@ -890,10 +811,6 @@ mod tests {
             json!({"action": "apply-test-tint", "parameter": "tint"})
         );
         assert_eq!(
-            value["activation"]["requires_resources"],
-            json!(["palette"])
-        );
-        assert_eq!(
             value["resources"][0]["redirect_origins"],
             json!(["https://cdn.example.com"])
         );
@@ -907,13 +824,7 @@ mod tests {
     fn descriptors_without_capabilities_serialize_exactly_as_before() {
         for descriptor in ModuleRegistry::builtin().descriptors() {
             let value = serde_json::to_value(descriptor).unwrap();
-            for key in [
-                "settings",
-                "capabilities",
-                "resources",
-                "activation",
-                "tasks",
-            ] {
+            for key in ["settings", "capabilities", "resources", "tasks"] {
                 assert!(
                     value.get(key).is_none(),
                     "{} serializes an empty {key}",
@@ -1268,15 +1179,6 @@ mod tests {
                 |d| d.resources[0].license = String::new(),
                 "resource palette declares no license",
             ),
-            // Activation.
-            (
-                |d| d.activation.as_mut().unwrap().requires_settings = vec!["missing".into()],
-                "activation of module test.capabilities requires undeclared setting missing",
-            ),
-            (
-                |d| d.activation.as_mut().unwrap().requires_resources = vec!["missing".into()],
-                "activation of module test.capabilities requires undeclared resource missing",
-            ),
             // Tasks.
             (
                 |d| d.tasks[0].uses.push("missing".into()),
@@ -1315,10 +1217,6 @@ mod tests {
             (
                 |d| d.tasks[0].profile = false,
                 "task generate-test-tint uses remote-image-request capability echo without declaring asset and profile",
-            ),
-            (
-                |d| d.activation = None,
-                "task generate-test-tint requires activation but module test.capabilities declares none",
             ),
             (
                 |d| {
