@@ -9,8 +9,9 @@ use super::{
     Editor,
     draft::Round,
     message::{
-        ActionMessage, ControlMessage, DraftMessage, HistoryMessage, MaskMessage, MaskPointer,
-        MenuTarget, Message, PaintTarget, PreviewMessage, RowEdit, SyncMessage, ViewMessage,
+        ActionMessage, ControlMessage, DraftMessage, DragEdit, DragItem, HistoryMessage,
+        MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, PreviewMessage, RowEdit,
+        SyncMessage, TypingEdit, TypingTarget, ViewMessage,
     },
     tasks::{self, call},
     testing,
@@ -501,17 +502,28 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
     assert!(kinds.contains(&"linear"), "{kinds:?}");
     assert_eq!(
         kinds,
-        luxforge_core::mask::declared_geometry_kinds().collect::<Vec<_>>(),
-        "the kinds are the host's, not a list of the panel's own"
+        luxforge_core::mask::component_kinds().collect::<Vec<_>>(),
+        "the kinds are the host's, in its table's order, not a list of the panel's own"
     );
-    // And they are the kinds that can be created, not every kind the build can evaluate. The brush
-    // is parsed, evaluated and retained but its geometry is drawn, so it declares no parameters and
-    // generates no `mask.create-brush`; offering it here would be a button with no command behind
-    // it. Strokes reach a mask through `mask.add-stroke`, not through this row.
+    // And each is one the panel can act on. The brush is parsed, evaluated and retained but its
+    // geometry is drawn, so it declares no parameters and generates no `mask.create-brush`: the
+    // menus list it as the kind that arms the brush, whose strokes reach a mask through
+    // `mask.add-stroke`. Every other kind has a generated command behind its item.
     for kind in &kinds {
+        let painted = masking
+            .editor
+            .workspace
+            .masks
+            .kinds
+            .iter()
+            .any(|option| option.kind == *kind && option.paints);
+        if painted {
+            assert!(luxforge_core::mask::component_geometry_is_drawn(kind));
+            continue;
+        }
         assert!(
             !luxforge_core::mask::component_geometry_is_drawn(kind),
-            "the Add row offers {kind}, whose geometry is drawn and has no create command"
+            "the menus offer {kind}, whose geometry is drawn and has no create command"
         );
         // And the command is really there, for each of the two routes a row can take: a kind with
         // handles is drawn and a kind whose geometry is entirely defaulted is typed, and either way
@@ -540,7 +552,7 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
     assert_eq!(panel, kinds, "every offered kind is drawn or typed");
     for kind in luxforge_core::mask::component_kinds() {
         assert!(
-            kinds.contains(&kind) || kind == luxforge_core::mask::BRUSH,
+            kinds.contains(&kind),
             "{kind} is registered but reachable from nowhere"
         );
     }
@@ -1957,7 +1969,7 @@ fn the_amount_slider_reads_the_amount_the_mask_holds() {
     masking.draw_mask();
     assert_eq!(
         amount(&masking),
-        (100.0, "100".to_owned(), "100%".to_owned()),
+        (100.0, "100".to_owned(), "100".to_owned()),
         "a freshly drawn mask is at full amount in both places"
     );
 
@@ -1976,7 +1988,7 @@ fn the_amount_slider_reads_the_amount_the_mask_holds() {
     masking.refresh();
     assert_eq!(
         amount(&masking),
-        (40.0, "40".to_owned(), "40%".to_owned()),
+        (40.0, "40".to_owned(), "40".to_owned()),
         "the slider follows the amount the stack holds"
     );
 }
@@ -2201,19 +2213,17 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
 
-    // The Add row offers only the kinds that declare their geometry as numbers, because that is what
-    // generates a `mask.create-<kind>`. A brush declares none, so it is not there — and the panel
-    // does not put up a button with no command behind it.
-    assert!(
-        !masking
-            .editor
-            .workspace
-            .masks
-            .kinds
-            .iter()
-            .any(|kind| kind.kind == BRUSH),
-        "the Add row must not offer a brush: there is no mask.create-brush to run"
-    );
+    // The kind menus list the brush as the kind that arms the brush: it declares no geometry and
+    // so generates no `mask.create-brush`, and choosing it paints rather than creating anything.
+    let brush = masking
+        .editor
+        .workspace
+        .masks
+        .kinds
+        .iter()
+        .find(|kind| kind.kind == BRUSH)
+        .expect("the menus list the brush");
+    assert!(brush.paints && brush.drawable && brush.letter == Some('B'));
 
     // The bracket keys move the brush by its command's own declared step, so a key and the panel's
     // nudge can never disagree. `[` and `]` size it; shifted, they feather it.
@@ -3549,5 +3559,593 @@ fn escape_puts_an_armed_brush_down_then_leaves_mask_mode() {
     assert!(
         matches!(&second, Message::View(ViewMessage::SetMode(mode)) if mode == POINTER_MODE),
         "the second Escape leaves Mask mode: {second:?}"
+    );
+}
+
+// ---- the rebuilt Masks panel: menus, rename in place, drag reorder, keys ------------------------
+
+/// One named key through the keymap table, as the window delivers it with `status`.
+fn named_key(
+    masking: &mut Masking,
+    named: iced::keyboard::key::Named,
+    modifiers: Modifiers,
+    status: iced::event::Status,
+) -> Option<Message> {
+    let event = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key: Key::Named(named),
+        modified_key: Key::Named(named),
+        physical_key: iced::keyboard::key::Physical::Unidentified(
+            iced::keyboard::key::NativeCode::Unidentified,
+        ),
+        location: iced::keyboard::Location::Standard,
+        modifiers,
+        text: None,
+        repeat: false,
+    });
+    let message = super::keymap::keymap(&event, status, &masking.editor.key_context());
+    if let Some(message) = message.clone() {
+        let _ = masking.editor.update(message);
+    }
+    message
+}
+
+/// The list edits a menu's items run, and the ones its Copy as JSON request copies.
+fn menu_edits(entries: &[luxforge_ui::MenuEntry<Message>]) -> (Vec<RowEdit>, Vec<RowEdit>) {
+    let mut run = Vec::new();
+    let mut copied = Vec::new();
+    for entry in entries {
+        if let luxforge_ui::MenuEntry::Item(item) = entry {
+            match &item.on_press {
+                Some(Message::Mask(MaskMessage::Row(edit))) => run.push(edit.clone()),
+                Some(Message::Mask(MaskMessage::CopyRow(edit))) => copied.push(edit.clone()),
+                _ => {}
+            }
+        }
+    }
+    (run, copied)
+}
+
+/// **Every list edit a row's menu runs is one its Copy as JSON request copies**, for a mask and for
+/// a component, and every copied edit is a request the host takes: the copy is built by the same
+/// builder the send is, so what the menu does and what the copy shows cannot drift.
+#[test]
+fn every_row_menu_item_is_copyable_as_the_request_it_sends() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.add_component(RADIAL, ComponentMode::Subtract);
+    masking.create_mask_through_the_api();
+    let mask = masking.listing().masks[0].id.clone();
+    masking.message(MaskMessage::Select(mask.as_str().to_owned()));
+    let component = masking.listing().masks[0].components[1].id.clone();
+    masking.message(MaskMessage::SelectComponent(component.as_str().to_owned()));
+
+    let model = masking.editor.workspace.masks.clone();
+    let row = model.masks.iter().find(|row| row.id == mask).unwrap();
+    for from_rule in [false, true] {
+        let (run, _) = menu_edits(&crate::view::masks_panel::mask_menu(&model, row, from_rule));
+        let (_, copied) = menu_edits(&crate::view::masks_panel::mask_copy_menu(row));
+        assert!(!run.is_empty());
+        for edit in &run {
+            assert!(copied.contains(edit), "{edit:?} is run but not copyable");
+        }
+        assert!(
+            copied
+                .iter()
+                .any(|edit| matches!(edit, RowEdit::RenameMask { .. })),
+            "Rename is copyable too"
+        );
+    }
+    let open = row.clone();
+    let row = model
+        .components
+        .iter()
+        .find(|row| row.id == component)
+        .unwrap();
+    let (run, _) = menu_edits(&crate::view::masks_panel::component_menu(
+        &model, &open, row,
+    ));
+    let (_, copied) = menu_edits(&crate::view::masks_panel::component_copy_menu(&open, row));
+    // The row's own controls — its three modes and its invert glyph — are copyable as well as the
+    // menu's items.
+    let mut expected = run.clone();
+    expected.push(RowEdit::ComponentInvert {
+        component: component.as_str().to_owned(),
+        invert: !row.inverted,
+    });
+    for mode in &row.mode_options {
+        expected.push(RowEdit::ComponentMode {
+            component: component.as_str().to_owned(),
+            mode: mode.clone(),
+        });
+    }
+    for edit in &expected {
+        assert!(copied.contains(edit), "{edit:?} is sent but not copyable");
+    }
+    // And each copied edit resolves to a declared host command.
+    for edit in copied {
+        assert!(
+            masking.editor.row_command(&edit).is_some(),
+            "{edit:?} names no command"
+        );
+    }
+}
+
+/// **Rename in place.** Rename in a row's menu turns the name into a field in the row, with no
+/// always-visible rename field anywhere; Enter sends exactly the request its Copy as JSON request
+/// shows, and Escape closes it with nothing sent. A component is renamed the same way, through the
+/// host's own `mask.rename-component`.
+#[test]
+fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
+    use iced::keyboard::key::Named;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let mask = masking.listing().masks[0].id.as_str().to_owned();
+
+    let _ = masking
+        .editor
+        .update(Message::View(ViewMessage::OpenMenu(MenuTarget::Mask(
+            mask.clone(),
+        ))));
+    masking.message(MaskMessage::Typing(TypingEdit::Begin(
+        TypingTarget::RenameMask(mask.clone()),
+    )));
+    assert_eq!(
+        *masking.editor.menu, None,
+        "choosing Rename puts the menu away"
+    );
+    let row = &masking.editor.workspace.masks.masks[0];
+    assert_eq!(row.renaming.as_deref(), Some(row.name.as_str()));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["typing"]["target"],
+        json!({"rename_mask": mask})
+    );
+
+    // Escape, which the focused field has already taken, closes it and sends nothing.
+    masking.editor.last_mask_request = None;
+    masking.message(MaskMessage::Typing(TypingEdit::Text("Nope".into())));
+    named_key(
+        &mut masking,
+        Named::Escape,
+        Modifiers::empty(),
+        iced::event::Status::Captured,
+    );
+    assert!(masking.editor.mask_typing.is_none());
+    assert!(masking.editor.last_mask_request.is_none());
+    assert!(
+        masking.editor.mask_mode_active(),
+        "Escape left the mode alone"
+    );
+
+    // Enter sends the rename, and it is the request the copy shows.
+    masking.message(MaskMessage::Typing(TypingEdit::Begin(
+        TypingTarget::RenameMask(mask.clone()),
+    )));
+    masking.message(MaskMessage::Typing(TypingEdit::Text("Face".into())));
+    let expected = masking.request_for(&RowEdit::RenameMask {
+        mask: mask.clone(),
+        name: "Face".into(),
+    });
+    masking.message(MaskMessage::Typing(TypingEdit::Submit));
+    assert_eq!(masking.sent(), Some(expected));
+    assert!(masking.editor.mask_typing.is_none());
+    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    call(&masking.owner(), masking.editor.client, &method, params).unwrap();
+    masking.editor.busy = false;
+    masking.refresh();
+    assert_eq!(masking.listing().masks[0].name, "Face");
+
+    // A component, through `mask.rename-component`.
+    masking.add_component(RADIAL, ComponentMode::Add);
+    let component = masking.listing().masks[0].components[1]
+        .id
+        .as_str()
+        .to_owned();
+    masking.message(MaskMessage::Typing(TypingEdit::Begin(
+        TypingTarget::RenameComponent(component.clone()),
+    )));
+    masking.message(MaskMessage::Typing(TypingEdit::Text("Cheek".into())));
+    let expected = masking.request_for(&RowEdit::RenameComponent {
+        component: component.clone(),
+        name: "Cheek".into(),
+    });
+    masking.message(MaskMessage::Typing(TypingEdit::Submit));
+    assert_eq!(masking.sent(), Some(expected));
+    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    assert_eq!(method, "mask.rename-component");
+    call(&masking.owner(), masking.editor.client, &method, params).unwrap();
+    masking.editor.busy = false;
+    masking.refresh();
+    assert_eq!(masking.listing().masks[0].components[1].name, "Cheek");
+
+    // An empty name is refused in the status line and the field stays open.
+    masking.editor.last_mask_request = None;
+    masking.message(MaskMessage::Typing(TypingEdit::Begin(
+        TypingTarget::RenameMask(mask.clone()),
+    )));
+    masking.message(MaskMessage::Typing(TypingEdit::Text("  ".into())));
+    masking.message(MaskMessage::Typing(TypingEdit::Submit));
+    assert!(masking.editor.last_mask_request.is_none());
+    assert!(masking.editor.mask_typing.is_some());
+}
+
+/// **Drag reorder.** A press on a row's handle, the pointer over another row and the release send
+/// one reorder to that row's index — the request Move up and Move down copy — and a reorder the
+/// host would refuse is stated in the status line and sends nothing.
+#[test]
+fn a_drag_reorders_with_one_request_and_states_a_refusal() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.create_mask_through_the_api();
+    let listing = masking.listing();
+    let first = listing.masks[0].id.as_str().to_owned();
+
+    masking.message(MaskMessage::Drag(DragEdit::Start(DragItem::Mask(
+        first.clone(),
+    ))));
+    masking.message(MaskMessage::Drag(DragEdit::Over(Some(1))));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["drag"],
+        json!({"item": {"mask": first}, "over": 1})
+    );
+    let expected = masking.request_for(&RowEdit::MoveMask {
+        mask: first.clone(),
+        index: 1,
+    });
+    masking.editor.last_mask_request = None;
+    masking.message(MaskMessage::Drag(DragEdit::End));
+    assert_eq!(masking.sent(), Some(expected));
+    assert!(masking.editor.mask_drag.is_none());
+    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    call(&masking.owner(), masking.editor.client, &method, params).unwrap();
+    masking.editor.busy = false;
+    masking.refresh();
+    assert_eq!(masking.listing().masks[1].id.as_str(), first);
+
+    // A release over no row, or over the row it started on, reorders nothing.
+    masking.editor.last_mask_request = None;
+    masking.message(MaskMessage::Drag(DragEdit::Start(DragItem::Mask(
+        first.clone(),
+    ))));
+    masking.message(MaskMessage::Drag(DragEdit::Over(Some(1))));
+    masking.message(MaskMessage::Drag(DragEdit::Over(None)));
+    masking.message(MaskMessage::Drag(DragEdit::End));
+    assert!(masking.editor.last_mask_request.is_none());
+
+    // Components: a subtract dragged to the top would leave a mask led by a subtract.
+    masking.message(MaskMessage::Select(first.clone()));
+    masking.add_component(RADIAL, ComponentMode::Subtract);
+    let report = masking
+        .listing()
+        .masks
+        .into_iter()
+        .find(|report| report.id.as_str() == first)
+        .unwrap();
+    let subtract = report.components[1].id.as_str().to_owned();
+    masking.message(MaskMessage::Drag(DragEdit::Start(DragItem::Component(
+        subtract.clone(),
+    ))));
+    masking.message(MaskMessage::Drag(DragEdit::Over(Some(0))));
+    masking.editor.last_mask_request = None;
+    masking.message(MaskMessage::Drag(DragEdit::End));
+    assert!(masking.editor.last_mask_request.is_none());
+    assert!(
+        masking.editor.status.contains("always add"),
+        "{}",
+        masking.editor.status
+    );
+}
+
+/// **The panel's keys** send the delivered commands, each the request its row's copy shows: `X`
+/// inverts the selected component, `⌫` deletes it — or the open mask with none selected — within
+/// the host's refusals, Up and Down move the selection, and `⌥` with them reorders.
+#[test]
+fn the_panel_keys_send_the_requests_their_rows_copy() {
+    use iced::keyboard::key::Named;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let mask = masking.listing().masks[0].id.as_str().to_owned();
+    let only = masking.listing().masks[0].components[0]
+        .id
+        .as_str()
+        .to_owned();
+
+    // `⌫` on a mask's only component is the host's refusal, stated, and nothing is sent.
+    masking.message(MaskMessage::SelectComponent(only.clone()));
+    masking.editor.last_mask_request = None;
+    named_key(
+        &mut masking,
+        Named::Backspace,
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    );
+    assert!(masking.editor.last_mask_request.is_none());
+    assert!(
+        masking.editor.status.contains("delete the mask"),
+        "{}",
+        masking.editor.status
+    );
+
+    // `X` inverts the selected component.
+    let expected = masking.request_for(&RowEdit::ComponentInvert {
+        component: only.clone(),
+        invert: true,
+    });
+    masking.key("x", Modifiers::empty());
+    assert_eq!(masking.sent(), Some(expected));
+    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    call(&masking.owner(), masking.editor.client, &method, params).unwrap();
+    masking.editor.busy = false;
+    masking.refresh();
+    assert!(masking.listing().masks[0].components[0].invert);
+
+    // Down moves the selection to the next component; `⌥`-Up reorders it, within the rule.
+    masking.add_component(RADIAL, ComponentMode::Add);
+    let second = masking.listing().masks[0].components[1]
+        .id
+        .as_str()
+        .to_owned();
+    masking.message(MaskMessage::SelectComponent(only.clone()));
+    named_key(
+        &mut masking,
+        Named::ArrowDown,
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    );
+    assert_eq!(
+        masking
+            .editor
+            .selected_component
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some(second.as_str())
+    );
+    let expected = masking.request_for(&RowEdit::MoveComponent {
+        component: second.clone(),
+        index: 0,
+    });
+    named_key(
+        &mut masking,
+        Named::ArrowUp,
+        Modifiers::ALT,
+        iced::event::Status::Ignored,
+    );
+    assert_eq!(masking.sent(), Some(expected));
+    masking.editor.busy = false;
+    masking.refresh();
+
+    // `⌫` with a component selected deletes it; with none, the open mask.
+    let expected = masking.request_for(&RowEdit::DeleteComponent(second.clone()));
+    masking.message(MaskMessage::SelectComponent(second.clone()));
+    named_key(
+        &mut masking,
+        Named::Delete,
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    );
+    assert_eq!(masking.sent(), Some(expected));
+    masking.editor.busy = false;
+    masking.editor.selected_component = None;
+    let expected = masking.request_for(&RowEdit::DeleteMask(mask.clone()));
+    named_key(
+        &mut masking,
+        Named::Backspace,
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    );
+    assert_eq!(masking.sent(), Some(expected));
+    masking.editor.busy = false;
+
+    // The mask list: `⌥`-Down reorders the open mask; Up and Down walk the list.
+    masking.create_mask_through_the_api();
+    masking.message(MaskMessage::Select(mask.clone()));
+    let expected = masking.request_for(&RowEdit::MoveMask {
+        mask: mask.clone(),
+        index: 1,
+    });
+    named_key(
+        &mut masking,
+        Named::ArrowDown,
+        Modifiers::ALT,
+        iced::event::Status::Ignored,
+    );
+    assert_eq!(masking.sent(), Some(expected));
+    masking.editor.busy = false;
+    named_key(
+        &mut masking,
+        Named::ArrowDown,
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    );
+    assert_ne!(
+        masking.editor.selected_mask.as_ref().map(|id| id.as_str()),
+        Some(mask.as_str()),
+        "Down opened the next mask"
+    );
+
+    // A key a text field took acts on nothing.
+    masking.editor.last_mask_request = None;
+    named_key(
+        &mut masking,
+        Named::Backspace,
+        Modifiers::empty(),
+        iced::event::Status::Captured,
+    );
+    assert!(masking.editor.last_mask_request.is_none());
+}
+
+/// **The kind menus.** New mask and Add component list every kind with its icon and letter; while
+/// one is open a kind's letter starts that kind — ahead of the crop's own `R` — and Escape puts the
+/// menu away before it reaches anything else. Brush in the New mask menu arms the brush on a new
+/// mask, and in the Add menu on the open one.
+#[test]
+fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
+    use iced::keyboard::key::Named;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+
+    let open = |masking: &mut Masking, target: MenuTarget| {
+        let _ = masking
+            .editor
+            .update(Message::View(ViewMessage::OpenMenu(target)));
+    };
+    // Escape closes the menu first, and the mode stays.
+    open(&mut masking, MenuTarget::NewMask);
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["menu"],
+        json!("new_mask")
+    );
+    named_key(
+        &mut masking,
+        Named::Escape,
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    );
+    assert_eq!(*masking.editor.menu, None);
+    assert!(masking.editor.mask_mode_active());
+
+    // Every item is a kind the menu can start, labelled with its letter where it has one.
+    let items = crate::view::masks_panel::kind_menu(
+        &masking.editor.workspace.masks,
+        crate::app::message::KindMenu::New,
+    );
+    let letters: Vec<(String, Option<String>)> = items
+        .iter()
+        .filter_map(|entry| match entry {
+            luxforge_ui::MenuEntry::Item(item) => Some((item.label.clone(), item.trailing.clone())),
+            luxforge_ui::MenuEntry::Separator => None,
+        })
+        .collect();
+    assert_eq!(
+        letters
+            .iter()
+            .filter(|(_, letter)| letter.is_some())
+            .count(),
+        3,
+        "{letters:?}"
+    );
+
+    // `L` starts a linear while New mask is open.
+    open(&mut masking, MenuTarget::NewMask);
+    masking.key("l", Modifiers::empty());
+    assert_eq!(*masking.editor.menu, None);
+    assert_eq!(
+        masking.editor.mask_shape().map(MaskDraft::kind),
+        Some(LINEAR)
+    );
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.apply();
+
+    // `R` with the Add menu open is the radial, not the crop's mode.
+    open(&mut masking, MenuTarget::AddComponent);
+    masking.key("r", Modifiers::empty());
+    assert_eq!(
+        masking.editor.mask_shape().map(MaskDraft::kind),
+        Some(RADIAL)
+    );
+    assert!(masking.editor.mask_mode_active());
+    masking.open_gesture();
+    masking.draft(DraftMessage::Cancel);
+    while testing::run_round(&mut masking.editor).is_some() {}
+
+    // `B` in the Add menu arms the brush on the open mask.
+    open(&mut masking, MenuTarget::AddComponent);
+    masking.key("b", Modifiers::empty());
+    let shape = masking.editor.mask_shape().expect("the brush is armed");
+    assert!(shape.brush().is_some());
+    assert!(shape.mask.is_some(), "on the open mask");
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["brush_visible"],
+        json!(true)
+    );
+}
+
+/// **A swatch's menu** removes that one colour with exactly the request it copies.
+#[test]
+fn a_swatch_menu_removes_one_colour_with_the_request_it_copies() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("colour-range".to_owned()));
+    let report = masking.listing().masks[0].clone();
+    let component = report.components[0].id.as_str().to_owned();
+    let method = luxforge_core::mask::commands::sample(
+        luxforge_core::mask::commands::SampleOp::Add,
+        "colour-range",
+    )
+    .unwrap()
+    .method;
+    for red in [0.2, 0.6] {
+        let revision = masking.editor.state.as_ref().unwrap().revision;
+        call(
+            &masking.owner(),
+            masking.editor.client,
+            method,
+            json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision),
+                   "mask": report.id, "component": component, "r": red, "g": 0.3, "b": 0.4}),
+        )
+        .expect("the sample is added");
+        masking.refresh();
+    }
+    masking.message(MaskMessage::SelectComponent(component.clone()));
+    let _ = masking
+        .editor
+        .update(Message::View(ViewMessage::OpenMenu(MenuTarget::Swatch {
+            component: component.clone(),
+            index: 1,
+        })));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["menu"],
+        json!({"swatch": {"component": component, "index": 1}})
+    );
+    let edit = RowEdit::DeleteSample {
+        component: component.clone(),
+        kind: "colour-range".into(),
+        index: 1,
+    };
+    let expected = masking.request_for(&edit);
+    masking.run(MaskMessage::Row(edit));
+    assert_eq!(*masking.editor.menu, None, "Remove puts the menu away");
+    let (_, params) = masking.editor.last_mask_request.clone().unwrap();
+    assert_eq!(identified(params), expected);
+    assert_eq!(
+        masking.listing().masks[0].components[0].payload["samples"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+/// **The Masks band** collapses the panel down to the adjustments, as view state, and a captured
+/// frame reports it; the Brush section shows only while a brush is armed or a brush is selected.
+#[test]
+fn the_band_collapses_and_the_brush_section_shows_on_demand() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let summary = masking.editor.workspace.masks.summary();
+    assert_eq!(summary["collapsed"], json!(false));
+    assert_eq!(summary["brush_visible"], json!(false));
+    assert_eq!(summary["count"], json!("1 of 16"));
+    masking.message(MaskMessage::ToggleBand);
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["collapsed"],
+        json!(true)
+    );
+    masking.message(MaskMessage::ToggleBand);
+
+    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    masking.open_gesture();
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["brush_visible"],
+        json!(true)
+    );
+    masking.draft(DraftMessage::Cancel);
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["brush_visible"],
+        json!(false)
     );
 }

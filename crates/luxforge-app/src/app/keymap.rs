@@ -424,6 +424,64 @@ mod tests {
         }
     }
 
+    /// The Masks panel's keys act only in their context: a kind menu's letters only while it is
+    /// open, and then ahead of a canvas-mode letter; the selection keys only in Mask mode and never
+    /// once a field has taken the key; Escape closes the panel's field or menu first.
+    #[test]
+    fn the_masks_panel_keys_act_only_in_their_context() {
+        let r = pressed(letter("r"), Modifiers::empty());
+        let x = pressed(letter("x"), Modifiers::empty());
+        let escape = pressed(Key::Named(Named::Escape), Modifiers::empty());
+        let delete = pressed(Key::Named(Named::Backspace), Modifiers::empty());
+        let up = pressed(Key::Named(Named::ArrowUp), Modifiers::ALT);
+        let plain = context();
+        assert!(matches!(
+            keymap(&r, Status::Ignored, &plain),
+            Some(Message::View(ViewMessage::SetMode(mode))) if mode == "luxforge.crop"
+        ));
+        assert!(keymap(&x, Status::Ignored, &plain).is_none());
+        assert!(keymap(&delete, Status::Ignored, &plain).is_none());
+        let menu = KeyContext {
+            kind_menu: Some((KindMenu::Add, vec![('R', "radial".into())])),
+            mask_menu_open: true,
+            mask_keys: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(&r, Status::Ignored, &menu),
+            Some(Message::Mask(MaskMessage::Choose { menu: KindMenu::Add, kind })) if kind == "radial"
+        ));
+        assert!(matches!(
+            keymap(&escape, Status::Ignored, &menu),
+            Some(Message::View(ViewMessage::CloseMenu))
+        ));
+        let keys = KeyContext {
+            mask_keys: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(&x, Status::Ignored, &keys),
+            Some(Message::Mask(MaskMessage::Key(MaskKey::Invert)))
+        ));
+        assert!(matches!(
+            keymap(&delete, Status::Ignored, &keys),
+            Some(Message::Mask(MaskMessage::Key(MaskKey::Delete)))
+        ));
+        assert!(matches!(
+            keymap(&up, Status::Ignored, &keys),
+            Some(Message::Mask(MaskMessage::Key(MaskKey::Move(-1))))
+        ));
+        assert!(keymap(&delete, Status::Captured, &keys).is_none());
+        let typing = KeyContext {
+            mask_typing: true,
+            ..keys
+        };
+        assert!(matches!(
+            keymap(&escape, Status::Captured, &typing),
+            Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)))
+        ));
+    }
+
     #[test]
     fn gallery_escape_returns_without_forwarding_photo_shortcuts() {
         let context = KeyContext {
