@@ -112,7 +112,7 @@ use overlay::{OverlayQueue, OverlayRequest};
 use presenter::Presenter;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -444,6 +444,12 @@ pub(crate) struct Editor {
     pub(crate) mask_command_in_flight: bool,
     /// A coverage grid the preview worker filled beside a frame, waiting for the presenter.
     pub(crate) mask_overlay_pending: Option<(u64, luxforge_core::analysis::MaskOverlay)>,
+    /// Generations whose job asked for a coverage grid and has not presented its frame yet: a
+    /// proxy frame of one of these is followed by its grid in an overlay phase of its own.
+    pub(crate) pending_overlay: BTreeSet<u64>,
+    /// The proxy frame on screen whose grid is still on its way. A captured frame waits for it, so
+    /// evidence never records the photograph before the overlay that belongs over it.
+    pub(crate) overlay_awaited: Option<u64>,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, off the
     /// UI thread and the owner thread.
     pub(crate) thumbnail_queue: thumbnails::ThumbnailQueue,
@@ -669,6 +675,8 @@ impl Editor {
             last_mask_request: None,
             mask_command_in_flight: false,
             mask_overlay_pending: None,
+            pending_overlay: BTreeSet::new(),
+            overlay_awaited: None,
             thumbnail_queue: thumbnails::ThumbnailQueue::default(),
             thumbnail_source: thumbnails::ThumbnailSource::default(),
             thumbnails: state::masks::MaskThumbnails::default(),

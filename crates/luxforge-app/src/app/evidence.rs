@@ -550,6 +550,7 @@ impl Editor {
                     || (!proxy_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
+                    || self.overlay_awaited.is_some()
                 {
                     return Task::none();
                 }

@@ -79,7 +79,8 @@ fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Erro
 }
 
 /// One preview job, on the preview worker: the proxy phase when the job has one, handed over as
-/// soon as it is rendered, then the exact phase, returned as the job's last result.
+/// soon as it is rendered, then its coverage grid when it asked for one, then the exact phase,
+/// returned as the job's last result.
 ///
 /// The proxy phase reads the job's `abandoned` token and the exact phase its `superseded` one, so
 /// a drag keeps presenting proxy frames while the full-resolution renders behind them are
@@ -145,10 +146,11 @@ pub(super) fn run(
     //
     // The coverage grid reads no pixel of the exact frame — the geometry tail of this compilation,
     // and for a mask that reads pixels, point queries into the input of its first bound layer — so
-    // it rides the first frame the job hands over: the proxy when there is one, whose phase it is
-    // filled in under the proxy's own token, and otherwise the exact frame, as the job's one phase.
-    // Either way it is this one function over this one compilation, so the grid is the same bytes
-    // whichever phase carries it.
+    // it never waits for the exact render. When the job has a proxy frame, the grid is filled after
+    // that frame is handed over, under the proxy's own token, and follows it in an overlay phase of
+    // its own; otherwise it rides the exact frame, as the job's one phase. Either way it is this
+    // one function over this one compilation, so the grid is the same bytes whichever phase
+    // carries it.
     let compile_started = Instant::now();
     let exact = match &prefix {
         Some(prefix) => render(
@@ -167,8 +169,8 @@ pub(super) fn run(
     // so a job never loses its frame because the shortcut did not work out. Nothing is logged.
     // The proxy phase's own clock: the plan, the build when this job builds, then the render.
     let started = Instant::now();
-    // Whether a proxy frame has already carried the job's coverage grid, so the exact phase does
-    // not fill it a second time.
+    // Whether an overlay phase has already followed the proxy frame with the job's coverage grid,
+    // so the exact phase does not fill it a second time.
     let mut overlay_delivered = false;
     let declined = match plan_proxy(&job, recipe, &exact) {
         ProxyStep::Skipped => None,
@@ -213,21 +215,6 @@ pub(super) fn run(
                     match rendered {
                         Err(error) => Some(error.detail),
                         Ok((raster, proxy_approximation)) => {
-                            let mask_overlay = match (&exact, &job.mask_overlay) {
-                                (Ok(exact), Some(request)) => {
-                                    overlay_delivered = true;
-                                    mask_overlay_for(
-                                        evaluation.registry(),
-                                        exact,
-                                        recipe,
-                                        request,
-                                        None,
-                                        proxy_cancel,
-                                        evaluation.context(),
-                                    )
-                                }
-                                _ => MaskOverlayOutcome::default(),
-                            };
                             let proxy = PreviewResult {
                                 generation,
                                 entry_id: entry_id.clone(),
@@ -237,9 +224,7 @@ pub(super) fn run(
                                 viewport_declined: job.viewport_declined.clone(),
                                 // A proxy raster is never reduced: every number the histogram and
                                 // the clipping counters report is the exact phase's (performance
-                                // rule 11). The mask's coverage grid is not such a number: it is
-                                // a function of position over the exact output stage, which this
-                                // job's exact compilation already knows, so it arrives here.
+                                // rule 11).
                                 outcome: PhaseOutcome::Proxy(ProxyOutcome {
                                     raster,
                                     dimensions,
@@ -249,7 +234,6 @@ pub(super) fn run(
                                     // feature the proxy's pixel grid can resolve is a fact about
                                     // that grid.
                                     approximation: proxy_approximation,
-                                    mask_overlay,
                                 }),
                                 approximate_white_balance,
                                 render_ms: compile_ms.take().unwrap_or(0.0)
@@ -260,6 +244,40 @@ pub(super) fn run(
                             // means the exact phase is not wanted either.
                             if !running.send(proxy) {
                                 return None;
+                            }
+                            // The frame is on its way to the screen; the coverage grid follows it
+                            // in a second message under the same generation, so the frame never
+                            // waits for the grid. The grid is not a number the exact phase owns:
+                            // it is a function of position over the exact output stage, which
+                            // this job's exact compilation already knows, so it needs no exact
+                            // render and is filled under the proxy's own token.
+                            if let (Ok(exact), Some(request)) = (&exact, &job.mask_overlay) {
+                                overlay_delivered = true;
+                                let started = Instant::now();
+                                let mask_overlay = mask_overlay_for(
+                                    evaluation.registry(),
+                                    exact,
+                                    recipe,
+                                    request,
+                                    None,
+                                    proxy_cancel,
+                                    evaluation.context(),
+                                );
+                                let overlay = PreviewResult {
+                                    generation,
+                                    entry_id: entry_id.clone(),
+                                    identity: job.identity.clone(),
+                                    draft_revision,
+                                    intent: job.intent,
+                                    viewport_declined: job.viewport_declined.clone(),
+                                    outcome: PhaseOutcome::Overlay(mask_overlay),
+                                    approximate_white_balance,
+                                    render_ms: milliseconds_since(started),
+                                    queue_wait_ms,
+                                };
+                                if !running.send(overlay) {
+                                    return None;
+                                }
                             }
                             if job.intent == PreviewIntent::Interactive {
                                 if let Some(activity) = activity {
