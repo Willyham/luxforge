@@ -97,6 +97,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `one-distribution` | A second percentile definition outside `luxforge-testbase`'s `Distribution` (`distribution.rs`): the shapes a hand-written one took (`fn percentile`, `let percentile`, `fn median`, `let median`, `fn p50`, `let p50`, `let p95`) and a nearest-rank rank computed again (`div_ceil(100)`) | `crates/` and `xtask/`, tests and comments included |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, the job table's lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
 | `editor-launch` | An editor argument (`"--evidence-dir"`, `"--evidence-script"`, `"--data-root"`, `"--catalog"`, `"--open"`, `"--developer"`, `"--disable-module"`, `"--proof-endpoint"`, `"--window-size"`), `spawn_editor` or `editor_args` outside the scenario library's launch envelope (`xtask/src/scenario/launch.rs`) and the hidden-window flag's home (`xtask/src/launch.rs`) | Production code under `xtask/` |
+| `registry-assembly` | `register_unavailable(`, `PixelModule::new(`, `ControlsModule::new(` and `CapabilitiesProofModule::new(` outside the one assembly, `ModuleRegistry::assemble` (`crates/luxforge-core/src/modules/registry/mod.rs`), which the desktop, `luxforge-json` and the harness all call, so test modules join only a developer run | Production code under `crates/` and `xtask/` |
 | `raw-manifest-reader` | A RAW manifest read outside the one reader, `raw::manifest` (`xtask/src/raw.rs`): its list named untyped (`["sources"]`) or its fields declared again (`neutral_point:`, `source_url:`). `raw-corpus`, `verify` and the `raw-editor` scenario read their manifests through it | Production code under `xtask/` |
 | `http-framing` | `ureq_proto::` and `httparse::`, the HTTP/1.1 framing under `ureq`, outside the module transport (`capabilities/transport/`) | `crates/` and `xtask/`, tests included |
 | `no-pixel-image-handle` | `Handle::from_rgba`, which uploads a new texture each time it is made | `crates/` and `xtask/`, tests included |
@@ -355,7 +356,7 @@ The headless owner, `luxforge-json`, reads one JSON request per line. It is the 
 target/release/luxforge-json --catalog /path/to/catalog.sqlite < requests.jsonl
 ```
 
-Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). `--data-root DIR` puts module settings, grants and installed resources under that root instead of the platform directories, `--secret-store memory` keeps module secrets for the process only instead of the platform store, `--permission-authority` lets this client grant module consent (an explicit local setup step; without it `module.permission.grant` is `forbidden`), and `--proof-endpoint URL` registers the capability proof module. The desktop's own client always has that authority; an evidence run keeps module state inside its evidence directory with an in-memory secret store, so no automated run touches the person's configuration or login keychain. Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source original is never written.
+Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). `--data-root DIR` puts module settings, grants and installed resources under that root instead of the platform directories, `--secret-store memory` keeps module secrets for the process only instead of the platform store, `--permission-authority` lets this client grant module consent (an explicit local setup step; without it `module.permission.grant` is `forbidden`), `--developer` serves the test modules, the pixel and controls proofs, as the desktop's flag does, though a debug build is never in developer mode without it, and `--proof-endpoint URL`, which needs `--developer`, registers the capability proof module. The desktop's own client always has that authority; an evidence run keeps module state inside its evidence directory with an in-memory secret store, so no automated run touches the person's configuration or login keychain. Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source original is never written.
 
 On macOS, `develop --background` builds the selected profile and runs a temporary copy in an `LSBackgroundOnly` app bundle, preventing desktop activation. Use an isolated catalog or `--evidence-dir NEW_DIR` for automated checks. The live API and native GPU renderer remain available; this mode is for API and capture work, not keyboard, mouse or native-dialog checks. The bundle is removed after exit, and the original executable and packaged app are untouched. Restricted tool environments must permit macOS LaunchServices/window-server IPC: a background process can otherwise stall before image work, with only startup/open-request events and idle source/catalog workers. Retry with the required host access rather than activating the window. Ordinary `develop` remains an interactive launch. `--background` fails explicitly on other platforms.
 
@@ -531,8 +532,8 @@ What the built-in registry publishes is written down once, in
 `fixtures/modules/builtin-descriptors.json`: `module.list` with its `host` array, and every method
 `schema.list` generates from the modules' and the host's descriptors, with its parameters, source
 kinds and superseded fields. `crates/luxforge-core/tests/modules/descriptors.rs` serves
-`ModuleRegistry::builtin()` through an owner, lists both as a JSON client and compares the result
-with the file byte for byte, so which modules, effects, actions, queries, controls and variants the
+`ModuleRegistry::builtin()`, an ordinary run's registry with no test module, through an owner,
+lists both as a JSON client and compares the result with the file byte for byte, so which modules, effects, actions, queries, controls and variants the
 build declares is this file's and no other test keeps a list of them; a change meant to keep the
 descriptors identical proves it by passing. After an intended descriptor change, regenerate it and
 review the diff:
@@ -540,6 +541,10 @@ review the diff:
 ```sh
 cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot
 ```
+
+Beside it, `schema_list_names_developer_only_methods_only_in_developer_mode` serves
+`ModuleRegistry::developer()` too and checks that it lists every ordinary method unchanged and adds
+exactly the methods the test modules generate, none of which the snapshot holds.
 
 ### The masking acceptance chapter
 
@@ -846,7 +851,8 @@ reset and discarded frames match the committed stack within the same tolerance. 
 brightness read back from the renderer, not a colorimetric claim.
 
 `histogram` opens the same fixture at 1440 × 900 and drives the inspector, both clipping overlays and
-the pointer readout over twelve frames: the default screen, one `edit.set-pixel` of `(0, 128, 255)`
+the pointer readout over twelve frames, in a developer launch because the pixel proof is a test
+module: the default screen, one `edit.set-pixel` of `(0, 128, 255)`
 at content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%,
 Fit again, both overlays off, a preview of the Original, the return to current, an Exposure drag
 left open and the same gesture released. The fixture's clipped pixels are known from
