@@ -13,9 +13,9 @@ use std::{
     },
 };
 mod dng;
-mod dng_ops;
 mod format;
 mod limits;
+mod mat3;
 mod native_tiles;
 mod neutral;
 mod normalize;
@@ -174,10 +174,7 @@ fn validate_camera_response(matrix: &[[f32; 3]; 4]) -> Result<(), RawError> {
     {
         return Err(RawError::MissingCalibration("XYZ-to-camera response"));
     }
-    let m = matrix.map(|row| row.map(f64::from));
-    let determinant = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    let determinant = mat3::determinant([0, 1, 2].map(|row| matrix[row].map(f64::from)));
     if !determinant.is_finite() || determinant.abs() < 1e-8 {
         return Err(RawError::MissingCalibration(
             "singular XYZ-to-camera response",
@@ -387,13 +384,7 @@ fn reject_unhandled_required_opcodes(
     opcodes: &[format::DngOpcode],
 ) -> Result<(), RawError> {
     if !handles_dng_corrections {
-        let mut ids = opcodes
-            .iter()
-            .filter(|op| op.flags & 1 == 0)
-            .map(|op| op.id)
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.dedup();
+        let ids = format::required_ids(opcodes);
         if !ids.is_empty() {
             return Err(RawError::UnsupportedRequiredOpcodes(ids));
         }
@@ -465,24 +456,6 @@ impl RawSource {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
-        let opcodes = if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
-            let found = format::dng_opcodes(bytes)?;
-            let mut unknown: Vec<_> = found
-                .iter()
-                .filter(|op| {
-                    op.flags & 1 == 0 && opcodes::Opcode::implemented(op.list, op.id).is_none()
-                })
-                .map(|op| op.id)
-                .collect();
-            unknown.sort_unstable();
-            unknown.dedup();
-            if !unknown.is_empty() {
-                return Err(RawError::UnsupportedRequiredOpcodes(unknown));
-            }
-            found
-        } else {
-            Vec::new()
-        };
         let mut native = Box::new(Self::blank_native());
         let mut handle = std::ptr::null_mut();
         let mut error = [0 as c_char; 256];
@@ -506,6 +479,22 @@ impl RawSource {
         }
         let guard = NativeHandle(handle);
         let n = Self::checked_len(&native)?;
+        // Only a DNG carries opcode lists; LibRaw reports its version. Every required operation
+        // must be one the corrections implement, whatever the camera.
+        let opcodes = if native.dng_version != 0 {
+            let found = format::dng_opcodes(bytes)?;
+            let unknown = format::required_ids(
+                found
+                    .iter()
+                    .filter(|op| opcodes::Opcode::implemented(op.list, op.id).is_none()),
+            );
+            if !unknown.is_empty() {
+                return Err(RawError::UnsupportedRequiredOpcodes(unknown));
+            }
+            found
+        } else {
+            Vec::new()
+        };
         let (mut metadata, dng_correction) = Self::interpret(&native, bytes, &opcodes)?;
         let mut samples = Vec::new();
         samples
@@ -875,9 +864,9 @@ impl RawSource {
         if row_norms.iter().any(|v| !v.is_finite() || *v < 1e-8) {
             return Err(RawError::MissingCalibration("camera color matrix"));
         }
-        let m = &native.rgb_cam;
-        let det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8])
-            + m[2] * (m[4] * m[9] - m[5] * m[8]);
+        let det = mat3::determinant(std::array::from_fn(|row| {
+            std::array::from_fn(|column| native.rgb_cam[row * 4 + column])
+        }));
         if !det.is_finite() || det.abs() < 1e-8 {
             return Err(RawError::MissingCalibration("singular camera color matrix"));
         }

@@ -196,10 +196,7 @@ impl Catalog {
                         "invalid configured XYZ-to-camera calibration provenance or coefficient",
                     );
                 }
-                let m = &calibration.xyz_to_camera;
-                let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-                    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                let det = crate::mat3::determinant(calibration.xyz_to_camera);
                 if !det.is_finite() || det.abs() < 1e-8 {
                     return fail("configured XYZ-to-camera calibration is singular");
                 }
