@@ -276,7 +276,7 @@ fn required_dji_opcodes_are_applied_to_fc3411() {
     assert_eq!(rgb.data.len(), 3 * 5568 * 3648);
     assert!(rgb.data.iter().all(|v| v.is_finite()));
     let reference: serde_json::Value =
-        serde_json::from_str(include_str!("../../../probes/raw/dng_reference.json")).unwrap();
+        serde_json::from_str(include_str!("../../../fixtures/raw-dng-reference.json")).unwrap();
     let samples = reference["sparse_reference"]["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 18);
     let plane_len = rgb.width as usize * rgb.height as usize;
