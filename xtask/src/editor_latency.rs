@@ -34,8 +34,8 @@ use crate::{
 };
 use luxforge_core::{ModuleRegistry, ParameterKind};
 use luxforge_evidence::{
-    self as script, BrushStep, CurveStep, CurveStepEvent, MaskStep, PaintStep, Reference,
-    SliderEnd, SliderStep, ViewStep, WorkspaceStep,
+    self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
+    Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
     collections::BTreeSet,
@@ -627,6 +627,12 @@ pub enum Mode {
     Paint,
     /// An open drafted adjustment, pans, quiet refinement and release at percentage zoom.
     Viewport,
+    /// A crop draft's open: `--samples` Starts at Fit, each held open and then cancelled, over
+    /// the recipe the flags commit. From events the editor already logs it reads the Start step to
+    /// `crop_draft_started`, and to the frame captured once the crop layer's input stage is on
+    /// screen, and from the Performance section the memory and GPU figures while each draft is
+    /// open.
+    CropStart,
 }
 
 impl Mode {
@@ -637,6 +643,7 @@ impl Mode {
             Self::Burst => "burst",
             Self::Paint => "paint",
             Self::Viewport => "viewport",
+            Self::CropStart => "crop-start",
         }
     }
 }
@@ -768,6 +775,9 @@ pub struct Options<'a> {
     /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
     /// exposure drag runs every one of the module's colour units on each frame.
     pub basic: bool,
+    /// Commit a Presence layer with all three fields at full strength before the gesture, so the
+    /// measured stack holds its neighbourhood operations.
+    pub presence: bool,
     /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
     /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
     /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
@@ -1773,6 +1783,193 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     Ok(())
 }
 
+/// How long a crop-start run holds each draft open, and waits after each Cancel and before the
+/// first Start: longer than the Performance section's one-second sampling interval, so the frame
+/// captured at its end carries a sample taken while the draft, or the photograph alone, was on
+/// screen.
+const CROP_START_HOLD_MS: u64 = 1500;
+
+/// The Presence layer `--presence` commits: every field at full strength, so the stack holds all
+/// three of its neighbourhood operations.
+fn presence_precondition() -> script::Step {
+    script::Step::call(
+        "edit.set-presence",
+        json!({"texture":100.0,"clarity":100.0,"dehaze":100.0}),
+    )
+}
+
+/// The crop-start run's script and the step numbers of its Starts: the recipe, the Performance
+/// section opened and a settled baseline, then per sample a Start held open, its Cancel and a
+/// settle.
+fn crop_start_script(options: &Options) -> (Vec<script::Step>, Vec<usize>) {
+    let mut steps = Vec::new();
+    if options.basic {
+        steps.push(basic_precondition());
+    }
+    if options.presence {
+        steps.push(presence_precondition());
+    }
+    steps.push(script::Step::performance(true));
+    steps.push(script::Step::wait(CROP_START_HOLD_MS));
+    let mut starts = Vec::new();
+    for _ in 0..options.samples {
+        steps.push(script::Step::Draft(DraftStep::Start));
+        // Script steps are numbered from one, in the order the editor runs them.
+        starts.push(steps.len());
+        steps.push(script::Step::wait(CROP_START_HOLD_MS));
+        steps.push(script::Step::Draft(DraftStep::Cancel));
+        steps.push(script::Step::wait(CROP_START_HOLD_MS));
+    }
+    (steps, starts)
+}
+
+fn run_crop_start(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(
+        (1..=14).contains(&options.samples),
+        "Crop-start samples must be 1..14: each is four script steps, and the script takes at most 64",
+    )?;
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
+    run.check(|run| crop_start(run, options))
+}
+
+/// A Performance-section figure of one captured frame, in MiB.
+fn resource_mib(frame: &Value, path: &[&str]) -> Option<f64> {
+    let mut value = &frame["state"]["performance"]["resources"];
+    for key in path {
+        value = &value[*key];
+    }
+    value.as_f64().map(|bytes| bytes / (1024.0 * 1024.0))
+}
+
+/// The crop-start mode's launch and its report, in `run`.
+fn crop_start(run: &mut Run, options: &Options) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
+    let source = options.source.canonicalize()?;
+    let source_hash = hash(&source)?;
+    let (steps, starts) = crop_start_script(options);
+    let load_start = launch::load_average(root);
+    let launch = gesture_launch(
+        out,
+        "crop-start",
+        "crop-start-script.json",
+        &steps,
+        &source,
+        false,
+    )
+    .watch(sampled(root, "crop-start"));
+    let Launched {
+        dir: evidence,
+        watched: usage,
+    } = run.launch(launch)?;
+    let app = read_json(&evidence.join("result.json"))?;
+    ensure(
+        app["status"] == "captured"
+            && app["had_input_errors"] == json!(false)
+            && app["script"]
+                .as_array()
+                .is_some_and(|recorded| recorded.len() == steps.len()),
+        format!("A crop-start step failed or never ran: {}", app["script"]),
+    )?;
+    let events = scenario::events(&evidence.join("events.jsonl"))?;
+    let header = run.provenance(&events)?;
+    let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    // The opened frame comes first, then one frame per step.
+    let frame = |step: usize| frame_at(frames, step, "crop-start");
+    let baseline = frame(starts[0] - 1)?;
+    // The first event of `name` after the script_step that sent `step`.
+    let after = |step: usize, name: &str| -> Result<f64> {
+        let sent = events
+            .iter()
+            .position(|event| {
+                event["event"] == "script_step" && event["detail"]["step"] == json!(step)
+            })
+            .ok_or_else(|| format!("Step {step} was never sent"))?;
+        let found = events[sent + 1..]
+            .iter()
+            .find(|event| event["event"] == name)
+            .ok_or_else(|| format!("No {name} followed step {step}"))?;
+        Ok(elapsed(found)? - elapsed(&events[sent])?)
+    };
+    let mut to_started = Vec::new();
+    let mut to_captured = Vec::new();
+    let mut memory = Vec::new();
+    let mut gpu = Vec::new();
+    let mut per_start = Vec::new();
+    for &step in &starts {
+        let started = after(step, "crop_draft_started")?;
+        let captured = after(step, "frame_captured")?;
+        let shown = frame(step)?;
+        ensure(
+            shown["state"]["crop"]["drafting"] == json!(true)
+                && shown["state"]["crop"]["input_stage_loaded"] == json!(true),
+            format!("Step {step}'s frame shows no crop draft on its input stage"),
+        )?;
+        let held = frame(step + 1)?;
+        let (held_memory, held_gpu) = (
+            resource_mib(held, &["memory", "bytes"]),
+            resource_mib(held, &["gpu", "allocated_bytes"]),
+        );
+        to_started.push(started);
+        to_captured.push(captured);
+        memory.extend(held_memory);
+        gpu.extend(held_gpu);
+        per_start.push(json!({
+            "step":step,
+            "start_to_crop_draft_started_ms":started,
+            "start_to_stage_frame_captured_ms":captured,
+            "held_memory_mib":held_memory,
+            "held_gpu_allocated_mib":held_gpu,
+            "stage_frame":held["state"]["crop"]["input_stage_frame"],
+            "stage_resident_bytes":held["state"]["surface"]["gpu"]["stage_resident_bytes"],
+        }));
+    }
+    let load_end = launch::load_average(root);
+    let mut rows = vec![
+        stats::row("start_to_crop_draft_started", "ms", to_started),
+        stats::row("start_to_stage_frame_captured", "ms", to_captured),
+        stats::row("held_draft_memory", "MiB", memory),
+        stats::row("held_draft_gpu_allocated", "MiB", gpu),
+        stats::scalar(
+            "baseline_memory",
+            "MiB",
+            resource_mib(baseline, &["memory", "bytes"]),
+        ),
+        stats::scalar(
+            "baseline_gpu_allocated",
+            "MiB",
+            resource_mib(baseline, &["gpu", "allocated_bytes"]),
+        ),
+    ];
+    let last = frames.last().ok_or("No frame was captured")?;
+    rows.extend(resource_rows(&usage, last));
+    let mut result = json!({
+        "status":"passed",
+        "source":source,
+        "source_sha256":source_hash,
+        "source_dimensions":baseline["state"]["source_dimensions"],
+        "preview_dimensions":baseline["state"]["preview_dimensions"],
+        "backend":baseline["state"]["backend"],
+        "physical_size":baseline["physical_size"],
+        "scale":baseline["scale"],
+        "full_basic_layer":options.basic,
+        "presence_layer":options.presence,
+        "mode":"crop-start",
+        "samples":options.samples,
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache, at Fit. Each sample is a crop draft Start step held open for {CROP_START_HOLD_MS} ms, then Cancel and {CROP_START_HOLD_MS} ms more. Times are from the script_step event that sent the Start: to crop_draft_started, which the Start's own update logs, and to the frame_captured of the Start step, which the editor captures once the crop layer's input stage is on screen, so that figure includes the window readback. Memory and GPU are the Performance section's resources.read figures in the frame captured at the end of each hold, sampled at most one second earlier while the draft was open."),
+        "rows":rows,
+        "starts":per_start,
+        "load":launch::load(load_start),
+        "load_average_1m_end":load_end,
+        "resources":{"rss_samples":usage["rss_samples"]},
+        "scope":"Opening a crop draft at Fit on this source and recipe: CropMessage::Start to crop_draft_started, and to the captured frame showing the input stage; and the process memory and GPU allocation while the draft is open, beside the settled baseline before the first Start.",
+    });
+    stamp(&mut result, &header);
+    write_json(&out.join("latency.json"), &result)?;
+    ensure(hash(&source)? == source_hash, "The source changed")?;
+    println!("PASS editor latency (crop-start): {}", out.display());
+    Ok(())
+}
+
 pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     ensure(
         cfg!(target_os = "macos"),
@@ -1797,6 +1994,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     if options.mode == Mode::Paint {
         return run_paint(root, out, bin, &options);
     }
+    if options.mode == Mode::CropStart {
+        return run_crop_start(root, out, bin, &options);
+    }
+    ensure(!options.presence, "--presence is a crop-start precondition")?;
     ensure(
         (1..=60).contains(&options.samples),
         "Samples must be 1..60; the evidence script accepts at most 64 steps",
@@ -2649,6 +2850,7 @@ mod tests {
                             crop,
                             idle: false,
                             basic,
+                            presence: false,
                             mask,
                             zoom,
                             moving_pan,
@@ -2721,6 +2923,7 @@ mod tests {
                             crop,
                             idle: false,
                             basic,
+                            presence: false,
                             mask,
                             zoom: Some(zoom),
                             moving_pan: false,
@@ -2765,6 +2968,40 @@ mod tests {
     /// placeholder for the curve control, which ignores its `field` argument entirely.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
+    }
+
+    /// A crop-start script at its largest sample count fits the evidence script, and the step
+    /// numbers it reports are its Starts, each followed by its hold, its Cancel and a settle.
+    #[test]
+    fn a_crop_start_script_numbers_its_starts_and_fits_the_script_limit() {
+        let source = PathBuf::from("unused.jpg");
+        let options = Options {
+            source: &source,
+            samples: 14,
+            mode: Mode::CropStart,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: None,
+            idle: false,
+            basic: true,
+            presence: true,
+            mask: false,
+            zoom: None,
+            moving_pan: false,
+        };
+        let (steps, starts) = crop_start_script(&options);
+        assert!(steps.len() <= script::MAX_SCRIPT_STEPS, "{}", steps.len());
+        assert_eq!(starts.len(), 14);
+        for start in starts {
+            assert_eq!(steps[start - 1], script::Step::Draft(DraftStep::Start));
+            assert_eq!(steps[start], script::Step::wait(CROP_START_HOLD_MS));
+            assert_eq!(steps[start + 1], script::Step::Draft(DraftStep::Cancel));
+        }
+        assert_eq!(
+            script::parse(&script::write(&steps).to_string()).as_deref(),
+            Ok(steps.as_slice())
+        );
     }
 
     #[test]

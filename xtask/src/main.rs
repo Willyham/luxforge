@@ -400,6 +400,7 @@ fn main_result() -> Result {
                 .transpose()?;
             let idle = a.flag("--idle");
             let basic = a.flag("--basic");
+            let presence = a.flag("--presence");
             let mask = a.flag("--mask");
             let zoom = a
                 .value("--zoom")?
@@ -419,9 +420,10 @@ fn main_result() -> Result {
                 Some("burst") => editor_latency::Mode::Burst,
                 Some("paint") => editor_latency::Mode::Paint,
                 Some("viewport") => editor_latency::Mode::Viewport,
+                Some("crop-start") => editor_latency::Mode::CropStart,
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint or viewport, not {other}"
+                        "--mode is drag, commit, burst, paint, viewport or crop-start, not {other}"
                     )
                     .into());
                 }
@@ -448,6 +450,7 @@ fn main_result() -> Result {
                     crop,
                     idle,
                     basic,
+                    presence,
                     mask,
                     zoom,
                     moving_pan,
@@ -578,7 +581,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }
