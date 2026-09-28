@@ -819,7 +819,7 @@ impl Editor {
         let synced = self.sync_when_wanted();
         let task = self.sync_mode(Task::batch([task, brush, abandoned, synced]));
         self.refresh_overlay();
-        self.refresh_thumbnails();
+        let task = Task::batch([task, self.refresh_thumbnails()]);
         let rederive_started = Instant::now();
         self.rederive();
         // A capability section is read for the first time once it is on screen: its first read is

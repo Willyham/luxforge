@@ -8,10 +8,18 @@
 //!
 //! **What starts one.** The stack of every settled full-stack preview job — not a truncated crop
 //! input, and not the interactive frames of a drag, whose 16 ms ticks send exactly what they sent
-//! before thumbnails existed — is kept as the thumbnails' source when it holds a mask. While Mask
-//! mode is on screen a new source asks for one job; outside it nothing runs, and entering Mask mode
-//! asks for the source kept meanwhile. A stack without masks keeps nothing and clears the
-//! thumbnails, so a RAW development that no mask needs is never held here.
+//! before thumbnails existed — is the thumbnails' source when it holds a mask. While Mask mode is
+//! on screen a new source is handed to the worker as its frame is requested; outside it nothing
+//! runs and only the source's identity is noted, and entering Mask mode plans the stack on screen
+//! again on an owner task, as a preview is planned, and hands that to the worker. A stack without
+//! masks clears the thumbnails.
+//!
+//! **What it never holds.** The desktop keeps no stack between messages, only identities. An
+//! evaluation holds its source, and a RAW source's developed planes hold the source worker's memory
+//! gate ([`luxforge_core`]'s `PlaneGate`), so a development kept here would keep the next one — a
+//! white-balance change, a history selection at other gains, another photograph — from ever
+//! starting. The worker holds a stack only for the job that reads it, exactly as the preview
+//! worker does.
 //!
 //! **What bounds it.** The worker is the preview's own primitive, [`Latest`]: one persistent
 //! thread, one running job and one replaceable pending job. A job covers at most
@@ -22,18 +30,21 @@
 //! **What it does not repeat.** The worker keeps each mask's grid under the key of everything that
 //! grid depends on, so an unchanged mask costs its key — `O(recipe)`, no cell — and hands back the
 //! very same cells, which is also what lets a row compare by identity.
-use super::Editor;
+use super::{Editor, message::Message, tasks};
 use crate::state::masks::{MaskThumbnails, Thumbnail};
+use iced::Task;
 use luxforge_core::{
-    ErrorKind, Evaluation, MASKS_PER_RECIPE, MaskCoverage, MaskId, PreviewIntent, PreviewJob,
+    ErrorKind, MASKS_PER_RECIPE, MaskCoverage, MaskId, PreviewIntent, PreviewJob,
     analysis::AnalysisIdentity,
     latest::{Latest, Running},
 };
 use serde_json::json;
 use std::sync::Arc;
 
-/// One thumbnail job: the settled stack to thumbnail every mask of.
-pub(crate) type ThumbnailJob = Evaluation;
+/// One thumbnail job: the settled stack to thumbnail every mask of. The one place the desktop
+/// names the stack's type (repository rule `desktop-keeps-no-stack`): the worker holds it for the
+/// job that reads it, and nothing on the desktop keeps one.
+pub(crate) type ThumbnailJob = luxforge_core::Evaluation;
 
 /// One mask's thumbnail as the worker keeps it between jobs: the key of what its grid depends on,
 /// and the grid.
@@ -59,7 +70,7 @@ pub(crate) struct ThumbnailResult {
 /// key. `cache` becomes exactly this stack's masks, so it never holds more than
 /// [`MASKS_PER_RECIPE`]. `None` when `cancel` ended the job: what it filled before then is kept.
 fn thumbnails(
-    evaluation: &Evaluation,
+    evaluation: &ThumbnailJob,
     cache: &mut Vec<Cached>,
     cancel: &luxforge_core::Cancel,
 ) -> Option<ThumbnailResult> {
@@ -153,7 +164,7 @@ impl ThumbnailQueue {
     }
 
     /// Ask for every mask's thumbnail over `evaluation`, superseding any job before it.
-    pub(crate) fn request(&mut self, evaluation: Evaluation) {
+    pub(crate) fn request(&mut self, evaluation: ThumbnailJob) {
         self.newest = self.worker.request(evaluation).generation;
     }
 
@@ -182,70 +193,106 @@ impl ThumbnailQueue {
     }
 }
 
-/// The settled stack the thumbnails describe, and whether it has been asked for.
+/// Which settled stack the thumbnails should describe, by identity alone, and which one the worker
+/// was asked for. No stack is kept here: an evaluation holds its source, a RAW source's developed
+/// planes hold the source worker's memory gate, and a development the desktop kept between messages
+/// would keep the next one from starting.
 #[derive(Default)]
 pub(crate) struct ThumbnailSource {
-    /// The newest settled full-stack preview job's stack, under its identity.
-    pub(crate) latest: Option<(AnalysisIdentity, Evaluation)>,
+    /// The newest settled full-stack preview job's identity, when its stack holds a mask.
+    pub(crate) latest: Option<AnalysisIdentity>,
     /// The identity last handed to the worker, so an unchanged stack starts nothing.
     pub(crate) requested: Option<AnalysisIdentity>,
+    /// The identity whose stack an owner task is planning again, because Mask mode was entered
+    /// after it settled; so it is planned once.
+    pub(crate) planning: Option<AnalysisIdentity>,
 }
 
 impl Editor {
-    /// Keep `job`'s stack as the thumbnails' source when it is a settled full-stack frame. A
-    /// crop's truncated input and the interactive frames of a drag are not: the first is not the
-    /// photograph the masks apply to, and the second changes every 16 ms tick.
+    /// Take note of `job`'s stack when it is a settled full-stack frame, and hand it to the
+    /// worker at once while Mask mode shows the thumbnails. A crop's truncated input and the
+    /// interactive frames of a drag are not noted: the first is not the photograph the masks apply
+    /// to, and the second changes every 16 ms tick. Outside Mask mode only the identity is noted.
     pub(super) fn note_thumbnail_source(&mut self, job: &PreviewJob) {
         if job.layer_count.is_some() || job.intent == PreviewIntent::Interactive {
             return;
         }
-        // A stack without masks has no thumbnail to describe, so nothing of it is kept: a kept
-        // stack holds its source, and a RAW source's developed planes hold the source worker's
-        // memory gate, which would keep the next development from starting.
+        // A stack without masks has no thumbnail to describe.
         if job.evaluation.recipe().masks.is_empty() {
             self.thumbnail_source = ThumbnailSource::default();
             self.thumbnail_queue.cancel();
             self.adopt_thumbnails(Vec::new());
             return;
         }
-        if self
-            .thumbnail_source
-            .latest
-            .as_ref()
-            .is_some_and(|(identity, _)| identity == &job.identity)
-        {
+        if self.thumbnail_source.latest.as_ref() == Some(&job.identity) {
             return;
         }
-        self.thumbnail_source.latest = Some((job.identity.clone(), job.evaluation.clone()));
+        self.thumbnail_source.latest = Some(job.identity.clone());
+        if self.mask_mode_active() {
+            self.thumbnail_source.requested = Some(job.identity.clone());
+            // The worker's clone lives as long as its job, as the preview worker's does.
+            self.thumbnail_queue.request(job.evaluation.clone());
+        }
     }
 
-    /// Ask for the thumbnails of the kept source when Mask mode shows them and they have not been
-    /// asked for. Outside Mask mode nothing runs; with no photograph open the source is released.
-    pub(super) fn refresh_thumbnails(&mut self) {
+    /// When Mask mode shows the thumbnails and the stack on screen settled while it did not, plan
+    /// that stack again on an owner task, as a preview is planned, and hand it to the worker when
+    /// it arrives ([`Self::thumbnail_source_planned`]). Outside Mask mode nothing runs; with
+    /// another photograph open, or none, the last one's thumbnails are dropped.
+    pub(super) fn refresh_thumbnails(&mut self) -> Task<Message> {
         let open = self.state.as_ref().map(|state| &state.asset.id);
         if self
             .thumbnail_source
             .latest
             .as_ref()
-            .is_some_and(|(identity, _)| Some(&identity.asset_id) != open)
+            .is_some_and(|identity| Some(&identity.asset_id) != open)
         {
-            // Another photograph, or none: nothing kept for the last one describes this one.
+            // Another photograph, or none: nothing noted for the last one describes this one.
             self.thumbnail_source = ThumbnailSource::default();
             self.thumbnail_queue.cancel();
             self.adopt_thumbnails(Vec::new());
         }
         if !self.mask_mode_active() {
-            return;
+            return Task::none();
         }
-        let Some((identity, evaluation)) = &self.thumbnail_source.latest else {
+        let source = &self.thumbnail_source;
+        let Some(identity) = source.latest.clone() else {
+            return Task::none();
+        };
+        if source.requested.as_ref() == Some(&identity)
+            || source.planning.as_ref() == Some(&identity)
+        {
+            return Task::none();
+        }
+        self.thumbnail_source.planning = Some(identity.clone());
+        tasks::thumbnail_source_task(
+            self.owner.clone(),
+            self.client,
+            identity.asset_id,
+            identity.entry_id,
+        )
+    }
+
+    /// The stack [`Self::refresh_thumbnails`] planned again: handed to the worker when Mask mode
+    /// still shows the thumbnails and it is still the stack on screen, and dropped otherwise. It is
+    /// never kept.
+    pub(super) fn thumbnail_source_planned(&mut self, planned: Result<Box<PreviewJob>, String>) {
+        let Some(identity) = self.thumbnail_source.planning.take() else {
             return;
         };
-        if self.thumbnail_source.requested.as_ref() == Some(identity) {
+        if !self.mask_mode_active() || self.thumbnail_source.latest.as_ref() != Some(&identity) {
             return;
         }
+        // Asked for either way, so a failed plan is not planned again until the stack changes.
         self.thumbnail_source.requested = Some(identity.clone());
-        let evaluation = evaluation.clone();
-        self.thumbnail_queue.request(evaluation);
+        match planned {
+            Ok(job) if job.identity == identity => self.thumbnail_queue.request(job.evaluation),
+            Ok(job) => self.event(
+                "mask_thumbnails_unavailable",
+                json!({"reason": "the stack planned again is not the settled one", "entry": job.evaluation.entry().id}),
+            ),
+            Err(reason) => self.event("mask_thumbnails_unavailable", json!({ "reason": reason })),
+        }
     }
 
     /// Take up one delivered set of thumbnails.
@@ -282,9 +329,9 @@ impl Editor {
 mod tests {
     use super::*;
     use luxforge_core::{
-        AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EntryId, HistoryEntry,
-        Layer, LayerId, Mask, ModuleRegistry, PreviewSource, RECIPE_FORMAT, Recipe, RenderContext,
-        Snapshot, SnapshotId, SourceImage, Stage,
+        AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EntryId, Evaluation,
+        HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, PreviewSource, RECIPE_FORMAT, Recipe,
+        RenderContext, Snapshot, SnapshotId, SourceImage, Stage,
         analysis::{MaskPixels, coverage_grid},
         mask::CompiledMask,
     };
@@ -555,9 +602,36 @@ mod tests {
         );
     }
 
-    /// Through the editor: a settled preview job's stack is kept, nothing runs outside Mask mode,
-    /// entering Mask mode asks for it once, the delivered thumbnails reach each mask's row, the
-    /// same stack again asks for nothing, and a stack without masks is not kept.
+    /// The same stack as `stack` — the same entry, recipe and source identity, so the same
+    /// analysis identity — over a new allocation of its pixels, and a handle that says whether
+    /// anything still holds that allocation: what a test needs to see that nothing kept a stack.
+    fn fresh(stack: &Evaluation) -> (Evaluation, std::sync::Weak<Vec<u8>>) {
+        let PreviewSource::Jpeg(image) = stack.source() else {
+            panic!("a JPEG stack");
+        };
+        let pixels = Arc::new(image.rgba.as_ref().clone());
+        let held = Arc::downgrade(&pixels);
+        let source = PreviewSource::Jpeg(SourceImage {
+            rgba: pixels,
+            ..image.clone()
+        });
+        let evaluation = Evaluation::new(
+            stack.registry().clone(),
+            stack.context().clone(),
+            source,
+            stack.entry().clone(),
+            stack.recipe().clone(),
+            None,
+        );
+        (evaluation, held)
+    }
+
+    /// Through the editor: outside Mask mode a settled stack starts nothing and only its identity
+    /// is noted; entering Mask mode plans that stack again once, and its delivered thumbnails reach
+    /// each mask's row; in Mask mode a new settled stack is handed to the worker as its frame is
+    /// requested; the same stack again asks for nothing; and a stack without masks clears the
+    /// thumbnails. At no point does the desktop hold a stack's pixels once the workers are done
+    /// with them: a kept RAW development would hold the source worker's memory gate.
     #[test]
     fn mask_mode_thumbnails_every_listed_mask_from_the_settled_stack_once() {
         use crate::app::message::{Message, PreviewMessage};
@@ -587,7 +661,6 @@ mod tests {
             stack.recipe().clone(),
             None,
         );
-        let job = PreviewJob::new(stack.clone()).expect("a job");
         *editor.masks = Some(luxforge_core::mask::commands::MaskListing {
             entry_id: editor.displayed_entry().expect("a displayed entry"),
             masks: [&sky, &face]
@@ -604,19 +677,48 @@ mod tests {
                 })
                 .collect(),
         });
-        editor.request_preview(job.clone());
-        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        let idle = |editor: &mut Editor| {
+            luxforge_testbase::wait_until("the preview and thumbnail workers", || {
+                let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+                !editor.preview_queue.is_busy() && !editor.thumbnail_queue.is_busy()
+            });
+        };
+        let identity = PreviewJob::new(stack.clone()).expect("a job").identity;
+
+        // Outside Mask mode: nothing is filled, and nothing of the stack outlives its frame.
+        let (settled, pixels) = fresh(&stack);
+        editor.request_preview(PreviewJob::new(settled).expect("a job"));
         assert!(
-            !editor.thumbnail_queue.is_busy() && editor.thumbnail_source.requested.is_none(),
+            !editor.thumbnail_queue.is_busy(),
             "outside Mask mode no thumbnail is filled"
         );
+        idle(&mut editor);
+        assert_eq!(editor.thumbnail_source.latest.as_ref(), Some(&identity));
+        assert!(editor.thumbnail_source.requested.is_none());
+        assert_eq!(
+            pixels.strong_count(),
+            0,
+            "the desktop keeps no stack once its frame is delivered"
+        );
 
+        // Entering Mask mode plans the stack on screen again, once.
         editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        assert_eq!(editor.thumbnail_source.planning.as_ref(), Some(&identity));
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         assert_eq!(
-            editor.thumbnail_source.requested.as_ref(),
-            Some(&job.identity)
+            editor.thumbnail_source.planning.as_ref(),
+            Some(&identity),
+            "planned once"
         );
+        assert!(!editor.thumbnail_queue.is_busy());
+        // The owner task's answer: the same stack, planned again.
+        let (planned, pixels) = fresh(&stack);
+        let _ = editor.update(Message::Preview(PreviewMessage::ThumbnailSource(Ok(
+            Box::new(PreviewJob::new(planned).expect("a job")),
+        ))));
+        assert_eq!(editor.thumbnail_source.requested.as_ref(), Some(&identity));
+        assert!(editor.thumbnail_source.planning.is_none());
         luxforge_testbase::wait_until("every listed mask's thumbnail", || {
             let _ = editor.update(Message::Preview(PreviewMessage::Poll));
             !editor.thumbnails.masks.is_empty()
@@ -626,16 +728,47 @@ mod tests {
             let thumbnail = row.thumbnail.as_ref().expect("every listed mask has one");
             assert_eq!(&thumbnail.cells[..], &overlay_cells(mask)[..]);
         }
+        idle(&mut editor);
+        assert_eq!(
+            pixels.strong_count(),
+            0,
+            "the worker releases the stack with its job"
+        );
         let version = editor.thumbnails.version;
 
         // The same settled stack again starts nothing.
-        editor.request_preview(job);
-        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        let (again, _) = fresh(&stack);
+        editor.request_preview(PreviewJob::new(again).expect("a job"));
         assert!(!editor.thumbnail_queue.is_busy());
+        idle(&mut editor);
         assert_eq!(editor.thumbnails.version, version);
 
-        // A settled stack without masks keeps nothing, so no source it holds outlives its frame,
-        // and the thumbnails of the stack before it are gone.
+        // In Mask mode a new settled stack goes to the worker as its frame is requested, and is
+        // released with the job that reads it.
+        let brighter = Evaluation::new(
+            stack.registry().clone(),
+            stack.context().clone(),
+            stack.source().clone(),
+            stack.entry().clone(),
+            Recipe {
+                layers: vec![bound(&sky, 1.5), bound(&face, 0.3)],
+                ..stack.recipe().clone()
+            },
+            None,
+        );
+        let (brighter, pixels) = fresh(&brighter);
+        let job = PreviewJob::new(brighter).expect("a job");
+        let brighter = job.identity.clone();
+        editor.request_preview(job);
+        assert_eq!(editor.thumbnail_source.requested.as_ref(), Some(&brighter));
+        assert!(
+            editor.thumbnail_source.planning.is_none(),
+            "nothing planned"
+        );
+        idle(&mut editor);
+        assert_eq!(pixels.strong_count(), 0, "nothing of it is kept");
+
+        // A settled stack without masks clears the thumbnails of the stack before it.
         let bare = Evaluation::new(
             stack.registry().clone(),
             stack.context().clone(),
@@ -680,5 +813,185 @@ mod tests {
             !queue.is_busy()
         });
         assert!(queue.poll().is_none());
+    }
+
+    /// With the real owner and a real RAW whose recipe holds a mask, while the Masks panel shows
+    /// its thumbnails: each white-balance change, each history selection at other gains and
+    /// opening another photograph prepares its development within a bounded wait. Each step runs
+    /// the desktop's own refresh — which plans the preview and blocks on the source job it needs —
+    /// on a thread of its own, so a development that waits on planes the desktop holds fails the
+    /// test instead of hanging it.
+    ///
+    /// `LUXFORGE_RAW_FIXTURE=/path/to/file.NEF cargo test --release -p luxforge-app --lib \
+    ///   a_raw_with_a_mask_develops_again -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires a private RAW fixture: set LUXFORGE_RAW_FIXTURE"]
+    fn a_raw_with_a_mask_develops_again_while_its_thumbnails_are_shown() {
+        use crate::app::{
+            message::{Message, PreviewMessage, SyncMessage},
+            tasks::{self, Refresh, Scope},
+        };
+        use std::time::{Duration, Instant};
+        /// Far above a release development of any supported camera, far below a hang.
+        const DEADLINE: Duration = Duration::from_secs(60);
+        let raw = std::path::PathBuf::from(
+            std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"),
+        );
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-thumbnail-gate-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let (mut editor, asset, _) = crate::app::testing::real_photo_at(&catalog, &raw);
+        let owner = editor.owner.clone();
+        let client = editor.client;
+        let bounded = |what: &str, work: Box<dyn FnOnce() -> Result<Refresh, String> + Send>| {
+            let started = Instant::now();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(work());
+            });
+            let refresh = receiver
+                .recv_timeout(DEADLINE)
+                .unwrap_or_else(|_| {
+                    panic!("{what}: the development did not finish in {DEADLINE:?}")
+                })
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
+            eprintln!("{what}: {:?}", started.elapsed());
+            refresh
+        };
+        let read = |what: &str, scope: Scope| {
+            let (owner, asset) = (owner.clone(), asset.clone());
+            bounded(
+                what,
+                Box::new(move || tasks::refresh(&owner, client, asset, scope, None)),
+            )
+        };
+        let settle = |editor: &mut Editor, refresh: Refresh| {
+            let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+            luxforge_testbase::wait_until("the frame and its thumbnails", || {
+                let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+                !editor.preview_queue.is_busy() && !editor.thumbnail_queue.is_busy()
+            });
+        };
+        let commit = |editor: &Editor, method: &str, params: Value| {
+            let revision = editor.state.as_ref().expect("an open photo").revision;
+            let mut params = params;
+            params["asset_id"] = json!(asset);
+            params["mutation"] = serde_json::to_value(tasks::mutation(revision)).unwrap();
+            let (answer, _) = tasks::call(&owner, client, method, params).expect(method);
+            Scope::Commit(answer["revision"].as_u64().expect("a revision"))
+        };
+        // Whether showing `entry` (the current one when `None`) needs a development first.
+        let readiness = |entry: Option<&luxforge_core::EntryId>| {
+            let (inspected, _) = tasks::call(
+                &owner,
+                client,
+                "source.inspect",
+                json!({"asset_id": asset, "entry_id": entry}),
+            )
+            .expect("source.inspect");
+            inspected["readiness"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+
+        let scope = commit(
+            &editor,
+            "mask.create-linear",
+            json!({"x0": 0.5, "y0": 0.1, "x1": 0.5, "y1": 0.6}),
+        );
+        let refresh = read("the mask", scope);
+        settle(&mut editor, refresh);
+        // Mask mode is the session's, so every refresh after this reads it back.
+        let (session, _) = tasks::call(
+            &owner,
+            client,
+            "workspace.set",
+            json!({"mode": luxforge_core::MASK_MODE}),
+        )
+        .expect("Mask mode");
+        let _ = editor.update(Message::View(
+            crate::app::message::ViewMessage::WorkspaceUpdated(Ok(
+                serde_json::from_value(session).unwrap()
+            )),
+        ));
+        assert!(editor.mask_mode_active());
+        // Entering Mask mode planned the stack on screen again: the owner task's plain call.
+        let planning = editor
+            .thumbnail_source
+            .planning
+            .clone()
+            .expect("the stack on screen is planned again");
+        let planned = tasks::thumbnail_source(&owner, client, asset.clone(), planning.entry_id);
+        let _ = editor.update(Message::Preview(PreviewMessage::ThumbnailSource(
+            planned.map(Box::new),
+        )));
+        luxforge_testbase::wait_until("the mask's thumbnail", || {
+            let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+            editor.thumbnails.masks.len() == 1
+        });
+
+        let mut entries = Vec::new();
+        for temperature in [3500.0, 6500.0, 4200.0] {
+            let scope = commit(&editor, "edit.set-raw", json!({"temperature": temperature}));
+            assert_eq!(
+                readiness(None),
+                "development-required",
+                "{temperature} K develops the mosaic again"
+            );
+            let refresh = read(&format!("{temperature} K"), scope);
+            settle(&mut editor, refresh);
+            assert_eq!(editor.thumbnails.masks.len(), 1, "the thumbnail follows");
+            entries.push(editor.state.as_ref().unwrap().current_entry.id.clone());
+        }
+        // History selections at other gains, as the history panel makes them: the Original at the
+        // camera's gains, two earlier white balances neither development holds, and current again.
+        // The Original holds no mask, so it has no thumbnail.
+        let original = editor.original_entry.clone().expect("the Original");
+        for (what, entry, thumbnails) in [
+            ("the Original", Some(&original), 0),
+            ("3500 K again", Some(&entries[0]), 1),
+            ("current", None, 1),
+            ("6500 K again", Some(&entries[1]), 1),
+            ("the Original again", Some(&original), 0),
+            ("current again", None, 1),
+        ] {
+            let (method, params) = match entry {
+                Some(entry) => (
+                    "preview.select",
+                    json!({"asset_id": asset, "entry_id": entry}),
+                ),
+                None => ("preview.return-current", json!({})),
+            };
+            eprintln!("{what}: {}", readiness(entry));
+            tasks::call(&owner, client, method, params).expect("a selection");
+            let refresh = read(what, Scope::Elsewhere);
+            settle(&mut editor, refresh);
+            assert_eq!(editor.thumbnails.masks.len(), thumbnails, "{what}");
+        }
+        // Another photograph: its original's preparation retains no development of this one.
+        let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0/orientation-1.jpg");
+        let (queued, _) = tasks::call(
+            &owner,
+            client,
+            "catalog.import",
+            json!({"path": jpeg, "mutation": tasks::request()}),
+        )
+        .expect("an import");
+        let job = queued["job_id"].as_str().expect("a source job").to_owned();
+        let (import_owner, started) = (owner.clone(), Instant::now());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(tasks::wait_source_job(&import_owner, client, &job));
+        });
+        receiver
+            .recv_timeout(DEADLINE)
+            .expect("another photograph: its preparation did not finish")
+            .expect("another photograph prepares");
+        eprintln!("another photograph: {:?}", started.elapsed());
+        crate::app::testing::finish(editor, catalog);
     }
 }

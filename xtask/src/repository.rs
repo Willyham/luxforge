@@ -297,6 +297,24 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "the widget crate (luxforge-ui) never reaches the core",
     },
+    // The desktop keeps no stack between messages. An evaluation holds its source, and a RAW
+    // source's developed planes hold the source worker's memory gate, so one kept in the desktop's
+    // state keeps the next development — a white-balance change, a history selection, another
+    // photograph — from ever starting. A stack reaches the desktop only inside the preview job that
+    // carries it to a worker; the thumbnail worker's job type is the one line that names it.
+    SourceRule {
+        name: "desktop-keeps-no-stack",
+        tokens: &["Evaluation"],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/app/thumbnails.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: true,
+        reason: "the desktop keeps no evaluation between messages: it holds its source, and a RAW \
+                 development's planes hold the source worker's memory gate; only the thumbnail \
+                 worker's job type (app/thumbnails.rs) names one",
+    },
     // One JPEG codec path: in shipped code only `luxforge-jpeg` names `mozjpeg` (and
     // `mozjpeg_sys`), and nothing decodes JPEG through `image`. Tests may, as an independent
     // decoder.
@@ -2098,6 +2116,50 @@ mod tests {
         );
         fs::remove_file(copy).unwrap();
         assert_eq!(read(tmp.path(), &["presettable-action"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn only_the_thumbnail_workers_job_names_a_stack_on_the_desktop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let alias = "pub(crate) type ThumbnailJob = luxforge_core::Evaluation;\n";
+        // The thumbnail worker's job type, a test file, a test item, a comment and a longer name
+        // may.
+        write_all(
+            root,
+            &[
+                ("crates/luxforge-app/src/app/thumbnails.rs", alias),
+                (
+                    "crates/luxforge-app/src/app/preview_tests.rs",
+                    "let stack: Evaluation = evaluation();\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/preview.rs",
+                    "#[cfg(test)]\nmod tests {\n    use luxforge_core::Evaluation;\n}\n\
+                     // An Evaluation holds its source.\nlet plan = EvaluationPlan::new();\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["desktop-keeps-no-stack"]).unwrap(), (2, 0));
+        // A second line in the worker's own file, or any other desktop file, is refused.
+        refuses_each(
+            root,
+            "desktop-keeps-no-stack",
+            &[(
+                "crates/luxforge-app/src/app/sync.rs",
+                "latest: Option<(AnalysisIdentity, Evaluation)>,\n",
+            )],
+            "the desktop keeps no evaluation",
+        );
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/src/app/thumbnails.rs",
+                &format!("{alias}latest: Option<(AnalysisIdentity, Evaluation)>,\n"),
+            )],
+        );
+        let error = refusal(root, &["desktop-keeps-no-stack"], "a kept stack");
+        assert!(error.contains("thumbnails.rs:2"), "{error}");
     }
 
     #[test]

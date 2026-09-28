@@ -543,6 +543,9 @@ pub(crate) enum PreviewMessage {
     /// A preview job and the session that selects it, read by something that did not set `busy`:
     /// a comparison, or the displayed entry again once a gesture ended without committing.
     Loaded(Result<Box<PreviewPayload>, String>),
+    /// The stack on screen planned again for the Masks panel's thumbnails, on entering Mask mode.
+    /// Handled in `app/thumbnails.rs`: its evaluation goes to the thumbnail worker or is dropped.
+    ThumbnailSource(Result<Box<luxforge_core::PreviewJob>, String>),
 }
 
 /// The clipping overlay drawn over the photograph. Handled in `app/overlay.rs`; a derived overlay

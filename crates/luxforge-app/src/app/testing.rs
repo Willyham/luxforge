@@ -80,10 +80,21 @@ pub(crate) fn boot() -> (Editor, PathBuf) {
 /// client of the same owner that stands in for an independent JSON client, and read back into the
 /// editor as a command's completion does. Returns the photograph and that client.
 pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforge_core::ClientId) {
+    real_photo_at(
+        catalog,
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0/orientation-1.jpg"),
+    )
+}
+
+/// [`real_photo`] of the photograph at `fixture`. A RAW original is decoded and developed on the
+/// owner's own source worker before the editor opens it.
+pub(crate) fn real_photo_at(
+    catalog: &std::path::Path,
+    fixture: &std::path::Path,
+) -> (Editor, AssetId, luxforge_core::ClientId) {
     let (owner, join) = luxforge_core::OwnerHandle::start(catalog).unwrap();
     let agent = owner.register();
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/s0/orientation-1.jpg");
     let call = |method: &str, params: Value| {
         crate::app::tasks::call(&owner, agent, method, params)
             .unwrap()
