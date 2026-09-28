@@ -377,9 +377,6 @@ impl Editor {
         // in the idle section or a scripted `draft.start` — asks the session to enter this
         // module's mode, so the strip shows Crop selected for the whole life of the draft.
         self.mode_sync = Some(module_id);
-        // An armed brush gives its core draft up to the crop: it is cancelled before the
-        // `draft.begin` below.
-        self.disarm();
         let crop = CropGesture {
             action,
             frame,
@@ -388,7 +385,8 @@ impl Editor {
                 base_revision,
             },
         };
-        let begin = self.open_core(Kind::Crop(crop), None);
+        let gesture = self.next_gesture();
+        let begin = self.open_core(gesture, Kind::Crop(crop), None);
         // A refused begin opened nothing and has said why.
         if self.crop().is_none() {
             return begin;

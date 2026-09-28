@@ -19,10 +19,27 @@ use crate::{
 };
 use iced::Task;
 use luxforge_core::{
-    ComponentId, MASK_MODE, MaskId, MaskOverlayColour, MaskOverlayMode, StageTransform,
+    ComponentId, EntryId, MASK_MODE, MaskId, MaskOverlayColour, MaskOverlayMode, StageTransform,
     mask::commands::{MaskReport, MaskTarget},
 };
 use serde_json::{Map, Value, json};
+
+/// The brush in hand between strokes: this desktop's view state and nothing else.
+///
+/// Choosing Brush, Paint more or a stroke's commit puts a brush in hand on a component; it holds no
+/// core draft, so `session.state` shows none, the one-draft rule does not see it and a commit made
+/// elsewhere has nothing to conflict. Its press opens the stroke's core draft
+/// ([`Editor::paint_press`]), which is one gesture like any other from there to its commit.
+#[derive(Clone, Debug)]
+pub(crate) struct ArmedBrush {
+    /// The identity its `render.transform` answer names, which the stroke its press opens takes on,
+    /// so a map asked for while the brush was in hand reaches the stroke that needs it.
+    pub(crate) id: GestureId,
+    /// The brush, the mask and component it paints on, and the content map a press is placed by.
+    pub(crate) mask: MaskGesture,
+    /// The displayed entry the map was asked for: a new one asks for the map again.
+    pub(crate) entry: Option<EntryId>,
+}
 
 impl Editor {
     /// Mask mode is the active canvas mode.
@@ -240,17 +257,82 @@ impl Editor {
         }
     }
 
-    /// The brush is armed and has drawn nothing yet.
-    ///
-    /// A painted gesture stays open between strokes — one stroke is one entry, so the draft behind
-    /// it re-opens as soon as the last one commits — which means "a draft is open" is not the same
-    /// question as "there is something to answer". An armed brush has nothing to Apply and nothing
-    /// to lose, so [`Editor::gesture_refusal`] never refuses anything on its account: the gesture
-    /// that needs the slot takes it, and everything else goes ahead around it.
+    /// A brush is in hand between strokes, holding no core draft.
     #[cfg(test)]
     pub(crate) fn armed_brush(&self) -> bool {
-        self.core_gesture()
-            .is_some_and(|gesture| gesture.kind.armed())
+        self.armed.is_some()
+    }
+
+    /// The mask gesture the canvas draws and the panel reads: the open core mask gesture, or else
+    /// the brush in hand.
+    pub(crate) fn held_mask(&self) -> Option<&MaskGesture> {
+        self.mask_gesture()
+            .or_else(|| self.armed.as_ref().map(|armed| &armed.mask))
+    }
+
+    fn held_mask_mut(&mut self) -> Option<&mut MaskGesture> {
+        if self.mask_gesture().is_some() {
+            return self.mask_gesture_mut();
+        }
+        self.armed.as_mut().map(|armed| &mut armed.mask)
+    }
+
+    /// Put the brush in hand down. It holds no draft, so nothing is sent and nothing is read back:
+    /// the frame on screen is already the committed one.
+    pub(crate) fn put_brush_down(&mut self) {
+        if let Some(armed) = self.armed.take() {
+            self.status = "Brush put down".into();
+            self.event(
+                "mask_brush_put_down",
+                json!({"summary": armed.mask.shape.summary()}),
+            );
+        }
+    }
+
+    /// The brush in hand follows the stack it paints on, once per update. When the mask or
+    /// component it paints on is gone — undone away, or deleted here or elsewhere — there is
+    /// nothing left to paint on, and it is put down. When the displayed entry moves, its content map
+    /// is asked for again: a crop or a straighten committed while it is in hand moves where a press
+    /// lands, and a press is placed by the map of the stack on screen, never an older one.
+    pub(crate) fn follow_armed_brush(&mut self) -> Task<Message> {
+        let Some(armed) = &self.armed else {
+            return Task::none();
+        };
+        let shape = &armed.mask.shape;
+        let gone = shape.mask.as_ref().is_some_and(|mask| {
+            let report = self
+                .masks
+                .as_ref()
+                .and_then(|listing| listing.masks.iter().find(|report| &report.id == mask));
+            report.is_none_or(|report| {
+                shape.component.as_ref().is_some_and(|component| {
+                    !report.components.iter().any(|known| &known.id == component)
+                })
+            })
+        });
+        if gone {
+            let summary = shape.summary();
+            self.armed = None;
+            self.event(
+                "mask_brush_put_down",
+                json!({"summary": summary, "reason": "gone"}),
+            );
+            return Task::none();
+        }
+        let entry = self.displayed_entry();
+        let (Some(asset), true) = (
+            self.state.as_ref().map(|state| state.asset.id.clone()),
+            armed.entry != entry,
+        ) else {
+            return Task::none();
+        };
+        let id = self.next_gesture();
+        if let Some(armed) = &mut self.armed {
+            armed.id = id;
+            armed.entry = entry.clone();
+            armed.mask.map = None;
+        }
+        crate::app::tasks::transform_task(self.owner.clone(), self.client, id, asset, entry)
     }
 
     /// The kind of the component the panel has selected, as the listing reports it.
@@ -319,9 +401,6 @@ impl Editor {
         let Some(request) = self.mask_request(&target, &fields) else {
             return Task::none();
         };
-        // An armed brush holds a core draft the command would move out from under it, and it has
-        // nothing painted to lose by giving it up: its draft is cancelled before the command goes.
-        self.disarm();
         self.event(
             "mask_command",
             json!({"method":method,"params":request.clone()}),
@@ -655,7 +734,7 @@ impl Editor {
             return Task::none();
         }
         let brush = self.painting_brush();
-        if let Some(mask) = self.mask_gesture_mut()
+        if let Some(mask) = self.held_mask_mut()
             && mask.shape.set_brush(brush)
         {
             self.status = format!(
@@ -719,9 +798,8 @@ impl Editor {
             return Task::none();
         };
         // A drafted frame is already in flight for an open gesture; it carries the overlay request of
-        // its own accord and must not be displaced by a second job for the same pixels. An armed
-        // brush has asked for no drafted frame, so the overlay's own request is the only one in
-        // flight and it is this one.
+        // its own accord and must not be displaced by a second job for the same pixels. A brush in
+        // hand has no draft and asks for no drafted frame, so the overlay's own request is this one.
         if self.gesture_refusal(Starting::Refit).is_some() {
             return Task::none();
         }
@@ -988,6 +1066,8 @@ impl Editor {
     }
 
     /// Start the gesture: read the geometry map once, then open the core draft the release commits.
+    /// A painted shape is a brush put in hand instead ([`ArmedBrush`]): it holds no draft until
+    /// its press. Either way it is the one mask tool in hand, so a brush already held is replaced.
     fn open_shape(&mut self, shape: MaskDraft) -> Task<Message> {
         let Some(method) = shape.method() else {
             self.status = format!("This build cannot draw a {} component", shape.kind());
@@ -996,13 +1076,13 @@ impl Editor {
         let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
             return Task::none();
         };
-        // A brush left armed from an earlier gesture holds this client's one core draft and has
-        // painted nothing, so it gives it up here rather than refusing the gesture that wants it:
-        // it is cancelled before the `draft.begin` below.
-        self.disarm();
         let entry = self.displayed_entry();
         self.event(
-            "mask_draft_begin",
+            if shape.paints() {
+                "mask_brush_armed"
+            } else {
+                "mask_draft_begin"
+            },
             json!({"method":method,"summary":shape.summary()}),
         );
         self.status = self.mask_gesture_line(&shape);
@@ -1010,24 +1090,32 @@ impl Editor {
         if !self.mask_mode_active() {
             self.mode_sync = Some(MASK_MODE.to_owned());
         }
+        let gesture = self.next_gesture();
         let mask = MaskGesture { shape, map: None };
-        // A gesture opens with its shape already set, so its first frame shows what the release
-        // would commit rather than the unmasked picture. An armed brush has nothing to send yet.
-        let fields = mask.fields();
-        let begin = self.open_core(Kind::Mask(mask), fields);
-        let Some(gesture) = self.core_gesture().map(|gesture| gesture.draft.gesture) else {
-            return begin;
-        };
-        Task::batch([
-            crate::app::tasks::transform_task(
-                self.owner.clone(),
-                self.client,
-                gesture,
-                asset,
+        let transform = crate::app::tasks::transform_task(
+            self.owner.clone(),
+            self.client,
+            gesture,
+            asset,
+            entry.clone(),
+        );
+        if mask.shape.paints() {
+            self.armed = Some(ArmedBrush {
+                id: gesture,
+                mask,
                 entry,
-            ),
-            begin,
-        ])
+            });
+            return transform;
+        }
+        self.armed = None;
+        // A gesture opens with its shape already set, so its first frame shows what the release
+        // would commit rather than the unmasked picture.
+        let fields = mask.fields();
+        let begin = self.open_core(gesture, Kind::Mask(mask), Some(fields));
+        if self.core_gesture().is_none() {
+            return begin;
+        }
+        Task::batch([transform, begin])
     }
 
     /// `render.transform` answered: the gesture that asked can map pointer positions from here on
@@ -1038,15 +1126,17 @@ impl Editor {
         gesture: GestureId,
         result: Result<StageTransform, String>,
     ) -> Task<Message> {
-        if self
-            .core_gesture()
-            .is_none_or(|open| open.draft.gesture != gesture || open.mask().is_none())
-        {
+        let asked = match (self.core_gesture(), &self.armed) {
+            (Some(open), _) => open.draft.gesture == gesture && open.mask().is_some(),
+            (None, Some(armed)) => armed.id == gesture,
+            (None, None) => false,
+        };
+        if !asked {
             return Task::none();
         }
         match result {
             Ok(transform) => {
-                if let Some(mask) = self.mask_gesture_mut() {
+                if let Some(mask) = self.held_mask_mut() {
                     mask.map = ContentMap::new(&transform);
                     // Mask space is defined in terms of the content stage's aspect, so the gesture
                     // is told it from the same answer its handles are mapped through — once, not
@@ -1060,7 +1150,7 @@ impl Editor {
                 // A stack with no output stage has no mapping, so the handles cannot be drawn and
                 // the gesture says so rather than drawing them somewhere invented.
                 self.status = format!("Handles unavailable: {error}");
-                if let Some(mask) = self.mask_gesture_mut() {
+                if let Some(mask) = self.held_mask_mut() {
                     mask.map = None;
                 }
             }
@@ -1072,10 +1162,10 @@ impl Editor {
     /// the canvas.
     fn mask_handle(&mut self, handle: crate::app::message::MaskPointer) -> Task<Message> {
         use crate::app::message::MaskPointer;
-        // A press starts the stroke at the brush being held, and the erase flag is frozen here for
-        // the stroke's whole life: letting the modifier go halfway along a path must not turn an
-        // erase into an add.
-        let brush = self.painting_brush();
+        // A press with the brush in hand is the one pointer step that opens a draft.
+        if let MaskPointer::PaintBegin { x, y } = handle {
+            return self.paint_press((x, y));
+        }
         let Some(mask) = self.mask_gesture_mut() else {
             return Task::none();
         };
@@ -1097,11 +1187,7 @@ impl Editor {
                 shape.end();
                 self.offer_mask()
             }
-            MaskPointer::PaintBegin { x, y } => {
-                shape.set_brush(brush);
-                shape.paint_begin((x, y));
-                self.offer_mask()
-            }
+            MaskPointer::PaintBegin { .. } => Task::none(),
             // The path is extended and the canvas redraws it immediately; the round trip below is
             // the drafted picture, which follows one frame behind exactly as a slider's does.
             MaskPointer::PaintTo { x, y } => {
@@ -1114,13 +1200,48 @@ impl Editor {
             // One stroke is one draft and therefore one history entry, so the release commits.
             MaskPointer::PaintEnd => {
                 shape.paint_end();
-                if shape.brush().is_some_and(|stroke| !stroke.drawn()) {
-                    // A press that painted no position is not an edit and writes no entry.
-                    return Task::none();
-                }
                 self.release()
             }
         }
+    }
+
+    /// A press with the brush in hand: the stroke starts at the press's position, drawn with the
+    /// brush held now — the erase flag is frozen here for the stroke's whole life, so letting the
+    /// modifier go halfway along a path cannot turn an erase into an add — and its core draft opens
+    /// here, with `draft.begin` and the first `draft.set`, carrying that position, in this update.
+    /// The press answers to the one refusal every mask gesture's start does; a refused press, or a
+    /// refused `draft.begin`, leaves the brush in hand and says why. A press that captured no
+    /// position is not an edit and opens nothing.
+    fn paint_press(&mut self, point: (f64, f64)) -> Task<Message> {
+        if let Some(reason) = self.gesture_refusal(Starting::Mask) {
+            self.status = reason;
+            return Task::none();
+        }
+        let brush = self.painting_brush();
+        let Some(armed) = self.armed.take() else {
+            return Task::none();
+        };
+        let mut stroke = armed.mask.clone();
+        stroke.shape.set_brush(brush);
+        stroke.shape.paint_begin(point);
+        if !stroke
+            .shape
+            .brush()
+            .is_some_and(crate::mask_draft::BrushStroke::drawn)
+        {
+            self.armed = Some(armed);
+            return Task::none();
+        }
+        self.event(
+            "mask_draft_begin",
+            json!({"method":stroke.shape.method(),"summary":stroke.shape.summary()}),
+        );
+        let fields = stroke.fields();
+        let begin = self.open_core(armed.id, Kind::Mask(stroke), Some(fields));
+        if self.core_gesture().is_none() {
+            self.armed = Some(armed);
+        }
+        begin
     }
 
     /// Offer the gesture's current geometry to its core draft. The shared driver sends it with its
@@ -1129,7 +1250,7 @@ impl Editor {
     /// trip is in flight. The coverage grid the overlay draws rides that job, attached by
     /// [`Editor::request_preview`] as it is to every job.
     pub(crate) fn offer_mask(&mut self) -> Task<Message> {
-        match self.mask_gesture().and_then(MaskGesture::fields) {
+        match self.mask_gesture().map(MaskGesture::fields) {
             Some(fields) => self.drive(Event::Offer(fields)),
             None => Task::none(),
         }
@@ -1161,7 +1282,7 @@ impl Editor {
         }
     }
 
-    /// Arm the brush again on the component the stroke that just committed landed on.
+    /// Put the brush back in hand on the component the stroke that just committed landed on.
     ///
     /// One stroke is one entry, so the draft behind a stroke closes when that stroke commits; the
     /// brush itself is still in the person's hand, and the next press must be the next stroke on the

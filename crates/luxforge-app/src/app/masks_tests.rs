@@ -230,8 +230,9 @@ impl Masking {
         let _ = self.editor.update(Message::Draft(message));
     }
 
-    /// Answer the open gesture's `render.transform` as the runtime's task does. Its `draft.begin`
-    /// and first `draft.set` already ran, synchronously, in the update that opened it.
+    /// Answer the open gesture's, or the brush in hand's, `render.transform` as the runtime's task
+    /// does. A gesture's `draft.begin` and first `draft.set` already ran, synchronously, in the
+    /// update that opened it; a brush in hand has neither until its press.
     fn open_gesture(&mut self) {
         assert!(self.editor.mask_shape().is_some(), "a gesture is open");
         // `render.transform` answers the affine the handles are mapped through.
@@ -242,7 +243,11 @@ impl Masking {
             json!({"asset_id": self.asset}),
         )
         .unwrap();
-        let gesture = testing::gesture_of(&self.editor);
+        let gesture = match (self.editor.core_gesture(), &self.editor.armed) {
+            (Some(open), _) => open.draft.gesture,
+            (None, Some(armed)) => armed.id,
+            (None, None) => unreachable!("a gesture is open"),
+        };
         let _ = self.editor.update(Message::Mask(MaskMessage::Transform(
             gesture,
             Ok(serde_json::from_value(transform).unwrap()),
@@ -268,10 +273,6 @@ impl Masking {
         let Some(draft) = self.editor.mask_shape() else {
             return;
         };
-        // An armed brush has painted nothing, so there is nothing to send and nothing was.
-        if draft.brush().is_some_and(|stroke| !stroke.drawn()) {
-            return;
-        }
         let held = self
             .editor
             .session
@@ -295,9 +296,9 @@ impl Masking {
 
     /// Paint one whole stroke: a press, a move per position and the release that commits it.
     ///
-    /// The release is what commits, because one stroke is one draft and therefore one history entry;
-    /// nothing presses Apply. The gesture re-arms itself on the component the stroke landed on, and
-    /// the caller opens that core draft when it wants to paint again.
+    /// The press opens the stroke's core draft and the release commits it, because one stroke is one
+    /// draft and therefore one history entry; nothing presses Apply. The brush goes back in hand on
+    /// the component the stroke landed on, holding no draft until the next press.
     fn paint(&mut self, points: &[(f64, f64)]) {
         let (x, y) = points[0];
         self.message(MaskMessage::Handle(MaskPointer::PaintBegin { x, y }));
@@ -2259,7 +2260,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
         "a brush payload holds the reserved strokes field and nothing else"
     );
 
-    // The gesture re-arms itself on the component that stroke landed on, so painting carries on
+    // The brush goes back in hand on the component that stroke landed on, so painting carries on
     // without a second gesture — and every later stroke is one more entry on that component.
     masking.open_gesture();
     assert_eq!(
@@ -2329,7 +2330,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
         "a stroke that committed nothing produces no entry"
     );
 
-    // Escape cancels the armed gesture with nothing committed.
+    // Escape during a stroke discards it and puts the brush down, with nothing committed.
     masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
         x: 0.2,
         y: 0.2,
@@ -2665,27 +2666,27 @@ fn a_mask_gesture_whose_begin_is_refused_opens_nothing() {
     );
 }
 
-/// A slider gesture started with the brush in hand takes the draft the brush was holding.
+/// Every other gesture and every `mask.*` command start with the brush in hand, which stays there.
 ///
-/// At most one core draft exists per client, so the adjustments under the component list — which are
-/// exactly where a hand goes after painting — could not reach one while the brush held it. Every
-/// other gesture and every `mask.*` command already give an **armed** brush's draft up, because a
-/// brush that has painted nothing has nothing to Apply and nothing to lose; this is that same rule on
-/// the slider path, where its absence left the gesture with a `draft.begin` the host refused a round
-/// trip later and a picture that never followed the drag.
+/// The adjustments under the component list are exactly where a hand goes after painting. The brush
+/// in hand holds no core draft, so a slider gesture opens the client's one draft as if no brush were
+/// held, a mask command goes out, and neither puts the brush down: once they are done the next
+/// press is the next stroke. A new mask shape is the one start that replaces it, because it is the
+/// mask tool in hand from then on.
 #[test]
-fn a_slider_gesture_takes_an_armed_brushs_draft() {
+fn every_other_start_goes_ahead_with_the_brush_in_hand() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
 
-    // One stroke painted, and the brush left armed on the component it landed on, which is where the
-    // gesture leaves itself after every stroke.
+    // One stroke painted, and the brush back in hand on the component it landed on, which is where
+    // painting leaves it after every stroke.
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
     masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
     masking.open_gesture();
-    assert!(masking.editor.armed_brush(), "the brush is armed");
+    assert!(masking.editor.armed_brush(), "the brush is in hand");
 
+    // A slider gesture opens the one draft, and it is the slider's.
     let _ =
         masking
             .editor
@@ -2695,9 +2696,57 @@ fn a_slider_gesture_takes_an_armed_brushs_draft() {
         "the slider gesture opened: {}",
         masking.editor.status
     );
+    assert_eq!(
+        masking
+            .editor
+            .session
+            .draft
+            .as_ref()
+            .map(|draft| draft.action.as_str()),
+        Some("set-presence"),
+        "the client's one draft is the slider's"
+    );
+    assert!(masking.editor.armed_brush(), "the brush stays in hand");
+    // A press while the slider's draft is open is refused by the one-draft rule, and the brush
+    // stays in hand for the press after it.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.6,
+        y: 0.6,
+    }));
+    assert_eq!(
+        masking.editor.status,
+        "Finish or discard the slider draft before editing a mask"
+    );
+    assert!(masking.editor.slider_gesture().is_some() && masking.editor.armed_brush());
+    masking.draft(DraftMessage::Cancel);
+    assert!(masking.editor.gesture.is_none() && masking.editor.armed_brush());
+
+    // A mask command goes out with the brush in hand, and leaves it there.
+    masking.run(MaskMessage::Row(RowEdit::InvertMask {
+        mask: masking.listing().masks[0].id.to_string(),
+        invert: true,
+    }));
     assert!(
-        masking.editor.mask_shape().is_none(),
-        "the armed brush gave up the draft it was holding"
+        masking.editor.armed_brush(),
+        "the command left the brush in hand"
+    );
+    masking.paint(&[(0.5, 0.6), (0.65, 0.65)]);
+    assert_eq!(
+        masking.labels(),
+        ["Add brush", "Inverted", "Update Brush 1"],
+        "the next press painted the next stroke"
+    );
+
+    // A new mask shape is the mask tool in hand from then on.
+    masking.open_gesture();
+    masking.message(MaskMessage::Add(RADIAL.to_owned()));
+    assert!(
+        !masking.editor.armed_brush(),
+        "the radial replaced the brush"
+    );
+    assert_eq!(
+        masking.editor.mask_shape().map(MaskDraft::kind),
+        Some(RADIAL)
     );
 }
 
@@ -2968,12 +3017,11 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
     );
 }
 
-/// A released stroke's step settles on the committed frame while the brush re-arms.
+/// A released stroke's step settles on the committed frame while the brush goes back in hand.
 ///
-/// The brush re-arms on the component its stroke landed on in the update that takes the commit up,
-/// before the committed frame arrives. Its `draft.begin` sends no geometry — an armed brush has
-/// painted nothing — so the re-armed brush brings no frame, and the committed frame is the step's
-/// evidence.
+/// The brush goes back in hand on the component its stroke landed on in the update that takes the
+/// commit up, before the committed frame arrives. It holds no draft and asks for no frame, so the
+/// committed frame is the step's evidence.
 #[test]
 fn a_stroke_settles_on_its_committed_frame_while_the_brush_re_arms() {
     use crate::app::{
@@ -2991,7 +3039,7 @@ fn a_stroke_settles_on_its_committed_frame_while_the_brush_re_arms() {
     masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
     assert!(
         masking.editor.armed_brush(),
-        "the brush re-armed in the update that took the commit up"
+        "the brush went back in hand in the update that took the commit up"
     );
     let committed = masking.editor.preview_generation;
     drain_queue(&mut masking);
@@ -3042,22 +3090,25 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     );
 }
 
-/// Another client commits while the brush is armed. It has painted nothing and sent nothing, so
-/// there is nothing to discard or reapply: no Changed elsewhere notice appears, its draft is
-/// rebased onto the new revision with one `draft.reapply`, and the next stroke commits on it.
+/// Another client commits while the brush is in hand and nothing is painted. The brush holds no
+/// draft, so there is nothing to conflict: no Changed elsewhere notice appears, nothing is sent,
+/// the brush asks for the content map of the new entry, and the next stroke's draft opens on the new
+/// revision and commits.
 #[test]
-fn an_armed_brush_changed_elsewhere_rebases_without_a_notice() {
+fn a_commit_elsewhere_while_the_brush_is_in_hand_conflicts_nothing() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
     masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
     masking.open_gesture();
-    assert!(masking.editor.armed_brush(), "the brush is armed");
+    assert!(masking.editor.armed_brush(), "the brush is in hand");
+    let asked = masking.editor.armed.as_ref().map(|armed| armed.id);
 
     agent_commits(&mut masking);
     let revision = masking.editor.state.as_ref().unwrap().revision;
     assert!(masking.editor.armed_brush(), "the brush stays in hand");
+    assert!(masking.editor.gesture.is_none(), "no draft was opened");
     assert!(!masking.editor.gesture_conflicted(), "no notice");
     assert!(
         !masking
@@ -3074,14 +3125,135 @@ fn an_armed_brush_changed_elsewhere_rebases_without_a_notice() {
         "{}",
         masking.editor.status
     );
-    // The brush's draft was rebased at the end of the update that read the commit back.
-    let draft = testing::core_draft(&masking.editor).expect("the brush's draft");
-    assert!(!draft.conflicted && draft.drained());
-    assert_eq!(draft.base_revision, revision);
-    assert_eq!(masking.editor.armed_rebase, None);
+    // The displayed entry moved, so the map a press is placed by is asked for again, under a new
+    // identity, and none is used until it answers.
+    let armed = masking.editor.armed.as_ref().expect("the brush in hand");
+    assert_ne!(Some(armed.id), asked, "the map was asked for again");
+    assert_eq!(armed.entry, masking.editor.displayed_entry());
+    assert!(armed.mask.map.is_none());
+    masking.open_gesture();
 
-    masking.paint(&[(0.5, 0.6), (0.65, 0.65)]);
+    // The next press opens the stroke's draft on the new revision.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.5,
+        y: 0.6,
+    }));
+    let draft = testing::core_draft(&masking.editor).expect("the stroke's draft");
+    assert!(!draft.conflicted);
+    assert_eq!(draft.base_revision, revision);
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: 0.65,
+        y: 0.65,
+    }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.commit_open_draft();
     assert_eq!(masking.labels(), ["Add brush", "Update Brush 1"]);
+}
+
+/// A brush in hand with nothing painted is this desktop's view state: the owner's `session.state`
+/// shows no draft for it, before the first stroke and between strokes. The stroke's draft opens at
+/// the press — its `draft.begin` and the first `draft.set`, carrying the press's position, in the
+/// press's own update — and is gone again once the stroke commits.
+#[test]
+fn a_brush_in_hand_holds_no_draft_until_its_press() {
+    use crate::app::testing::{attach_log, logged};
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    let owner_draft = |masking: &Masking| {
+        let (session, _) = call(
+            &masking.owner(),
+            masking.editor.client,
+            "session.state",
+            json!({}),
+        )
+        .expect("session.state answers");
+        session["draft"].clone()
+    };
+
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    assert!(masking.editor.armed_brush(), "the brush is in hand");
+    assert_eq!(
+        owner_draft(&masking),
+        Value::Null,
+        "no draft before the press"
+    );
+    assert!(masking.editor.session.draft.is_none() && masking.editor.gesture.is_none());
+    assert!(
+        masking.editor.workspace.masks.brush.armed,
+        "the Brush section says the brush is in hand"
+    );
+
+    let log = attach_log(&mut masking.editor);
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    // One update: the begin, then the set carrying the press's position, both answered.
+    let events = event_names(&logged(&mut masking.editor, &log));
+    let begin = events
+        .iter()
+        .position(|event| event == "mask_draft_begin")
+        .expect("the press began the stroke's draft");
+    assert_eq!(
+        events.get(begin + 1).map(String::as_str),
+        Some("mask_draft_set"),
+        "the first draft.set follows the begin at once: {events:?}"
+    );
+    masking.assert_geometry_sent();
+    let opened = owner_draft(&masking);
+    assert_eq!(opened["action"], json!("mask.add-stroke"));
+    assert_eq!(
+        opened["fields"]["points"].as_array().map(Vec::len),
+        Some(1),
+        "the owner's draft holds the press's position: {opened}"
+    );
+    assert!(
+        !masking.editor.armed_brush(),
+        "the stroke holds the brush now"
+    );
+
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: 0.5,
+        y: 0.35,
+    }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.commit_open_draft();
+    assert!(masking.editor.armed_brush(), "the brush is back in hand");
+    assert_eq!(
+        owner_draft(&masking),
+        Value::Null,
+        "no draft between strokes"
+    );
+    assert!(masking.editor.session.draft.is_none() && masking.editor.gesture.is_none());
+}
+
+/// The brush in hand is put down when what it paints on is gone, and by Done: it holds no draft, so
+/// nothing is sent either way.
+#[test]
+fn the_brush_in_hand_is_put_down_by_done_and_when_its_component_is_gone() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
+    assert!(
+        masking.editor.armed_brush(),
+        "the brush is in hand on Brush 1"
+    );
+
+    // Undoing the stroke that made the mask leaves nothing to paint on.
+    masking.undo();
+    assert!(masking.listing().masks.is_empty());
+    assert!(!masking.editor.armed_brush(), "the brush was put down");
+    assert!(masking.editor.mask_shape().is_none());
+
+    // Done with a brush in hand puts it down too, and sends nothing.
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    assert!(masking.editor.armed_brush());
+    masking.draft(DraftMessage::Commit);
+    assert!(!masking.editor.armed_brush() && masking.editor.gesture.is_none());
+    assert_eq!(masking.editor.status, "Brush put down");
 }
 
 /// A brush that has painted holds a stroke of its own, so a commit elsewhere during it shows the
@@ -3098,7 +3270,10 @@ fn a_painted_brush_changed_elsewhere_shows_the_notice() {
     }));
     masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.4 }));
     masking.assert_geometry_sent();
-    assert!(!masking.editor.armed_brush(), "the brush has painted");
+    assert!(
+        !masking.editor.armed_brush(),
+        "the stroke holds the brush now"
+    );
 
     agent_commits(&mut masking);
     assert!(masking.editor.gesture_conflicted());
@@ -3116,7 +3291,6 @@ fn a_painted_brush_changed_elsewhere_shows_the_notice() {
             .any(|notice| notice.title == "Changed elsewhere"),
         "the notice offers Discard and Reapply"
     );
-    assert_eq!(masking.editor.armed_rebase, None);
     assert!(
         testing::core_draft(&masking.editor).is_some_and(|draft| draft.conflicted),
         "nothing is rebased until the person chooses"
@@ -3299,7 +3473,7 @@ fn a_mask_gestures_status_line_names_it_and_the_strip_keeps_mask_selected() {
     assert!(mask_selected(&masking));
 }
 
-/// Escape puts an armed brush down first, and only the next Escape leaves Mask mode.
+/// Escape puts the brush in hand down first, and only the next Escape leaves Mask mode.
 #[test]
 fn escape_puts_an_armed_brush_down_then_leaves_mask_mode() {
     use iced::keyboard::key::Named;

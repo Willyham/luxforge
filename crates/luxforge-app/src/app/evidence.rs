@@ -1214,9 +1214,8 @@ impl Editor {
                 };
                 (Message::Mask(MaskMessage::Add(kind)), expect)
             }
-            // Arming the brush asks for no frame of its own: a stroke with no path is not a geometry
-            // the host can preview, so the gesture waits for the pointer rather than for pixels
-            // nothing requested, and the step is captured on the next frame.
+            // Putting a brush in hand opens no draft and asks for no frame: its stroke's draft opens
+            // at the press, so the step is captured on the next frame.
             MaskStep::Paint(target) => {
                 let target = match target {
                     PaintStep::NewMask => PaintTarget::NewMask,
@@ -1230,7 +1229,7 @@ impl Editor {
                 };
                 let task = self.mask_message(MaskMessage::Paint(target));
                 self.note_step(json!({"masks": self.workspace.masks.summary()}));
-                if self.mask_gesture().is_none() {
+                if self.armed.is_none() {
                     let reason = self.status.clone();
                     return Task::batch([task, self.fail_step(reason)]);
                 }
@@ -1359,17 +1358,22 @@ impl Editor {
                 // frame is the next redraw rather than a preview that will never arrive.
                 (Message::Mask(MaskMessage::Pick), Expect::Redraw)
             }
-            MaskStep::Apply => {
-                if self.mask_gesture().is_none() {
-                    return self.fail_step("no mask gesture is open to apply");
-                }
-                (Message::Draft(DraftMessage::Commit), Expect::RoundTrip)
-            }
-            MaskStep::Cancel => {
-                if self.mask_gesture().is_none() {
-                    return self.fail_step("no mask gesture is open to cancel");
-                }
-                (Message::Draft(DraftMessage::Cancel), Expect::RoundTrip)
+            // With only a brush in hand, Done and Cancel put it down: nothing is sent, so the frame
+            // is the next redraw.
+            ending @ (MaskStep::Apply | MaskStep::Cancel) => {
+                let (message, verb) = if matches!(ending, MaskStep::Apply) {
+                    (DraftMessage::Commit, "apply")
+                } else {
+                    (DraftMessage::Cancel, "cancel")
+                };
+                let expect = if self.mask_gesture().is_some() {
+                    Expect::RoundTrip
+                } else if self.armed.is_some() {
+                    Expect::Redraw
+                } else {
+                    return self.fail_step(format!("no mask gesture is open to {verb}"));
+                };
+                (Message::Draft(message), expect)
             }
             MaskStep::Row(MaskRow {
                 component: at,

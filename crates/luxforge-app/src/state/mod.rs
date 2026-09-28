@@ -2585,10 +2585,11 @@ mod tests {
         assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
         assert_eq!(bar.readout, "0.100, 0.920 → 0.140, 0.380");
 
-        // A brush ends with Done: each stroke committed on release, so the app's Apply refusal for
-        // an armed brush is not the bar's to state. Idle, it reads the brush the next stroke takes;
-        // with the stroke down, that it is painting.
-        scene.apply_refusal = Some("Paint a stroke on the photograph first".into());
+        // A brush ends with Done: each stroke committed on release, so an Apply refusal is not the
+        // bar's to state. Idle, it reads the brush the next stroke takes; with the stroke down,
+        // that it is painting.
+        scene.apply_refusal =
+            Some("Changed elsewhere: discard the mask gesture or reapply it".into());
         let held = crate::mask_draft::Brush {
             size: 0.06,
             feather: 50.0,

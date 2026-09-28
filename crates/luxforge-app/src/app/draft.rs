@@ -373,9 +373,10 @@ mod tests {
 
     #[test]
     fn a_frame_is_pending_only_while_something_asked_will_bring_one() {
-        // An armed brush opens with nothing to send: no frame is coming, and nothing is waiting.
-        let (brush, _) = begun();
-        assert!(!brush.frame_pending() && brush.drained());
+        // A draft opened with nothing to send, as the crop's is: no frame is coming, and nothing
+        // is waiting.
+        let (empty, _) = begun();
+        assert!(!empty.frame_pending() && empty.drained());
         let (mut draft, _) = begun();
         draft.handle(Event::Offer(fields(0.2)));
         assert!(draft.frame_pending(), "the set is answered with a frame");
