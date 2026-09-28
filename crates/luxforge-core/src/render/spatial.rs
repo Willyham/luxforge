@@ -212,6 +212,25 @@ fn worst_case_working_set(
     planes.saturating_add(scratch)
 }
 
+/// The unit scratch one tile slot of a render reuses from tile to tile, instead of allocating and
+/// zero-filling it per tile: [`run_batches`] keeps one per tile a batch runs at once, and a point
+/// query's tile starts from an empty one. It grows to the largest request its tiles make and is
+/// never cleared, which the [`crate::modules::SpatialUnit`] contract allows: a unit treats its
+/// scratch as uninitialized and never expects its own values back on the next tile. It holds at
+/// most one tile's scratch, which the tile's working set already charges to the spatial budget.
+#[derive(Debug, Default)]
+pub(crate) struct TileScratch(Vec<f32>);
+
+impl TileScratch {
+    /// `len` values, the slot grown once to the largest `len` asked of it.
+    fn values(&mut self, len: usize) -> &mut [f32] {
+        if self.0.len() < len {
+            self.0.resize(len, 0.0);
+        }
+        &mut self.0[..len]
+    }
+}
+
 /// How many `f32` values of scratch one tile's chain needs: the largest request of any unit for its
 /// own input rectangle.
 fn scratch_values(operation: &SpatialOperation, regions: &[Region]) -> usize {
@@ -235,7 +254,7 @@ const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value
 /// Run one tile's unit chain. `fill` writes a region's three planes; the result is the rectangle
 /// the values cover and those planar values, which always contains `tile`. `parallelism` is handed
 /// to every unit and decides whether this function's own finiteness check runs on the pool; it
-/// never changes a value.
+/// never changes a value. `scratch` is the unit scratch of the slot the tile runs in.
 ///
 /// Every path uses this one function: the byte render, the RAW float frame and the point sample.
 /// That is what makes a sample equal to the rendered byte by construction rather than by
@@ -271,6 +290,7 @@ pub(crate) fn run_tile(
     globals: &[Option<Global>],
     tile: Region,
     parallelism: Parallelism,
+    scratch: &mut TileScratch,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, Vec<f32>), Error> {
     let stage = plan.stage;
@@ -326,7 +346,7 @@ pub(crate) fn run_tile(
     if mask.is_some() {
         MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
     }
-    let mut scratch = vec![0.0_f32; scratch_values(operation, &regions)];
+    let scratch = scratch.values(scratch_values(operation, &regions));
     for (index, unit) in operation.units().iter().enumerate() {
         let input = Planes::new(stage, regions[index], &values)?;
         let mut next = vec![0.0_f32; (regions[index + 1].pixels() * 3) as usize];
@@ -335,7 +355,7 @@ pub(crate) fn run_tile(
             &input,
             &mut output,
             globals.get(index).and_then(Option::as_ref),
-            &mut scratch,
+            scratch,
             parallelism,
         )?;
         let finite = match parallelism {
@@ -602,20 +622,25 @@ pub(crate) fn reset_masked_tile_counts() {
 /// well (see [`tile_parallelism`]), so an operation whose working set holds the batch to two tiles
 /// still uses every worker without taking more memory.
 ///
-/// `work` computes one tile's result under the parallelism it is given and `write` places it, so
-/// the tiles themselves never share a mutable frame: a batch's results are bounded by its
-/// concurrency times one tile.
+/// `work` computes one tile's result under the parallelism it is given, with the unit scratch of
+/// the batch slot it runs in, and `write` places it, so the tiles themselves never share a mutable
+/// frame: a batch's results are bounded by its concurrency times one tile. `work` runs in the
+/// parallel phase, so everything done per pixel belongs there — the quantization, the alpha and the
+/// layout of the frame's rows — and `write` is left the serial copy of whole rows. A slot keeps its
+/// scratch from batch to batch and releases it when a narrower reservation drops the slot, so the
+/// scratch held never covers more tiles than the reservation does.
 pub(crate) fn run_batches<T: Send>(
     plan: &SpatialPlan,
     budget: &SpatialBudget,
     cancel: &Cancel,
-    work: impl Fn(Region, Parallelism) -> Result<T, Error> + Sync,
+    work: impl Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error> + Sync,
     mut write: impl FnMut(Region, T) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
     let large = plan.stage.width as u64 * plan.stage.height as u64 >= luxforge_raw::PARALLEL_PIXELS;
     let workers = rayon::current_num_threads();
     let concurrency = budget.concurrency(plan.working_set);
+    let mut slots: Vec<TileScratch> = Vec::new();
     let mut start = 0;
     while start < tiles.len() {
         // Before the reservation, so a cancelled render never takes working sets it will not use.
@@ -623,16 +648,19 @@ pub(crate) fn run_batches<T: Send>(
         let reservation = budget.reserve(plan.working_set, concurrency.min(tiles.len() - start));
         let batch = &tiles[start..start + reservation.tiles()];
         start += batch.len();
+        slots.resize_with(batch.len(), TileScratch::default);
         let parallelism = tile_parallelism(large, batch.len(), workers);
         let results: Vec<T> = if large && batch.len() > 1 {
             batch
                 .par_iter()
-                .map(|tile| work(*tile, parallelism))
+                .zip(slots.par_iter_mut())
+                .map(|(tile, scratch)| work(*tile, parallelism, scratch))
                 .collect::<Result<Vec<T>, Error>>()?
         } else {
             batch
                 .iter()
-                .map(|tile| work(*tile, parallelism))
+                .zip(slots.iter_mut())
+                .map(|(tile, scratch)| work(*tile, parallelism, scratch))
                 .collect::<Result<Vec<T>, Error>>()?
         };
         for (tile, result) in batch.iter().zip(results) {
@@ -826,6 +854,7 @@ impl<'a> PointTiles<'a> {
                 globals,
                 tile,
                 Parallelism::Serial,
+                &mut TileScratch::default(),
                 |region, planes| fill_planes(region, planes, Parallelism::Serial, &read),
             )?
         };
@@ -1891,8 +1920,9 @@ mod tests {
 
     #[test]
     fn a_tiled_render_matches_the_whole_frame_reference_at_every_tile_size() {
-        // Larger than one production tile on both sides of the 512 grid, so both tile sizes
-        // exercise partial edge tiles and more than one batch.
+        // Larger than one production tile on both sides of the 512 grid, so every tile size
+        // exercises partial edge tiles and more than one batch; 37 divides neither side, so its
+        // tiles' rows start and end away from every multiple of a row's width.
         let source = gradient(600, 400);
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["blur:4"])]);
@@ -1903,7 +1933,7 @@ mod tests {
             &[RefUnit::Blur(4)],
         );
         let mut frames = Vec::new();
-        for tile in [128_u32, 512] {
+        for tile in [37_u32, 128, 512] {
             let raster = render_tiled(
                 &registry,
                 &source,
@@ -1914,9 +1944,23 @@ mod tests {
             )
             .unwrap();
             assert_frame(&raster, &expected, &format!("tile {tile}"));
+            // Each tile's rows carry the input's alpha beside the filtered colour.
+            for (index, (written, read)) in raster
+                .rgba
+                .chunks_exact(4)
+                .zip(source.rgba.chunks_exact(4))
+                .enumerate()
+            {
+                assert_eq!(written[3], read[3], "tile {tile}: alpha of pixel {index}");
+            }
             frames.push(raster.rgba.as_ref().to_vec());
         }
-        assert_eq!(frames[0], frames[1], "the tile size changes no byte");
+        for (frame, tile) in frames.iter().zip([37, 128]) {
+            assert_eq!(
+                frame, &frames[2],
+                "tile {tile} writes the bytes tile 512 writes"
+            );
+        }
         // Deterministic across runs: the same stack rendered again is the same frame.
         let again = render_tiled(
             &registry,
@@ -1927,7 +1971,7 @@ mod tests {
             512,
         )
         .unwrap();
-        assert_eq!(again.rgba.as_ref(), frames[1].as_slice(), "deterministic");
+        assert_eq!(again.rgba.as_ref(), frames[2].as_slice(), "deterministic");
     }
 
     #[test]
@@ -1937,7 +1981,9 @@ mod tests {
         let stack = recipe(vec![spatial_layer(&["blur:3"])]);
         let expected = reference_chain(200, 150, linear_frame(&source), &[RefUnit::Blur(3)]);
         let mut frames = Vec::new();
-        for tile in [64_u32, 512] {
+        // 13 divides neither side, so the write copies partial rows out of a wider rectangle at
+        // both edges and whole ones everywhere else.
+        for tile in [13_u32, 64, 512] {
             let raster = render_linear_tiled(
                 &registry,
                 &source,
@@ -1951,7 +1997,12 @@ mod tests {
             assert_frame(&raster, &expected, &format!("linear tile {tile}"));
             frames.push(raster.rgba.as_ref().to_vec());
         }
-        assert_eq!(frames[0], frames[1], "the tile size changes no byte");
+        for (frame, tile) in frames.iter().zip([13, 64]) {
+            assert_eq!(
+                frame, &frames[2],
+                "linear tile {tile} writes the bytes tile 512 writes"
+            );
+        }
     }
 
     #[test]
@@ -2510,20 +2561,41 @@ mod tests {
         let registry = spatial_registry();
         let source = gradient(50, 40);
         let stack = recipe(vec![spatial_layer(&["blur:2", "shift"])]);
-        // A tile smaller than the frame, so the sampled pixel's tile is one of several and its
-        // halo is clamped differently from the whole frame's.
-        let context = RenderContext::new();
-        let raster = tiled_in(&context, &registry, &source, &stack, 16).unwrap();
-        let evaluation = evaluation(&context, &registry, &source, &stack)
-            .unwrap()
-            .with_tile(16);
-        for y in 0..raster.height {
-            for x in 0..raster.width {
-                assert_eq!(
-                    evaluation.pixel(x, y).unwrap(),
-                    raster.pixel(x, y),
-                    "tile 16: sample at ({x}, {y})"
-                );
+        let linear = linear_source(50, 40);
+        // Tiles smaller than the frame, so the sampled pixel's tile is one of several and its
+        // halo is clamped differently from the whole frame's; 7 and 16 divide neither side, so
+        // the rendered rows the samples are compared with were written from partial tiles too.
+        for tile in [7_u32, 16, 512] {
+            let context = RenderContext::new();
+            let raster = tiled_in(&context, &registry, &source, &stack, tile).unwrap();
+            let evaluation = evaluation(&context, &registry, &source, &stack)
+                .unwrap()
+                .with_tile(tile);
+            let floats = crate::render::testing::linear(&linear, LinearSettings::default());
+            let rendered = tiled_in(&context, &registry, floats, &stack, tile).unwrap();
+            let linear_evaluation = linear_evaluation(
+                &context,
+                &registry,
+                &linear,
+                &stack,
+                LinearSettings::default(),
+                tile,
+                crate::render::SpatialMode::Point,
+            )
+            .unwrap();
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    assert_eq!(
+                        evaluation.pixel(x, y).unwrap(),
+                        raster.pixel(x, y),
+                        "byte tile {tile}: sample at ({x}, {y})"
+                    );
+                    assert_eq!(
+                        linear_evaluation.terminal(x, y).unwrap(),
+                        rendered.pixel(x, y),
+                        "linear tile {tile}: sample at ({x}, {y})"
+                    );
+                }
             }
         }
     }
@@ -3808,14 +3880,21 @@ mod tests {
                             // `Counted` runs once per tile whose chain completed; a chain that
                             // refused a value stopped before it, and only a chain refuses here.
                             let before = applied.get();
-                            let result =
-                                run_tile(&plan, &operation, &[], tile, Parallelism::Serial, fill)
-                                    .map(|(region, values)| {
-                                        cut_out(region, &values, tile)
-                                            .into_iter()
-                                            .map(f32::to_bits)
-                                            .collect::<Vec<_>>()
-                                    });
+                            let result = run_tile(
+                                &plan,
+                                &operation,
+                                &[],
+                                tile,
+                                Parallelism::Serial,
+                                &mut TileScratch::default(),
+                                fill,
+                            )
+                            .map(|(region, values)| {
+                                cut_out(region, &values, tile)
+                                    .into_iter()
+                                    .map(f32::to_bits)
+                                    .collect::<Vec<_>>()
+                            });
                             let ran = applied.get() > before || result.is_err();
                             (tile, result, ran)
                         })
