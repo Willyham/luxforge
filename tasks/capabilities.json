@@ -667,7 +667,7 @@
     {
       "id": "TASK-009",
       "description": "Clear the capability leftovers: a typed requirement kind, the removed file-kind remnants, write results nobody reads, duplicated formatting and parsing, and stale documentation.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-006"
@@ -751,7 +751,7 @@
         }
       ],
       "acceptance_criteria": [
-        "`Requirement.kind` is an enum of exactly `setting`, `resource` and `profile`; docs/design/module-capabilities.md's kind list matches it, and the desktop's dead `\"grant\"` arm is gone.",
+        "`Requirement.kind` is an enum of exactly the kinds the code emits, `resource` and `profile` (with activation deferred, nothing emits a `setting` requirement); docs/design/module-capabilities.md's kind list matches it, and the desktop's dead `\"setting\"` and `\"grant\"` arms are gone.",
         "Every leftover mention of the already-removed file setting kind and read-user-file capability is gone from docs and code comments, and the settings test fixture no longer writes the unused `input.bin`.",
         "`SettingsWrite.previous` is removed or read by production code; the requirement-list formatting, `profile_status`'s field copy, the io-error mappers and the `now_ms` helpers each exist once, or the remaining duplication is left named with its reason.",
         "The artifact manifest reads through `JsonDocument`, and neither descriptor module imports `capabilities::transport`.",

@@ -218,14 +218,36 @@ impl<'de> Deserialize<'de> for SecretParam {
     }
 }
 
+/// What an unmet requirement of a task names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequirementKind {
+    /// A managed resource the task reads is not installed.
+    Resource,
+    /// The profile the task sends through is not ready.
+    Profile,
+}
+
+impl RequirementKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Resource => "resource",
+            Self::Profile => "profile",
+        }
+    }
+}
+
 /// One unmet requirement of a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Requirement {
-    /// `resource` or `profile`.
-    pub kind: String,
+    pub kind: RequirementKind,
     /// The resource or profile identity.
     pub id: String,
-    /// A resource state for a resource; a profile status for a profile.
+    /// The resource's state for a resource ([`ResourceState::name`]); the profile's status for a
+    /// profile ([`ProfileStatus::name`]).
+    ///
+    /// [`ResourceState::name`]: super::resources::ResourceState::name
+    /// [`ProfileStatus::name`]: super::settings::ProfileStatus::name
     pub state: String,
 }
 
@@ -440,8 +462,8 @@ impl CapabilityHost {
             announce_once(announce, origin);
             // The write is committed whatever follows, so a grants file that cannot be updated is
             // reported beside the result rather than as the write's failure. Nothing it leaves
-            // behind can be used: a grant names its exact path or endpoint origin, which the
-            // settings no longer hold.
+            // behind can be used: a grant names its endpoint origin, which the settings no longer
+            // hold.
             match self.after_settings_write(jobs, descriptor, method, &write, origin, announce) {
                 Ok(revoked) if revoked.is_empty() => {}
                 Ok(revoked) => {
@@ -628,23 +650,13 @@ impl CapabilityHost {
 }
 
 /// The valid, non-null, non-secret module-level values of a settings read that a module may read
-/// as values. An endpoint is left out: a job reaches it only through the capability that names it,
-/// so a module never holds a URL of its own.
-fn effective_values(
-    descriptor: &ModuleDescriptor,
-    read: Option<&SettingsRead>,
-) -> Map<String, Value> {
-    let plain = |id: &str| {
-        descriptor
-            .settings
-            .as_ref()
-            .and_then(|settings| settings.field(id))
-            .is_some_and(|field| !field.is_endpoint())
-    };
+/// as values. A module-level field is never an endpoint (registration refuses one), so a module
+/// never holds a URL of its own: a job reaches its profile's endpoint only through the capability
+/// that names it.
+fn effective_values(read: Option<&SettingsRead>) -> Map<String, Value> {
     read.map(|read| {
         read.fields
             .iter()
-            .filter(|(id, _)| plain(id))
             .filter_map(|(id, field)| match field {
                 FieldRead::Value {
                     value, valid: true, ..

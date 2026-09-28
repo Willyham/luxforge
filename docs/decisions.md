@@ -95,7 +95,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 
 - Settings are user-level only: module settings and named provider profiles, outside every catalog, with no history entries. Secrets live only in the OS credential store, starting with the macOS Keychain; a locked or unsupported store fails explicitly with no plaintext fallback.
 - Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin.
-- Only the desktop (after Allow) or `luxforge-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
+- Only the desktop (after Allow) or `luxforge-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
 - Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-10) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.

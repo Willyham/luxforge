@@ -91,8 +91,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// A module's capability context for one job. `Send`, so it moves to the worker with the job.
 pub struct ModuleContext {
     module_id: String,
-    /// The effective, valid, non-secret module-level setting values, without file paths and
-    /// endpoints: those are reached through the capabilities that name them.
+    /// The effective, valid, non-secret module-level setting values. None is an endpoint: a job
+    /// reaches its profile's endpoint only through the capability that names it.
     values: Map<String, Value>,
     /// The module-level secret fields it declares.
     secret_fields: Vec<String>,
@@ -190,8 +190,8 @@ impl ModuleContext {
         &self.module_id
     }
 
-    /// Every valid, non-secret module-level value, defaults included. An endpoint is not a value a
-    /// module reads: `send` uses it.
+    /// Every valid, non-secret module-level value, defaults included. An endpoint is a profile
+    /// field, not a value a module reads: `send` uses it.
     pub fn values(&self) -> &Map<String, Value> {
         &self.values
     }
@@ -302,7 +302,9 @@ impl ModuleContext {
             },
             &mut response,
         );
-        // The credential was copied into the header; it is cleared as soon as the request is done.
+        // The credential was copied into this header, which is zeroed as soon as the request is
+        // done. That is best effort: the transport's prepared request and its HTTP client's buffers
+        // hold further copies, which are freed without being zeroed.
         let TransportRequest { mut headers, .. } = request;
         for (_, value) in &mut headers {
             value.zeroize();
