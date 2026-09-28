@@ -117,10 +117,12 @@ impl Brush {
 /// One stroke as it is being painted: the path the pointer has drawn so far, and the brush it is
 /// being drawn with.
 ///
-/// The path is captured raw and **decimated only when it is posted**, on the host's own grid at the
-/// host's own tolerance, which is idempotent — so what the desktop sends and what an agent would
-/// send arrive at the same stored stroke. Nothing here calls the host: a pointer move appends a
-/// position and the canvas redraws, which is why path feedback never waits on a render.
+/// The path is kept twice, as it arrives: raw, for the canvas to draw what the pointer did, and on
+/// the host's own grid through [`luxforge_core::path::PathCapture`], which checks and snaps each
+/// position once, when it is painted. It is **decimated only when it is posted**, at the host's
+/// own tolerance, which is idempotent — so what the desktop sends and what an agent would send
+/// arrive at the same stored stroke. Nothing here calls the host: a pointer move appends a position
+/// and the canvas redraws, which is why path feedback never waits on a render.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BrushStroke {
     /// The brush this stroke was begun with. `erase` is frozen for the stroke's whole life, which is
@@ -128,6 +130,8 @@ pub(crate) struct BrushStroke {
     pub(crate) brush: Brush,
     /// The captured path in normalized content coordinates, in drawn order.
     path: Vec<[f64; 2]>,
+    /// The same path on the stored grid, snapped one position at a time as it is painted.
+    grid: luxforge_core::path::PathCapture,
     /// The pointer is down: moves extend the path, and a move with it up is not painting.
     painting: bool,
 }
@@ -137,6 +141,7 @@ impl BrushStroke {
         Self {
             brush,
             path: Vec::new(),
+            grid: luxforge_core::path::PathCapture::default(),
             painting: false,
         }
     }
@@ -147,6 +152,8 @@ impl BrushStroke {
             return;
         }
         self.path = vec![[point.0, point.1]];
+        self.grid = luxforge_core::path::PathCapture::default();
+        self.grid.push([point.0, point.1]);
         self.painting = true;
     }
 
@@ -162,6 +169,7 @@ impl BrushStroke {
             return false;
         }
         self.path.push(point);
+        self.grid.push(point);
         true
     }
 
@@ -181,9 +189,11 @@ impl BrushStroke {
 
     /// The path this stroke posts: decimated by the host's own contract, on its grid, at the
     /// tolerance this stroke's own size takes. Deterministic, so the same captured path at the same
-    /// size is always the same stored stroke and therefore the same content address.
+    /// size is always the same stored stroke and therefore the same content address. It is exactly
+    /// `path::decimate` of the captured path, reduced from the grid path held as the stroke was
+    /// painted rather than snapping every position again.
     pub(crate) fn points(&self) -> Vec<[f64; 2]> {
-        luxforge_core::path::decimate(&self.path, self.brush.size).unwrap_or_default()
+        self.grid.decimated(self.brush.size).unwrap_or_default()
     }
 
     /// Something was drawn. An empty stroke commits nothing: a click that painted no position is not

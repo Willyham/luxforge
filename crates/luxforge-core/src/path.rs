@@ -538,46 +538,122 @@ fn quantize(value: f64) -> i32 {
 /// their last bits were — and it is why the bound a stored path keeps to the captured one is
 /// [`stored_deviation`] rather than the tolerance alone.
 ///
-/// The desktop calls this with its brush's size before it posts a stroke, so the host receives a
-/// path that is already on the grid and already short; re-running it on the posted path at the same
-/// size is idempotent and is what makes a path posted by an agent that did not decimate arrive at the
-/// same stored bytes as one drawn by hand. A size no stroke can be captured at is refused by name,
-/// exactly as [`Stroke::capture`] refuses it.
+/// The desktop decimates with its brush's size before it posts a stroke, through [`PathCapture`],
+/// which is this function taken one position at a time, so the host receives a path that is already
+/// on the grid and already short; re-running it on the posted path at the same size is idempotent
+/// and is what makes a path posted by an agent that did not decimate arrive at the same stored bytes
+/// as one drawn by hand. A size no stroke can be captured at is refused by name, exactly as
+/// [`Stroke::capture`] refuses it.
 pub fn decimate(points: &[[f64; 2]], size: f64) -> Result<Vec<[f64; 2]>, Error> {
-    if !size_is_legal(size) {
-        return Err(illegal_size());
+    let mut capture = PathCapture::default();
+    for point in points {
+        capture.push(*point);
     }
-    Ok(decimate_to_grid(points, quantize(size))?
-        .into_iter()
-        .map(|[x, y]| {
-            [
-                f64::from(x) / COORDINATE_STEPS_PER_UNIT,
-                f64::from(y) / COORDINATE_STEPS_PER_UNIT,
-            ]
-        })
-        .collect())
+    capture.decimated(size)
+}
+
+/// A path captured one position at a time, on the stored grid: [`decimate`] for a gesture that
+/// draws its path as it goes.
+///
+/// A pushed position is checked and snapped once, when it arrives, and one that snaps into the cell
+/// of the position before it is dropped there, so the capture holds exactly the grid path
+/// [`decimate`] would snap the whole path to, and a pointer event costs the one position it adds.
+/// [`Self::decimated`] then runs the one reduction over that held grid path, so it answers exactly
+/// what [`decimate`] answers for every position pushed so far — the same function, not a copy of
+/// it.
+///
+/// **The reduction is the one whole-path step, and it cannot be taken incrementally without changing
+/// what is stored.** Its first split is the position farthest from the chord between the path's two
+/// ends, and the far end moves with every position, so a new position can change which earlier ones
+/// are kept. An incremental reduction would store a different path, and therefore a different
+/// address and a different coverage, for the same gesture. It is `O(n log n)` integer arithmetic over
+/// the held grid, with no snapping or checking repeated.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PathCapture {
+    /// The positions pushed so far, snapped, with consecutive repeats dropped.
+    grid: Vec<[i32; 2]>,
+    /// How many positions were pushed, repeats included: the index the next one is named by.
+    pushed: usize,
+    /// The first position outside the stored range, by its index and axis. A path holding one is
+    /// refused whole, as [`decimate`] refuses it, and nothing pushed after it is held.
+    refused: Option<(usize, &'static str)>,
+}
+
+impl PathCapture {
+    /// Take the next position of the path.
+    pub fn push(&mut self, point: [f64; 2]) {
+        let index = self.pushed;
+        self.pushed += 1;
+        if self.refused.is_some() {
+            return;
+        }
+        match snap(point) {
+            Ok(point) => {
+                if self.grid.last() != Some(&point) {
+                    self.grid.push(point);
+                }
+            }
+            Err(axis) => self.refused = Some((index, axis)),
+        }
+    }
+
+    /// How many positions were pushed.
+    pub fn len(&self) -> usize {
+        self.pushed
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pushed == 0
+    }
+
+    /// The path pushed so far, decimated for a stroke of radius `size`: exactly [`decimate`] of
+    /// every position pushed, refusals included.
+    pub fn decimated(&self, size: f64) -> Result<Vec<[f64; 2]>, Error> {
+        if !size_is_legal(size) {
+            return Err(illegal_size());
+        }
+        Ok(self
+            .grid_decimated(quantize(size))?
+            .into_iter()
+            .map(|[x, y]| {
+                [
+                    f64::from(x) / COORDINATE_STEPS_PER_UNIT,
+                    f64::from(y) / COORDINATE_STEPS_PER_UNIT,
+                ]
+            })
+            .collect())
+    }
+
+    fn grid_decimated(&self, size_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
+        if let Some((index, axis)) = self.refused {
+            return Err(Error::validation(format!(
+                "path position {index} {axis} must be a number within \
+                     {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
+            )));
+        }
+        if self.grid.is_empty() {
+            return Err(Error::validation("a path must hold at least one position"));
+        }
+        Ok(reduce(&self.grid, tolerance_steps(size_steps)))
+    }
+}
+
+/// One position on the stored grid, or the axis that is outside the stored range.
+fn snap([x, y]: [f64; 2]) -> Result<[i32; 2], &'static str> {
+    for (axis, value) in [("x", x), ("y", y)] {
+        if !value.is_finite() || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&value) {
+            return Err(axis);
+        }
+    }
+    Ok([quantize(x), quantize(y)])
 }
 
 fn decimate_to_grid(points: &[[f64; 2]], size_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
-    if points.is_empty() {
-        return Err(Error::validation("a path must hold at least one position"));
+    let mut capture = PathCapture::default();
+    for point in points {
+        capture.push(*point);
     }
-    let mut snapped: Vec<[i32; 2]> = Vec::with_capacity(points.len());
-    for (index, [x, y]) in points.iter().enumerate() {
-        for (axis, value) in [("x", *x), ("y", *y)] {
-            if !value.is_finite() || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&value) {
-                return Err(Error::validation(format!(
-                    "path position {index} {axis} must be a number within \
-                         {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
-                )));
-            }
-        }
-        let point = [quantize(*x), quantize(*y)];
-        if snapped.last() != Some(&point) {
-            snapped.push(point);
-        }
-    }
-    Ok(reduce(&snapped, tolerance_steps(size_steps)))
+    capture.grid_decimated(size_steps)
 }
 
 /// Ramer–Douglas–Peucker on grid coordinates at `tolerance` grid steps, iterative so a long captured
