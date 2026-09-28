@@ -838,12 +838,7 @@ mod tests {
             "the first stroke of a new mask: one row written"
         );
 
-        let recipe = service
-            .state(&asset)
-            .unwrap()
-            .current_entry
-            .snapshot
-            .recipe;
+        let recipe = service.state(&asset).unwrap().current_entry.snapshot.recipe;
         let target = MaskTarget {
             mask: Some(recipe.masks[0].id.clone()),
             component: Some(recipe.masks[0].components[0].id.clone()),
@@ -1025,7 +1020,10 @@ mod tests {
             );
             for (_, id) in entry.snapshot.recipe.stroke_references().unwrap() {
                 if let Err(error) = entry.snapshot.recipe.strokes.resolve(&id) {
-                    panic!("entry {} ({}) stroke {id}: {error}", row.sequence, row.label);
+                    panic!(
+                        "entry {} ({}) stroke {id}: {error}",
+                        row.sequence, row.label
+                    );
                 }
             }
         }
@@ -1582,7 +1580,8 @@ mod tests {
             // so a difference has to survive the reversal to be attributed to the toggle.
             let near_ceiling = |mark_fresh_as_stored: bool| -> f64 {
                 let catalog = temp("mask-growth-commit-time.sqlite");
-                let (curve, _) = painting_session(&catalog, source, CEILING, 50, mark_fresh_as_stored);
+                let (curve, _) =
+                    painting_session(&catalog, source, CEILING, 50, mark_fresh_as_stored);
                 std::fs::remove_file(&catalog).unwrap();
                 curve.last().expect("at least one sample").commit_ms
             };
