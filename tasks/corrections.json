@@ -3,7 +3,7 @@
   "plan_id": "corrections",
   "title": "Corrections module: Clone, Heal and AI Remove",
   "objective": "Deliver an offline, non-destructive Clone/Heal baseline and an optional provider-agnostic AI Remove workflow with durable frozen results, user-controlled models and exact UI/API parity.",
-  "context_summary": "Planning proposal, not implementation authorization. The earlier roadmap excludes generative editing until the owner accepts the new scope. Clone/Heal can proceed independently. AI implementation requires the shared settings, permissions, resource and derived-artifact capabilities in docs/design/module-capabilities.md; no cross-file task IDs are used. The groundwork it needs in the rendering, masking and capabilities work (stage-boundary methods, per-tile input regions, generic path primitives, candidates as job results, activation with local-runtime) is done when this plan starts, as each task's context says.",
+  "context_summary": "Planning proposal, not implementation authorization. The roadmap excludes generative editing until the owner accepts the new scope. Clone/Heal can proceed independently. AI implementation builds on the implemented module capabilities framework in docs/design/module-capabilities.md: user-level settings, OS-store secrets, per-asset consent, pinned-URL resources, capability tasks on the one job table and derived artifacts collected when a catalog opens; no cross-file task IDs are used. The groundwork other groups hold for this plan is not done yet and starts with it: stage-boundary methods on the compiled render entries (rendering) with the repair stage, and generic path primitives (masking) with the brush work; activation is being removed until `local-runtime` has a consumer, which the local adapter brings back (capabilities). Per-tile input regions and candidates as bounded job results are this plan's own work, as each task's context says.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -11,8 +11,10 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "The roadmap currently excludes generative editing; this is a proposal until the owner explicitly accepts the new scope.",
-        "Decide how RAW source-development changes invalidate a frozen AI result. The proposed policy fails render/sample/export explicitly until regeneration or removal."
+        "The roadmap still excludes generative editing pending the owner's review of this proposal (docs/plan.md, Not in scope); this is a proposal until the owner explicitly accepts the new scope.",
+        "Decide how RAW source-development changes invalidate a frozen AI result. The proposed policy fails render/sample/export explicitly until regeneration or removal. Exposure is Basic's on every kind and the RAW source development carries white balance only (docs/decisions.md, Source-kind controls), so the change in question is a white-balance change; Basic's colour stage would run after the repair stage and not stale a patch.",
+        "The stage model today: `EffectStage` (modules/descriptor.rs) runs source, pixel, colour, spatial, geometry and finish, and `ModuleRegistry::insertion_index` (modules/registry/placement.rs) places a new layer by its declared stage and `order` without moving stored layers. The pixel stage holds only the developer-only pixel proof's `Processing::PointReplace`, which makes a stack proxy-ineligible (`ModuleRegistry::proxy_eligible`, modules/registry/compile.rs). The owner decided that whether `PointReplace` seeds the repair primitive or is deleted is decided with the repair stage (docs/decisions.md, Post-consolidation review).",
+        "Remote-photo consent is per asset by the recorded module-capabilities default (docs/decisions.md, Module capabilities); this task confirms or changes it for Corrections."
       ],
       "context_links": [
         {
@@ -32,10 +34,17 @@
           "label": "History contract",
           "target": "docs/specs/edit-history.md",
           "relevance": "Original preservation and snapshot semantics."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "The open Corrections question, the per-asset consent default and the PointReplace decision."
         }
       ],
       "acceptance_criteria": [
-        "Record owner acceptance or rejection of AI scope, repair stage, stale-prefix policy, remote consent scope and first-provider qualification threshold.",
+        "Record owner acceptance or rejection of AI scope, the repair stage (its place beside the pixel stage, and whether `PointReplace` seeds its primitive or is deleted), stale-prefix policy, remote consent scope and first-provider qualification threshold.",
         "Freeze operation ordering, content coordinates, mask blending, artifact dependency hash and history labels before implementation.",
         "Keep any unanswered consequential question explicitly open and prevent dependent AI implementation from being reported as accepted."
       ],
@@ -107,7 +116,10 @@
       "extra_context": [
         "Preserve stored layer order; no catalog migration or generalized graph. The owner thread plans but never rasterizes.",
         "Answer every performance-rules checklist item for changes under crates.",
-        "Groundwork before this starts: the compiled render entries gain methods for what their match arms ask (input stage, point mapping, rectangle read, materialise, point), so a repair boundary is one implementation rather than about thirty match arms; and a spatial operation declares the input region each tile reads, because a clone reads at an arbitrary offset beyond the 512 px summed-halo bound and a heal needs a per-patch solve larger than the 4 KiB global estimate."
+        "The compiled render `Entry` (render.rs) has two stage-boundary kinds, `Resample` and `Spatial`, matched in about 30 places across render.rs, render/pipeline.rs, render/window.rs, render/linear.rs, render/entry.rs and modules/registry/compile.rs. The rendering group's stage-boundary methods (an input-stage query, point mapping, the rectangle read, materialising and one-point evaluation, generalising `SpatialEntry` in render/pipeline.rs) wait for this task and land first, so a repair boundary is one implementation rather than a new arm at each site.",
+        "Per-tile input regions are this task's own work; no other plan carries them. A spatial tile reads its output rectangle plus the operation's summed halo, refused past `MAX_SPATIAL_HALO` (512 px, modules/spatial.rs), in the 512 or 1024 px tiles `luxforge_raw::spatial_tile` picks, and a global estimate is at most `MAX_GLOBAL_BYTES` (4 KiB). A clone reads at an arbitrary source offset beyond any halo and a heal needs a per-patch solve larger than a global estimate, so the repair primitive declares the input region each tile reads and its solve's scratch, charged to the render context's `SpatialBudget` (256 MiB target) under the same reserve-before-allocate rule.",
+        "Render limits live in luxforge-raw's limits module (the `render-limits-home` repository rule), and a new rendering pass takes its own `luxforge_raw::RenderPass` with a parallel threshold measured for it (`parallel_pixels`). Render tiles run in the render's own batches on the shared pool; `luxforge_raw::refill_each` is the RAW development executor, not a render scheduler.",
+        "Proxy eligibility is decided per stage (`ModuleRegistry::proxy_eligible`): a pixel-stage layer is ineligible because it addresses content pixels, and a spatial one is eligible but approximate. The repair stage declares which it is, and a preview against the proxy is labelled approximate where its pixels differ."
       ],
       "context_links": [
         {
@@ -127,11 +139,25 @@
           "label": "Architecture",
           "target": "docs/design/architecture.md",
           "relevance": "Frame and scratch limits."
+        },
+        {
+          "kind": "file",
+          "label": "Spatial primitive bounds",
+          "target": "crates/luxforge-core/src/modules/spatial.rs",
+          "relevance": "The halo, tile, global-estimate and budget bounds a regional read must extend."
+        },
+        {
+          "kind": "file",
+          "label": "Stage boundaries",
+          "target": "crates/luxforge-core/src/render.rs",
+          "locator": "Entry",
+          "relevance": "`Entry` and `Segment`, the compiled stage boundaries a repair stage joins."
         }
       ],
       "acceptance_criteria": [
-        "New repair effects insert after source development and before colour/spatial/geometry without moving older layers; unsupported stacks fail with named errors.",
+        "New repair effects insert by their declared stage after source development and before colour, spatial and geometry work (`ModuleRegistry::insertion_index`) without moving older layers; unsupported stacks fail with named errors.",
         "Regional clone/heal reads the exact prefix with bounded tiles/scratch and cancellation; JPEG and RAW paths preserve declared precision and sample/render agreement.",
+        "Each tile's declared input region, including a clone's offset source and a heal's solve, is bounded before any pixel is read; a region past its bound is a `resource-limit`, never silently reduced.",
         "Exact-buffer fixtures cover overlapping operations, edges, orientation/crop, undo/redo/reopen, source preservation and frame-limit failure."
       ],
       "test_strategy": {
@@ -157,7 +183,8 @@
       ],
       "extra_context": [
         "Pointer events remain desktop-only; API clients submit bounded stroke geometry, source coordinates and add/subtract operations directly.",
-        "The path primitives are the mask brush's own today: `path.rs` imports mask constants and carries the colour limit, a draft's target is a mask target, and the desktop's brush gesture names `mask.add-stroke`. They are generalised into a store for consumer-owned stroke types, with draft targets taken from declared identity parameters, before this starts."
+        "The path primitives are still the mask brush's own. `path.rs` holds `PathCapture` (the host grid the desktop brush pushes one position at a time), `decimate`, `Stroke`, `StrokeId` and the content-addressed `StrokeTable`, whose commit write stores only the strokes it does not already know are stored (`store_strokes` in editor/catalog.rs, with `insert_stored`, `mark_stored` and `is_known_stored`). But `path.rs` imports `mask::{REFINE_MAX, REFINE_MIN}` for `ColourLimit` and takes `SIZE_MIN` from `mask::DISTANCE_MIN`, `Recipe::stroke_references` (model.rs) finds strokes in mask components only, `Draft.target` (draft.rs) is an optional `MaskTarget`, and the desktop brush (`mask_draft/brush.rs`) drives `mask.add-stroke` alone. The masking group's generic path primitives (consumer-declared stroke types in the one store, draft targets from declared identity parameters) wait for this work and land first.",
+        "The descriptor's canvas interactions are `point-pick`, `sample-apply` and `crop-frame` (`CanvasInteraction`, modules/descriptor.rs); the mask brush is the host's `mask.*` command family, not a declared interaction. Stroke geometry is the `points` parameter kind, refused past `POSTED_POINTS_PER_STROKE` before decimation and `POINTS_PER_STROKE` (1,024) after, with a radius-relative decimation tolerance. A component-kind token is named only in the host's kind table (`mask/mod.rs`), each kind's file and the desktop's drawn-kind table (the `component-kind` repository rule), so a corrections brush declares its own stroke type rather than reusing the mask brush kind."
       ],
       "context_links": [
         {
@@ -170,13 +197,19 @@
           "kind": "file",
           "label": "Module descriptor",
           "target": "crates/luxforge-core/src/modules/descriptor.rs",
-          "relevance": "Current canvas interaction validation."
+          "relevance": "`CanvasInteraction` and the `points` parameter kind a brush-mask interaction extends."
         },
         {
           "kind": "file",
           "label": "Develop workspace",
           "target": "docs/design/develop-workspace.md",
           "relevance": "Canvas modes and generated controls."
+        },
+        {
+          "kind": "file",
+          "label": "Path primitives",
+          "target": "crates/luxforge-core/src/path.rs",
+          "relevance": "`PathCapture`, decimation, the stroke limits and the content-addressed `StrokeTable`."
         }
       ],
       "acceptance_criteria": [
@@ -206,7 +239,8 @@
         "TASK-003"
       ],
       "extra_context": [
-        "One layer holds stable operation IDs; actions add, update, remove and reorder operations without module-owned catalog writes."
+        "One layer holds stable operation IDs; actions add, update, remove and reorder operations without module-owned catalog writes.",
+        "Every mutating action carries the `{request_id, actor}` envelope and `expected_revision`, checked once in the dispatcher (`Envelope::check`, api/params.rs), and a module supplies its history label through `ToolModule::label()`. The `identity` parameter kind is host-only today (`ParameterKind::host_only`), so a module-owned operation ID either uses another kind or waits for the generic path primitives' identity parameters."
       ],
       "context_links": [
         {
@@ -250,7 +284,8 @@
         "TASK-005"
       ],
       "extra_context": [
-        "This is the first usable handoff and does not require settings, credentials or AI resources."
+        "This is the first usable handoff and does not require settings, credentials or AI resources.",
+        "`cargo xtask editor-latency --mode paint` measures a mask brush stroke's press to its first frame; input-to-overlay for a Corrections brush needs that mode extended to it or a mode of its own."
       ],
       "context_links": [
         {
@@ -292,7 +327,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "LaMa is a non-generative inpainting baseline; PowerPaint and other candidates need independent weight/runtime terms. Do not claim Adobe quality from an architecture label.",
+        "The object removal research supersedes the earlier candidate list with a measured-first shortlist: Big-LaMa and MI-GAN as the permissive, non-generative baseline, and OSOR-SDXL, RORem and FLUX.2 klein 4B as generative candidates, each with its own code and weight licence and M4 measurements still to run. It also proposes one shared local inference service with the segmenter the masking work may use. Do not claim Adobe quality from an architecture label.",
         "Evaluate at equivalent mask/context sizes, including model-specific resizing and colour conversion."
       ],
       "context_links": [
@@ -303,16 +338,22 @@
           "relevance": "Local/remote candidate qualification."
         },
         {
+          "kind": "file",
+          "label": "Object removal research",
+          "target": "docs/research/object-removal/README.md",
+          "relevance": "Shortlist, licences, runtimes and the M4 measurements that gate a choice."
+        },
+        {
+          "kind": "file",
+          "label": "Inpainting candidates",
+          "target": "docs/research/object-removal/inpainting-and-effects-removal.md",
+          "relevance": "LaMa, MI-GAN, generative removers and the 60 MP strategy."
+        },
+        {
           "kind": "url",
           "label": "LaMa project",
           "target": "https://github.com/advimman/lama",
           "relevance": "Published model and inpainting behavior."
-        },
-        {
-          "kind": "url",
-          "label": "PowerPaint project",
-          "target": "https://github.com/open-mmlab/PowerPaint",
-          "relevance": "Open source object-removal candidate."
         }
       ],
       "acceptance_criteria": [
@@ -341,9 +382,10 @@
         "TASK-003"
       ],
       "extra_context": [
-        "Requires the generic host artifact storage from the module-capabilities design before implementation; no cross-plan task IDs are encoded here.",
+        "Builds on the implemented derived artifacts (docs/design/module-capabilities.md, Derived artifacts): a task publishes content-addressed bytes through `ModuleContext::publish_artifact` (at most 16 per task, 256 MiB each), an effect declaring `artifacts: true` lists them on its layer, the commit checks each has a row and a file, evaluation binds them into the recipe (`EditorService::bind_artifacts`) and `CapabilityModule::compile_bound` receives the bytes. A missing or corrupt artifact fails render, sample, analysis and export with `source-unavailable`.",
         "Rendering uses a frozen host-owned patch and never invokes its generation provider.",
-        "Every task result is recorded as a catalog artifact and unreferenced ones are collected only when a catalog opens; return candidates as bounded job results and publish only the accepted patch as an artifact."
+        "A task's result today is its JSON plus the IDs of the artifacts it published, and every published artifact stays until a collection finds it unreferenced: opening a catalog queues one collection on the source worker, and `artifact.collect` skips artifacts a task of the current process published. Disposable multi-megabyte candidates therefore need a bounded job result that is not an artifact, read through `job.read`, with only the accepted patch published; that result shape is this task's work.",
+        "`spatial::prefix_hash` (render/spatial.rs) already hashes a layer prefix with the masks it reads, including their sampling, which is the input-prefix identity a frozen patch needs."
       ],
       "context_links": [
         {
@@ -394,8 +436,8 @@
       ],
       "extra_context": [
         "If qualification rejects all local models, complete this task only by recording a no-go with evidence and keep local AI unavailable; do not substitute an unreviewed model.",
-        "Generic download, settings, permissions, activation and bounded workers from module-capabilities are prerequisites.",
-        "Activation (preloading a model with a cancellable worker) is deferred together with the `local-runtime` capability; this adapter brings both back with its first real consumer."
+        "Generic download, settings and permissions are implemented: a resource installs only from its pinned URL under the `download-artifact` grant, checked by length, SHA-256 and the module's `validate_resource` hook, and a task reads it through `ModuleContext::resource_path`. Capability tasks run on the one job table's `module` lane, one thread with at most four queued.",
+        "Activation (`module.activate`, `module.deactivate`, `JobKind::Activate`/`Deactivate`, capabilities/host/activation.rs) is being removed until a module needs `local-runtime` (docs/decisions.md, Post-consolidation review). This adapter is that first consumer and brings back activation and `local-runtime` together, preloading a model with a cancellable worker off the owner thread; downloaded weights are never loaded through a general object deserializer."
       ],
       "context_links": [
         {
@@ -415,6 +457,12 @@
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
           "relevance": "Bounded model work and honest measurements."
+        },
+        {
+          "kind": "file",
+          "label": "Inference runtimes",
+          "target": "docs/research/object-removal/inference-runtimes.md",
+          "relevance": "ort, tract, candle, burn and Core ML, their packaging and licences."
         }
       ],
       "acceptance_criteria": [
@@ -442,9 +490,9 @@
         "TASK-007"
       ],
       "extra_context": [
-        "Requires generic settings, secret storage, network permission and jobs; first live providers are chosen in the qualification task.",
+        "Requires generic settings, secret storage, network permission and jobs, which the module capabilities framework implements: settings use the module parameter vocabulary, secrets live only in the OS credential store (the macOS Keychain first), and a task is a capability job read and cancelled through `job.read` and `job.cancel`. First live providers are chosen in the qualification task.",
         "Do not pass original paths, EXIF or extra image bytes by default.",
-        "The transport runs on `ureq`'s own agent behind the unchanged address policy; at the 1,024-record grant cap the oldest remote-image grant is evicted, so per-asset consent keeps working, and whether remote-photo consent is per asset or remembered is settled in the decision task before the first adapter ships."
+        "The transport runs on `ureq`'s own agent (`capabilities/transport/`) behind the unchanged address policy, and the `http-framing` repository rule keeps HTTP framing inside it; the capabilities group moves the transport and the secret store into their own crate, injected through `HostConfig`. At the 1,024-record grant cap (`MAX_GRANT_RECORDS`) the oldest live remote-image grant is evicted, so per-asset consent keeps working. Remote-photo consent is per asset by the recorded default; the decision task confirms or changes that before the first adapter ships."
       ],
       "context_links": [
         {
@@ -489,7 +537,8 @@
         "TASK-010"
       ],
       "extra_context": [
-        "A local no-go in TASK-009 does not block an accepted remote AI delivery; candidate acceptance rechecks revision and prefix before commit."
+        "A local no-go in TASK-009 does not block an accepted remote AI delivery; candidate acceptance rechecks revision and prefix before commit.",
+        "The target mask is a draft on the core `draft.*` lifecycle: `draft.begin`, `draft.set`, `draft.cancel` and `draft.reapply` run synchronously on the desktop thread and `draft.commit` as an owner task, and Undo, Redo and Restore are refused while a draft is open (docs/decisions.md, Post-consolidation review). Events name the asset and revision they changed, so a late candidate is recognisable as stale."
       ],
       "context_links": [
         {
@@ -508,7 +557,7 @@
           "kind": "file",
           "label": "Generic jobs",
           "target": "docs/design/module-capabilities.md",
-          "relevance": "Activation, cancellation and progress."
+          "relevance": "Capability jobs on the one job table, cancellation and progress; activation returns with `local-runtime`."
         }
       ],
       "acceptance_criteria": [
@@ -540,7 +589,7 @@
       ],
       "extra_context": [
         "Exactness and naturalness are separate evidence. A skipped native or unavailable provider test is not a pass.",
-        "JPEG export verification depends on the separately planned shared exporter. If it has not shipped, this milestone cannot be marked complete."
+        "JPEG export has shipped (`export.plan`, `export.jpeg`, `export.read`, `export.cancel`; docs/design/export.md) and binds a stack's artifacts before it evaluates, failing as render does; export verification uses it rather than a render-to-buffer check."
       ],
       "context_links": [
         {
@@ -560,6 +609,12 @@
           "label": "Development verification",
           "target": "docs/engineering/development.md",
           "relevance": "Tiered checks and native evidence."
+        },
+        {
+          "kind": "file",
+          "label": "JPEG export",
+          "target": "docs/design/export.md",
+          "relevance": "The shipped exporter the acceptance exports through."
         }
       ],
       "acceptance_criteria": [

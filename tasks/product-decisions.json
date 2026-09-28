@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run. Interactive-preview softness, an updating histogram, and viewport-bounded clipping are accepted; measured quality/error choices beyond the authorized baseline remain open. The owner decided the 100% RAW white-balance gate and provisionally accepted the 1088 MiB temporary-overlap photo-texture ceiling on 2026-09-27. Both decisions are recorded below; the revised RAW gate passes fresh native checks, while total GPU-memory accounting remains implementation follow-up.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, where Detail's sharpening and noise reduction run, interactive-preview quality levels beyond the authorized baseline, Bayer highlight latitude, a RAW process memory budget, a developer mode for `luxforge-json`, and where the GPU residency follow-up sits. Interactive-preview softness, an updating histogram, and viewport-bounded clipping are accepted. The owner decided the 100% RAW white-balance gate and provisionally accepted the 1088 MiB temporary-overlap photo-texture ceiling on 2026-09-27. Both decisions are recorded below; the revised RAW gate passes fresh native checks, while total GPU-memory accounting remains implementation follow-up.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -63,7 +63,8 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Later RAW planning for real Nikon Z6 and Fujifilm X100VI modes/samples. The first four milestones operate on supported JPEGs."
+        "RAW editing is implemented for the Nikon Z6, the Fujifilm X100VI and the supplied DJI Air 2S DNG, with neutral development as the initial direction; camera-look or Adobe matching is not selected (docs/decisions.md, Product and platform). Whether RAW precedes the tonal suite is settled by delivery, and the owner's private RAW manifest already feeds `raw-corpus`, `verify --manifest` and the `raw-editor` scenario.",
+        "Still open: which recording modes, firmware and controlled quality scenes to prioritise, how much camera JPEG or film-simulation matching matters beyond neutral, and whether lens correction, denoise or sharpening are essential (docs/decisions.md, Open product questions; docs/design/initial-raw.md, Remaining qualification and decisions). Bayer highlight latitude and the RAW memory budget have their own tasks in this plan."
       ],
       "context_links": [
         {
@@ -83,11 +84,24 @@
           "label": "Technical options",
           "target": "docs/research/technical-options.md",
           "relevance": "Records provisional stack alternatives and primary sources."
+        },
+        {
+          "kind": "file",
+          "label": "RAW qualification boundary",
+          "target": "docs/design/initial-raw.md",
+          "locator": "Remaining qualification and decisions",
+          "relevance": "The controlled-quality, DJI and resource items still open."
+        },
+        {
+          "kind": "file",
+          "label": "RAW coverage gaps",
+          "target": "fixtures/raw-coverage.json",
+          "relevance": "The recorded controlled-scene, detail, high-ISO, highlight and shadow gaps."
         }
       ],
       "acceptance_criteria": [
-        "Record real Nikon Z6 and Fujifilm X100VI recording modes and a privately stored sample manifest when available.",
-        "Decide whether RAW should precede the full tonal-tool suite and how important camera JPEG/film-simulation matching is.",
+        "Record the real Nikon Z6 and Fujifilm X100VI recording modes, firmware and controlled scenes to prioritise, in the private RAW manifest and the coverage gaps in fixtures/raw-coverage.json.",
+        "Decide how important camera JPEG/film-simulation matching is beyond the neutral development direction.",
         "Define baseline appearance/detail requirements and clarify whether lens correction, denoise or sharpening are essential to the first RAW slice.",
         "Keep library reuse as the default and require measured support/performance evidence before a custom decoder proposal."
       ],
@@ -130,7 +144,7 @@
           "label": "Extension path",
           "target": "docs/design/architecture.md",
           "relevance": "Documents deferred extension boundaries.",
-          "locator": "Extension path"
+          "locator": "Modules and extension path"
         },
         {
           "kind": "file",
@@ -168,7 +182,8 @@
       "dependencies": [],
       "extra_context": [
         "Record workload priorities and measured native M4 conditions; proposed performance budgets require evidence and owner acceptance.",
-        "Speed and lazy subsection editing within a full catalog are owner priorities. Avoid assuming binary splitting saves memory or latency."
+        "Speed and lazy subsection editing within a full catalog are owner priorities. Avoid assuming binary splitting saves memory or latency.",
+        "Already accepted, and not reopened here: the slider-to-presented-frame target of 16 ms p95 with 32 ms acceptable (docs/decisions.md, Basic adjustments and histogram), shared working-memory budgets as targets that pace work rather than limits (Rendering memory), and the owner's 150 ms bound for the hold-`\\` compare that chose the second RAW development (Post-consolidation review). The RAW process memory budget has its own task in this plan."
       ],
       "context_links": [
         {
@@ -268,7 +283,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Every spatial layer is placed after all colour work today (the placement rule in the module registry), so noise reduction or sharpening before tone cannot be expressed; proxy eligibility is decided per stage, with no per-effect policy, so a spatial layer makes the proxy approximate at Fit.",
+        "Every spatial layer is placed after all colour work today (`EffectStage` order and the placement rule in modules/registry/placement.rs), so noise reduction or sharpening before tone cannot be expressed; proxy eligibility is decided per stage (`ModuleRegistry::proxy_eligible`), with no per-effect policy, so a non-neutral spatial layer makes the proxy approximate at Fit.",
         "Lightroom-style noise reduction usually runs early on scene-referred data while output sharpening runs late; the choice decides whether Detail needs a new stage or an ordering rule inside the spatial stage.",
         "It is the one question the post-consolidation design leaves open (docs/design/post-consolidation.md, Out of scope)."
       ],
@@ -459,6 +474,223 @@
           "A rendering follow-up owns the omitted-resource qualification."
         ]
       }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Decide whether the Bayer (RCD) development retains values above sensor white, as the X-Trans path does, or keeps clipping each gained site at sensor white.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The pinned RCD reads each Bayer site as `LIM01(value / 65536)`, so after its white-balance gain a site is clipped to sensor white before interpolation and under-black sites become zero; Markesteijn (X-Trans, the X100VI) keeps over-white and under-black values through the demosaic. Luxforge's own normalization and gains clamp nothing, and everything after the demosaic keeps signed and above-one values. The luxforge-raw test `bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not` pins today's behaviour. The Z6 and the Air 2S are Bayer.",
+        "docs/design/initial-raw.md records retaining the latitude as an owner decision, taken with its rendering change measured on the supplied files. Until it is taken, the RAW high-precision qualification's retained-latitude criterion cannot close for Bayer sources.",
+        "Proposal, not a decision: retain the latitude, so both CFAs keep values above display white until their declared boundary and highlight recovery behaves alike on every supplied camera, provided the measured rendering change on the Z6 and Air 2S shows no new highlight artefacts such as false-colour clipped highlights; if it does, keep the clip and document it as the Bayer path's limit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW pixel and colour contract",
+          "target": "docs/design/initial-raw.md",
+          "locator": "Pixel and color contract",
+          "relevance": "Where the Bayer clip and the X-Trans latitude are described."
+        },
+        {
+          "kind": "file",
+          "label": "Open RAW decisions",
+          "target": "docs/design/initial-raw.md",
+          "locator": "Remaining qualification and decisions",
+          "relevance": "Records Bayer highlight latitude as an owner decision."
+        },
+        {
+          "kind": "file",
+          "label": "Mosaic normalization",
+          "target": "crates/luxforge-raw/src/normalize.rs",
+          "relevance": "The unclamped normalization and gains ahead of the native demosaic."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where the answer is recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner chooses to retain Bayer highlight latitude or keep the clip after comparing the rendering change on the supplied Z6 and Air 2S files, and the choice is recorded in docs/decisions.md and docs/design/initial-raw.md.",
+        "The recommendation stays a proposal until the owner records it; no rendering change ships on it before then."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review 100% highlight and shadow crops of the supplied Bayer files rendered with and without the clip, with the owner.",
+          "Record the outcome in the decisions document and the RAW design."
+        ],
+        "commands": [],
+        "expected_results": [
+          "The Bayer development's highlight behaviour follows a recorded owner decision."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Set the RAW process memory budget now that a RAW source keeps a second development.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "docs/design/initial-raw.md's provisional investigation target is at most 1.5 GiB of combined process CPU RSS for a RAW edit, with GPU allocations reported separately. It predates the decision of 2026-09-28, taken under the owner's delegation, to keep a second development within `luxforge_raw::RETAINED_DEVELOPMENT_BYTES` (600 MiB) (docs/decisions.md, Post-consolidation review).",
+        "With both developments held, the `raw-editor` edit launch's RSS is 2290 / 2352 MiB p50 / p95 on the X100VI (1832 / 1882 without the slot), 1527 / 1559 MiB on the Z6 and 1450 / 1484 MiB on the Air 2S (docs/specs/performance.md, Second development), with GPU resources, captures and allocator retention included, not separated. Earlier screenshot-free X100VI series peaked at 1583-1647 MiB and a captured 30-trial p95 at 1992 MiB, so one development already passed the target.",
+        "The whole-editor RAW measurement attributes RSS by stage and is the measurement the second-slot decision names before any byte-budgeted source cache that also keeps JPEG decodes; the budget itself is the owner's.",
+        "Proposal, not a decision: state the budget in two parts, the one-development working set (keeping 1.5 GiB as its investigation target until the whole-editor measurement attributes today's miss) and the retained second development under its own 600 MiB byte budget, with GPU memory reported separately; accept numbers only from that measurement, and if a measured total is unacceptable choose between a higher target, a smaller slot or a proxy-only compare."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Provisional RAW budgets",
+          "target": "docs/design/initial-raw.md",
+          "locator": "Measurement and provisional budgets",
+          "relevance": "The 1.5 GiB investigation target and how RAW resources are measured."
+        },
+        {
+          "kind": "file",
+          "label": "Second development",
+          "target": "docs/specs/performance.md",
+          "locator": "Second development",
+          "relevance": "The switch times and RSS with both developments held."
+        },
+        {
+          "kind": "file",
+          "label": "Second development decision",
+          "target": "docs/decisions.md",
+          "locator": "Post-consolidation review",
+          "relevance": "The 600 MiB second slot and the RSS measurement it names."
+        },
+        {
+          "kind": "file",
+          "label": "Retained development budget",
+          "target": "crates/luxforge-raw/src/limits.rs",
+          "relevance": "`RETAINED_DEVELOPMENT_BYTES`."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner accepts a RAW process memory budget, or keeps the target explicitly provisional, stating whether the retained second development counts inside it and how GPU memory is reported.",
+        "docs/decisions.md and docs/design/initial-raw.md record the outcome, and no budget is reported as met without a measurement against it."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the recorded RSS with one and two developments held, and the whole-editor RAW measurement when it exists, with the owner.",
+          "Record the outcome in the decisions document and the RAW design."
+        ],
+        "commands": [],
+        "expected_results": [
+          "The RAW memory target reflects the decided second development and is either accepted or explicitly provisional."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Decide how the headless `luxforge-json` binary enters developer mode, now that test-only modules register only there.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Owner decision (docs/decisions.md, Post-consolidation review): test modules, including the pixel proof, register only in developer mode. The desktop has one: `--developer`, automatic in debug builds (`cfg!(debug_assertions)` in crates/luxforge-app/src/main.rs), and it refuses `--proof-endpoint` outside developer mode.",
+        "`luxforge-json` (crates/luxforge-app/src/json.rs) has no developer switch: it serves the pixel proof through `ModuleRegistry::builtin()` on every run and registers the capabilities proof whenever `--proof-endpoint` is given. Developer-only registration there needs a switch, and the process tests and harness runs that use either proof must pass it.",
+        "Proposal, not a decision: give `luxforge-json` the desktop's `--developer` flag with the same meaning and refuse `--proof-endpoint` without it, as the desktop does, but do not turn it on automatically in debug builds, so an agent's `schema.list` never depends on the build profile and tests that need a test module say so. The alternative is to mirror the desktop exactly, debug default included."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Post-consolidation review",
+          "relevance": "The developer-mode registration decision."
+        },
+        {
+          "kind": "file",
+          "label": "Headless JSON binary",
+          "target": "crates/luxforge-app/src/json.rs",
+          "relevance": "Its flags and registry assembly."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop launch",
+          "target": "crates/luxforge-app/src/main.rs",
+          "relevance": "The desktop's `--developer` flag, debug default and proof-endpoint refusal."
+        },
+        {
+          "kind": "file",
+          "label": "Developer workspace",
+          "target": "docs/design/modules-and-api.md",
+          "locator": "Developer workspace",
+          "relevance": "How developer-only modules are shown and registered."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner chooses how `luxforge-json` enters developer mode (a flag, a build-profile default or both) and whether `--proof-endpoint` requires it, and the choice is recorded in docs/decisions.md before developer-only registration reaches `luxforge-json`."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the desktop's developer mode and the headless binary's flags with the owner."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Developer-only registration in `luxforge-json` starts from a recorded decision."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Decide whether measuring and bounding GPU resources beyond the provisional 1088 MiB photo-texture ceiling joins a programme wave or stays a standalone follow-up, and how the ceiling applies to a second photo surface.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner provisionally accepted on 2026-09-27 a 1088 MiB temporary-overlap ceiling for the photo surface's slots alone (one current and one retiring full-photo allocation of at most 512 MiB each and two region sets of at most 32 MiB each), not a total editor or GPU budget (docs/decisions.md, Interactive previews at 100%). Crop GPU textures and tiles, overlays and backend upload staging are outside it and unmeasured; a crop draft's input stage at Fit is now a display-size proxy of 6.7 to 7.5 MiB (docs/specs/performance.md, A crop draft's input stage at Fit), while its exact stage at a percentage zoom can approach the 512 MiB frame limit.",
+        "The rendering group carries that measurement as a standalone follow-up outside the six programme waves, so nothing schedules it. The photo surface (`PhotoPipeline`, crates/luxforge-ui/src/photo_surface.rs) holds one set of slots for the whole application; keying them by a surface id is library groundwork, and how the ceiling applies to a second surface on screen is left to the owner.",
+        "Proposal, not a decision: keep the measurement a standalone follow-up but run it beside the whole-editor RAW measurement, which already needs native M4 GPU allocations and holds the largest photos, before any total-memory claim; and make the 1088 MiB ceiling one photo-texture budget shared by every photo surface, so a second surface draws from it, for example at display resolution, rather than doubling it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Provisional photo-texture ceiling",
+          "target": "docs/decisions.md",
+          "locator": "Interactive previews at 100%",
+          "relevance": "The accepted ceiling and its excluded resources."
+        },
+        {
+          "kind": "file",
+          "label": "Viewport design",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Region textures and stale pixels",
+          "relevance": "The slot accounting behind the ceiling."
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
+          "relevance": "`PhotoPipeline`'s one set of slots."
+        },
+        {
+          "kind": "file",
+          "label": "Programme waves",
+          "target": "docs/design/post-consolidation.md",
+          "locator": "Waves",
+          "relevance": "The waves a follow-up could join."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner decides whether the GPU residency measurement joins a programme wave or stays a standalone follow-up, and whether the 1088 MiB ceiling is per surface or shared across photo surfaces; docs/decisions.md records both.",
+        "The decision implies no total editor or GPU memory guarantee."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the ceiling, the excluded resources and the second-surface groundwork with the owner."
+        ],
+        "commands": [],
+        "expected_results": [
+          "The GPU residency follow-up has a recorded place and the ceiling a recorded scope for more than one surface."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -473,7 +705,11 @@
         "TASK-006",
         "TASK-007",
         "TASK-008",
-        "TASK-009"
+        "TASK-009",
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013"
       ]
     }
   ]
