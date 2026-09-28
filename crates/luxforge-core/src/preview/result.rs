@@ -86,7 +86,8 @@ pub enum PhaseOutcome {
     /// The coverage grid of the job whose proxy frame was just handed over, under that frame's
     /// generation, or the reason it has none. It follows the frame rather than riding it, so the
     /// frame reaches the screen without waiting for the grid; a client draws it over the frame of
-    /// its own generation and over no other.
+    /// its own generation and over no other. A newer request stops it, as it stops an exact phase:
+    /// it is then delivered with neither a grid nor a reason, and the newer job brings its own.
     Overlay(MaskOverlayOutcome),
     Exact(Box<ExactOutcome>),
 }
