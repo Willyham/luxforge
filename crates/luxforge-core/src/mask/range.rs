@@ -585,7 +585,7 @@ impl CompiledColour {
 /// anywhere in the frame and no colour span or spatial tile can be skipped for it. Saying so is what
 /// keeps the rectangle's promise — outside it coverage is exactly zero — true.
 pub(super) fn value_support(stage: Stage) -> Region {
-    super::whole_stage(stage)
+    super::Region::whole(stage)
 }
 
 /// The smallest feature a value-based component draws, in a stage's pixels: `f64::INFINITY`.

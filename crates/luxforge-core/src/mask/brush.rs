@@ -29,7 +29,7 @@
 //! the order is where that lives.
 //!
 //! **Why a grid index.** A point query must be answerable in bounded time and must never rasterize
-//! ([performance rule 4](../../../docs/engineering/performance-rules.md)). The index over segments is
+//! ([performance rule 4](../../../../docs/engineering/performance-rules.md)). The index over segments is
 //! what makes the cost of a pixel depend on the strokes *near it* rather than on how many strokes the
 //! component holds. The occupancy cap that bounds a pixel's cost is checked **where a stroke is
 //! painted** ([`densest_cell`], called by `mask.add-stroke`), against the content stage the mask is
@@ -299,7 +299,7 @@ impl Index {
     /// through [`Self::densest`], so a committed component is already within it.
     ///
     /// **Memory, and the limit that bounds it** ([performance rule
-    /// 6](../../../docs/engineering/performance-rules.md)). The grid is sized so its cell count
+    /// 6](../../../../docs/engineering/performance-rules.md)). The grid is sized so its cell count
     /// never exceeds the component's own segment count — the side is `floor(sqrt(segments))`, capped
     /// at [`GRID_SIDE_MAX`] — and a painted stroke is refused where it would leave a cell holding more
     /// than [`SEGMENTS_PER_PIXEL`] entries at the content stage. So an index costs about
@@ -623,10 +623,10 @@ impl ComponentField for Compiled {
     /// a whole-mask inversion answer it.
     fn support(&self, stage: Stage, inverted: bool) -> Region {
         if inverted {
-            return super::whole_stage(stage);
+            return super::Region::whole(stage);
         }
         match self.support {
-            None => super::empty_region(),
+            None => super::Region::EMPTY,
             Some([u0, v0, u1, v1]) => box_bounds(stage, u0, v0, u1, v1),
         }
     }

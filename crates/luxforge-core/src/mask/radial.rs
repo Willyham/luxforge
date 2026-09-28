@@ -253,7 +253,7 @@ impl ComponentField for Compiled {
     /// answer, exactly as a whole-mask inversion answers it.
     fn support(&self, stage: Stage, inverted: bool) -> Region {
         if inverted {
-            return super::whole_stage(stage);
+            return super::Region::whole(stage);
         }
         let rxca = self.radius_x * self.ca;
         let rysa = self.radius_y * self.sa;
