@@ -1193,6 +1193,33 @@ pub(crate) fn current_preview_task(
     )
 }
 
+/// Plan the stack of one displayed entry again for the Masks panel's thumbnails, as a preview is
+/// planned but rendering nothing: the job is handed to the thumbnail worker, never to the preview.
+pub(crate) fn thumbnail_source_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: EntryId,
+) -> Task<Message> {
+    owner_task(
+        move || thumbnail_source(&owner, client, asset_id, entry_id),
+        |result| Message::Preview(PreviewMessage::ThumbnailSource(result.map(Box::new))),
+    )
+}
+
+/// The plain calls [`thumbnail_source_task`] runs.
+pub(crate) fn thumbnail_source(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: EntryId,
+) -> Result<PreviewJob, String> {
+    ready_preview_job(
+        owner,
+        PreviewRequest::new(client, asset_id).entry(Some(entry_id)),
+    )
+}
+
 /// Plan one view-only frame without reading or changing the session. The app re-reads its local
 /// pan before admission, so a coalesced scroll remains the newest rectangle.
 pub(crate) fn view_preview_task(

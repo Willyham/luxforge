@@ -273,6 +273,7 @@ impl Editor {
                 }
             }
             PreviewMessage::QuietTick => return self.quiet_refine(),
+            PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
                     return Task::none();
