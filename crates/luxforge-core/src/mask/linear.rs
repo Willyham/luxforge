@@ -13,14 +13,16 @@
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
 use super::{
-    Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, parameters::position, smooth,
+    Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field,
+    parameters::{check_declared, position},
+    smooth,
 };
 use crate::{
     Component, Error, ParameterDescriptor,
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "linear";
@@ -83,12 +85,15 @@ pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
     ]
 }
 
+/// [`parameters`], declared once for the parser to check a stored payload against.
+static DECLARED: LazyLock<Vec<ParameterDescriptor>> = LazyLock::new(|| parameters(true));
+
 /// Parse and range-check one stored `linear` payload, without a stage.
 ///
 /// Everything a stage is not needed for is refused here, naming the component and the field: the
-/// payload's shape, and each coordinate being a finite number inside the legal range. The axis's own
-/// length is a mask-space distance and therefore depends on the stage's aspect ratio, so it is
-/// checked when the component is compiled.
+/// payload's shape, and each coordinate against its own declaration. The axis's own length is a
+/// mask-space distance and therefore depends on the stage's aspect ratio, so it is checked when the
+/// component is compiled.
 pub(super) fn parse(component: &Component) -> Result<LinearGradient, Error> {
     let gradient: LinearGradient =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
@@ -97,19 +102,7 @@ pub(super) fn parse(component: &Component) -> Result<LinearGradient, Error> {
                 component.name
             ))
         })?;
-    for (field, value) in [
-        ("x0", gradient.x0),
-        ("y0", gradient.y0),
-        ("x1", gradient.x1),
-        ("y1", gradient.y1),
-    ] {
-        if !value.is_finite() || !(POSITION_MIN..=POSITION_MAX).contains(&value) {
-            return Err(Error::validation(format!(
-                "component {} {KIND} {field} must be a number within {POSITION_MIN:.0}..={POSITION_MAX:.0}",
-                component.name
-            )));
-        }
-    }
+    check_declared(component, KIND, &DECLARED, &component.payload)?;
     Ok(gradient)
 }
 
@@ -160,7 +153,9 @@ impl Compiled {
             stored,
         })
     }
+}
 
+impl ComponentField for Compiled {
     /// Coverage at a mask-space point, as the study froze it:
     ///
     /// ```text
@@ -172,9 +167,16 @@ impl Compiled {
     /// numerator is `du*du + dv*dv` in the same order as `l2` and `smooth` is exact at both clamp
     /// ends. Constant perpendicular to the axis, because the projection is the only thing coverage
     /// depends on: a gradient has no width.
-    pub(super) fn coverage(&self, u: f64, v: f64) -> f64 {
+    ///
+    /// A geometric component ignores `rgb`: the same expressions on the same `(u, v)`, so its
+    /// coverage is bit-identical to the frozen reference whatever pixel it is handed.
+    fn coverage(&self, u: f64, v: f64, _rgb: [f64; 3]) -> f64 {
         let t = (((u - self.u0) * self.du + (v - self.v0) * self.dv) / self.l2).clamp(0.0, 1.0);
         smooth(t)
+    }
+
+    fn reads_pixels(&self) -> bool {
+        false
     }
 
     /// A conservative pixel rectangle of this component's support.
@@ -185,7 +187,7 @@ impl Compiled {
     /// support is one half-plane, and the rectangle is that half-plane clipped to the stage:
     /// `dot > 0` for the component as drawn, `dot < l2` for the inverted one, both affine in the
     /// pixel indices.
-    pub(super) fn support(&self, stage: Stage, inverted: bool) -> Region {
+    fn support(&self, stage: Stage, inverted: bool) -> Region {
         let height = f64::from(stage.height);
         let dot = |x: f64, y: f64| {
             let u = (x + 0.5) / height;
@@ -206,7 +208,7 @@ impl Compiled {
     /// Computed from the stored payload against the stage asked about, not from the compiled terms,
     /// so the answer is about that stage. The square root is taken here and nowhere near the
     /// rejection rule, which compares squared lengths.
-    pub(super) fn feature_px(&self, stage: Stage) -> f64 {
+    fn feature_px(&self, stage: Stage) -> f64 {
         let aspect = f64::from(stage.width) / f64::from(stage.height);
         let du = self.stored.x1 * aspect - self.stored.x0 * aspect;
         let dv = self.stored.y1 - self.stored.y0;
@@ -227,24 +229,4 @@ pub(super) fn compile(component: &Component, binding: &Binding<'_>) -> Result<Fi
         binding.stage,
         &component.name,
     )?))
-}
-
-impl ComponentField for Compiled {
-    // A geometric component ignores `rgb`: the same expressions on the same `(u, v)`, so its coverage
-    // is bit-identical to the frozen reference whatever pixel it is handed.
-    fn coverage(&self, u: f64, v: f64, _rgb: [f64; 3]) -> f64 {
-        Compiled::coverage(self, u, v)
-    }
-
-    fn reads_pixels(&self) -> bool {
-        false
-    }
-
-    fn support(&self, stage: Stage, inverted: bool) -> Region {
-        Compiled::support(self, stage, inverted)
-    }
-
-    fn feature_px(&self, stage: Stage) -> f64 {
-        Compiled::feature_px(self, stage)
-    }
 }

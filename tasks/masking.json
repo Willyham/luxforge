@@ -607,7 +607,7 @@
     {
       "id": "TASK-008",
       "description": "Let each mask kind validate its parameters against its own declared ranges instead of hand-checking them again, and share one bounds-to-region helper between brush and radial.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],

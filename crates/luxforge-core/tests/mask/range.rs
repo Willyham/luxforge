@@ -479,8 +479,8 @@ fn an_illegal_range_payload_is_refused_by_name() {
         (
             "luminance-range",
             json!({"low": -1.0, "low_feather": 0.0, "high": 30.0, "high_feather": 0.0}),
-            "validation: component Luminance range 1 luminance-range low must be a number within \
-             0..=100",
+            "validation: component Luminance range 1 luminance-range parameter low must be a number \
+             within 0..=100",
         ),
         (
             "luminance-range",
@@ -491,14 +491,14 @@ fn an_illegal_range_payload_is_refused_by_name() {
         (
             "colour-range",
             json!({"samples": [], "refine": 120.0}),
-            "validation: component Colour range 1 colour-range refine must be a number within \
-             0..=100",
+            "validation: component Colour range 1 colour-range parameter refine must be a number \
+             within 0..=100",
         ),
         (
             "colour-range",
             json!({"samples": [[0.0, 0.0, 99.0]], "refine": 50.0}),
-            "validation: component Colour range 1 colour-range samples must each be three \
-             linear-sRGB numbers within -16..=16",
+            "validation: component Colour range 1 colour-range sample parameter b must be a number \
+             within -16..=16",
         ),
     ];
     for (kind, payload, message) in cases {
