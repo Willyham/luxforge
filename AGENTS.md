@@ -50,4 +50,4 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
 | Task plans and conventions | [tasks/README.md](tasks/README.md) |
-| Reference research: stack options, Lightroom, darktable | [docs/research](docs/research) |
+| Reference research: stack options, Lightroom, darktable, object removal and AI masks | [docs/research](docs/research), [object removal](docs/research/object-removal/README.md) |
