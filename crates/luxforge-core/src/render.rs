@@ -420,7 +420,8 @@ fn bilinear(
         (fetch(bottom_left.0, bottom_left.1)?, w2),
         (fetch(bottom_right.0, bottom_right.1)?, w3),
     ];
-    let mut pixel = [0; 4];
+    // Frames are opaque by contract, so a resample writes alpha rather than blending it.
+    let mut pixel = [0, 0, 0, 255];
     for (channel, slot) in pixel.iter_mut().enumerate().take(3) {
         let linear: f64 = corners
             .iter()
@@ -428,12 +429,6 @@ fn bilinear(
             .sum();
         *slot = quantizer.rounded(linear);
     }
-    // Alpha has no transfer function; it blends linearly.
-    let alpha: f64 = corners
-        .iter()
-        .map(|(corner, weight)| weight * f64::from(corner[3]))
-        .sum();
-    pixel[3] = alpha.round().clamp(0.0, 255.0) as u8;
     Ok(pixel)
 }
 
@@ -1220,7 +1215,7 @@ impl Affine {
     }
 }
 
-/// The byte domain: a JPEG's decoded 8-bit sRGB, with alpha. Each colour run decodes through the
+/// The byte domain: a JPEG's decoded 8-bit sRGB, opaque. Each colour run decodes through the
 /// sRGB table, runs its units in `f32` and quantizes at its end, so a point replacement, a resample,
 /// a spatial operation's output and the end of the recipe are all quantization boundaries, and a
 /// frame between two segments is exactly the bytes the next boundary reads.
@@ -1230,7 +1225,7 @@ pub(crate) struct Byte<'a>(pub(crate) &'a SourceImage);
 impl PixelDomain for Byte<'_> {
     type Pixel = [u8; 4];
     type SpatialFrame = Arc<Vec<u8>>;
-    /// A tile's RGBA rows, quantized and with the input's alpha, exactly as the frame holds them.
+    /// A tile's RGBA rows, quantized and opaque, exactly as the frame holds them.
     type TileOutput = Vec<u8>;
 
     fn fingerprint(&self) -> &str {
@@ -1247,10 +1242,6 @@ impl PixelDomain for Byte<'_> {
     #[inline]
     fn source_pixel(&self, x: u32, y: u32) -> Result<[u8; 4], Error> {
         Ok(source_pixel(self.0, x, y))
-    }
-
-    fn source_alpha(&self, x: u32, y: u32) -> u8 {
-        source_pixel(self.0, x, y)[3]
     }
 
     #[inline]
@@ -1318,9 +1309,9 @@ impl PixelDomain for Byte<'_> {
         decode_pixel([pixel[0], pixel[1], pixel[2]])
     }
 
-    fn spatial_output(rgb: [f32; 3], alpha: impl FnOnce() -> u8) -> Result<[u8; 4], Error> {
+    fn spatial_output(rgb: [f32; 3]) -> Result<[u8; 4], Error> {
         let rgb = quantize_pixel(rgb);
-        Ok([rgb[0], rgb[1], rgb[2], alpha()])
+        Ok([rgb[0], rgb[1], rgb[2], 255])
     }
 
     #[inline]
@@ -1335,15 +1326,14 @@ impl PixelDomain for Byte<'_> {
         )?))
     }
 
-    /// Quantized through the same exact thresholds as a colour run's end, with the input's alpha
-    /// beside each pixel, into RGBA rows of the tile's width: on the pool under
-    /// [`Parallelism::Pool`], and otherwise on the worker that ran the tile.
+    /// Quantized through the same exact thresholds as a colour run's end, opaque, into RGBA rows
+    /// of the tile's width: on the pool under [`Parallelism::Pool`], and otherwise on the worker
+    /// that ran the tile.
     fn tile_output(
         region: Region,
         values: Vec<f32>,
         tile: Region,
         parallelism: Parallelism,
-        alpha: &(impl Fn(u32, u32) -> u8 + Sync),
     ) -> Vec<u8> {
         let mut bytes = vec![0; (tile.pixels() * 4) as usize];
         let plane = region.pixels() as usize;
@@ -1364,7 +1354,7 @@ impl PixelDomain for Byte<'_> {
                 pixel[0] = quantizer.channel(f64::from(red[column]));
                 pixel[1] = quantizer.channel(f64::from(green[column]));
                 pixel[2] = quantizer.channel(f64::from(blue[column]));
-                pixel[3] = alpha(tile.x0 + column as u32, y);
+                pixel[3] = 255;
             }
         };
         let row_bytes = width * 4;
@@ -1778,7 +1768,6 @@ pub(super) fn rasterize(
                         |region, planes, parallelism| {
                             fill_planes(region, planes, parallelism, read)
                         },
-                        |x, y| input[offset(x, y) + 3],
                     )?
                 }
             };
@@ -2829,8 +2818,7 @@ mod tests {
         registry
     }
 
-    /// An asymmetric gradient with a varying alpha, so a wrong axis, a wrong weight or a dropped
-    /// alpha channel all show up.
+    /// An asymmetric opaque gradient, so a wrong axis or a wrong weight shows up.
     pub(crate) fn gradient(width: u32, height: u32) -> SourceImage {
         let mut rgba = Vec::with_capacity((width * height * 4) as usize);
         for y in 0..height {
@@ -2839,7 +2827,7 @@ mod tests {
                     (x * 251 / width.max(1)) as u8,
                     (y * 241 / height.max(1)) as u8,
                     ((x * 7 + y * 3) % 256) as u8,
-                    (200 + (x + y) % 56) as u8,
+                    255,
                 ]);
             }
         }
@@ -3986,16 +3974,9 @@ mod tests {
     }
 
     #[test]
-    fn samples_match_rendered_pixels_and_keep_source_alpha() {
+    fn samples_match_rendered_pixels_and_are_opaque() {
         let registry = registry();
-        let mut source = source(5, 3);
-        let rgba: Vec<u8> = source
-            .rgba
-            .iter()
-            .enumerate()
-            .map(|(i, v)| if i % 4 == 3 { (i / 4) as u8 + 100 } else { *v })
-            .collect();
-        source.rgba = rgba.into();
+        let source = source(5, 3);
         let recipe = Recipe {
             format: crate::RECIPE_FORMAT,
             layers: vec![
@@ -4018,6 +3999,7 @@ mod tests {
                     (raster.width, raster.height)
                 );
                 assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y})");
+                assert_eq!(sampled.rgba.map(|pixel| pixel[3]), Some(255), "({x}, {y})");
             }
         }
         assert_eq!(
@@ -4419,14 +4401,7 @@ mod tests {
         let gains = evs.map(|ev| ev.exp2() as f32);
         let recipe = colour_recipe(vec![exposure_layer(&evs)]);
         for (width, height) in [(257, 129), (1024, 1024)] {
-            let mut source = source(width, height);
-            // All alpha codes survive the colour run unchanged as well.
-            for (index, pixel) in Arc::make_mut(&mut source.rgba)
-                .chunks_exact_mut(4)
-                .enumerate()
-            {
-                pixel[3] = index as u8;
-            }
+            let source = source(width, height);
             let mut expected = Vec::with_capacity(source.rgba.len());
             for pixel in source.rgba.chunks_exact(4) {
                 for channel in &pixel[..3] {
@@ -4436,7 +4411,8 @@ mod tests {
                     }
                     expected.push(quantizer_search_reference(&thresholds, f64::from(linear)));
                 }
-                expected.push(pixel[3]);
+                // Every frame is opaque.
+                expected.push(255);
             }
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             assert_eq!(raster.rgba.as_slice(), expected, "{width}x{height}");
@@ -4838,7 +4814,7 @@ mod tests {
                                 &format!("{ev} EV at ({x}, {y}) channel {channel}"),
                             );
                         }
-                        assert_eq!(actual[3], input[3], "alpha is never touched");
+                        assert_eq!(actual[3], 255, "every frame is opaque");
                     }
                 }
             }

@@ -893,7 +893,7 @@
     {
       "id": "TASK-013",
       "description": "Declare every frame opaque RGBA and delete alpha blending, fetching and threading from the render paths.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -968,7 +968,7 @@
     {
       "id": "TASK-014",
       "description": "Split render.rs by concept into separate files with no logic change, and fold in shared region and segment constructors, one Cancel module, LinearImage beside SourceImage, and the small clean-ups listed below.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-013"
       ],
