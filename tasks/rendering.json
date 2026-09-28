@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "rendering",
   "title": "Rendering, preview and analysis",
-  "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, an exact viewport-region path with a half-scale interactive preview, opaque frames, render.rs split by concept and one test per property, then stage-boundary methods before Corrections adds a new boundary.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates, beside a separate 256 Ki heavy-colour threshold that a colour pass with at least three units or a mask uses while every other pass keeps the one-megapixel one. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, and spends three power-function calls per pixel quantizing the byte resample. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The original moving-frame RAW white-balance gate missed on the Air 2S at 17.33% against 10%; the owner revised the 100% gate on 2026-09-27 to test the held full-detail draft after quiet refinement. Fresh native `raw-panel` runs pass for all three supplied cameras under the revised gate. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only; crop GPU textures, overlays and backend staging remain outside it and are not fully measured or bounded. No total-memory guarantee or general numerical photo-error bound is qualified.",
+  "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, an exact viewport-region path with a half-scale interactive preview, opaque frames, render.rs split by concept and one test per property, stage-boundary methods before Corrections adds a new boundary, and measured bounds for the GPU resources outside the provisional photo-texture ceiling.",
+  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. Waves 1 to 3 gave every test its own render context; declared the shared render limits once in luxforge-raw's limits module, with a measured parallel threshold per rendering pass (RenderPass and parallel_pixels, asked through render/parallel.rs's one gate) and one tile-size rule (spatial_tile: 512 px, or 1024 px past a 128 px summed halo); trimmed the pipeline to one read rectangle (Resample::reads) and one spatial-entry helper (spatial_entry with SpatialEntry::globals), each held single by a repository rule; and landed the byte-identical speedups, each recorded in docs/specs/performance.md: spatial tiles written back by row with a reused TileScratch, frames allocated zeroed as Arc<Vec<u8>>, the one srgb::quantizer() handle, row reads for point queries and reductions (block_means over REDUCTION_SPAN rows), the banded BoxDownscale proxy build with one compiled ProxyStage per job and the held proxy released first (ProxyCache::source_for), and the qualified drafted exact phase. What remains: the renderer still carries an alpha channel no production frame has; render.rs is 6,112 lines, about 1,850 of them production, mixing about eleven concepts; rendering properties are proven once per domain in duplicated tests; a new stage-boundary kind would add a match arm in about 30 places; and the GPU resources outside the photo-texture ceiling are not bounded. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design, accepted softness/histogram tradeoff and viewport-bounded clipping behavior are implemented in the current worktree. Half-scale interactive regions use exact whole-stage estimates from the shared eight-entry cache; sampled reduced guides are rejected because periodic inputs alias. Prior native evidence remains scoped to its recorded builds. On the final review release binary, quick and rendered (33 native smoke scenarios) passed; three permanent viewport journeys recorded zero blank or stale photo draws, and 16 targeted timing cases completed. No post-review full-tier result or milestone qualification is claimed. The original moving-frame RAW white-balance gate missed on the Air 2S at 17.33% against 10%; the owner revised the 100% gate on 2026-09-27 to test the held full-detail draft after quiet refinement. Fresh native `raw-panel` runs pass for all three supplied cameras under the revised gate. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only; crop GPU textures, overlays and backend staging remain outside it and are not fully measured or bounded. No total-memory guarantee or general numerical photo-error bound is qualified.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -898,10 +898,10 @@
         "TASK-005"
       ],
       "extra_context": [
-        "Wave 4, structure. Follows the frame-allocation change so the byte tile write can become a plain row copy with no per-pixel alpha read.",
-        "Owner decision: frames are opaque by contract. Every production byte frame already is: JPEG decode takes libjpeg's RGBA output (luxforge-jpeg's decode.rs, `header.rgba()`), whose alpha is always 255, the proxy (proxy.rs) writes 255, and analysis.rs already documents that the supported JPEG path is opaque.",
-        "Despite that, the renderer still blends alpha through resamples (`bilinear`'s alpha average, reached through the windowed `resample_frame`), walks the geometry to fetch a spatial output's input alpha (`alpha_in`, render/pipeline.rs), and threads an alpha closure through `spatial_output` and `write_tile`. It is also inconsistent: the exact path preserves a source's alpha while the proxy discards it, so 'proxy equals the exact recipe over the exact downscale' would not hold for a hypothetical non-opaque source, harmless only because none exists.",
-        "Test fixtures with varying alpha (the gradient source builder in render.rs, and `samples_match_rendered_pixels_and_keep_source_alpha` at render.rs:3801) become uniformly opaque."
+        "Wave 4, structure. Follows the frame-allocation change, which is complete: frames are Arc<Vec<u8>> allocated zeroed, and a spatial tile is already written back one row copy at a time (Byte::write_tile). What still reads alpha per pixel is the tile's output (Byte::tile_output), which asks the geometry walk for the input's alpha at every pixel of every spatial tile.",
+        "Owner decision: frames are opaque by contract. Every production byte frame already is: JPEG decode takes libjpeg's RGBA output (luxforge-jpeg's decode.rs, `header.rgba()`), whose alpha is always 255, the banded proxy downscale (BoxDownscale's band pass in proxy.rs) writes 255, the linear domain's source_alpha answers 255, and analysis.rs already documents that the supported JPEG path is opaque.",
+        "Despite that, the byte renderer blends alpha through a resample (`bilinear` in render.rs, reached through resample_frame and Byte::blend), walks the geometry back to the source for a spatial output's input alpha (Evaluation::alpha_in in render/pipeline.rs, four taps per resample), and threads that alpha as a closure through spatial_entry, PixelDomain::tile_output and PixelDomain::spatial_output, beside PixelDomain::source_alpha. It is also inconsistent: the exact path preserves a source's alpha while the proxy discards it, so 'proxy equals the exact recipe over the exact downscale' would not hold for a hypothetical non-opaque source, harmless only because none exists.",
+        "Test fixtures with varying alpha become uniformly opaque and the tests that named source alpha assert 255: render::tests::gradient (alpha 200 to 255), samples_match_rendered_pixels_and_keep_source_alpha (render.rs), and the alpha assertions in indexed_quantizer_preserves_complete_serial_and_parallel_colour_buffers and a_pass_over_the_source_loads_its_rows_and_leaves_the_source_alone (render.rs) and a_tiled_render_matches_the_whole_frame_reference_at_every_tile_size (render/spatial.rs). The integration tests that already assert alpha 255 (tests/basic, tests/modules/{mixer,presence}.rs) stay as they are."
       ],
       "context_links": [
         {
@@ -914,26 +914,26 @@
           "kind": "file",
           "label": "Alpha plumbing",
           "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "bilinear's alpha blend and the windowed resample_frame, source_alpha, and the varying-alpha gradient test fixture."
+          "relevance": "bilinear's alpha blend and resample_frame, Byte::source_alpha, Byte::tile_output's alpha closure, Byte::spatial_output, and the varying-alpha gradient test fixture."
         },
         {
           "kind": "file",
           "label": "alpha_in",
           "target": "crates/luxforge-core/src/render/pipeline.rs",
-          "relevance": "The geometry walk that fetches a spatial output's input alpha.",
+          "relevance": "Evaluation::alpha_in's geometry walk, the alpha parameters of PixelDomain::source_alpha, spatial_output and tile_output, and spatial_entry's alpha closure.",
           "locator": "alpha_in"
         },
         {
           "kind": "file",
           "label": "JPEG decode",
-          "target": "crates/luxforge-core/src/source.rs",
-          "relevance": "Decodes through libjpeg's RGBA output, so every decoded frame is opaque."
+          "target": "crates/luxforge-jpeg/src/decode.rs",
+          "relevance": "Decodes through libjpeg's RGBA output (`header.rgba()`), so every decoded frame is opaque."
         },
         {
           "kind": "file",
           "label": "Proxy alpha",
           "target": "crates/luxforge-core/src/proxy.rs",
-          "relevance": "Writes alpha 255; the point where the exact/proxy inconsistency would show for a non-opaque source."
+          "relevance": "BoxDownscale's band pass writes alpha 255; the point where the exact/proxy inconsistency would show for a non-opaque source."
         },
         {
           "kind": "file",
@@ -946,18 +946,18 @@
       "acceptance_criteria": [
         "No render path computes, fetches or threads an alpha value; every produced byte frame is 255 alpha by construction.",
         "Renders stay byte-identical, since every production frame is already opaque.",
-        "PixelDomain::source_alpha, alpha_in and the bilinear alpha blend are deleted, and the byte tile write no longer takes an alpha closure."
+        "PixelDomain::source_alpha, Evaluation::alpha_in and bilinear's alpha blend are deleted, and neither spatial_entry, PixelDomain::tile_output nor PixelDomain::spatial_output takes an alpha argument."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Delete source_alpha, alpha_in, the alpha parameters and the bilinear alpha blend.",
+          "Delete source_alpha, alpha_in, the alpha parameters of spatial_entry, tile_output and spatial_output, and bilinear's alpha blend; write 255 wherever a byte frame's alpha is produced.",
           "Make every varying-alpha test fixture opaque and update the tests that named source alpha.",
-          "Confirm the byte tile write no longer needs an alpha closure."
+          "Confirm renders and samples are byte-identical on both pixel domains."
         ],
         "commands": [
           "cargo test -p luxforge-core render",
-          "cargo xtask verify --tier rendered"
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
           "Every render test passes with frames declared opaque.",
@@ -970,19 +970,15 @@
       "description": "Split render.rs by concept into separate files with no logic change, and fold in shared region and segment constructors, one Cancel module, LinearImage beside SourceImage, and the small clean-ups listed below.",
       "status": "pending",
       "dependencies": [
-        "TASK-004",
-        "TASK-005",
-        "TASK-006",
-        "TASK-007",
-        "TASK-008",
-        "TASK-009",
         "TASK-013"
       ],
       "extra_context": [
-        "Wave 4, structure. Landed last among the render changes so the split starts from the final shape, not one later tasks would immediately move again.",
-        "render.rs is 5,582 lines, 1,686 of them production, mixing about eleven concepts: Cancel, colour runs, the bilinear resample, Raster and frame helpers, exact geometry and the resample mapping, the compiled IR (Entry / Segment / Compiled), the public locate and transform types, the Byte domain, ByteRows, LayerInput / grid_centres / stage_transform, and the byte driver. Cancel is the crate's general cancellation token, used by latest, analysis and the capability jobs, not only by rendering.",
-        "render/linear.rs holds LinearImage, the RAW source's own data type, while the JPEG source type SourceImage lives in source.rs; the two peer types are asymmetrically placed.",
-        "Small clean-ups to fold in: grid_centres (render.rs) duplicates cell_pixel (analysis/overlay.rs) without its edge clamp; add Region::EMPTY, Region::whole(stage) and Segment::stage() to replace the ad hoc region and stage literals scattered through render/, mask_field.rs and proxy.rs; the LayerInput enum plus the MaskInputPixel trait (analysis/mask_overlay.rs) have one production implementer and can become one generic impl; analysis.rs's reduction has five entry points (reduce, reduce_cancellable, reduce_raster, reduce_raster_cancellable, reduce_with_threshold) where reduce_cancellable has no caller outside the file; source validation and check_resamples each run twice across render/entry.rs and render/pipeline.rs; LinearRows::load zero-fills its row buffer on every chunk although load overwrites every element; and docs/design/architecture.md's 'Rendering and limits' section says a pool worker allocates its scratch once and reuses it, where try_for_each_init actually calls init once per Rayon split, typically tens of times per pass.",
+        "Wave 4, structure. Lands after opaque frames, the last render change before it, so the split starts from the final shape rather than one a later task would move again; every wave-3 render change it waited for is complete.",
+        "render.rs is 6,112 lines: about 1,850 production, then its testing helpers and one tests module of about 3,850 lines. It mixes about eleven concepts: Cancel; colour runs (ColorRun, color_runs, MaskPlacement and the masked and unmasked apply functions); the bilinear resample; Raster with the frame helpers zeroed_frame, frame_mut and the test-only frame_writes; exact geometry and the resample mapping (Resample::input_at, Resample::reads, TAP_MARGIN, resample_frame); the compiled IR (Entry / Segment / Compiled); the public locate and transform types (Sample, ContentPoint, StageSize, StageTransform); the Byte domain; ByteRows and colour_byte_rows; LayerInput, grid_centres, locate and stage_transform; and the byte driver (rasterize). Cancel is the crate's general cancellation token, used by latest, analysis, jobs, the capability host and the preview worker, not only by rendering.",
+        "Wave 3 added pieces that already have their homes and keep them: the one parallel gate (render/parallel.rs over luxforge-raw's RenderPass table), Tiling, TileScratch and the row-read reduction (block_means, REDUCTION_SPAN) in render/spatial.rs, the row reads for point queries (Evaluation::fill_rows and region_in) in render/pipeline.rs, ProxyStage in render/entry.rs, BoxDownscale and ProxyCache::source_for in proxy.rs, and the one srgb::quantizer() handle in colour.rs. The split moves render.rs's own concepts beside them.",
+        "render/linear.rs holds LinearImage (with its ViewReader and the source worker's PlanesHeld accounting), the RAW source's own data type, while the JPEG source type SourceImage lives in source.rs; the two peer types are asymmetrically placed.",
+        "Small clean-ups to fold in: grid_centres (render.rs, used by render/entry.rs's sample grid) duplicates cell_pixel (analysis/overlay.rs) without its edge clamp; add Region::EMPTY, Region::whole(stage) and Segment::stage() to replace the ad hoc region and stage literals scattered through render/ (window.rs's private `whole` among them), mask_field.rs and proxy.rs; the LayerInput enum plus the MaskInputPixel trait (analysis/mask_overlay.rs) have one production implementer and can become one generic impl; analysis.rs's reduction has five entry points (reduce, reduce_cancellable, reduce_raster, reduce_raster_cancellable, reduce_with_threshold) where reduce_cancellable has no caller outside the file, while reduce and reduce_raster are called by the desktop and xtask, so the one entry point stays public; a linear render runs check_resamples twice, in Render::of (render/entry.rs) and again through Linear::check in Evaluation::new (render/pipeline.rs), while the byte source's length check (check_source) already runs once per entry point; LinearRows::load clears and zero-fills its row buffer on every chunk although load overwrites every element; and docs/design/architecture.md's 'Rendering and limits' section says a pool worker allocates its colour scratch once and reuses it for every chunk, where try_for_each_init calls init once per Rayon split, typically tens of times per pass (the per-worker memory bound it states stays true).",
+        "The one-read-rectangle repository rule allows its token only in render.rs, where Resample::reads lives today: wherever the split puts Resample::reads, the rule's allowed path in xtask/src/repository.rs and its row in docs/engineering/development.md move with it, and the one-spatial-entry rule keeps naming the file that holds SpatialEntry::globals. The masking group's shared bounds-to-region helper for the brush and radial kinds has whole-stage and empty-region fallbacks of its own; whichever of the two changes lands second uses Region::whole and Region::EMPTY.",
         "No behaviour change: this is a mechanical split plus the listed deduplication, proven by an unchanged test suite and byte-identical renders."
       ],
       "context_links": [
@@ -996,7 +992,7 @@
           "kind": "file",
           "label": "Render module before the split",
           "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "The eleven mixed concepts and the small clean-ups this task folds in."
+          "relevance": "The eleven mixed concepts, the frame helpers and the small clean-ups this task folds in."
         },
         {
           "kind": "file",
@@ -1015,7 +1011,7 @@
           "kind": "file",
           "label": "Reduction entry points",
           "target": "crates/luxforge-core/src/analysis.rs",
-          "relevance": "The five entry points collapsing to one plus a test-only threshold hook."
+          "relevance": "The five entry points collapsing to one public entry point plus a test-only threshold hook."
         },
         {
           "kind": "file",
@@ -1023,23 +1019,33 @@
           "target": "docs/design/architecture.md",
           "relevance": "The scratch-reuse sentence this task corrects.",
           "locator": "Rendering and limits"
+        },
+        {
+          "kind": "file",
+          "label": "Repository rules",
+          "target": "xtask/src/repository.rs",
+          "relevance": "The one-read-rectangle and one-spatial-entry rules, whose allowed paths follow Resample::reads and SpatialEntry::globals.",
+          "locator": "one-read-rectangle"
         }
       ],
       "acceptance_criteria": [
-        "render.rs is split into files by concept (the compiled IR, geometry, colour, the byte domain, the linear domain, Cancel), each a few hundred lines, with LinearImage moved beside SourceImage.",
-        "The listed clean-ups land: one grid_centres / cell_pixel, Region::EMPTY / whole / Segment::stage() replacing the ad hoc literals, one MaskInputPixel impl, one reduction entry point plus a test-only threshold hook, check_resamples and source validation each running once, LinearRows::load resizing rather than re-zeroing, and the architecture.md sentence corrected.",
+        "render.rs is split into files by concept (the compiled IR, geometry and the resample, colour runs, the byte domain and its rows, Raster and its frame helpers, the public locate and transform types, Cancel), each a few hundred lines, with LinearImage moved beside SourceImage; the homes wave 3 gave the parallel gate, the spatial tiling and reductions and ProxyStage are unchanged.",
+        "The listed clean-ups land: one grid_centres / cell_pixel, Region::EMPTY / whole / Segment::stage() replacing the ad hoc literals, one MaskInputPixel impl, one public reduction entry point plus a test-only threshold hook, check_resamples running once per linear render, LinearRows::load resizing rather than re-zeroing, and the architecture.md sentence corrected.",
+        "cargo xtask check-repository passes with the one-read-rectangle and one-spatial-entry rules naming the files that now hold Resample::reads and SpatialEntry::globals.",
         "Renders and samples stay byte-identical on both pixel domains, and the existing tests move into topic-named files with no assertion lost."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Move render.rs's concepts into their own files with no logic change, and LinearImage beside SourceImage.",
-          "Fold in the listed small clean-ups: shared region/segment constructors, one MaskInputPixel impl, one reduction entry point, deduplicated check_resamples and source validation, LinearRows::load resizing instead of re-zeroing, and the corrected architecture.md sentence.",
+          "Fold in the listed small clean-ups: shared region/segment constructors, one MaskInputPixel impl, one reduction entry point, check_resamples once per linear render, LinearRows::load resizing instead of re-zeroing, and the corrected architecture.md sentence.",
+          "Move the repository rules' allowed paths, and their rows in the development guide, with the code they guard.",
           "Move the existing test module into topic-named test files alongside the new split."
         ],
         "commands": [
           "cargo test -p luxforge-core",
-          "cargo xtask verify --tier quick"
+          "cargo xtask check-repository",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Every existing test passes, unchanged in what it asserts, from its new file.",
@@ -1056,11 +1062,12 @@
         "TASK-014"
       ],
       "extra_context": [
-        "Wave 5, tests. The last rendering task, once the file split and the per-test render context are in place for the new test files to use.",
-        "'Render equals sample' is proven separately per domain about 15 times, roughly 1,200 lines: for example several tests in render.rs and render/spatial.rs on the byte side, and their counterparts in render/linear.rs and render/spatial.rs on the linear side, plus paired cancellation, frame-identity and positional-unit tests that exercise the same generic code once per domain.",
-        "preview/tests.rs restates latest.rs's superseded, abandoned and delivery-floor behaviour through the preview facade in about 185 lines; only its phase and token tests are preview-specific.",
-        "Unit tests reach for 1-10 MP frames only because the parallel and tile thresholds cannot be injected per test; RenderOptions::with_tile already shows the pattern for the tile size. tests/cancellation.rs renders two 24 MP frames whose only point, a 25 ms timing bound, is compiled out `if cfg!(debug_assertions)`, so cargo test pays for 48 MP of rendering and checks nothing timed in the dev profile.",
-        "About 800 lines of ignored historical A/B diagnostics remain in render/linear.rs: raw_colour_rows_production_diagnostic, which compares against an evaluator from before the domain unification, and bayer_normalization_fit_proxy_contention_diagnostic, which docs/specs/performance.md already says has not been repeated since and predates the current tile jobs, including two identical host_load_1m helpers and a develop_for_performance_diagnostic function luxforge-raw carries only for them. AGENTS.md rules out historical parity checks; ask the owner whether these still earn their keep before deleting them.",
+        "Wave 5, tests. The last rendering task, once the file split and the per-test render context are in place for the new test files to use. Tests are named here by their current files, which the render.rs split moves.",
+        "'Render equals sample' is proven separately per domain in many places, by the review's count about 15 tests and 1,200 lines: for example samples_match_rendered_pixels_through_a_resample and samples_match_rendered_pixels_for_a_mixed_colour_stack (render.rs) on the byte side, and sample_matches_full_render_and_crop_has_no_float_intermediate and a_positional_colour_unit_agrees_between_linear_render_and_sample (render/linear.rs) on the linear side, plus paired cancellation, frame-identity and positional-unit tests that exercise the same generic code once per domain. Some newer tests already cover both domains in one table and show its shape: render/spatial.rs's a_sample_equals_every_rendered_byte_on_both_paths and render/window.rs's exact_viewport_matches_whole_buffer_on_both_domains_and_complex_stacks.",
+        "preview/tests.rs (2,608 lines) restates through the preview facade what latest.rs's own tests prove about supersession, the cancel floor and the waker: newest_preview_wins_with_one_active_and_one_pending, a_superseded_job_that_already_finished_is_still_delivered, a_result_older_than_the_cancel_floor_is_dropped and the_waker_is_called_once_per_result. Its phase, token, viewport, proxy-cache, activity and mask-coverage tests are preview-specific and stay.",
+        "The tile side can already be injected (RenderOptions::with_tile and Evaluation::with_tile over Tiling::Fixed) and every rendering pass's parallel gate can be forced on the test's own thread (render::parallel::force), but only render/parallel.rs's own tests use the latter. Unit tests still build frames of about a megapixel or more to cross a threshold, for example render.rs's a_colour_pass_over_a_megapixel_frame_matches_the_reference_on_the_parallel_path (1200 × 900), render/spatial.rs's a_cancelled_render_stops_between_tile_batches_and_releases_its_reservation (2000 × 1500) and render/window.rs's viewport cases up to 2400 × 1600.",
+        "tests/cancellation.rs builds a 24 MP source and starts a 24 MP render in each of its two tests to assert the cancelled kind, no frame and released scratch reservations, which hold at any size, plus a 25 ms stop bound compiled out `if cfg!(debug_assertions)`, so the dev-profile run pays for the size and checks nothing timed.",
+        "About 800 lines of ignored owner-Mac diagnostics remain in render/linear.rs, each with its own host_load_1m helper: raw_colour_rows_production_diagnostic, which compares against the generic pixel evaluator from before the domain unification, and bayer_normalization_fit_proxy_contention_diagnostic, which docs/specs/performance.md ('Mosaic normalization') says last measured the native Bayer batching before RCD's tile jobs. luxforge-raw keeps its performance-diagnostics feature and develop_for_performance_diagnostic only for them, enabled by luxforge-core's dev-dependency; the RAW group's narrowing of the develop FFI boundary folds that entry point into one options-taking develop before this task. The same spec records that concurrent Fit proxies against pooled RCD and the current normalization are not yet measured, which is what the contention diagnostic measures. AGENTS.md rules out historical parity checks; ask the owner whether these still earn their keep before deleting them.",
         "Every deletion in this task names, in the commit, the kept test that proves the same property, per the programme's rule that a deleted test names its keeper."
       ],
       "context_links": [
@@ -1087,40 +1094,48 @@
           "kind": "file",
           "label": "Preview queue tests",
           "target": "crates/luxforge-core/src/preview/tests.rs",
-          "relevance": "The tests re-proving latest.rs's behaviour through the preview facade."
+          "relevance": "The tests restating latest.rs's supersession, cancel-floor and waker behaviour through the preview facade."
         },
         {
           "kind": "file",
           "label": "Cancellation timing",
           "target": "crates/luxforge-core/tests/cancellation.rs",
-          "relevance": "The 25 ms bound compiled out in the dev profile, over two 24 MP renders."
+          "relevance": "Two tests over 24 MP renders whose 25 ms bound is compiled out in the dev profile."
         },
         {
           "kind": "file",
           "label": "Performance measurement method",
           "target": "docs/specs/performance.md",
-          "relevance": "States the bayer_normalization diagnostic has not been repeated since and predates the current tile jobs."
+          "relevance": "States the same-pool Fit proxy diagnostic last measured the native Bayer batching before RCD's tile jobs, and that concurrent Fit proxies against the current development are not yet measured.",
+          "locator": "Mosaic normalization"
+        },
+        {
+          "kind": "file",
+          "label": "Parallel gate",
+          "target": "crates/luxforge-core/src/render/parallel.rs",
+          "relevance": "force, the per-thread override of every rendering pass's threshold that unit tests can use instead of large frames.",
+          "locator": "force"
         }
       ],
       "acceptance_criteria": [
         "One table-driven test proves frame equals point evaluator and sample equals frame, over every stack shape, both pixel domains and both below and above the parallel threshold, replacing the per-domain duplicates; each deleted assertion is named, in the commit, with the kept test that proves it.",
-        "preview/tests.rs keeps only its phase- and token-specific tests; the tests restating latest.rs through the facade are gone.",
-        "Unit tests exercise the parallel and tile thresholds through injected small values, not multi-megapixel frames, wherever with_tile-style injection can reach them.",
-        "tests/cancellation.rs's timing case moves to a tier where its bound is actually asserted, or is removed if superseded; it no longer renders 48 MP to check nothing.",
-        "The owner has answered whether the historical A/B diagnostics still earn their keep; if not, they and the luxforge-raw function that exists only for them are deleted."
+        "preview/tests.rs keeps its preview-specific tests; the tests restating latest.rs's worker behaviour through the facade are gone.",
+        "Unit tests cross the parallel and tile thresholds through render::parallel::force and the tile-size injection, and the analysis reduction through its threshold hook, not through multi-megapixel frames, wherever those reach them.",
+        "tests/cancellation.rs's 25 ms bound runs where it is asserted, or is removed if superseded; its dev-profile tests use a frame no larger than their properties need.",
+        "The owner has answered whether the ignored diagnostics in render/linear.rs still earn their keep; if not, they, luxforge-raw's performance-diagnostics feature and the diagnostic entry point that exists only for them are deleted."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Write the table-driven render-equals-sample test over every stack shape and both domains, then delete the duplicates it supersedes, naming each in the commit.",
-          "Delete the preview tests restating latest.rs and keep the phase- and token-specific ones.",
-          "Inject the parallel and tile thresholds into the unit tests that currently need a multi-megapixel frame to cross them.",
-          "Move or delete tests/cancellation.rs's compiled-out timing case, and get the owner's answer on the historical diagnostics."
+          "Delete the preview tests restating latest.rs and keep the preview-specific ones.",
+          "Move the unit tests that build a large frame to cross a threshold onto render::parallel::force and the tile-size injection.",
+          "Move or delete tests/cancellation.rs's compiled-out timing bound, and get the owner's answer on the ignored diagnostics."
         ],
         "commands": [
           "cargo test -p luxforge-core",
           "cargo test -p luxforge-raw",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The table test and the kept focused tests together cover what the deleted duplicates proved.",
@@ -1135,8 +1150,8 @@
       "dependencies": [],
       "extra_context": [
         "Wave 6, roadmap groundwork. Blocked: starts with the Corrections repair stage, the third kind of stage boundary; a trait is premature with only two kinds in the code today.",
-        "Entry (render.rs) is matched across at least 7 files (render.rs, render/pipeline.rs, render/linear.rs, render/window.rs, render/entry.rs, render/spatial.rs, modules/registry/compile.rs) in about 30 places. The Corrections proposal's repair stage would add a case to each: the point walk, alpha_in, the byte driver, Evaluation::new, window planning, locate, transform and the linear rows.",
-        "A GPU colour stage would need a per-unit typed description; PointwiseColor (modules/processing.rs) exposes only apply_row and describe, with no way to extract a unit's kind and coefficients. spatial::prefix_hash (render/spatial.rs) already gives an out-of-process AI patch the input-prefix hash its design needs, so that part does not wait on this.",
+        "Entry (render.rs) is matched in about 30 places across six files: render.rs, render/pipeline.rs, render/window.rs, render/linear.rs, render/entry.rs and modules/registry/compile.rs (file names as today; the render.rs split moves some). The Corrections proposal's repair stage would add a case to each: the point walk (Evaluation::entry_pixel), the byte driver (rasterize), Evaluation::new and SpatialEntry::of, window planning, locate, the linear rows (LinearRows) and compilation. SpatialEntry (render/pipeline.rs) already gathers the spatial arm's own questions in one type, which is the shape these methods generalise.",
+        "A GPU colour stage would need a per-unit typed description; PointwiseColor (modules/processing.rs) exposes only apply_row, is_finite and describe, with no way to extract a unit's kind and coefficients. spatial::prefix_hash (render/spatial.rs) already gives an out-of-process AI patch the input-prefix hash its design needs, so that part does not wait on this.",
         "Proposal, once the Corrections repair stage starts: give Entry methods for what the match arms currently ask by hand, an input-stage query, mapping a point back through the entry, the rectangle it reads, materialising it, and evaluating one point through it, so a new stage-boundary kind implements those methods once instead of adding an arm at each of the roughly 30 sites."
       ],
       "context_links": [
@@ -1188,7 +1203,7 @@
         ],
         "commands": [
           "cargo test -p luxforge-core render",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Every existing render, sample and window test passes unchanged.",
@@ -1534,8 +1549,9 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
+        "Not in a programme wave: the follow-up the owner's provisional acceptance of the photo-texture ceiling (2026-09-27) requires before any total-memory guarantee. It depends on no other rendering task.",
         "The owner provisionally accepted the 1088 MiB temporary-overlap ceiling on 2026-09-27 for the photo surface slots alone: one current and one retiring full-photo allocation up to 512 MiB each, and two region sets up to 32 MiB each. This is an engineering ceiling, not a total editor or GPU budget.",
-        "Crop GPU textures and tile aprons, overlays and backend-owned upload staging are outside that accounting. The core 512 MiB crop raster limit does not itself bound crop GPU residency. The existing backend staging cost is unmeasured. Use representative 24 MP and 60 MP workflows and native M4 GPU evidence, including temporary overlap and retirement, before proposing a total bound."
+        "Crop GPU textures and tiles, overlays and backend-owned upload staging are outside that accounting. Since the crop's proxy stage landed, a crop draft's input-stage texture is reserved at exactly its frame's size: the display-size proxy at Fit (6.7 MiB on the generated 60 MP JPEG and 7.5 MiB on the X100VI, about 11 MiB of GPU allocation per open draft; docs/specs/performance.md, 'A crop draft's input stage at Fit'), and a full-size exact stage only at a percentage zoom that needs one, tiled past the 8192 px texture limit and capped only by the core's 512 MiB frame limit (229 MiB for a 60 MP stage). The clipping and mask overlays have textures of their own, and backend staging is still unmeasured. editor-latency's crop-start mode reads memory at Fit only; the exact stage at a percentage zoom needs a measured path. Use representative 24 MP and 60 MP workflows and native M4 GPU evidence, including temporary overlap and retirement, before proposing a total bound."
       ],
       "context_links": [
         {
@@ -1564,6 +1580,13 @@
           "target": "docs/specs/performance.md",
           "locator": "Native viewport-region qualification",
           "relevance": "Existing native cases and their accounting limits."
+        },
+        {
+          "kind": "file",
+          "label": "Crop stage residency",
+          "target": "docs/specs/performance.md",
+          "locator": "A crop draft's input stage at Fit",
+          "relevance": "The crop stage texture and GPU allocation at Fit after the crop's proxy stage."
         }
       ],
       "acceptance_criteria": [
@@ -1574,13 +1597,15 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Inventory crop, overlay and backend GPU allocation and retirement paths; capture native GPU allocations during representative Fit and 100% crop, edit and pan transitions at 24 MP and 60 MP.",
+          "Inventory crop, overlay and backend GPU allocation and retirement paths; capture native GPU allocations during representative Fit and 100% crop, edit and pan transitions at 24 MP and 60 MP, extending editor-latency's crop-start mode to a percentage zoom where the exact stage needs it.",
           "Add the smallest enforceable accounting or limits for omitted resources and verify overlap, retirement and refusal behavior in focused surface tests.",
           "Repeat native measurement on the bounded implementation, correlate GPU and process counters with application slot logs, and update the design, performance evidence and feature status."
         ],
         "commands": [
           "cargo test -p luxforge-ui photo_surface",
-          "cargo xtask verify --tier quick --output NEW_DIR"
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode crop-start --presence --samples 5",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode viewport --zoom 100",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Excluded GPU resources have evidence-backed bounds or explicitly remain unqualified; no total-memory guarantee is asserted without complete accounting."

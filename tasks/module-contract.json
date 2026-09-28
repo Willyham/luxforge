@@ -3,7 +3,7 @@
   "plan_id": "module-contract",
   "title": "Module contract, tool modules and presets",
   "objective": "Finish the module contract so a new tool is a declaration plus its equations: declared source kinds, one presettable-action rule, field patches over the whole parameter vocabulary with structural invariants, a descriptor snapshot instead of hand-kept lists, a smaller ToolModule and descriptor, developer-only test modules, and the shared Exposure and White balance controls.",
-  "context_summary": "The consolidation made Basic, the colour mixer, Presence and the vignette one field-patch module each, gave the host layer identity, format and mask, and one placement rule. Source kinds are declared and JPEG and RAW photos share one Exposure and White balance set. What remains: the presettable-action rule is checked at six sites in three vocabularies; field patches take numbers only, so the developer controls proof is a second patch implementation and Tone Curve could not be expressed as a spec; field-patch specs restate their invariants by hand; four hard-coded lists of built-in modules must be edited for every new module; and the trait, descriptor and test suites carry mechanisms with only one user. The owner's decisions are in docs/decisions.md's \"Post-consolidation review\" section; constraints are in docs/design/post-consolidation.md.",
+  "context_summary": "The consolidation made Basic, the colour mixer, Presence and the vignette one field-patch module each, gave the host layer identity, format and mask, and one placement rule. Waves 1 to 3 declared each effect's source kinds, put JPEG and RAW photos on one Exposure and White balance control set (RAW's through control variants), resolved whether an action is presettable through one registry method, generalised field patches to the whole parameter vocabulary with a validating Spec builder (the developer controls proof is now a field-patch spec), replaced the hand-kept lists of built-in modules with one committed descriptor snapshot (fixtures/modules/builtin-descriptors.json) and made the vignette's falloff tables lazy. What remains: the trait and the descriptor carry mechanisms with one user (three describe hooks always read together, two history-label mechanisms, a JSON-descriptor parse path no production code calls, builder setters that silently do nothing on the wrong variant); the pixel proof is registered in every build; and per-module tests restate what the conformance suite proves. The owner's decisions are in docs/decisions.md's \"Post-consolidation review\" section; constraints are in docs/design/post-consolidation.md.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -570,11 +570,11 @@
       ],
       "extra_context": [
         "Wave 4, structure.",
-        "modules/mod.rs's ToolModule trait has 11 methods. describe_layer, values and is_neutral are always read together, by editor/describe.rs and registry/compile.rs's layer_neutral, each re-reading the same payload; collapsing them into one describe(...) -> LayerReport removes about 60 lines across the 8 implementations and the wrapper.",
-        "Two label mechanisms coexist: label() (used by the field patch and presets) and declared summary templates (used by pixel.rs, crop/module.rs and transform.rs, with their own machinery in descriptor.rs), combined at one site in editor/plan.rs; the desktop never reads summary.",
-        "parse in crop/module.rs, pixel.rs and modules/raw.rs re-checks ranges and enum membership the generic parameter check already enforces (raw.rs's own wording includes \"missing EV\" and \"missing Kelvin\"), about 80 lines of a second validation vocabulary. The Unavailable wrapper in registry/mod.rs forwards all 11 methods, but every host path checks availability first (plan.rs's available(), compile.rs through provider(), describe.rs, the capability host), so only its parse forward in a composite step is ever reached.",
+        "modules/mod.rs's ToolModule trait has 12 methods; settings (what a preset captures, defaulting to values and narrowed by the RAW module) joined with the shared Exposure and White balance controls. describe_layer, values and is_neutral are read together for every row of recipe.describe (editor/describe.rs, is_neutral through registry/compile.rs's layer_neutral), each re-reading the same payload; values is also read alone, by editor/source.rs's superseded-field check and presets/library.rs's capture. Collapsing the three into one describe(...) -> LayerReport, whose values those readers and settings' default take, removes about 60 lines across the 7 production implementations (the field-patch module, presets, RAW, pixel, transform, crop and the capabilities proof), the Unavailable wrapper and about 15 test modules.",
+        "Two label mechanisms coexist: label() (implemented by the field-patch module, presets and RAW) and declared summary templates (pixel.rs's \"Pixel {x}, {y}\", transform.rs's \"{transform}\" and crop/module.rs's \"Crop {angle}°\" and \"Crop {aspect}\", with check_summary, render_summary and action_label in descriptor.rs), combined at one site in editor/plan.rs's action resolution; the desktop never reads summary. module.list publishes summary on every action, so removing it changes the committed descriptor snapshot by that field alone, and docs/user-guide.md's module.list description names summary templates.",
+        "parse in crop/module.rs (FitRequest::parse's aspect, aspect-width, aspect-height, angle and centre bounds) and pixel.rs (coordinate_value and color_value) re-checks ranges and enum membership the generic parameter check already enforces. The RAW module's parse is already down to its one cross-field rule (As shot against a temperature or tint); its plan still re-reads gain and the neutral coordinates with \"missing\" errors the generic check makes unreachable. The Unavailable wrapper in registry/mod.rs forwards all 12 methods, but every host path checks availability before calling one (editor/plan.rs's check_available before parse and in check_askable, registry/lookups.rs's provider lookup, editor/describe.rs's Availability match, layer_neutral through provider(), the capability host), so its forwards exist only to keep that a property of the host's checks, as its own doc comment says.",
         "Owner decision: label() with the action's title as its default replaces summary templates; every stored history label stays byte-equal. This changes the mechanism, not the outcome, of the earlier decision to declare summary templates.",
-        "Stored labels for every built-in action must be byte-equal before and after, proven against the descriptor snapshot; renders are unchanged; parse keeps only cross-field rules, not range or enum re-checks."
+        "Stored labels for every built-in action must be byte-equal before and after, proven by a table of every built-in action's label for representative parameters recorded before the change; renders are unchanged; parse keeps only cross-field rules, not range or enum re-checks."
       ],
       "context_links": [
         {
@@ -587,7 +587,7 @@
           "kind": "file",
           "label": "Module trait",
           "target": "crates/luxforge-core/src/modules/mod.rs",
-          "relevance": "ToolModule's 11 methods and StageContext."
+          "relevance": "ToolModule's 12 methods and StageContext."
         },
         {
           "kind": "file",
@@ -611,33 +611,47 @@
           "kind": "file",
           "label": "Editor plan",
           "target": "crates/luxforge-core/src/editor/plan.rs",
-          "relevance": "Where label() and summary are combined today."
+          "relevance": "Where label() and the summary template are combined today, and the availability checks before parse."
         },
         {
           "kind": "file",
           "label": "Modules and API design",
           "target": "docs/design/modules-and-api.md",
           "relevance": "Describes the trait surface and label mechanism to update."
+        },
+        {
+          "kind": "file",
+          "label": "Descriptor snapshot",
+          "target": "fixtures/modules/builtin-descriptors.json",
+          "relevance": "Publishes each action's summary; changes by that field alone."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Its module.list description names summary templates."
         }
       ],
       "acceptance_criteria": [
-        "describe_layer, values and is_neutral collapse into one describe method; the trait shrinks from 11 methods accordingly.",
-        "label() with the action title as default is the only history-label mechanism; every built-in action's stored label is byte-identical to today's, proven against the descriptor snapshot.",
-        "parse in crop, pixel and RAW no longer re-checks a range or enum the generic parameter check already enforces.",
+        "describe_layer, values and is_neutral collapse into one describe method returning a layer's summary, values and neutral flag; the trait shrinks from 12 methods to 10, and settings' default and the lone values readers take describe's values.",
+        "label() with the action title as default is the only history-label mechanism; every built-in action's stored label is byte-identical to today's, proven by a label table recorded before the change, and the committed descriptor snapshot differs only by the removed summary field.",
+        "parse in crop and pixel no longer re-checks a range or enum the generic parameter check already enforces, and the RAW module's plan words no missing-parameter error of its own.",
         "The Unavailable wrapper is removed; availability lives on the registry's own entry and is consulted before a module method runs.",
-        "docs/design/modules-and-api.md describes the trimmed trait and the one label mechanism."
+        "docs/design/modules-and-api.md and docs/user-guide.md describe the trimmed trait and the one label mechanism."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
+          "Record every built-in action's label for representative parameters as a table test before changing anything",
           "Merge describe_layer, values and is_neutral into one describe method across all implementers",
-          "Replace summary templates with label() defaults and compare stored labels against the snapshot",
+          "Replace summary templates with label() defaults, compare the stored labels against the table and regenerate the descriptor snapshot, reviewing that only summary left it",
           "Delete parse's redundant range and enum checks, keeping only cross-field rules",
           "Remove the Unavailable wrapper and move availability onto the registry entry"
         ],
         "commands": [
           "cargo test -p luxforge-core modules",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-core --test modules descriptors",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Every built-in action's stored history label is unchanged",
@@ -654,9 +668,10 @@
       ],
       "extra_context": [
         "Wave 4, structure.",
-        "modules/descriptor.rs is 2,410 production lines (types and builders, module validation, parameter declaration, check_value, labels and the generic check) plus about 2,500 test lines, including one large single test function. ModuleDescriptor::parse, check_raw_control_hints and capabilities::descriptor::check_raw are error-message passes for descriptors arriving as JSON; the only production caller is ControlsModule::new's static JSON literal in modules/controls.rs, while every other built-in module is typed.",
-        "The Control builder setters silently no-op when called on the wrong variant, for example calling a choice-only setter on a number control. Literal EffectDescriptor, ActionDescriptor and parameter-descriptor construction sites number in the dozens across the crate, mostly in tests.",
-        "AGENTS.md rules out building for external module loading now (\"required later, not now\"), so deleting the JSON-parse path removes dead generality rather than a used capability. Descriptor JSON must serialize identically before and after, proven by the committed snapshot this plan already introduces."
+        "modules/descriptor.rs is about 2,990 production lines (types and builders, control variants and their resolution, module validation, parameter declaration, check_value and the settings check, labels and the generic check) plus about 2,700 test lines, including one large single test function. ModuleDescriptor::parse, check_raw_control_hints and capabilities::descriptor::check_raw are error-message passes for descriptors arriving as JSON, and no production code calls them: the developer controls proof, their last production caller, is now a field-patch spec built with typed builders like every other module. Their callers are tests that build descriptors from JSON literals: descriptor.rs's and capabilities/descriptor.rs's own tests, modules/presets.rs, registry/compile_tests.rs, artifacts/testing.rs, capabilities/proof_tests.rs, and the desktop's state/testing.rs and state/presets.rs tests.",
+        "The Control builder setters (number_style, rail and the like) silently do nothing when called on the wrong variant, for example a number-only setter on a choice control. Field-patch modules reach Control through their spec's typed FieldControl, but the RAW, pixel, transform and crop modules and the mask commands call the builders directly. Literal EffectDescriptor (about 30), ActionDescriptor (about 75) and ParameterDescriptor (about 55) construction sites exist across the workspace, mostly in tests.",
+        "AGENTS.md rules out building for external module loading now (\"required later, not now\"), so deleting the JSON-parse path removes dead generality rather than a used capability. Descriptor JSON must serialize identically before and after, proven by the committed snapshot (fixtures/modules/builtin-descriptors.json, checked by tests/modules/descriptors.rs). The patch-action repository rule also matches a patch action declared in a JSON descriptor; with the parse path gone, its JSON tokens can go too.",
+        "The desktop's control mirror (state/tools.rs's Rendered) matches Control's variants; per-variant structs change what it matches, so this lands before, or together with, the desktop change that matches core controls directly."
       ],
       "context_links": [
         {
@@ -669,13 +684,13 @@
           "kind": "file",
           "label": "Module descriptor",
           "target": "crates/luxforge-core/src/modules/descriptor.rs",
-          "relevance": "The 2,410-line file to split; parse, check_raw_control_hints and the Control builders."
+          "relevance": "The file to split; parse, check_raw_control_hints and the Control builders."
         },
         {
           "kind": "file",
-          "label": "Controls proof",
-          "target": "crates/luxforge-core/src/modules/controls.rs",
-          "relevance": "The one production caller of the JSON-parse path."
+          "label": "Descriptor snapshot test",
+          "target": "crates/luxforge-core/tests/modules/descriptors.rs",
+          "relevance": "Proves descriptor JSON is unchanged byte for byte."
         },
         {
           "kind": "file",
@@ -691,22 +706,24 @@
         }
       ],
       "acceptance_criteria": [
-        "ModuleDescriptor::parse, check_raw_control_hints and capabilities::descriptor::check_raw are deleted; ControlsModule is built with typed builders like every other module.",
+        "ModuleDescriptor::parse, check_raw_control_hints and capabilities::descriptor::check_raw are deleted, and the tests that built descriptors from JSON literals build them with the typed builders.",
         "Each Control variant is its own struct (or an internally-tagged variant with its own fields), so calling a variant-specific setter on the wrong variant fails to compile.",
         "EffectDescriptor::new(id, stage) and ActionDescriptor::new(id, title, notes) constructors exist and replace literal struct construction at the call sites this change touches.",
-        "descriptor.rs is split into descriptor/{types,validate,values,labels}.rs, each with its own tests beside it; the committed module-list and schema-list snapshot is unchanged."
+        "descriptor.rs is split into descriptor/{types,validate,values,labels}.rs (control variants and their resolution with the types, the settings check with the values), each with its own tests beside it; the committed descriptor snapshot is unchanged."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Delete the JSON-parse path and rebuild ControlsModule with typed builders",
-          "Give each Control variant its own struct",
+          "Delete the JSON-parse path and move its test callers onto the typed builders",
+          "Give each Control variant its own struct, proving a wrong-variant setter fails to compile with a compile_fail doctest",
           "Add the EffectDescriptor and ActionDescriptor constructors",
           "Split descriptor.rs into its four files with tests alongside each"
         ],
         "commands": [
           "cargo test -p luxforge-core descriptor",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-core --test modules descriptors",
+          "cargo test -p luxforge-app state",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The committed descriptor snapshot is unchanged",
@@ -721,10 +738,12 @@
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",
-        "The pixel proof's descriptor declares developer: true, but luxforge_core::builtin_modules() always includes it, so its PointReplace primitive, its pixel stage and about 150 render lines stay live and edit.set-pixel is on every production API, unlike the controls proof, which luxforge-app's app/lifecycle.rs registers only when developer mode is on.",
-        "luxforge-app/src/json.rs assembles its own registry from ModuleRegistry::builtin() plus an optional capabilities-proof module, separately from app/lifecycle.rs's own registry() function, so the desktop and the JSON CLI can drift on what a developer build serves.",
+        "The pixel proof's descriptor declares developer: true, but luxforge_core::builtin_modules() (modules/registry/mod.rs) always includes it, so its PointReplace primitive, its pixel stage and about 150 render lines stay live, and edit.set-pixel is on every production API and in the committed descriptor snapshot of ModuleRegistry::builtin(). The controls proof, by contrast, is added by luxforge-app's app/lifecycle.rs registry() only in developer mode (automatic in debug builds, --developer in optimized ones).",
+        "luxforge-app/src/json.rs assembles its own registry from ModuleRegistry::builtin() plus the capabilities proof whenever --proof-endpoint is given, and has no developer switch, so the desktop and the JSON CLI already differ: the desktop serves the capability proof only with --developer --proof-endpoint, luxforge-json with --proof-endpoint alone.",
+        "Many tests reach the pixel proof through ModuleRegistry::builtin(): core unit and integration tests (the owner, preview, export and mask tests among them), luxforge-app's tests/json_cli.rs, and xtask's histogram scenario (which commits edit.set-pixel in the real editor), controls scenario, editor-acceptance and the Basic and mask acceptance chapters. Each moves to a developer registry or a developer launch; an evidence launch passes --developer only through the scenario launch envelope (xtask/src/scenario/launch.rs), as the editor-launch repository rule requires.",
+        "The desktop group's move of the headless luxforge-json binary into its own crate without the GUI stack means the one assembly function belongs where both binaries can reach it (luxforge-core, or a crate both depend on), not in luxforge-app.",
         "Owner decision: test modules, including the pixel proof, register only in developer mode. PointReplace's own fate (seed the eventual repair primitive, or deletion) is decided separately alongside the repair-stage design; this task only stops registering it by default.",
-        "Developer builds must keep every developer-only module unchanged; a normal build's schema.list must drop every developer-only method."
+        "Developer mode must keep every developer-only module unchanged; outside it, schema.list must drop every developer-only method, and the committed descriptor snapshot (of the normal registry) loses the pixel proof's entries."
       ],
       "context_links": [
         {
@@ -762,29 +781,50 @@
           "label": "Develop workspace design",
           "target": "docs/design/develop-workspace.md",
           "relevance": "Describes the developer-only surfaces this change gates."
+        },
+        {
+          "kind": "file",
+          "label": "Built-in registry",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "relevance": "builtin_modules(), which lists the pixel proof beside the product modules.",
+          "locator": "builtin_modules"
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API design",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Lists the pixel proof among the built-in modules and describes which binary registers which proof."
+        },
+        {
+          "kind": "file",
+          "label": "Histogram scenario",
+          "target": "xtask/src/histogram_smoke.rs",
+          "relevance": "Commits edit.set-pixel in the real editor, so its launch needs developer mode."
         }
       ],
       "acceptance_criteria": [
         "The pixel proof registers only in developer mode, matching the controls proof.",
-        "The desktop launch and luxforge-json both assemble their registry through one shared function; there is no second assembly.",
-        "A normal (non-developer) build's schema.list lists no developer-only method or action; a developer build's method list is unchanged.",
-        "docs/user-guide.md and docs/design/develop-workspace.md describe developer-only registration accurately."
+        "The desktop launch and luxforge-json both assemble their registry through one shared function that neither binary's own crate owns; there is no second assembly, and luxforge-json serves developer-only modules only in developer mode, as the desktop does.",
+        "Outside developer mode schema.list lists no developer-only method or action, which the committed descriptor snapshot shows; in developer mode the method list is unchanged.",
+        "docs/user-guide.md, docs/design/develop-workspace.md, docs/design/modules-and-api.md and docs/features.md describe developer-only registration accurately."
       ],
       "test_strategy": {
         "approach": "integration",
         "steps": [
           "Gate the pixel proof's registration on developer mode",
-          "Share one registry-assembly function between the desktop and luxforge-json",
-          "Compare schema.list between a normal and a developer build"
+          "Share one registry-assembly function between the desktop and luxforge-json, with luxforge-json's own developer switch",
+          "Move the tests, acceptance chapters and scenarios that use the pixel proof onto a developer registry or launch",
+          "Compare schema.list outside and in developer mode, and regenerate the descriptor snapshot"
         ],
         "commands": [
           "cargo test -p luxforge-app lifecycle",
           "cargo test -p luxforge-app --test json_cli",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-core --test modules descriptors",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
-          "A normal build's schema.list has no developer-only method",
-          "Developer builds are unchanged"
+          "Outside developer mode schema.list has no developer-only method",
+          "Developer mode is unchanged"
         ]
       }
     },
@@ -797,10 +837,11 @@
       ],
       "extra_context": [
         "Wave 5, tests.",
-        "Per-module copies of host-level checks remain after the registry-driven conformance suite took them over: sample-equals-render in tests/basic/{exposure,white_balance,tone,colour}.rs, tests/modules/{mixer,presence}.rs and xtask/src/basic_acceptance.rs; the host journey re-run in tests/basic/exposure.rs; \"neutral compiles to nothing\" in modules/basic/mod.rs, modules/mixer/mod.rs, modules/presence/mod.rs and presence/oracle.rs; compile refusals in basic/mod.rs; and discovery checks in vignette/mod.rs and tests/basic/white_balance.rs.",
-        "The per-module Presence sampling alone is the most expensive part of the modules test binary: tests/modules/presence.rs runs 2 images times 4 parameter sets times 1,280 pixels times 2 render paths, about 26 million pixel evaluations, to prove what the render-level spatial suite already proves with cheap units.",
+        "Per-module copies of host-level checks remain after the registry-driven conformance suite (tests/modules/conformance: sample_equals_render, renders_nothing and stored_refusals in pixels.rs, the rules in rules.rs, the journey in journey.rs) took them over: sample-equals-render in tests/basic/{exposure,white_balance,tone,colour}.rs, tests/modules/{mixer,presence}.rs and xtask/src/basic_acceptance.rs's render.sample probe; the host journey re-run in tests/basic/exposure.rs (the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update_it); \"neutral compiles to nothing\" in modules/basic/mod.rs (compilation_produces_an_exposure_unit_a_tone_unit_both_or_neither), modules/mixer/mod.rs and modules/presence/mod.rs (compile_is_neutral_for_the_empty_payload_...), modules/vignette/mod.rs (compile_of_a_zero_amount_payload_is_the_neutral_colour_operation) and presence/oracle.rs (every_unit_at_zero_is_omitted_and_the_neutral_payload_compiles_to_nothing); and the discovery steps of tests/basic/white_balance.rs's picker journey. The vignette's own discovery test went with the descriptor snapshot.",
+        "The per-module Presence sampling alone is the most expensive part of the modules test binary: tests/modules/presence.rs's production_matches_the_reference_through_both_render_paths runs 2 images times 4 parameter sets times 1,280 pixels times 2 render paths, about 26 million pixel evaluations, to prove what the render-level spatial suite already proves with cheap units.",
         "Keep each module's numerics against its own frozen corpus, its history-word tests, its placement test and any genuinely module-specific behavior. Add the field-order assertions the deleted per-module tests incidentally provided for the mixer and vignette (one describe-based assertion each), so a field-order swap is still caught. A commit that deletes a test names, for each assertion, the kept test that proves the same fact.",
-        "Separately, replace the private re-implementations of the sRGB transfer function scattered across roughly 15 test files (three different, mutually disagreeing definitions under the same few names, including inside the reference crate's own studies) with calls to one named set of functions the reference crate exports."
+        "basic_acceptance.rs's probe is also in scope of the harness group's narrowing of editor-acceptance, whose owner decision keeps Basic's numerics on the photo fixture against the independent reference there; whichever change lands first removes the probe and the other drops it from its list.",
+        "The private sRGB transfer-function copies in test code are already gone: the harness group's one sRGB reference replaced them with luxforge-reference's one set of functions, and the srgb-transfer-function repository rule keeps it single."
       ],
       "context_links": [
         {
@@ -829,16 +870,15 @@
         },
         {
           "kind": "file",
-          "label": "Reference crate",
-          "target": "crates/luxforge-reference/src/lib.rs",
-          "relevance": "Exports the sRGB functions the copies should call instead."
+          "label": "Basic acceptance",
+          "target": "xtask/src/basic_acceptance.rs",
+          "relevance": "The render.sample probe that repeats sample-equals-render at the acceptance layer."
         }
       ],
       "acceptance_criteria": [
         "The listed per-module copies are deleted; the commit names, for each deleted assertion, the kept test that proves the same property.",
         "One describe-based field-order assertion exists for the mixer and for the vignette, replacing what the deleted corpus tests incidentally covered.",
         "Breaking one module's sample path, its draft-cancel behavior or its neutral rule still makes the conformance suite fail by name, confirmed with a deliberate mutation.",
-        "Every private sRGB transfer-function copy in test code is replaced with a call to the reference crate's one named implementation; the frozen-corpus reload tests still pass unchanged.",
         "The modules test binary's wall time is recorded before and after the deletions."
       ],
       "test_strategy": {
@@ -846,13 +886,12 @@
         "steps": [
           "Delete each listed per-module copy, naming its keeper in the commit",
           "Add the mixer and vignette field-order assertions",
-          "Spot-check with a deliberate mutation that the suite still catches a broken sample path",
-          "Replace the private sRGB copies with the reference crate's named functions"
+          "Spot-check with a deliberate mutation that the suite still catches a broken sample path"
         ],
         "commands": [
           "cargo test -p luxforge-core --test modules",
           "cargo test -p luxforge-core --test basic",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The conformance suite still names a module whose sample path, draft cancel or neutral rule is broken",
@@ -868,8 +907,8 @@
       "extra_context": [
         "Wave 6, roadmap groundwork.",
         "Blocked: starts when the first new geometry module (for example upright or perspective) is designed.",
-        "modules/transform.rs imports crop::stored_payload and CROP_EFFECT directly and re-expresses only the crop through a turn, via CropPayload's carried method in modules/crop/geometry.rs — the one piece of module-to-module coupling anywhere in modules/. A second geometry effect placed after the orientation (an upright or perspective module, say) would keep its stored payload unchanged while its input stage turns, so it would silently address different image content; nothing today refuses this.",
-        "Non-affine geometry is out of scope for the hook itself: it would need a new host primitive through processing.rs, registry/compile.rs's output_stage, render.rs's point walk, render/pipeline.rs, render/linear.rs, render/window.rs and render's locate path. Record that in docs/design/architecture.md so a future module does not fake one through the carry hook."
+        "modules/transform.rs imports crop::stored_payload and CROP_EFFECT directly and re-expresses only the crop through a turn, via CropPayload's carried method in modules/crop/geometry.rs: the one place a module reads and rewrites another module's stored payload (Basic's spec also takes the RAW module's white-balance control variants, but those are declared controls, not a payload). A second geometry effect placed after the orientation (an upright or perspective module, say) would keep its stored payload unchanged while its input stage turns, so it would silently address different image content; nothing today refuses this.",
+        "Non-affine geometry is out of scope for the hook itself: it would need a new host primitive through processing.rs, registry/compile.rs's output_stage, the point walk (render/pipeline.rs's Evaluation::entry_pixel), the byte driver and locate (render.rs), render/linear.rs and render/window.rs, wherever the render.rs split puts them. Record that in docs/design/architecture.md so a future module does not fake one through the carry hook."
       ],
       "context_links": [
         {
@@ -913,7 +952,7 @@
         "commands": [
           "cargo test -p luxforge-core transform",
           "cargo test -p luxforge-core crop",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Orientation and crop rebase behavior is unchanged",
