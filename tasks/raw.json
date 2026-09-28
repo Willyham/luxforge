@@ -490,9 +490,9 @@
         },
         {
           "kind": "file",
-          "label": "Isolated opcode helpers",
-          "target": "crates/luxforge-raw/src/dng_ops.rs",
-          "relevance": "Its own error type and byte readers, to merge into dng.rs on RawError and one reader set."
+          "label": "Merged opcode module",
+          "target": "crates/luxforge-raw/src/dng.rs",
+          "relevance": "Where the former dng_ops.rs vignette and bad-pixel helpers now live, on RawError and format.rs's one reader set."
         },
         {
           "kind": "file",
