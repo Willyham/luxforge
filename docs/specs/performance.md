@@ -525,7 +525,11 @@ that reading**, and the correction is the more useful of the two results.
 #### Bare recipe at photo size, with phase attribution
 
 `editor-latency --mode paint` opens one generated photo-sized JPEG, prepares a single brush mask and
-one masked Basic exposure layer, then sends a 30-position stroke at 24 ms intervals. The parser
+one masked Basic exposure layer, then sends a stroke at 24 ms intervals. The rows in this section
+were taken with the workload's earlier stroke: 30 positions along a straight sweep with a hard-edged
+brush (feather 0), which took the mask field's 2 × 2 proxy supersample on every frame and decimates
+to its two ends; the current feathered, curved stroke is measured
+[below](#a-feathered-curved-stroke-and-the-overlay-after-its-frame). The parser
 starts at that scripted stroke step, so setup edits do not enter its latency or superseded counts.
 The preview queue remains one active job plus one replaceable pending job; every frame is paired to
 the generation its own `mask_draft_preview` named. Release build, warm file cache, background hidden
@@ -586,6 +590,103 @@ A byte frame is an `Arc<Vec<u8>>` allocated with `vec![0; len]`, which the syste
 Every run's frames had the same SHA-256 before and after: `cf45865f…` (24 MP Exposure-only), `4895b6de…` (24 MP one transform), `0c36dca4…` (60 MP Exposure-only) and `21cb00ac…` (60 MP one transform). Only 24 MP Exposure-only moves: it is faster in three of the four adjacent before/after pairs (by 0.4 to 10 ms at the median, the larger gaps while the load climbed) and 1.3 ms slower in the fourth, and its fastest run falls from 8.0 to 6.7 ms. The one-transform renders and 60 MP Exposure-only lie within the runs' own spread at this load: the fastest runs are 6.33 against 6.27 ms, 12.96 against 13.32 ms and 20.23 against 19.65 ms.
 
 The allocation itself explains why the difference is small in a warm loop. A release probe of a 240 MB frame (60 MP RGBA), 14 writer threads: in a fresh process, collecting `repeat_n(0, len)` into an `Arc<[u8]>` is a `malloc` and a serial `bzero` of 10.8 to 12.5 ms, and 12.2 to 13.7 ms with the parallel write after it; `Arc::new(vec![0; len])` returns in 2 to 3 µs, and the parallel write that faults its pages in takes the whole to 8.4 to 9.8 ms (10 processes each). At 96 MB (24 MP) the fresh-process totals are 4.7 to 5.5 ms for the fill and 6.3 to 6.9 ms for the zeroed allocation, so faulting pages in from every writer at once does not pay at that size. Repeating the same allocation in one process, as `editor-performance` does, the allocator hands back the region the last frame freed and both forms cost 1.0 ms to allocate and 2.0 ms with the write (p50 of 30). The render therefore gains most on a first render at a new size and on the identity pass's source copy it no longer makes.
+
+#### A feathered, curved stroke, and the overlay after its frame
+
+The current `editor-latency --mode paint` stroke is 400 positions at 24 ms along a sine across the
+frame (`x = 0.2 + 0.8t`, `y = 0.5 + 0.2 sin 5πt`) with the panel's default feather, 50, radius 0.06
+and flow 100. The feather keeps the brush's ramp wider than two proxy pixels, so the proxy phase
+point samples the mask field, as a person's brush is; a hard edge would measure the 2 × 2
+supersample instead. The curve keeps positions along the decimated path's whole length (37 stored
+at the end of the stroke), so any cost proportional to the path already drawn grows along it.
+`--mask-overlay` turns the selected mask's tint on for the stroke, so every drafted job also fills
+the overlay's coverage grid. Besides the per-`draft.set` rows above, the report times each position
+from its own `mask_stroke_position` to the first presented frame whose `draft.set` carried it
+(`position_to_presented_frame`), splits the rows into the stroke's first and last quarters, and
+times each frame to its grid's `mask_overlay`.
+
+Measured on the host and window above (Apple M4 Pro, macOS 26.5.2, Metal, 2880 × 1800 at 2×),
+release builds, background launches, warm cache, both builds driven by one `xtask` through
+`--binary`. Before is the base build (`56b4315a…`, commit `6de77bbd`), after this change's
+(`a2d1feeb…`). Each block is one launch of 400 positions, run A, B, B, A back to back at each size
+and overlay setting, each launch waiting for a one-minute load under 10 before it started; the start
+load of each block is given. The host was shared with other sessions' builds throughout, and a
+block whose own proxy render climbs from about 3 ms to tens of milliseconds partway through the
+stroke, in either build, is one of their bursts rather than the stroke: those blocks are marked
+and their tails are not read.
+
+| 24 MP, overlay off, p50 / p95 ms | Before A1 (9.4) | After B1 (8.3) | After B2 (6.9) | Before A2 (7.6) |
+| --- | --- | --- | --- | --- |
+| Position to presented frame (399 each) | 8.16 / 9.56 | 8.19 / 9.48 | 8.12 / 9.54 | 8.08 / 9.50 |
+| … first quarter / last quarter, p50 | 8.00 / 8.25 | 8.29 / 8.32 | 8.04 / 8.18 | 8.07 / 8.03 |
+| Proxy render on the worker | 3.08 / 3.87 | 3.07 / 3.80 | 2.99 / 3.69 | 2.93 / 3.40 |
+| Press to first presented frame | 10.33 | 10.43 | 10.26 | 2.81 |
+
+| 60 MP, tint on, p50 / p95 ms | Before A1 (9.0) | After B1 (8.8) | After B2 (9.3), burst | Before A2 (9.8), burst |
+| --- | --- | --- | --- | --- |
+| Position to presented frame (≈ 400 each) | 8.32 / 9.51 | 7.58 / 8.76 | 34.89 / 75.67 | 8.77 / 54.10 |
+| Proxy render on the worker | 4.66 / 5.93 | 2.44 / 3.58 | 16.72 / 40.62 | 5.28 / 31.78 |
+| Presented frame to its grid's `mask_overlay` | 2.01 / 2.08 | 11.26 / 11.63 | 11.77 / 59.61 | 2.02 / 5.27 |
+| Press to first presented frame | 11.47 | 11.03 | 11.84 | 10.69 |
+
+| 24 MP, tint on, first quarter of the stroke, p50 / p95 ms | Before A1 (7.5) | After B1 (9.7) | After B2 (9.5) | Before A2 (9.8) |
+| --- | --- | --- | --- | --- |
+| Position to presented frame (100 each) | 8.32 / 9.66 | 7.26 / 8.70 | 7.55 / 8.58 | 8.21 / 9.62 |
+| Proxy render on the worker | 4.91 / 5.47 | 2.46 / 2.82 | 2.19 / 2.55 | 5.29 / 6.07 |
+
+| 60 MP, overlay off, p50 / p95 ms (third round) | Before A1 (9.7) | After B1 (8.8) | After B2 (8.9) | Before A2 (8.2) |
+| --- | --- | --- | --- | --- |
+| Position to presented frame (399 each) | 8.25 / 15.48 | 8.09 / 9.55 | 8.07 / 9.47 | 8.33 / 9.25 |
+| … first quarter / last quarter, p50 | 8.67 / 8.10 | 7.99 / 8.15 | 8.24 / 8.07 | 8.81 / 8.03 |
+| Proxy render on the worker | 3.57 / 9.24 | 2.91 / 3.60 | 2.55 / 3.18 | 2.31 / 2.90 |
+| Press to first presented frame | 10.34 | 10.06 | 10.77 | 10.60 |
+
+Three rounds were run; the first three tables are from the second. The blocks not given here took such a burst, in both builds, and a
+burst block used less process CPU over its launch than a clean one of the same workload, 24.9
+against 30.3 s at 60 MP with the tint on, so the editor was starved of the host rather than doing
+more work. The 24 MP tinted blocks all took one in their later quarters, so only their first
+quarter is given above. The load-reliability rule makes every figure here provisional: each block
+started at a one-minute load between 6.9 and 9.8.
+
+**What moved, and what did not.** With the tint on, the proxy frame no longer carries the coverage
+grid, so the proxy render the frame waits for falls by the grid's cost: 4.66 to 2.44 ms at 60 MP
+and 4.9–5.3 to 2.2–2.5 ms at 24 MP, in both orders, and a position reaches the screen 0.7–1.1 ms
+sooner at p50. The grid now follows in its own message, 11.3–11.5 ms after its frame at p50 (the
+grid's own time, one more worker wake and the desktop's painting of it), where before it was taken
+up in the frame's own update, 2.0–2.2 ms after the frame's event. Until it arrives the
+frame is drawn without a tint, so during a tinted stroke the tint follows the picture by about one
+frame. A newer request stops a grid still being filled, so a grid never holds the next position's
+job in the queue. With the overlay off, nothing on the worker changed, and the figures agree
+within 0.3 ms at p50 in both orders at both sizes. The press's first frame is unchanged (the base's 2.81 ms at 24 MP is
+a press that found a frame already presenting).
+
+**The path's own work is not the cause, and is recorded as such.** Along the untinted 24 MP stroke
+the owner's `draft.set` stays at 0.03 ms p50 from the first quarter to the last, and planning the
+drafted preview (capturing and hashing the stroke) goes from 0.08 to 0.09–0.10 ms, in both builds;
+the position-to-frame p50 does not grow along the stroke at all. The per-point work measured on
+its own (`render::tests::painted_stroke_path_work_per_position`, an ignored measurement test,
+release, 200 rounds each on the workload's own sine and brush) is microseconds at every length:
+
+| Positions drawn (stored) | Decimate the whole path | Push one and reduce | Check the posted path | Capture and hash the stroke | Grid index, proxy / 24 MP stage |
+| --- | --- | --- | --- | --- | --- |
+| 100 (34) | 1.8 µs | 1.3 µs | 0.1 µs | 2.3 µs | 1.2 / 1.2 µs |
+| 400 (37) | 5.4 µs | 4.1 µs | 0.1 µs | 2.5 µs | 1.7 / 1.7 µs |
+| 1600 (38) | 19.2 µs | 14.8 µs | 0.1 µs | 2.5 µs | 1.7 / 1.7 µs |
+| 6400 (37) | 76.4 µs | 58.0 µs | 0.1 µs | 2.5 µs | 1.7 / 1.7 µs |
+
+So the index build, the hashing, the recompile per `draft.set` and the decimation are three orders
+of magnitude below a displayed frame; do not re-optimize them for latency. The desktop now checks
+and snaps each painted position once, as it arrives (`path::PathCapture`), and reduces the grid path
+it holds when it posts; the reduction itself stays whole-path, because its first split depends on
+the path's far end and an incremental reduction would store a different stroke. The owner's work per
+`draft.set` is proportional to the stored path, not the drawn one, which is why it is flat above.
+Two further changes were considered and not made, because the figures say they would cost more
+than they save: offering at most one new position per presented drafted frame would hold every
+position that outpaces the frames for the worker-to-desktop wake (the pre-result residual, 4.9 ms
+p50 above), where today it replaces the queue's waiting job at once; and letting `draft.set` append
+raw positions to the draft would move the path's decimation onto the owner, whose per-event capture
+would then grow with the drawn path (6.8 µs at 400 raw positions and 106 µs at 6400, against
+2.5 µs for the stored path) instead of staying flat.
 
 ### Desktop slider-to-presented-frame and settled histogram
 

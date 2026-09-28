@@ -362,12 +362,12 @@
     {
       "id": "TASK-005",
       "description": "Cut paint latency at its measured cause: offer at most one new paint position per presented drafted frame, hand the proxy frame over before the overlay grid is filled, and measure with a feathered brush.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed. A byte-identical speedup that needs a before-and-after figure recorded with scope in docs/specs/performance.md.",
+        "Decided on 2026-09-28 under the owner's delegation: neither pacing nor an appending `draft.set` is built. Along a 400-position curved stroke per-event owner work is flat (`draft.set` 0.03 ms, planning 0.08-0.10 ms in the first and last quarter) and the whole path's work is microseconds (docs/specs/performance.md, 'A feathered, curved stroke'); pacing would hold every position that outpaces the frames for the worker-to-desktop wake (about 5 ms p50), and appending raw positions would move the decimation onto the owner, whose per-event capture would then grow with the raw path. Delivered: the overlay grid follows the proxy frame in its own message and yields to a newer request; the workload is feathered, curved and 400 positions long; the desktop snaps and checks each painted position once (`path::PathCapture`). The per-event whole-path work left, the desktop's exact reduction and the owner's work over the stored path, is recorded as a non-cause.",
         "The recorded attribution already shows the mask mathematics is not the cause: the worker render is 4.6/5.4 ms p50/p95 and `draft.set` is 0.04 ms, while request-to-worker-start is 6.6/18.2 ms and the pre-result residual is 7.3/20.3 ms. This task should record the per-point mask work (index build, hashing, recompiles) as a non-cause so nobody re-optimizes it later.",
-        "Two real causes are in the code path: every `CursorMoved` re-decimates and re-serializes the whole captured path on the desktop (`mask_canvas.rs`, `mask_draft/brush.rs`), and `draft.set` (`api/methods.rs`) validates the whole path and echoes it back, after which planning re-captures and re-hashes it again (`editor/plan.rs`, `mask/commands.rs`) — work proportional to the whole path, roughly eight times per pointer event, so a stroke's per-event cost grows with its length even though the workload's collinear path decimates to 2 points and never shows it.",
         "Separately, in `preview/worker.rs`'s job runner, the mask overlay's coverage grid is computed and attached to the proxy `PreviewResult` before that result reaches `running.send`, so the overlay sits ahead of the frame reaching the screen instead of following it in a second message.",
         "The workload itself hides the second cause: `xtask/src/editor_latency.rs`'s `PAINT_FEATHER` is 0.0, which makes the brush hard-edged and forces the 2×2 proxy supersample (`mask/brush.rs`, `mask_field.rs`) — the opposite of its own comment, which says a hard edge keeps the profile cheap.",
         "Coordinate with whoever measures the drafted job's own full-resolution exact phase, a competing candidate cause, so each figure is attributed to the right change; coverage mathematics are untouched here and renders stay byte-identical."
@@ -377,7 +377,7 @@
           "kind": "file",
           "label": "Post-consolidation design",
           "target": "docs/design/post-consolidation.md",
-          "relevance": "Constraints, waves and the order across groups, including that the drafted exact phase is measured before this task paces its offers."
+          "relevance": "Constraints, waves and the order across groups, including that the drafted exact phase is measured before paint latency is attributed."
         },
         {
           "kind": "file",
@@ -422,7 +422,7 @@
         }
       ],
       "acceptance_criteria": [
-        "Per pointer event, the desktop and the owner each do work proportional to the new points offered, not to the whole path.",
+        "Per-pointer-event path work is measured along a long curved stroke on the desktop and the owner; pacing the offers or an appending `draft.set` is built only if that work grows measurably with the path's length.",
         "The proxy frame reaches the screen before the mask overlay's coverage grid is computed, not after.",
         "The latency workload paints with a feathered brush, or the task states plainly that it measures the 2×2-supersampled path instead.",
         "`editor-latency --mode paint` is run on a curved path before and after this change, at 24 MP and 60 MP, and both figures are recorded in docs/specs/performance.md with host, load and scope.",
