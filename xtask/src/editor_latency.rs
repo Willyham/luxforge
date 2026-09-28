@@ -775,8 +775,8 @@ pub struct Options<'a> {
     /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
     /// exposure drag runs every one of the module's colour units on each frame.
     pub basic: bool,
-    /// Commit a Presence layer with all three fields at full strength before the gesture, so the
-    /// measured stack holds its neighbourhood operations.
+    /// Commit a Presence layer with all three fields at full strength before a drag, commit or
+    /// crop-start gesture, so the measured stack holds its neighbourhood operations.
     pub presence: bool,
     /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
     /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
@@ -946,6 +946,9 @@ fn gesture_script(
     }
     if options.basic {
         steps.push(basic_precondition());
+    }
+    if options.presence {
+        steps.push(presence_precondition());
     }
     if options.control == Control::Curve {
         steps.extend(curve_view_steps());
@@ -2156,7 +2159,6 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     if options.mode == Mode::CropStart {
         return run_crop_start(root, out, bin, &options);
     }
-    ensure(!options.presence, "--presence is a crop-start precondition")?;
     ensure(
         (1..=60).contains(&options.samples),
         "Samples must be 1..60; the evidence script accepts at most 64 steps",
@@ -2446,6 +2448,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
+        "presence_layer":options.presence,
         "mode":options.mode.name(),
         "control":options.control.name(),
         "control_action":if options.control == Control::Curve { SET_CONTROLS } else { field.action.as_str() },
