@@ -815,7 +815,7 @@
     {
       "id": "TASK-011",
       "description": "Show a crop draft's input stage at Fit from a proxy phase, with the exact stage only at a percentage zoom.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -973,7 +973,7 @@
     {
       "id": "TASK-013",
       "description": "Give presentation its own owner, `preview::Presentation`, holding the presenter and the frame bookkeeping, with typed retained frames and one displayed-size rule.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-011"
       ],
