@@ -315,7 +315,7 @@ fn reduce_parallel(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
 
 /// `reduce` with an explicit parallel threshold, so tests can force either path on the same
 /// buffer. Production code always goes through `reduce`, which fixes the threshold at
-/// [`luxforge_raw::PARALLEL_PIXELS`], the same one every other per-pixel pass uses.
+/// [`luxforge_raw::PARALLEL_PIXELS`], the one the passes that are not rendering passes share.
 fn reduce_with_threshold(
     rgba: &[u8],
     width: u32,
@@ -348,7 +348,7 @@ fn reduce_with_threshold(
 }
 
 /// Reduce one immutable byte raster (tightly packed RGBA, row-major) into an exact [`Report`].
-/// Reduces serially below the one-megapixel threshold `render.rs` uses for its own parallel pass,
+/// Reduces serially below the one-megapixel threshold [`luxforge_raw::PARALLEL_PIXELS`],
 /// and on the shared Rayon pool above it, using bounded worker-local bins merged by addition. Reads
 /// `rgba` in place: no copy of the raster and no allocation proportional to the image (`Bins` is a
 /// fixed handful of kilobytes per worker, not per pixel).

@@ -646,9 +646,9 @@ pub(crate) fn reset_masked_tile_counts() {
     MASKED_TILES_EVALUATED.store(0, Ordering::Relaxed);
 }
 
-/// Run every tile of a stage in batches, on the shared Rayon pool above the same one-megapixel
-/// threshold the other passes use and serially below it, checking the cancellation token between
-/// batches.
+/// Run every tile of a stage in batches, on the shared Rayon pool at and above the spatial pass's
+/// parallel threshold ([`luxforge_raw::PARALLEL_SPATIAL_PIXELS`]) and serially below it, checking
+/// the cancellation token between batches.
 ///
 /// Each batch reserves its working sets from the budget before any of its tiles allocates, asking
 /// for the plan's concurrency and running as many tiles as the reservation covers, so a render that
@@ -674,7 +674,10 @@ pub(crate) fn run_batches<T: Send>(
     mut write: impl FnMut(Region, T) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
-    let large = plan.stage.width as u64 * plan.stage.height as u64 >= luxforge_raw::PARALLEL_PIXELS;
+    let large = super::parallel::pooled(
+        super::parallel::RenderPass::Spatial,
+        plan.stage.width as u64 * plan.stage.height as u64,
+    );
     let workers = rayon::current_num_threads();
     let concurrency = budget.concurrency(plan.working_set);
     let mut slots: Vec<TileScratch> = Vec::new();

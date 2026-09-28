@@ -10,7 +10,7 @@
 //!
 //! Nothing here touches the catalog and nothing here belongs on the owner thread: building a proxy
 //! is frame work, bounded by the same 512 MiB frame limit as a rendered raster and parallelized on
-//! the shared Rayon pool above the same one-megapixel threshold as every other pass.
+//! the shared Rayon pool from the proxy pass's own measured threshold (`render::parallel`).
 
 #[cfg(test)]
 use crate::ErrorKind;
@@ -313,8 +313,8 @@ impl PreviewSource {
     /// the same order, and only the source rows and columns the window covers are read.
     ///
     /// This is frame work: it runs on the caller's thread and puts its bands of output rows on the
-    /// shared Rayon pool above the one-megapixel threshold, each worker holding one band's
-    /// intermediate of about 1 MiB. Never call it on the catalog owner thread.
+    /// shared Rayon pool from the proxy pass's threshold of source pixels read, each worker holding
+    /// one band's intermediate of about 1 MiB. Never call it on the catalog owner thread.
     pub fn proxy(&self, plan: ProxyPlan) -> Result<PreviewSource, Error> {
         self.proxy_cancellable(plan, &Cancel::never())
     }
@@ -543,8 +543,10 @@ impl BoxDownscale {
             .span((window.x + window.width - 1) as usize);
         let read_columns = column_last + column_weights.len() as u32 - column_first;
         Ok(Self {
-            parallel: u64::from(read_columns) * u64::from(end_row - first_row)
-                >= luxforge_raw::PARALLEL_PIXELS,
+            parallel: crate::render::parallel::pooled(
+                crate::render::parallel::RenderPass::Proxy,
+                u64::from(read_columns) * u64::from(end_row - first_row),
+            ),
             ..downscale
         })
     }

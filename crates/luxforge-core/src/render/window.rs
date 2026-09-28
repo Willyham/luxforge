@@ -745,10 +745,10 @@ mod tests {
 
     #[test]
     fn sub_megapixel_heavy_colour_pool_matches_serial_regions_on_both_domains() {
-        // The whole stage is below the ordinary million-pixel pool threshold but above the
+        // The whole stage is below the ordinary colour pass's pool threshold but above the
         // heavy-colour threshold; every quarter is below both and uses the serial row path.
-        let (width, height) = (899, 831);
-        assert!(u64::from(width) * u64::from(height) < luxforge_raw::PARALLEL_PIXELS);
+        let (width, height) = (299, 277);
+        assert!(u64::from(width) * u64::from(height) < luxforge_raw::PARALLEL_COLOUR_PIXELS);
         assert!(u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS);
         let registry = ModuleRegistry::builtin();
         let stack = recipe(

@@ -25,9 +25,10 @@ pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
-    MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES,
-    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, RETAINED_DEVELOPMENT_BYTES, SPATIAL_TILE,
-    SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, spatial_tile,
+    MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES, PARALLEL_COLOUR_PIXELS,
+    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, PARALLEL_PROXY_PIXELS, PARALLEL_RESAMPLE_PIXELS,
+    PARALLEL_SPATIAL_PIXELS, PARALLEL_TRANSFORM_PIXELS, RETAINED_DEVELOPMENT_BYTES, RenderPass,
+    SPATIAL_TILE, SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, parallel_pixels, spatial_tile,
 };
 pub use native_tiles::refill_each;
 use profiles::{Catalog, Crop};

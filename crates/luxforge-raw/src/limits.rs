@@ -18,16 +18,71 @@ pub const MAX_RGB_BYTES: usize = 1536 * 1024 * 1024;
 /// X100VI development (468 MiB of planes) fits, a development at the [`MAX_PIXELS`] limit does not.
 pub const RETAINED_DEVELOPMENT_BYTES: usize = 600 * 1024 * 1024;
 
-/// Above this many pixels a per-pixel pass moves from a serial loop to the shared Rayon pool: the
-/// point past which per-row or per-chunk parallel dispatch is paid back by the work it saves.
-/// Shared by every pass that picks its parallel path this way: the byte rasterizer, the proxy
-/// build, the camera-matrix conversion, the analysis reducer and the RAW DNG corrections.
+/// Above this many pixels a per-pixel pass that is not a rendering pass moves from a serial loop to
+/// the shared Rayon pool: the RAW development passes (the camera-matrix conversion and the DNG
+/// corrections), a spatial operation's global-estimate reduction, the analysis reducer and the
+/// overlays. A rendering pass reads its own threshold from [`parallel_pixels`].
 pub const PARALLEL_PIXELS: u64 = 1_000_000;
 
-/// A sub-[`PARALLEL_PIXELS`] pass with enough independent colour work (several colour units, or a
-/// mask) to pay for the shared Rayon pool below the ordinary threshold; smaller than this, even
-/// that work stays serial.
-pub const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = 256 * 1024;
+/// A rendering pass's kind, which chooses the pixel count at and past which the pass runs on the
+/// shared Rayon pool ([`parallel_pixels`]). Each threshold is measured with one unit per case,
+/// serial against pooled at 0.025 to 2 megapixels on the M4 (`render::parallel`'s
+/// `parallel_break_even_per_pass`; `docs/specs/performance.md`, "Per-pass parallel thresholds"):
+/// it is the smallest size measured at which pooling won in every case of its kind. The ratios
+/// below are pooled time over serial time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderPass {
+    /// A segment's exact geometry, counted over the segment's pixels.
+    Transform,
+    /// A segment's colour runs with one or two colour units, counted over the rows they reach.
+    Colour,
+    /// A segment's colour runs with at least three colour units or a mask, counted over the rows
+    /// they reach.
+    HeavyColour,
+    /// An interpolating resample, counted over the output pixels it writes.
+    Resample,
+    /// A spatial operation's tiles, counted over its stage.
+    Spatial,
+    /// A proxy source's box downscale, counted over the source pixels it reads.
+    Proxy,
+}
+
+/// [`RenderPass::Transform`]: a quarter turn is 0.61 to 0.73 at 0.5 MP and 1.24 to 1.26 at 0.25 MP.
+pub const PARALLEL_TRANSFORM_PIXELS: u64 = 500_000;
+
+/// [`RenderPass::Colour`]: one Exposure unit is 0.49 to 0.58 at 0.1 MP on bytes (0.34 to 0.77 on
+/// linear planes) and 0.89 to 0.93 on bytes at 0.05 MP.
+pub const PARALLEL_COLOUR_PIXELS: u64 = 100_000;
+
+/// [`RenderPass::HeavyColour`]: a full Basic layer's four units are 0.31 to 0.37 on bytes and 0.45
+/// to 0.77 on linear planes at 0.025 MP, the smallest size measured. A mask is counted here too,
+/// as before, and was not measured on its own.
+pub const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = 25_000;
+
+/// [`RenderPass::Resample`]: a 10 degree crop is 0.59 to 0.60 at 0.14 MP of output, 0.75 at
+/// 0.07 MP and 1.14 at 0.03 MP.
+pub const PARALLEL_RESAMPLE_PIXELS: u64 = 100_000;
+
+/// [`RenderPass::Spatial`]: at 0.25 MP each Presence unit's fastest runs are 0.21 to 0.88 and all
+/// three together 0.33 to 0.34 at the p50; at 0.1 MP Texture or Dehaze alone breaks even or loses.
+pub const PARALLEL_SPATIAL_PIXELS: u64 = 250_000;
+
+/// [`RenderPass::Proxy`]: a box downscale to a third is 0.56 to 0.78 at 0.5 MP of source read; up
+/// to 0.25 MP it reads one band, so pooling changes nothing.
+pub const PARALLEL_PROXY_PIXELS: u64 = 500_000;
+
+/// The pixel count at and past which a rendering pass of this kind runs on the shared Rayon pool:
+/// the one table every rendering pass's parallel gate reads.
+pub const fn parallel_pixels(pass: RenderPass) -> u64 {
+    match pass {
+        RenderPass::Transform => PARALLEL_TRANSFORM_PIXELS,
+        RenderPass::Colour => PARALLEL_COLOUR_PIXELS,
+        RenderPass::HeavyColour => PARALLEL_HEAVY_COLOUR_PIXELS,
+        RenderPass::Resample => PARALLEL_RESAMPLE_PIXELS,
+        RenderPass::Spatial => PARALLEL_SPATIAL_PIXELS,
+        RenderPass::Proxy => PARALLEL_PROXY_PIXELS,
+    }
+}
 
 /// The largest RGBA8 frame any evaluated render, proxy or linear-to-byte conversion may allocate
 /// (512 MiB).
