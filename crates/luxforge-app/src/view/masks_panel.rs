@@ -1015,7 +1015,7 @@ fn strokes<'a>(
         let view = stroke_row(
             &StrokeRowModel {
                 index: (stroke.index + 1).to_string(),
-                label: stroke.label.clone(),
+                label: stroke.summary.clone(),
                 delete_tooltip: stroke
                     .delete_reason
                     .clone()

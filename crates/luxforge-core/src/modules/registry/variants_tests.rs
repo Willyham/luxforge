@@ -423,7 +423,7 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
         ),
         (
             "luxforge.masks",
-            "bacd345f0560d7d08ed9fec0e94bfa2d8aa5e519057ba8171789bf3121937951",
+            "dfecdf028f8eb04a72efd22abb21b675168f5e337ab1de594cdd94d13497ca27",
         ),
     ];
     let listed: Vec<&ModuleDescriptor> = registry

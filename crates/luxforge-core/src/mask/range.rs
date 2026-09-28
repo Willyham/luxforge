@@ -188,7 +188,7 @@ fn level(name: &str, required: bool, default: f64, notes: &str) -> ParameterDesc
         .notes(notes)
         .unit("%")
         .step(1.0)
-        .precision(1)
+        .precision(0)
         .fine_step(0.1)
         .default(default)
 }
@@ -199,7 +199,7 @@ fn feather(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
         .notes(notes)
         .unit("%")
         .step(1.0)
-        .precision(1)
+        .precision(0)
         .fine_step(0.1)
         .zero(0.0)
         .default(FEATHER_DEFAULT)
@@ -392,7 +392,7 @@ pub(super) fn colour_parameters(required: bool) -> Vec<ParameterDescriptor> {
             )
             .unit("%")
             .step(1.0)
-            .precision(1)
+            .precision(0)
             .fine_step(0.1)
             .zero(REFINE_DEFAULT)
             .default(REFINE_DEFAULT),
