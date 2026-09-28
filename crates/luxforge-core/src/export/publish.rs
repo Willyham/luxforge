@@ -54,7 +54,7 @@ impl Destination {
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or_else(|| Error::validation("export destination has no parent directory"))?;
         let parent_is_directory = fs::metadata(parent)
-            .map_err(|error| file_error(parent, error))?
+            .map_err(|error| file_error(parent.display(), error.kind()))?
             .is_dir();
         if !parent_is_directory {
             return Err(Error::file_access(format!(
@@ -68,7 +68,7 @@ impl Destination {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self {
                 path: path.to_path_buf(),
             }),
-            Err(error) => Err(file_error(path, error)),
+            Err(error) => Err(file_error(path.display(), error.kind())),
         }
     }
 
@@ -95,7 +95,7 @@ impl Destination {
             .write(true)
             .create_new(true)
             .open(&temp_path)
-            .map_err(|error| file_error(&temp_path, error))?;
+            .map_err(|error| file_error(temp_path.display(), error.kind()))?;
         Ok(Staged {
             file: BufWriter::new(file),
             temp_path,
@@ -123,13 +123,13 @@ impl Staged {
     pub fn publish(mut self) -> Result<u64, Error> {
         self.file
             .flush()
-            .map_err(|error| file_error(&self.temp_path, error))?;
+            .map_err(|error| file_error(self.temp_path.display(), error.kind()))?;
         let file = self.file.get_ref();
         file.sync_all()
-            .map_err(|error| file_error(&self.temp_path, error))?;
+            .map_err(|error| file_error(self.temp_path.display(), error.kind()))?;
         let bytes = file
             .metadata()
-            .map_err(|error| file_error(&self.temp_path, error))?
+            .map_err(|error| file_error(self.temp_path.display(), error.kind()))?
             .len();
 
         match fs::hard_link(&self.temp_path, &self.final_path) {
@@ -152,14 +152,14 @@ impl Staged {
                             .and_then(|_| final_file.sync_all());
                         if let Err(error) = copied {
                             let _ = fs::remove_file(&self.final_path);
-                            return Err(file_error(&self.final_path, error));
+                            return Err(file_error(self.final_path.display(), error.kind()));
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                         return Err(Error::conflict("export destination already exists")
                             .with_data(json!({"path": &self.final_path})));
                     }
-                    Err(error) => return Err(file_error(&self.final_path, error)),
+                    Err(error) => return Err(file_error(self.final_path.display(), error.kind())),
                 }
             }
         }

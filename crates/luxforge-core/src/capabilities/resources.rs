@@ -16,10 +16,9 @@ use super::{
     descriptor::ResourceDescriptor,
     document::JsonDocument,
     endpoint::{EndpointClass, parse_endpoint},
-    grants::now_ms,
     transport::{MAX_REDIRECTS, Method, RedirectPolicy, SendOptions, Transport, TransportRequest},
 };
-use crate::{Error, JobId, ModuleRegistry, atomic_file, jobs::JobControl};
+use crate::{Error, JobId, ModuleRegistry, atomic_file, editor::now_ms, jobs::JobControl};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -70,7 +69,7 @@ pub struct InstalledMarker {
     pub license: String,
     pub provenance: String,
     pub actor: String,
-    pub installed_ms: u64,
+    pub installed_ms: i64,
 }
 
 impl InstalledMarker {
@@ -143,7 +142,7 @@ pub struct ResourceRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installed_ms: Option<u64>,
+    pub installed_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<JobId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -339,12 +338,7 @@ impl Write for Staged {
 /// A write failure by its cause: a full disk or quota is `resource-limit: disk full`, anything else
 /// a `read-error` naming the path.
 fn write_failure(path: &Path, kind: io::ErrorKind) -> Error {
-    match kind {
-        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => {
-            Error::resource_limit("disk full")
-        }
-        kind => Error::file_access(format!("cannot write {}: {kind}", path.display())),
-    }
+    atomic_file::file_error(format_args!("cannot write {}", path.display()), kind)
 }
 
 /// Remove every staging directory: the transfer lane runs one job at a time, so none of them
@@ -354,7 +348,7 @@ fn clear_staging(store: &ResourceStore) -> Result<(), Error> {
     let entries = match fs::read_dir(&staging) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(atomic_file::file_error(&staging, error)),
+        Err(error) => return Err(atomic_file::file_error(staging.display(), error.kind())),
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -363,7 +357,7 @@ fn clear_staging(store: &ResourceStore) -> Result<(), Error> {
         } else {
             fs::remove_file(&path)
         };
-        removed.map_err(|error| atomic_file::file_error(&path, error))?;
+        removed.map_err(|error| atomic_file::file_error(path.display(), error.kind()))?;
     }
     Ok(())
 }
@@ -546,12 +540,12 @@ pub(crate) fn remove(
     match fs::remove_file(&marker) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(atomic_file::file_error(&marker, error)),
+        Err(error) => return Err(atomic_file::file_error(marker.display(), error.kind())),
     }
     match fs::remove_dir_all(&target) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(atomic_file::file_error(&target, error)),
+        Err(error) => return Err(atomic_file::file_error(target.display(), error.kind())),
     }
     // Emptied parents go too; a parent that still holds another version stays.
     for parent in target.ancestors().skip(1).take(2) {

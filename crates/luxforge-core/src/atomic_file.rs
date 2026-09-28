@@ -1,9 +1,9 @@
 //! The one durable write every store outside the catalog uses: the module settings and grants
-//! documents and a resource's `installed.json` (`capabilities::document`), and the derived-artifact
-//! objects and manifest (`artifacts::store`). Bytes go to a temporary file that is synced, then
-//! renamed over the target, and the directory is synced so the rename itself is durable; a failure
-//! at any point leaves the previous file. Writers that share a file serialize on an OS advisory
-//! lock beside it, and a read is bounded.
+//! documents, a resource's `installed.json` and the artifact manifest (`capabilities::document`),
+//! and the derived-artifact objects (`artifacts::store`). Bytes go to a temporary file that is
+//! synced, then renamed over the target, and the directory is synced so the rename itself is
+//! durable; a failure at any point leaves the previous file. Writers that share a file serialize on
+//! an OS advisory lock beside it, and a read is bounded.
 use crate::Error;
 use std::{
     fs::{self, File, OpenOptions},
@@ -11,14 +11,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// A failed file operation: a full disk or quota is `resource-limit: disk full`, anything else a
-/// `read-error` naming the path.
-pub(crate) fn file_error(path: &Path, error: io::Error) -> Error {
-    match error.kind() {
+/// A failed file operation, the one mapping of an io error every store and the source reader use:
+/// a full disk or quota is `resource-limit: disk full`, anything else a `read-error` naming what
+/// failed (`context`, normally the path) and the error's kind.
+pub(crate) fn file_error(context: impl std::fmt::Display, kind: io::ErrorKind) -> Error {
+    match kind {
         io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => {
             Error::resource_limit("disk full")
         }
-        kind => Error::file_access(format!("{}: {kind}", path.display())),
+        kind => Error::file_access(format!("{context}: {kind}")),
     }
 }
 
@@ -26,15 +27,16 @@ pub(crate) fn file_error(path: &Path, error: io::Error) -> Error {
 /// threads, creating the directory and the lock file on first use. It is released when the
 /// returned handle drops.
 pub(crate) fn lock(dir: &Path, name: &str) -> Result<File, Error> {
-    fs::create_dir_all(dir).map_err(|error| file_error(dir, error))?;
+    fs::create_dir_all(dir).map_err(|error| file_error(dir.display(), error.kind()))?;
     let path = dir.join(name);
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&path)
-        .map_err(|error| file_error(&path, error))?;
-    file.lock().map_err(|error| file_error(&path, error))?;
+        .map_err(|error| file_error(path.display(), error.kind()))?;
+    file.lock()
+        .map_err(|error| file_error(path.display(), error.kind()))?;
     Ok(file)
 }
 
@@ -44,12 +46,12 @@ pub(crate) fn read(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, Error
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(file_error(path, error)),
+        Err(error) => return Err(file_error(path.display(), error.kind())),
     };
     let mut bytes = Vec::new();
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| file_error(path, error))?;
+        .map_err(|error| file_error(path.display(), error.kind()))?;
     if bytes.len() as u64 > max_bytes {
         return Err(Error::resource_limit(format!(
             "{} is larger than {max_bytes} bytes; the file is kept unchanged",
@@ -87,10 +89,10 @@ pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
-    stage(&temporary, bytes).map_err(|error| file_error(&temporary, error))?;
+    stage(&temporary, bytes).map_err(|error| file_error(temporary.display(), error.kind()))?;
     publish(&temporary, path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
-        file_error(path, error)
+        file_error(path.display(), error.kind())
     })
 }
 

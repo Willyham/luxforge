@@ -7,6 +7,7 @@ use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
     Snapshot,
     artifacts::{self, ArtifactRead, VerifiedArtifact},
+    atomic_file::file_error,
     open_source_bytes, read_bounded_file,
     source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment},
 };
@@ -82,11 +83,11 @@ impl SourceKind {
 /// A source path in the one spelling every catalog lookup uses.
 fn canonical_source(path: &Path) -> Result<PathBuf, Error> {
     path.canonicalize()
-        .map_err(|e| Error::file_access(format!("cannot resolve source: {}", e.kind())))
+        .map_err(|error| file_error("cannot resolve source", error.kind()))
 }
 
 fn file_access(error: std::io::Error) -> Error {
-    Error::file_access(error.kind().to_string())
+    file_error("cannot read source", error.kind())
 }
 
 /// A source path's canonical spelling and its file's current signature.
