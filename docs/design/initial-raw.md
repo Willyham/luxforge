@@ -174,7 +174,7 @@ Measure on the owner's M4 with release builds and recorded OS, RAM, GPU/backend,
 | Loading acknowledgement / unrelated owner request | p95 ≤ 100 ms while RAW work runs |
 | Full neutral development ready, local SSD warm filesystem | p95 ≤ 3 s Z6, ≤ 5 s X100VI |
 | Warm exposure update when intermediate can be reused | p95 ≤ 250 ms to rendered preview; report WB separately if it re-demosaics |
-| RAW edit working set | Investigate ≤ 1.5 GiB combined process CPU RSS including helpers; GPU allocations reported separately |
+| RAW edit working set | Two parts ([decided](../decisions.md#plan-refresh)): investigate ≤ 1.5 GiB of process CPU RSS for the one-development working set including helpers, plus the retained second development under its own 600 MiB byte budget; GPU allocations reported separately |
 | Idle and existing JPEG interactions | Preserve existing measured behavior and investigate the existing <1% CPU target |
 
 Record read/hash, identify, unpack, normalize, demosaic, color/output, geometry, resize, upload and observed-frame stages; decoder-only speed is not responsiveness. Measure repeated NEF/RAF/JPEG replacements, 100%, edits, undo/redo, history preview and cancellation, plus the existing generated 24/60 MP JPEG regressions. No CI timing gates. If a target is missed, expose the measured tradeoff and obtain a scope/budget decision rather than silently relaxing it.
@@ -239,7 +239,7 @@ The task DAG separates code delivery from broad visual quality, recovery, resour
 | Resource budget | The 1.5 GiB target is an investigation hypothesis. Screenshot-free Fuji series peak at 1583–1647 MiB; captured 30-trial p95 is 1992 MiB, with an unexplained 2436 MiB maximum. Attribute remaining costs without claiming an accepted budget |
 | Native portability | M4 Metal evidence is distinct from automated Windows/Linux builds and native desktop checks; manual audits remain deferred |
 | Output/Basic | No duplicate exporter or JPEG Basic controls; integrate with those capabilities when delivered |
-| Bayer highlight latitude | RCD clips each gained Bayer site at sensor white before interpolating ([pixel and color contract](#pixel-and-color-contract)). Retaining the latitude is an owner decision, taken with its rendering change measured on the supplied files |
+| Bayer highlight latitude | RCD clips each gained Bayer site at sensor white before interpolating ([pixel and color contract](#pixel-and-color-contract)). The owner [decided](../decisions.md#plan-refresh) to retain the latitude, as X-Trans does, provided the measured rendering change on the supplied Z6 and Air 2S files shows no new highlight artefacts; otherwise the clip stays as the Bayer path's documented limit. The change and its measurement are outstanding |
 
 Neutral rendering, exact as-shot defaults, custom WB mapping and the retained working domain are explicit implementation choices documented above. They are not assertions that the owner accepted a particular visual match, arbitrary performance relaxation or a wider feature scope. New consequential tradeoffs still require concrete evidence and consultation.
 

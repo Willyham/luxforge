@@ -743,6 +743,7 @@
         "Many tests reach the pixel proof through ModuleRegistry::builtin(): core unit and integration tests (the owner, preview, export and mask tests among them), luxforge-app's tests/json_cli.rs, and xtask's histogram scenario (which commits edit.set-pixel in the real editor), controls scenario, editor-acceptance and the Basic and mask acceptance chapters. Each moves to a developer registry or a developer launch; an evidence launch passes --developer only through the scenario launch envelope (xtask/src/scenario/launch.rs), as the editor-launch repository rule requires.",
         "The desktop group's move of the headless luxforge-json binary into its own crate without the GUI stack means the one assembly function belongs where both binaries can reach it (luxforge-core, or a crate both depend on), not in luxforge-app.",
         "Owner decision: test modules, including the pixel proof, register only in developer mode. PointReplace's own fate (seed the eventual repair primitive, or deletion) is decided separately alongside the repair-stage design; this task only stops registering it by default.",
+        "Owner decision (2026-09-28, docs/decisions.md \"Plan refresh\"): luxforge-json takes the desktop's --developer flag with the same meaning and refuses --proof-endpoint without it, as the desktop does, but is not put in developer mode automatically in debug builds; process tests and harness runs that need a test module pass --developer.",
         "Developer mode must keep every developer-only module unchanged; outside it, schema.list must drop every developer-only method, and the committed descriptor snapshot (of the normal registry) loses the pixel proof's entries."
       ],
       "context_links": [
@@ -804,7 +805,7 @@
       ],
       "acceptance_criteria": [
         "The pixel proof registers only in developer mode, matching the controls proof.",
-        "The desktop launch and luxforge-json both assemble their registry through one shared function that neither binary's own crate owns; there is no second assembly, and luxforge-json serves developer-only modules only in developer mode, as the desktop does.",
+        "The desktop launch and luxforge-json both assemble their registry through one shared function that neither binary's own crate owns; there is no second assembly, and luxforge-json serves developer-only modules only with --developer, refusing --proof-endpoint without it and never entering developer mode by build profile.",
         "Outside developer mode schema.list lists no developer-only method or action, which the committed descriptor snapshot shows; in developer mode the method list is unchanged.",
         "docs/user-guide.md, docs/design/develop-workspace.md, docs/design/modules-and-api.md and docs/features.md describe developer-only registration accurately."
       ],
