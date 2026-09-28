@@ -267,11 +267,11 @@ pub(crate) struct PacedStroke {
 /// The script's step types are the shared evidence script crate's: the desktop reads them and
 /// xtask writes them, so a step has one spelling on both ends.
 pub(crate) use luxforge_evidence::{
-    CapabilityAction, CapabilitySection, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent,
-    DoubleClickStep, DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, KindMenuStep,
-    MaskRow, MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
-    PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
-    SliderStep, Step, TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
+    CapabilityAction, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent, DoubleClickStep,
+    DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, KindMenuStep, MaskRow, MaskStep,
+    PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep,
+    Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step,
+    TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -711,7 +711,7 @@ impl Editor {
                 };
             }
             EvidenceMessage::HostAnswered(result) => {
-                self.host_answered(result.map(|answer| *answer))
+                return self.host_answered(result.map(|answer| *answer));
             }
         }
         Task::none()
@@ -872,7 +872,16 @@ impl Editor {
             if step.request && !params.contains_key("mutation") {
                 params.insert("mutation".into(), json!(request()));
             }
+            if step.revision {
+                match self.settings_envelope(&method, &params) {
+                    Ok(envelope) => {
+                        params.insert("mutation".into(), envelope);
+                    }
+                    Err(reason) => return self.fail_step(reason),
+                }
+            }
             self.await_step(Settle::Host);
+            self.capability_read_after(&method, &params);
             return host_task(
                 self.owner.clone(),
                 self.client,
@@ -927,6 +936,14 @@ impl Editor {
             let id = self.resolve_component(mask.as_deref(), &reference)?;
             resolved.insert("component".into(), json!(id));
             params.insert("component".into(), json!(id));
+        }
+        if let Some(value) = params.get("profile_id").cloned() {
+            let reference = Reference::from_value(value)
+                .map_err(|error| format!("profile_id takes {error}"))?;
+            let module = params.get("module_id").and_then(Value::as_str);
+            let id = self.resolve_profile(module, &reference)?;
+            resolved.insert("profile_id".into(), json!(id));
+            params.insert("profile_id".into(), json!(id));
         }
         if !resolved.is_empty() {
             self.note_step(json!({ "resolved": resolved }));
@@ -2883,8 +2900,8 @@ impl Editor {
     }
 
     /// A host method the running step called answered: adopt the library it listed, record what it
-    /// said, and capture the frame.
-    pub(crate) fn host_answered(&mut self, result: Result<HostAnswer, String>) {
+    /// said, and capture the frame, once a capability method's module has been read again.
+    pub(crate) fn host_answered(&mut self, result: Result<HostAnswer, String>) -> Task<Message> {
         match result {
             Ok(answer) => {
                 if let Some(presets) = answer.presets {
@@ -2892,13 +2909,20 @@ impl Editor {
                 }
                 self.status = format!("{} answered", answer.method);
                 self.note_step(json!({"result":answer.result}));
+                if let Some(read) = self.capability_host_answered() {
+                    return read;
+                }
             }
             Err(error) => {
                 self.refuse_step(&error);
                 self.status = error;
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.capability_wait = None;
+                }
             }
         }
         self.settle_step(Settle::Host);
+        Task::none()
     }
 
     /// A `mask.*` command the running step sent was refused by the host.
@@ -3121,14 +3145,7 @@ pub(crate) fn parse_script(text: &str) -> Result<VecDeque<Step>, String> {
 /// The step as the desktop records it beside its frame: as the script wrote it, with a secret's
 /// value and a request's secret parameters redacted like every other request the desktop keeps.
 pub(crate) fn record(step: &Step) -> Value {
-    let mut record = step.kept();
-    if let Step::Api { method, params } = step
-        && !params.is_empty()
-    {
-        record["api"]["params"] =
-            luxforge_core::redact_params(method, &Value::Object(params.clone()));
-    }
-    record
+    step.kept(luxforge_core::redact_params)
 }
 
 /// One drawn handle of a gesture's figure, as the script names it.
@@ -3196,6 +3213,9 @@ pub(crate) struct HostStep {
     pub(crate) takes_asset: bool,
     /// The method carries the `request` mutation envelope, so the step sends a fresh one.
     pub(crate) request: bool,
+    /// The method carries the `revision` envelope of something other than the open asset — a
+    /// module's settings — so the step sends the revision the desktop holds for it.
+    pub(crate) revision: bool,
 }
 
 /// How an `api` step sends `method`: `None` for an edit of the open asset, which carries the
@@ -3225,6 +3245,7 @@ pub(crate) fn envelope_free(method: &str) -> Option<HostStep> {
         envelope => Some(HostStep {
             takes_asset,
             request: envelope == Some("request"),
+            revision: envelope == Some("revision"),
         }),
     }
 }
@@ -4015,6 +4036,7 @@ mod tests {
             Some(HostStep {
                 takes_asset,
                 request,
+                revision: false,
             })
         };
         assert_eq!(envelope_free("preset.list"), host(false, false));
@@ -4026,6 +4048,15 @@ mod tests {
             "a library change carries a fresh request envelope"
         );
         assert_eq!(envelope_free("version.create"), host(true, true));
+        assert_eq!(
+            envelope_free("module.settings.set"),
+            Some(HostStep {
+                takes_asset: false,
+                request: false,
+                revision: true,
+            }),
+            "a settings write carries the settings revision the desktop holds"
+        );
         assert_eq!(envelope_free("history.undo"), None);
         assert_eq!(envelope_free("edit.apply-preset"), None);
         assert_eq!(envelope_free("no.such-method"), None);
@@ -4040,7 +4071,7 @@ mod tests {
             "and waits for no render"
         );
         let listing = vec![crate::app::testing::listed("Warm", "User presets", None)];
-        editor.host_answered(Ok(HostAnswer {
+        let _ = editor.host_answered(Ok(HostAnswer {
             method: "preset.list".into(),
             result: json!({"presets":[]}),
             presets: Some(listing.clone()),

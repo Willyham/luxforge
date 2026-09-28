@@ -175,9 +175,12 @@ impl Step {
         &self.expect
     }
 
-    /// The step as the kept script holds it and the editor records it: a secret redacted.
+    /// The step as the kept script holds it and the editor records it: a secret redacted by the
+    /// core's own rule.
     fn kept(&self) -> Option<Value> {
-        self.script.as_ref().map(script::Step::kept)
+        self.script
+            .as_ref()
+            .map(|step| step.kept(luxforge_core::redact_params))
     }
 
     /// `n` revisions committed since the frame before: `0` for none.
@@ -841,24 +844,17 @@ mod tests {
 
     #[test]
     fn a_plan_derives_its_script_and_refuses_a_malformed_order() {
-        let secret = |value: &str| {
-            script::CapabilityStep::new(
-                "m",
-                script::CapabilityAction::Secret {
-                    field: "key".into(),
-                    value: script::Secret::new(value.into()),
-                    profile: None,
-                },
-            )
-        };
+        let secret = |value: &str| json!({"api":{"method":"module.settings.set-secret","params":{"module_id":"m","setting":"key","value":value}}});
         let plan = Plan::new(vec![
             Step::opened("opened"),
             Step::new("expand", script::Step::section("m", true)).commits(0),
-            Step::new("key", secret("k")),
+            Step::new(
+                "key",
+                script::Step::from_value(secret("k")).expect("an api step"),
+            ),
         ]);
         assert!(plan.validate().is_ok());
         assert_eq!(plan.len(), 3);
-        let secret = |value: &str| json!({"capability":{"module":"m","secret":{"field":"key","value":value}}});
         assert_eq!(
             plan.script(),
             json!([{"section":{"module":"m","expanded":true}},secret("k")])

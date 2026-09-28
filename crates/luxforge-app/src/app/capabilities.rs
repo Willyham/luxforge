@@ -1,11 +1,10 @@
-//! The desktop's module capability driver. A gesture on a capability section, on a task control or
+//! The desktop's module capability driver. A gesture on a capability block, on a task control or
 //! on the consent notice becomes one [`Operation`], and one owner round trip runs it off the update
 //! loop through the same methods the JSON API dispatches: the `module.*` methods, `task.<id>` and
-//! `module.permission.*`. Every round trip ends with one `module.status` read of that module alone,
-//! which is the narrowest completion path that keeps the section honest, and, only while the
-//! module's permissions list is open, one `module.permission.list` read for its rows: the status
-//! carries the counts the permissions line shows, not the records. Settings writes answer with the
-//! fresh settings themselves, so they need no second read.
+//! `job.*`. Every round trip ends with one `module.status` read of that module alone, which is the
+//! narrowest completion path that keeps the block honest. A settings write answers with the fresh
+//! settings itself, so it needs no second read; one that meets a newer revision reads them again
+//! and says so on the block's one status line.
 //!
 //! Jobs are followed by a poll that exists only while a job the desktop tracks is queued or running
 //! (see [`Editor::capability_poll_subscription`]). A `consent-required` answer opens the consent
@@ -14,14 +13,14 @@
 use crate::{
     app::{
         Editor,
-        evidence::{CapabilityAction, CapabilitySection, CapabilityStep, Settle},
+        evidence::{CapabilityAction, CapabilityStep, Reference, Settle},
         message::{ActionMessage, CapabilityMessage, Message},
         tasks::{self, mutation, owner_task, request},
     },
     state::{
         capabilities::{
-            CapabilityView, Consent, FieldKey, ModuleCapabilities, ModuleStatus, OpenConsent,
-            Operation, SecretText, TaskPhase, TaskRun, declares, task_profile,
+            Consent, ModuleStatus, OpenConsent, Operation, TaskPhase, TaskRun, declares,
+            task_profile,
         },
         fields, tools,
     },
@@ -30,9 +29,8 @@ use iced::{Subscription, Task};
 use luxforge_core::{
     AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
-        descriptor::SettingDescriptor,
         grants::{self, GrantList},
-        host::{self, Requirement, TASK_PREFIX},
+        host::{self, TASK_PREFIX},
         resources,
         settings::{self, SettingsRead},
     },
@@ -65,10 +63,6 @@ pub(crate) enum Outcome {
         consent: Box<Consent>,
         retry: Box<Operation>,
     },
-    NotReady {
-        requirements: Vec<Requirement>,
-        message: String,
-    },
     /// A settings write met a newer revision; the settings were read again.
     Conflict(String),
     Failed(CallError),
@@ -78,16 +72,14 @@ pub(crate) enum Outcome {
 #[derive(Clone, Debug)]
 pub(crate) struct Answer {
     pub(crate) module_id: String,
-    /// The operation the outcome answers. After Allow it is the retried operation, so the answer
-    /// is routed exactly as a first try would be.
+    /// The operation the outcome answers. After Allow or Don't allow it is the refused operation,
+    /// so the answer is routed exactly as a first try would be.
     pub(crate) op: Operation,
     /// The notice Allow or Don't allow answered, when this round trip was one.
     pub(crate) consent: Option<(bool, Box<Consent>)>,
     pub(crate) outcome: Outcome,
     pub(crate) settings: Option<SettingsRead>,
-    pub(crate) status: Option<Result<ModuleStatus, String>>,
-    /// The module's grants and denials, read when its permissions list was open.
-    pub(crate) permissions: Option<Result<GrantList, String>>,
+    pub(crate) status: Result<ModuleStatus, String>,
     /// The job the operation started, read once after it was queued.
     pub(crate) job: Option<JobRecord>,
     /// Every request sent, redacted, for the event log.
@@ -110,51 +102,62 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
-/// The envelope of every settings write: the revision it was made against and a fresh request id.
-fn envelope(module_id: &str, profile: Option<&String>, revision: u64) -> Map<String, Value> {
-    let mut params = Map::new();
-    params.insert("module_id".into(), json!(module_id));
-    if let Some(profile) = profile {
-        params.insert("profile_id".into(), json!(profile));
-    }
-    params.insert("mutation".into(), json!(mutation(revision)));
-    params
-}
-
-/// What a failure means for the section: consent, missing requirements, or a plain failure.
+/// What a failure means for the block: consent, or a plain failure whose message is its status
+/// line (a `not-ready` answer names what is missing in its message).
 fn classify(error: CallError, retry: &Operation) -> Outcome {
-    match error.code.as_str() {
-        "consent-required" => {
-            match error
-                .data
-                .as_ref()
-                .and_then(|data| data.get("consent"))
-                .cloned()
-                .map(parse::<Consent>)
-            {
-                Some(Ok(consent)) => Outcome::Consent {
-                    consent: Box::new(consent),
-                    retry: Box::new(retry.clone()),
-                },
-                _ => Outcome::Failed(error),
-            }
-        }
-        "not-ready" => Outcome::NotReady {
-            requirements: error
-                .data
-                .as_ref()
-                .and_then(|data| data.get("requirements"))
-                .cloned()
-                .and_then(|requirements| parse(requirements).ok())
-                .unwrap_or_default(),
-            message: error.message,
-        },
-        _ => Outcome::Failed(error),
+    if error.code == "consent-required"
+        && let Some(Ok(consent)) = error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("consent"))
+            .cloned()
+            .map(parse::<Consent>)
+    {
+        return Outcome::Consent {
+            consent: Box::new(consent),
+            retry: Box::new(retry.clone()),
+        };
     }
+    Outcome::Failed(error)
 }
 
-/// Run one operation's own requests and say what they came to. Settings writes put the fresh
-/// settings they answer with into `settings`.
+/// Withdraw every live grant the module holds, one `module.permission.revoke` each, and say how
+/// many were withdrawn.
+fn revoke_all(
+    owner: &OwnerHandle,
+    client: ClientId,
+    module_id: &str,
+    sent: &mut Vec<Value>,
+) -> Result<Value, CallError> {
+    let listed = call(
+        owner,
+        client,
+        grants::LIST,
+        json!({"module_id": module_id}),
+        sent,
+    )?;
+    let list: GrantList = parse(listed).map_err(|message| CallError {
+        code: "internal".into(),
+        message,
+        data: None,
+        job_id: None,
+    })?;
+    let mut revoked = 0;
+    for grant in list.grants.iter().filter(|grant| grant.is_live()) {
+        call(
+            owner,
+            client,
+            grants::REVOKE,
+            json!({"grant_id": grant.grant_id, "mutation": request()}),
+            sent,
+        )?;
+        revoked += 1;
+    }
+    Ok(json!({"revoked": revoked}))
+}
+
+/// Run one operation's own requests and say what they came to. A settings write puts the fresh
+/// settings it answers with into `settings`.
 fn perform(
     owner: &OwnerHandle,
     client: ClientId,
@@ -163,69 +166,45 @@ fn perform(
     sent: &mut Vec<Value>,
     settings: &mut Option<SettingsRead>,
 ) -> Outcome {
-    let mut write = |method: &str, params: Map<String, Value>, sent: &mut Vec<Value>| {
-        call(owner, client, method, Value::Object(params), sent).map(|answer| {
-            *settings = parse(answer["settings"].clone()).ok();
-            answer
-        })
-    };
-    let result = match op {
-        Operation::Load => call(
+    let mut read = |sent: &mut Vec<Value>| {
+        if let Ok(read) = call(
             owner,
             client,
             settings::READ,
             json!({"module_id": module_id}),
             sent,
-        )
-        .map(|read| {
+        ) {
             *settings = parse(read).ok();
-            Value::Null
-        }),
+        }
+    };
+    let result = match op {
+        Operation::Load => {
+            read(sent);
+            Ok(Value::Null)
+        }
         Operation::Refresh => Ok(Value::Null),
         Operation::Set {
-            profile,
             field,
             value,
             revision,
         } => {
-            let mut params = envelope(module_id, profile.as_ref(), *revision);
-            params.insert("values".into(), json!({field.as_str(): value}));
-            write(settings::SET, params, sent)
-        }
-        Operation::SetSecret {
-            profile,
-            field,
-            value,
-            revision,
-        } => {
-            let mut params = envelope(module_id, profile.as_ref(), *revision);
-            params.insert("setting".into(), json!(field));
-            params.insert("value".into(), json!(value.expose()));
-            write(settings::SET_SECRET, params, sent)
-        }
-        Operation::ClearSecret {
-            profile,
-            field,
-            revision,
-        } => {
-            let mut params = envelope(module_id, profile.as_ref(), *revision);
-            params.insert("setting".into(), json!(field));
-            write(settings::CLEAR_SECRET, params, sent)
-        }
-        Operation::CreateProfile {
-            adapter,
-            label,
-            revision,
-        } => {
-            let mut params = envelope(module_id, None, *revision);
-            params.insert("adapter".into(), json!(adapter));
-            params.insert("label".into(), json!(label));
-            write(settings::CREATE_PROFILE, params, sent)
-        }
-        Operation::RemoveProfile { profile, revision } => {
-            let mut params = envelope(module_id, None, *revision);
-            params.insert("profile_id".into(), json!(profile));
-            write(settings::REMOVE_PROFILE, params, sent)
+            let params = json!({
+                "module_id": module_id,
+                "values": {field.as_str(): value},
+                "mutation": mutation(*revision),
+            });
+            match call(owner, client, settings::SET, params, sent) {
+                Ok(answer) => {
+                    *settings = parse(answer["settings"].clone()).ok();
+                    Ok(answer)
+                }
+                // Somebody else changed the settings: read them again and say so.
+                Err(error) if error.code == "conflict" => {
+                    read(sent);
+                    return Outcome::Conflict(error.message);
+                }
+                Err(error) => Err(error),
+            }
         }
         Operation::Install { resource } => call(
             owner,
@@ -242,13 +221,7 @@ fn perform(
             sent,
         ),
         Operation::Cancel { job } => call(owner, client, JOB_CANCEL, json!({"job_id": job}), sent),
-        Operation::Revoke { grant } => call(
-            owner,
-            client,
-            grants::REVOKE,
-            json!({"grant_id": grant, "mutation": request()}),
-            sent,
-        ),
+        Operation::RevokeAll => revoke_all(owner, client, module_id, sent),
         Operation::RunTask {
             task,
             asset,
@@ -317,46 +290,29 @@ fn perform(
     };
     match result {
         Ok(answer) => Outcome::Done(answer),
-        Err(error) if error.code == "conflict" && op.field().is_some() => {
-            // Somebody else changed the settings: read them again and say so at the field.
-            if let Ok(read) = call(
-                owner,
-                client,
-                settings::READ,
-                json!({"module_id": module_id}),
-                sent,
-            ) {
-                *settings = parse(read).ok();
-            }
-            Outcome::Conflict(error.message)
-        }
         Err(error) => classify(error, op),
     }
 }
 
-/// One whole round trip: the operation, one read of a job it started, the module's status and,
-/// when `list` says its permissions list is open, its grants and denials.
+/// One whole round trip: the operation, one read of a job it started, and the module's status.
 pub(crate) fn run(
     owner: &OwnerHandle,
     client: ClientId,
     module_id: String,
     op: Operation,
-    list: bool,
 ) -> Answer {
     let mut sent = Vec::new();
     let mut settings = None;
     let outcome = perform(owner, client, &module_id, &op, &mut sent, &mut settings);
-    // After Allow the answer is the retried operation's, and is routed as that operation.
+    // An answer to the notice is routed as the refused operation it answers: after Allow the
+    // outcome is the retry's, and after Don't allow that operation's run ends.
     let (routed, consent) = match &op {
         Operation::Consent {
             allow,
             consent,
             retry,
         } => (
-            match (allow, retry) {
-                (true, Some(retry)) => (**retry).clone(),
-                _ => op.clone(),
-            },
+            retry.as_deref().unwrap_or(&op).clone(),
             Some((*allow, consent.clone())),
         ),
         _ => (op.clone(), None),
@@ -378,25 +334,13 @@ pub(crate) fn run(
     )
     .map_err(|error| error.to_string())
     .and_then(parse::<ModuleStatus>);
-    let permissions = list.then(|| {
-        call(
-            owner,
-            client,
-            grants::LIST,
-            json!({"module_id": module_id}),
-            &mut sent,
-        )
-        .map_err(|error| error.to_string())
-        .and_then(parse::<GrantList>)
-    });
     Answer {
         module_id,
         op: routed,
         consent,
         outcome,
         settings,
-        status: Some(status),
-        permissions,
+        status,
         job,
         sent,
     }
@@ -420,12 +364,9 @@ pub(crate) fn poll(
 }
 
 impl Editor {
-    /// Start one owner round trip for a module. Nothing runs on the update loop but this. It reads
-    /// the permissions list too while that list is open.
+    /// Start one owner round trip for a module. Nothing runs on the update loop but this.
     pub(crate) fn capability_op(&mut self, module_id: &str, op: Operation) -> Task<Message> {
-        let state = self.capabilities.module_mut(module_id);
-        state.pending += 1;
-        let list = state.permissions_open;
+        self.capabilities.module_mut(module_id).pending += 1;
         #[cfg(test)]
         self.capability_started
             .push((module_id.to_owned(), op.clone()));
@@ -433,7 +374,7 @@ impl Editor {
         let client = self.client;
         let module = module_id.to_owned();
         owner_task(
-            move || run(&owner, client, module, op, list),
+            move || run(&owner, client, module, op),
             |answer| Message::Capability(CapabilityMessage::Answered(Box::new(answer))),
         )
     }
@@ -449,12 +390,11 @@ impl Editor {
             .filter(|section| section.expanded && section.capability.is_some())
             .map(|section| section.module_id.clone())
             .filter(|module| {
-                self.capabilities.modules.get(module).is_none_or(|state| {
-                    state.settings.is_none()
-                        && state.status.is_none()
-                        && state.load_error.is_none()
-                        && state.pending == 0
-                })
+                let state = self.capabilities.module(module);
+                state.settings.is_none()
+                    && state.status.is_none()
+                    && state.message.is_none()
+                    && state.pending == 0
             })
             .collect();
         (!wanted.is_empty()).then(|| {
@@ -494,21 +434,8 @@ impl Editor {
 
     /// A task run's result belongs to the asset it ran for: another asset clears every run.
     pub(crate) fn capabilities_asset_changed(&mut self, asset: &AssetId) {
-        let stale: Vec<String> = self
-            .capabilities
-            .modules
-            .iter()
-            .filter(|(_, state)| {
-                state
-                    .tasks
-                    .values()
-                    .any(|run| run.asset.as_ref().is_some_and(|ran| ran != asset))
-            })
-            .map(|(module, _)| module.clone())
-            .collect();
-        for module in stale {
-            self.capabilities
-                .module_mut(&module)
+        for state in self.capabilities.modules.values_mut() {
+            state
                 .tasks
                 .retain(|_, run| run.asset.as_ref().is_none_or(|ran| ran == asset));
         }
@@ -518,50 +445,33 @@ impl Editor {
         tools::module_of(&self.modules, module_id).filter(|module| declares(module))
     }
 
-    /// The settings revision a write is made against, or the reason no write can be made yet.
-    fn settings_revision(&self, module_id: &str) -> Result<u64, String> {
-        let state = self.capabilities.modules.get(module_id);
-        if state.is_some_and(|state| state.pending > 0) {
-            return Err("Waiting for the last change".into());
+    /// A module-level setting written from the form, or the reason it cannot be sent, on the
+    /// block's status line.
+    fn write_setting(&mut self, module_id: &str, field: String, value: Value) -> Task<Message> {
+        let state = self.capabilities.module(module_id);
+        let revision = match (state.pending, state.revision()) {
+            (0, Some(revision)) => Ok(revision),
+            (0, None) => Err("The module's settings have not been read yet".to_owned()),
+            _ => Err("Waiting for the last change".to_owned()),
+        };
+        match revision {
+            Ok(revision) => self.capability_op(
+                module_id,
+                Operation::Set {
+                    field,
+                    value,
+                    revision,
+                },
+            ),
+            Err(reason) => self.capability_refused(module_id, reason),
         }
-        state
-            .and_then(ModuleCapabilities::revision)
-            .ok_or_else(|| "The module's settings have not been read yet".into())
     }
 
-    /// A settings field's declaration, module-level or of a profile block.
-    fn setting(
-        &self,
-        module_id: &str,
-        profile: Option<&String>,
-        field: &str,
-    ) -> Option<SettingDescriptor> {
-        let settings = self.capability_module(module_id)?.settings.as_ref()?;
-        match profile {
-            None => settings.field(field),
-            Some(_) => settings.profiles.as_ref()?.field(field),
-        }
-        .cloned()
-    }
-
-    /// A settings write, or the reason it cannot be sent, shown under the field.
-    fn write_setting(
-        &mut self,
-        module_id: &str,
-        key: FieldKey,
-        build: impl FnOnce(u64) -> Operation,
-    ) -> Task<Message> {
-        match self.settings_revision(module_id) {
-            Ok(revision) => self.capability_op(module_id, build(revision)),
-            Err(reason) => {
-                self.capabilities
-                    .module_mut(module_id)
-                    .errors
-                    .insert(key, reason.clone());
-                self.status = reason;
-                Task::none()
-            }
-        }
+    /// A gesture that sends nothing: its reason goes on the block's status line and the status bar.
+    fn capability_refused(&mut self, module_id: &str, reason: String) -> Task<Message> {
+        self.capabilities.module_mut(module_id).message = Some(reason.clone());
+        self.status = reason;
+        Task::none()
     }
 
     pub(crate) fn capability_update(&mut self, message: CapabilityMessage) -> Task<Message> {
@@ -572,54 +482,34 @@ impl Editor {
 
     fn capability_message(&mut self, message: CapabilityMessage) -> Task<Message> {
         match message {
-            CapabilityMessage::Show { module_id, view } => {
-                let state = self.capabilities.module_mut(&module_id);
-                state.view = view;
-                if view == CapabilityView::Status {
-                    state.secret = None;
-                }
-            }
-            CapabilityMessage::TogglePermissions(module_id) => {
-                let state = self.capabilities.module_mut(&module_id);
-                state.permissions_open = !state.permissions_open;
-                if !state.permissions_open {
-                    state.permission_list = None;
-                    return Task::none();
-                }
-                // Opening reads the rows; the status the line shows is read with them.
-                return self.capability_op(&module_id, Operation::Refresh);
-            }
             CapabilityMessage::FieldText {
                 module_id,
-                profile,
                 field,
                 text,
             } => {
                 self.capabilities
                     .module_mut(&module_id)
                     .edits
-                    .insert((profile, field), text);
+                    .insert(field, text);
             }
-            CapabilityMessage::FieldCommit {
-                module_id,
-                profile,
-                field,
-            } => {
-                let key = (profile.clone(), field.clone());
+            CapabilityMessage::FieldCommit { module_id, field } => {
                 let Some(text) = self
                     .capabilities
-                    .modules
-                    .get(&module_id)
-                    .and_then(|state| state.edits.get(&key))
+                    .module(&module_id)
+                    .edits
+                    .get(&field)
                     .cloned()
                 else {
                     return Task::none();
                 };
-                // A typed field is read back exactly as a module control's text is, against the
-                // same parameter declaration.
-                let value = match self.setting(&module_id, profile.as_ref(), &field) {
-                    // An emptied endpoint returns the field to having no value; any other text is
-                    // sent for the transport policy to classify.
+                // Typed text is read back exactly as a module control's text is, against the same
+                // parameter declaration; an emptied endpoint returns the field to having no value,
+                // and any other endpoint text is sent for the transport policy to classify.
+                let declared = self
+                    .capability_module(&module_id)
+                    .and_then(|module| module.settings.as_ref())
+                    .and_then(|settings| settings.field(&field));
+                let value = match declared {
                     Some(declared) if declared.is_endpoint() => match text.trim() {
                         "" => Ok(Value::Null),
                         trimmed => Ok(Value::from(trimmed)),
@@ -637,137 +527,16 @@ impl Editor {
                     Some(_) => Err(format!("{field} is not a typed field")),
                     None => Err(format!("{module_id} declares no setting {field}")),
                 };
-                match value {
-                    Ok(value) => {
-                        return self.write_setting(&module_id, key, |revision| Operation::Set {
-                            profile,
-                            field,
-                            value,
-                            revision,
-                        });
-                    }
-                    Err(reason) => {
-                        self.capabilities
-                            .module_mut(&module_id)
-                            .errors
-                            .insert(key, reason.clone());
-                        self.status = reason;
-                    }
-                }
+                return match value {
+                    Ok(value) => self.write_setting(&module_id, field, value),
+                    Err(reason) => self.capability_refused(&module_id, reason),
+                };
             }
             CapabilityMessage::FieldValue {
                 module_id,
-                profile,
                 field,
                 value,
-            } => {
-                let key = (profile.clone(), field.clone());
-                return self.write_setting(&module_id, key, |revision| Operation::Set {
-                    profile,
-                    field,
-                    value,
-                    revision,
-                });
-            }
-            CapabilityMessage::SecretEdit {
-                module_id,
-                profile,
-                field,
-            } => {
-                self.capabilities.module_mut(&module_id).secret =
-                    Some(((profile, field), SecretText::default()));
-            }
-            CapabilityMessage::SecretText { module_id, text } => {
-                if let Some((_, typed)) = &mut self.capabilities.module_mut(&module_id).secret {
-                    *typed = text;
-                }
-            }
-            CapabilityMessage::SecretCancel(module_id) => {
-                self.capabilities.module_mut(&module_id).secret = None;
-            }
-            CapabilityMessage::SecretCommit(module_id) => {
-                let Some(((profile, field), value)) = self
-                    .capabilities
-                    .modules
-                    .get(&module_id)
-                    .and_then(|state| state.secret.clone())
-                else {
-                    return Task::none();
-                };
-                let key = (profile.clone(), field.clone());
-                return self.write_setting(&module_id, key, |revision| Operation::SetSecret {
-                    profile,
-                    field,
-                    value,
-                    revision,
-                });
-            }
-            CapabilityMessage::SecretClear {
-                module_id,
-                profile,
-                field,
-            } => {
-                let key = (profile.clone(), field.clone());
-                return self.write_setting(&module_id, key, |revision| Operation::ClearSecret {
-                    profile,
-                    field,
-                    revision,
-                });
-            }
-            CapabilityMessage::ProfileAdapter { module_id, adapter } => {
-                self.capabilities.module_mut(&module_id).profile_adapter = Some(adapter);
-            }
-            CapabilityMessage::ProfileLabel { module_id, label } => {
-                self.capabilities.module_mut(&module_id).profile_label = label;
-            }
-            CapabilityMessage::ProfileCreate(module_id) => {
-                let Some(adapters) = self
-                    .capability_module(&module_id)
-                    .and_then(|module| module.settings.as_ref())
-                    .and_then(|settings| settings.profiles.as_ref())
-                    .map(|profiles| profiles.adapters.clone())
-                else {
-                    self.status = format!("{module_id} declares no profiles");
-                    return Task::none();
-                };
-                let state = self.capabilities.modules.get(&module_id);
-                let label = state
-                    .map(|state| state.profile_label.trim().to_owned())
-                    .unwrap_or_default();
-                let adapter = state
-                    .and_then(|state| state.profile_adapter.clone())
-                    .or_else(|| adapters.first().map(|adapter| adapter.id.clone()));
-                let (Some(adapter), false) = (adapter, label.is_empty()) else {
-                    self.status = "Name the profile first".into();
-                    return Task::none();
-                };
-                let revision = match self.settings_revision(&module_id) {
-                    Ok(revision) => revision,
-                    Err(reason) => {
-                        self.status = reason;
-                        return Task::none();
-                    }
-                };
-                return self.capability_op(
-                    &module_id,
-                    Operation::CreateProfile {
-                        adapter,
-                        label,
-                        revision,
-                    },
-                );
-            }
-            CapabilityMessage::ProfileRemove { module_id, profile } => {
-                let revision = match self.settings_revision(&module_id) {
-                    Ok(revision) => revision,
-                    Err(reason) => {
-                        self.status = reason;
-                        return Task::none();
-                    }
-                };
-                return self
-                    .capability_op(&module_id, Operation::RemoveProfile { profile, revision });
-            }
+            } => return self.write_setting(&module_id, field, value),
             CapabilityMessage::Install {
                 module_id,
                 resource,
@@ -779,18 +548,8 @@ impl Editor {
             CapabilityMessage::Cancel { module_id, job } => {
                 return self.capability_op(&module_id, Operation::Cancel { job });
             }
-            CapabilityMessage::Revoke { module_id, grant } => {
-                return self.capability_op(&module_id, Operation::Revoke { grant });
-            }
-            CapabilityMessage::TaskProfile {
-                module_id,
-                task,
-                profile,
-            } => {
-                self.capabilities
-                    .module_mut(&module_id)
-                    .task_profiles
-                    .insert(task, profile);
+            CapabilityMessage::RevokeAll(module_id) => {
+                return self.capability_op(&module_id, Operation::RevokeAll);
             }
             CapabilityMessage::RunTask { module_id, task } => {
                 return match self.task_operation(&module_id, &task) {
@@ -873,7 +632,7 @@ impl Editor {
                     },
                 );
             }
-            CapabilityMessage::Answered(answer) => return self.capability_answered(*answer),
+            CapabilityMessage::Answered(answer) => self.capability_answered(*answer),
             CapabilityMessage::Poll => {
                 if self.capabilities.polling {
                     return Task::none();
@@ -909,11 +668,9 @@ impl Editor {
             (true, None) => return Err("No photograph is open".into()),
             (false, _) => None,
         };
-        let empty = ModuleCapabilities::default();
-        let state = self.capabilities.modules.get(module_id).unwrap_or(&empty);
-        let profile = task_profile(state, task, declared.profile);
+        let profile = task_profile(self.capabilities.module(module_id), declared.profile);
         if declared.profile && profile.is_none() {
-            return Err("Add a profile in Settings first".into());
+            return Err("Create a profile with module.profile.create first".into());
         }
         Ok(Operation::RunTask {
             task: task.to_owned(),
@@ -936,9 +693,9 @@ impl Editor {
         let asset = self.state.as_ref().map(|state| &state.asset.id);
         let artifact = self
             .capabilities
-            .modules
-            .get(module_id)
-            .and_then(|state| state.tasks.get(task))
+            .module(module_id)
+            .tasks
+            .get(task)
             .filter(|run| run.asset.is_none() || run.asset.as_ref() == asset)
             .and_then(|run| match &run.phase {
                 TaskPhase::Succeeded { artifacts, .. } => artifacts.first().cloned(),
@@ -953,7 +710,7 @@ impl Editor {
         ))
     }
 
-    fn capability_answered(&mut self, answer: Answer) -> Task<Message> {
+    fn capability_answered(&mut self, answer: Answer) {
         let Answer {
             module_id,
             op,
@@ -961,7 +718,6 @@ impl Editor {
             outcome,
             settings,
             status,
-            permissions,
             job,
             sent,
         } = answer;
@@ -974,7 +730,6 @@ impl Editor {
                 "outcome": match &outcome {
                     Outcome::Done(_) => json!("done"),
                     Outcome::Consent { consent, .. } => json!({"consent-required": consent.capability}),
-                    Outcome::NotReady { requirements, .. } => json!({"not-ready": requirements}),
                     Outcome::Conflict(message) => json!({"conflict": message}),
                     Outcome::Failed(error) => json!({"failed": {"code": error.code, "message": error.message}}),
                 },
@@ -988,24 +743,13 @@ impl Editor {
             state.settings = Some(settings);
         }
         match status {
-            Some(Ok(status)) => {
+            Ok(status) => {
                 for record in &status.jobs {
                     state.track(record.clone(), false);
                 }
                 state.status = Some(status);
-                if matches!(op, Operation::Load) {
-                    state.load_error = None;
-                }
             }
-            Some(Err(error)) if matches!(op, Operation::Load) => state.load_error = Some(error),
-            Some(Err(error)) => state.message = Some(error),
-            None => {}
-        }
-        // A list read for a list closed since is dropped.
-        match permissions {
-            Some(Ok(list)) if state.permissions_open => state.permission_list = Some(list),
-            Some(Err(error)) if state.permissions_open => state.message = Some(error),
-            _ => {}
+            Err(error) => state.message = Some(error),
         }
         // A declined consent ends the run it was asked for.
         if let Some((false, declined)) = &consent
@@ -1017,83 +761,56 @@ impl Editor {
                 message: format!("{} was not allowed", declined.capability),
             };
         }
-        let field = op.field();
+        let run = match &op {
+            Operation::RunTask { task, .. } => state.tasks.get_mut(task),
+            _ => None,
+        };
         match outcome {
-            Outcome::Done(_) => {
+            Outcome::Done(answer) => {
                 state.message = None;
-                if matches!(op, Operation::Install { .. } | Operation::RunTask { .. }) {
-                    state.requirements.clear();
-                }
-                if let Some(key) = &field {
-                    state.errors.remove(key);
-                    state.conflicts.remove(key);
-                    state.edits.remove(key);
-                    if state.secret.as_ref().is_some_and(|(open, _)| open == key) {
-                        state.secret = None;
-                    }
-                }
-                if matches!(op, Operation::CreateProfile { .. }) {
-                    state.profile_label.clear();
+                if let Operation::Set { field, .. } = &op {
+                    state.edits.remove(field);
                 }
                 if let Some(record) = &job {
-                    state.track(record.clone(), true);
-                    if let Operation::RunTask { task, .. } = &op
-                        && let Some(run) = state.tasks.get_mut(task)
-                    {
+                    if let Some(run) = run {
                         run.phase = TaskPhase::Job(record.job_id.as_str().to_owned());
                     }
+                    state.track(record.clone(), true);
+                }
+                if op == Operation::RevokeAll {
+                    self.status = format!(
+                        "Revoked {} permission(s) of {module_id}",
+                        answer["revoked"].as_u64().unwrap_or(0)
+                    );
                 }
             }
             Outcome::Consent { consent, retry } => {
-                if let Operation::RunTask { task, .. } = &op
-                    && let Some(run) = state.tasks.get_mut(task)
-                {
+                if let Some(run) = run {
                     run.phase = TaskPhase::Consent;
                 }
-                // The notice belongs to one module, and opening it shows in that module's section.
-                let previous = self.capabilities.consent.replace(OpenConsent {
+                self.capabilities.consent = Some(OpenConsent {
                     consent: *consent,
                     retry: Some(*retry),
                 });
-                if let Some(previous) = previous {
-                    self.capabilities.module_mut(&previous.consent.module_id);
-                }
-            }
-            Outcome::NotReady {
-                requirements,
-                message,
-            } => {
-                state.requirements = requirements;
-                state.message = Some(format!("Not ready: {message}"));
-                if let Operation::RunTask { task, .. } = &op
-                    && let Some(run) = state.tasks.get_mut(task)
-                {
-                    run.phase = TaskPhase::NotReady;
-                }
             }
             Outcome::Conflict(message) => {
-                if let Some(key) = field {
-                    state.errors.remove(&key);
-                    state.edits.remove(&key);
-                    state.conflicts.insert(key);
+                // The settings were read again: the form shows the other client's values, and the
+                // one status line says why the typed value was not written.
+                if let Operation::Set { field, .. } = &op {
+                    state.edits.remove(field);
                 }
-                self.status = format!("Changed elsewhere: {message}");
+                let line = format!("Changed elsewhere, so the settings were read again: {message}");
+                state.message = Some(line.clone());
+                self.status = line;
             }
             Outcome::Failed(error) => {
-                match field {
-                    Some(key) => {
-                        state.errors.insert(key, error.message.clone());
-                    }
-                    None => state.message = Some(error.to_string()),
-                }
-                if let Operation::RunTask { task, .. } = &op
-                    && let Some(run) = state.tasks.get_mut(task)
-                {
+                if let Some(run) = run {
                     run.phase = TaskPhase::Failed {
                         code: error.code.clone(),
                         message: error.message.clone(),
                     };
                 }
+                state.message = Some(error.to_string());
                 self.status = error.to_string();
             }
         }
@@ -1102,7 +819,6 @@ impl Editor {
         if let Some(record) = job.filter(|record| record.status.is_finished()) {
             self.job_finished(&module_id, &record);
         }
-        Task::none()
     }
 
     /// A tracked job reached a terminal status: a task's run takes its result or its error.
@@ -1154,9 +870,9 @@ impl Editor {
                         .track(record.clone(), false);
                     if finished {
                         self.job_finished(&module, &record);
-                        if !refresh.contains(&module) {
-                            refresh.push(module);
-                        }
+                    }
+                    if finished && !refresh.contains(&module) {
+                        refresh.push(module);
                     }
                 }
                 Err(error) => {
@@ -1177,6 +893,8 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    // ---- evidence -------------------------------------------------------------------------------
+
     /// Capture the running capability step's frame once what it waits for has happened: its round
     /// trips have answered and its module's jobs have finished or, for `"wait": false`, are
     /// running and have reported how far they have come, so the frame shows real progress.
@@ -1184,19 +902,19 @@ impl Editor {
         let Some((module, wait)) = self
             .evidence
             .as_ref()
+            .filter(|evidence| evidence.awaiting == Some(Settle::Capability))
             .and_then(|evidence| evidence.capability_wait.clone())
         else {
             return;
         };
-        let settled = self.capabilities.modules.get(&module).is_none_or(|state| {
-            state.pending == 0
-                && state.jobs.iter().all(|job| {
-                    job.status.is_finished()
-                        || (!wait
-                            && job.status == JobStatus::Running
-                            && job.progress.fraction.is_some())
-                })
-        });
+        let state = self.capabilities.module(&module);
+        let settled = state.pending == 0
+            && state.jobs.iter().all(|job| {
+                job.status.is_finished()
+                    || (!wait
+                        && job.status == JobStatus::Running
+                        && job.progress.fraction.is_some())
+            });
         if settled {
             if let Some(evidence) = &mut self.evidence {
                 evidence.capability_wait = None;
@@ -1212,183 +930,133 @@ impl Editor {
         }
     }
 
-    /// One scripted capability gesture, through exactly the messages the section, the task control
-    /// and the consent notice send. Its frame is captured once the round trips it started have
-    /// answered and, unless it said `"wait": false`, its module's jobs have finished.
+    /// The envelope an `api` step's settings write carries: the settings revision the desktop
+    /// holds for the module it names, as the block's own write would, so a stale one is a conflict.
+    pub(crate) fn settings_envelope(
+        &self,
+        method: &str,
+        params: &Map<String, Value>,
+    ) -> Result<Value, String> {
+        let module = params
+            .get("module_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{method} names no module whose settings revision is held"))?;
+        self.capabilities
+            .module(module)
+            .revision()
+            .map(|revision| json!(mutation(revision)))
+            .ok_or_else(|| format!("{module}'s settings have not been read yet"))
+    }
+
+    /// A profile an `api` step names by its label or its position in the module's settings read,
+    /// as the identity the host assigned it.
+    pub(crate) fn resolve_profile(
+        &self,
+        module: Option<&str>,
+        reference: &Reference,
+    ) -> Result<String, String> {
+        let module = module.ok_or("a profile named by label or position needs a module_id")?;
+        let profiles = self
+            .capabilities
+            .module(module)
+            .settings
+            .as_ref()
+            .map(|settings| settings.profiles.as_slice())
+            .ok_or_else(|| format!("{module}'s settings have not been read yet"))?;
+        let found: Vec<&str> = match reference {
+            Reference::Id(id) => return Ok(id.clone()),
+            Reference::Index(index) => profiles
+                .get(*index)
+                .map(|profile| profile.id.as_str())
+                .into_iter()
+                .collect(),
+            Reference::Name { name } => profiles
+                .iter()
+                .filter(|profile| &profile.label == name)
+                .map(|profile| profile.id.as_str())
+                .collect(),
+        };
+        match found.as_slice() {
+            [id] => Ok((*id).to_owned()),
+            [] => Err(format!("{module} has no such profile")),
+            many => Err(format!(
+                "{} profiles of {module} carry that label",
+                many.len()
+            )),
+        }
+    }
+
+    /// An `api` step that calls a capability method on a module reads that module again once the
+    /// method answers, as another client's change would be read, so its frame shows the block
+    /// the method left and the next step resolves against it.
+    pub(crate) fn capability_read_after(&mut self, method: &str, params: &Map<String, Value>) {
+        let module = params.get("module_id").and_then(Value::as_str);
+        if let (true, Some(module), Some(evidence)) =
+            (tasks::capability_event(method), module, &mut self.evidence)
+        {
+            // A job the method starts is captured once it reports progress, not once it ends.
+            evidence.capability_wait = Some((module.to_owned(), false));
+        }
+    }
+
+    /// The `api` step's capability method answered: read its module, and capture once that read
+    /// has answered. `None` when the step called no capability method.
+    pub(crate) fn capability_host_answered(&mut self) -> Option<Task<Message>> {
+        let (module, _) = self.evidence.as_ref()?.capability_wait.clone()?;
+        let task = self.capability_op(&module, Operation::Load);
+        self.await_step(Settle::Capability);
+        Some(task)
+    }
+
+    /// One scripted gesture on the task control or the consent notice, through exactly the
+    /// messages they send. Its frame is captured once the round trips it started have answered
+    /// and, unless it said `"wait": false`, its module's jobs have finished.
     pub(crate) fn capability_step(&mut self, step: CapabilityStep) -> Task<Message> {
         let module = step.module;
         if self.capability_module(&module).is_none() {
             return self.fail_step(format!("{module} declares no capabilities"));
         }
-        // A settings gesture is made on the settings sub-view and every other one on the status
-        // view, so each frame shows the control the step used.
-        let view = match &step.action {
-            CapabilityAction::Section(CapabilitySection::Status) => CapabilityView::Status,
-            CapabilityAction::Section(CapabilitySection::Settings) => CapabilityView::Settings,
-            CapabilityAction::Set { .. }
-            | CapabilityAction::Secret { .. }
-            | CapabilityAction::CreateProfile { .. }
-            | CapabilityAction::RemoveProfile(_) => CapabilityView::Settings,
-            _ => CapabilityView::Status,
-        };
-        let _ = self.capability_update(CapabilityMessage::Show {
-            module_id: module.clone(),
-            view,
-        });
-        // `settle` waits for the module's jobs; a sub-view waits only for a read in flight.
-        let settle = matches!(step.action, CapabilityAction::Settle);
-        let messages = match self.step_messages(&module, step.action) {
-            Ok(Some(messages)) => messages,
+        let message = match self.step_message(&module, step.action) {
+            Ok(Some(message)) => message,
             Ok(None) => {
-                self.arm_capability(&module, settle);
+                self.arm_capability(&module, true);
                 self.capability_settle();
                 return Task::none();
             }
             Err(reason) => return self.fail_step(reason),
         };
         // Apply is an edit: its frame is the committed render, as an `api` step's is.
-        if let [CapabilityMessage::Apply { .. }] = messages.as_slice() {
+        if let CapabilityMessage::Apply { .. } = message {
             self.begin_request();
-            let task = self.capability_update(messages.into_iter().next().expect("one message"));
+            let task = self.capability_update(message);
             if !self.busy {
                 return self.fail_step(format!("the result was not applied: {}", self.status));
             }
             return task;
         }
         self.arm_capability(&module, step.wait);
-        // The messages are one gesture — typing then Enter, say — so the step settles on what the
-        // whole gesture started, never between its messages.
-        let tasks: Vec<Task<Message>> = messages
-            .into_iter()
-            .map(|message| self.capability_message(message))
-            .collect();
+        let task = self.capability_message(message);
         // Nothing reached the owner: the step's frame is the refusal, with its reason.
-        let sent = self
-            .capabilities
-            .modules
-            .get(&module)
-            .is_some_and(|state| state.pending > 0);
-        if !sent {
+        if self.capabilities.module(&module).pending == 0 {
             if let Some(evidence) = &mut self.evidence {
                 evidence.capability_wait = None;
             }
             return self.fail_step(format!("the step sent nothing: {}", self.status));
         }
-        Task::batch(tasks)
+        task
     }
 
-    /// The messages one scripted gesture sends, `None` for a step that sends nothing, or why it
+    /// The message one scripted gesture sends, `None` for a step that sends nothing, or why it
     /// cannot be sent.
-    fn step_messages(
+    fn step_message(
         &mut self,
         module: &str,
         action: CapabilityAction,
-    ) -> Result<Option<Vec<CapabilityMessage>>, String> {
+    ) -> Result<Option<CapabilityMessage>, String> {
         let module_id = module.to_owned();
-        let profile = |editor: &Self, index: Option<usize>| -> Result<Option<String>, String> {
-            match index {
-                None => Ok(None),
-                Some(index) => editor
-                    .capabilities
-                    .modules
-                    .get(module)
-                    .and_then(|state| state.profile_at(index))
-                    .map(Some)
-                    .ok_or_else(|| format!("{module} has no profile {index}")),
-            }
-        };
-        let messages = match action {
-            CapabilityAction::Section(_) | CapabilityAction::Settle => return Ok(None),
-            CapabilityAction::Set {
-                field,
-                value,
-                profile: index,
-            } => {
-                let profile = profile(self, index)?;
-                match self
-                    .setting(module, profile.as_ref(), &field)
-                    .map(|declared| declared.parameter.kind)
-                {
-                    Some(
-                        ParameterKind::Number { .. }
-                        | ParameterKind::Integer { .. }
-                        | ParameterKind::String { .. }
-                        | ParameterKind::Endpoint { .. },
-                    ) => vec![
-                        CapabilityMessage::FieldText {
-                            module_id: module_id.clone(),
-                            profile: profile.clone(),
-                            field: field.clone(),
-                            text: match &value {
-                                Value::String(text) => text.clone(),
-                                other => other.to_string(),
-                            },
-                        },
-                        CapabilityMessage::FieldCommit {
-                            module_id,
-                            profile,
-                            field,
-                        },
-                    ],
-                    Some(ParameterKind::Boolean | ParameterKind::Enum { .. }) => {
-                        vec![CapabilityMessage::FieldValue {
-                            module_id,
-                            profile,
-                            field,
-                            value,
-                        }]
-                    }
-                    Some(_) => return Err(format!("{field} is set with a file or secret step")),
-                    None => return Err(format!("{module} declares no setting {field}")),
-                }
-            }
-            CapabilityAction::Secret {
-                field,
-                value,
-                profile: index,
-            } => {
-                let profile = profile(self, index)?;
-                vec![
-                    CapabilityMessage::SecretEdit {
-                        module_id: module_id.clone(),
-                        profile,
-                        field,
-                    },
-                    CapabilityMessage::SecretText {
-                        module_id: module_id.clone(),
-                        text: SecretText::new(value.expose().to_owned()),
-                    },
-                    CapabilityMessage::SecretCommit(module_id),
-                ]
-            }
-            CapabilityAction::CreateProfile { adapter, label } => vec![
-                CapabilityMessage::ProfileAdapter {
-                    module_id: module_id.clone(),
-                    adapter,
-                },
-                CapabilityMessage::ProfileLabel {
-                    module_id: module_id.clone(),
-                    label,
-                },
-                CapabilityMessage::ProfileCreate(module_id),
-            ],
-            CapabilityAction::RemoveProfile(index) => {
-                let profile = profile(self, Some(index))?.expect("an index names a profile");
-                vec![CapabilityMessage::ProfileRemove { module_id, profile }]
-            }
-            CapabilityAction::Install(resource) => {
-                vec![CapabilityMessage::Install {
-                    module_id,
-                    resource,
-                }]
-            }
-            CapabilityAction::Remove(resource) => {
-                vec![CapabilityMessage::Remove {
-                    module_id,
-                    resource,
-                }]
-            }
-            CapabilityAction::Task(task) => vec![CapabilityMessage::RunTask { module_id, task }],
+        Ok(Some(match action {
+            CapabilityAction::Settle => return Ok(None),
+            CapabilityAction::Task(task) => CapabilityMessage::RunTask { module_id, task },
             CapabilityAction::Consent(allow) => {
                 if self
                     .capabilities
@@ -1398,7 +1066,7 @@ impl Editor {
                 {
                     return Err(format!("no consent notice is open for {module}"));
                 }
-                vec![CapabilityMessage::Consent(allow)]
+                CapabilityMessage::Consent(allow)
             }
             CapabilityAction::Apply => {
                 let task = self
@@ -1407,39 +1075,8 @@ impl Editor {
                     .flat_map(|declared| declared.tasks.iter().map(|task| task.id.clone()))
                     .find(|task| self.apply_preset(module, task).is_ok())
                     .ok_or_else(|| format!("{module} has no task result to apply"))?;
-                vec![CapabilityMessage::Apply { module_id, task }]
+                CapabilityMessage::Apply { module_id, task }
             }
-            CapabilityAction::Cancel => {
-                let job = self
-                    .capabilities
-                    .modules
-                    .get(module)
-                    .and_then(ModuleCapabilities::newest_live)
-                    .map(|job| job.job_id.as_str().to_owned())
-                    .ok_or_else(|| format!("{module} has no live job to cancel"))?;
-                vec![CapabilityMessage::Cancel { module_id, job }]
-            }
-            CapabilityAction::Permissions => {
-                vec![CapabilityMessage::TogglePermissions(module_id)]
-            }
-            CapabilityAction::Revoke(index) => {
-                // Revoke is pressed on a row of the open list, as a person reaches it.
-                let state = self.capabilities.modules.get(module);
-                if state.is_none_or(|state| state.permission_list.is_none()) {
-                    return Err(format!("{module}'s permissions list is not open"));
-                }
-                let grant = state
-                    .and_then(|state| state.grants().get(index).map(|grant| (*grant).clone()))
-                    .ok_or_else(|| format!("{module} has no grant {index}"))?;
-                if !grant.is_live() {
-                    return Err(format!("grant {index} of {module} is already revoked"));
-                }
-                vec![CapabilityMessage::Revoke {
-                    module_id,
-                    grant: grant.grant_id,
-                }]
-            }
-        };
-        Ok(Some(messages))
+        }))
     }
 }

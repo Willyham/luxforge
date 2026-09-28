@@ -1397,8 +1397,7 @@ mod tests {
         let raw = (find("performance").unwrap().launches[0].plan)(&[PathBuf::from("/x/photo.NEF")]);
         put("performance-raw", "script.json", raw.kept());
         // `capabilities` plans with its run's own endpoint and sentinels: here, fixed ones.
-        let capabilities =
-            capabilities::plan("http://127.0.0.1:1/generate", "sentinel-KEY", "wrong-KEY");
+        let capabilities = capabilities::plan("http://127.0.0.1:1", "sentinel-KEY", "wrong-KEY");
         put("capabilities", "sent.json", capabilities.script());
         put("capabilities", "script.json", capabilities.kept());
     }

@@ -736,72 +736,52 @@ fn export_steps_round_trip_and_take_a_bare_file_name() {
 }
 
 #[test]
-fn capability_steps_round_trip_and_record_a_secret_as_redacted() {
+fn capability_steps_round_trip_and_an_api_step_is_kept_through_the_redactor() {
     let module = "luxforge.capabilities";
     let steps = round_trip(json!([
-        {"capability": {"module": module, "section": "settings"}},
-        {"capability": {"module": module, "set": {"field": "strength", "value": 0.8}}},
-        {"capability": {"module": module, "set": {"field": "endpoint", "value": "http://127.0.0.1:1/generate", "profile": 0}}},
-        {"capability": {"module": module, "secret": {"field": "api-key", "value": "script-sentinel", "profile": 0}}},
-        {"capability": {"module": module, "profile": {"create": {"adapter": "proof-echo", "label": "Local"}}}},
-        {"capability": {"module": module, "profile": {"remove": 0}}},
-        {"capability": {"module": module, "install": {"resource": "proof-palette"}}},
-        {"capability": {"module": module, "remove": {"resource": "proof-palette"}}},
         {"capability": {"module": module, "task": {"task": "generate"}}},
         {"capability": {"module": module, "consent": "allow", "wait": false}},
         {"capability": {"module": module, "consent": "deny"}},
         {"capability": {"module": module, "apply": true}},
-        {"capability": {"module": module, "cancel": true}},
-        {"capability": {"module": module, "revoke": 2}},
         {"capability": {"module": module, "settle": true}},
+        {"api": {"method": "module.settings.set-secret", "params": {"module_id": module, "setting": "api-key", "value": "script-sentinel"}}},
     ]));
-    let Step::Capability(secret) = &steps[3] else {
-        panic!("a capability step");
-    };
-    assert!(matches!(
-        &secret.action,
-        CapabilityAction::Secret { value, profile: Some(0), .. } if value.expose() == "script-sentinel"
-    ));
-    assert!(!format!("{:?}", steps[3]).contains("script-sentinel"));
-    assert!(!steps[3].kept().to_string().contains("script-sentinel"));
     assert_eq!(
-        steps[3].kept(),
-        json!({"capability": {"module": module, "secret": {"field": "api-key", "value": REDACTED, "profile": 0}}})
-    );
-    assert_eq!(
-        steps[9],
+        steps[1],
         CapabilityStep::new(module, CapabilityAction::Consent(true))
             .no_wait()
             .into()
     );
-    // Every other step records itself exactly as written.
-    for (index, step) in steps.iter().enumerate() {
-        if index != 3 {
-            assert_eq!(step.kept(), step.to_value());
+    // An `api` step's parameters are kept as the redactor leaves them, and every other step
+    // exactly as written.
+    let redact = |method: &str, params: &Value| {
+        let mut params = params.clone();
+        if method == "module.settings.set-secret" {
+            params["value"] = json!("<redacted>");
         }
+        params
+    };
+    assert_eq!(
+        steps[5].kept(redact),
+        json!({"api": {"method": "module.settings.set-secret", "params": {"module_id": module, "setting": "api-key", "value": "<redacted>"}}})
+    );
+    for step in &steps[..5] {
+        assert_eq!(step.kept(redact), step.to_value());
     }
 
     for (script, expected) in [
         (json!({"capability": {"module": module}}), "exactly one of"),
         (
-            json!({"capability": {"module": module, "apply": true, "cancel": true}}),
+            json!({"capability": {"module": module, "apply": true, "settle": true}}),
             "exactly one of",
         ),
         (
-            json!({"capability": {"section": "status"}}),
+            json!({"capability": {"consent": "allow"}}),
             "missing field `module`",
         ),
         (
-            json!({"capability": {"module": module, "section": "elsewhere"}}),
-            "unknown variant `elsewhere`",
-        ),
-        (
-            json!({"capability": {"module": module, "secret": {"field": "k", "value": ""}}}),
-            "needs a text value",
-        ),
-        (
-            json!({"capability": {"module": module, "profile": {"create": {"adapter": "a"}}}}),
-            "missing field `label`",
+            json!({"capability": {"module": module, "section": "settings"}}),
+            "unknown field `section`",
         ),
         (
             json!({"capability": {"module": module, "consent": "maybe"}}),
@@ -812,8 +792,8 @@ fn capability_steps_round_trip_and_record_a_secret_as_redacted() {
             "takes true",
         ),
         (
-            json!({"capability": {"module": module, "revoke": -1}}),
-            "expected usize",
+            json!({"capability": {"module": module, "task": {"task": " "}}}),
+            "capability task",
         ),
         (
             json!({"capability": {"module": module, "settle": true, "colour": 1}}),
@@ -822,13 +802,6 @@ fn capability_steps_round_trip_and_record_a_secret_as_redacted() {
     ] {
         refused(json!([script]), expected);
     }
-    // No refusal of a secret step echoes its value.
-    let error = parse(
-        &json!([{"capability": {"module": module, "secret": {"field": "", "value": "script-sentinel"}}}])
-            .to_string(),
-    )
-    .unwrap_err();
-    assert!(!error.contains("script-sentinel"), "{error}");
 }
 
 #[test]

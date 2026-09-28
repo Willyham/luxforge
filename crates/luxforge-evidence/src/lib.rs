@@ -31,9 +31,6 @@ pub const KEY_ESCAPE: &str = "Escape";
 /// press's own hold comes out of that too.
 pub const MAX_DOUBLE_CLICK_GAP_MS: u64 = 250;
 
-/// What a secret's value is kept and recorded as.
-pub const REDACTED: &str = "<redacted>";
-
 /// Parse an evidence script. Every step is checked before any runs, and an error names the step by
 /// its one-based position and its kind.
 pub fn parse(text: &str) -> Result<Vec<Step>, String> {
@@ -176,18 +173,17 @@ impl Step {
         serde_json::to_value(self).expect("an evidence step always serializes")
     }
 
-    /// The step as it is kept beside the evidence and recorded beside its frame: a secret's value
-    /// replaced by [`REDACTED`], everything else as written.
-    pub fn kept(&self) -> Value {
-        let mut step = self.clone();
-        if let Self::Capability(CapabilityStep {
-            action: CapabilityAction::Secret { value, .. },
-            ..
-        }) = &mut step
+    /// The step as it is kept beside the evidence and recorded beside its frame: an `api` step's
+    /// parameters passed through `redact`, the core's one rule for what a request may show (a
+    /// secret's value replaced), and every other step as written.
+    pub fn kept(&self, redact: impl Fn(&str, &Value) -> Value) -> Value {
+        let mut kept = self.to_value();
+        if let Self::Api { method, params } = self
+            && !params.is_empty()
         {
-            *value = Secret::new(REDACTED.into());
+            kept["api"]["params"] = redact(method, &Value::Object(params.clone()));
         }
-        step.to_value()
+        kept
     }
 
     /// The checks the types alone do not make: ranges, non-empty names, and the combinations a
@@ -1089,50 +1085,12 @@ impl PresetCreateStep {
     }
 }
 
-/// A secret a step types, such as a module's key. It is zeroed when dropped, never printed by
-/// `Debug`, and [`Step::kept`] writes it as [`REDACTED`].
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(zeroize::Zeroizing<String>);
-
-impl Secret {
-    pub fn new(text: String) -> Self {
-        Self(zeroize::Zeroizing::new(text))
-    }
-
-    /// The text, for the one request that stores it.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(REDACTED)
-    }
-}
-
-impl Serialize for Secret {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.expose())
-    }
-}
-
-impl<'de> Deserialize<'de> for Secret {
-    /// Read as any value first, so a secret of the wrong type is refused without the refusal
-    /// quoting it, as serde's own type errors would.
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Value::deserialize(deserializer)? {
-            Value::String(text) => Ok(Self::new(text)),
-            _ => Err(D::Error::custom("a secret is text")),
-        }
-    }
-}
-
-/// One capability gesture: which module, what, and whether its frame waits for the jobs it starts.
+/// One gesture on a module's task control or the consent notice: which module, what, and whether
+/// its frame waits for the jobs it starts. A module's settings, profiles, secrets, grants and
+/// resources are set through `api` steps, as any client sets them.
 ///
 /// On the wire the gesture is one key beside `module` and `wait`:
-/// `{"module": M, "consent": "allow", "wait": false}`. No refusal echoes a value, because a secret
-/// step's value must reach nothing but the one request that stores it.
+/// `{"module": M, "consent": "allow", "wait": false}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "CapabilityWire", into = "CapabilityWire")]
 pub struct CapabilityStep {
@@ -1142,50 +1100,17 @@ pub struct CapabilityStep {
     pub wait: bool,
 }
 
-/// What a capability step does, each through the messages its control sends. Profiles and grants
-/// are named by their position in the lists the section shows.
+/// What a capability step does, each through the message its control sends.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CapabilityAction {
-    /// Open the status or the settings sub-view.
-    Section(CapabilitySection),
-    Set {
-        field: String,
-        value: Value,
-        profile: Option<usize>,
-    },
-    /// Replace a secret through its masked input.
-    Secret {
-        field: String,
-        value: Secret,
-        profile: Option<usize>,
-    },
-    CreateProfile {
-        adapter: String,
-        label: String,
-    },
-    RemoveProfile(usize),
-    Install(String),
-    Remove(String),
+    /// Press the task control of this task.
     Task(String),
     /// Allow (`true`) or Don't allow on the open consent notice.
     Consent(bool),
     /// Apply the newest task result that declares an apply action.
     Apply,
-    /// Cancel the module's newest live job.
-    Cancel,
-    /// Open or close the permissions list, which reads its rows when it opens.
-    Permissions,
-    /// Revoke a grant by its index in the open permissions list.
-    Revoke(usize),
     /// Capture once every job the desktop tracks for the module has finished.
     Settle,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CapabilitySection {
-    Status,
-    Settings,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1195,53 +1120,13 @@ struct CapabilityWire {
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     wait: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    section: Option<CapabilitySection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    set: Option<SetWire<Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    secret: Option<SetWire<Secret>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    profile: Option<ProfileWire>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    install: Option<ResourceWire>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    remove: Option<ResourceWire>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     task: Option<TaskWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     consent: Option<Consent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     apply: Option<True>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cancel: Option<True>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    permissions: Option<True>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    revoke: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     settle: Option<True>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetWire<T> {
-    field: String,
-    value: T,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    profile: Option<usize>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", deny_unknown_fields)]
-enum ProfileWire {
-    Create { adapter: String, label: String },
-    Remove(usize),
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResourceWire {
-    resource: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1258,67 +1143,22 @@ enum Consent {
 }
 
 /// The gesture keys of a capability step, of which a step takes exactly one.
-const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, task, consent, apply, cancel, permissions, revoke or settle";
+const CAPABILITY_GESTURES: &str = "task, consent, apply or settle";
 
 impl TryFrom<CapabilityWire> for CapabilityStep {
     type Error = String;
 
     fn try_from(wire: CapabilityWire) -> Result<Self, String> {
-        let mut actions = Vec::new();
-        if let Some(section) = wire.section {
-            actions.push(CapabilityAction::Section(section));
-        }
-        if let Some(set) = wire.set {
-            actions.push(CapabilityAction::Set {
-                field: set.field,
-                value: set.value,
-                profile: set.profile,
-            });
-        }
-        if let Some(secret) = wire.secret {
-            actions.push(CapabilityAction::Secret {
-                field: secret.field,
-                value: secret.value,
-                profile: secret.profile,
-            });
-        }
-        match wire.profile {
-            Some(ProfileWire::Create { adapter, label }) => {
-                actions.push(CapabilityAction::CreateProfile { adapter, label });
-            }
-            Some(ProfileWire::Remove(index)) => {
-                actions.push(CapabilityAction::RemoveProfile(index))
-            }
-            None => {}
-        }
-        if let Some(install) = wire.install {
-            actions.push(CapabilityAction::Install(install.resource));
-        }
-        if let Some(remove) = wire.remove {
-            actions.push(CapabilityAction::Remove(remove.resource));
-        }
-        if let Some(task) = wire.task {
-            actions.push(CapabilityAction::Task(task.task));
-        }
-        if let Some(consent) = wire.consent {
-            actions.push(CapabilityAction::Consent(matches!(consent, Consent::Allow)));
-        }
-        if wire.apply.is_some() {
-            actions.push(CapabilityAction::Apply);
-        }
-        if wire.cancel.is_some() {
-            actions.push(CapabilityAction::Cancel);
-        }
-        if wire.permissions.is_some() {
-            actions.push(CapabilityAction::Permissions);
-        }
-        if let Some(index) = wire.revoke {
-            actions.push(CapabilityAction::Revoke(index));
-        }
-        if wire.settle.is_some() {
-            actions.push(CapabilityAction::Settle);
-        }
-        let (Some(action), 1) = (actions.pop(), actions.len() + 1) else {
+        let mut actions = [
+            wire.task.map(|task| CapabilityAction::Task(task.task)),
+            wire.consent
+                .map(|consent| CapabilityAction::Consent(matches!(consent, Consent::Allow))),
+            wire.apply.map(|_| CapabilityAction::Apply),
+            wire.settle.map(|_| CapabilityAction::Settle),
+        ]
+        .into_iter()
+        .flatten();
+        let (Some(action), None) = (actions.next(), actions.next()) else {
             return Err(format!(
                 "capability takes exactly one of {CAPABILITY_GESTURES}"
             ));
@@ -1336,60 +1176,17 @@ impl From<CapabilityStep> for CapabilityWire {
         let mut wire = Self {
             module: step.module,
             wait: step.wait,
-            section: None,
-            set: None,
-            secret: None,
-            profile: None,
-            install: None,
-            remove: None,
             task: None,
             consent: None,
             apply: None,
-            cancel: None,
-            permissions: None,
-            revoke: None,
             settle: None,
         };
         match step.action {
-            CapabilityAction::Section(section) => wire.section = Some(section),
-            CapabilityAction::Set {
-                field,
-                value,
-                profile,
-            } => {
-                wire.set = Some(SetWire {
-                    field,
-                    value,
-                    profile,
-                });
-            }
-            CapabilityAction::Secret {
-                field,
-                value,
-                profile,
-            } => {
-                wire.secret = Some(SetWire {
-                    field,
-                    value,
-                    profile,
-                });
-            }
-            CapabilityAction::CreateProfile { adapter, label } => {
-                wire.profile = Some(ProfileWire::Create { adapter, label });
-            }
-            CapabilityAction::RemoveProfile(index) => {
-                wire.profile = Some(ProfileWire::Remove(index));
-            }
-            CapabilityAction::Install(resource) => wire.install = Some(ResourceWire { resource }),
-            CapabilityAction::Remove(resource) => wire.remove = Some(ResourceWire { resource }),
             CapabilityAction::Task(task) => wire.task = Some(TaskWire { task }),
             CapabilityAction::Consent(allow) => {
                 wire.consent = Some(if allow { Consent::Allow } else { Consent::Deny });
             }
             CapabilityAction::Apply => wire.apply = Some(True),
-            CapabilityAction::Cancel => wire.cancel = Some(True),
-            CapabilityAction::Permissions => wire.permissions = Some(True),
-            CapabilityAction::Revoke(index) => wire.revoke = Some(index),
             CapabilityAction::Settle => wire.settle = Some(True),
         }
         wire
@@ -1400,21 +1197,6 @@ impl CapabilityStep {
     fn validate(&self) -> Result<(), String> {
         text(&self.module, "capability module")?;
         match &self.action {
-            CapabilityAction::Set { field, .. } => text(field, "capability set field"),
-            CapabilityAction::Secret { field, value, .. } => {
-                text(field, "capability secret field")?;
-                if value.expose().is_empty() {
-                    return Err("capability secret needs a text value".into());
-                }
-                Ok(())
-            }
-            CapabilityAction::CreateProfile { adapter, label } => {
-                text(adapter, "capability profile create adapter")?;
-                text(label, "capability profile create label")
-            }
-            CapabilityAction::Install(resource) | CapabilityAction::Remove(resource) => {
-                text(resource, "capability resource")
-            }
             CapabilityAction::Task(task) => text(task, "capability task"),
             _ => Ok(()),
         }
