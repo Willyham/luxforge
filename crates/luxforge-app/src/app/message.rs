@@ -453,11 +453,6 @@ pub(crate) enum CapabilityMessage {
         module_id: String,
         profile: String,
     },
-    /// Activate (`true`) or Deactivate.
-    Activate {
-        module_id: String,
-        on: bool,
-    },
     Install {
         module_id: String,
         resource: String,

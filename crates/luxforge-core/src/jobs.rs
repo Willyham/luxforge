@@ -16,9 +16,9 @@
 //!   `export` lane. Each lane is one thread, spawned on its first job, that blocks on its channel
 //!   while idle, runs one job at a time and posts the result into the catalog owner's own channel;
 //!   nothing polls. The table keeps each lane's waiting jobs, at most [`LANE_QUEUE`] of them, so a
-//!   queued job can be cancelled or superseded without touching the thread. A lane job belongs to
-//!   no client: any client may read or cancel it, a cancel stops it for everyone, and a client's
-//!   disconnect never touches it.
+//!   queued job can be cancelled without touching the thread. A lane job belongs to no client: any
+//!   client may read or cancel it, a cancel stops it for everyone, and a client's disconnect never
+//!   touches it.
 //!
 //! Progress travels from a worker to the owner through a [`JobControl`] the worker writes and the
 //! owner reads when a client asks.
@@ -27,10 +27,7 @@ use crate::{
     activity::{Activity, ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, Report},
     api::{Origin, SourceFlightKey},
-    capabilities::{
-        host::{ACTIVATE, DEACTIVATE},
-        resources::{INSTALL, REMOVE},
-    },
+    capabilities::resources::{INSTALL, REMOVE},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -106,8 +103,6 @@ pub enum JobKind {
     Collect,
     /// The exact histogram and clipping counts of one evaluated stack.
     Analysis,
-    Activate,
-    Deactivate,
     Install,
     Remove,
     Task,
@@ -143,9 +138,7 @@ impl JobKind {
         match self {
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect => Family::Source,
             Self::Analysis => Family::Analysis,
-            Self::Activate | Self::Deactivate | Self::Install | Self::Remove | Self::Task => {
-                Family::Capability
-            }
+            Self::Install | Self::Remove | Self::Task => Family::Capability,
             Self::Export => Family::Export,
         }
     }
@@ -154,7 +147,7 @@ impl JobKind {
     pub fn lane(self) -> Option<Lane> {
         match self {
             Self::Install | Self::Remove => Some(Lane::Transfer),
-            Self::Activate | Self::Deactivate | Self::Task => Some(Lane::Module),
+            Self::Task => Some(Lane::Module),
             Self::Export => Some(Lane::Export),
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect | Self::Analysis => {
                 None
@@ -164,8 +157,8 @@ impl JobKind {
 }
 
 /// The shared job lifecycle (`crate::JobStatus`): every kind reaches `queued`, `running`, `ready`,
-/// `failed` and `cancelled`; `superseded` is a pending analysis a newer request replaced, or a
-/// queued activation a deactivation replaced, before either ran.
+/// `failed` and `cancelled`; `superseded` is a pending analysis a newer request replaced before it
+/// ran.
 pub use crate::JobStatus;
 
 /// How far a job has come. The one progress model every activity publisher shares
@@ -435,17 +428,6 @@ pub(crate) enum Release {
     Stopped,
 }
 
-/// Whether a job counts against its lane's bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Admission {
-    /// Refused with `resource-limit` when [`LANE_QUEUE`] jobs already wait.
-    Bounded,
-    /// Always admitted. Only a deactivation is: it releases what a module holds, it is at most one
-    /// per module because a module with one pending already reads inactive, and refusing it would
-    /// keep memory held because a queue was busy.
-    Always,
-}
-
 /// A lane job the owner is about to queue. Its identity is chosen by the caller, so work that
 /// names its own job, such as an install's staging directory, can be built before it is queued.
 pub(crate) struct NewJob {
@@ -457,7 +439,6 @@ pub(crate) struct NewJob {
     pub origin: Option<Origin>,
     /// Grants the job runs under; revoking one cancels it.
     pub grants: Vec<String>,
-    pub admission: Admission,
     /// What the job publishes once its lane picks it up; its `job_id` is filled in then. `None`
     /// derives it from the capability job's kind, module and resource.
     pub activity: Option<ActivitySpec>,
@@ -571,8 +552,6 @@ pub(crate) enum Cancelled {
 /// module, so the panel's job row says which one is running without a dynamic label.
 fn capability_activity(record: &JobRecord) -> ActivitySpec {
     let (kind, label): (&'static str, &'static str) = match record.kind {
-        JobKind::Activate => (ACTIVATE, "Activating module"),
-        JobKind::Deactivate => (DEACTIVATE, "Deactivating module"),
         JobKind::Install => (INSTALL, "Installing resource"),
         JobKind::Remove => (REMOVE, "Removing resource"),
         JobKind::Task => ("module.task", "Running task"),
@@ -953,8 +932,8 @@ impl Jobs {
     }
 
     /// A queued job a newer request replaced before it ran: a pending analysis another request
-    /// displaced from the one slot, or a waiting activation a deactivation made pointless. A
-    /// running or finished job is left as it is and `None` is returned.
+    /// displaced from the one slot. A running or finished job is left as it is and `None` is
+    /// returned.
     pub(crate) fn supersede(&mut self, job_id: &JobId) -> Option<JobRecord> {
         let entry = self.entries.get_mut(job_id)?;
         if entry.record.status != JobStatus::Queued {
@@ -966,9 +945,6 @@ impl Jobs {
             interest.interested.clear();
         }
         let record = entry.read();
-        if let Some(lane) = entry.record.kind.lane() {
-            self.lanes[lane.index()].waiting.retain(|id| id != job_id);
-        }
         self.retire(job_id);
         Some(record)
     }
@@ -1043,20 +1019,7 @@ impl Jobs {
             .kind
             .lane()
             .ok_or_else(|| Error::internal("a lane job needs a lane kind"))?;
-        let state = &self.lanes[lane.index()];
-        // Deactivations are admitted beyond the bound, so they do not take a bounded place either.
-        if job.admission == Admission::Bounded
-            && state
-                .waiting
-                .iter()
-                .filter(|id| {
-                    self.entries
-                        .get(*id)
-                        .is_some_and(|entry| entry.record.kind != JobKind::Deactivate)
-                })
-                .count()
-                >= LANE_QUEUE
-        {
+        if self.lanes[lane.index()].waiting.len() >= LANE_QUEUE {
             return Err(Error::resource_limit(format!(
                 "the {} lane is full",
                 lane.name()
@@ -1351,16 +1314,15 @@ mod tests {
         )
     }
 
-    fn job(kind: JobKind, admission: Admission) -> NewJob {
+    fn job(kind: JobKind) -> NewJob {
         NewJob {
             job_id: JobId::new(),
             kind,
             module_id: Some("test.module".into()),
             resource_id: None,
             asset_id: None,
-            origin: Some(Origin::new("module.activate", "request")),
+            origin: Some(Origin::new("task.test", "request")),
             grants: vec!["grant-a".into()],
-            admission,
             activity: None,
         }
     }
@@ -1392,9 +1354,7 @@ mod tests {
         assert_eq!(jobs.lanes_started(), 0, "nothing is spawned before a job");
         let control = JobControl::new();
         let (work, open) = gated(&control);
-        let first = jobs
-            .submit(job(JobKind::Activate, Admission::Bounded), control, work)
-            .unwrap();
+        let first = jobs.submit(job(JobKind::Task), control, work).unwrap();
         assert_eq!(first.status, JobStatus::Running);
         assert_eq!(jobs.lanes_started(), 1, "only the module lane started");
         let mut waiting = Vec::new();
@@ -1404,36 +1364,20 @@ mod tests {
             let control = JobControl::new();
             let (work, gate) = gated(&control);
             gates.push(gate);
-            let record = jobs
-                .submit(job(JobKind::Activate, Admission::Bounded), control, work)
-                .unwrap();
+            let record = jobs.submit(job(JobKind::Task), control, work).unwrap();
             assert_eq!(record.status, JobStatus::Queued);
             waiting.push(record.job_id);
         }
         let control = JobControl::new();
         let (work, _refused) = gated(&control);
-        let error = jobs
-            .submit(job(JobKind::Activate, Admission::Bounded), control, work)
-            .unwrap_err();
+        let error = jobs.submit(job(JobKind::Task), control, work).unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert_eq!(error.detail, "the module lane is full");
         // The transfer lane is separate and still empty.
         let control = JobControl::new();
         let (work, open_transfer) = gated(&control);
-        let transfer = jobs
-            .submit(job(JobKind::Install, Admission::Bounded), control, work)
-            .unwrap();
+        let transfer = jobs.submit(job(JobKind::Install), control, work).unwrap();
         assert_eq!(transfer.status, JobStatus::Running);
-        // A deactivation is admitted beyond the bound.
-        let control = JobControl::new();
-        let deactivate = jobs
-            .submit(
-                job(JobKind::Deactivate, Admission::Always),
-                control,
-                Box::new(|| Ok(json!({}))),
-            )
-            .unwrap();
-        assert_eq!(deactivate.status, JobStatus::Queued);
         // Cancelling a waiting job removes it; the lane has room again.
         let Some(Cancelled::Removed(record)) = jobs.cancel(&waiting[0], "cancelled by test") else {
             panic!("a waiting job is removed");
@@ -1451,12 +1395,6 @@ mod tests {
             JobStatus::Running,
             "the next waiting job started"
         );
-        // Superseding works only while a job waits.
-        assert!(jobs.supersede(&waiting[1]).is_none());
-        assert_eq!(
-            jobs.supersede(&waiting[2]).unwrap().status,
-            JobStatus::Superseded
-        );
         open_transfer.send(()).unwrap();
         let (id, result) = receive(&completions);
         assert_eq!(id, transfer.job_id);
@@ -1473,11 +1411,7 @@ mod tests {
         let control = JobControl::new();
         let (work, _gate) = gated(&control);
         let running = jobs
-            .submit(
-                job(JobKind::Install, Admission::Bounded),
-                control.clone(),
-                work,
-            )
+            .submit(job(JobKind::Install), control.clone(), work)
             .unwrap();
         control.set_progress(Some(1.5), "halfway");
         let read = jobs.read(&running.job_id).unwrap();
@@ -1510,11 +1444,7 @@ mod tests {
         let control = JobControl::new();
         let (work, open) = gated(&control);
         let running = jobs
-            .submit(
-                job(JobKind::Install, Admission::Bounded),
-                control.clone(),
-                work,
-            )
+            .submit(job(JobKind::Install), control.clone(), work)
             .unwrap();
         let snapshot = jobs.board().snapshot();
         assert_eq!(
@@ -1576,7 +1506,6 @@ mod tests {
                     asset_id: Some(asset.clone()),
                     origin: Some(Origin::new("export.jpeg", "request")),
                     grants: Vec::new(),
-                    admission: Admission::Bounded,
                     activity: Some(ActivitySpec {
                         kind: "export",
                         label: "Exporting JPEG",
@@ -1617,7 +1546,7 @@ mod tests {
         let (mut jobs, completions) = jobs();
         let panicking = jobs
             .submit(
-                job(JobKind::Activate, Admission::Bounded),
+                job(JobKind::Task),
                 JobControl::new(),
                 Box::new(|| panic!("module bug")),
             )
@@ -1629,7 +1558,7 @@ mod tests {
         assert_eq!(finished.record.error.unwrap().code, "internal");
         for index in 0..FINISHED_RECORDS + 3 {
             jobs.submit(
-                job(JobKind::Activate, Admission::Bounded),
+                job(JobKind::Task),
                 JobControl::new(),
                 Box::new(move || Ok(json!({"index": index}))),
             )
@@ -1794,7 +1723,7 @@ mod tests {
             .submit(
                 NewJob {
                     module_id: None,
-                    ..job(JobKind::Export, Admission::Bounded)
+                    ..job(JobKind::Export)
                 },
                 control.clone(),
                 work,
@@ -1862,7 +1791,7 @@ mod tests {
         assert!(jobs.read(&live).is_some(), "a live job is never forgotten");
         // Lane jobs are families of their own, untouched by the analyses above.
         jobs.submit(
-            job(JobKind::Activate, Admission::Bounded),
+            job(JobKind::Task),
             JobControl::new(),
             Box::new(|| Ok(json!({}))),
         )

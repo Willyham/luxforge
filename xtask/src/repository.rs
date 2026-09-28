@@ -731,9 +731,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     },
     // Tests that do not depend on host load: a test orders its steps by a gate or a channel and
     // waits through the one hang-bounded wait, all in `luxforge-testbase`, never by a sleep or a
-    // spin of its own. The two production homes each keep their one sleep: the widget crate's GPU
-    // retirement worker, and the proof module's configured activation delay; each may hold it on
-    // one line only, so the tests beside them are held to the rule too.
+    // spin of its own. The one production home keeps its one sleep: the widget crate's GPU
+    // retirement worker, which may hold it on one line only, so the tests beside it are held to the
+    // rule too.
     SourceRule {
         name: "test-waits",
         tokens: &["sleep(", "yield_now"],
@@ -742,7 +742,6 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             "crates/luxforge-ui/src/photo_surface.rs",
-            "crates/luxforge-core/src/modules/capabilities_proof.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -3626,7 +3625,7 @@ mod tests {
         let rules = &["test-waits", "test-gates"];
         let surface = "crates/luxforge-ui/src/photo_surface.rs";
         let worker = "fn worker() {\n    std::thread::sleep(STEP);\n}\n";
-        // The shared crate's one wait and its gate, each production home's one sleep, the core's
+        // The shared crate's one wait and its gate, the production home's one sleep, the core's
         // production blocking points, and tests that wait through the shared crate may.
         write_all(
             root,
@@ -3641,10 +3640,6 @@ mod tests {
                 ),
                 (surface, worker),
                 (
-                    "crates/luxforge-core/src/modules/capabilities_proof.rs",
-                    "            thread::sleep(rest);\n",
-                ),
-                (
                     "crates/luxforge-core/src/latest.rs",
                     "    changed: Condvar,\n",
                 ),
@@ -3654,12 +3649,17 @@ mod tests {
                 ),
             ],
         );
-        assert_eq!(read(root, rules).unwrap(), (6, 0));
-        // A test's own sleep, spin or gate anywhere else, test code and comments included.
+        assert_eq!(read(root, rules).unwrap(), (5, 0));
+        // A test's own sleep, spin or gate anywhere else, test code and comments included, and a
+        // sleep in the proof module, which has no delay of its own to wait out.
         refuses_each(
             root,
             "test-waits",
             &[
+                (
+                    "crates/luxforge-core/src/modules/capabilities_proof.rs",
+                    "            thread::sleep(rest);\n",
+                ),
                 (
                     "crates/luxforge-core/src/api/owner/export_tests.rs",
                     "            std::thread::sleep(Duration::from_millis(1));\n",
@@ -3690,8 +3690,8 @@ mod tests {
             ],
             "luxforge_testbase::Gate",
         );
-        // A production home holds its one sleep only: a second, in the tests beside it, is a
-        // test's own wait, while the next home's one sleep is its own.
+        // The production home holds its one sleep only: a second, in the tests beside it, is a
+        // test's own wait.
         write_all(
             root,
             &[(
@@ -3705,7 +3705,7 @@ mod tests {
             "{error}"
         );
         write_all(root, &[(surface, worker)]);
-        assert_eq!(read(root, rules).unwrap(), (6, 0));
+        assert_eq!(read(root, rules).unwrap(), (5, 0));
     }
 
     #[test]

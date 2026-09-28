@@ -15,7 +15,7 @@ use crate::{
         encode::encode_jpeg,
         publish::{self, Destination},
     },
-    jobs::{Admission, JobControl, JobKind, NewJob, Work},
+    jobs::{JobControl, JobKind, NewJob, Work},
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
@@ -117,7 +117,6 @@ pub(in crate::api) fn jpeg(
             asset_id: Some(identity.asset_id.clone()),
             origin: Some(call.origin.clone()),
             grants: Vec::new(),
-            admission: Admission::Bounded,
             activity: Some(ActivitySpec {
                 kind: "export",
                 label: "Exporting JPEG",

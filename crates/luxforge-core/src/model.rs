@@ -88,8 +88,7 @@ identifier!(ComponentId, "component-");
 ///   second request for the same work joins the job already in flight rather than displacing it.
 /// - **Analysis jobs**: all six. The worker runs one active job with one replaceable pending job;
 ///   a fresh request beyond those two displaces the pending one, which reads `superseded`.
-/// - **Capability jobs**: all six. A queued activation a deactivation replaces reads `superseded`;
-///   nothing else does.
+/// - **Capability jobs**: every value but `superseded`: a capability lane never replaces a job.
 /// - **Export jobs**: every value but `superseded`: the export lane never replaces a job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -809,8 +808,8 @@ impl Mutation {
 }
 
 /// The mutation envelope of a method that changes nothing with a revision: the preset library,
-/// versions, the catalog's import and artifact collection, and module permissions, activation,
-/// resources and capability jobs. It is [`Mutation`] without `expected_revision`, and a retry of the
+/// versions, the catalog's import and artifact collection, and module permissions, resources and
+/// capability jobs. It is [`Mutation`] without `expected_revision`, and a retry of the
 /// same `request_id` returns the first answer exactly as it does for an edit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

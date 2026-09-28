@@ -24,7 +24,7 @@ pub enum ErrorKind {
     ConsentRequired,
     /// The client lacks the authority the method needs, such as granting a permission.
     Forbidden,
-    /// A declared requirement is not met yet: a setting, a resource, an activation or the secure
+    /// A declared requirement is not met yet: a setting, a resource, a profile or the secure
     /// store. The error's data lists what is missing; nothing was queued.
     NotReady,
     Protocol,

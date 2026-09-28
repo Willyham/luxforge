@@ -40,8 +40,6 @@ Publishers today:
 | `source.develop` | Developing RAW | Source worker, `SourceTaskKind::Develop` | File name | none |
 | `preview.render` | Rendering preview | The preview queue's job thread, from its start to the end of its exact phase, before the exact result is sent | none | `proxy` (when a proxy plan exists), then `exact` |
 | `analysis.histogram` | Measuring histogram | The owner's analysis job thread, until before its result is posted | none | none |
-| `module.activate` | Activating module | The capability worker's module lane, from the moment it dispatches the job to the moment its result is in | Module ID | none |
-| `module.deactivate` | Deactivating module | The capability worker's module lane | Module ID | none |
 | `module.resource.install` | Installing resource | The capability worker's transfer lane | `<module ID>/<resource ID>` | none |
 | `module.resource.remove` | Removing resource | The capability worker's transfer lane | `<module ID>/<resource ID>` | none |
 | `module.task` | Running task | The capability worker's module lane | Module ID | none |

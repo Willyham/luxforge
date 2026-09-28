@@ -1,15 +1,14 @@
 //! Worker tasks, the generated `task.<id>` methods. Before anything is queued the owner checks the
-//! module, the parameters, the asset and profile, the activation, every requirement and a live
-//! grant for each capability the task uses, and binds the data the task may send: for
-//! `sample-grid-8`, the asset's current entry with its verified source and artifacts, compiled once
-//! in `O(layers)`. The task then runs on the module lane under those grants, so revoking one cancels
-//! it; its 64 point samples are taken there, from what was bound, the first time it sends. When it
-//! succeeds the owner records what it published before the job reads succeeded; a failed or
-//! cancelled task commits nothing. See
+//! module, the parameters, the asset and profile, every requirement (a ready profile and each used
+//! resource installed) and a live grant for each remote capability the task uses, and binds the
+//! data the task may send: for `sample-grid-8`, the asset's current entry with its verified source
+//! and artifacts, compiled once in `O(layers)`. The task then runs on the module lane under those
+//! grants, so revoking one cancels it; its 64 point samples are taken there, from what was bound,
+//! the first time it sends. When it succeeds the owner records what it published before the job
+//! reads succeeded; a failed or cancelled task commits nothing. See
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
-    ActivationState, CapabilityHost, Requirement, asset_exists, effective_values, profile_endpoint,
-    secret_fields,
+    CapabilityHost, Requirement, asset_exists, effective_values, profile_endpoint, secret_fields,
 };
 use crate::{
     AssetId, Availability, EditorService, Error, JobId, ModuleDescriptor, MutationRequest,
@@ -26,7 +25,7 @@ use crate::{
         settings::{FieldRead, ProfileRead, ProfileStatus},
         transport::Endpoint,
     },
-    jobs::{Admission, JobControl, JobKind, JobStatus, Jobs, NewJob, Work},
+    jobs::{JobControl, JobKind, JobStatus, Jobs, NewJob, Work},
     modules::check_declared_values,
 };
 use serde_json::{Value, json};
@@ -216,19 +215,6 @@ impl CapabilityHost {
                 state: profile_status(profile.status).into(),
             });
         }
-        if task.requires_active {
-            let state = self
-                .activations
-                .get(module_id)
-                .map_or(ActivationState::Inactive, |activation| activation.state);
-            if state != ActivationState::Active {
-                missing.push(Requirement {
-                    kind: "activation".into(),
-                    id: module_id.to_owned(),
-                    state: state.name().into(),
-                });
-            }
-        }
         let rows = self.resource_rows(jobs, descriptor);
         let mut resources = Vec::new();
         for capability in &capabilities {
@@ -414,7 +400,6 @@ impl CapabilityHost {
                 asset_id: None,
                 origin: Some(origin.clone()),
                 grants: grant_ids,
-                admission: Admission::Bounded,
                 activity: None,
             },
             run.control.clone(),

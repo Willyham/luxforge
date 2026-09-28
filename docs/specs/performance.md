@@ -1953,8 +1953,6 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | Registration, built-ins and the proof module | 0.031 / 0.035 ms | 200 |
 | `module.status` owner round trip | 0.013 / 0.023 ms | 30 |
 | `module.settings.read` owner round trip | 0.009 / 0.012 ms | 30 |
-| `module.activate` to active (the proof reads and checks its palette) | 0.27 / 0.31 ms | 30 |
-| Cancel a running activation to `cancelled` (the proof's slow loader checks every ~10 ms) | 10.2 / 15.1 ms | 10 |
 | A whole `task.generate-proof-tint`: request to `ready`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
 | … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
 | Cancel a task stalled inside its request to `cancelled` (the cancel shuts the request's socket down; measured 2026-09-27 on the [`ureq` transport](#transport-on-ureqs-agent), load 35 to 39) | 0.28 / 0.89 ms | 10 |

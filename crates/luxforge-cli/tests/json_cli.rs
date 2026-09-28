@@ -249,7 +249,7 @@ fn tinted_code(code: u64, gain: f64) -> f64 {
 }
 
 #[test]
-fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint() {
+fn a_proof_endpoint_client_installs_runs_the_task_and_applies_its_tint() {
     let key = format!("CLI-SENTINEL-{}", std::process::id());
     let endpoint = luxforge_testkit::ProofEndpoint::start(&key).unwrap();
     let data_root = fixtures::temp_path("json-cli-proof");
@@ -316,14 +316,6 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     let installed = client.call("module.resource.install", install("cli-install-2"));
     assert_eq!(
         client.settle("job.read", &installed["job_id"])["status"],
-        "ready"
-    );
-    let activating = client.call(
-        "module.activate",
-        json!({"module_id": module, "mutation": {"request_id": "cli-activate", "actor": "cli-test"}}),
-    );
-    assert_eq!(
-        client.settle("job.read", &activating["job_id"])["status"],
         "ready"
     );
     // A refused request changed nothing, so asking again after Allow keeps its request_id.

@@ -747,7 +747,6 @@ fn capability_steps_round_trip_and_record_a_secret_as_redacted() {
         {"capability": {"module": module, "profile": {"remove": 0}}},
         {"capability": {"module": module, "install": {"resource": "proof-palette"}}},
         {"capability": {"module": module, "remove": {"resource": "proof-palette"}}},
-        {"capability": {"module": module, "activate": false}},
         {"capability": {"module": module, "task": {"task": "generate"}}},
         {"capability": {"module": module, "consent": "allow", "wait": false}},
         {"capability": {"module": module, "consent": "deny"}},
@@ -770,7 +769,7 @@ fn capability_steps_round_trip_and_record_a_secret_as_redacted() {
         json!({"capability": {"module": module, "secret": {"field": "api-key", "value": REDACTED, "profile": 0}}})
     );
     assert_eq!(
-        steps[10],
+        steps[9],
         CapabilityStep::new(module, CapabilityAction::Consent(true))
             .no_wait()
             .into()

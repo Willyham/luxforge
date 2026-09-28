@@ -1166,7 +1166,6 @@ pub enum CapabilityAction {
     RemoveProfile(usize),
     Install(String),
     Remove(String),
-    Activate(bool),
     Task(String),
     /// Allow (`true`) or Don't allow on the open consent notice.
     Consent(bool),
@@ -1207,8 +1206,6 @@ struct CapabilityWire {
     install: Option<ResourceWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remove: Option<ResourceWire>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    activate: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     task: Option<TaskWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1261,7 +1258,7 @@ enum Consent {
 }
 
 /// The gesture keys of a capability step, of which a step takes exactly one.
-const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, activate, task, consent, apply, cancel, permissions, revoke or settle";
+const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, task, consent, apply, cancel, permissions, revoke or settle";
 
 impl TryFrom<CapabilityWire> for CapabilityStep {
     type Error = String;
@@ -1299,9 +1296,6 @@ impl TryFrom<CapabilityWire> for CapabilityStep {
         }
         if let Some(remove) = wire.remove {
             actions.push(CapabilityAction::Remove(remove.resource));
-        }
-        if let Some(on) = wire.activate {
-            actions.push(CapabilityAction::Activate(on));
         }
         if let Some(task) = wire.task {
             actions.push(CapabilityAction::Task(task.task));
@@ -1348,7 +1342,6 @@ impl From<CapabilityStep> for CapabilityWire {
             profile: None,
             install: None,
             remove: None,
-            activate: None,
             task: None,
             consent: None,
             apply: None,
@@ -1389,7 +1382,6 @@ impl From<CapabilityStep> for CapabilityWire {
             }
             CapabilityAction::Install(resource) => wire.install = Some(ResourceWire { resource }),
             CapabilityAction::Remove(resource) => wire.remove = Some(ResourceWire { resource }),
-            CapabilityAction::Activate(on) => wire.activate = Some(on),
             CapabilityAction::Task(task) => wire.task = Some(TaskWire { task }),
             CapabilityAction::Consent(allow) => {
                 wire.consent = Some(if allow { Consent::Allow } else { Consent::Deny });

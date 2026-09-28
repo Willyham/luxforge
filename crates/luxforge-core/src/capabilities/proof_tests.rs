@@ -1,12 +1,12 @@
 //! The capability proof end to end through the catalog owner's JSON methods, exactly as a client
 //! drives it: discovery, settings and a profile, consent for the resource download, install,
-//! activation, consent for the per-asset remote send, the task with its sample grid, the published
+//! consent for the per-asset remote send, the task with its sample grid, the published
 //! artifact, its application and the render, against a [`ProofEndpoint`] on loopback, isolated
 //! directories and an in-memory secret store. Nothing here leaves the machine.
 use super::{
     data::SAMPLE_GRID_BYTES,
     grants::{DENY, GRANT, REVOKE},
-    host::{ACTIVATE, DEACTIVATE, HostConfig, STATUS},
+    host::{HostConfig, STATUS},
     resources::{INSTALL, REMOVE},
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, SET, SET_SECRET},
@@ -34,7 +34,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 const MODULE: &str = "luxforge.capabilities";
@@ -125,15 +125,10 @@ struct Fixture {
     endpoint: ProofEndpoint,
     key: String,
     secrets: Arc<MemorySecretStore>,
-    activation_delay: Duration,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        Self::with_activation_delay(name, Duration::ZERO)
-    }
-
-    fn with_activation_delay(name: &str, activation_delay: Duration) -> Self {
         let root = temp(name);
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
@@ -143,7 +138,6 @@ impl Fixture {
             key,
             root,
             secrets: Arc::new(MemorySecretStore::new()),
-            activation_delay,
         }
     }
 
@@ -154,10 +148,9 @@ impl Fixture {
     fn registry(&self) -> Arc<ModuleRegistry> {
         let mut registry = ModuleRegistry::builtin();
         registry
-            .register(Arc::new(
-                CapabilitiesProofModule::new(&self.endpoint.base_url())
-                    .with_activation_delay(self.activation_delay),
-            ))
+            .register(Arc::new(CapabilitiesProofModule::new(
+                &self.endpoint.base_url(),
+            )))
             .unwrap();
         registry.register(Publisher::shared()).unwrap();
         Arc::new(registry)
@@ -338,18 +331,6 @@ impl Owner {
         })
     }
 
-    /// Wait for a job to be running.
-    fn running(&self, job_id: &Value) {
-        wait_for(&format!("job {job_id} to run"), || {
-            let job = self.ok(JOB_READ, json!({"job_id": job_id}));
-            match job["status"].as_str() {
-                Some("running") => Some(()),
-                Some("queued") => None,
-                _ => panic!("the job ended before it was seen running: {job}"),
-            }
-        });
-    }
-
     /// Ask for the task, waiting through any preparation job its sampling asks for, as a client
     /// does. Returns the failure or the queued answer.
     fn task(&self, asset: &AssetId, profile: &str) -> Result<Value, ApiFailure> {
@@ -427,8 +408,8 @@ struct Ready {
     profile: String,
 }
 
-/// Settings, a profile with the endpoint and key, the palette installed under its consent, the
-/// module active, and the remote grant for the first photo.
+/// Settings, a profile with the endpoint and key, the palette installed under its consent, and the
+/// remote grant for the first photo.
 fn ready(fixture: &Fixture, owner: &Owner, assets: [AssetId; 2]) -> Ready {
     owner.set(None, json!({"strength": STRENGTH}));
     let created = owner.ok(
@@ -445,8 +426,6 @@ fn ready(fixture: &Fixture, owner: &Owner, assets: [AssetId; 2]) -> Ready {
     owner.grant(&owner.fail(INSTALL, install.clone()));
     let installed = owner.ok(INSTALL, install);
     assert_eq!(owner.finished(&installed["job_id"])["status"], "ready");
-    let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(owner.finished(&activating["job_id"])["status"], "ready");
     owner.grant(&owner.task(&assets[0], &profile).unwrap_err());
     Ready { assets, profile }
 }
@@ -569,13 +548,6 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     let fixture = Fixture::new("proof-journey");
     let assets = fixture.import();
     let owner = fixture.start();
-    // Nothing activates a module that lacks its resource.
-    let refused = owner.fail(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(refused.code, "not-ready");
-    assert_eq!(
-        refused.data.unwrap()["requirements"],
-        json!([{"kind": "resource", "id": "proof-palette", "state": "not-installed"}])
-    );
     owner.set(None, json!({"strength": STRENGTH}));
     let created = owner.ok(
         CREATE_PROFILE,
@@ -592,6 +564,13 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     });
     let keyed = owner.ok(SET_SECRET, key_request.clone());
     assert_eq!(keyed["settings"]["profiles"][0]["status"], "ready");
+    // The task reads its palette, so nothing runs it before the palette is installed.
+    let refused = owner.task(&assets[0], &profile).unwrap_err();
+    assert_eq!(refused.code, "not-ready");
+    assert_eq!(
+        refused.data.unwrap()["requirements"],
+        json!([{"kind": "resource", "id": "proof-palette", "state": "not-installed"}])
+    );
 
     // The download needs consent, which only the permission client can give.
     let install = json!({"module_id": MODULE, "resource_id": "proof-palette"});
@@ -621,12 +600,6 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     let installed = owner.ok(INSTALL, install);
     let job = owner.finished(&installed["job_id"]);
     assert_eq!(job["status"], "ready", "{job}");
-    let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(owner.finished(&activating["job_id"])["status"], "ready");
-    assert_eq!(
-        owner.ok(STATUS, json!({"module_id": MODULE}))["activation"]["state"],
-        "active"
-    );
 
     // The task asks for consent to send this photo's grid.
     let asset = &assets[0];
@@ -767,11 +740,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         }
     };
     assert_eq!(reopened["rgba"], sampled);
-    assert_eq!(
-        owner.ok(STATUS, json!({"module_id": MODULE}))["activation"]["state"],
-        "inactive",
-        "a reopen activates nothing"
-    );
+    owner.ok(STATUS, json!({"module_id": MODULE}));
     observed.extend(owner.stop());
 
     // The sentinel key reached the endpoint and no response, event, error, job record, status or
@@ -1073,8 +1042,8 @@ fn changing_the_endpoint_revokes_its_grant_and_asks_for_consent_again() {
 }
 
 #[test]
-fn a_running_task_is_cancelled_and_a_deactivated_module_refuses_the_task() {
-    let fixture = Fixture::with_activation_delay("proof-cancel", Duration::from_millis(50));
+fn a_running_task_is_cancelled_at_its_checkpoint() {
+    let fixture = Fixture::new("proof-cancel");
     let assets = fixture.import();
     let owner = fixture.start();
     let Ready { assets, profile } = ready(&fixture, &owner, assets);
@@ -1097,20 +1066,11 @@ fn a_running_task_is_cancelled_and_a_deactivated_module_refuses_the_task() {
     assert_eq!(job["error"]["message"], "the job was cancelled");
     generation.open();
     assert_eq!(owner.ok("artifact.status", json!({}))["bytes"], 0);
-    // Deactivated, the module no longer runs the task, and says why.
-    let deactivated = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-    owner.finished(&deactivated["job_id"]);
-    let refused = owner.task(&assets[0], &profile).unwrap_err();
-    assert_eq!(refused.code, "not-ready");
-    assert_eq!(
-        refused.data.unwrap()["requirements"],
-        json!([{"kind": "activation", "id": MODULE, "state": "inactive"}])
-    );
     owner.stop();
 }
 
 #[test]
-fn removing_the_resource_deactivates_the_module_and_the_accepted_tint_still_renders() {
+fn removing_the_resource_refuses_the_task_and_the_accepted_tint_still_renders() {
     let fixture = Fixture::new("proof-remove");
     let assets = fixture.import();
     let owner = fixture.start();
@@ -1127,12 +1087,14 @@ fn removing_the_resource_deactivates_the_module_and_the_accepted_tint_still_rend
     );
     assert_eq!(owner.finished(&removed["job_id"])["status"], "ready");
     let status = owner.ok(STATUS, json!({"module_id": MODULE}));
-    assert_eq!(status["activation"]["state"], "inactive");
-    assert_eq!(status["activation"]["reason"], "resource removed");
     assert_eq!(status["resources"][0]["state"], "not-installed");
     assert_eq!(owner.sample(asset, 10, 10)["rgba"], pixel);
     let refused = owner.task(asset, &profile).unwrap_err();
     assert_eq!(refused.code, "not-ready");
+    assert_eq!(
+        refused.data.unwrap()["requirements"],
+        json!([{"kind": "resource", "id": "proof-palette", "state": "not-installed"}])
+    );
     // Resetting returns the photo to neutral in place; a second reset changes nothing.
     let revision = owner.state(asset)["revision"].clone();
     let reset = owner.ok(
@@ -1153,27 +1115,6 @@ fn removing_the_resource_deactivates_the_module_and_the_accepted_tint_still_rend
         0,
         "a neutral tint is the source"
     );
-}
-
-#[test]
-fn a_running_activation_of_the_proof_module_is_cancelled_by_a_deactivation() {
-    let fixture = Fixture::with_activation_delay("proof-activation", Duration::from_secs(60));
-    let owner = fixture.start();
-    let install = json!({"module_id": MODULE, "resource_id": "proof-palette"});
-    owner.grant(&owner.fail(INSTALL, install.clone()));
-    let installed = owner.ok(INSTALL, install);
-    assert_eq!(owner.finished(&installed["job_id"])["status"], "ready");
-    let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    owner.running(&activating["job_id"]);
-    owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-    // The loader would take a minute; the job ends cancelled instead.
-    let job = owner.finished(&activating["job_id"]);
-    assert_eq!(job["status"], "cancelled");
-    assert_eq!(
-        owner.ok(STATUS, json!({"module_id": MODULE}))["activation"]["state"],
-        "inactive"
-    );
-    owner.stop();
 }
 
 /// The proof module's apply and reset plan against a stack exactly as the contract says: commit,
@@ -1249,11 +1190,10 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
 }
 
 /// The framework's own costs on this host: registration with and without the proof module, the
-/// owner's answer to the capability reads, activation, a whole task against the loopback endpoint,
-/// cancellation of a running activation and of a task stalled in its request, and the disk an
-/// installed resource takes. A job's end is seen by a wait that looks every millisecond, so the
-/// job measurements are accurate to about a millisecond. Run explicitly, in release, on a quiet
-/// machine:
+/// owner's answer to the capability reads, a whole task against the loopback endpoint, cancellation
+/// of a task stalled in its request, and the disk an installed resource takes. A job's end is seen
+/// by a wait that looks every millisecond, so the job measurements are accurate to about a
+/// millisecond. Run explicitly, in release, on a quiet machine:
 /// `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`.
 #[test]
 #[ignore = "measurement, run explicitly in release"]
@@ -1290,7 +1230,7 @@ fn capability_timing() {
         &mut with_proof,
     );
 
-    let fixture = Fixture::with_activation_delay("proof-timing", Duration::from_millis(1500));
+    let fixture = Fixture::new("proof-timing");
     let assets = fixture.import();
     let owner = fixture.start();
     let mut status = Vec::new();
@@ -1306,7 +1246,7 @@ fn capability_timing() {
     report("module.status round trip (nothing installed)", &mut status);
     report("module.settings.read round trip", &mut settings);
 
-    ready(&fixture, &owner, assets);
+    let Ready { assets, profile } = ready(&fixture, &owner, assets);
     let installed = fixture
         .files()
         .into_iter()
@@ -1322,58 +1262,9 @@ fn capability_timing() {
         fs::read_dir(&staging).map_or(0, |entries| entries.count())
     );
 
-    // Cancelling a running activation: the proof's slow loader checks for cancellation every
-    // few milliseconds, so this is the host's own latency plus at most one loader step.
-    let mut cancel_activation = Vec::new();
-    for _ in 0..10 {
-        let deactivating = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-        if let Some(job) = deactivating.get("job_id").filter(|job| !job.is_null()) {
-            owner.finished(job);
-        }
-        let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-        owner.running(&activating["job_id"]);
-        let started = Instant::now();
-        owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-        let job = owner.finished(&activating["job_id"]);
-        cancel_activation.push(started.elapsed().as_secs_f64() * 1000.0);
-        assert_eq!(job["status"], "cancelled", "{job}");
-    }
-    report(
-        "cancel a running activation to cancelled",
-        &mut cancel_activation,
-    );
-
-    // Activation of the proof module itself, without the slow loader: a fresh fixture whose
-    // loader reads and validates the installed palette.
-    drop(owner);
-    drop(fixture);
-    let fixture = Fixture::new("proof-timing-fast");
-    let assets = fixture.import();
-    let owner = fixture.start();
-    ready(&fixture, &owner, assets);
-    let mut activation = Vec::new();
-    for _ in 0..SAMPLES {
-        let deactivating = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
-        if let Some(job) = deactivating.get("job_id").filter(|job| !job.is_null()) {
-            owner.finished(job);
-        }
-        let started = Instant::now();
-        let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-        let job = owner.finished(&activating["job_id"]);
-        activation.push(started.elapsed().as_secs_f64() * 1000.0);
-        assert_eq!(job["status"], "ready", "{job}");
-    }
-    report("activate to active (proof palette load)", &mut activation);
-    drop(owner);
-    drop(fixture);
-
-    // A whole task and a cancelled one, on the first fixture's shape: the owner binds the stack,
-    // the module lane samples the 8 × 8 grid, posts to the loopback endpoint and publishes the
-    // artifact, and the owner records it.
-    let fixture = Fixture::new("proof-timing-task");
-    let assets = fixture.import();
-    let owner = fixture.start();
-    let Ready { assets, profile } = ready(&fixture, &owner, assets);
+    // A whole task and a cancelled one: the owner binds the stack, the module lane reads the
+    // palette, samples the 8 × 8 grid, posts to the loopback endpoint and publishes the artifact,
+    // and the owner records it.
     let mut task = Vec::new();
     for _ in 0..SAMPLES {
         let started = Instant::now();

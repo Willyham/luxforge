@@ -1,7 +1,7 @@
 //! The owner's request table: the first answer of every mutation whose method table entry declares
 //! that the owner answers its retries (`Retries::Owner`). That is every method with the `request`
 //! envelope, which changes nothing with a revision — the preset library, versions, the catalog's
-//! import and artifact collection, module permissions, activation, resources and capability jobs —
+//! import and artifact collection, module permissions, resources and capability jobs —
 //! a module's settings writes, whose revision the settings file holds without a request log, and
 //! `draft.commit`, whose first answer ends the draft its retry names, so the retry cannot reach the
 //! catalog's log for the asset that draft edited.

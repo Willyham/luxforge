@@ -98,7 +98,7 @@ pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
             CapabilityAction::Section(CapabilitySection::Status),
         ),
         // The download's consent, declined, then asked again and allowed: installing, then
-        // installed, then active.
+        // installed.
         gesture("install-asked", install()),
         gesture("denied", CapabilityAction::Consent(false)),
         gesture("install-asked-again", install()),
@@ -107,7 +107,6 @@ pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
             step(CapabilityAction::Consent(true)).no_wait(),
         ),
         gesture("installed", CapabilityAction::Settle),
-        gesture("activated", CapabilityAction::Activate(true)),
         // The photo-data consent, the running task and its result, and Apply.
         gesture("task-asked", CapabilityAction::Task(TASK.into())),
         capability("running", step(CapabilityAction::Consent(true)).no_wait()),
@@ -381,7 +380,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         consent(at("install-asked-again")?, "download-artifact")?["denied"] == true,
         "A second ask does not say it was declined before",
     )?;
-    // Installing, with progress, then installed, then active.
+    // Installing, with progress, then installed.
     let installing = &capability(at("installing")?)["resources"][0];
     ensure(
         installing["state"] == "installing"
@@ -402,13 +401,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ensure(
         capability(at("installed")?)["resources"][0]["state"] == "installed",
         "The palette was not installed",
-    )?;
-    ensure(
-        capability(at("activated")?)["activation"]["state"] == "active",
-        format!(
-            "The module is not active: {}",
-            capability(at("activated")?)["activation"]
-        ),
     )?;
     // The photo-data consent, the running task and its result.
     let task_frame = at("task-asked")?;

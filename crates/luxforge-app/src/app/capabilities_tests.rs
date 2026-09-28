@@ -212,7 +212,7 @@ impl Proof {
         });
     }
 
-    /// Expand the section, fill every setting a task needs and install and activate, allowing each
+    /// Expand the section, fill every setting a task needs and install its resource, allowing each
     /// consent the core asks for.
     fn ready(&mut self) -> String {
         let _ = self
@@ -248,12 +248,6 @@ impl Proof {
         });
         self.answer();
         self.send(CapabilityMessage::Consent(true));
-        self.answer();
-        self.finish_jobs();
-        self.send(CapabilityMessage::Activate {
-            module_id: MODULE.into(),
-            on: true,
-        });
         self.answer();
         self.finish_jobs();
         profile
@@ -302,10 +296,6 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
         .clone()
         .expect("a capability block");
     assert!(!model.loading && model.enabled);
-    assert_eq!(
-        model.activation.map(|row| row.text),
-        Some("Inactive".into())
-    );
     assert_eq!(model.resources[0].state, "Not installed");
     assert_eq!(model.resources[0].detail, "v1 · 20 B");
     assert_eq!(model.permissions.summary, "0 permissions");
@@ -554,23 +544,6 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
         proof.section().capability.clone().unwrap().resources[0].state,
         "Installed"
     );
-    proof.send(CapabilityMessage::Activate {
-        module_id: MODULE.into(),
-        on: true,
-    });
-    proof.answer();
-    proof.finish_jobs();
-    assert_eq!(
-        proof
-            .section()
-            .capability
-            .clone()
-            .unwrap()
-            .activation
-            .unwrap()
-            .text,
-        "Active"
-    );
     // The task sends the open asset and the only ready profile, asks for the photo-data consent
     // and, once allowed, runs to a result Apply can commit.
     assert_eq!(
@@ -771,7 +744,7 @@ fn a_task_result_belongs_to_its_asset_and_a_wrong_key_fails_the_job() {
 }
 
 #[test]
-fn cancel_and_deactivate_go_through_the_job_and_activation_methods() {
+fn a_cancel_goes_through_the_job_method() {
     let mut proof = Proof::start();
     proof.ready();
     proof.endpoint.generation().shut();
@@ -808,24 +781,6 @@ fn cancel_and_deactivate_go_through_the_job_and_activation_methods() {
         &proof.state().tasks[TASK].phase,
         TaskPhase::Failed { code, .. } if code == "cancelled"
     ));
-    proof.send(CapabilityMessage::Activate {
-        module_id: MODULE.into(),
-        on: false,
-    });
-    let sent = proof.answer();
-    assert_eq!(sent[0]["method"], "module.deactivate");
-    proof.finish_jobs();
-    assert_eq!(
-        proof
-            .section()
-            .capability
-            .clone()
-            .unwrap()
-            .activation
-            .unwrap()
-            .text,
-        "Inactive"
-    );
     proof.stop();
 }
 
@@ -841,7 +796,6 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
             {"capability": {"module": MODULE, "profile": {"remove": 0}}},
             {"capability": {"module": MODULE, "install": {"resource": "proof-palette"}}},
             {"capability": {"module": MODULE, "remove": {"resource": "proof-palette"}}},
-            {"capability": {"module": MODULE, "activate": false}},
             {"capability": {"module": MODULE, "task": {"task": TASK}}},
             {"capability": {"module": MODULE, "consent": "allow", "wait": false}},
             {"capability": {"module": MODULE, "apply": true}},
@@ -853,7 +807,7 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
         .to_string(),
     )
     .expect("a valid script");
-    assert_eq!(steps.len(), 16);
+    assert_eq!(steps.len(), 15);
     let Step::Capability(secret) = &steps[3] else {
         panic!("a capability step");
     };
@@ -876,7 +830,7 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
     .expect("a valid script");
     assert_eq!(record(&raw[0])["api"]["params"]["value"], "<redacted>");
     assert_eq!(
-        record(&steps[10]),
+        record(&steps[9]),
         json!({"capability": {"module": MODULE, "consent": "allow", "wait": false}})
     );
     for (script, expected) in [

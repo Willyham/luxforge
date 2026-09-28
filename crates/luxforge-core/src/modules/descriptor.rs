@@ -4,8 +4,7 @@ use crate::{
     Error, ErrorKind, SourceTag,
     capabilities::{
         descriptor::{
-            ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
-            TaskDescriptor,
+            CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor, TaskDescriptor,
         },
         transport::{EndpointClass, parse_endpoint},
     },
@@ -1354,9 +1353,6 @@ pub struct ModuleDescriptor {
     /// Pinned files the host may install for this module.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceDescriptor>,
-    /// What explicit activation requires; `None` is a module with nothing to activate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<ActivationDescriptor>,
     /// Worker tasks, each reached through the generated `task.<id>` method. A task identity is
     /// unique across the registry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1534,7 +1530,7 @@ impl ModuleDescriptor {
         for query in &self.queries {
             check_declared(declarer, query, "query", &mut queries)?;
         }
-        // Settings, capabilities, resources, activation and tasks refer to each other and to the
+        // Settings, capabilities, resources and tasks refer to each other and to the
         // actions above, so they are checked together once those are known to be sound.
         crate::capabilities::descriptor::validate(self)?;
         for control in &self.controls {

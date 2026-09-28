@@ -435,8 +435,8 @@ pub trait ToolModule: Send + Sync {
         payload: &Value,
         stage: Stage,
     ) -> Result<Processing, Error>;
-    /// The module's capability hooks, when it declares worker tasks, an activation, managed
-    /// resources or an effect evaluated with derived artifacts: such a module implements
+    /// The module's capability hooks, when it declares worker tasks, managed resources or an
+    /// effect evaluated with derived artifacts: such a module implements
     /// [`CapabilityModule`] and returns itself here, and [`ModuleRegistry::register`] refuses one
     /// whose descriptor needs the hooks when this is `None`. Every other module keeps the default.
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
