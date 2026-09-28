@@ -1865,6 +1865,7 @@ dependencies = [
  "luxforge-cli",
  "luxforge-core",
  "luxforge-evidence",
+ "luxforge-net",
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-ui",
@@ -1879,6 +1880,7 @@ name = "luxforge-cli"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-net",
  "luxforge-reference",
  "luxforge-testbase",
  "luxforge-testkit",
@@ -1902,14 +1904,9 @@ dependencies = [
  "rayon",
  "roxmltree",
  "rusqlite",
- "rustls",
- "rustls-platform-verifier",
- "security-framework",
  "serde",
  "serde_json",
  "sha2",
- "ureq",
- "ureq-proto",
  "url",
  "uuid",
  "winapi-util",
@@ -1934,6 +1931,21 @@ dependencies = [
  "mozjpeg-sys",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "luxforge-net"
+version = "0.0.0"
+dependencies = [
+ "luxforge-core",
+ "luxforge-testbase",
+ "luxforge-testkit",
+ "rustls",
+ "rustls-platform-verifier",
+ "security-framework",
+ "ureq",
+ "ureq-proto",
+ "url",
 ]
 
 [[package]]

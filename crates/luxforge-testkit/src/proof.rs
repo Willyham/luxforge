@@ -1,8 +1,10 @@
 //! [`ProofEndpoint`], the capability proof's fake provider: a developer test fixture, never part of
 //! the editor. Tests and the rendered smoke start one, point the proof module's resource and a
-//! profile at it, and read back what it received. It is a [`TestServer`] that keeps no copy of the
-//! requests, since they carry the key; the endpoint keeps its own record without the credential.
-use crate::server::{Options, Request, TestServer, respond};
+//! profile at it, and read back what it received. A started endpoint is a [`TestServer`] that keeps
+//! no copy of the requests, since they carry the key; the endpoint keeps its own record without the
+//! credential. The core's own tests, which link no network transport, answer an endpoint in
+//! process instead, through [`ProofEndpoint::answer`].
+use crate::server::{Options, TestServer, respond};
 use luxforge_core::{
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
     capabilities::data::{SAMPLE_GRID_BYTES, SAMPLE_GRID_SAMPLES},
@@ -12,7 +14,7 @@ use luxforge_testbase::Gate;
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    io::{self, Write},
+    io,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
@@ -81,12 +83,54 @@ impl Shared {
 /// next generation and serve a palette that does not match its pin.
 pub struct ProofEndpoint {
     shared: Arc<Shared>,
-    server: TestServer,
+    /// The loopback server, or `None` for an endpoint answered in process.
+    server: Option<TestServer>,
+}
+
+/// The origin an endpoint answered in process names. Nothing resolves it: only a test's in-memory
+/// transport, which hands each request to [`ProofEndpoint::answer`], reaches it.
+const IN_PROCESS_ORIGIN: &str = "https://proof.example";
+
+/// One answer of the endpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProofAnswer {
+    pub status: u16,
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
 }
 
 impl ProofEndpoint {
     /// Listen on a free loopback port and answer requests authorized with `api_key`.
     pub fn start(api_key: &str) -> io::Result<Self> {
+        let mut endpoint = Self::in_process(api_key);
+        let answering = endpoint.shared.clone();
+        endpoint.server = Some(TestServer::start(
+            Options {
+                unrecorded: true,
+                ..Options::default()
+            },
+            move |request, out| {
+                let answer = reply(
+                    &answering,
+                    &request.method,
+                    &request.path,
+                    &request.headers,
+                    &request.body,
+                );
+                respond(
+                    out,
+                    &status_line(answer.status),
+                    &format!("Content-Type: {}\r\n", answer.content_type),
+                    &answer.body,
+                );
+            },
+        )?);
+        Ok(endpoint)
+    }
+
+    /// An endpoint with no server, answering requests authorized with `api_key` only through
+    /// [`Self::answer`]. Its URLs name an origin nothing resolves.
+    pub fn in_process(api_key: &str) -> Self {
         let shared = Arc::new(Shared {
             api_key: api_key.to_owned(),
             state: Mutex::new(State {
@@ -99,25 +143,41 @@ impl ProofEndpoint {
             generation: Gate::new(),
             palette: Gate::new(),
         });
-        let answering = shared.clone();
-        let server = TestServer::start(
-            Options {
-                unrecorded: true,
-                ..Options::default()
-            },
-            move |request, out| answer(&answering, request, out),
-        )?;
-        Ok(Self { shared, server })
+        Self {
+            shared,
+            server: None,
+        }
     }
 
-    /// `http://127.0.0.1:<port>`: the base the proof module's resource URL is built on.
+    /// `http://127.0.0.1:<port>`, or the in-process origin: the base the proof module's resource
+    /// URL is built on.
     pub fn base_url(&self) -> String {
-        self.server.origin()
+        match &self.server {
+            Some(server) => server.origin(),
+            None => IN_PROCESS_ORIGIN.to_owned(),
+        }
     }
 
     /// The URL a profile's endpoint names.
     pub fn generate_url(&self) -> String {
-        self.server.url(PROOF_GENERATE_PATH)
+        format!("{}{PROOF_GENERATE_PATH}", self.base_url())
+    }
+
+    /// Answer one request exactly as the server does, on the caller's thread: record it, hold its
+    /// answer at its gate, and return the answer. `headers` are compared by lowercased name. For a
+    /// test's in-memory transport; a started endpoint's server calls it for every request.
+    pub fn answer(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> ProofAnswer {
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
+        reply(&self.shared, method, path, &headers, body)
     }
 
     /// The gate every answer to `POST /generate` passes once its request is recorded. A test shuts
@@ -176,7 +236,7 @@ impl Drop for ProofEndpoint {
 impl std::fmt::Debug for ProofEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProofEndpoint")
-            .field("server", &self.server)
+            .field("origin", &self.base_url())
             .finish_non_exhaustive()
     }
 }
@@ -235,15 +295,25 @@ fn status_line(status: u16) -> String {
     format!("{status} {reason}")
 }
 
-/// Answer one request.
-fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
-    let authorized =
-        request.header("authorization") == Some(format!("Bearer {}", shared.api_key).as_str());
+/// Answer one request, whose header names are lowercased.
+fn reply(
+    shared: &Shared,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> ProofAnswer {
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| value.as_str())
+    };
+    let authorized = header("authorization") == Some(format!("Bearer {}", shared.api_key).as_str());
     let mut record = ProofRequest {
-        method: request.method.clone(),
-        path: request.path.clone(),
-        headers: request
-            .headers
+        method: method.to_owned(),
+        path: path.to_owned(),
+        headers: headers
             .iter()
             .map(|(name, value)| {
                 let value = if name == "authorization" {
@@ -255,12 +325,12 @@ fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
             })
             .collect(),
         authorized,
-        body_bytes: request.body.len(),
+        body_bytes: body.len(),
         samples: None,
         status: 200,
         rgb: None,
     };
-    let (status, content_type, body) = match (request.method.as_str(), request.path.as_str()) {
+    let (status, content_type, answer) = match (method, path) {
         ("GET", PROOF_PALETTE_PATH) => {
             let palette = if shared.lock().wrong_palette {
                 palette_bytes([1.0, 1.0, 1.0]).to_vec()
@@ -270,7 +340,7 @@ fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
             (200, "application/octet-stream", palette)
         }
         ("POST", PROOF_GENERATE_PATH) => {
-            record.samples = samples(&request.body);
+            record.samples = samples(body);
             let failure = shared.lock().fail_next.take_if(|_| authorized);
             match (&record.samples, failure) {
                 _ if !authorized => (
@@ -329,12 +399,11 @@ fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
     if let Some((gate, delay)) = held {
         gate.pass_unless(|| delay.is_some_and(|delay| arrived.elapsed() >= delay));
     }
-    respond(
-        out,
-        &status_line(status),
-        &format!("Content-Type: {content_type}\r\n"),
-        &body,
-    );
+    ProofAnswer {
+        status,
+        content_type,
+        body: answer,
+    }
 }
 
 /// Hold every answer at `gate` for at most `delay`, or release every held one when it is zero.
@@ -357,11 +426,19 @@ fn hold(
 mod tests {
     use super::*;
     use luxforge_core::capabilities::data::sample_grid_body;
-    use std::{io::Read, net::TcpStream, thread};
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+        thread,
+    };
+
+    fn server(endpoint: &ProofEndpoint) -> &TestServer {
+        endpoint.server.as_ref().expect("a started endpoint")
+    }
 
     /// One raw exchange with the endpoint.
     fn exchange(endpoint: &ProofEndpoint, request: &[u8]) -> (u16, Vec<u8>) {
-        let mut stream = TcpStream::connect(endpoint.server.address()).unwrap();
+        let mut stream = TcpStream::connect(server(endpoint).address()).unwrap();
         stream.write_all(request).unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
@@ -444,14 +521,62 @@ mod tests {
         assert!(!recorded[3].authorized);
         assert!(!format!("{recorded:?}").contains("secret-key"));
         assert!(
-            endpoint.server.requests().is_empty(),
+            server(&endpoint).requests().is_empty(),
             "the server under the endpoint keeps no request, so no copy of the key"
         );
     }
 
+    /// An endpoint answered in process gives the same answers and keeps the same record, with
+    /// header names compared as the server reads them.
+    #[test]
+    fn an_endpoint_answered_in_process_answers_as_the_server_does() {
+        let endpoint = ProofEndpoint::in_process("secret-key");
+        assert_eq!(endpoint.base_url(), IN_PROCESS_ORIGIN);
+        assert_eq!(
+            endpoint.generate_url(),
+            format!("{IN_PROCESS_ORIGIN}/generate")
+        );
+        let palette = endpoint.answer("GET", PROOF_PALETTE_PATH, &[], b"");
+        assert_eq!(
+            palette,
+            ProofAnswer {
+                status: 200,
+                content_type: "application/octet-stream",
+                body: PROOF_PALETTE.to_vec(),
+            }
+        );
+        let grid: Vec<[u8; 3]> = (0..SAMPLE_GRID_SAMPLES)
+            .map(|index| [index as u8, 100, 255])
+            .collect();
+        let body = sample_grid_body(&grid).unwrap();
+        let headers = |key: &str| {
+            vec![
+                ("Authorization".to_owned(), format!("Bearer {key}")),
+                ("Content-Type".to_owned(), "application/json".to_owned()),
+            ]
+        };
+        let generated = endpoint.answer("POST", "/generate", &headers("secret-key"), &body);
+        assert_eq!(
+            (generated.status, generated.body.as_slice()),
+            (200, &br#"{"rgb":[199,217,255]}"#[..])
+        );
+        assert_eq!(
+            endpoint
+                .answer("POST", "/generate", &headers("wrong-key"), &body)
+                .status,
+            401
+        );
+        let recorded = endpoint.requests();
+        assert_eq!(recorded.len(), 3);
+        assert_eq!(recorded[1].header("authorization"), Some("<redacted>"));
+        assert_eq!(recorded[1].header("content-type"), Some("application/json"));
+        assert!(recorded[1].authorized && !recorded[2].authorized);
+        assert!(!format!("{recorded:?}").contains("secret-key"));
+    }
+
     /// Send `request` from a thread of its own, answering the whole response.
     fn sent(endpoint: &ProofEndpoint, request: Vec<u8>) -> thread::JoinHandle<Vec<u8>> {
-        let address = endpoint.server.address();
+        let address = server(endpoint).address();
         thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
             stream.write_all(&request).unwrap();

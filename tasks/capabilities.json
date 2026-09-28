@@ -257,14 +257,14 @@
         {
           "kind": "file",
           "label": "Transport resolution and connection",
-          "target": "crates/luxforge-core/src/capabilities/transport/net.rs",
+          "target": "crates/luxforge-net/src/connect.rs",
           "locator": "Resolve, Connect, connect",
           "relevance": "The existing policy resolution and connection logic a ureq adapter must preserve."
         },
         {
           "kind": "file",
           "label": "Transport address policy",
-          "target": "crates/luxforge-core/src/capabilities/transport/policy.rs",
+          "target": "crates/luxforge-net/src/address.rs",
           "locator": "EndpointClass, address_allowed",
           "relevance": "The address-class check every resolved address must still pass."
         },
@@ -338,13 +338,13 @@
         {
           "kind": "file",
           "label": "Transport exchange loop",
-          "target": "crates/luxforge-core/src/capabilities/transport/agent.rs",
+          "target": "crates/luxforge-net/src/agent.rs",
           "relevance": "The hand-written exchange loop this task deletes."
         },
         {
           "kind": "file",
           "label": "Transport address policy",
-          "target": "crates/luxforge-core/src/capabilities/transport/policy.rs",
+          "target": "crates/luxforge-net/src/address.rs",
           "relevance": "The address-class policy that stays unchanged underneath the new agent."
         },
         {
@@ -610,9 +610,9 @@
         {
           "kind": "file",
           "label": "Transport",
-          "target": "crates/luxforge-core/src/capabilities/transport/mod.rs",
-          "locator": "Transport, TransportConfig",
-          "relevance": "The rustls transport that moves, and the configuration `HostConfig` takes today in place of an injected transport."
+          "target": "crates/luxforge-net/src/transport.rs",
+          "locator": "HttpTransport, TransportConfig",
+          "relevance": "The rustls transport, moved out of the core behind its `Transport` trait, and the configuration it is built from."
         },
         {
           "kind": "file",

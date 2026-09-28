@@ -20,10 +20,10 @@ use crate::{
         descriptor::{
             AdapterAuth, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, DataClass,
         },
+        endpoint::Endpoint,
         grants::{GrantScope, RemoteScope},
         resources::ResourceState,
         settings::{FieldRead, ProfileRead, ProfileStatus},
-        transport::Endpoint,
     },
     jobs::{JobControl, JobKind, JobStatus, Jobs, NewJob, Work},
     modules::check_declared_values,

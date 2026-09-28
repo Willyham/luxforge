@@ -6,8 +6,9 @@ use iced::Task;
 use luxforge_cli::Paths;
 use luxforge_core::{
     ClientAuthority, ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
-    capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
+    capabilities::secrets::{MemorySecretStore, SecretStore},
 };
+use luxforge_net::{HttpTransport, platform_secret_store};
 use serde_json::json;
 use std::{
     sync::{Arc, Mutex},
@@ -30,9 +31,10 @@ pub(crate) struct Boot {
 }
 
 /// Where the capability host keeps module settings, grants and resources, under the run's
-/// resolved paths, and which secret store it uses. An evidence run keeps all of it inside its
-/// evidence directory with an in-memory store, so it never touches the person's configuration or
-/// login keychain. Nothing is created here: the host creates a directory on its first write.
+/// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
+/// of it inside its evidence directory with an in-memory store, so it never touches the person's
+/// configuration or login keychain. Nothing is created here: the host creates a directory on its
+/// first write, and the transport builds its TLS configuration on its first request.
 pub(super) fn host_config(config: &Config) -> HostConfig {
     let secrets: Arc<dyn SecretStore> = match &config.evidence {
         Some(_) => Arc::new(MemorySecretStore::new()),
@@ -43,6 +45,7 @@ pub(super) fn host_config(config: &Config) -> HostConfig {
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
         secrets,
+        transport: Arc::new(HttpTransport::system()),
         ..HostConfig::unconfigured()
     }
 }

@@ -12,6 +12,7 @@ path = "src/json.rs"
 
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
+luxforge-net = { path = "../luxforge-net" }
 serde_json.workspace = true
 
 [dev-dependencies]

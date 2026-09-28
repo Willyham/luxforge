@@ -13,9 +13,9 @@
 use super::{
     data::DisclosedData,
     descriptor::{AdapterAuth, AdapterDescriptor},
-    resources::SharedTransport,
+    endpoint::Endpoint,
     secrets::{SecretKey, SecretStore, SecretValue},
-    transport::{Endpoint, Method, RedirectPolicy, SendOptions, TransportRequest},
+    transport::{Method, RedirectPolicy, SendOptions, Transport, TransportRequest},
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -55,7 +55,7 @@ pub struct ProfileView {
 /// timeout and authentication apply, the profile's credential field when the adapter is bearer, and
 /// the disclosed data the host builds the body from.
 pub(crate) struct GrantedSend {
-    pub transport: Arc<SharedTransport>,
+    pub transport: Arc<dyn Transport>,
     pub endpoint: Endpoint,
     pub adapter: AdapterDescriptor,
     pub credential: Option<String>,
@@ -288,22 +288,20 @@ impl ModuleContext {
         let timeout = Duration::from_millis(adapter.timeout_ms);
         let control = &self.control;
         let mut response = Vec::new();
-        let sent = granted.transport.get().and_then(|transport| {
-            transport.send(
-                &request,
-                SendOptions {
-                    max_request_bytes: adapter.max_request_bytes,
-                    max_response_bytes: adapter.max_response_bytes,
-                    connect_timeout: timeout,
-                    read_timeout: timeout,
-                    total_timeout: timeout,
-                    redirects: RedirectPolicy::default(),
-                    control,
-                    progress: &mut |_, _| {},
-                },
-                &mut response,
-            )
-        });
+        let sent = granted.transport.send(
+            &request,
+            SendOptions {
+                max_request_bytes: adapter.max_request_bytes,
+                max_response_bytes: adapter.max_response_bytes,
+                connect_timeout: timeout,
+                read_timeout: timeout,
+                total_timeout: timeout,
+                redirects: RedirectPolicy::default(),
+                control,
+                progress: &mut |_, _| {},
+            },
+            &mut response,
+        );
         // The credential was copied into the header; it is cleared as soon as the request is done.
         let TransportRequest { mut headers, .. } = request;
         for (_, value) in &mut headers {
@@ -384,9 +382,9 @@ mod tests {
         capabilities::{
             data::DisclosedData,
             descriptor::{AdapterCost, DataClass},
+            endpoint::{EndpointClass, parse_endpoint},
             secrets::MemorySecretStore,
-            testing::temp,
-            transport::{EndpointClass, TlsTrust, TransportConfig, parse_endpoint},
+            testing::{proof_transport, temp},
         },
     };
     use luxforge_testkit::ProofEndpoint;
@@ -535,7 +533,8 @@ mod tests {
 
     #[test]
     fn a_send_posts_the_sampled_grid_with_the_bearer_credential_and_maps_statuses() {
-        let endpoint = ProofEndpoint::start("proof-key").unwrap();
+        let endpoint = Arc::new(ProofEndpoint::in_process("proof-key"));
+        let transport = proof_transport(endpoint.clone());
         let store = Arc::new(MemorySecretStore::new());
         let key = SecretKey::new("test.module", Some("profile-1"), "api-key");
         store
@@ -589,13 +588,10 @@ mod tests {
                 .with_send(
                     "echo",
                     GrantedSend {
-                        transport: Arc::new(SharedTransport::new(TransportConfig {
-                            trust: TlsTrust::Roots(Vec::new()),
-                            ..TransportConfig::default()
-                        })),
+                        transport: transport.clone(),
                         endpoint: parse_endpoint(
                             &endpoint.generate_url(),
-                            &[EndpointClass::Loopback],
+                            &[EndpointClass::Remote],
                         )
                         .unwrap(),
                         adapter: adapter.clone(),
@@ -652,6 +648,11 @@ mod tests {
             "permission revoked"
         );
         assert_eq!(endpoint.requests().len(), before, "nothing was sent");
+        assert_eq!(
+            transport.sends(),
+            3,
+            "a missing credential sent nothing either"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,39 +1,38 @@
-//! The host's only network path: endpoint classification, resolution checks, redirects, limits and
-//! TLS. See `docs/design/module-capabilities.md#transport`.
+//! [`HttpTransport`], the host's only network path: resolution checks, redirects, limits and TLS
+//! behind the core's [`Transport`] trait. See `docs/design/module-capabilities.md#transport`.
 //!
-//! A request runs on its own `ureq` agent ([`agent`]) that connects directly to an address it
-//! checked, over this module's own socket and TLS session; `ureq` writes the request and frames the
-//! response on that connection, and this module keeps the redirects, bounds and the framing it
-//! refuses. Proxy settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment
-//! variables, are deliberately ignored: a proxy would choose the address after the check and could
-//! read or rewrite the request.
-mod agent;
-mod net;
-pub mod policy;
-#[cfg(test)]
-mod tests;
-mod tls;
-
-pub use net::{Connect, Resolve, SystemConnector, SystemResolver};
-pub use policy::{Endpoint, EndpointClass, address_allowed, parse_endpoint};
-pub use rustls::pki_types::CertificateDer;
-pub use tls::TlsTrust;
-
-use crate::{Error, jobs::JobControl};
-use agent::Pace;
+//! A request runs on its own `ureq` agent ([`agent`](crate::agent)) that connects directly to an
+//! address it checked, over this crate's own socket and TLS session; `ureq` writes the request and
+//! frames the response on that connection, and this module keeps the redirects, bounds and the
+//! framing it refuses. Proxy settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`
+//! environment variables, are deliberately ignored: a proxy would choose the address after the
+//! check and could read or rewrite the request.
+use crate::{
+    agent::{self, Pace},
+    connect::{Connect, Resolve, SystemConnector, SystemResolver},
+    tls::{self, TlsTrust},
+};
+use luxforge_core::{
+    Error,
+    capabilities::{
+        endpoint::{Endpoint, parse_endpoint},
+        transport::{
+            MAX_REDIRECTS, Method, SendOptions, Transport, TransportRequest, TransportResponse,
+        },
+    },
+    jobs::JobControl,
+};
 use rustls::ClientConfig;
 use std::{
     borrow::Cow,
     fmt,
     io::{self, Read, Write},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 use ureq::http::{self, Response, Version};
 use url::{Position, Url};
 
-/// A request follows at most this many redirects, whatever its policy asks for.
-pub const MAX_REDIRECTS: u8 = 3;
 /// Statuses that redirect a request. Other `3xx` statuses are returned as data.
 const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
 /// One header block holds at most this many fields.
@@ -62,101 +61,6 @@ const HOST_HEADERS: &[&str] = &[
     "proxy-connection",
 ];
 
-/// The methods the transport sends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Method {
-    Get,
-    Post,
-}
-
-/// One request. Its `Debug` shows the origin, header names and body length, never a header value
-/// or the body.
-#[derive(Clone)]
-pub struct TransportRequest {
-    pub method: Method,
-    pub endpoint: Endpoint,
-    /// Extra headers, such as `Authorization` or `Content-Type`. The host writes `Host`,
-    /// `User-Agent`, `Accept-Encoding: identity`, `Connection: close` and `Content-Length` itself
-    /// and refuses them here, together with cookies and the other connection-level headers.
-    pub headers: Vec<(String, String)>,
-    /// The body of a `POST`; a `GET` has none.
-    pub body: Vec<u8>,
-}
-
-impl fmt::Debug for TransportRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TransportRequest")
-            .field("method", &self.method)
-            .field("origin", &self.endpoint.origin())
-            .field(
-                "headers",
-                &self
-                    .headers
-                    .iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>(),
-            )
-            .field("body_bytes", &self.body.len())
-            .finish()
-    }
-}
-
-/// Which redirects a request may follow. The default follows none.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RedirectPolicy<'a> {
-    /// How many redirects may be followed, at most `MAX_REDIRECTS`.
-    pub max: u8,
-    /// The origins (`scheme://host[:port]`) a redirect may lead to. A redirect must also keep the
-    /// endpoint's class and may not leave `https`.
-    pub origins: &'a [String],
-}
-
-/// The bounds and hooks of one `send`, borrowed from the caller for its duration.
-pub struct SendOptions<'a> {
-    /// The body is refused before connecting if it is larger.
-    pub max_request_bytes: u64,
-    /// The response body is refused from its declared length, or cut off where it crosses this.
-    pub max_response_bytes: u64,
-    /// The longest wait for one connection attempt.
-    pub connect_timeout: Duration,
-    /// The longest wait for any progress on a connection.
-    pub read_timeout: Duration,
-    /// The whole request, resolution and redirects included.
-    pub total_timeout: Duration,
-    pub redirects: RedirectPolicy<'a>,
-    /// The job the request runs for. Its cancel stops the request with its `cancelled` error: the
-    /// connection holds the job's cancel, which shuts the socket down, so a blocked read or write
-    /// returns at once; a request whose job is already cancelled never resolves or connects.
-    pub control: &'a Arc<JobControl>,
-    /// Called after each piece of the final response body reaches the sink, with the bytes
-    /// written so far and the declared length, if there is one.
-    pub progress: &'a mut dyn FnMut(u64, Option<u64>),
-}
-
-/// The final response's head. Any status other than a redirect is returned as data, for the caller
-/// to judge.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransportResponse {
-    pub status: u16,
-    /// Header fields with lowercased names, at most 100 of them within 64 KiB, in the order
-    /// received with a repeated name's values together.
-    pub headers: Vec<(String, String)>,
-    /// The URL that answered, after any redirects.
-    pub final_url: Url,
-    /// Body bytes written to the sink.
-    pub received: u64,
-}
-
-impl TransportResponse {
-    /// The first value of the header `name`, compared without regard to case.
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(field, _)| field.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
-    }
-}
-
 /// What a transport trusts and how it reaches the network. Tests replace each part.
 #[derive(Clone)]
 pub struct TransportConfig {
@@ -176,17 +80,22 @@ impl Default for TransportConfig {
     }
 }
 
-/// The host's HTTP client for module capabilities. It is shareable across worker threads and
-/// holds no connection between requests.
-pub struct Transport {
-    tls: Arc<ClientConfig>,
+/// The host's HTTP client for module capabilities, which the desktop and `luxforge-json` give the
+/// catalog owner. It is shareable across worker threads, holds no connection between requests and
+/// builds nothing until its first request: its TLS configuration, the platform verifier's
+/// included, is built then, on the worker that sends it, never when the host starts.
+pub struct HttpTransport {
+    trust: TlsTrust,
+    tls: Mutex<Option<Arc<ClientConfig>>>,
     resolver: Arc<dyn Resolve>,
     connector: Arc<dyn Connect>,
 }
 
-impl fmt::Debug for Transport {
+impl fmt::Debug for HttpTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Transport").finish_non_exhaustive()
+        f.debug_struct("HttpTransport")
+            .field("trust", &self.trust)
+            .finish_non_exhaustive()
     }
 }
 
@@ -199,28 +108,38 @@ impl Drop for Held<'_> {
     }
 }
 
-impl Transport {
-    pub fn new(config: TransportConfig) -> Result<Self, Error> {
-        Ok(Self {
-            tls: tls::client_config(&config.trust)?,
+impl HttpTransport {
+    pub fn new(config: TransportConfig) -> Self {
+        Self {
+            trust: config.trust,
+            tls: Mutex::new(None),
             resolver: config.resolver,
             connector: config.connector,
-        })
+        }
     }
 
     /// A transport with the platform's trust store, the system resolver and direct connections.
-    pub fn system() -> Result<Self, Error> {
+    pub fn system() -> Self {
         Self::new(TransportConfig::default())
     }
 
-    /// Send `request` and stream the final response body into `sink`. Everything the request itself
-    /// can be refused for is checked before connecting. Each connection resolves its host once and
-    /// connects only to addresses of the endpoint's class. A redirect is followed only as
-    /// `options.redirects` allows, with `GET`, no body, and no `Authorization` header once the
-    /// origin changes. Errors are `validation` for a refused request, address or redirect,
-    /// `resource-limit` for sizes, `read-error` for network, TLS and protocol failures and
-    /// timeouts, and `cancelled`; no message contains a header value or a body.
-    pub fn send(
+    /// The TLS configuration every request shares, built by the first request that needs it. A
+    /// failure to build it is that request's error, and the next request tries again.
+    fn tls(&self) -> Result<Arc<ClientConfig>, Error> {
+        let mut built = self.tls.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(config) = built.as_ref() {
+            return Ok(config.clone());
+        }
+        let config = tls::client_config(&self.trust)?;
+        *built = Some(config.clone());
+        Ok(config)
+    }
+}
+
+impl Transport for HttpTransport {
+    /// Each connection resolves its host once and connects only to addresses of the endpoint's
+    /// class; see [`Transport::send`] for the whole contract.
+    fn send(
         &self,
         request: &TransportRequest,
         options: SendOptions<'_>,
@@ -273,6 +192,7 @@ impl Transport {
         let deadline = Instant::now()
             .checked_add(total_timeout)
             .ok_or_else(|| Error::validation("the request timeout is too long"))?;
+        let tls = self.tls()?;
 
         let mut method = request.method;
         let mut body = request.body.as_slice();
@@ -289,7 +209,7 @@ impl Transport {
             });
             let agent = agent::agent(
                 &endpoint,
-                &self.tls,
+                &tls,
                 &self.resolver,
                 &self.connector,
                 connect_timeout,
@@ -416,7 +336,7 @@ fn prepare(
         .map_err(|_| Error::validation("the request cannot be sent: a header is not valid"))
 }
 
-fn too_many_fields(name: &str) -> Error {
+pub(crate) fn too_many_fields(name: &str) -> Error {
     Error::resource_limit(format!(
         "the response from {name} has more than {MAX_FIELDS} header fields"
     ))

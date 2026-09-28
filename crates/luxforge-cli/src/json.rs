@@ -1,9 +1,10 @@
 use luxforge_cli::Paths;
 use luxforge_core::{
     ClientAuthority, HostConfig, ModuleRegistry, OwnerHandle, RegistryOptions,
-    capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
+    capabilities::secrets::{MemorySecretStore, SecretStore},
     serve_json_lines_with,
 };
+use luxforge_net::{HttpTransport, platform_secret_store};
 use std::{path::PathBuf, sync::Arc};
 
 const HELP: &str = "luxforge-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] [--developer] [--proof-endpoint URL] < requests.jsonl
@@ -102,6 +103,7 @@ fn run() -> Result<(), (String, String)> {
         config_dir: paths.as_ref().map(Paths::module_config),
         resource_dir: paths.as_ref().map(Paths::module_resources),
         secrets,
+        transport: Arc::new(HttpTransport::system()),
         ..HostConfig::unconfigured()
     };
     let (owner, join) = OwnerHandle::start_with_host(&catalog, Arc::new(registry), host)

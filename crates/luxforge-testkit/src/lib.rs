@@ -18,5 +18,5 @@ mod proof;
 mod server;
 
 pub use process::JsonProcess;
-pub use proof::{ProofEndpoint, ProofRequest};
+pub use proof::{ProofAnswer, ProofEndpoint, ProofRequest};
 pub use server::{Options, Request, TestServer, respond, send};

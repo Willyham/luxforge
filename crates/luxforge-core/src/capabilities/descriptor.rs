@@ -8,7 +8,7 @@
 //! "Strength"}`. A capability is serialized flat the same way.
 //! Flattening rules out `deny_unknown_fields` on those two types, so an unknown field there is
 //! ignored on read; every other capability type refuses unknown fields.
-use super::transport::{EndpointClass, parse_endpoint};
+use super::endpoint::{EndpointClass, parse_endpoint};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{

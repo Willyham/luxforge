@@ -1,8 +1,9 @@
 //! The capability proof end to end through the catalog owner's JSON methods, exactly as a client
 //! drives it: discovery, settings and a profile, consent for the resource download, install,
 //! consent for the per-asset remote send, the task with its sample grid, the published
-//! artifact, its application and the render, against a [`ProofEndpoint`] on loopback, isolated
-//! directories and an in-memory secret store. Nothing here leaves the machine.
+//! artifact, its application and the render, against a [`ProofEndpoint`] answered in process by
+//! the in-memory transport, isolated directories and an in-memory secret store. Nothing here opens
+//! a socket.
 use super::{
     data::SAMPLE_GRID_BYTES,
     grants::{DENY, GRANT, REVOKE},
@@ -10,8 +11,7 @@ use super::{
     resources::{INSTALL, REMOVE},
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, SET, SET_SECRET},
-    testing::{enveloped, temp},
-    transport::{TlsTrust, TransportConfig},
+    testing::{enveloped, proof_transport, temp},
 };
 use crate::{
     ApiFailure, ApiRequest, ApiResponse, ArtifactId, AssetId, CapabilitiesProofModule,
@@ -122,7 +122,7 @@ impl CapabilityModule for Publisher {
 /// with.
 struct Fixture {
     root: PathBuf,
-    endpoint: ProofEndpoint,
+    endpoint: Arc<ProofEndpoint>,
     key: String,
     secrets: Arc<MemorySecretStore>,
 }
@@ -134,7 +134,7 @@ impl Fixture {
         let root = root.canonicalize().unwrap();
         let key = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
         Self {
-            endpoint: ProofEndpoint::start(&key).unwrap(),
+            endpoint: Arc::new(ProofEndpoint::in_process(&key)),
             key,
             root,
             secrets: Arc::new(MemorySecretStore::new()),
@@ -161,10 +161,7 @@ impl Fixture {
             config_dir: Some(self.root.join("config").join("modules")),
             resource_dir: Some(self.root.join("data").join("modules").join("resources")),
             secrets: self.secrets.clone(),
-            transport: TransportConfig {
-                trust: TlsTrust::Roots(Vec::new()),
-                ..TransportConfig::default()
-            },
+            transport: proof_transport(self.endpoint.clone()),
             ..HostConfig::unconfigured()
         }
     }
@@ -1019,25 +1016,18 @@ fn changing_the_endpoint_revokes_its_grant_and_asks_for_consent_again() {
     let assets = fixture.import();
     let owner = fixture.start();
     let Ready { assets, profile } = ready(&fixture, &owner, assets);
+    let elsewhere = "https://elsewhere.example";
     let moved = fixture
         .endpoint
         .generate_url()
-        .replace("127.0.0.1", "localhost");
+        .replace(&fixture.endpoint.base_url(), elsewhere);
     let changed = owner.set(Some(&profile), json!({"endpoint": moved}));
     assert_eq!(changed["revoked"].as_array().unwrap().len(), 1);
     let refused = owner.task(&assets[0], &profile).unwrap_err();
     assert_eq!(refused.code, "consent-required");
     let consent = refused.data.unwrap()["consent"].clone();
     assert_eq!(consent["capability"], "echo");
-    assert_eq!(
-        consent["scope"]["origin"],
-        json!(
-            fixture
-                .endpoint
-                .base_url()
-                .replace("127.0.0.1", "localhost")
-        )
-    );
+    assert_eq!(consent["scope"]["origin"], json!(elsewhere));
     owner.stop();
 }
 
@@ -1190,8 +1180,10 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
 }
 
 /// The framework's own costs on this host: registration with and without the proof module, the
-/// owner's answer to the capability reads, a whole task against the loopback endpoint, cancellation
-/// of a task stalled in its request, and the disk an installed resource takes. A job's end is seen
+/// owner's answer to the capability reads, a whole task against the endpoint answered in process,
+/// cancellation of a task stalled in its request, and the disk an installed resource takes.
+/// Requests go through the in-memory transport, which checks a cancel every millisecond; the real
+/// transport's own costs are measured in `luxforge-net`. A job's end is seen
 /// by a wait that looks every millisecond, so the job measurements are accurate to about a
 /// millisecond. Run explicitly, in release, on a quiet machine:
 /// `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`.
@@ -1263,8 +1255,8 @@ fn capability_timing() {
     );
 
     // A whole task and a cancelled one: the owner binds the stack, the module lane reads the
-    // palette, samples the 8 × 8 grid, posts to the loopback endpoint and publishes the artifact,
-    // and the owner records it.
+    // palette, samples the 8 × 8 grid, posts it through the in-memory transport and publishes the
+    // artifact, and the owner records it.
     let mut task = Vec::new();
     for _ in 0..SAMPLES {
         let started = Instant::now();
@@ -1273,7 +1265,7 @@ fn capability_timing() {
         task.push(started.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(job["status"], "ready", "{job}");
     }
-    report("task request to succeeded (loopback round trip)", &mut task);
+    report("task request to succeeded (in-memory transport)", &mut task);
     // The task's durable part: one artifact synced and renamed into place, as the writer does it.
     let writer = EditorService::open_with(&fixture.root.join("timing.sqlite"), fixture.registry())
         .unwrap()

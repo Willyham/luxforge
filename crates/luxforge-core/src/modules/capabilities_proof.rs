@@ -22,7 +22,7 @@ use crate::{
             AdapterAuth, AdapterCost, AdapterDescriptor, DataClass, ProfilesDescriptor,
             SettingDescriptor, SettingsDescriptor,
         },
-        transport::EndpointClass,
+        endpoint::EndpointClass,
     },
 };
 use serde_json::{Map, Value, json};

@@ -14,11 +14,11 @@ use luxforge_core::{
     capabilities::{
         consent::Disclosure,
         descriptor::{AdapterCost, SettingDescriptor},
+        endpoint::{EndpointClass, parse_endpoint},
         grants::{Denial, Grant, GrantKind, GrantList, PermissionCounts},
         host::Requirement,
         resources::{ResourceRow, ResourceState},
         settings::{FieldRead, ProfileStatus, SettingsRead, SettingsState},
-        transport::{EndpointClass, parse_endpoint},
     },
     jobs::{JobRecord, JobStatus},
 };

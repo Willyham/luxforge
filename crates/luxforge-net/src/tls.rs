@@ -1,7 +1,6 @@
 //! TLS for `https` endpoints: rustls with the ring provider, TLS 1.3 and 1.2, SNI from the URL's
 //! host, and either the operating system's verifier or an explicit set of roots.
-use super::policy::Endpoint;
-use crate::Error;
+use luxforge_core::{Error, capabilities::endpoint::Endpoint};
 use rustls::{
     ClientConfig, RootCertStore,
     pki_types::{CertificateDer, ServerName},
@@ -24,7 +23,7 @@ fn setup_failed(error: rustls::Error) -> Error {
 }
 
 /// The client configuration every `https` request of one transport shares.
-pub(super) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error> {
+pub(crate) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error> {
     let builder =
         ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
@@ -47,7 +46,7 @@ pub(super) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error
 }
 
 /// The name the server's certificate must match, and the SNI for a domain: `endpoint`'s host.
-pub(super) fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, Error> {
+pub(crate) fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, Error> {
     Ok(match endpoint.url.host() {
         Some(Host::Domain(name)) => ServerName::try_from(name.to_owned())
             .map_err(|_| Error::validation(format!("{name} is not a valid TLS server name")))?,

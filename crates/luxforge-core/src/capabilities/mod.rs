@@ -1,12 +1,15 @@
-//! Host-owned module capabilities: typed settings and provider profiles, secret storage, scoped
-//! consent, the network transport, the capability worker and managed resources. A module declares
-//! what it needs; only the host stores, downloads, contacts or schedules anything. See
+//! Host-owned module capabilities: typed settings and provider profiles, the secret store's
+//! contract, scoped consent, endpoint parsing, the network transport's contract, the capability
+//! worker and managed resources. A module declares what it needs; only the host stores, downloads,
+//! contacts or schedules anything. The host is given its secure store and its network transport
+//! (`luxforge-net`'s, in the desktop and `luxforge-json`) through [`host::HostConfig`]. See
 //! `docs/design/module-capabilities.md`.
 pub mod consent;
 pub mod context;
 pub mod data;
 pub mod descriptor;
 mod document;
+pub mod endpoint;
 pub mod grants;
 pub mod host;
 #[cfg(test)]

@@ -241,6 +241,7 @@ const TEXT: &[&str] = &["rs", "toml", "md", "json", "wgsl", "txt"];
 /// The source directories of the crates a shipped binary links.
 const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-core/src",
+    "crates/luxforge-net/src",
     "crates/luxforge-app/src",
     "crates/luxforge-cli/src",
     "crates/luxforge-ui/src",
@@ -253,6 +254,7 @@ const SHIPPED_SOURCES: &[&str] = &[
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
 const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-core",
+    "crates/luxforge-net",
     "crates/luxforge-app",
     "crates/luxforge-cli",
     "crates/luxforge-ui",
@@ -898,12 +900,12 @@ const SOURCE_RULES: &[SourceRule] = &[
         tokens: &["ureq_proto::", "httparse::"],
         scope: &["crates", "xtask"],
         types: &["rs"],
-        allowed: &["crates/luxforge-core/src/capabilities/transport"],
+        allowed: &["crates/luxforge-net/src"],
         mode: Match::Whole,
         tests: true,
         once: false,
-        reason: "only the module transport (crates/luxforge-core/src/capabilities/transport) \
-                 speaks HTTP/1.1, through ureq; no other code frames HTTP",
+        reason: "only the module transport (crates/luxforge-net) speaks HTTP/1.1, through ureq; \
+                 no other code frames HTTP",
     },
     SourceRule {
         name: "no-pixel-image-handle",
@@ -1033,14 +1035,34 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
     },
-    // The HTTP client is the core's: `ureq` and `ureq-proto` belong to the module transport.
+    // One HTTP client: `ureq` and `ureq-proto` belong to the module transport in `luxforge-net`.
     DependencyRule {
         name: "http-client-crates",
         refuses: Depends::Prefixed("ureq"),
         manifests: &["crates/*", "xtask"],
         tables: EVERY_TABLE,
-        allowed: &["crates/luxforge-core"],
-        reason: "only luxforge-core, for its module transport, may depend on ureq or ureq-proto",
+        allowed: &["crates/luxforge-net"],
+        reason: "only luxforge-net, for its module transport, may depend on ureq or ureq-proto",
+    },
+    // The core links no network stack or secure store: the transport and the Keychain store live
+    // in `luxforge-net`, which the desktop and `luxforge-json` give the host through `HostConfig`,
+    // so neither the core nor its test binaries compile TLS, HTTP or the Security framework.
+    DependencyRule {
+        name: "core-links-no-network",
+        refuses: Depends::Any(&[
+            "rustls",
+            "rustls-platform-verifier",
+            "ring",
+            "ureq",
+            "ureq-proto",
+            "security-framework",
+        ]),
+        manifests: &["crates/luxforge-core"],
+        tables: &[Table::Normal, Table::Dev, Table::Build],
+        allowed: &[],
+        reason: "luxforge-core links no TLS, HTTP client or Keychain crate; the transport and the \
+                 secret store's Keychain implementation belong to luxforge-net, injected through \
+                 HostConfig",
     },
     // The references are independent by construction: nothing they build against can reach the
     // core they check, directly or through a crate that depends on it.
@@ -2902,7 +2924,7 @@ mod tests {
     fn only_the_module_transport_frames_http() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let transport = "crates/luxforge-core/src/capabilities/transport";
+        let transport = "crates/luxforge-net/src";
         // The transport and its tests may; a longer name and the rules file are not the token.
         write_all(
             root,
@@ -2921,7 +2943,7 @@ mod tests {
                 ),
                 (RULES_FILE, "tokens: &[\"ureq_proto::\", \"httparse::\"],\n"),
                 (
-                    "crates/luxforge-core/Cargo.toml",
+                    "crates/luxforge-net/Cargo.toml",
                     "[dependencies]\nureq.workspace = true\nureq-proto.workspace = true\n",
                 ),
                 (
@@ -2942,7 +2964,7 @@ mod tests {
                     "let mut headers = [httparse::EMPTY_HEADER; 64];\n",
                 ),
                 (
-                    "crates/luxforge-core/src/capabilities/resources.rs",
+                    "crates/luxforge-core/src/capabilities/transport.rs",
                     "use ureq_proto::client::Call;\n",
                 ),
                 (
@@ -2962,6 +2984,10 @@ mod tests {
                 "[dev-dependencies]\nureq-proto = \"0.6\"\n",
             ),
             (
+                "crates/luxforge-core/Cargo.toml",
+                "[dependencies]\nureq.workspace = true\n",
+            ),
+            (
                 "xtask/Cargo.toml",
                 "[dependencies]\nclient = { package = \"ureq\", version = \"3\" }\n",
             ),
@@ -2975,6 +3001,59 @@ mod tests {
                 "{path}: {error}"
             );
             fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_core_links_no_tls_http_or_keychain_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-core/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-core\"\n\n[dependencies]\n\
+                     url.workspace = true\nzeroize.workspace = true\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["core-links-no-network"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        // The crate that owns them may; the rule reads only the core's manifest.
+        let net = tmp.path().join("crates/luxforge-net/Cargo.toml");
+        fs::create_dir_all(net.parent().unwrap()).unwrap();
+        fs::write(
+            &net,
+            "[dependencies]\nrustls.workspace = true\nsecurity-framework.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            ("rustls", "rustls.workspace = true\n"),
+            (
+                "the platform verifier",
+                "rustls-platform-verifier.workspace = true\n",
+            ),
+            ("ring", "ring = \"0.17\"\n"),
+            ("ureq", "ureq.workspace = true\n"),
+            ("ureq-proto", "ureq-proto.workspace = true\n"),
+            (
+                "the Keychain under a macOS target",
+                "\n[target.'cfg(target_os = \"macos\")'.dependencies]\n\
+                 security-framework.workspace = true\n",
+            ),
+            (
+                "rustls for the tests",
+                "\n[dev-dependencies]\nrustls.workspace = true\n",
+            ),
+            (
+                "rustls under another name",
+                "tls = { package = \"rustls\", version = \"0.23\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-core/Cargo.toml:")
+                    && error.contains("links no TLS")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
         }
     }
 

@@ -240,7 +240,9 @@ pub struct JobControl {
 }
 
 impl JobControl {
-    pub(crate) fn new() -> Arc<Self> {
+    /// The control of a job nothing has cancelled. The owner makes one per job; a transport's own
+    /// tests make theirs.
+    pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
@@ -255,7 +257,7 @@ impl JobControl {
     }
 
     /// Ask the job to stop at its next checkpoint. The first reason given is the one reported.
-    pub(crate) fn cancel(&self, reason: &str) {
+    pub fn cancel(&self, reason: &str) {
         let mut held = self.reason.lock().expect("job cancel reason");
         if held.is_none() {
             *held = Some(reason.to_owned());
@@ -267,11 +269,11 @@ impl JobControl {
         }
     }
 
-    /// Keep a clone of `socket`, the job's network request's connection, for `cancel` to shut
-    /// down; `false`, keeping nothing, if the job is already cancelled. The check and the
-    /// registration share the lock `cancel` takes after setting its flag, so a cancel cannot fall
-    /// between them.
-    pub(crate) fn hold_connection(&self, socket: &TcpStream) -> io::Result<bool> {
+    /// Keep a clone of `socket`, the connection of the job's network request, for `cancel` to shut
+    /// down, as the host's transport does for each connection it opens; `false`, keeping nothing,
+    /// if the job is already cancelled. The check and the registration share the lock `cancel`
+    /// takes after setting its flag, so a cancel cannot fall between them.
+    pub fn hold_connection(&self, socket: &TcpStream) -> io::Result<bool> {
         let mut held = self.connection.lock().expect("job connection");
         if self.is_cancelled() {
             return Ok(false);
@@ -281,7 +283,7 @@ impl JobControl {
     }
 
     /// Drop the connection's clone once its request is over.
-    pub(crate) fn release_connection(&self) {
+    pub fn release_connection(&self) {
         *self.connection.lock().expect("job connection") = None;
     }
 

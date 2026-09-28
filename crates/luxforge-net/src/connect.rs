@@ -1,8 +1,11 @@
 //! Resolution and connection. A request resolves its host exactly once, requires every answer to
 //! belong to the endpoint's class and connects only to an address it checked, so no second lookup
 //! can rebind the name between the check and the connection.
-use super::policy::{Endpoint, EndpointClass, address_allowed};
-use crate::Error;
+use crate::address::address_allowed;
+use luxforge_core::{
+    Error,
+    capabilities::endpoint::{Endpoint, EndpointClass},
+};
 use std::{
     io,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
@@ -51,7 +54,7 @@ fn not_in_class(address: SocketAddr, class: EndpointClass) -> Error {
 
 /// Resolve `endpoint` once and check every address against its class. An IP-literal host is
 /// checked the same way without a lookup.
-pub(super) fn resolve(
+pub(crate) fn resolve(
     endpoint: &Endpoint,
     resolver: &dyn Resolve,
 ) -> Result<Vec<SocketAddr>, Error> {
@@ -96,7 +99,7 @@ pub(super) fn resolve(
 
 /// Connect to the first of `addresses` that accepts, checking each against `class` again,
 /// spending at most `timeout` on each and never passing `deadline`.
-pub(super) fn connect(
+pub(crate) fn connect(
     addresses: &[SocketAddr],
     class: EndpointClass,
     name: &str,

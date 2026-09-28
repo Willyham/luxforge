@@ -1,7 +1,6 @@
 //! Permissions, capability jobs, task requirements and resources driven through the catalog owner
-//! exactly as a client drives them, against loopback servers, isolated directories, an in-memory
-//! secret store and a network that counts every lookup and connection. Nothing here leaves the
-//! machine.
+//! exactly as a client drives them, against an in-memory transport that counts every request,
+//! isolated directories and an in-memory secret store. Nothing here opens a socket.
 use super::{
     descriptor::CapabilityKind,
     grants::{DENY, GRANT, GRANTS_FILE, LIST, REVOKE},
@@ -10,18 +9,16 @@ use super::{
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
     testing::{
-        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, TASK, enveloped,
+        LifecycleModule, MODULE, MemoryTransport, PALETTE, Probe, SWATCH, TASK, enveloped,
         lifecycle_descriptor, sha256_hex, temp,
     },
-    transport::{TlsTrust, TransportConfig},
 };
 use crate::{
-    ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, EditorService, LocalServer,
-    ModuleDescriptor, ModuleRegistry, OwnerHandle,
+    ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, EditorService, Error,
+    LocalServer, ModuleDescriptor, ModuleRegistry, OwnerHandle,
     jobs::{JOB_CANCEL, JOB_READ},
 };
 use luxforge_testbase::{Gate, wait_for};
-use luxforge_testkit::{TestServer, respond};
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
@@ -38,22 +35,22 @@ use std::{
 struct Fixture {
     root: PathBuf,
     secrets: Arc<MemorySecretStore>,
-    net: Arc<CountingNet>,
+    transport: Arc<MemoryTransport>,
     probe: Arc<Probe>,
     descriptor: ModuleDescriptor,
     quota: u64,
 }
 
 impl Fixture {
-    fn new(name: &str, server: &TestServer) -> Self {
+    fn new(name: &str, transport: &Arc<MemoryTransport>) -> Self {
         let root = temp(name);
         fs::create_dir_all(&root).unwrap();
         Self {
             root,
             secrets: Arc::new(MemorySecretStore::new()),
-            net: Arc::new(CountingNet::default()),
+            transport: transport.clone(),
             probe: Arc::new(Probe::default()),
-            descriptor: lifecycle_descriptor(&server.url("/palette"), &server.url("/swatch")),
+            descriptor: lifecycle_descriptor(&served("/palette"), &served("/swatch")),
             quota: 1 << 20,
         }
     }
@@ -95,11 +92,7 @@ impl Fixture {
             config_dir: Some(self.config()),
             resource_dir: Some(self.resources()),
             secrets: self.secrets.clone(),
-            transport: TransportConfig {
-                trust: TlsTrust::Roots(Vec::new()),
-                resolver: self.net.clone(),
-                connector: self.net.clone(),
-            },
+            transport: self.transport.clone(),
             resource_quota_bytes: self.quota,
         }
     }
@@ -266,7 +259,7 @@ impl Owner {
     }
 
     /// Grant the download of one resource, install it from its pinned URL on the fixture's
-    /// server, and wait.
+    /// transport, and wait.
     fn install_downloaded(&self, fixture: &Fixture, resource: &str) -> Value {
         let capability = fixture
             .descriptor
@@ -320,38 +313,39 @@ fn download_scope(fixture: &Fixture, resource: &str) -> Value {
     json!({"resource": resource, "version": declared.version, "origin": origin})
 }
 
-/// A server that answers `/palette` and `/swatch` with their pinned bytes.
-fn serving() -> TestServer {
-    TestServer::http(|request, out| match request.path.as_str() {
-        "/palette" => respond(out, "200 OK", "", PALETTE),
-        "/swatch" => respond(out, "200 OK", "", SWATCH),
-        _ => respond(out, "404 Not Found", "", b""),
-    })
-    .unwrap()
+/// The origin the fixture's resources are declared at. Only the in-memory transport answers it.
+const SERVED: &str = "https://downloads.example";
+
+/// The URL of `path` at [`SERVED`].
+fn served(path: &str) -> String {
+    format!("{SERVED}{path}")
 }
 
-/// A server whose `/palette` sends its head and four bytes, then waits at the returned gate, shut,
-/// before the rest; `/swatch` answers at once.
-fn stalling() -> (TestServer, Arc<Gate>) {
+/// A transport that answers `/palette` and `/swatch` with their pinned bytes.
+fn serving() -> Arc<MemoryTransport> {
+    MemoryTransport::new(|exchange, answer| match exchange.path() {
+        "/palette" => answer.whole(200, PALETTE),
+        "/swatch" => answer.whole(200, SWATCH),
+        _ => answer.whole(404, b""),
+    })
+}
+
+/// A transport whose `/palette` answers its status and four bytes, then waits at the returned gate,
+/// shut, before the rest; `/swatch` answers at once.
+fn stalling() -> (Arc<MemoryTransport>, Arc<Gate>) {
     let gate = Arc::new(Gate::new());
     gate.shut();
     let held = gate.clone();
-    let server = TestServer::http(move |request, out| match request.path.as_str() {
+    let transport = MemoryTransport::new(move |exchange, answer| match exchange.path() {
         "/palette" => {
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                PALETTE.len()
-            );
-            let _ = out.write_all(head.as_bytes());
-            let _ = out.write_all(&PALETTE[..4]);
-            let _ = out.flush();
+            answer.status(200);
+            answer.bytes(&PALETTE[..4]);
             held.pass();
-            let _ = out.write_all(&PALETTE[4..]);
+            answer.bytes(&PALETTE[4..]);
         }
-        _ => respond(out, "200 OK", "", SWATCH),
-    })
-    .unwrap();
-    (server, gate)
+        _ => answer.whole(200, SWATCH),
+    });
+    (transport, gate)
 }
 
 /// Every file under `root`, read whole.
@@ -376,8 +370,8 @@ fn files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 
 #[test]
 fn only_a_client_registered_with_permission_authority_can_grant() {
-    let server = serving();
-    let fixture = Fixture::new("authority", &server);
+    let transport = serving();
+    let fixture = Fixture::new("authority", &transport);
     let owner = fixture.start();
     assert_eq!(
         owner.ok_as(owner.edit, "session.state", json!({}))["authority"],
@@ -476,8 +470,8 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
 
 #[test]
 fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same_grant() {
-    let server = serving();
-    let fixture = Fixture::new("scopes", &server);
+    let transport = serving();
+    let fixture = Fixture::new("scopes", &transport);
     let asset = fixture.import_asset();
     let owner = fixture.start();
     let grant = |capability: &str, scope: Value, request_id: &str| {
@@ -564,8 +558,8 @@ fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same
 
 #[test]
 fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
-    let server = serving();
-    let fixture = Fixture::new("denial", &server);
+    let transport = serving();
+    let fixture = Fixture::new("denial", &transport);
     let owner = fixture.start();
     let install = json!({"module_id": MODULE, "resource_id": "palette"});
     let first = owner.fail(INSTALL, install.clone());
@@ -579,7 +573,7 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
     let disclosure = &consent["disclosure"];
     assert_eq!(disclosure["module"], json!("Capabilities test"));
     assert_eq!(disclosure["purpose"], json!("Install the tint palette."));
-    assert_eq!(disclosure["destination"], json!(server.url("/palette")));
+    assert_eq!(disclosure["destination"], json!(served("/palette")));
     assert_eq!(disclosure["data"], json!("Tint palette 1.0.0"));
     assert_eq!(disclosure["bytes"], json!(12));
     assert_eq!(
@@ -599,7 +593,11 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
         owner.status(MODULE)["permissions"],
         json!({"live": 0, "revoked": 0, "denials": 1})
     );
-    assert_eq!(server.hits(), 0, "nothing was downloaded without a grant");
+    assert_eq!(
+        transport.sends(),
+        0,
+        "nothing was downloaded without a grant"
+    );
     assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
     owner.ok_as(
         owner.admin,
@@ -620,8 +618,8 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
 
 #[test]
 fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
-    let (server, release) = stalling();
-    let fixture = Fixture::new("revoke", &server);
+    let (transport, release) = stalling();
+    let fixture = Fixture::new("revoke", &transport);
     let owner = fixture.start();
     let palette = owner.grant_download(&fixture, "palette", "palette");
     let swatch = owner.grant_download(&fixture, "swatches", "swatch");
@@ -683,8 +681,8 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
 
 #[test]
 fn changing_what_a_grant_names_revokes_it() {
-    let server = serving();
-    let fixture = Fixture::new("scope-change", &server);
+    let transport = serving();
+    let fixture = Fixture::new("scope-change", &transport);
     let asset = fixture.import_asset();
     let owner = fixture.start();
     let grant = |capability: &str, scope: Value| {
@@ -767,8 +765,8 @@ fn changing_what_a_grant_names_revokes_it() {
 
 #[test]
 fn a_grants_file_of_another_format_is_refused_and_kept() {
-    let server = serving();
-    let fixture = Fixture::new("grants-format", &server);
+    let transport = serving();
+    let fixture = Fixture::new("grants-format", &transport);
     fs::create_dir_all(fixture.config()).unwrap();
     let contents = json!({"format": 2, "grants": [], "denials": []}).to_string();
     fs::write(fixture.config().join(GRANTS_FILE), &contents).unwrap();
@@ -799,14 +797,14 @@ fn a_grants_file_of_another_format_is_refused_and_kept() {
         fs::read_to_string(fixture.config().join(GRANTS_FILE)).unwrap(),
         contents
     );
-    assert_eq!(server.hits(), 0);
+    assert_eq!(transport.sends(), 0);
     owner.stop();
 }
 
 #[test]
 fn a_task_lists_every_missing_requirement_before_anything_is_queued() {
-    let server = serving();
-    let fixture = Fixture::new("requirements", &server);
+    let transport = serving();
+    let fixture = Fixture::new("requirements", &transport);
     let asset = fixture.import_asset();
     let owner = fixture.start();
     let created = owner.ok(
@@ -834,14 +832,14 @@ fn a_task_lists_every_missing_requirement_before_anything_is_queued() {
         refused.message
     );
     assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
-    assert_eq!(server.hits(), 0);
+    assert_eq!(transport.sends(), 0);
     owner.stop();
 }
 
 #[test]
 fn status_reports_settings_resources_permissions_and_jobs() {
-    let server = serving();
-    let fixture = Fixture::new("status", &server);
+    let transport = serving();
+    let fixture = Fixture::new("status", &transport);
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
     let grant = owner.grant_download(&fixture, "palette", "palette");
@@ -903,8 +901,8 @@ fn queued_request(owner: &Owner, method: &str) -> String {
 
 #[test]
 fn a_download_installs_the_pinned_bytes_with_their_record() {
-    let server = serving();
-    let fixture = Fixture::new("download", &server);
+    let transport = serving();
+    let fixture = Fixture::new("download", &transport);
     let owner = fixture.start();
     owner.grant_download(&fixture, "palette", "palette");
     let listed = owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}));
@@ -944,7 +942,7 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
         marker,
         json!({
             "format": 1, "module_id": MODULE, "resource_id": "palette", "version": "1.0.0",
-            "url": server.url("/palette"), "sha256": sha256_hex(PALETTE), "bytes": 12,
+            "url": served("/palette"), "sha256": sha256_hex(PALETTE), "bytes": 12,
             "license": "CC0-1.0", "provenance": "Generated for tests",
             "actor": "test", "installed_ms": installed_ms,
         })
@@ -964,7 +962,7 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
         json!({"module_id": MODULE, "resource_id": "palette", "state": "installed", "deduplicated": false}),
         "an installed resource answers at once"
     );
-    assert_eq!(server.hits(), 1, "the resource was downloaded once");
+    assert_eq!(transport.sends(), 1, "the resource was downloaded once");
     assert!(!fixture.resources().join(STAGING_DIR).exists());
     owner.stop();
 }
@@ -973,24 +971,22 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
 fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
     let mode = Arc::new(Mutex::new("hash"));
     let serving_mode = mode.clone();
-    let server = TestServer::http(move |_, out| {
+    let transport = MemoryTransport::new(move |_, answer| {
         let current = *serving_mode.lock().unwrap();
         match current {
-            "hash" => respond(out, "200 OK", "", b"twelve BYTES"),
-            "short" => respond(out, "200 OK", "", b"twelve"),
-            "oversized" => respond(out, "200 OK", "", b"twelve bytes and more"),
-            "redirect" => respond(
-                out,
-                "302 Found",
-                "Location: http://127.0.0.1:1/palette\r\n",
-                b"",
-            ),
-            "error" => respond(out, "500 Internal Server Error", "", b""),
-            _ => respond(out, "200 OK", "", PALETTE),
+            "hash" => answer.whole(200, b"twelve BYTES"),
+            "short" => answer.whole(200, b"twelve"),
+            "oversized" => answer.whole(200, b"twelve bytes and more"),
+            // The transport's own refusal of a redirect to an origin the resource does not list;
+            // the redirect policy itself is the transport's to test, in `luxforge-net`.
+            "redirect" => answer.fail(Error::validation(
+                "redirect refused: https://elsewhere.example is not an allowed origin",
+            )),
+            "error" => answer.whole(500, b""),
+            _ => answer.whole(200, PALETTE),
         }
-    })
-    .unwrap();
-    let fixture = Fixture::new("failures", &server);
+    });
+    let fixture = Fixture::new("failures", &transport);
     let owner = fixture.start();
     let install = json!({"module_id": MODULE, "resource_id": "palette"});
     assert_eq!(
@@ -1052,7 +1048,7 @@ fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
         .map(|(method, _)| method)
         .collect();
     assert_eq!(methods, [GRANT]);
-    // The same resource installs once the server sends the pinned bytes.
+    // The same resource installs once the transport sends the pinned bytes.
     *mode.lock().unwrap() = "good";
     fixture.probe.refuse.store(false, Ordering::SeqCst);
     let queued = owner.ok(INSTALL, install);
@@ -1062,8 +1058,8 @@ fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
 
 #[test]
 fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
-    let (server, release) = stalling();
-    let fixture = Fixture::new("cancel-download", &server);
+    let (transport, release) = stalling();
+    let fixture = Fixture::new("cancel-download", &transport);
     let owner = fixture.start();
     owner.grant_download(&fixture, "palette", "palette");
     let queued = owner.ok(
@@ -1077,7 +1073,7 @@ fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
     });
     assert_eq!(running["status"], json!("running"));
     assert_eq!(running["progress"]["message"], json!("downloading"));
-    // The server still holds the rest of the body at its gate, so the job ended mid-transfer at
+    // The transport still holds the rest of the body at its gate, so the job ended mid-transfer at
     // its cancellation, not when the transfer could finish.
     owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
     let cancelled = owner.finished(&queued["job_id"]);
@@ -1098,8 +1094,8 @@ fn a_download_cancelled_mid_transfer_stops_promptly_and_leaves_nothing() {
 
 #[test]
 fn an_install_beyond_the_quota_is_refused_before_it_is_queued() {
-    let server = serving();
-    let mut fixture = Fixture::new("quota", &server);
+    let transport = serving();
+    let mut fixture = Fixture::new("quota", &transport);
     fixture.quota = PALETTE.len() as u64 - 1;
     let owner = fixture.start();
     owner.grant_download(&fixture, "palette", "palette");
@@ -1114,15 +1110,15 @@ fn an_install_beyond_the_quota_is_refused_before_it_is_queued() {
         refused.message
     );
     assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
-    assert_eq!(server.hits(), 0);
+    assert_eq!(transport.sends(), 0);
     fixture.assert_clean("palette", "over quota");
     owner.stop();
 }
 
 #[test]
 fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
-    let server = serving();
-    let fixture = Fixture::new("crash", &server);
+    let transport = serving();
+    let fixture = Fixture::new("crash", &transport);
     let stale = fixture.resources().join(STAGING_DIR).join("job-stale");
     fs::create_dir_all(&stale).unwrap();
     fs::write(stale.join("palette"), &PALETTE[..6]).unwrap();
@@ -1144,8 +1140,8 @@ fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
 
 #[test]
 fn an_install_takes_only_the_pinned_url_and_refuses_a_caller_path() {
-    let server = serving();
-    let fixture = Fixture::new("pinned-only", &server);
+    let transport = serving();
+    let fixture = Fixture::new("pinned-only", &transport);
     let owner = fixture.start();
     // A file holding exactly the pinned bytes is still not a source: no client names a path the
     // owner reads.
@@ -1192,14 +1188,14 @@ fn an_install_takes_only_the_pinned_url_and_refuses_a_caller_path() {
         json!({"module_id": MODULE, "resource_id": "palette", "source": {"kind": "download"}}),
     );
     assert_eq!(owner.finished(&queued["job_id"])["status"], json!("ready"));
-    assert_eq!(server.hits(), 1);
+    assert_eq!(transport.sends(), 1);
     owner.stop();
 }
 
 #[test]
 fn removing_a_resource_deletes_only_the_resource() {
-    let server = serving();
-    let fixture = Fixture::new("remove", &server);
+    let transport = serving();
+    let fixture = Fixture::new("remove", &transport);
     let owner = fixture.start();
     owner.install_downloaded(&fixture, "palette");
     owner.install_downloaded(&fixture, "swatch");
@@ -1257,8 +1253,8 @@ fn removing_a_resource_deletes_only_the_resource() {
 
 #[test]
 fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing() {
-    let server = serving();
-    let fixture = Fixture::new("inert", &server);
+    let transport = serving();
+    let fixture = Fixture::new("inert", &transport);
     for round in 0..2 {
         let owner = fixture.start();
         let asked = fixture.secrets.calls().total();
@@ -1301,8 +1297,7 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
         assert_eq!(owner.handle.lane_threads(), 0, "round {round}");
         owner.stop();
     }
-    assert_eq!(fixture.net.total(), 0, "no lookup or connection was made");
-    assert_eq!(server.hits(), 0);
+    assert_eq!(transport.sends(), 0, "nothing was sent");
     assert!(
         !fixture.root.join("config").exists(),
         "no settings directory"
@@ -1312,8 +1307,8 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
 
 #[test]
 fn a_sentinel_secret_reaches_no_observable_surface() {
-    let server = serving();
-    let fixture = Fixture::new("sentinel", &server);
+    let transport = serving();
+    let fixture = Fixture::new("sentinel", &transport);
     let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
@@ -1361,8 +1356,8 @@ fn a_sentinel_secret_reaches_no_observable_surface() {
 /// finish before its retry, so an event its job announces is never mistaken for the retry's.
 #[test]
 fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_event() {
-    let server = serving();
-    let fixture = Fixture::new("retries", &server);
+    let transport = serving();
+    let fixture = Fixture::new("retries", &transport);
     let owner = fixture.start();
     let envelope = |request_id: &str| json!({"request_id": request_id, "actor": "test"});
     let twice = |client: ClientId, method: &str, params: Value| -> Value {

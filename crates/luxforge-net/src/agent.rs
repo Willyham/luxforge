@@ -11,8 +11,11 @@
 //! error instead. `ureq`'s timeouts are per phase, and a zero remaining timeout reads as one
 //! second, so the socket applies the transport's own deadlines: the idle wait for any progress and
 //! the whole request's deadline, both checked with the job's cancel before every read and write.
-use super::{Connect, Resolve, net, policy::Endpoint, tls};
-use crate::{Error, jobs::JobControl};
+use crate::{
+    connect::{self, Connect, Resolve},
+    tls,
+};
+use luxforge_core::{Error, capabilities::endpoint::Endpoint, jobs::JobControl};
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use std::{
     fmt,
@@ -35,10 +38,10 @@ use ureq::{
 };
 
 /// The response head, interim responses each counted on their own, is at most this many bytes.
-pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_HEAD_BYTES: usize = 64 * 1024;
 
 /// What bounds one connection besides sizes: the job whose cancel stops it and its deadlines.
-pub(super) struct Pace {
+pub(crate) struct Pace {
     /// The host, for messages.
     pub name: String,
     pub control: Arc<JobControl>,
@@ -79,7 +82,7 @@ impl Pace {
     /// Map an agent failure back onto the transport's error kinds: a cancel wins over whatever the
     /// shut-down socket reported, and a refusal of the transport's own comes back as itself.
     /// Messages name the fault, never a header value or the body.
-    pub(super) fn error(&self, error: ureq::Error) -> Error {
+    pub(crate) fn error(&self, error: ureq::Error) -> Error {
         if self.control.is_cancelled() {
             return self.control.cancelled_error();
         }
@@ -94,7 +97,7 @@ impl Pace {
                 "the response head from {name} is larger than {MAX_HEAD_BYTES} bytes"
             )),
             ureq::Error::Protocol(ureq_proto::Error::HttpParseTooManyHeaders) => {
-                super::too_many_fields(name)
+                crate::transport::too_many_fields(name)
             }
             ureq::Error::Protocol(error) => {
                 Error::file_access(format!("the response from {name} is malformed: {error}"))
@@ -140,7 +143,7 @@ impl Resolver for PolicyResolver {
         if uri.host() != self.endpoint.url.host_str() {
             return Err(refused(Error::validation("the request left its endpoint")));
         }
-        let addresses = net::resolve(&self.endpoint, &*self.resolve).map_err(refused)?;
+        let addresses = connect::resolve(&self.endpoint, &*self.resolve).map_err(refused)?;
         let mut answer = self.empty();
         for address in addresses {
             if answer.try_push(address).is_err() {
@@ -177,7 +180,7 @@ impl Connector for PolicyConnector {
         let pace = &self.pace;
         pace.control.checkpoint().map_err(refused)?;
         let addresses: Vec<SocketAddr> = details.addrs.iter().copied().collect();
-        let stream = net::connect(
+        let stream = connect::connect(
             &addresses,
             self.endpoint.class,
             &pace.name,
@@ -362,7 +365,7 @@ impl Transport for TlsTransport {
 /// One request's agent for `endpoint`: the policy resolver, connector and TLS, and every agent
 /// behaviour the transport does not want switched off. The request supplies `Host`, `User-Agent`,
 /// `Accept-Encoding` and `Connection` itself, so the agent adds only a `POST`'s `Content-Length`.
-pub(super) fn agent(
+pub(crate) fn agent(
     endpoint: &Endpoint,
     tls: &Arc<ClientConfig>,
     resolve: &Arc<dyn Resolve>,

@@ -1,6 +1,17 @@
 //! End-to-end transport tests against loopback servers, a fake resolver and a connector that routes
 //! chosen public addresses to those servers. Nothing here leaves the machine.
-use super::*;
+use crate::{CertificateDer, Connect, HttpTransport, Resolve, TlsTrust, TransportConfig};
+use luxforge_core::{
+    Error,
+    capabilities::{
+        endpoint::{Endpoint, EndpointClass, parse_endpoint},
+        transport::{
+            MAX_REDIRECTS, Method, RedirectPolicy, SendOptions, Transport, TransportRequest,
+            TransportResponse,
+        },
+    },
+    jobs::JobControl,
+};
 use luxforge_testbase::{Gate, HANG, wait_until};
 use luxforge_testkit::{Options, Request, TestServer, send};
 use rustls::{
@@ -8,16 +19,18 @@ use rustls::{
     pki_types::{PrivateKeyDer, pem::PemObject},
 };
 use std::{
-    io,
+    io::{self, Write},
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
     thread,
+    time::{Duration, Instant},
 };
+use url::Url;
 
 const BOTH: &[EndpointClass] = &[EndpointClass::Remote, EndpointClass::Loopback];
 /// A public address the fake resolver hands out and the test connector routes to a local server.
@@ -148,26 +161,24 @@ fn transport(
     trust: TlsTrust,
     resolver: Arc<dyn Resolve>,
     connector: Arc<dyn Connect>,
-) -> Transport {
-    Transport::new(TransportConfig {
+) -> HttpTransport {
+    HttpTransport::new(TransportConfig {
         trust,
         resolver,
         connector,
     })
-    .unwrap()
 }
 
 /// A transport for loopback servers: the test roots and direct connections.
-fn loopback() -> Transport {
-    Transport::new(TransportConfig {
+fn loopback() -> HttpTransport {
+    HttpTransport::new(TransportConfig {
         trust: test_roots(),
         ..TransportConfig::default()
     })
-    .unwrap()
 }
 
 /// A transport whose every lookup and connection attempt is observable and goes nowhere.
-fn isolated() -> (Transport, Arc<FakeResolver>, Arc<Routes>) {
+fn isolated() -> (HttpTransport, Arc<FakeResolver>, Arc<Routes>) {
     let resolver = FakeResolver::new(vec![vec![PUBLIC]]);
     let routes = Arc::new(Routes::default());
     let transport = transport(test_roots(), resolver.clone(), routes.clone());
@@ -236,7 +247,7 @@ impl Fetched {
     }
 }
 
-fn fetch(transport: &Transport, request: &TransportRequest, plan: &Plan) -> Fetched {
+fn fetch(transport: &HttpTransport, request: &TransportRequest, plan: &Plan) -> Fetched {
     let control = JobControl::new();
     if plan.cancelled {
         control.cancel("the request was cancelled");
@@ -246,7 +257,7 @@ fn fetch(transport: &Transport, request: &TransportRequest, plan: &Plan) -> Fetc
 
 /// Send `request` for the job `control`, which the caller may cancel from another thread.
 fn send_with(
-    transport: &Transport,
+    transport: &HttpTransport,
     request: &TransportRequest,
     plan: &Plan,
     control: &Arc<JobControl>,
@@ -1040,11 +1051,10 @@ fn loopback_https_works_with_the_test_roots_and_fails_with_platform_trust() {
     let fetched = fetch(&loopback(), &get, &Plan::default());
     assert_eq!(fetched.body, b"secure");
 
-    let platform = Transport::new(TransportConfig {
+    let platform = HttpTransport::new(TransportConfig {
         trust: TlsTrust::Platform,
         ..TransportConfig::default()
-    })
-    .unwrap();
+    });
     let fetched = fetch(&platform, &get, &Plan::default());
     assert_eq!(fetched.code(), "read-error");
     assert!(
