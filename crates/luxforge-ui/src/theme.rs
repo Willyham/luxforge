@@ -768,6 +768,11 @@ pub const SWATCH_SLOT_DASH: f32 = 2.0;
 /// A brush stroke's row: 20 pt, its 11 pt caption after its number right-aligned in 14 pt, and an
 /// 11 pt bin.
 pub const STROKE_ROW_HEIGHT: f32 = 20.0;
+/// The accent line a reorder drag draws at the edge of the row the dragged row will land on.
+pub const DROP_INDICATOR_WIDTH: f32 = 2.0;
+/// How much of the panel the dragged row is covered with while it is dragged, so it reads as the
+/// row in hand without disappearing.
+pub const DRAGGED_ROW_DIM: f32 = 0.45;
 pub const STROKE_INDEX_WIDTH: f32 = 14.0;
 pub const STROKE_ICON_SIZE: f32 = 11.0;
 /// Between a stroke row's number and its caption.

@@ -1225,22 +1225,36 @@ fn toggle_view<'a>(
     control: &'a ToggleControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
+    sized_toggle_view(enabled, control, menu, false)
+}
+
+/// A generated toggle at the module row height, or `compact` at the Masks panel's toggle-row
+/// height, as the board draws Invert mask; the keys and the context menu are the same either way.
+pub(crate) fn sized_toggle_view<'a>(
+    enabled: bool,
+    control: &'a ToggleControl,
+    menu: Option<&'a MenuTarget>,
+    compact: bool,
+) -> Element<'a, Message> {
     let action = control.action.clone();
     let parameter = control.parameter.clone();
-    let widget = toggle(
-        &ToggleModel {
-            label: control.label.clone(),
-            on: control.on,
-            enabled,
-        },
-        move |on| {
-            Message::Control(ControlMessage::Discrete {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                value: Value::Bool(on),
-            })
-        },
-    );
+    let model = ToggleModel {
+        label: control.label.clone(),
+        on: control.on,
+        enabled,
+    };
+    let on_toggle = move |on| {
+        Message::Control(ControlMessage::Discrete {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: Value::Bool(on),
+        })
+    };
+    let widget = if compact {
+        luxforge_ui::compact_toggle(&model, None, on_toggle)
+    } else {
+        toggle(&model, on_toggle)
+    };
     let action = control.action.clone();
     let parameter = control.parameter.clone();
     let on = control.on;

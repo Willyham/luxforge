@@ -194,6 +194,7 @@ fn item(icon: Icon, label: &str, trailing: Option<&str>, enabled: bool) -> MenuE
         label: label.into(),
         trailing: trailing.map(Into::into),
         on_press: enabled.then_some(()),
+        reason: (!enabled).then(|| "Selection model not installed".into()),
     })
 }
 
