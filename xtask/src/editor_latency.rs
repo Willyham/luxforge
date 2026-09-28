@@ -1907,11 +1907,38 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         .filter(|value| value.is_finite())
         .collect();
     let input_p95 = stats::Distribution::of(input_to_frame.clone()).map(|d| d.p95);
+    // A gesture's press: its `slider_draft_begin`, logged in the update that opens the draft, paired
+    // with the first measured `draft.set` after it and, in a drag, the frame that set's preview job
+    // was presented as. Every later input of a gesture is timed from its own `draft.set` above, so
+    // these are the only rows that include what the press waits for before its first `draft.set`.
+    // A drag has one press per run and a commit run one per sample.
+    let presses: Vec<f64> = events
+        .iter()
+        .filter(|event| event["event"] == "slider_draft_begin")
+        .map(elapsed)
+        .collect::<Result<Vec<_>>>()?;
+    let press_to_first_set: Vec<f64> = presses
+        .iter()
+        .filter_map(|press| {
+            measured
+                .iter()
+                .find(|input| input.sent_ms >= *press)
+                .map(|input| input.sent_ms - press)
+        })
+        .collect();
+    let press_to_first_frame: Vec<f64> = presses
+        .first()
+        .zip(drained.first())
+        .map(|(press, input)| input.displayed_ms - press)
+        .into_iter()
+        .collect();
     let mut rows = vec![
         stats::row("input_to_presented_frame", "ms", input_to_frame),
         stats::row("draft_set_round_trip", "ms", set_round_trip),
         stats::row("render_and_upload", "ms", render_and_upload),
         stats::row("gpu_upload", "ms", upload),
+        stats::row("press_to_first_draft_set", "ms", press_to_first_set),
+        stats::row("press_to_first_presented_frame", "ms", press_to_first_frame),
     ];
 
     // The settled exact histogram. A drafted preview is never analysed — the design keeps the plot
@@ -2029,6 +2056,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,"measured_p95_ms":input_p95,
             "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
         "rows":rows,
+        "press_note":"press_to_first_draft_set and press_to_first_presented_frame start at the gesture's slider_draft_begin, logged in the update that opens its draft, and end at its first draft.set and, in a drag, at the preview_displayed of that set's preview job; they are the only rows that include what a press waits for before its first draft.set. A drag has one press, so each run adds one sample; a commit run has one per sample and no drafted frame survives its commit.",
         "gpu_upload_note":"The gpu_upload row has no distribution when the binary's preview_displayed carries no upload_ms, which is true of the photo surface: the raster is written into the surface's own texture during the frame that draws it, so there is no upload step to time. render_and_upload then covers the render and the hand-over together.",
         "queue":{
             "scripted_slider_values":if options.control == Control::Slider {
