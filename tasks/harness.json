@@ -3,7 +3,7 @@
   "plan_id": "harness",
   "title": "Verification harness, tests and repository checks",
   "objective": "Make verification honest and small: `verify` that provides its fixtures and never calls a skip a pass, no test that cannot fail, documentation that matches the code, a repository check that keeps each concept on one path, one rule for load-independent tests, one sRGB reference, one launch path and one distribution for every timing tool, `raw-editor` as a scenario, scenarios written as plans plus pixel claims, a structured architecture document, `editor-acceptance` limited to what `cargo test` cannot prove, and fewer test binaries.",
-  "context_summary": "The harness consolidation landed its core: one smoke table and plan library that derive scripts and frame counts, universal per-frame checks, a replay and a mutation proof, one serde evidence script, `luxforge-testkit`, an independent `luxforge-reference` and one percentile in xtask. It stopped at the edges: timing tools and `raw-editor` still launch and watch editors their own way, every scenario hand-writes its own evidence records, state checks and photo finders across roughly 13,600 lines for 18 scenarios, `verify` has two honesty defects, and some tests cannot fail. Test code is about 46% of the tree; each group plan deletes its own duplicates, and this plan owns the shared rules and the harness-wide pieces. The owner's decisions are recorded in `docs/decisions.md`; the programme's constraints are in `docs/design/post-consolidation.md`; verification practice is in `docs/engineering/development.md`.",
+  "context_summary": "The harness consolidation landed one smoke table and plan library that derive scripts and frame counts, universal per-frame checks, a replay and a mutation proof, one serde evidence script, `luxforge-testkit`, an independent `luxforge-reference` and one percentile in xtask. Waves 1 and 2 finished its edges: `verify` provides its fixtures and reports a skip as incomplete, tests that could not fail are gone, the one-path repository check exists, tests share one gate, one wait and one distribution in `luxforge-testbase`, there is one sRGB reference, the timing tools launch through the scenario envelope and `raw-editor` is a smoke scenario. What remains: scenarios still hand-write their evidence records, state checks and photo finders across about 16,500 lines for 37 scenario rows; `architecture.md` needs structure; `editor-acceptance` re-walks core tests; the test binaries and the testkit cycle; and small clean-ups. Test code is about 46% of the tree; each group plan deletes its own duplicates, and this plan owns the shared rules and the harness-wide pieces. The owner's decisions are recorded in `docs/decisions.md`; the programme's constraints are in `docs/design/post-consolidation.md`; verification practice is in `docs/engineering/development.md`.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -759,10 +759,12 @@
         "TASK-008"
       ],
       "extra_context": [
-        "Wave 4, structure. Depends on the timing tools' launch path landing first, so this restructuring starts from one settled shape rather than migrating scenarios twice.",
-        "The 18 smoke scenario files total roughly 13,600 lines. Most of that is hand-written evidence records, a dozen near-identical `record` closures across a dozen files, state checks the plan format cannot express (`Expect` covers commits, label, layer payloads, field text, same-layer identity, slider drafts, expanded sections and refusals, but nothing about masks, notices, status text, workspace mode or zoom, so most of the verifiers' several hundred state assertions are written by hand instead), and eleven separate ways of locating the photograph in a frame, one of them documented as fooled once its scanned strip outgrows the photograph and still in active use by the `presence` scenario.",
-        "Two scenarios (`zoom`, `raw-panel`) already predict the photograph's rectangle from recorded geometry instead of searching for it; that is the pattern to generalize, by having the editor record the drawn rectangle once per frame.",
-        "Constraint: checks must stay at least as strict as today. `smoke --verify-only` and the plan-mutation proof, which fails a scenario on a dropped step or a changed label, are the existing tools that prove this; migrate one scenario at a time and replay each one's last recorded run before and after."
+        "Wave 4, structure. The timing tools' launch path has landed. By the programme's order, the desktop's typed evidence outcomes land first, since both sides of the evidence format change; start this after them.",
+        "The smoke table (`SCENARIOS` in `smoke.rs`) holds 37 scenario rows across 22 scenario files (the 21 `*_smoke.rs` files and `raw_editor.rs`), about 16,500 lines. Most of that is hand-written evidence records, per-file `record` closures in fourteen of them, and state checks the plan format cannot express: `Expect` (`scenario/plan.rs`) covers commits, label, layer payloads, field text, same-layer identity, slider drafts, expanded sections and refusals, but nothing about masks, notices, status text, workspace mode or zoom, so most of the verifiers' state assertions are written by hand.",
+        "Photo finding lives in `scenario/pixels.rs`, but as several finders rather than one: `bright_bounds` with three `Scan` variants (`Tallest { last_row: true }` for `vignette` and `presets`, `Tallest { last_row: false }` for the `mask-*` scenarios, and `Widest`, documented as fooled once the mode strip outgrows the photograph and still used by `presence`), `top_quadrant_bounds` (`mask`), `band_bounds` (`basic`, `histogram`), `identity_photo` (`controls`, `capabilities`, `gallery`), `window_luminance` (`basic`), and `histogram_smoke.rs`'s own exhaustive `photo_rect`.",
+        "Every frame already records the canvas rectangle (`canvas_rect`), and `zoom`, `raw-panel` and `viewport` predict the photograph's rectangle from it and the view geometry instead of searching; that is the pattern to generalize, by having the editor record the drawn photo rectangle once per frame beside it.",
+        "The timing tools share the scenario envelope (`scenario::Launch`, `Run`) but build their scripts directly from `luxforge-evidence` steps and check events, not frames: `editor-latency` has six modes (`drag`, `commit`, `burst`, `paint`, `viewport`, `crop-start`) and recipe flags (`--basic`, `--presence`, `--mask`, `--crop`, `--mask-overlay` for `paint`, `--zoom`, `--moving-pan`, `--control`, `--idle`). They stay outside the plan migration, but a recipe a timing tool shares with a scenario gets one definition: the full-strength Presence layer is written once as `editor_latency.rs`'s `presence_precondition` and again as `performance_smoke.rs`'s heavy `PRESENCE` edit.",
+        "Constraint: checks must stay at least as strict as today. `smoke --verify-only` and the plan-mutation proof (`smoke.rs`'s `mutations` test over `scenario::plan::mutation`, which fails a scenario on a dropped step or a changed label) are the existing tools that prove this; migrate one scenario at a time and replay each one's last recorded run before and after."
       ],
       "context_links": [
         {
@@ -775,13 +777,20 @@
           "kind": "file",
           "label": "Plan and Expect",
           "target": "xtask/src/scenario/plan.rs",
-          "relevance": "The `Expect` struct this task extends, and the plan format scenarios already derive their frame checks from."
+          "relevance": "The `Expect` struct this task extends, the plan format scenarios already derive their frame checks from, and the mutation proof's `mutation` module."
         },
         {
           "kind": "file",
           "label": "Photo locators",
           "target": "xtask/src/scenario/pixels.rs",
-          "relevance": "`Scan` and the other photo-finding functions this task replaces with one recorded-rectangle locator."
+          "relevance": "`bright_bounds`, `Scan` and the other photo finders this task replaces with one recorded-rectangle locator."
+        },
+        {
+          "kind": "file",
+          "label": "Zoom scenario",
+          "target": "xtask/src/zoom_smoke.rs",
+          "locator": "canvas_rect",
+          "relevance": "The recorded-geometry prediction to generalize."
         },
         {
           "kind": "file",
@@ -793,14 +802,22 @@
           "kind": "file",
           "label": "Scenario table and replay",
           "target": "xtask/src/smoke.rs",
-          "relevance": "`smoke --verify-only` and the plan-mutation proof this task's migration must keep passing."
+          "relevance": "`SCENARIOS`, `smoke --verify-only` and the plan-mutation proof this task's migration must keep passing."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency",
+          "target": "xtask/src/editor_latency.rs",
+          "locator": "presence_precondition",
+          "relevance": "A timing tool that shares recipes with scenarios but not the plan format."
         }
       ],
       "acceptance_criteria": [
         "A `Checks` recorder replaces the per-file `record` closures and hand-written evidence JSON with one `compare`/`note`/`write` path.",
         "`Expect` gains mask, notice, status, mode and zoom expectations, moving the equivalent hand-written state assertions into scenario plans.",
-        "One photo locator, built from a rectangle the editor records per frame, replaces the eleven current finders, including the one documented as unreliable once a canvas element outgrows the photograph.",
+        "One photo locator, built from a rectangle the editor records per frame, replaces the finders in `scenario/pixels.rs` and `histogram_smoke.rs`'s `photo_rect`, including `Scan::Widest`.",
         "Every migrated scenario replays unchanged through `smoke --verify-only`, and the plan-mutation proof still fails it on a dropped step and a changed label.",
+        "A recipe that `editor-latency` and a scenario both commit has one definition, and `editor-latency`'s own script tests pass unchanged.",
         "The scenario files shrink substantially in total while keeping every existing check."
       ],
       "test_strategy": {
@@ -812,7 +829,8 @@
         ],
         "commands": [
           "cargo test -p xtask",
-          "cargo xtask verify --tier rendered"
+          "cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
           "Every migrated scenario's checks are at least as strict as before migration, proved by an unchanged replay.",
@@ -827,9 +845,10 @@
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. `architecture.md` is the source the performance-rules review checklist names for every current limit, so its readability as a checklist matters more than most documents in the tree.",
-        "Two single paragraphs hold 41% of the document's words: an unstructured paragraph of over a thousand words covering rendering, and a paragraph of several hundred words listing about 25 unrelated numeric limits with no grouping. A comparable long single paragraph exists in `develop-workspace.md`, which every module-placement task also reads.",
-        "Three design documents (a source-preparation-and-rendering one, a startup-and-RAW-throughput one, and an isolated-kernels one) are contracts for already-completed, already-qualified work, framed as run plans rather than current-state documents; their checklists belong in `docs/specs/performance.md`, which already records the measured results.",
-        "Constraint: no number changes, and the anchor `docs/engineering/performance-rules.md`'s rule 6 depends on to point at the rendering-and-limits section must keep resolving, whether by preserving it or updating the cross-reference. This is a restructuring pass, not a content rewrite."
+        "Two paragraphs of 'Rendering and limits' hold about 42% of the document's 4,600 words: the rendering paragraph (about 1,280 words) and the limits paragraph (about 670), which lists some thirty unrelated numeric limits with no grouping; the Workspace section's `luxforge-core` bullet adds another 990 words in one list item. Wave 3 added to both: the spatial tile rule (512 px tiles, 1024 px past a 128 px summed halo, `luxforge_raw::spatial_tile`), the per-pass parallel thresholds (`luxforge_raw::parallel_pixels`: 0.5 MP for a segment's geometry, 0.1 MP for one or two colour units, 25,000 pixels for three or more or a mask; `luxforge_raw::PARALLEL_PIXELS`, 1 MP, for passes that are not rendering passes), the second development's 600 MiB budget (`luxforge_raw::RETAINED_DEVELOPMENT_BYTES`) with its measured RSS, and a point query's held tiles at each tile size. A comparable long single paragraph exists in `develop-workspace.md`, which every module-placement task also reads.",
+        "Three design documents are contracts for completed, qualified work, framed as run plans rather than current-state documents: `performance-second-wave.md` (source preparation and rendering), `performance-third-wave.md` (startup overlap and native RAW throughput) and `isolated-performance.md` (isolated rendering kernels). Their checklists belong in `docs/specs/performance.md`, which already records the measured results and is the only document that links them.",
+        "Constraint: no number changes, and the anchor `docs/engineering/performance-rules.md`'s rule 6 uses to point at the rendering-and-limits section must keep resolving, whether by preserving it or updating the cross-reference. Measured results in the prose, such as the second development's RSS, may link to their `docs/specs/performance.md` sections rather than sit in the limits table. This is a restructuring pass, not a content rewrite.",
+        "Other wave-4 tasks also edit this document: the `render.rs` split (rendering), the transport's own crate (capabilities), the headless binary's crate (desktop) and the explicit core surface (core service). Restructure after them, or have them rebase onto the new sections."
       ],
       "context_links": [
         {
@@ -865,14 +884,20 @@
         },
         {
           "kind": "file",
+          "label": "Startup and RAW throughput",
+          "target": "docs/design/performance-third-wave.md",
+          "relevance": "Another of the three finished-work documents to fold and delete."
+        },
+        {
+          "kind": "file",
           "label": "Isolated rendering performance",
           "target": "docs/design/isolated-performance.md",
           "relevance": "Another of the three finished-work documents to fold and delete."
         }
       ],
       "acceptance_criteria": [
-        "`architecture.md` has short sections, overview, workspace and crates, boundaries, sources and layers, persistence, rendering split into pixel domains/stage boundaries/point queries/preview scheduling, limits, histogram and analysis, agent contract, and modules, in place of the two long paragraphs.",
-        "A limits table names, for every current numeric limit, the constant or type that enforces it.",
+        "`architecture.md` has short sections, overview, workspace and crates (one short entry per crate), boundaries, sources and layers, persistence, rendering split into pixel domains/stage boundaries/point queries/preview scheduling, limits, histogram and analysis, agent contract, and modules, in place of the long paragraphs.",
+        "A limits table names, for every current numeric limit, the constant or type that enforces it, including the spatial tile rule, the per-pass parallel thresholds and the second development's budget.",
         "`performance-second-wave.md`, `performance-third-wave.md` and `isolated-performance.md` are folded into `docs/specs/performance.md` and deleted; nothing that links them is left broken.",
         "Every number in the restructured document is unchanged from before, and every internal and external link to the folded sections, including `performance-rules.md` rule 6's, still resolves."
       ],
@@ -898,10 +923,10 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Wave 5, tests. All four chapters drive the owner through the same JSON method layer the core's own conformance journey and command-contract tests already exercise on every `cargo test` run.",
-        "The mask chapter's sections on command refusals and on a masked module made unavailable are subsets of the mask command-contract tests and the conformance journey's own unavailable-module step; a Basic step duplicates a specific owner test the chapter's own text already calls out as \"referenced rather than duplicated\"; the whole M1 through M4 journey (history order, read-only preview, undo/redo/restore, the orientation layer, the crop, placement, reopen) re-walks milestones the core's own tests already pin. One duplicated step has already gone stale, which is exactly the risk a second copy of a proof creates.",
+        "Wave 5, tests. `editor-acceptance` (`xtask/src/editor_acceptance.rs`) is an M1 through M4 journey that drives `EditorService` directly, followed by four chapters: Basic and histogram (`basic_acceptance.rs`), the field-patch conformance suite compiled in from `crates/luxforge-core/tests/modules/conformance/` and run in release, Presence, mixer and vignette placement (`presence_mixer_vignette_acceptance.rs`), and masking (`mask_acceptance.rs`). The chapters drive the owner through `OwnerHandle::call`, the same JSON method layer the core's own owner, method and conformance tests exercise on every `cargo test` run.",
+        "The mask chapter's section 8 (refusals) and section 13 (a disabled maskable module) are subsets of the mask command-contract tests (`mask/command_contracts.rs`) and the conformance journey's `unavailable` step; its section 15, the reopen through a third owner, is what it keeps. The Basic chapter's last step, two clients sharing one analysis job with one client's cancel, repeats `api::owner::tests::two_clients_share_one_job_and_keep_independent_current_and_historical_results`, which the chapter's own `reused_unit_tests` list names. The M1 through M4 journey (history order, read-only preview, undo/redo/restore, the orientation layer, the crop, reopen) re-walks what the core's own tests pin.",
         "Owner decision: `editor-acceptance` keeps only what `cargo test` cannot prove at the same layer, the release-profile run of the shared conformance suite, Basic's numerics on the photo fixture against the independent reference, the placement chapter, and mask reopen through a fresh owner.",
-        "Constraint: every deleted check must be mapped, in the commit, to the specific core test that proves it, following the rule that a deleted test names its keeper."
+        "Constraint: every deleted check must be mapped, in the commit, to the specific core test that proves it, following the rule that a deleted test names its keeper. The masking group's kind-conformance suite rewrites the mask command-contract tests; name as keepers the tests that remain after it."
       ],
       "context_links": [
         {
@@ -914,19 +939,26 @@
           "kind": "file",
           "label": "Editor acceptance journey",
           "target": "xtask/src/editor_acceptance.rs",
-          "relevance": "The M1 through M4 journey this task narrows to what only it can prove."
+          "relevance": "The M1 through M4 journey and the chapter order this task narrows to what only it can prove."
         },
         {
           "kind": "file",
           "label": "Masking acceptance chapter",
           "target": "xtask/src/mask_acceptance.rs",
-          "relevance": "The command-refusal and unavailable-module sections that duplicate core tests."
+          "relevance": "The refusal and disabled-module sections that duplicate core tests, and the reopen it keeps."
         },
         {
           "kind": "file",
           "label": "Basic and histogram acceptance chapter",
           "target": "xtask/src/basic_acceptance.rs",
-          "relevance": "Keeps its numerics-against-reference checks; loses the step already marked as duplicating a named owner test."
+          "locator": "reused_unit_tests",
+          "relevance": "Keeps its numerics-against-reference checks; loses the shared-job step that repeats a named owner test."
+        },
+        {
+          "kind": "file",
+          "label": "Placement chapter",
+          "target": "xtask/src/presence_mixer_vignette_acceptance.rs",
+          "relevance": "The placement chapter this task keeps."
         },
         {
           "kind": "file",
@@ -938,13 +970,20 @@
           "kind": "file",
           "label": "Conformance journey",
           "target": "crates/luxforge-core/tests/modules/conformance/journey.rs",
-          "relevance": "The core-layer test the mask chapter's unavailable-module step duplicates."
+          "locator": "unavailable",
+          "relevance": "The core-layer test the mask chapter's disabled-module section duplicates."
+        },
+        {
+          "kind": "file",
+          "label": "Mask command contracts",
+          "target": "crates/luxforge-core/src/mask/command_contracts.rs",
+          "relevance": "The core-layer refusals the mask chapter's refusal section duplicates."
         }
       ],
       "acceptance_criteria": [
-        "`editor-acceptance` retains exactly the release-profile conformance run, Basic's independent-reference numerics, the placement chapter and mask reopen through a fresh owner; every other chapter and step listed above as a duplicate is deleted.",
+        "`editor-acceptance` retains exactly the release-profile conformance run, Basic's independent-reference numerics, the placement chapter and mask reopen through a fresh owner; every other chapter section and step listed above as a duplicate is deleted.",
         "The commit maps each deleted check to the core test that already proves it.",
-        "`docs/engineering/development.md`'s acceptance section states the rule: a chapter step exists only if no `cargo test` proves it at the same layer.",
+        "`docs/engineering/development.md`'s acceptance sections state the rule: a chapter step exists only if no `cargo test` proves it at the same layer.",
         "`editor-acceptance` still runs to completion and its retained checks pass unchanged."
       ],
       "test_strategy": {
@@ -956,7 +995,7 @@
         ],
         "commands": [
           "cargo xtask editor-acceptance --output NEW_DIR",
-          "cargo xtask verify --tier quick"
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "`editor-acceptance` proves only what the core's own tests cannot prove at the same layer.",
@@ -970,10 +1009,12 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Wave 5, tests. `cargo test --workspace` builds 24 test executables; 13 link `luxforge-core`, and the core itself dev-depends on `luxforge-testkit`, which depends back on the core, so the recommended edit loop of testing the core's library alone builds the core twice.",
-        "That cycle is also why the core's own tens of thousands of lines of unit tests cannot use testkit's typed helpers: a `luxforge-core` type inside testkit is a different type from the one the core's own unit tests see. The result is duplication testkit was meant to remove: several private `mutation` helpers inside the core's unit tests alone, near-identical owner test harnesses in two capability test files, and the same small SQL-seeding helper repeated in two mask test files.",
-        "The core already has three small test-support modules (`editor/test_support.rs`, `capabilities/testing.rs`, `artifacts/testing.rs`); this consolidates future owner-harness and mutation-envelope helpers there instead of adding a fourth.",
-        "Separately, three of the app's `tests/` binaries each spin up their own process for a small, non-overlapping slice of CLI behavior, and one core integration binary (`resources_cost`) is a single ignored test that could run inside another binary instead."
+        "Wave 5, tests. `cargo test --workspace` builds 26 test executables; 13 link `luxforge-core` (its library and five integration binaries, `luxforge-testkit`, the app's two binaries and three CLI test binaries, and xtask). The core dev-depends on `luxforge-testkit`, which depends back on the core, so testing the core's library alone builds the core twice.",
+        "`luxforge-testbase` now exists as the core-free base (the one gate, the one wait and the one distribution), and the `core-free-test-base` repository rule keeps it free of workspace crates. The core's unit tests use only core-free parts of testkit (`TestServer`, `ProofEndpoint`, and the scratch and fixture paths in `fixtures`), which can move there or beside it under the same rule. The core's integration tests (`basic`, `mask`, `modules`, `cancellation`) use testkit's core-typed helpers (`fixtures::render`, `sample`, `source_of`, `client::Owner` and others).",
+        "Cargo builds every dev-dependency for every test target of a package, so the second build goes only when `luxforge-core`'s manifest no longer names a crate that depends on the core. The core's integration tests then need their typed helpers another way: move those binaries into a test crate of their own, or compile the helpers into each consumer from one source file through `#[path]`, as xtask already compiles the conformance suite. Either route updates xtask's `#[path]` include of the conformance suite if the files move, and `docs/engineering/development.md`'s test-binary section.",
+        "That cycle is also why the core's unit tests cannot use testkit's typed helpers, which left duplication: private `mutation` helpers across the core's unit tests (the core service's own duplicate-test clean-up consolidates them), near-identical owner test harnesses in two capability test files (the capability group's test clean-up), and SQL entry seeding in `editor/masks.rs`'s tests (`plant`) and `mask/command_contracts.rs` beside `editor/catalog.rs`'s `insert_entry`. The core's test-support modules (`editor/test_support.rs`, `capabilities/testing.rs`, `artifacts/testing.rs`) are where such helpers go, rather than a fourth.",
+        "Separately, the app's three CLI test binaries (`json_cli`, `presets_json_cli`, `raw_json_cli`) each start their own process for a small, non-overlapping slice of CLI behaviour. `verify`'s `raw-authentic` component runs `raw_json_cli` by name (`AUTHENTIC` in `verify.rs`) and development.md documents that command. The desktop group's headless-binary crate moves these tests with the binary; merge them where they then live. One core integration binary, `resources_cost`, is a single ignored timing test that can run inside `cancellation`.",
+        "The `thread-spawn` repository rule lists `luxforge-testkit`'s `server.rs` and `process.rs` as thread homes; the row follows whatever moves."
       ],
       "context_links": [
         {
@@ -990,6 +1031,12 @@
         },
         {
           "kind": "file",
+          "label": "Test base",
+          "target": "crates/luxforge-testbase/Cargo.toml",
+          "relevance": "The existing core-free test crate and the rule that keeps it so."
+        },
+        {
+          "kind": "file",
           "label": "Core crate manifest",
           "target": "crates/luxforge-core/Cargo.toml",
           "relevance": "The dev-dependency on `luxforge-testkit` that creates the build cycle."
@@ -1002,27 +1049,42 @@
         },
         {
           "kind": "file",
+          "label": "Authentic RAW invocation",
+          "target": "xtask/src/verify.rs",
+          "locator": "AUTHENTIC",
+          "relevance": "Runs `raw_json_cli` by name; follows the merge."
+        },
+        {
+          "kind": "file",
+          "label": "Test-binary layout",
+          "target": "docs/engineering/development.md",
+          "locator": "Test and debug builds",
+          "relevance": "Documents the core's integration binaries and why `cancellation` and `resources_cost` stand apart."
+        },
+        {
+          "kind": "file",
           "label": "Existing core test-support module",
           "target": "crates/luxforge-core/src/editor/test_support.rs",
           "relevance": "One of three existing support modules this task consolidates future helpers into."
         }
       ],
       "acceptance_criteria": [
-        "The loopback test server, scratch and fixture paths move to a crate with no dependency on `luxforge-core`; testkit's typed helpers stay where core-dependent tests can use them.",
-        "`cargo test -p luxforge-core --lib` no longer triggers a second full build of the core through the testkit dependency cycle, and its incremental build time is recorded before and after.",
-        "The app's three CLI test binaries are merged into one binary with one module per CLI; `resources_cost` is merged into `cancellation` and still runs by name.",
-        "The full workspace test suite passes unchanged after every merge."
+        "The loopback test server, the proof endpoint and the scratch and fixture paths live in a crate with no dependency on `luxforge-core` (`luxforge-testbase`, or a sibling under the same rule); the core's unit tests use them from there.",
+        "`luxforge-core`'s manifest names no crate that depends on the core, so `cargo test -p luxforge-core --lib` builds the core once, and its incremental build time is recorded before and after; the core's integration tests keep their typed helpers by the chosen route.",
+        "The app's three CLI test binaries are one binary with one module per CLI slice, wherever the headless binary lives, and `verify`'s `raw-authentic` invocation and `docs/engineering/development.md` name it with a filter; `resources_cost` is merged into `cancellation` and still runs by name.",
+        "The full workspace test suite passes unchanged after every merge, and `cargo xtask check-repository` passes with the thread-spawn row following the move."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Split the core-free parts of testkit into a new crate and repoint the core's dev-dependency at it.",
-          "Merge the app's three CLI test binaries and `resources_cost` into their targets, keeping every test runnable by name.",
+          "Move the core-free parts of testkit beside `luxforge-testbase`, choose the route for the integration tests' typed helpers, and drop `luxforge-testkit` from the core's manifest.",
+          "Merge the app's three CLI test binaries and `resources_cost` into their targets, keeping every test runnable by name and updating `verify`'s `raw-authentic` invocation.",
           "Measure `cargo test -p luxforge-core --lib`'s incremental build time before and after the split."
         ],
         "commands": [
           "cargo test --workspace",
-          "cargo xtask verify --tier quick"
+          "cargo xtask check-repository",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Every existing test still passes, addressable by the same or an equivalently named path.",
@@ -1033,16 +1095,16 @@
     {
       "id": "TASK-015",
       "description": "Clear the harness's remaining small defects: dead fields, a Windows-incompatible test, redundant CI jobs, hard-coded scenario lists, copied desktop formatters, an uninjectable buffer-size constant, and run-log prose in the development guide.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-009"
       ],
       "extra_context": [
-        "Wave 5, tests. Depends on the one distribution type landing first, since one of these items, `editor-latency`'s dead `upload_ms` field, is otherwise entangled with the timing report shape that task settles.",
-        "Portability: `verify`'s pool tests spawn `/bin/sleep`, so `cargo test -p xtask` cannot pass on Windows, where CI only runs `cargo xtask check`; spawn the xtask test binary itself instead, as the scenario launch tests already do, or confine the sleep-based tests to Unix.",
-        "Redundant or drifted checks: the CI fixtures job re-runs the same fixture check `check`'s own test run already runs as `golden_corpus`; the CI Linux smoke step hard-codes eight scenario names instead of iterating `smoke --list`; `docs/engineering/development.md`'s CI section says CI runs `cargo xtask check` and that Linux runs every smoke scenario, when the workflow actually runs `verify --tier quick` and the same eight named scenarios.",
-        "Dead and copied code: `editor-latency` carries an `upload_ms`/`gpu_upload` field the editor never emits, backed by a test that fabricates the value it checks; the harness re-implements the desktop's own byte, percentage and elapsed-time formatters instead of importing them, and the two copies already disagree on how a non-finite value prints; the core's artifact LRU accounting test fills real 64 MiB buffers because its size constant cannot be injected, when a parameterized bound would let it test with kilobytes.",
-        "Prose: `docs/engineering/development.md` carries a dated scenario-workload quote and a per-run measurement log that duplicate figures this plan's other tasks keep current elsewhere, plus roughly 180 lines restating each scenario's own plan, which duplicates what each scenario's module doc already provides to `smoke --list`.",
+        "Wave 5, tests. The one distribution type has landed (`luxforge_testbase::Distribution`), but `editor-latency`'s dead `upload_ms`/`gpu_upload` row survived it.",
+        "Portability: `verify`'s pool tests (`the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index` and its neighbours, through `pooled` and `sleeps`) spawn `/bin/sleep`. CI runs `verify --tier quick` on Windows too, and its `check` runs `cargo test --workspace`, so these tests reach a Windows host; spawn the xtask test binary itself instead, as `scenario/launch.rs`'s tests already do, or confine them to Unix.",
+        "Redundant or drifted checks: the CI `fixtures` job runs `cargo xtask fixtures`, the same check `check`'s test run already makes as `fixtures.rs`'s `golden_corpus`; the Linux smoke step hard-codes eight scenario names (`empty` through `large60`) instead of iterating `smoke --list`; `docs/engineering/development.md`'s CI section says CI runs `cargo xtask check` and that Linux runs every smoke scenario, when the workflow runs `verify --tier quick` and those eight.",
+        "Dead and copied code: `editor-latency` reads an `upload_ms` the editor never emits into a `gpu_upload` row (`editor_latency.rs`, with an empty row in `stats.rs`), backed by a test that fabricates the value it checks. The `performance` scenario re-derives the Performance section's text (`bytes_text`, `percent_text`, `elapsed_text` in `performance_smoke.rs`) beside the desktop's `format_bytes`, `format_percent` and `format_elapsed` (`state/performance.rs`), and they disagree on a non-finite percentage: the desktop checks `is_finite`, while the harness's `max(0.0)` prints NaN as `0.0`. `luxforge-app` has no library target, so xtask cannot import the desktop's functions as they stand, and the harness copies are written as an independent re-derivation. The core's prepared-artifact cache test (`the_prepared_cache_is_bounded_by_bytes_and_evicts_the_least_recently_used`, `artifacts/mod.rs`) fills four real 64 MiB buffers because `PREPARED_ARTIFACT_BYTES` cannot be injected; a parameterized bound would let it test with kilobytes.",
+        "Prose: `docs/engineering/development.md`'s 'Rendered scenario cost' section carries a dated 17-scenario workload quote with its load averages and a per-scenario elapsed table, which each run's own `summary.json` records; its evidence-scripts section carries roughly 180 lines of per-scenario walkthroughs (from `crop` and `crop-draft` to `capabilities`) that restate each scenario's plan and module doc.",
         "Constraint: each item in this task is independent; where a fix is not worth its own change, explain why in the commit rather than leaving it silently undone."
       ],
       "context_links": [
@@ -1056,13 +1118,29 @@
           "kind": "file",
           "label": "Verify pool tests",
           "target": "xtask/src/verify.rs",
+          "locator": "pooled, sleeps",
           "relevance": "The `/bin/sleep`-spawning tests that block Windows portability."
         },
         {
           "kind": "file",
           "label": "Editor latency tool",
           "target": "xtask/src/editor_latency.rs",
+          "locator": "upload_ms",
           "relevance": "The dead `upload_ms`/`gpu_upload` field and its fabricated test."
+        },
+        {
+          "kind": "file",
+          "label": "Performance scenario",
+          "target": "xtask/src/performance_smoke.rs",
+          "locator": "bytes_text, percent_text, elapsed_text",
+          "relevance": "The harness's re-derivation of the Performance section's text."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop formatters",
+          "target": "crates/luxforge-app/src/state/performance.rs",
+          "locator": "format_bytes, format_percent, format_elapsed",
+          "relevance": "The desktop's own formatters the harness copies disagree with on non-finite values."
         },
         {
           "kind": "file",
@@ -1078,16 +1156,19 @@
         },
         {
           "kind": "file",
-          "label": "Artifact LRU accounting",
+          "label": "Prepared artifact cache",
           "target": "crates/luxforge-core/src/artifacts/mod.rs",
-          "relevance": "The uninjectable buffer-size constant its own test works around with real 64 MiB buffers."
+          "locator": "PREPARED_ARTIFACT_BYTES",
+          "relevance": "The uninjectable byte bound its own test works around with real 64 MiB buffers."
         }
       ],
       "acceptance_criteria": [
         "`cargo test -p xtask` passes without spawning a Unix-only binary, or the affected tests are confined to Unix explicitly.",
         "The CI fixtures job and the hard-coded Linux scenario list are removed in favor of what `check` and `smoke --list` already provide, and `docs/engineering/development.md`'s CI section states what CI actually runs.",
-        "The dead `upload_ms` field and its fabricated test are removed; the harness imports the desktop's own formatters instead of a second copy that can disagree with it.",
-        "The run-log prose and the roughly 180 lines of per-scenario restatement in `docs/engineering/development.md` are removed in favor of each scenario's own module doc.",
+        "The dead `upload_ms` field, its `gpu_upload` rows and its fabricated test are removed.",
+        "The harness either uses the desktop's own formatters through a crate both can depend on, or keeps its independent re-derivation with the reason stated beside it; either way the two agree on a non-finite value.",
+        "The prepared-artifact cache test runs on an injected bound of kilobytes.",
+        "The run-log prose and the roughly 180 lines of per-scenario restatement in `docs/engineering/development.md` are removed in favor of each scenario's own module doc and `smoke --list`.",
         "Every item in this task's scope is either fixed or has a stated reason it is not, in the commit."
       ],
       "test_strategy": {
@@ -1099,8 +1180,8 @@
         ],
         "commands": [
           "cargo test -p xtask",
-          "cargo test -p luxforge-testkit",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-core prepared_cache",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "`cargo test -p xtask` is portable to a host without `/bin/sleep`.",
