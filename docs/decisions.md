@@ -232,6 +232,16 @@ Decided on 2026-09-28. The owner delegated the behaviour choices of the [Masks p
 - The luminance range is drawn with a generic `range` control kind above its four fields.
 - The Polygon kind, model selections, the inference runtime and Refine edge stay proposals; the panel draws nothing for them.
 
+## Plan refresh
+
+Decided by the owner on 2026-09-28, accepting the recommendations recorded in [product decisions](../tasks/product-decisions.json) when the post-consolidation plans were refreshed after the speed wave.
+
+- **Bayer highlight latitude is retained**, so the Z6 and the Air 2S keep values above sensor white through the demosaic as the X100VI does, provided the rendering change measured on the supplied Z6 and Air 2S files shows no new highlight artefacts such as false-colour clipped highlights. If it does, the Bayer path keeps its clip at sensor white and the [RAW design](design/initial-raw.md#pixel-and-color-contract) documents it as that path's limit. The RAW high-precision qualification carries the change and its measurement.
+- **The RAW memory budget has two parts:** the one-development working set, whose investigation target stays 1.5 GiB of process CPU RSS until the whole-editor RAW measurement attributes today's miss, and the retained second development under its own 600 MiB byte budget (`luxforge_raw::RETAINED_DEVELOPMENT_BYTES`). GPU memory is reported separately. Only that measurement's numbers count against the budget; if a measured total is unacceptable, the choice is between a higher target, a smaller slot and a compare that shows only the proxy.
+- **`luxforge-json` takes the desktop's `--developer` flag**, with the same meaning, and refuses `--proof-endpoint` without it, as the desktop does. It is not turned on automatically in debug builds, so an agent's `schema.list` never depends on the build profile and a test that needs a test module says so.
+- **GPU residency beyond the photo-texture ceiling stays a standalone follow-up** outside the programme waves, measured beside the whole-editor RAW measurement before any total-memory claim. **The 1088 MiB photo-texture ceiling is one budget shared by every photo surface**, so a second surface draws from it rather than doubling it. Neither implies a total editor or GPU memory guarantee.
+- **RAW priorities are narrowed** to what the recorded product decisions leave open: which recording modes, firmware and controlled quality scenes come next, and whether any camera-JPEG or film matching goes beyond the neutral development.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
