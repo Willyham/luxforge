@@ -1276,7 +1276,7 @@
     {
       "id": "TASK-016",
       "description": "Make the desktop's layering true and checked: value rules in the view model, one framework-free layout module, both canvases under `view/`, and the boundary check extended to them.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",
@@ -1348,19 +1348,19 @@
         {
           "kind": "file",
           "label": "Crop canvas",
-          "target": "crates/luxforge-app/src/crop_canvas.rs",
+          "target": "crates/luxforge-app/src/view/crop_canvas.rs",
           "relevance": "View code outside `view/`, importing `luxforge_core` in production code."
         },
         {
           "kind": "file",
           "label": "Mask canvas",
-          "target": "crates/luxforge-app/src/mask_canvas.rs",
+          "target": "crates/luxforge-app/src/view/mask_canvas.rs",
           "relevance": "View code outside `view/`."
         },
         {
           "kind": "file",
           "label": "Canvas view transform",
-          "target": "crates/luxforge-app/src/canvas_view.rs",
+          "target": "crates/luxforge-app/src/view/canvas_view.rs",
           "relevance": "The canvases' shared view transform, also outside `view/`."
         }
       ],
@@ -1392,7 +1392,7 @@
     {
       "id": "TASK-017",
       "description": "Match core controls directly instead of through the `Rendered` mirror, hold per-control local state in one map, and delete the dead-code allowances that hid unread fields.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-016"
       ],

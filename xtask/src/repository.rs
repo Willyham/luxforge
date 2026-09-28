@@ -263,20 +263,31 @@ const SHIPPED_CRATES: &[&str] = &[
 ];
 
 const SOURCE_RULES: &[SourceRule] = &[
-    // The desktop's layering: the view model reaches no framework and not the update layer above
-    // it (`app/`, which depends on it). `app::` catches `crate::app::`, `super::app::` and a grouped
-    // `use crate::{ app::... }` line alike, and nothing that merely ends in `app`.
+    // The desktop's layering: the view model reaches no framework, not the widget crate, not the
+    // view that draws it and not the update layer above it (`app/`, which depends on it). `app::`
+    // and `view::` catch `crate::app::`, `super::view::` and a grouped `use crate::{ view::... }`
+    // line alike, and nothing that merely ends in `app` or `view` (`preview::`, `canvas_view::`).
+    // The window and panel arithmetic both sides need is the framework-free `layout.rs`.
     SourceRule {
         name: "state-layer",
-        tokens: &["use iced", "iced::", "iced_runtime", "app::"],
+        tokens: &[
+            "use iced",
+            "iced::",
+            "iced_runtime",
+            "app::",
+            "luxforge_ui",
+            "view::",
+        ],
         scope: &["crates/luxforge-app/src/state"],
         types: &["rs", "toml"],
         allowed: &[],
         mode: Match::Prefix,
         tests: true,
         once: false,
-        reason: "the view model reaches neither Iced nor the update layer (`app/`) above it",
+        reason: "the view model reaches neither Iced, the widget crate (luxforge_ui), the view \
+                 (`view/`) nor the update layer (`app/`) above it",
     },
+    // The view, the two canvases and the view transform they draw through included.
     SourceRule {
         name: "view-layer",
         tokens: &["luxforge_core", "OwnerHandle", ".call("],
@@ -1890,20 +1901,46 @@ mod tests {
                 && error.contains("SOURCE_RULES"),
             "{error}"
         );
-        // The view model never imports the update layer, in any spelling of the path.
-        for import in [
-            "use crate::app::message::Message;\n",
-            "\nlet step = super::app::crop::ANGLE_STEP;\n",
-            "use crate::{\n    app::fields::Fields,\n};\n",
-            "/// Seeded like [`crate::app::Editor`] seeds them.\n",
+        // The view model never imports the update layer, the view or the widget crate, in any
+        // spelling of the path.
+        for (import, token) in [
+            ("use crate::app::message::Message;\n", "app::"),
+            ("\nlet step = super::app::crop::ANGLE_STEP;\n", "app::"),
+            ("use crate::{\n    app::fields::Fields,\n};\n", "app::"),
+            (
+                "/// Seeded like [`crate::app::Editor`] seeds them.\n",
+                "app::",
+            ),
+            ("use crate::view::STATE_PANEL_WIDTH;\n", "view::"),
+            ("let inset = crate::view::canvas::FIT_INSET;\n", "view::"),
+            (
+                "use crate::{\n    layout,\n    view,\n    view::canvas,\n};\n",
+                "view::",
+            ),
+            ("use luxforge_ui::geometry::quantize;\n", "luxforge_ui"),
+            (
+                "let divider = luxforge_ui::theme::BORDER_WIDTH;\n",
+                "luxforge_ui",
+            ),
+            (
+                "pub(crate) icon: Option<luxforge_ui::Icon>,\n",
+                "luxforge_ui",
+            ),
         ] {
             fs::write(state.join("bad.rs"), import).unwrap();
             let error = refusal(tmp.path(), LAYERS, import);
             assert!(
-                error.contains("bad.rs:") && error.contains("found `app::`"),
+                error.contains("bad.rs:") && error.contains(&format!("found `{token}`")),
                 "{import:?}: {error}"
             );
         }
+        // Nor does it refuse what merely ends in `view` or `app`.
+        fs::write(
+            state.join("bad.rs"),
+            "use crate::layout::FIT_INSET;\nlet p = preview::x;\nlet c = canvas_view::y;\n",
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), LAYERS).unwrap(), (2, 0));
         fs::remove_file(state.join("bad.rs")).unwrap();
         let view = tmp.path().join("crates/luxforge-app/src/view");
         fs::create_dir_all(&view).unwrap();
@@ -1916,6 +1953,18 @@ mod tests {
         fs::write(view.join("bad.rs"), "owner.call(client, request)\n").unwrap();
         assert!(refusal(tmp.path(), LAYERS, "an owner call in the view").contains("`.call(`"));
         fs::remove_file(view.join("bad.rs")).unwrap();
+        // The canvases live in the view and are held to it, their tests included.
+        fs::write(
+            view.join("crop_canvas.rs"),
+            "fn f() {}\n#[cfg(test)]\nmod tests {\n    use luxforge_core::CropStage;\n}\n",
+        )
+        .unwrap();
+        let error = refusal(tmp.path(), LAYERS, "the core in a canvas's tests");
+        assert!(
+            error.contains("view/crop_canvas.rs:4:") && error.contains("`luxforge_core`"),
+            "{error}"
+        );
+        fs::remove_file(view.join("crop_canvas.rs")).unwrap();
         let ui = tmp.path().join("crates/luxforge-ui");
         fs::create_dir_all(&ui).unwrap();
         fs::write(
