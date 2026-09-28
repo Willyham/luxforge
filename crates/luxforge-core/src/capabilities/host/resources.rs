@@ -9,9 +9,9 @@ use crate::{
     capabilities::{
         consent::{consent_required, download_disclosure},
         descriptor::{CapabilityKind, ResourceDescriptor},
+        endpoint::{EndpointClass, parse_endpoint},
         grants::{DownloadScope, GrantScope},
         resources::{self as transfer, InstallJob, InstallSource, ResourceRow, ResourceState},
-        transport::{EndpointClass, parse_endpoint},
     },
     jobs::{JobControl, JobKind, JobRecord, JobStatus, Jobs, NewJob, Work},
 };

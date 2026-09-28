@@ -12,9 +12,14 @@ publish.workspace = true
 luxforge-core = { path = "../luxforge-core" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
-rustls.workspace = true
+rustls = { workspace = true, optional = true }
 serde_json.workspace = true
 sha2.workspace = true
+
+# `tls` lets a `TestServer` serve TLS. Only the transport's own tests (`luxforge-net`) ask for it,
+# so a build of the core's tests alone links no TLS crate.
+[features]
+tls = ["dep:rustls"]
 
 [lints]
 workspace = true

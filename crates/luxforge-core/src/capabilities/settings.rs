@@ -8,8 +8,8 @@
 use super::{
     descriptor::{AdapterAuth, ProfilesDescriptor, SettingDescriptor, SettingsDescriptor},
     document::JsonDocument,
+    endpoint::parse_endpoint,
     secrets::{SecretKey, SecretStore, SecretValue},
-    transport::parse_endpoint,
 };
 #[cfg(test)]
 use crate::ErrorKind;

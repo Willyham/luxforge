@@ -67,6 +67,7 @@ impl Proof {
             config_dir: Some(root.join("config")),
             resource_dir: Some(root.join("resources")),
             secrets: Arc::new(MemorySecretStore::new()),
+            transport: Arc::new(luxforge_net::HttpTransport::system()),
             ..HostConfig::unconfigured()
         };
         let (owner, join) =

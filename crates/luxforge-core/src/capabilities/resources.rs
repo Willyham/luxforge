@@ -15,11 +15,9 @@
 use super::{
     descriptor::ResourceDescriptor,
     document::JsonDocument,
+    endpoint::{EndpointClass, parse_endpoint},
     grants::now_ms,
-    transport::{
-        EndpointClass, Method, RedirectPolicy, SendOptions, Transport, TransportConfig,
-        TransportRequest, parse_endpoint,
-    },
+    transport::{MAX_REDIRECTS, Method, RedirectPolicy, SendOptions, Transport, TransportRequest},
 };
 use crate::{Error, JobId, ModuleRegistry, atomic_file, jobs::JobControl};
 use serde::{Deserialize, Serialize};
@@ -29,7 +27,7 @@ use std::{
     fs::{self, File},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -247,40 +245,14 @@ pub(crate) fn check_quota(
     Ok(())
 }
 
-/// The one transport the host's downloads and task requests share, built on a lane the first time
-/// one needs it rather than when the owner starts.
-pub(crate) struct SharedTransport {
-    config: TransportConfig,
-    built: Mutex<Option<Arc<Transport>>>,
-}
-
-impl SharedTransport {
-    pub(crate) fn new(config: TransportConfig) -> Self {
-        Self {
-            config,
-            built: Mutex::new(None),
-        }
-    }
-
-    pub(crate) fn get(&self) -> Result<Arc<Transport>, Error> {
-        let mut built = self.built.lock().expect("shared transport");
-        if let Some(transport) = built.as_ref() {
-            return Ok(transport.clone());
-        }
-        let transport = Arc::new(Transport::new(self.config.clone())?);
-        *built = Some(transport.clone());
-        Ok(transport)
-    }
-}
-
 /// Everything an install job needs on the transfer lane.
 pub(crate) struct InstallJob {
     pub store: ResourceStore,
     pub job_id: JobId,
     pub module_id: String,
     pub resource: ResourceDescriptor,
-    /// The transport the declared URL is downloaded through.
-    pub transport: Arc<SharedTransport>,
+    /// The host's transport, which the declared URL is downloaded through.
+    pub transport: Arc<dyn Transport>,
     /// Asked to check the staged file's format.
     pub registry: Arc<ModuleRegistry>,
     pub quota: u64,
@@ -466,7 +438,6 @@ fn download(
         &resource.url,
         &[EndpointClass::Remote, EndpointClass::Loopback],
     )?;
-    let transport = job.transport.get()?;
     let request = TransportRequest {
         method: Method::Get,
         endpoint,
@@ -479,7 +450,7 @@ fn download(
     let mut progress = |received: u64, _: Option<u64>| {
         control.set_progress(Some(received as f64 / total as f64), "downloading");
     };
-    let sent = transport.send(
+    let sent = job.transport.send(
         &request,
         SendOptions {
             max_request_bytes: 0,
@@ -489,7 +460,7 @@ fn download(
             total_timeout: DOWNLOAD_BASE
                 .saturating_add(Duration::from_secs(total / DOWNLOAD_MIN_RATE)),
             redirects: RedirectPolicy {
-                max: super::transport::MAX_REDIRECTS,
+                max: MAX_REDIRECTS,
                 origins: &resource.redirect_origins,
             },
             control,

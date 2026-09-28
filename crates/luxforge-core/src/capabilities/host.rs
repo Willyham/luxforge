@@ -13,14 +13,15 @@
 //! [`CapabilityHost`].
 use super::{
     descriptor::SettingDescriptor,
+    endpoint::{Endpoint, parse_endpoint},
     grants::{Grant, GrantKind, GrantScope, GrantsStore, PermissionCounts},
-    resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
+    resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore},
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
         CLEAR_SECRET, CREATE_PROFILE, FieldRead, REMOVE_PROFILE, RESET, SET, SET_SECRET,
         SettingsRead, SettingsStore, SettingsWrite, WriteOutcome,
     },
-    transport::{Endpoint, TransportConfig, parse_endpoint},
+    transport::{Transport, UnavailableTransport},
 };
 use crate::{
     AssetId, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry, ParameterKind,
@@ -47,9 +48,11 @@ pub const ENDPOINT_CHANGED: &str = "endpoint changed";
 pub const PROFILE_REMOVED: &str = "profile removed";
 pub const SETTINGS_RESET: &str = "settings reset";
 
-/// Where the host keeps what it owns for modules. Tests and evidence runs point every directory at
-/// an isolated location, pass an in-memory secret store and inject their own transport, so they
-/// never touch the person's configuration, login keychain or network.
+/// Where the host keeps what it owns for modules, and the secure store and network transport it
+/// uses. The desktop and `luxforge-json` give it `luxforge-net`'s Keychain store and transport.
+/// Tests and evidence runs point every directory at an isolated location and pass an in-memory
+/// secret store, and the core's own tests an in-memory transport, so they never touch the person's
+/// configuration, login keychain or network.
 #[derive(Clone)]
 pub struct HostConfig {
     /// The directory that holds `settings.json` and `grants.json`, normally `<config>/modules`.
@@ -60,22 +63,24 @@ pub struct HostConfig {
     /// `None` refuses installs and removals with `not-ready`. Nothing is created until an install.
     pub resource_dir: Option<PathBuf>,
     pub secrets: Arc<dyn SecretStore>,
-    /// How downloads reach the network: by default the platform's trust store, the system resolver
-    /// and direct connections. The transport is built on the first download, never at start.
-    pub transport: TransportConfig,
+    /// How downloads and task requests reach the network. Every capability job shares it, on its
+    /// lane; nothing calls it at start.
+    pub transport: Arc<dyn Transport>,
     /// The storage every module's installed resources may take together.
     pub resource_quota_bytes: u64,
 }
 
 impl HostConfig {
-    /// No directories and no secure store: every settings, permission and resource method reports
-    /// `not-ready`.
+    /// No directories, no secure store and no transport: every settings, permission and resource
+    /// method, and every request, reports `not-ready`.
     pub fn unconfigured() -> Self {
         Self {
             config_dir: None,
             resource_dir: None,
             secrets: Arc::new(UnavailableSecretStore::new("no secure store is configured")),
-            transport: TransportConfig::default(),
+            transport: Arc::new(UnavailableTransport::new(
+                "no network transport is configured",
+            )),
             resource_quota_bytes: DEFAULT_RESOURCE_QUOTA_BYTES,
         }
     }
@@ -87,7 +92,7 @@ impl std::fmt::Debug for HostConfig {
             .field("config_dir", &self.config_dir)
             .field("resource_dir", &self.resource_dir)
             .field("secrets", &self.secrets.name())
-            .field("trust", &self.transport.trust)
+            .field("transport", &self.transport)
             .field("resource_quota_bytes", &self.resource_quota_bytes)
             .finish()
     }
@@ -232,7 +237,7 @@ pub(crate) struct CapabilityHost {
     settings: Option<SettingsStore>,
     grants: Option<GrantsStore>,
     resources: Option<ResourceStore>,
-    transport: Arc<SharedTransport>,
+    transport: Arc<dyn Transport>,
     /// Queued and running tasks, at most one lane's worth.
     tasks: HashMap<JobId, tasks::TaskRun>,
 }
@@ -243,7 +248,7 @@ impl CapabilityHost {
             settings: config.config_dir.clone().map(SettingsStore::new),
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),
-            transport: Arc::new(SharedTransport::new(config.transport.clone())),
+            transport: config.transport.clone(),
             tasks: HashMap::new(),
             config,
         }

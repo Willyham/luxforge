@@ -6,7 +6,7 @@ use crate::{
         descriptor::{
             CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor, TaskDescriptor,
         },
-        transport::{EndpointClass, parse_endpoint},
+        endpoint::{EndpointClass, parse_endpoint},
     },
 };
 use serde::{Deserialize, Serialize};

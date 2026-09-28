@@ -1,8 +1,9 @@
 //! [`TestServer`], the one loopback HTTP server the workspace's tests start: the transport's
-//! protocol and address tests, the capability lifecycle's resource downloads and the capability
-//! proof's fake provider all answer through it. It listens on a free port of `127.0.0.1`, serves
-//! plain HTTP or TLS, reads each request with bounded heads and bodies on its own thread, hands it
+//! protocol, TLS and address tests (`luxforge-net`) and the capability proof's fake provider
+//! answer through it. It listens on a free port of `127.0.0.1`, serves plain HTTP, or TLS with the
+//! `tls` feature, reads each request with bounded heads and bodies on its own thread, hands it
 //! to the test's responder and stops when the value is dropped.
+#[cfg(feature = "tls")]
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use std::{
     collections::VecDeque,
@@ -59,9 +60,11 @@ impl Request {
 pub struct Options {
     /// Serve TLS with this configuration instead of plain HTTP. Each answer ends with the TLS
     /// close signal unless `truncate_tls` is set.
+    #[cfg(feature = "tls")]
     pub tls: Option<Arc<ServerConfig>>,
     /// End each TLS connection without the close signal, so a close-delimited body cannot be told
     /// from a truncation.
+    #[cfg(feature = "tls")]
     pub truncate_tls: bool,
     /// Keep no copy of the requests, for a server whose requests carry a credential.
     pub unrecorded: bool,
@@ -99,6 +102,7 @@ impl TestServer {
     }
 
     /// HTTPS with this server configuration.
+    #[cfg(feature = "tls")]
     pub fn https(
         config: Arc<ServerConfig>,
         respond: impl Fn(&Request, &mut dyn Write) + Send + Sync + 'static,
@@ -129,11 +133,14 @@ impl TestServer {
             hits: AtomicUsize::new(0),
             recorded: Mutex::new(VecDeque::new()),
         });
+        #[cfg(feature = "tls")]
         let scheme = if options.tls.is_some() {
             "https"
         } else {
             "http"
         };
+        #[cfg(not(feature = "tls"))]
+        let scheme = "http";
         let respond: Arc<Respond> = Arc::new(respond);
         let serving = shared.clone();
         let accept = thread::Builder::new()
@@ -231,19 +238,20 @@ fn connection(
 ) {
     let _ = socket.set_read_timeout(Some(IO_TIMEOUT));
     let _ = socket.set_write_timeout(Some(IO_TIMEOUT));
-    let Some(config) = &options.tls else {
-        exchange(index, &mut { socket }, options, shared, respond);
+    #[cfg(feature = "tls")]
+    if let Some(config) = &options.tls {
+        let Ok(session) = ServerConnection::new(config.clone()) else {
+            return;
+        };
+        let mut stream = StreamOwned::new(session, socket);
+        exchange(index, &mut stream, options, shared, respond);
+        if !options.truncate_tls {
+            stream.conn.send_close_notify();
+            let _ = stream.flush();
+        }
         return;
-    };
-    let Ok(session) = ServerConnection::new(config.clone()) else {
-        return;
-    };
-    let mut stream = StreamOwned::new(session, socket);
-    exchange(index, &mut stream, options, shared, respond);
-    if !options.truncate_tls {
-        stream.conn.send_close_notify();
-        let _ = stream.flush();
     }
+    exchange(index, &mut { socket }, options, shared, respond);
 }
 
 /// Read one request and answer it: a request over the bounds is answered here, one that never

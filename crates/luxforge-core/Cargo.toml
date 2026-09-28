@@ -15,19 +15,12 @@ moxcms.workspace = true
 rayon.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
-rustls.workspace = true
-rustls-platform-verifier.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-ureq.workspace = true
-ureq-proto.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winapi-util = "=0.1.11"
