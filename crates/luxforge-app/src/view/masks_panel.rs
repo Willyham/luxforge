@@ -963,9 +963,9 @@ fn component_fields<'a>(
                     model: NumberFieldModel {
                         id: Some(number.id.clone()),
                         label: number.label.clone(),
-                        display: number.display.clone(),
+                        display: true_minus(&number.display),
                         edit: ui_edit(&number.edit, &number.display, &number.invalid),
-                        unit: number.unit.clone(),
+                        unit: grid_unit(number.unit.as_deref()),
                         enabled,
                     },
                     on_edit_start: Message::Control(ControlMessage::EditValue {
@@ -1014,6 +1014,22 @@ fn component_fields<'a>(
     parts
 }
 
+/// The unit a two-column field shows: none, as the boards draw them — a word unit after the box
+/// would cramp the columns and `%` says nothing a feather's `60` does not — except the degree sign,
+/// which reads inside the box against the number (`−12°`), as the draft bar reads it.
+fn grid_unit(unit: Option<&str>) -> Option<String> {
+    matches!(unit, Some("deg" | "\u{b0}")).then(|| "\u{b0}".to_owned())
+}
+
+/// A shown value with a true minus sign, `−12°` as the draft bar and the boards write it. Display
+/// only: what is typed, sent and stored is unchanged, and a typed value reads either sign.
+fn true_minus(display: &str) -> String {
+    match display.strip_prefix('-') {
+        Some(rest) => format!("\u{2212}{rest}"),
+        None => display.to_owned(),
+    }
+}
+
 /// The open gesture's own declared fields as two columns, each typed into as a field and each
 /// moving the draft, so the canvas follows it exactly as it follows the pointer. A reason the
 /// gesture cannot be applied sits under them.
@@ -1036,9 +1052,9 @@ fn draft_field(field: &DraftField, enabled: bool) -> GridField<'static, Message>
         model: NumberFieldModel {
             id: Some(draft_field_id(&name)),
             label: field.label.clone(),
-            display: field.text.clone(),
+            display: true_minus(&field.text),
             edit: typed_edit(field),
-            unit: None,
+            unit: grid_unit(field.unit.as_deref()),
             enabled,
         },
         on_edit_start: typing(TypingEdit::Begin(TypingTarget::DraftField(name.clone()))),
@@ -1228,7 +1244,10 @@ fn brush_section(model: &MasksModel) -> Element<'_, Message> {
         None,
     ));
     let live = brush.enabled && !brush.locked;
-    for field in &brush.fields {
+    // Colour refine only means something while a stroke is limited to a colour, so its slider sits
+    // under Limit to colour while that is on; the toggle's own hint reads the value either way.
+    let is_refine = |field: &&DraftField| field.name == "colour_refine";
+    for field in brush.fields.iter().filter(|field| !is_refine(field)) {
         block = block.push(brush_slider(field, live));
     }
     block = block.push(compact_toggle(
@@ -1259,6 +1278,11 @@ fn brush_section(model: &MasksModel) -> Element<'_, Message> {
         }),
         iced::widget::tooltip::Position::Top,
     ));
+    if brush.limit {
+        for field in brush.fields.iter().filter(is_refine) {
+            block = block.push(brush_slider(field, live));
+        }
+    }
     if brush.erase_held {
         block = block.push(component_note("Option held: the next stroke erases"));
     }
@@ -1311,4 +1335,19 @@ fn brush_slider(field: &DraftField, enabled: bool) -> Element<'_, Message> {
         typing(TypingEdit::Submit),
         mask(MaskMessage::Brush(BrushEdit::Reset(name))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{grid_unit, true_minus};
+
+    #[test]
+    fn a_grid_field_shows_the_degree_sign_and_a_true_minus_and_no_other_unit() {
+        assert_eq!(grid_unit(Some("deg")).as_deref(), Some("\u{b0}"));
+        for unit in [Some("frame"), Some("h"), Some("%"), None] {
+            assert_eq!(grid_unit(unit), None, "{unit:?}");
+        }
+        assert_eq!(true_minus("-12"), "\u{2212}12");
+        assert_eq!(true_minus("0.52"), "0.52");
+    }
 }
