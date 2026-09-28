@@ -820,6 +820,36 @@ sample, did not complete on either binary: its script's 19th value, 0.57 EV, is 
 0.5700000000000001 and refused as having no rail fraction, which is an `editor-latency` defect
 outside this change.
 
+#### A brush stroke's press
+
+A brush in hand holds no core draft: each stroke's `draft.begin` runs at its press, synchronously,
+immediately followed in the same update by the first `draft.set` carrying the press's position.
+Before, the empty draft was opened ahead of time, when the brush was put in hand, so the press sent
+its first `draft.set` at once. `editor-latency --mode paint` reports the same two press rows drag
+mode does, from the stroke's first `mask_stroke_position` (logged in the update that hands the press
+to the desktop): `press_to_first_draft_set` and `press_to_first_presented_frame`, the first of the
+stroke's own frames presented. Measured on the 24 MP JPEG at Fit with the default 30-position stroke
+at 24 ms, on the host and window above (Apple M4 Pro, macOS 26.5.2, Metal, 2880 × 1800 at 2×),
+release builds, background launches, warm cache; both binaries driven by this change's `xtask`
+through `--binary`. Before is the base build (`0d6626bb…`, commit `8119f891`), after this change's
+(`117ff713…`; the committed build differs from it only in the event a brush put down because its
+component is gone records, which no stroke reaches). One stroke is one press, so each block is 15 launches and 15 presses; the blocks ran
+A, B, B, A back to back on a heavily shared host, with the one-minute load each launch recorded.
+
+| 24 MP paint, p50 / p95 ms | Before A1 (load 14.1–36.1) | After B1 (25.6–34.0) | After B2 (18.5–26.9) | Before A2 (12.0–17.3) |
+| --- | --- | --- | --- | --- |
+| Press to first `draft.set` (15 per block) | 0.01 / 0.22 | 0.06 / 0.09 | 0.06 / 0.10 | 0.01 / 0.02 |
+| Press to first presented frame (15 per block) | 12.13 / 36.90 | 10.58 / 15.65 | 10.66 / 58.73 | 10.42 / 13.00 |
+| Later positions, input to presented frame (398–435 per block) | 17.12 / 55.88 | 8.28 / 32.09 | 8.37 / 28.91 | 8.27 / 10.28 |
+
+Pooled over both blocks (30 presses each), the press reached its first `draft.set` in 0.01 / 0.09 ms
+before and 0.06 / 0.09 ms after, and its first frame in 10.55 / 30.74 ms before and 10.60 / 18.70 ms
+after. Opening the draft at the press costs the synchronous `draft.begin`, about 0.05 ms at p50, and
+the press's first frame is unchanged in both orders: the difference is well under one 120 Hz frame
+and inside the spread between the two blocks of the same binary. The p95 tails are single launches
+on the shared host (B2's 58.7 ms is one launch; A1 ran at loads up to 36), not one binary, and the
+later-position rows, whose path this change does not touch, move with the load in the same way.
+
 | Core diagnostic, 24 MP crop stack (p50 / p95 ms, 10 samples) | Full resolution | Proxy for 2880 × 1800 |
 | --- | --- | --- |
 | Same stack without colour | 29.1 / 32.9 | 16.9 / 19.0 |
