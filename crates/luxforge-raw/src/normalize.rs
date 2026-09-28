@@ -6,7 +6,7 @@
 //! the demosaiced planes by the same scale. [`BlackLevels`] is the one per-site black model,
 //! shared with the neutral picker.
 
-use crate::{MosaicCorrection, RawError, native_tiles};
+use crate::{MosaicCorrection, RawError, RawMetadata, native_tiles};
 use std::{
     mem::MaybeUninit,
     sync::atomic::{AtomicBool, Ordering},
@@ -14,11 +14,17 @@ use std::{
 
 /// Sensor white in the normalized mosaic, the numerical contract of both native demosaics. The
 /// developed planes are divided by it, so sensor white develops to 1.
+///
+/// Normalization clamps nothing, but the pinned RCD reads each Bayer site as
+/// `LIM01(value / 65536)`: a gained site is clipped to [0, 65536/65535] of sensor white before
+/// interpolation, except in the 9 px border band the border pass fills from this unclamped input.
+/// Markesteijn has no input clamp, so X-Trans keeps both under-black and over-white values
+/// (`bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not` pins this).
 pub(crate) const SENSOR_SCALE: f32 = 65535.0;
 
-/// Rows in one normalization job: about 124 thousand sites on the X100VI, a fraction of a
-/// millisecond, so a pool thread that steals one returns to its own work well within the time of
-/// a native tile job.
+/// Rows in one normalization or output-scale job: about 124 thousand sites or values on the
+/// X100VI, a fraction of a millisecond, so a pool thread that steals one returns to its own work
+/// well within the time of a native tile job.
 const JOB_ROWS: usize = 16;
 
 /// The largest number of sparse sensor repairs a development accepts.
@@ -41,6 +47,19 @@ pub(crate) struct BlackLevels<'a> {
 }
 
 impl<'a> BlackLevels<'a> {
+    pub(crate) fn of(metadata: &'a RawMetadata) -> Self {
+        Self {
+            cfa_width: usize::from(metadata.cfa_width),
+            cfa_height: usize::from(metadata.cfa_height),
+            black_cfa: &metadata.black_cfa,
+            base: metadata.black_base,
+            channels: metadata.black_channels,
+            repeat_width: usize::from(metadata.black_repeat_width),
+            repeat_height: usize::from(metadata.black_repeat_height),
+            repeat: &metadata.black_repeat,
+        }
+    }
+
     /// The calibration site ID of sensor site `(x, y)`.
     fn site(&self, x: usize, y: usize) -> u8 {
         self.black_cfa[(y % self.cfa_height) * self.cfa_width + x % self.cfa_width]
@@ -242,5 +261,150 @@ impl Normalization<'_> {
             );
         }
         Ok(())
+    }
+}
+
+/// Divide the demosaiced planes, whole rows of `width` values, by [`SENSOR_SCALE`] in place, in
+/// [`JOB_ROWS`]-row jobs on the development executor with `lanes` at once. Every value is divided
+/// the same way, so the three contiguous planes are one pass. The first cancellation stops the
+/// queue.
+pub(crate) fn scale_planes(
+    planes: &mut [f32],
+    width: usize,
+    lanes: usize,
+    cancel: &AtomicBool,
+) -> Result<(), RawError> {
+    native_tiles::refill_each(
+        lanes,
+        planes.chunks_mut(width.max(1) * JOB_ROWS),
+        |values| {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(RawError::Cancelled);
+            }
+            for value in values {
+                *value /= SENSOR_SCALE;
+            }
+            Ok(())
+        },
+    )?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(RawError::Cancelled);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BAYER: [u8; 4] = [0, 1, 1, 2];
+    const BAYER_BLACK: [u8; 4] = [0, 1, 3, 2];
+
+    fn normalization<'a>(
+        samples: &'a [u16],
+        corrections: &'a [MosaicCorrection],
+    ) -> Normalization<'a> {
+        Normalization {
+            samples,
+            corrections,
+            width: 64,
+            cfa: &BAYER,
+            black: BlackLevels {
+                cfa_width: 2,
+                cfa_height: 2,
+                black_cfa: &BAYER_BLACK,
+                base: 64.0,
+                channels: [1.0, 2.0, 3.0, 4.0],
+                repeat_width: 0,
+                repeat_height: 0,
+                repeat: &[],
+            },
+            white: 4095.0,
+            gains: [2.0, 1.0, 1.5],
+        }
+    }
+
+    /// Each site's black is the base, its own calibration site's channel and the repeat entry;
+    /// sensor white maps to the sensor scale before the gain, and a repair replaces its site.
+    #[test]
+    fn black_levels_scale_and_repairs_follow_each_site() {
+        let samples = vec![4095_u16; 64 * 32];
+        let mut repeated = normalization(&samples, &[]);
+        let repeat = [0.0, 5.0, 7.0];
+        repeated.black.repeat_width = 3;
+        repeated.black.repeat_height = 1;
+        repeated.black.repeat = &repeat;
+        assert_eq!(repeated.black.at(0, 0), 65.0);
+        assert_eq!(repeated.black.at(1, 0), 66.0 + 5.0);
+        assert_eq!(repeated.black.at(0, 1), 68.0);
+        assert_eq!(repeated.black.at(5, 1), 67.0 + 7.0);
+        let repair = [MosaicCorrection {
+            index: 64 * 20 + 1,
+            value: 66,
+        }];
+        let mosaic = normalization(&samples, &repair)
+            .run(1, &AtomicBool::new(false))
+            .unwrap();
+        let close = |actual: f32, expected: f32| (actual - expected).abs() < 0.02;
+        assert!(close(mosaic[0], SENSOR_SCALE * 2.0), "{}", mosaic[0]);
+        assert!(close(mosaic[1], SENSOR_SCALE), "{}", mosaic[1]);
+        assert!(close(mosaic[64], SENSOR_SCALE), "{}", mosaic[64]);
+        assert!(close(mosaic[65], SENSOR_SCALE * 1.5), "{}", mosaic[65]);
+        assert_eq!(mosaic[64 * 20 + 1], 0.0);
+    }
+
+    /// Invalid calibration, CFA or repairs fail before any mosaic is allocated, and a cancelled
+    /// token stops the normalization, before and within its rows, and the output scale.
+    #[test]
+    fn invalid_inputs_and_cancellation_return_no_mosaic() {
+        let samples = vec![2048_u16; 64 * 32];
+        let never = AtomicBool::new(false);
+        let mut invalid = normalization(&samples, &[]);
+        invalid.white = 0.0;
+        assert!(matches!(
+            invalid.run(1, &never),
+            Err(RawError::MissingCalibration(_))
+        ));
+        let cfa = [0, 1, 3, 2];
+        let mut invalid = normalization(&samples, &[]);
+        invalid.cfa = &cfa;
+        assert_eq!(invalid.run(1, &never), Err(RawError::UnsupportedCfa));
+        let black_cfa = [0, 1, 4, 2];
+        let mut invalid = normalization(&samples, &[]);
+        invalid.black.black_cfa = &black_cfa;
+        assert_eq!(invalid.run(1, &never), Err(RawError::UnsupportedCfa));
+        let invalid = normalization(&samples[..100], &[]);
+        assert!(matches!(
+            invalid.run(1, &never),
+            Err(RawError::InvalidInput(_))
+        ));
+        let repair = |index| MosaicCorrection { index, value: 1 };
+        for corrections in [
+            vec![repair(5), repair(5)],
+            vec![repair(9), repair(3)],
+            vec![repair(64 * 32)],
+        ] {
+            assert!(matches!(
+                normalization(&samples, &corrections).run(1, &never),
+                Err(RawError::InvalidInput(_))
+            ));
+        }
+
+        let cancelled = AtomicBool::new(true);
+        let valid = normalization(&samples, &[]);
+        assert_eq!(valid.run(4, &cancelled), Err(RawError::Cancelled));
+        let sites = valid.sites().unwrap();
+        let mut rows = vec![MaybeUninit::uninit(); 64 * JOB_ROWS];
+        assert_eq!(
+            valid.rows(&sites, 0, &mut rows, &cancelled),
+            Err(RawError::Cancelled)
+        );
+        let mut planes = vec![1.0_f32; 64 * 32 * 3];
+        assert_eq!(
+            scale_planes(&mut planes, 64, 4, &cancelled),
+            Err(RawError::Cancelled)
+        );
+        scale_planes(&mut planes, 64, 4, &never).unwrap();
+        assert!(planes.iter().all(|value| *value == 1.0 / SENSOR_SCALE));
     }
 }

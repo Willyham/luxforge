@@ -1,6 +1,6 @@
 //! The development executor: synchronous, bounded admission to the shared Rayon pool for native
-//! demosaic tiles (Bayer RCD and X-Trans one-pass Markesteijn), native normalization batches and
-//! the DNG correction rows.
+//! demosaic tiles (Bayer RCD and X-Trans one-pass Markesteijn) and the Rust passes around them:
+//! the mosaic normalization, the output scale and the DNG correction rows.
 
 use std::{
     ffi::{c_int, c_void},

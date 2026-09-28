@@ -4,9 +4,6 @@
 #include "librtprocess.h"
 #include "camera_allowlist.h"
 #include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -17,13 +14,6 @@
 extern "C" {
 typedef int (*LfCancel)(void *);
 struct LfCancelState { LfCancel callback; void *context; };
-
-struct LfMosaicCorrection { uint32_t index; uint16_t value; };
-struct LfDevelopDiagnostics {
-  uint64_t normalization_ns;
-  uint64_t demosaic_ns;
-  float *normalized_mosaic_capture;
-};
 
 struct LfMetadata {
   char make[64], model[64], decoder[80];
@@ -77,91 +67,6 @@ struct CancelData { LfCancel callback; void *context; };
 int progress(void *data, enum LibRaw_progress, int, int) noexcept {
   auto *cancel = static_cast<CancelData *>(data);
   return cancel->callback && cancel->callback(cancel->context) ? 1 : 0;
-}
-struct NormalizeRows {
-  const uint16_t *samples;
-  const LfMetadata *meta;
-  const LfMosaicCorrection *patches;
-  size_t patch_count;
-  const float *gains;
-  float *mosaic;
-  float *red;
-  float *green;
-  float *blue;
-  const unsigned (*bayer)[2];
-  const unsigned (*xtrans)[6];
-  const LfCancelState *cancel;
-  size_t width;
-  size_t height;
-  std::vector<const float *> *input_rows;
-  std::vector<float *> *red_rows;
-  std::vector<float *> *green_rows;
-  std::vector<float *> *blue_rows;
-  std::atomic<int> status{0};
-};
-constexpr size_t kNormalizeRowBatch = 16;
-constexpr size_t kNormalizeParallelPixelThreshold = 1024 * 1024;
-
-void normalize_rows(void *opaque, size_t batch) noexcept {
-  auto *state = static_cast<NormalizeRows *>(opaque);
-  const size_t first_row = batch * kNormalizeRowBatch;
-  const size_t end_row = std::min(first_row + kNormalizeRowBatch, state->height);
-  const auto &meta = *state->meta;
-  for (size_t y = first_row; y < end_row; ++y) {
-    if (state->status.load(std::memory_order_relaxed) != 0) return;
-    if (state->cancel->callback && state->cancel->callback(state->cancel->context)) {
-      int expected = 0;
-      state->status.compare_exchange_strong(expected, 2, std::memory_order_relaxed);
-      return;
-    }
-    (*state->input_rows)[y] = state->mosaic + y * state->width;
-    (*state->red_rows)[y] = state->red + y * state->width;
-    (*state->green_rows)[y] = state->green + y * state->width;
-    (*state->blue_rows)[y] = state->blue + y * state->width;
-    const size_t row_start = y * state->width;
-    const LfMosaicCorrection *patch = nullptr;
-    const LfMosaicCorrection *patch_end = nullptr;
-    if (state->patch_count) {
-      patch = std::lower_bound(
-          state->patches, state->patches + state->patch_count, row_start,
-          [](const LfMosaicCorrection &correction, size_t index) { return correction.index < index; });
-      patch_end = state->patches + state->patch_count;
-    }
-    const size_t row_end = row_start + state->width;
-    for (size_t x = 0; x < state->width; ++x) {
-      const size_t index = row_start + x;
-      const unsigned channel = meta.cfa_width == 2
-          ? state->bayer[y % 2][x % 2]
-          : state->xtrans[y % 6][x % 6];
-      const unsigned black_channel = meta.cfa_width == 2
-          ? meta.black_cfa[(y % 2) * 2 + (x % 2)]
-          : meta.black_cfa[(y % 6) * 6 + (x % 6)];
-      if (channel > 2 || black_channel > 3) {
-        int expected = 0;
-        state->status.compare_exchange_strong(expected, 5, std::memory_order_relaxed);
-        return;
-      }
-      float black = meta.black_base + meta.black_channels[black_channel];
-      if (meta.black_repeat_width && meta.black_repeat_height) {
-        const size_t ix = (y % meta.black_repeat_height) * meta.black_repeat_width +
-                          (x % meta.black_repeat_width);
-        black += meta.black_repeat[ix];
-      }
-      const float denominator = meta.white - black;
-      if (!std::isfinite(denominator) || denominator <= 0.f) {
-        int expected = 0;
-        state->status.compare_exchange_strong(expected, 5, std::memory_order_relaxed);
-        return;
-      }
-      uint16_t sample = state->samples[index];
-      if (patch && patch != patch_end && patch->index == index && patch->index < row_end) {
-        sample = patch->value;
-        ++patch;
-      }
-      const float normalized = (float(sample) - black) * (65535.f / denominator) * state->gains[channel];
-      state->mosaic[index] = normalized;
-    }
-  }
 }
 // LibRaw's callback context is needed only for the synchronous open/unpack.
 // It points to a stack value in lf_raw_open and is cleared before return.
@@ -279,27 +184,19 @@ extern "C" int lf_raw_copy(void *handle, uint16_t *dest, size_t length,
 
 extern "C" void lf_raw_close(void *handle) noexcept { delete static_cast<Handle*>(handle); }
 
-extern "C" int lf_raw_develop(const uint16_t *samples,size_t count,
-                               const LfMetadata *meta,const LfMosaicCorrection *patches,size_t patch_count,
-                               const float gains[3],
+// Demosaic Rust's normalized float mosaic, in which sensor white is 65535, into
+// three planes at the same scale. Rust owns the mosaic and planes, normalizes
+// before this call and divides the planes by 65535 after it.
+extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfMetadata *meta,
                                float *red,float *green,float *blue,
                                unsigned test_fault,
                                rpTileExecutor executor,void *executor_context,
                                LfCancel cancel,void *cancel_context,
-                               char *err,size_t err_len,
-                               LfDevelopDiagnostics *diagnostics) noexcept {
-  using Clock = std::chrono::steady_clock;
-  if (diagnostics) {
-    diagnostics->normalization_ns = 0;
-    diagnostics->demosaic_ns = 0;
-  }
-  if(!samples||!meta||!gains||!red||!green||!blue||!meta->width||!meta->height||
+                               char *err,size_t err_len) noexcept {
+  if(!mosaic||!meta||!red||!green||!blue||!meta->width||!meta->height||
      count!=uint64_t(meta->width)*meta->height||count>LF_MAX_PIXELS||
      count>LF_MAX_RGB_BYTES/(3*sizeof(float))) {
     error(err,err_len,"invalid or oversized develop buffers");return 1;
-  }
-  if (patch_count>65536 || (patch_count && !patches)) {
-    error(err,err_len,"invalid sparse mosaic corrections"); return 1;
   }
   // The pinned X-Trans tile code requires one full 114px tile to initialize
   // scratch before its final-edge calculation. Qualified sensors exceed this.
@@ -312,15 +209,9 @@ extern "C" int lf_raw_develop(const uint16_t *samples,size_t count,
   if (meta->cfa_width==2 && (meta->width<10 || meta->height<10)) {
     error(err,err_len,"Bayer sensor below native border minimum"); return 4;
   }
-  for(size_t i=0;i<patch_count;++i) {
-    if(patches[i].index>=count || (i && patches[i-1].index>=patches[i].index)) {
-      error(err,err_len,"invalid sparse mosaic correction ordering"); return 1;
-    }
-  }
   if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled");return 2;}
   try{
     const size_t w=meta->width,h=meta->height;
-    std::vector<float> mosaic(count);
     std::vector<const float*> input_rows(h);
     std::vector<float*> rrows(h),grows(h),brows(h);
     unsigned bayer[2][2]{},xtrans[6][6]{};
@@ -329,76 +220,10 @@ extern "C" int lf_raw_develop(const uint16_t *samples,size_t count,
     }else if(meta->cfa_width==6&&meta->cfa_height==6){
       for(size_t y=0;y<6;++y)for(size_t x=0;x<6;++x)xtrans[y][x]=meta->cfa[y*6+x];
     }else{error(err,err_len,"unsupported CFA");return 5;}
-    const Clock::time_point normalization_start = diagnostics ? Clock::now() : Clock::time_point{};
+    for(size_t y=0;y<h;++y){
+      input_rows[y]=mosaic+y*w;rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
+    }
     LfCancelState cancel_state{cancel,cancel_context};
-    NormalizeRows normalization{
-      samples, meta, patches, patch_count, gains, mosaic.data(), red, green, blue,
-      bayer, xtrans, &cancel_state, w, h,
-      &input_rows, &rrows, &grows, &brows
-    };
-    const size_t batches = (h + kNormalizeRowBatch - 1) / kNormalizeRowBatch;
-    const bool parallel_bayer_normalization =
-        executor && meta->cfa_width == 2 && count >= kNormalizeParallelPixelThreshold && batches > 1;
-    int executor_status = 0;
-    if (parallel_bayer_normalization) {
-      executor_status = executor(executor_context, batches, normalize_rows, &normalization);
-    } else {
-      size_t patch_index = 0;
-      for (size_t y = 0; y < h; ++y) {
-        input_rows[y] = mosaic.data() + y * w;
-        rrows[y] = red + y * w;
-        grows[y] = green + y * w;
-        brows[y] = blue + y * w;
-        if (cancel && y % 128 == 0 && cancel(cancel_context)) {
-          error(err, err_len, "cancelled");
-          return 2;
-        }
-        for (size_t x = 0; x < w; ++x) {
-          const unsigned channel = meta->cfa_width == 2 ? bayer[y % 2][x % 2] : xtrans[y % 6][x % 6];
-          const unsigned black_channel = meta->cfa_width == 2
-              ? meta->black_cfa[(y % 2) * 2 + (x % 2)]
-              : meta->black_cfa[(y % 6) * 6 + (x % 6)];
-          if (channel > 2) { error(err, err_len, "invalid CFA channel"); return 5; }
-          if (black_channel > 3) { error(err, err_len, "invalid black CFA channel"); return 5; }
-          float black = meta->black_base + meta->black_channels[black_channel];
-          if (meta->black_repeat_width && meta->black_repeat_height) {
-            const size_t ix = (y % meta->black_repeat_height) * meta->black_repeat_width +
-                              (x % meta->black_repeat_width);
-            black += meta->black_repeat[ix];
-          }
-          // Sensor scale 65535 is the established numerical contract. This
-          // normalization clamps nothing, but the pinned RCD reads each Bayer
-          // site as LIM01(value / 65536): a gained site is clipped to
-          // [0, 65536/65535] of sensor white before interpolation, except in
-          // the 9 px border band the border pass fills from this unclamped
-          // input. Markesteijn has no input clamp, so X-Trans keeps both
-          // under-black and over-white values (the luxforge-raw
-          // test bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not pins this).
-          const float denominator = meta->white - black;
-          if (!std::isfinite(denominator) || denominator <= 0.f) {
-            error(err, err_len, "invalid black/white denominator");
-            return 5;
-          }
-          uint16_t sample = samples[y * w + x];
-          if (patch_index < patch_count && patches[patch_index].index == y * w + x) {
-            sample = patches[patch_index++].value;
-          }
-          mosaic[y * w + x] = (float(sample) - black) * (65535.f / denominator) * gains[channel];
-        }
-      }
-    }
-    if (diagnostics) {
-      diagnostics->normalization_ns = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - normalization_start).count());
-    }
-    const int normalization_status = normalization.status.load(std::memory_order_relaxed);
-    if (executor_status == 2 || normalization_status == 2) { error(err,err_len,"cancelled"); return 2; }
-    if (executor_status != 0) { error(err,err_len,"normalization worker failed"); return 3; }
-    if (normalization_status == 5) { error(err,err_len,"invalid CFA or black/white denominator"); return 5; }
-    if (normalization_status != 0) { error(err,err_len,"normalization failed"); return 3; }
-    if (diagnostics && diagnostics->normalized_mosaic_capture)
-      std::memcpy(diagnostics->normalized_mosaic_capture, mosaic.data(), count * sizeof(float));
-    const Clock::time_point demosaic_start = diagnostics ? Clock::now() : Clock::time_point{};
     // librtprocess ignores this progress return; both demosaics check
     // cancel_state between tiles instead.
     auto no_cancel=[](double){return false;};
@@ -409,19 +234,11 @@ extern "C" int lf_raw_develop(const uint16_t *samples,size_t count,
       float cam[3][4]{};for(size_t i=0;i<12;++i)cam[i/4][i%4]=meta->rgb_cam[i];
       code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lf_tile_cancel,&cancel_state,test_fault);
     }
-    if (diagnostics) {
-      diagnostics->demosaic_ns = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - demosaic_start).count());
-    }
     if(code!=RP_NO_ERROR){
       error(err,err_len,"float demosaic failed");
       return code==RP_MEMORY_ERROR?6:code==RP_CANCELLED?2:code==RP_WORKER_ERROR?3:5;
     }
     if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled after demosaic");return 2;}
-    // No finiteness scan here: the caller checks every value once, where it
-    // adopts the planes after the camera conversion, and a non-finite camera
-    // value makes each converted channel of its pixel non-finite.
-    for(size_t i=0;i<count;++i){red[i]/=65535.f;green[i]/=65535.f;blue[i]/=65535.f;}
     return 0;
   }catch(const std::bad_alloc&){error(err,err_len,"native allocation failed");return 6;}
    catch(const std::exception&e){error(err,err_len,e.what());return 3;}
