@@ -898,6 +898,60 @@ phase: a Presence render over the whole 40 MP stage, which is unchanged and is t
 histogram and export source. The figures filed with the bug (about 8.7 s per commit and 3.9 GiB
 peak) came from another journey; these runs compare one journey before and after, on one host.
 
+#### A crop draft's input stage at Fit
+
+A crop draft's input stage is now a display-size proxy of the layers before the crop at Fit, and
+the exact stage is rendered only at a percentage zoom that needs it
+([instant previews](../design/instant-preview.md#a-crop-drafts-input-stage)). Before, the stage was
+the whole prefix rendered at full resolution and uploaded into a texture of its own size. Measured
+with `editor-latency --mode crop-start --presence` (a Presence layer with Texture, Clarity and Dehaze
+at 100, then per sample a crop draft Start held open 1.5 s, Cancel and 1.5 s more), at Fit in the
+hidden 2880 × 1800 window at 2×, on the generated 60 MP JPEG (10000 × 6000, 5 Starts a launch) and
+the owner's X100VI RAF (7728 × 5152, 4 a launch). Native Apple M4 Pro, macOS 26.5.2, Metal; release
+builds, background launches, warm cache; before is the base (`800f09e7…`), after this change
+(`f1e3c268…`), both driven by the same `xtask`, launched back to back as before, after, after,
+before. The host was shared: one-minute load 17.7, 18.8, 17.7, 16.0 for the 60 MP launches and
+13.8, 18.4, 21.1, 26.5 for the X100VI. The open time is from the Start step's `script_step` to the
+`frame_captured` the editor takes once the stage is on screen, so it includes the window readback.
+Memory is the Performance section's `resources.read` figure and GPU its allocated bytes, read at
+the end of each hold; the baseline is the settled frame before the first Start.
+
+| Per launch (before 1, before 2 · after 1, after 2) | Before | After |
+| --- | --- | --- |
+| 60 MP: Start to `crop_draft_started`, p50 | 0.11, 0.10 ms | 0.14, 0.36 ms |
+| 60 MP: Start to the stage on screen, p50 (min–max) | 2832 (2781–8068), 5065 (3044–9589) ms | 65 (61–98), 70 (63–80) ms |
+| 60 MP: stage texture | 10000 × 6000, 229 MiB | 1716 × 1030, 6.7 MiB |
+| 60 MP: GPU allocated while the draft is open (baseline) | 450.8, 450.7 MiB (211.2, 211.1) | 222.0, 222.1 MiB (211.1, 211.3) |
+| 60 MP: memory while the draft is open, p50 (baseline) | 2157, 2122 MiB (1490, 1468) | 1824, 1822 MiB (1468, 1478) |
+| 60 MP: sampled peak RSS and process CPU of the launch | 1668, 1641 MiB; 265, 270 s | 1425, 1433 MiB; 135, 136 s |
+| X100VI: Start to `crop_draft_started`, p50 | 0.12, 0.13 ms | 0.09, 0.09 ms |
+| X100VI: Start to the stage on screen, p50 (min–max) | 2013 (1851–3237), 2214 (2031–9334) ms | 354 (138–1033), 322 (291–550) ms |
+| X100VI: stage texture | 7728 × 5152, 152 MiB | 1716 × 1144, 7.5 MiB |
+| X100VI: GPU allocated while the draft is open (baseline) | 369.8, 369.8 MiB (211.2, 211.2) | 222.3, 222.3 MiB (211.2, 211.2) |
+| X100VI: memory while the draft is open, p50 (baseline) | 2593, 2736 MiB (2386, 2430) | 2552, 2460 MiB (2416, 2497) |
+| X100VI: sampled peak RSS of the launch | 2323, 2316 MiB | 2171, 2256 MiB |
+
+`crop_draft_started` is logged in the Start's own update on both builds, since `draft.begin` became
+synchronous, so the draft's section and keys are live at once either way; what changed is how long
+the frame waits for its stage. Both orders agree: the 60 MP stage opens 40 to 70 times sooner and
+the X100VI's about 6 times, and the GPU allocation a draft adds falls from 240 and 158 MiB to 11 MiB
+(the stage's own texture is 7 MiB of it). The X100VI's proxy costs more than the JPEG's because the
+Presence prefix renders through the RAW development's linear planes. The process memory rows are
+noisy on this host; the 60 MP ones fall by about 300 MiB, the full-resolution frame the stage no
+longer renders, and the X100VI ones overlap. The launch CPU halves at 60 MP because no Start renders
+the prefix at full resolution any more.
+
+Aliasing at Fit was settled on a generated 6000 × 4000 zone plate (a radial chirp reaching 0.5
+cycles per pixel in the corners, JPEG quality 95 without chroma subsampling): the crop draft opened
+at Fit with each binary through `editor-latency --mode crop-start --samples 1`, and the captured
+stage compared, over the 77% of it whose source frequency lies beyond the display's Nyquist limit,
+with a linear-light box downscale computed independently. The exact stage drawn by the surface's
+bilinear sampler without mip levels aliases: full-contrast replicas of the centre rings across the
+frame, a standard deviation of 63.6 codes there and a mean of 145.1, 16 codes darker than the true
+average. The proxy stage does not: it shows only the faint residual rings of a box filter, 15.8 codes
+against the reference's own 10.9, with a mean of 160.3 against 160.8. A percentage zoom draws the
+exact stage at or above its size, where the sampler magnifies and cannot alias.
+
 RAW, one functional trial per camera through `raw-editor` (the same 13-step journey as the RAW
 tables below, so these are single launches and not distributions): request to display of the
 exposure step is 10.5 ms on the Z6, 14.6 ms on the X100VI and 15.0 ms on the Air 2S, against

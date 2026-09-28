@@ -674,11 +674,12 @@ fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) 
     });
 }
 
-/// A starting draft's input stage is still rendering when another client's commit requests the
-/// new entry's frame, which stops the draft's job: the job's cancelled outcome is recorded under
-/// the draft's own generation, and the draft ends explicitly, back in the pointer mode with the
-/// reason in the status bar, instead of waiting for pixels that will never come. The new entry's
-/// frame is then shown as usual, and its own status replaces the reason.
+/// A starting draft's exact input stage — a percentage zoom that draws the stage at its size asks
+/// for it alone — is still rendering when another client's commit requests the new entry's frame,
+/// which stops the draft's job: the job's cancelled outcome is recorded under the draft's own
+/// generation, and the draft ends explicitly, back in the pointer mode with the reason in the
+/// status bar, instead of waiting for pixels that will never come. The new entry's frame is then
+/// shown as usual, and its own status replaces the reason.
 ///
 /// Both jobs are held: the draft's until the commit has superseded it, so it cannot finish first
 /// and show the stage; the new entry's until the draft has ended, so its frame cannot follow the
@@ -690,6 +691,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         editor.presented_generation > 0 && !editor.preview_queue.is_busy()
     });
     let log = attach_log(&mut editor);
+    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let (stage, frame) = (Hold::shut(), Hold::shut());
     let mut job = draft_job(&editor, small());
@@ -755,6 +757,49 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
             "detail": "superseded by a newer preview",
             "generation": draft,
         })]
+    );
+    finish(editor, catalog);
+}
+
+/// At Fit a starting draft's input stage is asked for as the photograph's drafted frames are, and
+/// like them it outlives a newer request that finds it rendering: it lands under the frame, and
+/// the draft the other client's commit conflicted is kept for Reapply or Discard rather than ended.
+/// The new entry's frame then becomes the photograph behind the stage.
+#[test]
+fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes_it() {
+    let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
+    poll_until(&mut editor, "the opened frame", |editor| {
+        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+    });
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    let (stage, frame) = (Hold::shut(), Hold::shut());
+    let mut job = draft_job(&editor, small());
+    stage.hold(&mut job);
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let draft = editor
+        .draft_generation
+        .expect("the draft's job was requested");
+    stage.reached(&editor, "the draft's input stage");
+
+    let next = committed_elsewhere(&mut editor, &asset, 5, Some(&frame));
+    let newer = editor.preview_generation;
+    assert!(newer > draft);
+    stage.open();
+    poll_until(&mut editor, "the draft's input stage", |editor| {
+        editor.crop_stage() == Some(StageView::Shown)
+    });
+    assert!(editor.presenter.stage().is_some());
+    assert!(core_draft(&editor).expect("the draft is kept").conflicted);
+    assert_eq!(editor.draft_generation, None, "nothing more is on its way");
+
+    frame.open();
+    poll_until(&mut editor, "the new entry's frame", |editor| {
+        editor.presented_generation == newer && !editor.preview_queue.is_busy()
+    });
+    assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
+    assert!(
+        editor.crop().is_some() && editor.presenter.stage().is_some(),
+        "the stage stays under the frame"
     );
     finish(editor, catalog);
 }

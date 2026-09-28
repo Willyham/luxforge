@@ -39,6 +39,48 @@ pub(crate) struct CropGesture {
     pub(crate) action: String,
     pub(crate) frame: CropDraft,
     pub(crate) stage: StageView,
+    /// The input stage's planned job and the frames its phases have delivered.
+    pub(crate) frames: StageFrames,
+}
+
+/// The crop layer's input stage as the draft holds it, by the one rule the photograph follows
+/// ([`Editor::proxy_bounds_for`]): a display-size proxy of the layer prefix wherever the view draws
+/// the stage smaller than it is, and the exact stage only at a percentage zoom that needs it. The
+/// planned job is kept so a zoom that crosses between the two asks for the other without planning
+/// the stage again; each frame is kept once delivered, so crossing back hands it over again.
+/// Everything here ends with the draft. No frame here is ever reduced, sampled or committed: the
+/// draft commits its fields.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StageFrames {
+    job: Option<Box<luxforge_core::PreviewJob>>,
+    /// The frame for a view that draws the stage smaller than it is: the prefix's proxy, or the
+    /// exact stage when the worker declined one (the stage already fits the bounds, or a layer of
+    /// the prefix has no proxy).
+    bounded: Option<StageFrame>,
+    /// The exact stage, for a percentage zoom that draws it at or above its size.
+    exact: Option<luxforge_core::Raster>,
+    /// What the presenter holds.
+    shown: Option<Shown>,
+}
+
+#[derive(Clone, Debug)]
+struct StageFrame {
+    raster: luxforge_core::Raster,
+    proxy: bool,
+}
+
+/// Which frame of the stage is on screen: one a bounded job delivered, and whether it is a proxy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shown {
+    bounded: bool,
+    proxy: bool,
+}
+
+impl Shown {
+    /// Whether this frame is what a view that does or does not bound the stage asks for.
+    fn serves(self, bounded: bool) -> bool {
+        if bounded { self.bounded } else { !self.proxy }
+    }
 }
 
 /// Where the crop layer's input stage has got to. The frame never waits for it: the section and
@@ -272,6 +314,10 @@ impl Editor {
                     self.draft_preview_superseded(None);
                 }
                 Ok(job) => {
+                    // Kept for a zoom that needs the stage's other phase.
+                    if let Some(crop) = self.crop_gesture_mut() {
+                        crop.frames.job = Some(job.clone());
+                    }
                     // A job an earlier start asked for is no longer the draft's once this one is
                     // requested, so this request superseding it ends nothing.
                     self.draft_generation = None;
@@ -384,6 +430,7 @@ impl Editor {
                 reapply: false,
                 base_revision,
             },
+            frames: StageFrames::default(),
         };
         let gesture = self.next_gesture();
         let begin = self.open_core(gesture, Kind::Crop(crop), None);
@@ -431,6 +478,7 @@ impl Editor {
             reapply: true,
             base_revision,
         };
+        crop.frames = StageFrames::default();
         // The stage on screen is the one the frame was rebased away from, and one still rendering
         // for it is stopped and held below the delivery floor, so neither is drawn under the
         // rebased frame nor taken up as the photograph.
@@ -478,6 +526,144 @@ impl Editor {
             input.width, input.height
         );
         self.settle_crop();
+    }
+
+    /// The bounds the crop draft's input stage is rendered at for the view now: the photograph's
+    /// rule ([`Editor::proxy_bounds_for`]) over the stage the frame is on. `None` asks for the exact
+    /// stage, as a percentage zoom that draws the stage at or above its size does.
+    pub(crate) fn crop_stage_bounds(&self) -> Option<luxforge_core::ProxyBounds> {
+        let stage = self.crop()?.stage;
+        self.proxy_bounds_for(Some((stage.width, stage.height)))
+    }
+
+    /// Whether the crop draft's input stage, rather than the photograph, is what the view shows or
+    /// is waiting for, so a zoom is answered by the stage.
+    pub(crate) fn crop_stage_owns_view(&self) -> bool {
+        self.session.preview.can_edit()
+            && matches!(
+                self.crop_stage(),
+                Some(StageView::Rendering { .. } | StageView::Shown)
+            )
+    }
+
+    /// One frame of the crop layer's input stage arrived: the layer prefix's proxy, or the exact
+    /// prefix. `bounded` says its job offered display bounds, so the frame is what a bounded view
+    /// shows even when the worker declined the proxy and rendered it exactly; `last` says the job
+    /// has nothing more to deliver. The frame is kept for the view it serves, and shown when it is
+    /// the draft's first frame or serves the view now; the other is then asked for if the view has
+    /// moved on. Returns whether a frame was handed to the display.
+    pub(crate) fn crop_stage_ready(
+        &mut self,
+        raster: &luxforge_core::Raster,
+        proxy: bool,
+        bounded: bool,
+        last: bool,
+    ) -> bool {
+        if last {
+            self.draft_generation = None;
+        }
+        let wants_bounded = self.crop_stage_bounds().is_some();
+        let Some(crop) = self.crop_gesture_mut() else {
+            return false;
+        };
+        if bounded {
+            crop.frames.bounded = Some(StageFrame {
+                raster: raster.clone(),
+                proxy,
+            });
+        }
+        if !proxy {
+            crop.frames.exact = Some(raster.clone());
+        }
+        let shown = Shown { bounded, proxy };
+        let first = matches!(crop.stage, StageView::Rendering { .. });
+        if !first && !shown.serves(wants_bounded) {
+            return false;
+        }
+        crop.frames.shown = Some(shown);
+        if !self.presenter.show_stage(raster) {
+            self.crop_stage_lost();
+            self.status = "Could not show the crop's input stage".into();
+            self.settle_step(Settle::Draft);
+            return true;
+        }
+        self.crop_stage_shown();
+        self.settle_crop();
+        self.present_crop_stage();
+        true
+    }
+
+    /// Put the input-stage frame the view wants on screen: the one the draft already holds, or
+    /// else one request for it once no stage job is on its way — the one on its way lands first
+    /// and this runs again. Answers every zoom while the stage owns the view and every stage frame,
+    /// so a zoom that changed while the stage rendered is picked up. A scripted step waits for the
+    /// frame it asks for.
+    pub(crate) fn present_crop_stage(&mut self) {
+        let wants_bounded = self.crop_stage_bounds().is_some();
+        let in_flight = self.draft_generation.is_some();
+        let Some(crop) = self.crop_gesture_mut() else {
+            return;
+        };
+        if crop.stage != StageView::Shown
+            || crop
+                .frames
+                .shown
+                .is_some_and(|shown| shown.serves(wants_bounded))
+        {
+            return;
+        }
+        let held = if wants_bounded {
+            crop.frames.bounded.as_ref().map(|frame| {
+                (
+                    frame.raster.clone(),
+                    Shown {
+                        bounded: true,
+                        proxy: frame.proxy,
+                    },
+                )
+            })
+        } else {
+            crop.frames.exact.clone().map(|raster| {
+                (
+                    raster,
+                    Shown {
+                        bounded: false,
+                        proxy: false,
+                    },
+                )
+            })
+        };
+        if let Some((raster, shown)) = held {
+            crop.frames.shown = Some(shown);
+            if !self.presenter.show_stage(&raster) {
+                self.status = "Could not show the crop's input stage".into();
+            }
+            return;
+        }
+        let job = crop.frames.job.clone();
+        self.await_frame(Settle::Draft);
+        if in_flight {
+            return;
+        }
+        let Some(job) = job else {
+            return;
+        };
+        self.event("crop_stage_requested", json!({ "bounded": wants_bounded }));
+        self.draft_generation = Some(self.request_preview(*job));
+    }
+
+    /// Correlated evidence of the input stage on screen: whether it is a proxy and the frame's
+    /// size, and which frames the draft holds.
+    pub(crate) fn crop_stage_frame_summary(&self) -> Value {
+        let Some(frames) = self.crop_gesture().map(|crop| &crop.frames) else {
+            return Value::Null;
+        };
+        json!({
+            "phase": frames.shown.map(|shown| if shown.proxy { "proxy" } else { "exact" }),
+            "size": self.presenter.stage().map(|frame| [frame.size().0, frame.size().1]),
+            "held_bounded": frames.bounded.is_some(),
+            "held_exact": frames.exact.is_some(),
+        })
     }
 
     /// A scripted step waiting for the crop draft settles once the frame can be captured over its
@@ -2025,6 +2211,75 @@ mod tests {
         let draft = editor.crop().expect("an opened draft");
         assert_eq!(draft.preset, "16:9");
         assert_eq!(draft.payload(), committed_wide());
+        finish(editor, catalog);
+    }
+
+    /// At Fit a crop draft's input stage is the layer prefix's display-size proxy, rendered alone:
+    /// its exact phase is never rendered there. A percentage zoom that draws the stage at its own
+    /// size asks for the exact stage once, and a zoom back to Fit hands the held proxy over again
+    /// without a render, exactly as the photograph's proxy and exact frames behave.
+    #[test]
+    fn the_input_stage_is_a_proxy_at_fit_and_exact_only_at_a_percentage_zoom() {
+        use luxforge_core::Zoom;
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-crop-stage-proxy-{}-{}.sqlite",
+            std::process::id(),
+            crate::app::tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
+        // A photo surface smaller than the 480 × 320 photograph, so Fit draws it smaller than it is.
+        editor.session.workspace.state_panel = false;
+        editor.session.workspace.tools_panel = false;
+        editor.window = (360.0, 300.0);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let count = editor.crop().expect("a frame").layer_index;
+        let input = editor.crop().expect("a frame").stage;
+        let job = editor
+            .owner
+            .preview_job(luxforge_core::PreviewRequest::new(editor.client, asset).layers(count))
+            .expect("the input stage's job");
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+        let shown = |editor: &mut Editor, phase: &str| -> Value {
+            luxforge_testbase::wait_until(&format!("the {phase} stage"), || {
+                let _ = editor.update(Message::Preview(crate::app::message::PreviewMessage::Poll));
+                editor.snapshot()["crop"]["input_stage_frame"]["phase"] == json!(phase)
+            });
+            editor.snapshot()["crop"]["input_stage_frame"].clone()
+        };
+
+        let fit = shown(&mut editor, "proxy");
+        assert_eq!(editor.crop_stage(), Some(StageView::Shown));
+        let bounds = editor.crop_stage_bounds().expect("Fit bounds the stage");
+        let (width, height) = (
+            fit["size"][0].as_u64().unwrap() as u32,
+            fit["size"][1].as_u64().unwrap() as u32,
+        );
+        assert!(
+            width < input.width && height < input.height,
+            "a {width}x{height} proxy of the {}x{} stage",
+            input.width,
+            input.height
+        );
+        assert!(width <= bounds.width && height <= bounds.height);
+        assert_eq!(fit["held_exact"], json!(false), "no exact phase at Fit");
+        assert_eq!(editor.draft_generation, None, "nothing more is on its way");
+
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        let _ = editor.zoom_changed(&Zoom::Fit);
+        assert!(
+            editor.draft_generation.is_some(),
+            "the exact stage is asked for"
+        );
+        let exact = shown(&mut editor, "exact");
+        assert_eq!(exact["size"], json!([input.width, input.height]));
+        assert_eq!(editor.draft_generation, None);
+
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
+        let back = editor.snapshot()["crop"]["input_stage_frame"].clone();
+        assert_eq!(back["phase"], json!("proxy"), "the held proxy, at once");
+        assert_eq!(back["size"], fit["size"]);
+        assert_eq!(editor.draft_generation, None, "nothing is rendered");
         finish(editor, catalog);
     }
 }

@@ -65,8 +65,10 @@
 //! buckets so a refit, half-to-exact refinement or one-pixel pan change can reuse their textures;
 //! only the active rectangle is written and sampled. A full replacement may overlap one retiring
 //! full allocation, each capped at 512 MiB; each region set is capped at 32 MiB. The crop stage
-//! and overlays have separate textures. The pixels are borrowed from desktop frames, and uploads
-//! read their rows directly from those buffers.
+//! and overlays have separate textures. The crop stage's is reserved at exactly its frame's size:
+//! the display-size proxy a draft shows at Fit, and a full-size exact stage only at a percentage
+//! zoom that needs one, never kept for the proxy after it. The pixels are borrowed from desktop
+//! frames, and uploads read their rows directly from those buffers.
 
 use iced::{
     ContentFit, Element, Length, Point, Rectangle, Size, Vector,
@@ -150,6 +152,9 @@ pub struct SurfaceDiagnostics {
     pub upload_bytes: u64,
     pub full_resident_bytes: u64,
     pub region_resident_bytes: u64,
+    /// The crop draft's input-stage texture: a display-size proxy's at Fit, the exact stage's only
+    /// at a percentage zoom that needs it, and nothing once the draft ends.
+    pub stage_resident_bytes: u64,
     pub retiring_bytes: u64,
     pub deferred_uploads: u64,
     pub rejected_full_uploads: u64,
@@ -1650,6 +1655,9 @@ impl PhotoPipeline {
             .as_ref()
             .map_or(0, |picture| picture.allocated_bytes);
         diagnostic.region_resident_bytes = self.resident_region_bytes();
+        diagnostic.stage_resident_bytes = self.slots[Layer::Stage.index()]
+            .as_ref()
+            .map_or(0, |picture| picture.allocated_bytes);
         diagnostic.photo_writes = self.figures.writes.load(Ordering::Relaxed);
         diagnostic.upload_bytes = self.figures.upload_bytes.load(Ordering::Relaxed);
     }
@@ -1680,6 +1688,10 @@ impl PhotoPipeline {
         let limit = device.limits().max_texture_dimension_2d;
         let reusable = self.slots[layer.index()]
             .as_ref()
+            // A crop stage is reserved at exactly its frame's size, so the display-size proxy a
+            // draft shows at Fit never keeps the full-size texture an exact stage at a percentage
+            // zoom allocated.
+            .filter(|picture| layer != Layer::Stage || picture.capacity == (width, height))
             .and_then(|picture| picture.layouts_for((width, height), limit));
         let fresh = reusable.is_none();
         if fresh {
@@ -3521,6 +3533,44 @@ mod gpu_surface_tests {
         }
         assert_eq!(pipeline.retiring_regions.load(Ordering::Acquire), 0);
         assert_eq!(diagnostics(&pipeline).blank_photo_draws, blanks_before);
+    }
+
+    /// A crop stage's texture is exactly its frame's size: the exact stage a percentage zoom shows
+    /// is not kept to hold the display-size proxy a zoom back to Fit shows, and the resident bytes
+    /// say so.
+    #[test]
+    fn a_crop_stage_texture_is_its_frames_size_and_never_kept_larger() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Stage,
+            &raster(120, 80, 1),
+            None,
+            None
+        ));
+        pipeline.publish_diagnostics();
+        assert_eq!(diagnostics(&pipeline).stage_resident_bytes, 120 * 80 * 4);
+        assert!(pipeline.write(
+            &device,
+            &queue,
+            Layer::Stage,
+            &raster(30, 20, 2),
+            None,
+            None
+        ));
+        pipeline.publish_diagnostics();
+        assert_eq!(diagnostics(&pipeline).stage_resident_bytes, 30 * 20 * 4);
+        assert_eq!(
+            pipeline.slots[Layer::Stage.index()]
+                .as_ref()
+                .map(|picture| picture.capacity),
+            Some((30, 20))
+        );
     }
 
     #[test]

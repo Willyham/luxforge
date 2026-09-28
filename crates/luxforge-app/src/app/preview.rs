@@ -462,6 +462,13 @@ impl Editor {
     /// pixel or more, so there is nothing to bound: `None`, which is what keeps the 100% view the
     /// exact render of the exact recipe. `None` as well when nothing is known yet.
     pub(crate) fn proxy_bounds(&self) -> Option<ProxyBounds> {
+        self.proxy_bounds_for(self.dimensions)
+    }
+
+    /// [`Self::proxy_bounds`] for a frame whose exact stage is `stage`: the photograph's output
+    /// stage, or a crop draft's input stage, which the same rule gives a proxy at Fit and at a
+    /// percentage that draws it smaller than it is, and the exact render otherwise.
+    pub(crate) fn proxy_bounds_for(&self, stage: Option<(u32, u32)>) -> Option<ProxyBounds> {
         let workspace = &self.session.workspace;
         let surface = state::histogram::photo_surface(
             self.window,
@@ -477,7 +484,7 @@ impl Editor {
                 ))
             }
             Zoom::Percent { value } => {
-                let stage = self.dimensions?;
+                let stage = stage?;
                 let displayed = state::histogram::displayed_size(
                     state::canvas::ZoomView::Percent(value),
                     stage,
@@ -656,6 +663,7 @@ impl Editor {
         let draft_revision = result.draft_revision;
         let approximate_white_balance = result.approximate_white_balance;
         let render_ms = result.render_ms;
+        let interactive = result.intent == PreviewIntent::Interactive;
         let (proxy, frame, proxy_dimensions, proxy_built, proxy_approximation, mask_overlay, exact) =
             match result.outcome {
                 PhaseOutcome::Proxy(outcome) => (
@@ -700,7 +708,9 @@ impl Editor {
             self.mask_overlay_unavailable(generation, &reason);
         }
         // Only an exact result can say why a job that offered bounds has no proxy phase,
-        // and it says nothing when the job had one.
+        // and it says nothing when the job had one. A stage frame is bounded when its job
+        // offered bounds, whichever phase answered them.
+        let bounded = proxy || proxy_declined.is_some();
         if !for_draft && !proxy {
             self.proxy_declined = proxy_declined;
         }
@@ -755,14 +765,11 @@ impl Editor {
                     // The crop layer's input stage is shown in place of the photograph from
                     // the render's own buffer, and the open frame is drawn over it in this same
                     // update: nothing is uploaded through the runtime, so nothing waits for it.
-                    if self.presenter.show_stage(&raster) {
-                        self.crop_stage_shown();
-                    } else {
-                        self.crop_stage_lost();
-                        self.status = "Could not show the crop's input stage".into();
-                        self.settle_step(Settle::Draft);
-                    }
-                    return (Task::none(), true);
+                    // Like the photograph's, its proxy is the Fit view and its exact phase the
+                    // percentage zoom's; neither is ever reduced, sampled or committed.
+                    let presented =
+                        self.crop_stage_ready(&raster, proxy, bounded, !proxy || interactive);
+                    return (Task::none(), presented);
                 }
                 // The dimensions every pick, every percent-zoom box and every overlay
                 // cell maps through are the **exact stage's**, whatever size the
@@ -1222,6 +1229,13 @@ impl Editor {
     /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
     /// rebase.
     pub(crate) fn draft_preview_failed(&mut self, error: &luxforge_core::Error) {
+        if self.crop_stage() == Some(crate::app::crop::StageView::Shown) {
+            // The stage on screen stays under the frame; only its other phase failed, and says so.
+            self.draft_generation = None;
+            self.status = format!("The crop's input stage could not be rendered: {error}");
+            self.settle_step(Settle::Draft);
+            return;
+        }
         self.end_pending_draft(
             format!("The crop's input stage could not be rendered: {error}"),
             error.kind.code(),
@@ -1243,6 +1257,9 @@ impl Editor {
     /// whole input-stage render, and requesting it again would stop that frame in turn.
     pub(crate) fn draft_preview_superseded(&mut self, generation: Option<u64>) {
         let Some(crate::app::crop::StageView::Rendering { reapply, .. }) = self.crop_stage() else {
+            // A stage already on screen keeps its frame: only the request for its other phase
+            // ended, and the next zoom that needs that phase asks for it again.
+            self.draft_generation = None;
             return;
         };
         let again = if reapply { "reapply" } else { "start" };
@@ -1297,6 +1314,13 @@ impl Editor {
     pub(super) fn zoom_changed(&mut self, previous: &Zoom) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
         if zoom == *previous || self.state.is_none() {
+            return Task::none();
+        }
+        // A crop draft's input stage is what the view shows, or is about to: the same rule is
+        // answered over the stage, and the photograph behind it asks for nothing that would
+        // supersede the stage. The draft's end always brings a new photograph at the zoom then.
+        if self.crop_stage_owns_view() {
+            self.present_crop_stage();
             return Task::none();
         }
         let wants_proxy = self.proxy_bounds().is_some();
@@ -1391,7 +1415,7 @@ impl Editor {
     /// bounds a task carried from the owner are replaced by what the window, the panels and the
     /// display scale ask for now, so a job requested once the display scale is known is already at
     /// it and a job requested during a resize is sized for the window it will be shown in. A
-    /// truncated job never gets a proxy.
+    /// truncated job — a crop draft's input stage — is bounded by that stage's own displayed size.
     pub(crate) fn request_preview(&mut self, job: luxforge_core::PreviewJob) -> u64 {
         self.request_preview_inner(job, false).0
     }
@@ -1428,8 +1452,18 @@ impl Editor {
                 };
             }
         }
-        job.proxy = if job.layer_count.is_some() || job.viewport.is_some() {
+        job.proxy = if job.viewport.is_some() {
             None
+        } else if job.layer_count.is_some() {
+            // A crop draft's input stage takes the photograph's own rule over its own stage: a
+            // display-size proxy of the layer prefix wherever the view draws the stage smaller than
+            // it is, and alone, because nothing is ever reduced from the stage. Its exact phase
+            // is asked for only by a view that needs it ([`Self::present_crop_stage`]).
+            let bounds = self.crop_stage_bounds();
+            if bounds.is_some() && job.intent == PreviewIntent::Immediate {
+                job.intent = PreviewIntent::Interactive;
+            }
+            bounds
         } else {
             self.proxy_bounds()
         };
@@ -1546,12 +1580,18 @@ impl Editor {
     /// same update — waits for that frame instead, so the capture never shows the picture the view
     /// has already replaced, such as a proxy of the previous bounds.
     pub(super) fn await_requested_frame(&mut self) {
+        self.await_frame(Settle::Preview);
+    }
+
+    /// [`Self::await_requested_frame`] for a frame that settles `settle`: the crop draft's input
+    /// stage settles [`Settle::Draft`].
+    pub(super) fn await_frame(&mut self, settle: Settle) {
         if let Some(evidence) = &mut self.evidence
             && (evidence.awaiting == Some(Settle::Session)
                 || (evidence.awaiting.is_none() && evidence.capture_pending))
         {
             evidence.capture_pending = false;
-            evidence.awaiting = Some(Settle::Preview);
+            evidence.awaiting = Some(settle);
         }
     }
 

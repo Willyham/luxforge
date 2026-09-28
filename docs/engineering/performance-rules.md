@@ -50,7 +50,8 @@ including retirement. This full-slot count increase is proposed for owner accept
 region slots reserve bounded size buckets, so a rotated Fit proxy and half-to-exact region change
 usually rewrite active texels without reallocating. A deferred upload keeps one coherent previous
 picture visible and marks it updating; overlays tied to other content are suppressed. The crop stage
-has separate GPU tiles outside these photo slots. An 8 MiB upload chunk borrows the raster; it
+has separate GPU tiles outside these photo slots, sized to its frame: display-size at Fit, full
+size only at a percentage zoom that needs the exact stage. An 8 MiB upload chunk borrows the raster; it
 makes no full-frame application staging copy. Backend staging is not measured.
 
 Rendering, estimate reduction and coverage run on workers. The desktop owner admits a single desired

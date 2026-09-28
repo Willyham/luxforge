@@ -248,6 +248,7 @@ impl Editor {
                 "upload_bytes":gpu.upload_bytes,
                 "full_resident_bytes":gpu.full_resident_bytes,
                 "region_resident_bytes":gpu.region_resident_bytes,
+                "stage_resident_bytes":gpu.stage_resident_bytes,
                 "retiring_bytes":gpu.retiring_bytes,
                 "deferred_uploads":gpu.deferred_uploads,
                 "rejected_full_uploads":gpu.rejected_full_uploads,
@@ -414,6 +415,9 @@ impl Editor {
                         "input_stage_loaded".into(),
                         Value::from(self.presenter.stage().is_some()),
                     );
+                    // Which phase of the stage is on screen, and the size of the frame drawn:
+                    // the display-size proxy at Fit, the exact stage at a percentage zoom.
+                    object.insert("input_stage_frame".into(), self.crop_stage_frame_summary());
                     object.insert("section".into(), self.crop_section_summary());
                 }
                 summary

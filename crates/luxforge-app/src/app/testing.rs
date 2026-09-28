@@ -688,6 +688,7 @@ pub(crate) fn hold_crop(
             action: "crop".into(),
             frame,
             stage,
+            frames: Default::default(),
         }),
     }));
 }
