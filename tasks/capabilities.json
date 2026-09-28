@@ -308,7 +308,7 @@
     {
       "id": "TASK-005",
       "description": "Run the module transport on `ureq`'s agent behind the unchanged address policy, deleting the hand-written exchange loop, and pin `idna_adapter` so endpoint parsing adds no Unicode data stack.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -318,7 +318,8 @@
         "A cancel overrides a success: a shut-down plain socket reads as the end of a close-delimited body, so the transport checks the job's cancel before reporting a body complete, as the spike's `spike_cancelling_a_stalled_close_delimited_body_is_not_taken_for_its_end` proves. `ureq`'s timeouts are per phase, not today's idle timeout between reads, so the socket transport applies the idle read timeout itself; and the response framing today's exchange refuses but `ureq-proto` accepts (a bare LF, the header field cap) is either kept by the transport or its loss is recorded in the Transport section. The spike module and its dev-dependency go when this lands; its tests become the transport's.",
         "Keep `policy.rs` unchanged, and keep the transport's structured error kinds (`validation`, `resource-limit`, `read-error`, `cancelled`) exactly as they are; only message wording may change.",
         "`idna_adapter` is pinned at 1.2.2 today through `url = \"=2.5.8\"`, used only by `capabilities/descriptor.rs` and the transport. Pinning `idna_adapter = \"=1.0.0\"` drops its ICU4X back end: a non-ASCII endpoint host is refused by name while punycode keeps working. `ureq` needs its own address parsing regardless, so this is independent cleanup riding along with the transport change, not a consequence of it.",
-        "Add a `check-repository` boundary rule (`xtask/src/repository.rs`'s forbidden-token table) that refuses `ureq_proto::` and `httparse::` outside `capabilities/transport/`, so a second hand-written HTTP framing implementation can never reappear elsewhere. No render or export path is touched; only the transport's tests, the capability proof's network calls and the capabilities smoke exercise this code."
+        "Add a `check-repository` boundary rule (`xtask/src/repository.rs`'s forbidden-token table) that refuses `ureq_proto::` and `httparse::` outside `capabilities/transport/`, so a second hand-written HTTP framing implementation can never reappear elsewhere. No render or export path is touched; only the transport's tests, the capability proof's network calls and the capabilities smoke exercise this code.",
+        "Delivered on ureq 3.4.2's agent with Luxforge's own resolver, connector, socket and TLS transports; the client is about 1,150 lines, not the roughly 700 fewer the estimate assumed, because ureq makes the caller supply all four. Recorded with the framing decision in docs/design/module-capabilities.md's Transport section."
       ],
       "context_links": [
         {
@@ -337,7 +338,7 @@
         {
           "kind": "file",
           "label": "Transport exchange loop",
-          "target": "crates/luxforge-core/src/capabilities/transport/exchange.rs",
+          "target": "crates/luxforge-core/src/capabilities/transport/agent.rs",
           "relevance": "The hand-written exchange loop this task deletes."
         },
         {
@@ -658,7 +659,7 @@
         "A settings `file` parameter kind and its `read-user-file` capability were decided removed on 2026-09-24 because nothing used them, and the type itself is gone, but the wording survives: docs/decisions.md's \"path change\" phrase, a comment in `host.rs` saying a grant names its exact path, `context.rs`'s comment excluding \"file paths\" from a module's context values, an error string in `app/capabilities.rs` naming a \"file\" setting step, `view/capabilities.rs`'s doc comment about a native file dialog, and the settings test fixture (`settings.rs`) still writing an unused `input.bin`. This is a separate, already-decided removal from this plan's own resource-install source.",
         "`SettingsWrite.previous` (`capabilities/settings.rs`) is built on every write and read only by tests; the requirement list that becomes a `not-ready` error is formatted twice (`host/activation.rs` and `host/tasks.rs`); `profile_status` hand-copies the serde field names once in `host/tasks.rs` and again in the desktop's `state/capabilities.rs`; there are three separate io-error mappers (`crates/luxforge-core/src/atomic_file.rs`, `capabilities/resources.rs`, `artifacts/store.rs`) and two `now_ms` helpers (`grants.rs`, returning `u64`, and `artifacts/store.rs`, returning `i64`).",
         "`artifacts/store.rs`'s manifest reader hand-parses its format-marked JSON instead of using the shared `JsonDocument` that settings and grants already use, and `modules/descriptor.rs` (the module parameter vocabulary, not the capability descriptor of the same name) imports `capabilities::transport::{EndpointClass, parse_endpoint}` directly; move those two items to a neutral module both can depend on.",
-        "A module-level `endpoint` setting passes `descriptor.rs`'s field validation today but nothing reads it, since `profile_endpoint` only reads profile-level fields, so it should be refused at registration instead of silently doing nothing. `context.rs`'s comment says a credential is cleared as soon as the request is done and zeroizes its own header copy, but `exchange.rs` makes two further copies that are never zeroed; say \"best effort\", or zero those too. docs/features.md's long-running-work list omits capability jobs, which already publish to the activity board."
+        "A module-level `endpoint` setting passes `descriptor.rs`'s field validation today but nothing reads it, since `profile_endpoint` only reads profile-level fields, so it should be refused at registration instead of silently doing nothing. `context.rs`'s comment says a credential is cleared as soon as the request is done and zeroizes its own header copy, but the transport's request header value and ureq's output buffer hold two further copies that are never zeroed; say \"best effort\", or zero those too. docs/features.md's long-running-work list omits capability jobs, which already publish to the activity board."
       ],
       "context_links": [
         {

@@ -1,7 +1,6 @@
 //! Stable internal error categories shared by GUI and development drivers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
-    Startup,
     UnsupportedInput,
     UnsupportedColor,
     UnsupportedProfile,
@@ -13,7 +12,6 @@ pub enum ErrorKind {
     /// failure of the work: nothing was wrong with the recipe, the source or the budget, and the
     /// caller that cancelled already knows why. No partial frame or report accompanies it.
     Cancelled,
-    Diagnostics,
     Validation,
     Conflict,
     Catalog,
@@ -35,7 +33,6 @@ pub enum ErrorKind {
 impl ErrorKind {
     pub fn code(self) -> &'static str {
         match self {
-            Self::Startup => "startup",
             Self::UnsupportedInput => "unsupported-input",
             Self::UnsupportedColor => "unsupported-color",
             Self::UnsupportedProfile => "unsupported-profile",
@@ -44,7 +41,6 @@ impl ErrorKind {
             Self::ResourceLimit => "resource-limit",
             Self::Render => "render",
             Self::Cancelled => "cancelled",
-            Self::Diagnostics => "diagnostics",
             Self::Validation => "validation",
             Self::Conflict => "conflict",
             Self::Catalog => "catalog",
@@ -59,6 +55,9 @@ impl ErrorKind {
         }
     }
 }
+/// `data.retry` of a refusal that a source job ending makes room for.
+const RETRY_AFTER_SOURCE_JOB: &str = "after-source-job";
+
 #[derive(Debug, Clone)]
 pub struct Error {
     pub kind: ErrorKind,
@@ -82,9 +81,6 @@ impl Error {
     /// One constructor per [`ErrorKind`], named after the kind, for every call site that knows its
     /// kind at compile time. `Error::new` stays for the few call sites where the kind is itself a
     /// variable.
-    pub fn startup(detail: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Startup, detail)
-    }
     pub fn unsupported_input(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::UnsupportedInput, detail)
     }
@@ -108,9 +104,6 @@ impl Error {
     }
     pub fn cancelled(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Cancelled, detail)
-    }
-    pub fn diagnostics(detail: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Diagnostics, detail)
     }
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Validation, detail)
@@ -144,6 +137,45 @@ impl Error {
     }
     pub fn internal(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Internal, detail)
+    }
+    /// `incompatible: unavailable effect <id>`, or `… (layers <ids>)` when the refused stack's
+    /// layers are known: a layer whose effect no registered provider declares. `data.effect_id`
+    /// names the effect, and `data.layers` the layers holding it when the message does, so a client
+    /// names the missing provider without reading the message. Every producer builds it here.
+    pub fn unavailable_effect(effect_id: &str, layers: &[&str]) -> Self {
+        if layers.is_empty() {
+            return Self::incompatible(format!("unavailable effect {effect_id}"))
+                .with_data(serde_json::json!({ "effect_id": effect_id }));
+        }
+        Self::incompatible(format!(
+            "unavailable effect {effect_id} (layers {})",
+            layers.join(", ")
+        ))
+        .with_data(serde_json::json!({ "effect_id": effect_id, "layers": layers }))
+    }
+    /// The effect an [`Self::unavailable_effect`] refusal names, read from its kind and data.
+    pub fn unavailable_effect_id(&self) -> Option<&str> {
+        if self.kind != ErrorKind::Incompatible {
+            return None;
+        }
+        self.data.as_deref()?.get("effect_id")?.as_str()
+    }
+    /// A `resource-limit` refusal because a source queue is full, the source preparation queue or
+    /// the RAW mosaic queue. `data.retry` is `after-source-job`: room is made by a source job
+    /// ending, so the same request is worth sending again once one does. Nothing was queued.
+    pub fn source_queue_full(detail: impl Into<String>) -> Self {
+        Self::resource_limit(detail)
+            .with_data(serde_json::json!({ "retry": RETRY_AFTER_SOURCE_JOB }))
+    }
+    /// Whether this is a [`Self::source_queue_full`] refusal, read from its kind and data.
+    pub fn retries_after_source_job(&self) -> bool {
+        self.kind == ErrorKind::ResourceLimit
+            && self
+                .data
+                .as_deref()
+                .and_then(|data| data.get("retry"))
+                .and_then(serde_json::Value::as_str)
+                == Some(RETRY_AFTER_SOURCE_JOB)
     }
     /// The same error carrying structured data for the client.
     pub fn with_data(mut self, data: serde_json::Value) -> Self {

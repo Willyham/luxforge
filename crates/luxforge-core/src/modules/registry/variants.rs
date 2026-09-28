@@ -7,7 +7,7 @@
 //! Everything here walks descriptors — `O(controls)` — and reads no stack; nothing runs per frame.
 use super::ModuleRegistry;
 use crate::{
-    Error, MaskId, SourceTag,
+    Error, ErrorKind, MaskId, SourceTag,
     modules::{Control, ModuleDescriptor, ResolvedControl, ResolvedReset, resolve_control},
 };
 
@@ -224,5 +224,16 @@ impl ModuleRegistry {
             field.by_action,
             field.by_parameter
         )
+    }
+
+    /// The refusal of a superseded field, of kind `error`: [`Self::superseded_refusal`]'s message,
+    /// and data `{source, field, by}` naming the photo's kind, the refused field and the variant's
+    /// field that is its one path there, as `schema.list` names both (`set-raw.temperature`).
+    pub(crate) fn superseded_error(&self, error: ErrorKind, field: &Superseded<'_>) -> Error {
+        Error::new(error, self.superseded_refusal(field)).with_data(serde_json::json!({
+            "source": field.source,
+            "field": format!("{}.{}", field.action, field.parameter),
+            "by": field.by(),
+        }))
     }
 }

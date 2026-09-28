@@ -206,7 +206,7 @@ pub(crate) fn mask_workspace(mode: &str) -> bool {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
-    let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
+    let editable = inputs.edit_refusal.is_none();
     let drafting = inputs.drafting;
     // Pointer first, then one entry per available module that takes the whole canvas over — a
     // declared crop frame — in registry order, and the view overlays after them. A pick mode is
@@ -305,11 +305,11 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
         return PhotoView::Plain;
     }
     if inputs.state.is_some()
-        && let Some((kind, detail)) = inputs.render_error
+        && let Some(error) = inputs.render_error
     {
-        let reason = render_notice(inputs.modules, *kind, detail)
+        let reason = render_notice(inputs.modules, error)
             .map(|notice| notice.body)
-            .unwrap_or_else(|| detail.clone());
+            .unwrap_or_else(|| error.detail.clone());
         return PhotoView::Empty(format!("Preview unavailable: {reason}"));
     }
     PhotoView::default()
@@ -414,23 +414,27 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             actions: vec![("Return to current".into(), NoticeAction::ReturnCurrent)],
         });
     }
-    if let Some((kind, detail)) = inputs.render_error {
-        notices.extend(render_notice(inputs.modules, *kind, detail));
+    if let Some(error) = inputs.render_error {
+        notices.extend(render_notice(inputs.modules, error));
     }
     notices
 }
 
-/// The notice one failed preview produces, when its kind is one the workspace explains.
-fn render_notice(modules: &[ModuleDescriptor], kind: ErrorKind, detail: &str) -> Option<Notice> {
-    match kind {
-        // A stack whose provider is missing is reported, never rendered without the effect.
-        ErrorKind::Incompatible if detail.starts_with(UNAVAILABLE_EFFECT) => Some(Notice {
+/// The notice one failed preview produces, when its kind is one the workspace explains. What the
+/// failure is comes from its kind and data, never from its message, which is only shown.
+fn render_notice(modules: &[ModuleDescriptor], error: &luxforge_core::Error) -> Option<Notice> {
+    let detail = &error.detail;
+    // A stack whose provider is missing is reported, never rendered without the effect.
+    if let Some(effect) = error.unavailable_effect_id() {
+        return Some(Notice {
             tone: NoticeTone::Neutral,
             icon: NoticeIcon::Triangle,
             title: "Preview is stale".into(),
-            body: unavailable_body(modules, detail),
+            body: unavailable_body(modules, effect),
             actions: Vec::new(),
-        }),
+        });
+    }
+    match error.kind {
         // Locate is a later feature, so this notice names the cause and offers nothing.
         ErrorKind::SourceUnavailable | ErrorKind::FileAccess => Some(Notice {
             tone: NoticeTone::Error,
@@ -450,18 +454,9 @@ fn render_notice(modules: &[ModuleDescriptor], kind: ErrorKind, detail: &str) ->
     }
 }
 
-/// The prefix the registry writes when a stored layer's provider is not registered.
-const UNAVAILABLE_EFFECT: &str = "unavailable effect ";
-
 /// The module that provides the effect the failure names, reported by title and reason. The effect
 /// identity is the fallback, so a layer whose provider was never registered is still named.
-fn unavailable_body(modules: &[ModuleDescriptor], detail: &str) -> String {
-    let Some(effect) = detail
-        .strip_prefix(UNAVAILABLE_EFFECT)
-        .and_then(|rest| rest.split_whitespace().next())
-    else {
-        return detail.to_owned();
-    };
+fn unavailable_body(modules: &[ModuleDescriptor], effect: &str) -> String {
     let module = modules
         .iter()
         .find(|module| module.effects.iter().any(|known| known.id == effect));

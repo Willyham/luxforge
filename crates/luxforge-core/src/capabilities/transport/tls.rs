@@ -3,14 +3,11 @@
 use super::policy::Endpoint;
 use crate::Error;
 use rustls::{
-    ClientConfig, ClientConnection, RootCertStore, StreamOwned,
+    ClientConfig, RootCertStore,
     pki_types::{CertificateDer, ServerName},
 };
 use rustls_platform_verifier::BuilderVerifierExt;
-use std::{
-    net::{IpAddr, TcpStream},
-    sync::Arc,
-};
+use std::{net::IpAddr, sync::Arc};
 use url::Host;
 
 /// Which certificates an `https` endpoint must chain to.
@@ -58,15 +55,4 @@ pub(super) fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, Er
         Some(Host::Ipv6(address)) => ServerName::from(IpAddr::V6(address)),
         None => return Err(Error::validation("URL has no host")),
     })
-}
-
-/// Wrap a connected socket in a client session for `name`. The handshake happens on the first
-/// write, under the request's deadlines.
-pub(super) fn wrap(
-    config: &Arc<ClientConfig>,
-    name: ServerName<'static>,
-    socket: TcpStream,
-) -> Result<StreamOwned<ClientConnection, TcpStream>, Error> {
-    let session = ClientConnection::new(Arc::clone(config), name).map_err(setup_failed)?;
-    Ok(StreamOwned::new(session, socket))
 }

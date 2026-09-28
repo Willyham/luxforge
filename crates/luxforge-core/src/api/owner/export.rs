@@ -91,7 +91,6 @@ pub(in crate::api) fn jpeg(
     call: &Call<'_>,
     params: ExportJpeg,
 ) -> Result<Value, Error> {
-    params.mutation.validate()?;
     let destination = Destination::check(&params.destination)?;
     let plan = owner
         .service

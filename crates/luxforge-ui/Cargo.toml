@@ -15,5 +15,9 @@ iced.workspace = true
 iced_wgpu.workspace = true
 wgpu.workspace = true
 
+[dev-dependencies]
+# The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
+luxforge-testbase = { path = "../luxforge-testbase" }
+
 [lints]
 workspace = true

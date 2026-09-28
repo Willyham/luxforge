@@ -39,6 +39,8 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 [`presets/`](presets/README.md) holds hand-written synthetic presets for the importer: Lightroom XMP develop presets, a profile, a sidecar, a legacy `.lrtemplate` and a Luxforge preset document. None is a copy of a third-party preset. The importer tests assert each one's exact settings, report and origin.
 
+`modules/builtin-descriptors.json` is the one committed snapshot of what `ModuleRegistry::builtin()` publishes: `module.list` with its `host` array, and every method `schema.list` generates from those descriptors, with its parameters, source kinds and superseded fields. `crates/luxforge-core/tests/modules/descriptors.rs` compares a fresh listing with it byte for byte; after an intended descriptor change, regenerate it with `cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot` and review the diff.
+
 ## RAW preparation fixtures
 
 [Public provenance](raw-public.json) identifies four CC0 files from raw.pixls.us covering Z6 12/14-bit lossless and X100VI uncompressed/lossless capture. No photograph bytes are checked in. Paths resolve from the manifest directory; obtain the individual files from their recorded URLs and verify hashes before decoder experiments. The owner originals have a separate ignored local manifest with explicit permission for local testing only.

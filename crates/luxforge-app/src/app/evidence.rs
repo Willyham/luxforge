@@ -4,6 +4,7 @@
 use crate::{
     app::{
         Editor,
+        gesture::Starting,
         message::{
             ActionMessage, BrushEdit, ControlMessage, CropMessage, CropPointer, DraftMessage,
             EvidenceMessage, HistoryMessage, MaskMessage, MenuTarget, Message, PaintTarget,
@@ -17,7 +18,8 @@ use crate::{
     mask_draft::MaskDraft,
     state::{
         control_tree::walk,
-        number::number_text,
+        fields,
+        number::{NumberSpec, number_text},
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
     },
@@ -226,8 +228,9 @@ pub(crate) struct SecondClick {
 pub(crate) struct PacedSlider {
     pub(crate) action: String,
     pub(crate) parameter: String,
-    /// Values still to send, in order; the front is sent by the next tick.
-    pub(crate) remaining: VecDeque<f64>,
+    /// Values still to send, in order, each with the rail fraction that sends it; the front is
+    /// sent by the next tick.
+    pub(crate) remaining: VecDeque<(f64, f64)>,
     pub(crate) remaining_pan: VecDeque<[f32; 2]>,
     /// How many of the step's values have already been sent, which is the index the next one
     /// records.
@@ -763,12 +766,7 @@ impl Editor {
     /// into the evidence directory through the chain the menu starts, with the step's file name in
     /// place of the save dialog's answer, and capture once the job has ended.
     fn export_step(&mut self, step: ExportStep) -> Task<Message> {
-        if !self.can_export() {
-            let reason = if self.state.is_none() {
-                "no photograph is open"
-            } else {
-                "Export is disabled"
-            };
+        if let Some(reason) = self.export_refusal() {
             return self.fail_step(reason);
         }
         match step {
@@ -1514,28 +1512,19 @@ impl Editor {
                 return self.draft_message(DraftMessage::Commit);
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
-            DraftStep::AngleRail(fractions) => {
-                if !drafting {
-                    return self.idle_step(
-                        fractions
-                            .iter()
-                            .map(|fraction| CropMessage::AngleRail(*fraction))
-                            .chain(std::iter::once(CropMessage::AngleRailReleased))
-                            .collect(),
-                    );
-                }
-                let mut tasks: Vec<Task<Message>> = fractions
-                    .iter()
-                    .map(|fraction| self.crop_update(CropMessage::AngleRail(*fraction)))
-                    .collect();
-                tasks.push(self.crop_update(CropMessage::AngleRailReleased));
-                self.capture_next_frame();
-                return Task::batch(tasks);
+            // The angle is the generic stepper of the crop action's declared angle, so its steps
+            // send what that widget sends: a drag's fractions and release, a button press, or a
+            // press on the box, the typed text and Enter.
+            DraftStep::AngleRail(_) | DraftStep::Angle(_) | DraftStep::Nudge(_) => {
+                let Some(frame) = crop_frame(&self.modules) else {
+                    return self.fail_step("no module declares a crop frame");
+                };
+                let (action, parameter) = (frame.action.to_owned(), frame.angle.to_owned());
+                let messages = angle_messages(&step, &action, &parameter);
+                return self.angle_step(drafting, messages);
             }
             DraftStep::Option(on) => CropMessage::Option(*on),
             DraftStep::Guide(on) => CropMessage::Guide(*on),
-            DraftStep::Angle(value) => CropMessage::AngleText(number_text(*value)),
-            DraftStep::Nudge(value) => CropMessage::NudgeAngle(*value),
             DraftStep::Swap => CropMessage::Swap,
             DraftStep::Lock => CropMessage::Lock,
             // Ending the draft returns the session to the pointer through one `workspace.set`,
@@ -1570,30 +1559,30 @@ impl Editor {
         if !drafting
             && matches!(
                 step,
-                DraftStep::Preset(_)
-                    | DraftStep::Lock
-                    | DraftStep::Swap
-                    | DraftStep::Nudge(_)
-                    | DraftStep::Angle(_)
-                    | DraftStep::Guide(true)
+                DraftStep::Preset(_) | DraftStep::Lock | DraftStep::Swap | DraftStep::Guide(true)
             )
         {
-            let mut messages = vec![message];
-            if matches!(step, DraftStep::Angle(_)) {
-                messages.push(CropMessage::SubmitAngle);
-            }
-            return self.idle_step(messages);
+            return self.idle_step(vec![Message::Crop(message)]);
         }
         let modifier = matches!(step, DraftStep::Option(_) | DraftStep::Guide(_));
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
         }
-        // Setting the angle text does not change the draft; submitting it does, exactly as Enter in
-        // the field does.
-        let mut tasks = vec![self.crop_update(message)];
-        if matches!(step, DraftStep::Angle(_)) {
-            tasks.push(self.crop_update(CropMessage::SubmitAngle));
+        let task = self.crop_update(message);
+        self.capture_next_frame();
+        task
+    }
+
+    /// The angle stepper's messages for one step: on an open draft they change it and the frame
+    /// shows the change; from the idle section they open the draft as the stepper does.
+    fn angle_step(&mut self, drafting: bool, messages: Vec<Message>) -> Task<Message> {
+        if !drafting {
+            return self.idle_step(messages);
         }
+        let tasks: Vec<Task<Message>> = messages
+            .into_iter()
+            .map(|message| self.update(message))
+            .collect();
         self.capture_next_frame();
         Task::batch(tasks)
     }
@@ -1601,11 +1590,11 @@ impl Editor {
     /// One change from the idle crop section: the same messages its control sends, which open the
     /// draft seeded from the committed crop and apply the change to it at once. The frame is the
     /// opened draft over its input stage, so the step waits for that stage as a start does.
-    fn idle_step(&mut self, messages: Vec<CropMessage>) -> Task<Message> {
+    fn idle_step(&mut self, messages: Vec<Message>) -> Task<Message> {
         self.await_step(Settle::Draft);
         let tasks: Vec<Task<Message>> = messages
             .into_iter()
-            .map(|message| self.crop_update(message))
+            .map(|message| self.update(message))
             .collect();
         if self.crop().is_none() {
             return self.fail_step("the idle change could not open a draft");
@@ -1648,9 +1637,10 @@ impl Editor {
         Task::batch(tasks)
     }
 
-    /// One slider gesture, driven as the exact messages a pointer drag produces: one `SliderMoved`
-    /// per value, then the release, Escape or nothing at all. Each move sends its own `draft.set`
-    /// when nothing is in flight.
+    /// One slider gesture, driven as the exact messages the slider widget publishes for a pointer
+    /// drag: each scripted value becomes the rail fraction that sends it ([`rail_fractions`]), one
+    /// `Fraction` each, then the release, Escape or nothing at all through the generated-controls
+    /// ending. Each move sends its own `draft.set` when nothing is in flight.
     /// Nothing here reaches the owner directly; the gesture's own driver does, under its own bound.
     ///
     /// A step with `interval_ms` sends nothing here: it hands its values to
@@ -1660,18 +1650,20 @@ impl Editor {
         if self.state.is_none() {
             return self.fail_step("no photograph is open");
         }
-        if crate::state::tools::declared_action(&self.modules, &step.action).is_none() {
-            return self.fail_step(format!("no module declares the action {}", step.action));
-        }
         if step.values.is_empty() {
             return self.fail_step("a slider step needs at least one value");
         }
+        let fractions =
+            match rail_fractions(&self.modules, &step.action, &step.parameter, &step.values) {
+                Ok(fractions) => fractions,
+                Err(reason) => return self.fail_step(reason),
+            };
         if let Some(interval_ms) = step.interval_ms {
             if let Some(evidence) = &mut self.evidence {
                 evidence.paced_slider = Some(PacedSlider {
                     action: step.action,
                     parameter: step.parameter,
-                    remaining: step.values.into(),
+                    remaining: step.values.into_iter().zip(fractions).collect(),
                     remaining_pan: step.pan_path.into(),
                     sent: 0,
                     interval_ms,
@@ -1680,22 +1672,34 @@ impl Editor {
             }
             return Task::none();
         }
-        let mut tasks = Vec::new();
-        for value in &step.values {
-            tasks.push(self.update(Message::Control(ControlMessage::SliderMoved {
-                action: step.action.clone(),
-                parameter: step.parameter.clone(),
-                value: *value,
-            })));
-        }
-        if self.slider_gesture().is_none() && step.end != SliderEnd::Cancel {
-            return self.fail_step(format!(
-                "the {} draft could not be opened: {}",
-                step.action, self.status
-            ));
-        }
-        tasks.push(self.end_slider_gesture(step.action, step.parameter, step.end));
-        Task::batch(tasks)
+        let tasks = self.slide(&step.action, &step.parameter, fractions);
+        self.finish_generated_gesture(
+            step.action,
+            step.parameter,
+            step.end,
+            tasks,
+            GeneratedKind::Slider,
+        )
+    }
+
+    /// Rail positions of one slider, sent exactly as the widget publishes them: one `Fraction`
+    /// each, which the host maps through the parameter's declared rail.
+    fn slide(
+        &mut self,
+        action: &str,
+        parameter: &str,
+        fractions: impl IntoIterator<Item = f64>,
+    ) -> Vec<Task<Message>> {
+        fractions
+            .into_iter()
+            .map(|fraction| {
+                self.update(Message::Control(ControlMessage::Fraction {
+                    action: action.to_owned(),
+                    parameter: parameter.to_owned(),
+                    fraction,
+                }))
+            })
+            .collect()
     }
 
     /// The first press of a scripted double-click and its release: the rail's jump to `value`
@@ -1711,12 +1715,13 @@ impl Editor {
                 step.action, step.parameter
             ));
         }
+        let fractions =
+            match rail_fractions(&self.modules, &step.action, &step.parameter, &[step.value]) {
+                Ok(fractions) => fractions,
+                Err(reason) => return self.fail_step(reason),
+            };
         self.note_step(json!({ "revision_before": revision }));
-        let mut tasks = vec![self.update(Message::Control(ControlMessage::SliderMoved {
-            action: step.action.clone(),
-            parameter: step.parameter.clone(),
-            value: step.value,
-        }))];
+        let mut tasks = self.slide(&step.action, &step.parameter, fractions);
         if self.slider_gesture().is_none() {
             return self.fail_step(format!(
                 "the first press opened no gesture: {}",
@@ -1800,7 +1805,7 @@ impl Editor {
         else {
             return Task::none();
         };
-        let Some(value) = paced.remaining.pop_front() else {
+        let Some((value, fraction)) = paced.remaining.pop_front() else {
             return Task::none();
         };
         let pan = paced.remaining_pan.pop_front();
@@ -1814,11 +1819,7 @@ impl Editor {
             evidence.paced_slider = None;
         }
         self.event("slider_step_value", json!({"value": value, "index": index}));
-        let mut tasks = vec![self.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value,
-        }))];
+        let mut tasks = self.slide(&action, &parameter, [fraction]);
         if let Some([x, y]) = pan {
             self.event("slider_step_pan", json!({"index":index,"x":x,"y":y}));
             tasks.push(iced::widget::operation::snap_to(
@@ -1827,13 +1828,13 @@ impl Editor {
             ));
         }
         if done {
-            if self.slider_gesture().is_none() && end != SliderEnd::Cancel {
-                return self.fail_step(format!(
-                    "the {action} draft could not be opened: {}",
-                    self.status
-                ));
-            }
-            tasks.push(self.end_slider_gesture(action, parameter, end));
+            return self.finish_generated_gesture(
+                action,
+                parameter,
+                end,
+                tasks,
+                GeneratedKind::Slider,
+            );
         }
         Task::batch(tasks)
     }
@@ -1908,51 +1909,8 @@ impl Editor {
         Task::batch(tasks)
     }
 
-    /// End a slider gesture the way a step says to: released, cancelled, or left open. Shared by
-    /// the unpaced and paced drivers so both settle exactly the same way.
-    fn end_slider_gesture(
-        &mut self,
-        action: String,
-        parameter: String,
-        end: SliderEnd,
-    ) -> Task<Message> {
-        match end {
-            // The committed pixels are the evidence, so this waits for the render the commit
-            // produces; a return-to-start gesture settles the same step with no entry at all.
-            SliderEnd::Release => {
-                self.await_step(Settle::Preview);
-                self.update(Message::Control(ControlMessage::SliderReleased {
-                    action,
-                    parameter,
-                }))
-            }
-            // Escape, through the same message the keyboard table produces.
-            SliderEnd::Cancel => {
-                self.await_step(Settle::Preview);
-                self.update(Message::Draft(DraftMessage::Cancel))
-            }
-            // Left open: the frame shows the drafted preview, captured once the gesture has
-            // drained, so the pixels belong to the newest value it sent.
-            SliderEnd::Open => {
-                self.await_step(Settle::SliderDraft);
-                // A value whose preview job was refused has already drained with no frame of its
-                // own to wait for, so the frame on screen is the step's evidence.
-                if self
-                    .core_gesture()
-                    .is_some_and(|gesture| gesture.draft.drained())
-                    && self
-                        .slider_gesture()
-                        .is_some_and(|slider| slider.unpreviewed)
-                {
-                    self.settle_step(Settle::SliderDraft);
-                }
-                Task::none()
-            }
-        }
-    }
-
     /// Generated controls publish fractions and typed values, then use the same bounded draft
-    /// driver as ordinary pointer input. The old `slider` step remains physical-value evidence.
+    /// driver as ordinary pointer input. The `slider` step is the same path, scripted in values.
     fn controls_step(&mut self, step: ControlsStep) -> Task<Message> {
         if self.state.is_none() {
             return self.fail_step("no photograph is open");
@@ -1964,14 +1922,7 @@ impl Editor {
                 fractions,
                 finish,
             } => {
-                let mut tasks = Vec::new();
-                for fraction in fractions {
-                    tasks.push(self.update(Message::Control(ControlMessage::Fraction {
-                        action: action.clone(),
-                        parameter: parameter.clone(),
-                        fraction,
-                    })));
-                }
+                let tasks = self.slide(&action, &parameter, fractions);
                 self.finish_generated_gesture(
                     action,
                     parameter,
@@ -2127,7 +2078,24 @@ impl Editor {
             ));
         }
         match finish {
-            SliderEnd::Open => self.await_step(Settle::SliderDraft),
+            // Left open: the frame shows the drafted preview, captured once the gesture has
+            // drained, so the pixels belong to the newest value it sent.
+            SliderEnd::Open => {
+                self.await_step(Settle::SliderDraft);
+                // A value whose preview job was refused has already drained with no frame of its
+                // own to wait for, so the frame on screen is the step's evidence.
+                if self
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.drained())
+                    && self
+                        .slider_gesture()
+                        .is_some_and(|slider| slider.unpreviewed)
+                {
+                    self.settle_step(Settle::SliderDraft);
+                }
+            }
+            // The committed pixels are the evidence, so this waits for the render the commit
+            // produces; a return-to-start gesture settles the same step with no entry at all.
             SliderEnd::Release => {
                 self.await_step(Settle::Preview);
                 let release = match kind {
@@ -2147,6 +2115,7 @@ impl Editor {
                 };
                 tasks.push(self.update(release));
             }
+            // Escape, through the same message the keyboard table produces.
             SliderEnd::Cancel => {
                 self.await_step(Settle::Preview);
                 tasks.push(self.update(Message::Draft(DraftMessage::Cancel)));
@@ -2377,7 +2346,7 @@ impl Editor {
         if crate::state::tools::canvas_pick(&self.modules, &mode).is_none() {
             return self.fail_step(format!("the {mode} canvas mode declares no pick"));
         }
-        if let Some(reason) = self.pick_refusal() {
+        if let Some(reason) = self.gesture_refusal(Starting::Pick) {
             return self.fail_step(reason);
         }
         self.await_step(Settle::Pick);
@@ -3082,6 +3051,38 @@ impl Editor {
 /// Parse an evidence script with the shared script types, before the window opens, so a malformed
 /// script fails the run instead of producing partial evidence. The one check the types cannot make
 /// is the desktop's own: a gallery page must be one the component board has.
+/// The rail fractions that send exactly these scripted values through the slider widget's own
+/// `Fraction` message, each converted through the number spec of the parameter its providing module
+/// declares (`set-raw`'s Temperature in kelvin, Basic's on a JPEG). A value no fraction sends —
+/// outside the rail's soft range or off its fine grid — is named with what it would be sent as
+/// instead, and the step fails rather than send a value the script did not ask for.
+pub(crate) fn rail_fractions(
+    modules: &[luxforge_core::ModuleDescriptor],
+    action: &str,
+    parameter: &str,
+    values: &[f64],
+) -> Result<Vec<f64>, String> {
+    let spec = fields::declared(modules, action, parameter)
+        .and_then(NumberSpec::of)
+        .ok_or_else(|| format!("no module declares a number parameter {action}.{parameter}"))?;
+    let mut fractions = Vec::with_capacity(values.len());
+    let mut missed = Vec::new();
+    for value in values {
+        match spec.fraction_of(*value) {
+            Ok(fraction) => fractions.push(fraction),
+            Err(sent) => missed.push(format!("{value} (sent as {sent})")),
+        }
+    }
+    if missed.is_empty() {
+        Ok(fractions)
+    } else {
+        Err(format!(
+            "{action}.{parameter} has no rail fraction for {}",
+            missed.join(", ")
+        ))
+    }
+}
+
 pub(crate) fn parse_script(text: &str) -> Result<VecDeque<Step>, String> {
     let steps = luxforge_evidence::parse(text)?;
     for (index, step) in steps.iter().enumerate() {
@@ -3206,6 +3207,49 @@ pub(crate) fn envelope_free(method: &str) -> Option<HostStep> {
             request: envelope == Some("request"),
         }),
     }
+}
+
+/// What the crop angle's stepper sends for one scripted angle step, naming the crop action's
+/// declared `action` and `parameter`: a rail drag's fractions and its release, one press of the −
+/// or + button, or a press on the box, the angle typed into it and Enter.
+fn angle_messages(step: &DraftStep, action: &str, parameter: &str) -> Vec<Message> {
+    let (action, parameter) = (action.to_owned(), parameter.to_owned());
+    let messages = match step {
+        DraftStep::AngleRail(fractions) => fractions
+            .iter()
+            .map(|fraction| ControlMessage::Fraction {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                fraction: *fraction,
+            })
+            .chain(std::iter::once(ControlMessage::Released {
+                action: action.clone(),
+                parameter: parameter.clone(),
+            }))
+            .collect(),
+        DraftStep::Nudge(direction) => vec![ControlMessage::Step {
+            action,
+            parameter,
+            direction: *direction,
+        }],
+        DraftStep::Angle(value) => vec![
+            ControlMessage::EditValue {
+                action: action.clone(),
+                parameter: parameter.clone(),
+            },
+            ControlMessage::Field {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                text: number_text(*value),
+            },
+            ControlMessage::Submit {
+                action,
+                parameter: Some(parameter),
+            },
+        ],
+        _ => Vec::new(),
+    };
+    messages.into_iter().map(Message::Control).collect()
 }
 
 #[cfg(test)]
@@ -3387,6 +3431,105 @@ mod tests {
         assert_eq!(group_path(&basic.controls, "Nowhere"), None);
     }
 
+    /// Every value an evidence scenario scripts on a slider step or a double-click's first press,
+    /// by the scenario that scripts it (`xtask/src/*_smoke.rs` and `editor_latency.rs`).
+    const SCRIPTED: &[(&str, &str, &str, &[f64])] = &[
+        ("basic", "set-basic", "exposure", &[0.25, 0.5, 1.0, 2.0]),
+        (
+            "basic-panel",
+            "set-basic",
+            "temperature",
+            &[10.0, 25.0, 40.0, 20.0],
+        ),
+        ("histogram", "set-basic", "exposure", &[0.5, 1.0]),
+        ("mask", "set-basic", "exposure", &[0.8, 1.4, 2.0]),
+        ("mask-range", "set-basic", "exposure", &[-0.5, -1.0]),
+        ("mask-brush", "set-presence", "dehaze", &[12.0, 30.0]),
+        ("mask-combine", "set-presence", "dehaze", &[12.0, 30.0]),
+        ("mixer", "set-mixer", "red-hue", &[30.0, 60.0, 90.0, 100.0]),
+        (
+            "presence",
+            "set-presence",
+            "clarity",
+            &[30.0, 60.0, 90.0, 100.0],
+        ),
+        ("presence", "set-presence", "texture", &[100.0]),
+        ("presence", "set-presence", "dehaze", &[100.0, -100.0]),
+        ("vignette", "set-vignette", "amount", &[-20.0, -40.0, -60.0]),
+        ("vignette", "set-vignette", "roundness", &[-100.0, 100.0]),
+        ("vignette", "set-vignette", "feather", &[0.0, 100.0]),
+        // Two Temperature drags in kelvin, then the double-clicks' first presses.
+        (
+            "raw-panel",
+            "set-raw",
+            "temperature",
+            &[3500.0, 2500.0, 5000.0],
+        ),
+        ("raw-panel", "set-raw", "tint", &[12.0]),
+        ("raw-panel", "set-basic", "exposure", &[0.4]),
+        ("editor-latency paint", "set-basic", "exposure", &[0.6]),
+    ];
+
+    /// The fields `editor-latency` measures by name: its default, Basic's exposure, the RAW white
+    /// balance its bursts drive, and the mixer field its own tests generate for.
+    const LATENCY_FIELDS: &[(&str, &str)] = &[
+        ("set-basic", "exposure"),
+        ("set-raw", "temperature"),
+        ("set-raw", "tint"),
+        ("set-mixer", "red-hue"),
+    ];
+
+    /// Every value `editor-latency` can generate for one field: its drags, commits, bursts and
+    /// their reflections are all snapped to the declared step (1 where none is declared) inside
+    /// the declared range, each spelled exactly as its snap spells it.
+    fn latency_grid(parameter: &luxforge_core::ParameterDescriptor) -> Vec<f64> {
+        let (min, max) = match parameter.kind {
+            luxforge_core::ParameterKind::Number { min, max } => (min, max),
+            luxforge_core::ParameterKind::Integer { min, max } => (min as f64, max as f64),
+            _ => panic!("{} is not a number", parameter.name),
+        };
+        let step = parameter.step.unwrap_or(1.0);
+        let (first, last) = ((min / step).ceil() as i64, (max / step).floor() as i64);
+        (first..=last)
+            .map(|index| {
+                if step >= 1.0 {
+                    index as f64 * step
+                } else {
+                    index as f64 / (1.0 / step)
+                }
+            })
+            .collect()
+    }
+
+    /// The widget path can send every value a scenario scripts: converted to the rail fraction
+    /// the slider publishes and back through the providing module's number spec, each value comes
+    /// back exactly — the `set-raw` kelvin and tint values through the RAW module's own
+    /// declarations. A value that does not is named, with what it would be sent as.
+    #[test]
+    fn every_scripted_slider_value_round_trips_through_its_rail_fraction() {
+        let modules = crate::app::testing::descriptors();
+        let mut missed = Vec::new();
+        for (scenario, action, parameter, values) in SCRIPTED {
+            if let Err(reason) = rail_fractions(&modules, action, parameter, values) {
+                missed.push(format!("{scenario}: {reason}"));
+            }
+        }
+        for (action, parameter) in LATENCY_FIELDS {
+            let declared = crate::state::fields::declared(&modules, action, parameter)
+                .unwrap_or_else(|| panic!("{action}.{parameter} is declared"));
+            if let Err(reason) =
+                rail_fractions(&modules, action, parameter, &latency_grid(declared))
+            {
+                missed.push(format!("editor-latency: {reason}"));
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "scripted values no rail fraction sends:\n{}",
+            missed.join("\n")
+        );
+    }
+
     /// A paced step sends nothing when it starts: its values wait in `paced_slider` for the timer
     /// that is gated on them, and each tick sends exactly one, in order, recording it as its own
     /// event and leaving the field showing the value it just sent. The last tick ends the gesture
@@ -3511,7 +3654,7 @@ mod tests {
     #[test]
     fn a_scripted_draft_change_records_its_step_and_arms_one_capture() {
         let (mut editor, catalog, _, _) = scripted(
-            r#"[{"draft":{"start":true}},{"draft":{"rect":[20,10,200,150]}},{"draft":{"angle":9.0}},{"draft":{"preset":"1:1"}},{"draft":{"cancel":true}}]"#,
+            r#"[{"draft":{"start":true}},{"draft":{"rect":[20,10,200,150]}},{"draft":{"angle":9.0}},{"draft":{"nudge":-1}},{"draft":{"preset":"1:1"}},{"draft":{"cancel":true}}]"#,
         );
         // Start opens the frame at once and waits for its input stage; nothing is captured until
         // the stage is under the frame.
@@ -3536,9 +3679,13 @@ mod tests {
             ),
             (3, &|editor: &Editor| {
                 assert_eq!(editor.crop().expect("a draft").stage.angle, 9.0);
-                assert_eq!(editor.crop_angle, "9");
+                assert_eq!(editor.snapshot()["crop"]["section"]["angle"], json!("9.0"));
             }),
+            // A press of the − button steps the angle by its declared step.
             (4, &|editor: &Editor| {
+                assert_eq!(editor.crop().expect("a draft").stage.angle, 8.5);
+            }),
+            (5, &|editor: &Editor| {
                 let draft = editor.crop().expect("a draft");
                 assert_eq!(draft.preset, "1:1");
                 assert!(
@@ -3547,7 +3694,7 @@ mod tests {
                     draft.rect
                 );
             }),
-            (5, &|editor: &Editor| assert!(editor.crop().is_none())),
+            (6, &|editor: &Editor| assert!(editor.crop().is_none())),
         ] {
             editor.evidence.as_mut().expect("evidence").capture_pending = false;
             let _ = editor.next_step();
@@ -3607,22 +3754,40 @@ mod tests {
     }
 
     /// A `wait` step captures nothing until its interval has passed, and then exactly one frame,
-    /// on the evidence tick that finds it due.
+    /// on the evidence tick that finds it due. The step's due time is its interval after the step
+    /// began; the test then decides when that time has come, moving it first out of any tick's
+    /// reach and then to now, rather than sleeping and hoping no tick is late.
     #[test]
     fn a_scripted_wait_captures_once_its_interval_has_passed() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"wait":{"ms":20}}]"#);
+        let interval = Duration::from_millis(20);
+        let before = Instant::now();
         let _ = editor.next_step();
+        let after = Instant::now();
         assert!(!evidence(&editor).capture_pending);
-        assert!(evidence(&editor).wait_until.is_some());
+        let due = evidence(&editor).wait_until.expect("the wait's due time");
+        assert!(
+            before + interval <= due && due <= after + interval,
+            "the step is due its interval after it began"
+        );
+        let wait = |editor: &mut Editor, until: Instant| {
+            editor.evidence.as_mut().expect("evidence mode").wait_until = Some(until);
+        };
+        wait(&mut editor, due + luxforge_testbase::HANG);
         let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
         assert!(
             !evidence(&editor).capture_pending,
             "a tick before the interval captures nothing"
         );
-        std::thread::sleep(Duration::from_millis(30));
+        wait(&mut editor, Instant::now());
         let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
         assert!(evidence(&editor).capture_pending);
         assert!(evidence(&editor).wait_until.is_none());
+        let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
+        assert!(
+            evidence(&editor).wait_until.is_none(),
+            "a later tick finds no wait left to capture"
+        );
         finish(editor, catalog);
     }
 

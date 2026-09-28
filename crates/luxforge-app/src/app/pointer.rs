@@ -121,7 +121,7 @@ impl Editor {
                 if tools::canvas_pick(&self.modules, &mode).is_none() {
                     return Task::none();
                 }
-                if let Some(reason) = self.pick_refusal() {
+                if let Some(reason) = self.gesture_refusal(Starting::Pick) {
                     self.event(
                         "canvas_pick",
                         json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
@@ -191,8 +191,10 @@ impl Editor {
                         // The module declares that the two coordinates are the whole request, so
                         // the pick submits it as one commit through the one request builder.
                         if commit {
-                            if !self.session.preview.can_edit() {
-                                self.status = "Return to the current state before editing".into();
+                            // The state may have moved while the locate was out: the commit asks
+                            // the pick's one refusal again.
+                            if let Some(reason) = self.gesture_refusal(Starting::Pick) {
+                                self.status = reason;
                                 self.settle_step(Settle::Pick);
                                 return Task::none();
                             }
@@ -358,10 +360,11 @@ impl Editor {
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
-                if self.busy {
-                    // Something else took the one request in flight while the query was out. The
-                    // answer is not committed behind it; the pick is simply refused and said so.
-                    self.status = "Waiting for the last request".into();
+                if let Some(reason) = self.gesture_refusal(Starting::Pick) {
+                    // Something else took the one request in flight, or the state moved, while the
+                    // query was out. The answer is not committed behind it; the pick is refused
+                    // with the pick's one refusal and said so.
+                    self.status = reason;
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
@@ -444,23 +447,5 @@ impl Editor {
             x,
             y,
         )
-    }
-
-    /// Why a click on the photograph cannot be picked right now, in the words the status bar uses.
-    ///
-    /// A sample-apply pick commits, so it obeys the same one-draft rule every other commit does: a
-    /// draft is finished deliberately, never displaced by a click. A point pick commits nothing,
-    /// but it answers to the same rule so that one sentence describes every canvas pick.
-    pub(super) fn pick_refusal(&self) -> Option<String> {
-        if let Some(reason) = self.gesture_refusal(Starting::Pick) {
-            return Some(reason);
-        }
-        if !self.session.preview.can_edit() {
-            return Some("Return to the current state before picking from the photograph".into());
-        }
-        if self.state.is_none() {
-            return Some("No photograph is open".into());
-        }
-        self.busy.then(|| "Waiting for the last request".to_owned())
     }
 }

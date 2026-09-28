@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
 luxforge-reference = { path = "../luxforge-reference" }
+luxforge-testbase = { path = "../luxforge-testbase" }
 rustls.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

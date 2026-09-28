@@ -2,6 +2,7 @@
 //! agent drives it: each call writes one request line and reads its answer, so a test can wait on
 //! jobs between requests. A test names the binary (`env!("CARGO_BIN_EXE_luxforge-json")` is only
 //! known to the crate that builds it) and the arguments.
+use luxforge_testbase::{HANG, wait_for};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -9,15 +10,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc,
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
 };
-
-/// The longest one answer may take. Every request a test sends is answered promptly; long work is a
-/// job the test polls.
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// How long the process may take to exit once its standard input is closed.
-const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One running `luxforge-json` process. Dropping it without [`JsonProcess::finish`] kills it.
 pub struct JsonProcess {
@@ -82,10 +75,12 @@ impl JsonProcess {
         )
         .expect("write a request");
         input.flush().expect("flush a request");
+        // Every request is answered at once; long work is a job the test polls. The hang bound
+        // only stops a process that never answers from hanging the test.
         let line = self
             .output
-            .recv_timeout(RESPONSE_TIMEOUT)
-            .unwrap_or_else(|_| panic!("no answer to {method} within {RESPONSE_TIMEOUT:?}"))
+            .recv_timeout(HANG)
+            .unwrap_or_else(|_| panic!("no answer to {method} within the {HANG:?} hang bound"))
             .expect("read an answer");
         self.transcript.push(line.clone());
         let response: Value = serde_json::from_str(&line).expect("a JSON answer");
@@ -113,19 +108,11 @@ impl JsonProcess {
 
     /// Poll a job with `method` (`job.read`, for a job of any kind) until it leaves the queue,
     /// answering its last status. The client polls; the owner never does.
-    pub fn settle(&mut self, method: &str, job_id: &Value, timeout: Duration) -> Value {
-        let deadline = Instant::now() + timeout;
-        loop {
+    pub fn settle(&mut self, method: &str, job_id: &Value) -> Value {
+        wait_for(&format!("{method} {job_id} settling"), || {
             let status = self.call(method, json!({"job_id": job_id}));
-            if !matches!(status["status"].as_str(), Some("queued" | "running")) {
-                return status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{method} {job_id} did not settle within {timeout:?}: {status}"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        })
     }
 
     /// Every answer line so far, in order.
@@ -137,19 +124,13 @@ impl JsonProcess {
     /// error.
     pub fn finish(mut self) -> String {
         drop(self.input.take());
-        let mut child = self.child.take().expect("the process");
-        let deadline = Instant::now() + EXIT_TIMEOUT;
-        let status = loop {
-            if let Some(status) = child.try_wait().expect("the process's exit status") {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("the process did not exit within {EXIT_TIMEOUT:?} of end of input");
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
+        // The child stays in `self` while it is awaited, so a process that never exits is killed
+        // when the failed wait drops it.
+        let child = self.child.as_mut().expect("the process");
+        let status = wait_for("the process exiting at the end of its input", || {
+            child.try_wait().expect("the process's exit status")
+        });
+        self.child = None;
         let stderr = self
             .stderr
             .take()

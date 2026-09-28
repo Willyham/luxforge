@@ -118,8 +118,9 @@ fn profile_secret_fields(descriptor: &ModuleDescriptor) -> Vec<String> {
 }
 
 impl CapabilityHost {
-    /// `task.<id>`: check, in order, that the module is available, the `{request_id, actor}`
-    /// envelope, the parameters, the asset, the profile's readiness, every requirement (listed
+    /// `task.<id>`, whose `{request_id, actor}` envelope the dispatcher has checked: check, in
+    /// order, that the module is available, the parameters, the asset, the profile's readiness,
+    /// every requirement (listed
     /// together as `not-ready`), and a live grant for each capability the task uses (the first
     /// missing one is `consent-required`); then bind the disclosed data, which is
     /// `preparation-required` for an unprepared source or artifact, and queue the task on the module
@@ -145,7 +146,8 @@ impl CapabilityHost {
             )));
         }
         let mut parameters = params::generated(request)?;
-        params::take::<MutationRequest>(&mut parameters, "mutation")?.validate()?;
+        // The envelope is the dispatcher's, which checked it; it is not one of the task's fields.
+        params::take::<MutationRequest>(&mut parameters, "mutation")?;
         let asset_id: Option<AssetId> = task
             .asset
             .then(|| params::take(&mut parameters, "asset_id"))

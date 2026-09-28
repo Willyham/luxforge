@@ -1,9 +1,7 @@
 //! Tests of the registry's lookups.
 use super::{tests::*, *};
-use crate::modules::raw::RAW_EFFECT;
 use crate::{
-    ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, ORIENTATION_EFFECT,
-    Orientation, PIXEL_EFFECT,
+    ActionDescriptor, BASIC_EFFECT, EFFECT_FORMAT, Layer, Orientation,
     modules::{ActionInput, Availability, ModuleDescriptor},
 };
 use serde_json::{Value, json};
@@ -231,45 +229,35 @@ fn built_in_modules_describe_their_stored_layers() {
     );
 }
 
-/// The three effects the design names declare the flag and nothing else does, and the field
-/// follows the module that declares one: `edit.set-basic` accepts a target, `edit.set-crop` does
-/// not, and a client reads both from the registry rather than from a hand-maintained list.
+/// The maskable flag is the declaring effect's, and the mask target follows the module that
+/// declares one: `edit.set-basic` accepts a target, `edit.set-crop` does not, and a client reads
+/// both from the registry rather than from a hand-maintained list. Which effects are maskable is
+/// the committed descriptor snapshot's (`tests/modules/descriptors.rs`).
 #[test]
-fn exactly_the_three_delivered_effects_are_maskable() {
+fn the_maskable_flag_follows_the_declaring_effect_and_its_module() {
     let registry = ModuleRegistry::builtin();
-    for effect in [BASIC_EFFECT, crate::MIXER_EFFECT, crate::PRESENCE_EFFECT] {
-        assert!(registry.effect_maskable(effect), "{effect}");
+    for module in crate::builtin_modules() {
+        let descriptor = module.descriptor();
+        for effect in &descriptor.effects {
+            assert_eq!(
+                registry.effect_maskable(&effect.id),
+                effect.maskable,
+                "{}",
+                effect.id
+            );
+        }
+        let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
+        for action in &descriptor.actions {
+            assert_eq!(
+                registry.action_accepts_mask(&action.id),
+                maskable,
+                "{}",
+                action.id
+            );
+        }
     }
-    for effect in [
-        PIXEL_EFFECT,
-        RAW_EFFECT,
-        CROP_EFFECT,
-        ORIENTATION_EFFECT,
-        crate::VIGNETTE_EFFECT,
-        "test.absent",
-    ] {
-        assert!(!registry.effect_maskable(effect), "{effect}");
-    }
-    for action in [
-        "set-basic",
-        "reset-basic",
-        "set-mixer",
-        "reset-mixer",
-        "set-presence",
-        "reset-presence",
-    ] {
-        assert!(registry.action_accepts_mask(action), "{action}");
-    }
-    for action in [
-        "set-pixel",
-        "set-crop",
-        "rotate-left",
-        "set-vignette",
-        "set-raw",
-        "no-such-action",
-    ] {
-        assert!(!registry.action_accepts_mask(action), "{action}");
-    }
+    assert!(!registry.effect_maskable("test.absent"));
+    assert!(!registry.action_accepts_mask("no-such-action"));
 }
 
 /// `patch_action` is the one answer to "is this a presettable action": a registered, available

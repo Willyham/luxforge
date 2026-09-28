@@ -12,19 +12,15 @@
 mod unit;
 
 use super::{
-    ColorOperation, EffectDescriptor, EffectStage, PointwiseColor, Processing, RailDecoration,
-    Stage,
-    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    ColorOperation, EffectStage, PointwiseColor, Processing, RailDecoration, Stage,
+    field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error};
+use crate::Error;
 use std::sync::Arc;
 
 /// The colour mixer's one pointwise unit: hue, saturation and luminance for the eight colour
 /// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
 pub const MIXER_EFFECT: &str = "luxforge.mixer.hsl";
-
-pub(super) const SET_MIXER: &str = "set-mixer";
-pub(super) const RESET_MIXER: &str = "reset-mixer";
 
 const HUE: &str = "hue";
 const SATURATION: &str = "saturation";
@@ -185,71 +181,29 @@ pub type MixerModule = FieldPatchModule<Mixer>;
 
 impl FieldPatch for Mixer {
     fn spec() -> Spec {
-        Spec {
-            id: "luxforge.mixer",
-            title: "Colour mixer",
-            hint: "Hue, saturation and luminance by range",
-            noun: "mixer",
-            effect: EffectDescriptor {
-                id: MIXER_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Color,
-                order: 10,
-                maskable: true,
-                artifacts: false,
-                single: true,
-                sources: Vec::new(),
-            },
-            set: ActionText {
-                id: SET_MIXER,
-                title: "Set Colour mixer",
-                notes: "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
-            },
-            reset: ActionText {
-                id: RESET_MIXER,
-                title: "Reset Colour mixer",
-                notes: "returns the stack's one Colour mixer layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
-            },
-            fields: FIELDS.iter().map(|name| mixer_field(name)).collect(),
-            groups: vec![
-                Group {
-                    label: HUE_GROUP,
-                    fields: FIELDS[0..8].to_vec(),
-                    collapsed: false,
-                    extra: Vec::new(),
-                    reset_variants: Vec::new(),
-                },
-                Group {
-                    label: SATURATION_GROUP,
-                    fields: FIELDS[8..16].to_vec(),
-                    collapsed: true,
-                    extra: Vec::new(),
-                    reset_variants: Vec::new(),
-                },
-                Group {
-                    label: LUMINANCE_GROUP,
-                    fields: FIELDS[16..24].to_vec(),
-                    collapsed: true,
-                    extra: Vec::new(),
-                    reset_variants: Vec::new(),
-                },
-            ],
-            queries: Vec::new(),
-            canvas: None,
-            collapsed: true,
-            // The three groups are parallel views of the same eight ranges, so the desktop draws
-            // them as one segmented row instead of stacked sections.
-            layout: crate::ModuleLayout::Tabs,
-            developer: false,
-        }
+        Spec::new(
+            "luxforge.mixer",
+            "Colour mixer",
+            "Hue, saturation and luminance by range",
+            MIXER_EFFECT,
+            EffectStage::Color,
+        )
+        .order(10)
+        .maskable()
+        .set_notes("merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")
+        .fields(FIELDS.map(mixer_field))
+        .group(Group::new(HUE_GROUP, FIELDS[0..8].iter().copied()))
+        .group(Group::new(SATURATION_GROUP, FIELDS[8..16].iter().copied()).collapsed())
+        .group(Group::new(LUMINANCE_GROUP, FIELDS[16..24].iter().copied()).collapsed())
+        .collapsed()
+        // The three groups are parallel views of the same eight ranges, so the desktop draws them
+        // as one segmented row instead of stacked sections.
+        .layout(crate::ModuleLayout::Tabs)
     }
 
+    /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
+    /// to no units.
     fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
-        // A neutral payload compiles to no units, which the host drops entirely: the identity
-        // byte path and the shared source buffer are kept.
-        if values.is_default() {
-            return Ok(Processing::Color(ColorOperation::neutral()));
-        }
         // FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
         let property = |offset: usize| -> [f64; unit::RANGE_COUNT] {
             std::array::from_fn(|range| values.number(FIELDS[offset + range]))
@@ -267,150 +221,14 @@ impl FieldPatch for Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{ActionInput, Control, ParameterKind, ResetAction, ToolModule};
-
-    use serde_json::Map;
+    use crate::modules::{ActionInput, ToolModule};
     use serde_json::json;
 
+    const SET_MIXER: &str = "set-mixer";
     const STAGE: Stage = Stage {
         width: 4,
         height: 4,
     };
-
-    #[test]
-    fn the_descriptor_declares_one_colour_effect_at_order_ten_two_actions_and_three_groups() {
-        let module = MixerModule::new();
-        let descriptor = module.descriptor();
-        descriptor.validate().expect("a valid descriptor");
-        assert_eq!(descriptor.id, "luxforge.mixer");
-        assert_eq!(descriptor.title, "Colour mixer");
-        assert_eq!(
-            descriptor.hint.as_deref(),
-            Some("Hue, saturation and luminance by range")
-        );
-        assert!(descriptor.collapsed);
-        assert!(!descriptor.developer);
-        assert_eq!(descriptor.effects.len(), 1);
-        assert_eq!(descriptor.effects[0].id, MIXER_EFFECT);
-        assert_eq!(descriptor.effects[0].format, 1);
-        assert_eq!(descriptor.effects[0].stage, EffectStage::Color);
-        assert_eq!(descriptor.effects[0].order, 10);
-        assert_eq!(
-            descriptor.reset,
-            Some(ResetAction {
-                action: RESET_MIXER.into(),
-                preset: Map::new(),
-            })
-        );
-        assert!(descriptor.canvas.is_none());
-        assert!(descriptor.queries.is_empty());
-
-        let set = descriptor.action(SET_MIXER).expect("set-mixer");
-        assert!(set.patch);
-        assert!(set.summary.is_none());
-        assert_eq!(set.parameters.len(), 24);
-        assert_eq!(
-            set.parameters
-                .iter()
-                .map(|parameter| parameter.name.as_str())
-                .collect::<Vec<_>>(),
-            FIELDS,
-            "every field is a declared parameter of the one patch action, in FIELDS order"
-        );
-        for parameter in &set.parameters {
-            assert_eq!(
-                parameter.kind,
-                ParameterKind::Number {
-                    min: -100.0,
-                    max: 100.0
-                },
-                "{}",
-                parameter.name
-            );
-            assert!(!parameter.required, "{}", parameter.name);
-            assert_eq!(parameter.default, Some(json!(0.0)), "{}", parameter.name);
-            assert_eq!(parameter.unit, None, "{}", parameter.name);
-            assert_eq!(parameter.step, Some(1.0), "{}", parameter.name);
-            assert_eq!(parameter.precision, Some(0), "{}", parameter.name);
-            assert_eq!(parameter.zero, Some(0.0), "{}", parameter.name);
-            assert!(!parameter.notes.is_empty(), "{}", parameter.name);
-        }
-
-        let reset = descriptor.action(RESET_MIXER).expect("reset-mixer");
-        assert!(reset.parameters.is_empty());
-        assert!(!reset.patch);
-
-        assert_eq!(descriptor.controls.len(), 3);
-        let group_labels: Vec<&str> = descriptor
-            .controls
-            .iter()
-            .map(|control| match control {
-                Control::Group { label, .. } => label.as_str(),
-                _ => panic!("every top-level control is a group"),
-            })
-            .collect();
-        assert_eq!(group_labels, ["Hue", "Saturation", "Luminance"]);
-        let collapsed: Vec<bool> = descriptor
-            .controls
-            .iter()
-            .map(|control| match control {
-                Control::Group { collapsed, .. } => *collapsed,
-                _ => unreachable!(),
-            })
-            .collect();
-        assert_eq!(
-            collapsed,
-            [false, true, true],
-            "Hue starts expanded, Saturation and Luminance collapsed"
-        );
-        for control in &descriptor.controls {
-            let Control::Group {
-                controls, reset, ..
-            } = control
-            else {
-                unreachable!()
-            };
-            assert_eq!(controls.len(), 8);
-            let labels: Vec<&str> = controls
-                .iter()
-                .map(|control| match control {
-                    Control::Number { label, .. } => label.as_str(),
-                    _ => panic!("every group control is a slider"),
-                })
-                .collect();
-            assert_eq!(
-                labels,
-                [
-                    "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"
-                ]
-            );
-            let reset = reset.as_ref().expect("a group reset");
-            assert_eq!(reset.action, SET_MIXER);
-            assert_eq!(reset.preset.len(), 8);
-            assert!(reset.preset.values().all(|value| *value == json!(0.0)));
-        }
-    }
-
-    #[test]
-    fn every_slider_declares_the_gradient_rail_hint() {
-        let module = MixerModule::new();
-        for control in &module.descriptor().controls {
-            let Control::Group { controls, .. } = control else {
-                unreachable!()
-            };
-            for control in controls {
-                let Control::Number { rail, .. } = control else {
-                    unreachable!()
-                };
-                match rail {
-                    Some(RailDecoration::Gradient { stops }) => {
-                        assert!((2..=8).contains(&stops.len()));
-                    }
-                    other => panic!("expected a gradient rail, got {other:?}"),
-                }
-            }
-        }
-    }
 
     /// The words a history label and the recipe row use for each field, with its declared decimals,
     /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count

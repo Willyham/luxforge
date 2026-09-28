@@ -415,7 +415,8 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
         ),
         (
             "luxforge.crop",
-            "371b17e20de70ba39e3cbf71785087b02bf7c63d339d42bb673a4935430a6371",
+            // Its angle declares `step` 0.5 and `fine_step` 0.05, which the stepper reads.
+            "5228d635a38c778ce21190d208254544795f47c05f30182ff065ed5ad22638e6",
         ),
         (
             "luxforge.vignette",

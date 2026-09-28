@@ -31,7 +31,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|viewport] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR` |
-| Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
+| Authentic RAW editor journey and reopen over one file the RAW manifest lists | `cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Every smoke scenario, with its launches and frame counts, what it opens and its window | `cargo xtask smoke --list` |
 | A recorded smoke run's checks again, over a copy and without launching | `cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR [--scenario NAME] [--source RAW]` |
@@ -65,9 +65,9 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 
 ### Repository rules
 
-`cargo xtask check-repository` validates the task plans and local links, then applies two rule tables in `xtask/src/repository.rs`. Each row is one rule; a refusal names the file and line, the rule, the token or dependency it found, and the table whose row to change.
+`cargo xtask check-repository` validates the task plans and local links, then applies three rule tables in `xtask/src/repository.rs`. Each row is one rule; a refusal names the file and line, the rule, the token, dependency or message it found, and the table whose row to change.
 
-`SOURCE_RULES` says which files may hold which tokens. A row names its tokens, its scope (directories and file types, since `crates/luxforge-raw/vendor` holds LibRaw's C++ sources), the paths allowed to hold them (a file, a directory, or a module path such as `modules/raw` for `raw.rs` and `raw/`), its match mode, whether it covers test code, whether its allowed paths may hold each token on one line only (an expression written once in its home), and the reason it prints. One matcher serves every row. `Whole` checks an end of the token only where the token has an identifier character there, so `app::` finds `crate::app::State` but not `snapp::`, and `RAW_EFFECT` misses `RAW_EFFECTS`. `Prefix` lets the token run on into a longer identifier, so `mozjpeg` finds `mozjpeg_sys`. A row that covers tests reads every line, comments included. A row that does not skips files that are tests by name (a `tests` directory, `tests.rs`, `*_tests.rs`), modules declared under `#[cfg(test)]` with everything under their directory, `#[cfg(test)]` items, and comment lines. No source rule reads `xtask/src/repository.rs`, which names every token in its rows and tests.
+`SOURCE_RULES` says which files may hold which tokens. A row names its tokens, its scope (directories and file types, since `crates/luxforge-raw/vendor` holds LibRaw's C++ sources), the paths allowed to hold them (a file, a directory, or a module path such as `modules/raw` for `raw.rs` and `raw/`), its match mode, whether it covers test code, whether each allowed path may hold each token on one line only (an expression written once in its home; each file under an allowed directory is a home of its own), and the reason it prints. One matcher serves every row. `Whole` checks an end of the token only where the token has an identifier character there, so `app::` finds `crate::app::State` but not `snapp::`, and `RAW_EFFECT` misses `RAW_EFFECTS`. `Prefix` lets the token run on into a longer identifier, so `mozjpeg` finds `mozjpeg_sys`. A row that covers tests reads every line, comments included. A row that does not skips files that are tests by name (a `tests` directory, `tests.rs`, `*_tests.rs`), modules declared under `#[cfg(test)]` with everything under their directory, `#[cfg(test)]` items, and comment lines. No source rule reads `xtask/src/repository.rs`, which names every token in its rows and tests.
 
 | Rule | Refuses | Where |
 | --- | --- | --- |
@@ -75,17 +75,28 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `jpeg-codec-name`, `jpeg-through-codec` | `mozjpeg` outside `luxforge-jpeg`; decoding JPEG through `image` | Shipped crates' production code |
 | `raw-identity` | `"luxforge.raw"` and `RAW_EFFECT` outside the RAW module | Production code under `crates/` |
 | `presettable-action` | The refusal `is not a field-patch action` outside `ModuleRegistry::patch_action`, the one answer to whether an action is presettable | Production code under `crates/` |
+| `refusal-text` | The unavailable-effect and full-source-queue messages (`"unavailable effect`, `queue is full`) outside their constructors' homes (`error.rs`, and `api/owner.rs` for the two queues): a client, the desktop included, reads the refusal's code and data (`data.effect_id`, `data.retry`), never its message | Production code under `crates/` |
 | `component-kind` | A mask component kind's token (`BRUSH`, `LINEAR`, `RADIAL`, `KIND`, `LUMINANCE_KIND`, `COLOUR_KIND`, `"luminance-range"`, `"colour-range"`) outside the host's kind table (`mask/mod.rs`), each kind's own file and the desktop's drawn-kind table and editors | Production code under `crates/` |
 | `one-read-rectangle` | A resample's tap index, `- 0.5).floor()`, anywhere but once, in `Resample::reads` in `render.rs` | Core production code |
 | `one-spatial-entry` | Keying the estimate store by a domain's prefix, `.estimate_prefix(`, anywhere but once, in `SpatialEntry::globals` in `render/pipeline.rs` | Core production code |
 | `patch-action` | A patch action's declaration (`patch: true`, or `"patch": true` in a JSON descriptor) outside the field-patch module and the RAW module, whose `set-raw` keeps its own merge | Production code under `crates/` |
 | `job-records` | A ring of finished job records, `VecDeque<JobId>`, outside the one job table (`jobs.rs`) | Core production code |
 | `job-table` | `Jobs::new` anywhere but once, in the catalog owner's launch (`api/owner.rs`) | Core production code |
+| `one-envelope-check` | `mutation.validate()` outside the dispatcher's one envelope check (`Envelope::check` in `api/params.rs`), which checks every mutating method's envelope before any handler runs | Core production code |
+| `one-source-preparation` | A synchronous service mode (`allow_sync_source`) and the reads of an original or an artifact (`prepare_file`, `read_bounded_file`, `read_verified`) outside the source work in `editor/source.rs` (`SourceWork::run`, which the owner's source worker and the blocking helpers `EditorService::import` and `EditorService::prepare` share) and the reads' own homes (`source.rs`, `artifacts/`, the re-export in `lib.rs`) | Core code, tests included |
 | `desktop-crop-rows` | `CROP_EFFECT`, `ORIENTATION_EFFECT`, `from_value::<CropPayload>` and `from_value::<Orientation>` anywhere in the desktop: it reads a crop, its stage and the orientation ahead of it from `recipe.describe` rows | Desktop production code (`crates/luxforge-app/src`) |
+| `declared-crop-angle` | `MIN_ANGLE` and `MAX_ANGLE` outside the frame's geometry (`crop_draft.rs`): the angle's control reads its range, steps and default from the declared parameter | Desktop production code (`crates/luxforge-app/src`) |
+| `desktop-start-refusal` | `"Return to the current state before` and `"Waiting for the last request` anywhere in the desktop but once each, as the constants beside `state::edit_refusal` in `state/mod.rs`: a start's refusal is `Editor::gesture_refusal`, whose editable half is the view model's one editability rule (`state::editable_refusal`), and a start site or a model writes the reason it is given | Desktop production code (`crates/luxforge-app/src`) |
+| `desktop-group-reset` | `resolve_group_reset` outside the tools panel model (`state/tools.rs`): `ResetGroup` runs the reset the section resolved for the photo and target (`SectionModel::group_reset`) | Desktop production code (`crates/luxforge-app/src`) |
 | `render-limits-home` | The one-megapixel parallel threshold or the 512 MiB frame limit's literal assignment, `= 1_000_000;` or `= 512 * 1024 * 1024;`, outside `luxforge-raw/src/limits.rs` | `luxforge-core` and `luxforge-raw` production code |
 | `draft-preview-rule` | `RawSettingsMode::DraftPreview`, the drafted preview's approximate white balance, outside the one evaluation builder (`editor/evaluate.rs`) and the RAW settings resolver (`editor/source.rs`) | Core production code |
+| `test-waits` | `sleep(` and `yield_now`: a test's own sleep, spin or poll loop, outside `luxforge-testbase`'s one wait. The widget crate's GPU retirement worker (`photo_surface.rs`) and the proof module's activation delay (`modules/capabilities_proof.rs`) each keep their one production sleep, on one line, so the tests beside them are held to the rule too | `crates/`, tests and comments included |
+| `test-gates` | `Condvar`: a test's own gate, outside `luxforge-testbase`'s `Gate` and the core's production blocking points (the source worker's plane gate in `source.rs`, the latest-job worker in `latest.rs`, the point-query worker in `api/owner/point.rs`) | `crates/`, tests and comments included |
+| `one-distribution` | A second percentile definition outside `luxforge-testbase`'s `Distribution` (`distribution.rs`): the shapes a hand-written one took (`fn percentile`, `let percentile`, `fn median`, `let median`, `fn p50`, `let p50`, `let p95`) and a nearest-rank rank computed again (`div_ceil(100)`) | `crates/` and `xtask/`, tests and comments included |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, the job table's lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
-| `editor-launch` | An editor argument (`"--evidence-dir"`, `"--evidence-script"`, `"--data-root"`, `"--catalog"`, `"--open"`, `"--developer"`, `"--disable-module"`, `"--proof-endpoint"`, `"--window-size"`), `spawn_editor` or `editor_args` outside the scenario library's launch envelope (`xtask/src/scenario/launch.rs`), the hidden-window flag's home (`xtask/src/launch.rs`) and `raw_editor.rs`, whose launch becomes a scenario row later | Production code under `xtask/` |
+| `editor-launch` | An editor argument (`"--evidence-dir"`, `"--evidence-script"`, `"--data-root"`, `"--catalog"`, `"--open"`, `"--developer"`, `"--disable-module"`, `"--proof-endpoint"`, `"--window-size"`), `spawn_editor` or `editor_args` outside the scenario library's launch envelope (`xtask/src/scenario/launch.rs`) and the hidden-window flag's home (`xtask/src/launch.rs`) | Production code under `xtask/` |
+| `raw-manifest-reader` | A RAW manifest read outside the one reader, `raw::manifest` (`xtask/src/raw.rs`): its list named untyped (`["sources"]`) or its fields declared again (`neutral_point:`, `source_url:`). `raw-corpus`, `verify` and the `raw-editor` scenario read their manifests through it | Production code under `xtask/` |
+| `http-framing` | `ureq_proto::` and `httparse::`, the HTTP/1.1 framing under `ureq`, outside the module transport (`capabilities/transport/`) | `crates/` and `xtask/`, tests included |
 | `no-pixel-image-handle` | `Handle::from_rgba`, which uploads a new texture each time it is made | `crates/` and `xtask/`, tests included |
 | `project-name` | The old working name | Every text file under `crates/` and `xtask/` |
 | `srgb-transfer-function` | `12.92`, the sRGB transfer function's linear-branch slope, outside the core's production copy (`crates/luxforge-core/src/colour.rs`) and the one shared test reference (`luxforge_reference::srgb`); a decode/encode transcription is always found by its slope, whichever spelling of the threshold (`0.04045`/`0.0031308` or `0.040_45`/`0.003_130_8`) it uses | `crates/` and `xtask/`, tests included |
@@ -98,8 +109,16 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `mozjpeg-links` | A `mozjpeg*` dependency of a shipped crate other than `luxforge-jpeg` |
 | `jpeg-codec-users`, `jpeg-codec-leaf` | A dependency on `luxforge-jpeg` from any crate but `luxforge-core`; any workspace crate or path in `luxforge-jpeg`'s manifest |
 | `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
+| `core-free-test-base` | Any workspace crate or path in `luxforge-testbase`'s manifest, so the core's and the widget crate's tests can use its gate, wait and distribution |
+| `http-client-crates` | A dependency on `ureq` or `ureq-proto` from any crate but `luxforge-core`, whose module transport is the one HTTP client |
 
-The check also refuses a stale row: one that reads no file, allows a path that does not exist, or shares another row's name.
+`SENDER_RULES` says which messages product code must send. A row names a message enum and the file that declares it, the file whose `match` handles it, the directories read for senders and the scripted drivers whose constructions do not count. Every variant needs a sender: a production line (tests skipped as for a source rule) outside the drivers that holds `Enum::Variant` under the `Whole` matcher. In the handler, a line that begins with a variant is its match arm, not a sender; elsewhere rustfmt may begin a line with a construction, and it counts.
+
+| Rule | Refuses |
+| --- | --- |
+| `widget-sent-controls` | A `ControlMessage` variant that only the evidence driver (`app/evidence.rs`) or a test constructs: evidence and tests drive a control through the message its widget sends, such as a slider's `Fraction` and `Released` |
+
+The check also refuses a stale row: one that reads no file, names a path that does not exist, or shares another row's name.
 
 A task that finishes a concept adds the rule that keeps it single as a row of one of these tables, with a test that shows an allowed and a refused path; it never writes a bespoke check. A deliberate new home for something a rule confines is a change to that row's allowed paths, made in review.
 
@@ -117,7 +136,7 @@ timing run elsewhere on the host. Run each check where its answer can change wha
 | Milestone claim | `full`, with `--manifest`. |
 
 Timing runs wait until feature work is complete: the `timing` tier, `editor-performance`,
-`editor-latency`, `measure`, `raw-editor` and every `--samples 30` distribution. A figure taken
+`editor-latency`, `measure` and every `--samples 30` distribution. A figure taken
 mid-implementation measures code that is about to change, on a host loaded by builds and tests. The
 exception is work whose subject is performance (a budget, a regression, an optimization), where
 measurement is the feedback: iterate with the one targeted command at its default sample count, and
@@ -150,6 +169,33 @@ Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProce
 independent references and their studies live in `luxforge-reference`
 (`cargo test -p luxforge-reference --test studies tone::`).
 
+### Tests that do not depend on host load
+
+The workspace's tests run in parallel, beside other builds and test runs on a shared host, so a test
+passes or fails the same way however loaded that host is:
+
+- **No shared mutable state between tests.** A test reads only figures it owns: its own render
+  context, registry, catalog, queue or pipeline, never a process-wide counter another test also
+  moves.
+- **Order comes from gates and channels, never from sleeping for long enough.** Work a test needs
+  held — a render, a job, a module's activation, a test server's answer — passes a
+  `luxforge_testbase::Gate` the test shut; the test waits for the work to reach it
+  (`Gate::wait_reached`), acts while it is held, then opens it. What a test cannot be told about,
+  such as a job status read through the API, it polls through `luxforge_testbase::wait_until` or
+  `wait_for`.
+- **A deadline only bounds a hang.** Every wait fails naming what never happened after the one hang
+  bound, `luxforge_testbase::HANG` (two minutes); no test outside the timing tier asserts how fast
+  anything happened.
+
+`luxforge-testbase` holds the one gate and the one wait. It depends on no workspace crate, so the
+core's own unit tests and the widget crate's can use it; a crate adapts it (a module that holds a
+render at it, a helper that polls its own queue through `wait_until`) rather than writing a second
+one, and the `test-waits` and `test-gates` rules below refuse one. It also holds the one
+`Distribution`, a nearest-rank p50/p95 (`sorted[ceil(percent·n/100) − 1]`, always one of the
+samples) that every timing figure is read from: the crates' own ignored timing tests print theirs
+through it, and `xtask`'s timing tools write theirs through it. The `one-distribution` rule refuses
+a second percentile or median definition.
+
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
 build inheriting them would rebuild `ring`, `rustls`, `luxforge-core` and everything above them
@@ -165,12 +211,14 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 | `quick` | `check` and `editor-acceptance` |
 | `rendered` | quick plus all 35 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
-| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, `raw-editor`, the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
+| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
 When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
 runs in `full` whether or not a manifest is given. Without a manifest, `full` lists `raw-editor` and
-`raw-authentic` as `skipped` with the reason `no --manifest`, and adds no `raw-panel` or RAW
-`performance` components at all, since there is no source to run them over. `raw-authentic` runs the
+`raw-authentic` as `skipped` with the reason `no --manifest`, and adds no per-source `raw-editor`,
+`raw-panel` or RAW `performance` components at all, since there is no source to run them over.
+`verify` reads the manifest through the one RAW manifest reader, so a manifest the `raw-editor`
+scenario would refuse is refused before anything runs. `raw-authentic` runs the
 `#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and `luxforge-app`'s
 `raw_json_cli` (the ones that need only `LUXFORGE_RAW_OWNER_DIR`, not `real_files`'s separate
 CC0-fixture test) with that variable pointed at the directory the manifest's own sources live in.
@@ -201,8 +249,8 @@ times.
 Timing components never overlap, with each other or with anything else on the machine. Before the
 first one starts, `verify` takes a host-wide lock — `luxforge-timing.lock` in the OS temporary
 directory, holding the pid, treated as stale only once that pid is no longer alive — and releases it
-at the end of the run, including on failure. `measure`, `editor-latency`, `editor-performance` and
-`raw-editor` take the same lock when run by hand, so an ad hoc timing run and a `verify` timing tier
+at the end of the run, including on failure. `measure`, `editor-latency` and `editor-performance`
+take the same lock when run by hand, so an ad hoc timing run and a `verify` timing tier
 refuse each other. A run that cannot have the lock refuses rather than measuring: it exits non-zero
 naming the live pid, and its summary records `refused: another timing run (pid N) is alive` with
 nothing run.
@@ -214,13 +262,27 @@ between 2.3 and 5.7 on this fourteen-core host. Every timing summary states the 
 load, on either side of it. When a component started above the threshold, all of its timing rows and
 target verdicts are marked `unreliable` instead of `pass` or `miss`: the measured figure, its sample
 count and the load are all still recorded, but the target is unanswered rather than met or missed,
-and the summary header names the component. Load never fails the run by itself.
+and the summary header names the component. Load never fails the run by itself. Every tool that
+records a load-dependent figure of its own (`editor-latency --mode paint`, `mask-range`'s stroke
+latency, and `verify`'s rows and verdicts) records it through one rule and one shape,
+`{"load_average_1m","load_threshold","reliability"}`, with `reliability` either `reliable` or
+`unreliable`; a host that cannot report its load records a null load, marked `reliable`.
+
+Every timing tool writes its figures in one shape, a `rows` array of
+`{"metric","unit","distribution"}` in its own report: `editor-performance`'s `result.json`,
+`editor-latency`'s `latency.json` in every mode (its viewport scalar and GPU counters included) and
+`resources.json`, `measure`'s `measurements.json` (`<workload>.<figure>` and `idle.<figure>`),
+and `mask-range`'s `stroke_latency`. A distribution is
+`{"count","p50","p95","min","max","samples"}` over the one nearest-rank `Distribution`; a single
+observation (a one-shot core step, an idle window, frames per second, a GPU counter) is a
+one-sample distribution, and a metric the run never reached has a `null` distribution.
 
 The console shows only the Markdown table. `<out>/summary.json` and `<out>/summary.md` hold, per
 component in plan order, its status, start offset, elapsed time, exit code, first failure line,
 artifact paths and how many editor processes it started, then the p50/p95 timing rows of the timing
-tier with their source file, sample count, load and reliability, and each provisional performance
-target with its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
+tier — every row of every timing component's report, read by one loop — with their source file,
+sample count, load and reliability, and each provisional performance target, read from its row, with
+its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
 files are rewritten after every component, from whichever worker finished it, so a partial run still
 reports what it has; components that never ran are `not_run`. The process exits non-zero and names
 the components either way: an ordinary failure when any component failed or timed out, and the
@@ -235,8 +297,7 @@ is 27 s, mostly the workspace tests, and varies with how much Cargo has to redo;
 through the pool against 82 s of their own summed elapsed time, the four `mask-*` scenarios the
 longest of them at 4 to 12 s each; `timing` 70 s with the default sample counts, of which `measure` is
 48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
-manifest adds `raw-editor`, whose default three trials per source cost about 8 s
-each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per trial, plus one `raw-panel`
+manifest adds one `raw-editor` smoke run per manifest source, two launches each, plus one `raw-panel`
 smoke run per manifest source and one RAW `performance` smoke run over the first source. On a run whose
 `measure` started at a load average of 8.33, that component's rows and target verdicts came back
 `unreliable` while the two components below the threshold still gave verdicts.
@@ -247,8 +308,8 @@ Per-scenario elapsed time comes from each run's own `summary.json`. Back to back
 host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), a 17-scenario workload (excluding the gallery and controls boards) cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
 Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
 whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
-therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, `raw-editor`, a
-`raw-panel` run per manifest source and one RAW `performance` run), which is already the tier's
+therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor`
+and a `raw-panel` run per manifest source and one RAW `performance` run), which is already the tier's
 composition. `zoom`, which is not in that
 workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
 pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
@@ -306,7 +367,7 @@ stays unchanged throughout.
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Every scenario is one row of the runner's table, which `cargo xtask smoke --list` prints with its launches and frame counts, what it opens and its window; generate the large fixtures first. Each launch has a plan: every frame it captures, in order, with the script step that produces it and what that frame must show. The script the launch runs and the number of frames it must capture are derived from the plan, and every frame of every scenario is checked against it before the scenario's own checks: its run identity, backend, renderer-readback provenance and state file; for a scripted frame, the step the editor recorded equal to the scripted one as its parser reads it back, listed in the run's script and log and `sent` unless the plan expects it refused; an input error exactly when the plan expects a refusal; then the step's own expectations, such as the commit it makes, the history label, a layer's payload or identity, a field's text, the draft and the sections expanded. Each launch's `plan-checks.json` records what every step was checked against, and a failure names the step. Ignored `xtask` tests check a change to the plans or to how scripts are written: `SCRIPT_DUMP=DIR cargo test -p xtask dump_script -- --ignored` writes every launch's script and argument list as a launch writes them, every script and argument list `editor-latency` can write (its viewport mode, `--zoom` and `--moving-pan` included), the argument list of every `measure` and `hardening` launch, and every script the `raw-editor` measurement can write, to compare against the same dump from before the change, and `SMOKE_RECORDED=DIR cargo test -p xtask mutations -- --ignored` replays each `DIR/smoke-<scenario>/run` with its plan's last step removed and with its first expected label changed, and fails unless each replay fails on the frame count and on the named step. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`; a scenario of several launches writes each one's evidence to its own directory and log instead, and `result.json` lists every editor process a run started under `launches`, with its command and exit code, which is what `verify` counts. An editor's diagnostics log holds at most 4,096 events: past that it counts what it drops, writes one `diagnostics_truncated` record naming the count when it finishes, and an evidence run whose log was truncated fails exactly as one whose log could not be written does. `smoke --verify-only RUN_DIR --output NEW_DIR` copies a recorded run, less the checks files its checks wrote, and runs the scenario's own code over the copy with each launch taken as the recorded one: the checks files it writes are that run's checks again, and `replay.json` is the verdict. The scenario comes from the run's `result.json` unless `--scenario` names it, and a `--source` run is given its source again. The `capabilities` scenario's endpoint record and secret scan are what the live run's own process saw, so a replay carries them from the recorded checks. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and `canvas_rect`, the canvas region between the panels and the bars as `[left, top, right, bottom]` physical pixels, which at a percentage zoom is exactly the scrollable the photograph pans in; the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Every scenario is one row of the runner's table, which `cargo xtask smoke --list` prints with its launches and frame counts, what it opens and its window; generate the large fixtures first. Each launch has a plan: every frame it captures, in order, with the script step that produces it and what that frame must show. The script the launch runs and the number of frames it must capture are derived from the plan, and every frame of every scenario is checked against it before the scenario's own checks: its run identity, backend, renderer-readback provenance and state file; for a scripted frame, the step the editor recorded equal to the scripted one as its parser reads it back, listed in the run's script and log and `sent` unless the plan expects it refused; an input error exactly when the plan expects a refusal; then the step's own expectations, such as the commit it makes, the history label, a layer's payload or identity, a field's text, the draft and the sections expanded. Each launch's `plan-checks.json` records what every step was checked against, and a failure names the step. Ignored `xtask` tests check a change to the plans or to how scripts are written: `SCRIPT_DUMP=DIR cargo test -p xtask dump_script -- --ignored` writes every launch's script and argument list as a launch writes them, every script and argument list `editor-latency` can write (its viewport mode, `--zoom` and `--moving-pan` included), and the argument list of every `measure` and `hardening` launch, to compare against the same dump from before the change (a row whose plans read more than its sources, such as `raw-editor`'s neutral point, is dumped over the placeholder its table plan names), and `SMOKE_RECORDED=DIR cargo test -p xtask mutations -- --ignored` replays each `DIR/smoke-<scenario>/run`, a supplied source given again as the one its first launch opened, with its plan's last step removed and with its first expected label changed, and fails unless each replay fails on the frame count and on the named step. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`; a scenario of several launches writes each one's evidence to its own directory and log instead, and `result.json` lists every editor process a run started under `launches`, with its command and exit code, which is what `verify` counts. An editor's diagnostics log holds at most 4,096 events: past that it counts what it drops, writes one `diagnostics_truncated` record naming the count when it finishes, and an evidence run whose log was truncated fails exactly as one whose log could not be written does. `smoke --verify-only RUN_DIR --output NEW_DIR` copies a recorded run, less the checks files its checks wrote, and runs the scenario's own code over the copy with each launch taken as the recorded one: the checks files it writes are that run's checks again, and `replay.json` is the verdict. The scenario comes from the run's `result.json` unless `--scenario` names it, and a `--source` run is given its source again. The `capabilities` scenario's endpoint record and secret scan are what the live run's own process saw, so a replay carries them from the recorded checks. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and `canvas_rect`, the canvas region between the panels and the bars as `[left, top, right, bottom]` physical pixels, which at a percentage zoom is exactly the scrollable the photograph pans in; the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
 
 At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
 the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
@@ -449,8 +510,9 @@ readable and refusing sampling, analysis and a new edit by name; and a reopen re
 revision, entry, layer and mask identities, rows, pixels and analysis identity. The original's bytes
 are unchanged throughout.
 
-A module's own declaration (its descriptor and the words its history labels use for each field),
-its numerics against its frozen reference and its unique behaviour — Basic's neutral picker,
+A module's descriptor is the [built-in descriptor snapshot](#the-built-in-descriptor-snapshot)'s.
+The words its history labels use for each field, its numerics against its frozen reference and
+its unique behaviour — Basic's neutral picker,
 Presence's halos and tiling, the vignette's recentring against its frozen reference — stay in that
 module's own tests under `crates/luxforge-core/tests/` and `src/modules/`, and Basic's
 numerics on the photo fixture in the Basic and histogram chapter. The placement of Presence, the
@@ -459,6 +521,22 @@ mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette cha
 `result.json`), driven the same way: Presence after the colour run and before the geometry tail in
 every touch order, the mixer after Basic in both touch orders with the same bytes, and the vignette
 last and recentred on the stage each crop update produces.
+
+### The built-in descriptor snapshot
+
+What the built-in registry publishes is written down once, in
+`fixtures/modules/builtin-descriptors.json`: `module.list` with its `host` array, and every method
+`schema.list` generates from the modules' and the host's descriptors, with its parameters, source
+kinds and superseded fields. `crates/luxforge-core/tests/modules/descriptors.rs` serves
+`ModuleRegistry::builtin()` through an owner, lists both as a JSON client and compares the result
+with the file byte for byte, so which modules, effects, actions, queries, controls and variants the
+build declares is this file's and no other test keeps a list of them; a change meant to keep the
+descriptors identical proves it by passing. After an intended descriptor change, regenerate it and
+review the diff:
+
+```sh
+cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot
+```
 
 ### The masking acceptance chapter
 
@@ -495,11 +573,9 @@ has the store, so the owner is asked.
 
 ### Authentic RAW evidence
 
-`raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy. Large RAWs and required DNG corrections can take substantially longer than small fixtures; a script that continues producing correlated frames must be assessed against the whole-journey deadline.
+The `raw-editor` smoke scenario (`cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR`) runs the actual background editor over one RAW file, then reopens the first launch's catalog in a second process. The edit launch passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick at the manifest's point, geometry, undo, Original/current history selection and 100%/Fit. Every frame of both launches passes the plan's universal checks; the scenario's own check the imported source against its manifest entry, a ready render of the displayed entry on every frame with Basic's Exposure, Temperature and Tint showing the recipe they mirror, the displayed entry and layers against history, that each edit moves the photograph's centred window and that the historical Original and the reopen show the same picture as the frames they repeat, and the source hash. These comparisons prove reevaluation and state correlation, not controlled color accuracy. Each launch has a 70-second process deadline, since large RAWs and required DNG corrections redevelop the mosaic on several steps. `raw-editor-checks.json` records the comparisons and, as one functional run's observations rather than a distribution, each step's request-to-display time; RAW memory under a heavy edit is the `performance` scenario's over a RAW `--source`. `verify --tier full --manifest FILE` runs the scenario once per manifest source; repeated trials are repeated runs.
 
-The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Mode strings, make and model must match the current [camera catalog](../../crates/luxforge-raw/data/cameras.json). DNG sources additionally supply exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies required opcode order, calibration and persisted interpretation against that profile. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
-
-Reports include binary/lock/manifest hashes, launch mode, stage events, frame checks and sampled process RSS. The filesystem cache is not purged; app-cold is not OS-cache-cold. GPU memory is not isolated from RSS, and capture readbacks can affect memory. Same-process editing without repeated captures is a separate resource control.
+A RAW manifest has `format:1` and a `sources` array, and every tool reads one through the one reader, `raw::manifest`, which refuses unknown fields, a file over 1 MiB, an empty or over-long list, a duplicate id or one that is not ASCII letters, digits and hyphens, and a SHA-256 that is not lowercase hex. The editor manifest `verify` and `raw-editor` take gives each source `id`, `path` (relative to the manifest unless absolute), `sha256`, the editor's `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`; a mode the [camera catalog](../../crates/luxforge-raw/data/cameras.json) does not declare is refused as the manifest is read. A source whose camera profile declares DNG corrections additionally supplies exact `sensor_dimensions`, `active_area` and `default_crop`, consistent with each other and with the upright size; the scenario checks the import recorded them and a correction provenance for each applied opcode, while the opcode order, calibration and interpretation the profile requires are the RAW adapter's own checks on import. `raw-editor` finds a source's entry by its SHA-256 and keeps a copy of the manifest as `manifest.json`, which `smoke --verify-only` reads again. Keep private paths and derived evidence ignored. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
 
 Native and JSON authentic-file tests are opt-in, ignored in the normal test suite:
 
@@ -556,17 +632,21 @@ Each step is an object with exactly one key.
   itself — the current state's revision and a fresh request id — and rejects a script that sets
   either, so any asset mutation works, `history.undo` included. Its frame is captured when the resulting preview
   reaches the GPU: the same `render_ready` correlation an `--open` uses.
-- `draft` drives the crop draft: `start`, `reapply`, `angle`, `nudge`, `preset` (a declared aspect
-  option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
+- `draft` drives the crop draft: `start`, `reapply`, `angle` (typed into the angle's box and
+  submitted), `nudge` (`-1` or `1`: one press of the angle's − or + button), `angle_rail` (a drag
+  through rail fractions, then its release), `preset` (a declared aspect option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
   top-left then bottom-right), `swap`, `lock`, `option`, `guide`, `apply`, `cancel`. `start` and
   `reapply` open or rebase the frame at once and wait for the crop layer's truncated input-stage
   preview under it (and a reapply for its `draft.reapply` too), `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
 - `slider` drives one gesture on a generated control: `{"action": "set-basic", "parameter":
-  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value, exactly as a drag
-  produces them. Each move sends its `draft.set` and the one preview job for it as soon as nothing
-  is in flight; there is no tick to wait for. `"release": true` ends it
-  with the control's release, which commits once; `"cancel": true` ends it with Escape; neither
+  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value as the slider widget
+  publishes it: the rail fraction that sends that value through the parameter's declared rail
+  (its soft range and fine step), the same `Fraction` message a drag produces. A value no fraction
+  sends, outside the rail or off its fine grid, fails the step with each such value named. Each
+  move sends its `draft.set` and the one preview job for it as soon as nothing is in flight; there
+  is no tick to wait for. `"release": true` ends it with the widget's release, which commits once;
+  `"cancel": true` ends it with Escape; neither
   leaves the gesture open and captures the frame once the draft has drained, so the pixels belong to
   the newest value it sent. A second `slider` step naming the same control continues the same
   gesture. An `"interval_ms": 8` field paces the values instead of sending them all at once: one
@@ -576,8 +656,8 @@ Each step is an object with exactly one key.
   gesture round trip coalesces away, so the harness can time an input that never reached the owner.
   Without `interval_ms` every value is sent at once, as before.
 - `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw",
-  "parameter": "temperature", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
-  which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
+  "parameter": "temperature", "value": 5000, "gap_ms": 120}`. The first press is the rail's move to
+  `value`'s fraction, which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
   release, one timer tick sends the reset the rail's wrapper publishes for the second press,
   whatever the commit is doing by then. The frame is captured once nothing the two presses started
   is in flight. `double_click_first`, `double_click_second` and the reset's own
@@ -817,7 +897,7 @@ opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module 
 second reuses the first launch's own catalog (`--catalog <dir1>/catalog.sqlite`) with
 `--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same
 asset by file identity, so its stack still names the now-unavailable crop layer. The runner checks
-that the second launch's frame reports `state.render_error.code` `incompatible`, `state.notices`
+that the second launch's frame reports `state.render_error.code` `incompatible` with `data.effect_id` the crop effect, `state.notices`
 naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
@@ -874,14 +954,15 @@ sends the same fixed values. Its `latency.json` keeps the same header fields as 
 (host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
 and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core
 coalesces away as scripted rather than measured), `draft_sets` and `preview_jobs` (the core's own
-real-time coalescing of that pace), `presented_frames` and `presented_fps` (every `preview_displayed`
-over the run, drafted and committed alike, divided by the seconds from the first `slider_step_value`
-to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
-its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
-`frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
-`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
-superseded, which carry no frame) and `proxy` (the last
-presented frame's `proxy`/`proxy_dimensions`).
+real-time coalescing of that pace), `presented_frames` (every `preview_displayed` over the run,
+drafted and committed alike), `cancelled_exact` (`preview_exact_cancelled` events: full-resolution
+phases a newer request superseded, which carry no frame) and `proxy` (the last presented frame's
+`proxy`/`proxy_dimensions`). Its figures are rows: `presented_fps` (`presented_frames` divided by
+the seconds from the first `slider_step_value` to the last of them), `staleness_ms` (each presented
+drafted frame's own `slider_draft_set` time to its `preview_displayed` time, paired by generation
+exactly as drag mode pairs them), `frame_gap_ms` and `max_gap_ms` (the intervals between
+consecutive presented drafted frames), the GPU counters `draw_encoded_frames`,
+`photo_texture_writes` and `photo_upload_bytes`, and the sampled resources.
 With `--zoom PERCENT --moving-pan`, the same paced tick also moves the photo scrollable on a path
 across and back over the image. Without `--moving-pan`, a zoomed burst holds a fixed viewport and
 its script can run against the pre-viewport binary for a like-for-like baseline. The moving-pan
@@ -896,7 +977,8 @@ settles. The captured states and `preview_displayed` events must name interactiv
 regions for each draft revision. The first viewport-only frame keeps the histogram updating;
 release must produce a current full-image histogram. The final settled pan must draw the same
 full texture without another photograph write. `latency.json` records region geometry, quality,
-generation and draft revision, plus the photo surface's actual draw/write/residency counters.
+generation and draft revision, and its rows hold `input_to_first_region_adoption_ms` and the photo
+surface's actual draw and write counters, each a one-sample row.
 `preview_displayed` remains an adoption timestamp, not GPU upload or display scanout. An older
 binary with no region events is reported as `unavailable`, never as a passing viewport run.
 
@@ -909,8 +991,8 @@ paced step is still one stroke and one history entry. `--samples` is the number 
 Each position is its own mask `draft.set`, preview job and displayed frame, paired by the generation
 `mask_draft_preview` carries, and a position whose job a later one superseded is reported as
 `superseded` rather than averaged away. `latency.json` records the recipe it was painted on, the brush,
-the path, the distribution and the one-minute load average, and marks itself `provisional` above the
-8.0 threshold. It exists because the `mask-range` scenario's paint figure is taken on four masked
+the path, the distributions as rows and, in its `load` record, the one-minute load average at the
+start, marked `unreliable` above the 8.0 threshold (the end-of-run load is recorded beside it). It exists because the `mask-range` scenario's paint figure is taken on four masked
 colour layers, three of whose masks bind the whole stage, and is therefore not a baseline for the
 gesture; the pairing itself is one function shared with that scenario so the two cannot drift.
 This mode's own paced stroke leaves the step's `settle_between` field unset: it is a controlled,

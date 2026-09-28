@@ -48,13 +48,6 @@ pub fn spawn(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<G
     })
 }
 
-/// Launch the editor itself: the caller's arguments with the hidden-window flag the harness always
-/// passes. Children that are not the editor (the probe binary, xtask's own test children) use
-/// [`spawn`] directly.
-pub fn spawn_editor(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<Guard> {
-    spawn(root, bin, &editor_args(args), log)
-}
-
 /// What ended a [`watch`]: the editor's exit, or what the watch was waiting for.
 pub enum Watched<T> {
     Exited(ExitStatus),
@@ -613,6 +606,11 @@ impl Run {
 
     pub fn scenario(&self) -> &str {
         &self.scenario
+    }
+
+    /// The sources [`Run::hash`] hashed: what the run opens.
+    pub fn sources(&self) -> &[PathBuf] {
+        &self.sources
     }
 
     /// Whether each launch is the recorded one rather than a new process.
@@ -1250,7 +1248,9 @@ mod tests {
             &out,
             "unit",
             &bin,
-            Duration::from_secs(20),
+            // The deadline only bounds a hang: the launch copies this large test binary into a
+            // background bundle, which a loaded host can make slow.
+            luxforge_testbase::HANG,
         )
         .unwrap();
         let error = run

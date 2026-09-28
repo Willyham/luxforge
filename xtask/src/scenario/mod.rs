@@ -11,7 +11,7 @@ pub mod launch;
 pub mod pixels;
 pub mod plan;
 
-pub use frame::{Frame, columns, events, identity, preamble};
+pub use frame::{Frame, columns, events, preamble};
 pub use launch::{Launch, Launched, Run};
 pub use pixels::{Bright, Fixture, Scan, Tolerance};
 pub use plan::{Checked, Plan, Step};

@@ -182,11 +182,12 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
     }
     Ok(summaries)
 }
-// The repository rules: what source text may say where, and which crate may depend on what. Each
-// rule is one row of `SOURCE_RULES` or `DEPENDENCY_RULES`, served by one token matcher
-// (`holds_token`) and one test-exclusion parser (`production_lines`). A task that finishes a concept
-// adds the row that keeps it single; it never writes a bespoke check. To add a rule, copy the row
-// nearest in shape, give it a new `name`, and add a test with an allowed and a refused path.
+// The repository rules: what source text may say where, which crate may depend on what, and which
+// messages product code must send. Each rule is one row of `SOURCE_RULES`, `DEPENDENCY_RULES` or
+// `SENDER_RULES`, served by one token matcher (`holds_token`) and one test-exclusion parser
+// (`production_lines`). A task that finishes a concept adds the row that keeps it single; it never
+// writes a bespoke check. To add a rule, copy the row nearest in shape, give it a new `name`, and
+// add a test with an allowed and a refused path.
 
 /// The file holding the rule tables names every refused token in its rows and tests, so no source
 /// rule reads it.
@@ -226,8 +227,9 @@ struct SourceRule {
     /// a module declared under `#[cfg(test)]` (with everything below its directory) is skipped,
     /// and each other file is read through [`production_lines`], which also skips comment lines.
     tests: bool,
-    /// Whether the allowed paths may hold each token on one line only: an expression written
-    /// once in its home, so a second copy beside the first is refused as one elsewhere is.
+    /// Whether each allowed path may hold each token on one line only: an expression written
+    /// once in its home, so a second copy beside the first is refused as one elsewhere is. An
+    /// allowed directory counts each file under it as a home of its own.
     once: bool,
     /// Why the rule holds, printed with each refusal.
     reason: &'static str,
@@ -357,6 +359,26 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only ModuleRegistry::patch_action decides whether an action is presettable; \
                  resolve it there",
     },
+    // The facts a client acts on are the refusal's code and data, never its message: the
+    // unavailable-effect refusal is worded once, by `Error::unavailable_effect`, and the full
+    // source queues by their two producers through `Error::source_queue_full`. So no client — the
+    // desktop above all — matches that text, and no second producer words it without the data.
+    SourceRule {
+        name: "refusal-text",
+        tokens: &["\"unavailable effect", "queue is full"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/error.rs",
+            "crates/luxforge-core/src/api/owner.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the core words these refusals once, with their facts in data \
+                 (Error::unavailable_effect, Error::source_queue_full); read the code and \
+                 data (unavailable_effect_id, retries_after_source_job), never the message",
+    },
     // A mask component kind is dispatched only through the host's kind table (`mask/mod.rs`) or,
     // on the desktop, the drawn-kind table (`mask_draft/editor.rs`); each kind's own file declares
     // its token, and everything else asks a table (`component_geometry_is_drawn`, `stroke_kind`,
@@ -469,6 +491,51 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only the catalog owner (crates/luxforge-core/src/api/owner.rs) creates the job \
                  table, once",
     },
+    // One envelope check: the dispatcher checks every method's mutation envelope once, before any
+    // handler runs, so no handler, service or store checks its own.
+    SourceRule {
+        name: "one-envelope-check",
+        tokens: &["mutation.validate()"],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/api/params.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the dispatcher checks every mutation envelope once, before any handler runs \
+                 (Envelope::check in crates/luxforge-core/src/api/params.rs); a handler never \
+                 checks its own",
+    },
+    // One source preparation path: an original is read only by the source work's file preparation
+    // and an artifact only by its verified read, both run by `SourceWork::run` in
+    // `editor/source.rs`, which the catalog owner's source worker and the blocking helpers
+    // (`EditorService::import`, `EditorService::prepare`) share. No service mode reads inline on a
+    // cache miss, test code included: a test prepares through the helpers, never by hand. The
+    // bounded read and the verified read are defined in `source.rs` and `artifacts/`, and `lib.rs`
+    // re-exports the first.
+    SourceRule {
+        name: "one-source-preparation",
+        tokens: &[
+            "allow_sync_source",
+            "prepare_file",
+            "read_bounded_file",
+            "read_verified",
+        ],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/editor/source.rs",
+            "crates/luxforge-core/src/source.rs",
+            "crates/luxforge-core/src/artifacts",
+            "crates/luxforge-core/src/lib.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "only the source work (SourceWork::run in crates/luxforge-core/src/editor/source.rs) \
+                 reads an original or an artifact, for the source worker and the blocking helpers \
+                 alike; prepare through EditorService::prepare or import, never inline",
+    },
     // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
     // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
     // the crop nor the orientation effect and deserializes neither payload. Tests may, to check
@@ -489,6 +556,60 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "the desktop reads the crop, its stage and the orientation ahead of it from \
                  recipe.describe rows, never from a payload",
+    },
+    // The crop angle is one declared parameter drawn by the generic stepper, which reads its range,
+    // steps and default from the descriptor. Only the frame's own geometry (`crop_draft.rs`)
+    // clamps to the core's angle constants; a hand-built angle control that reached for them would
+    // be a second path.
+    SourceRule {
+        name: "declared-crop-angle",
+        tokens: &["MIN_ANGLE", "MAX_ANGLE"],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/crop_draft.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the desktop reads the crop angle's range and steps from its declared parameter \
+                 through NumberSpec; only the frame's geometry (crop_draft.rs) clamps to the core's \
+                 constants",
+    },
+    // One start refusal: whether anything may start on the desktop is answered by
+    // `Editor::gesture_refusal` in app/gesture.rs, and its editable half is the view model's one
+    // editability rule (`state::editable_refusal`, and `state::edit_refusal` for the models). The
+    // busy and editable halves are worded once, as constants in state/mod.rs, and a start site or
+    // a model writes the reason it is given rather than a sentence of its own. The release
+    // refusal's "Return to the current state to apply" is another sentence and not matched.
+    SourceRule {
+        name: "desktop-start-refusal",
+        tokens: &[
+            "\"Return to the current state before",
+            "\"Waiting for the last request",
+        ],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/state/mod.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: true,
+        reason: "a start's refusal is worded once, as the constants beside state::edit_refusal in \
+                 crates/luxforge-app/src/state/mod.rs; Editor::gesture_refusal and the models ask \
+                 that rule and write the reason it returns",
+    },
+    // The tools panel model resolves each group's reset for the photo's source kind and the bound
+    // target, and the header shows it; `ResetGroup` runs what the section holds
+    // (`SectionModel::group_reset`) rather than resolving it a second time.
+    SourceRule {
+        name: "desktop-group-reset",
+        tokens: &["resolve_group_reset"],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/state/tools.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "only the tools panel model (state/tools.rs) resolves a group's reset; read the \
+                 one the section resolved through SectionModel::group_reset",
     },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
@@ -550,6 +671,73 @@ const SOURCE_RULES: &[SourceRule] = &[
                  transfer function's constants; every other caller, test code included, computes \
                  through one of them",
     },
+    // Tests that do not depend on host load: a test orders its steps by a gate or a channel and
+    // waits through the one hang-bounded wait, all in `luxforge-testbase`, never by a sleep or a
+    // spin of its own. The two production homes each keep their one sleep: the widget crate's GPU
+    // retirement worker, and the proof module's configured activation delay; each may hold it on
+    // one line only, so the tests beside them are held to the rule too.
+    SourceRule {
+        name: "test-waits",
+        tokens: &["sleep(", "yield_now"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-testbase",
+            "crates/luxforge-ui/src/photo_surface.rs",
+            "crates/luxforge-core/src/modules/capabilities_proof.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: true,
+        reason: "a test waits through luxforge_testbase::wait_until (or holds work at a \
+                 luxforge_testbase::Gate), never a sleep or spin of its own; extend that crate \
+                 instead of writing a second wait",
+    },
+    SourceRule {
+        name: "test-gates",
+        tokens: &["Condvar"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-testbase",
+            // The core's production blocking points: the source worker's plane gate, the
+            // latest-job worker and the point-query worker.
+            "crates/luxforge-core/src/source.rs",
+            "crates/luxforge-core/src/latest.rs",
+            "crates/luxforge-core/src/api/owner/point.rs",
+        ],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "a test holds work at the one luxforge_testbase::Gate, never a gate of its own; \
+                 extend that crate instead of writing a second gate",
+    },
+    // One percentile definition: every timing figure — xtask's timing tools and the crates' own
+    // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
+    // never from a sort-and-index of its own. The tokens are the shapes each hand-written
+    // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again.
+    SourceRule {
+        name: "one-distribution",
+        tokens: &[
+            "fn percentile",
+            "let percentile",
+            "fn median",
+            "let median",
+            "fn p50",
+            "let p50",
+            "let p95",
+            "div_ceil(100)",
+        ],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-testbase/src/distribution.rs"],
+        mode: Match::Prefix,
+        tests: true,
+        once: false,
+        reason: "a percentile, median or p50/p95 is read from luxforge_testbase::Distribution \
+                 (xtask writes it through stats::row), never computed by a second definition; \
+                 extend that type instead",
+    },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
         name: "thread-spawn",
@@ -582,7 +770,6 @@ const SOURCE_RULES: &[SourceRule] = &[
     },
     // One way to launch the editor from the harness: the scenario library's `Launch` assembles
     // every argument list and `Run` makes every launch, so each is recorded and watched alike.
-    // `raw-editor` keeps its own launch until it becomes a scenario row.
     SourceRule {
         name: "editor-launch",
         tokens: &[
@@ -600,16 +787,43 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         scope: &["xtask"],
         types: &["rs"],
-        allowed: &[
-            "xtask/src/scenario/launch.rs",
-            "xtask/src/launch.rs",
-            "xtask/src/raw_editor.rs",
-        ],
+        allowed: &["xtask/src/scenario/launch.rs", "xtask/src/launch.rs"],
         mode: Match::Whole,
         tests: false,
         once: false,
         reason: "the harness assembles editor arguments only in the scenario library's Launch and \
                  launches the editor only through its Run (xtask/src/scenario/launch.rs)",
+    },
+    // One RAW manifest reader: `raw::manifest` reads and checks every RAW manifest, for
+    // `raw-corpus`, `verify` and the `raw-editor` scenario alike. A reader elsewhere names the
+    // manifest's list untyped (`["sources"]`) or declares its fields again (`neutral_point:`,
+    // `source_url:`); code that uses a source `raw::manifest` read names neither.
+    SourceRule {
+        name: "raw-manifest-reader",
+        tokens: &["[\"sources\"]", "neutral_point:", "source_url:"],
+        scope: &["xtask"],
+        types: &["rs"],
+        allowed: &["xtask/src/raw.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "RAW manifests are read only through raw::manifest (xtask/src/raw.rs); read a \
+                 manifest's sources through it",
+    },
+    // One HTTP/1.1 implementation: the module transport runs on `ureq`'s agent, and only it names
+    // the protocol crate under that agent or its head parser, so no second hand-written framing
+    // appears elsewhere, test code included.
+    SourceRule {
+        name: "http-framing",
+        tokens: &["ureq_proto::", "httparse::"],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/capabilities/transport"],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "only the module transport (crates/luxforge-core/src/capabilities/transport) \
+                 speaks HTTP/1.1, through ureq; no other code frames HTTP",
     },
     SourceRule {
         name: "no-pixel-image-handle",
@@ -737,6 +951,15 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
     },
+    // The HTTP client is the core's: `ureq` and `ureq-proto` belong to the module transport.
+    DependencyRule {
+        name: "http-client-crates",
+        refuses: Depends::Prefixed("ureq"),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-core"],
+        reason: "only luxforge-core, for its module transport, may depend on ureq or ureq-proto",
+    },
     // The references are independent by construction: nothing they build against can reach the
     // core they check, directly or through a crate that depends on it.
     DependencyRule {
@@ -747,6 +970,53 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "luxforge-reference may depend on no workspace crate and no path, so it can never \
                  reach luxforge-core",
+    },
+    // The one gate, wait and distribution serve every crate's tests, the core's own and the widget
+    // crate's included, so they can never reach the core.
+    DependencyRule {
+        name: "core-free-test-base",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-testbase"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-testbase may depend on no workspace crate and no path, so the core's \
+                 and the widget crate's tests can use it",
+    },
+];
+
+/// A rule that every variant of one message enum has a sender in product code: a production line,
+/// outside the scripted drivers, that constructs it. A variant only a driver or a test constructs
+/// proves a path no person can take, so evidence and tests drive the messages widgets send.
+struct SenderRule {
+    /// The rule's name, printed with each refusal and unique across every table.
+    name: &'static str,
+    /// The enum, as a sender names it: a variant is sent where a line holds `Enum::Variant`.
+    message: &'static str,
+    /// The file that declares the enum.
+    declared: &'static str,
+    /// The file whose `match` handles it: a line there that begins with a variant is that
+    /// variant's arm, not a sender. Everywhere else, rustfmt may begin a line with one that is.
+    handler: &'static str,
+    /// The directories whose production lines are read for senders, relative to the root.
+    scope: &'static [&'static str],
+    /// The scripted drivers, whose constructions are not senders.
+    drivers: &'static [&'static str],
+    /// Why the rule holds, printed with each refusal.
+    reason: &'static str,
+}
+
+const SENDER_RULES: &[SenderRule] = &[
+    // The widgets' own messages: evidence scripts and tests drive a slider through the `Fraction`
+    // and `Released` its widget publishes, never a message of their own that no widget sends.
+    SenderRule {
+        name: "widget-sent-controls",
+        message: "ControlMessage",
+        declared: "crates/luxforge-app/src/app/message.rs",
+        handler: "crates/luxforge-app/src/app/controls.rs",
+        scope: &["crates/luxforge-app/src"],
+        drivers: &["crates/luxforge-app/src/app/evidence.rs"],
+        reason: "every control message has a sender in desktop product code outside the evidence \
+                 driver; drive evidence and tests through the message the widget sends",
     },
 ];
 
@@ -825,6 +1095,45 @@ fn production_lines(text: &str) -> (Vec<(usize, &str)>, Vec<&str>) {
         }
     }
     (lines, test_modules)
+}
+
+/// The variants `text` declares for `enum name`, in order, or `None` when it declares no such
+/// enum. A variant is a line directly inside the enum's braces that begins with an identifier;
+/// attributes, comments and a struct variant's fields are not.
+fn enum_variants<'a>(text: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    let mut lines = text.lines().skip_while(|line| {
+        line.trim()
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub ")
+            .strip_prefix("enum ")
+            .is_none_or(|rest| rest.trim_end_matches('{').trim() != name)
+    });
+    lines.next()?;
+    let mut variants = Vec::new();
+    let mut depth = 1;
+    for line in lines {
+        let trimmed = line.trim();
+        if depth == 1 && trimmed.starts_with(|c: char| c.is_ascii_uppercase()) {
+            let end = trimmed
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(trimmed.len());
+            variants.push(&trimmed[..end]);
+        }
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        for c in trimmed.chars() {
+            match c {
+                '{' | '(' => depth += 1,
+                '}' | ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            return Some(variants);
+        }
+    }
+    Some(variants)
 }
 
 /// Where an out-of-line module `name` declared in `file` lives: its `name.rs`, and the directory
@@ -1082,38 +1391,58 @@ struct Applied {
     reads: BTreeMap<&'static str, usize>,
 }
 
+/// Every file of one of `types` under the directories of `scope`, except the rule tables' own.
+fn scoped(tree: &mut Tree, scope: &[&str], types: &[&str]) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    for dir in scope {
+        paths.extend(tree.under(dir)?.into_iter().filter(|path| {
+            path != RULES_FILE
+                && Path::new(path)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| types.contains(&extension))
+        }));
+    }
+    Ok(paths)
+}
+
+/// Which of `paths` are test code: a test by name ([`test_file`]), or a module one of them
+/// declares under `#[cfg(test)]`, with everything below its directory.
+fn test_paths(tree: &mut Tree, paths: &[String]) -> Result<BTreeSet<String>> {
+    let mut test_modules = Vec::new();
+    for path in paths {
+        for name in production_lines(tree.text(path)?).1 {
+            test_modules.push(module_files(path, name));
+        }
+    }
+    Ok(paths
+        .iter()
+        .filter(|path| {
+            test_file(Path::new(path))
+                || test_modules
+                    .iter()
+                    .any(|(file, dir)| *path == file || path.starts_with(dir.as_str()))
+        })
+        .cloned()
+        .collect())
+}
+
 impl SourceRule {
     fn apply(&self, tree: &mut Tree, applied: &mut Applied, refusals: &mut Vec<String>) -> Result {
-        let mut paths = Vec::new();
-        for dir in self.scope {
-            paths.extend(tree.under(dir)?.into_iter().filter(|path| {
-                path != RULES_FILE
-                    && Path::new(path)
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| self.types.contains(&extension))
-            }));
-        }
-        let mut test_modules = Vec::new();
-        if !self.tests {
-            for path in &paths {
-                for name in production_lines(tree.text(path)?).1 {
-                    test_modules.push(module_files(path, name));
-                }
-            }
-        }
+        let paths = scoped(tree, self.scope, self.types)?;
+        let tests = if self.tests {
+            BTreeSet::new()
+        } else {
+            test_paths(tree, &paths)?
+        };
         let mut read = 0;
-        let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
         for path in &paths {
-            let test_only = !self.tests
-                && (test_file(Path::new(path))
-                    || test_modules
-                        .iter()
-                        .any(|(file, dir)| path == file || path.starts_with(dir.as_str())));
+            let test_only = tests.contains(path);
             let home = permitted(path, self.allowed);
             if test_only || (home && !self.once) {
                 continue;
             }
+            let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
             let text = tree.text(path)?;
             let lines = if self.tests {
                 text.lines().enumerate().map(|(i, l)| (i + 1, l)).collect()
@@ -1139,6 +1468,46 @@ impl SourceRule {
             }
             applied.sources.insert(path.clone());
             read += 1;
+        }
+        *applied.reads.entry(self.name).or_default() += read;
+        Ok(())
+    }
+}
+
+impl SenderRule {
+    fn apply(&self, tree: &mut Tree, applied: &mut Applied, refusals: &mut Vec<String>) -> Result {
+        let variants: Vec<String> = enum_variants(tree.text(self.declared)?, self.message)
+            .ok_or_else(|| format!("{} declares no enum {}", self.declared, self.message))?
+            .into_iter()
+            .map(|variant| format!("{}::{variant}", self.message))
+            .collect();
+        let paths = scoped(tree, self.scope, &["rs"])?;
+        let tests = test_paths(tree, &paths)?;
+        let mut sent = BTreeSet::new();
+        let mut read = 0;
+        for path in &paths {
+            if tests.contains(path) || permitted(path, self.drivers) {
+                continue;
+            }
+            for (_, line) in production_lines(tree.text(path)?).0 {
+                let arm = path == self.handler;
+                for token in &variants {
+                    if holds_token(line, token, Match::Whole)
+                        && !(arm && line.trim_start().starts_with(token.as_str()))
+                    {
+                        sent.insert(token.clone());
+                    }
+                }
+            }
+            applied.sources.insert(path.clone());
+            read += 1;
+        }
+        for token in variants.iter().filter(|token| !sent.contains(*token)) {
+            refusals.push(format!(
+                "{}: {} (sender rule `{}` found no sender of `{token}`; a deliberate new \
+                 driver is a change to that row of SENDER_RULES in {RULES_FILE}, not a new check)",
+                self.declared, self.reason, self.name
+            ));
         }
         *applied.reads.entry(self.name).or_default() += read;
         Ok(())
@@ -1203,7 +1572,7 @@ impl DependencyRule {
     }
 }
 
-/// Apply the named rules of both tables (every rule when `only` is empty) to the repository at
+/// Apply the named rules of every table (every rule when `only` is empty) to the repository at
 /// `root`, failing with every refusal.
 fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
     let selected = |name: &str| only.is_empty() || only.contains(&name);
@@ -1216,6 +1585,9 @@ fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
     for rule in DEPENDENCY_RULES.iter().filter(|rule| selected(rule.name)) {
         rule.apply(&mut tree, &mut applied, &mut refusals)?;
     }
+    for rule in SENDER_RULES.iter().filter(|rule| selected(rule.name)) {
+        rule.apply(&mut tree, &mut applied, &mut refusals)?;
+    }
     ensure(refusals.is_empty(), refusals.join("\n"))?;
     Ok(applied)
 }
@@ -1225,6 +1597,14 @@ fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
 fn rules(root: &Path) -> Result<Applied> {
     let applied = apply(root, &[])?;
     let mut names = BTreeSet::new();
+    let senders: Vec<(&str, Vec<&str>)> = SENDER_RULES
+        .iter()
+        .map(|rule| {
+            let mut paths = vec![rule.declared, rule.handler];
+            paths.extend(rule.drivers);
+            (rule.name, paths)
+        })
+        .collect();
     let rows = SOURCE_RULES
         .iter()
         .map(|rule| (rule.name, rule.allowed))
@@ -1232,6 +1612,11 @@ fn rules(root: &Path) -> Result<Applied> {
             DEPENDENCY_RULES
                 .iter()
                 .map(|rule| (rule.name, rule.allowed)),
+        )
+        .chain(
+            senders
+                .iter()
+                .map(|(name, paths)| (*name, paths.as_slice())),
         );
     for (name, allowed) in rows {
         ensure(
@@ -1313,8 +1698,10 @@ pub fn check(root: &Path) -> Result {
     );
     let applied = rules(root)?;
     println!(
-        "PASS {} source rules ({} files) and {} dependency rules ({} manifests)",
+        "PASS {} source rules and {} sender rules ({} files) and {} dependency rules ({} \
+         manifests)",
         SOURCE_RULES.len(),
+        SENDER_RULES.len(),
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
@@ -1359,7 +1746,8 @@ mod tests {
         for name in only {
             assert!(
                 SOURCE_RULES.iter().any(|rule| rule.name == *name)
-                    || DEPENDENCY_RULES.iter().any(|rule| rule.name == *name),
+                    || DEPENDENCY_RULES.iter().any(|rule| rule.name == *name)
+                    || SENDER_RULES.iter().any(|rule| rule.name == *name),
                 "no rule {name}"
             );
         }
@@ -1713,6 +2101,61 @@ mod tests {
     }
 
     #[test]
+    fn no_client_matches_the_cores_refusal_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        let app = tmp.path().join("crates/luxforge-app/src");
+        for dir in [core.join("api"), core.join("modules"), app.join("app")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let wording = "        format!(\"unavailable effect {effect_id}\")\n";
+        let full = "        Error::source_queue_full(\"source preparation queue is full\")\n";
+        // The constructor's home, the queues' owner, a test file, a test item and a comment.
+        for (file, text) in [
+            (core.join("error.rs"), wording.to_owned()),
+            (core.join("api/owner.rs"), full.to_owned()),
+            (core.join("modules/pixel_tests.rs"), wording.to_owned()),
+            (
+                app.join("app/tasks.rs"),
+                format!(
+                    "#[cfg(test)]\nmod tests {{\n    {full}}}\n// when its queue is full\n\
+                     // it reports the unavailable effect\n"
+                ),
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["refusal-text"]).unwrap(), (1, 0));
+        // The desktop matching either message is refused, and so is a second producer's wording.
+        for (file, text, found) in [
+            (
+                app.join("app/tasks.rs"),
+                "    error.detail.starts_with(\"RAW mosaic queue is full\")\n",
+                "tasks.rs:1",
+            ),
+            (
+                app.join("app/canvas.rs"),
+                "const PREFIX: &str = \"unavailable effect \";\n",
+                "canvas.rs:1",
+            ),
+            (core.join("modules/pixel.rs"), wording, "pixel.rs:1"),
+        ] {
+            let before = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["refusal-text"], found);
+            assert!(
+                error.contains(found) && error.contains("Error::unavailable_effect"),
+                "{error}"
+            );
+            match before {
+                Some(before) => fs::write(&file, before).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(read(tmp.path(), &["refusal-text"]).unwrap(), (1, 0));
+    }
+
+    #[test]
     fn the_pipeline_keeps_one_read_rectangle_and_one_spatial_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let core = tmp.path().join("crates/luxforge-core/src");
@@ -1867,6 +2310,92 @@ mod tests {
         assert_eq!(read(tmp.path(), &["raw-identity"]).unwrap(), (2, 0));
     }
 
+    /// Every control message needs a sender outside the evidence driver and tests: the view's
+    /// widgets, or product code in `app/` such as the handler's own dispatch. The handler's match
+    /// arms are not senders, and a sender split across lines by rustfmt still is one.
+    #[test]
+    fn every_control_message_has_a_sender_outside_evidence_and_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let app = "crates/luxforge-app/src/app";
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-app/src/app/message.rs",
+                    "pub(crate) enum ControlMessage {\n    /// A rail position.\n    Fraction {\n        \
+                     fraction: f64,\n    },\n    #[allow(dead_code)]\n    Scripted {\n        \
+                     value: f64,\n    },\n    ToggleSection(String),\n    Answered,\n}\n\
+                     pub(crate) enum Other {\n    Unsent,\n}\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/controls.rs",
+                    "match message {\n    ControlMessage::Fraction { fraction } => {}\n    \
+                     ControlMessage::Scripted { value } => {}\n    \
+                     ControlMessage::ToggleSection(id) => {}\n    ControlMessage::Answered => {}\n}\n\
+                     let task = Message::Control(ControlMessage::Answered);\n",
+                ),
+                (
+                    "crates/luxforge-app/src/view/tools_panel.rs",
+                    "slider(move |fraction| Message::Control(\n    ControlMessage::Fraction {\n        \
+                     fraction,\n    }\n));\n\
+                     button(Message::Control(ControlMessage::ToggleSection(id)));\n\
+                     // ControlMessage::Scripted is only a comment here.\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/evidence.rs",
+                    "self.update(Message::Control(ControlMessage::Scripted { value }));\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/slider_tests.rs",
+                    "editor.update(Message::Control(ControlMessage::Scripted { value: 1.0 }));\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/mod.rs",
+                    "#[cfg(test)]\nmod tests {\n    fn t() { let m = ControlMessage::Scripted { value: 1.0 }; }\n}\n",
+                ),
+            ],
+        );
+        // Scripted is constructed only by evidence, a test file and a test module, and named in
+        // the handler's arm and a comment: refused, by name, and the only refusal.
+        let error = refusal(root, &["widget-sent-controls"], "an evidence-only message");
+        assert!(
+            error.contains("sender rule `widget-sent-controls`")
+                && error.contains("`ControlMessage::Scripted`")
+                && error.lines().count() == 1,
+            "{error}"
+        );
+        // A widget sending it is enough.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/src/view/tools_panel.rs",
+                "slider(move |fraction| Message::Control(\n    ControlMessage::Fraction {\n        \
+                 fraction,\n    }\n));\n\
+                 button(Message::Control(ControlMessage::ToggleSection(id)));\n\
+                 field(Message::Control(ControlMessage::Scripted { value }));\n",
+            )],
+        );
+        // The declaration, the handler, the view and the production lines of `app/mod.rs`.
+        assert_eq!(read(root, &["widget-sent-controls"]).unwrap(), (4, 0));
+        // So a message only the handler's own arm names has no sender.
+        fs::write(
+            root.join(app).join("controls.rs"),
+            "match message {\n    ControlMessage::Fraction { fraction } => {}\n    \
+             ControlMessage::Answered => {}\n}\n",
+        )
+        .unwrap();
+        let error = refusal(root, &["widget-sent-controls"], "an unsent message");
+        assert!(error.contains("`ControlMessage::Answered`"), "{error}");
+        assert_eq!(
+            enum_variants(
+                &fs::read_to_string(root.join(app).join("message.rs")).unwrap(),
+                "ControlMessage"
+            ),
+            Some(vec!["Fraction", "Scripted", "ToggleSection", "Answered"])
+        );
+    }
+
     /// Write each `(path, text)` under `root`, creating its directories.
     fn write_all(root: &Path, files: &[(&str, &str)]) {
         for (path, text) in files {
@@ -1895,8 +2424,8 @@ mod tests {
     fn only_the_launch_envelope_assembles_editor_arguments() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // The envelope, the hidden-window flag's home, `raw-editor` until it becomes a scenario
-        // row, test code, xtask's own flags and a longer name may.
+        // The envelope, the hidden-window flag's home, test code, xtask's own flags and a longer
+        // name may.
         write_all(
             root,
             &[
@@ -1909,10 +2438,6 @@ mod tests {
                     "pub fn editor_args(args: &[OsString]) {}\n",
                 ),
                 (
-                    "xtask/src/raw_editor.rs",
-                    "let child = spawn_editor(root, binary, &[\"--catalog\".into()], &log)?;\n",
-                ),
-                (
                     "xtask/src/verify.rs",
                     "let a = [\"--output\", \"--binary\"];\nlet b = \"--open-all\";\n\
                      #[cfg(test)]\nmod tests {\n    fn t() { let a = [\"--open\"]; }\n}\n",
@@ -1920,11 +2445,16 @@ mod tests {
             ],
         );
         assert_eq!(read(root, &["editor-launch"]).unwrap(), (1, 0));
-        // Anywhere else in the harness, each spelling is refused.
+        // Anywhere else in the harness, each spelling is refused: the RAW editor journey's own
+        // launch included, now that it is a scenario row.
         refuses_each(
             root,
             "editor-launch",
             &[
+                (
+                    "xtask/src/raw_editor.rs",
+                    "let child = spawn_editor(root, binary, &[\"--catalog\".into()], &log)?;\n",
+                ),
                 (
                     "xtask/src/editor_latency.rs",
                     "let args = vec![\"--evidence-dir\".into(), evidence.into()];\n",
@@ -1941,6 +2471,45 @@ mod tests {
                 ("xtask/src/tool.rs", "let args = editor_args(&args);\n"),
             ],
             "scenario library's Launch",
+        );
+    }
+
+    #[test]
+    fn only_raw_rs_reads_a_raw_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The one reader, a scenario using a source it read, and test code may.
+        write_all(
+            root,
+            &[
+                (
+                    "xtask/src/raw.rs",
+                    "    pub neutral_point: [u32; 2],\n    source_url: Option<String>,\n",
+                ),
+                (
+                    "xtask/src/raw_editor.rs",
+                    "let (listed, _) = listed(run)?;\njourney(listed.neutral_point)\n\
+                     #[cfg(test)]\nmod tests {\n    fn t() { let s = &m[\"sources\"]; }\n}\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["raw-manifest-reader"]).unwrap(), (1, 0));
+        // A second reader, typed or untyped, anywhere else in the harness is refused.
+        refuses_each(
+            root,
+            "raw-manifest-reader",
+            &[
+                (
+                    "xtask/src/verify.rs",
+                    "let sources = manifest[\"sources\"].as_array();\n",
+                ),
+                (
+                    "xtask/src/raw_editor.rs",
+                    "struct Source {\n    neutral_point: [u32; 2],\n}\n",
+                ),
+                ("xtask/src/corpus.rs", "    source_url: Option<String>,\n"),
+            ],
+            "raw::manifest",
         );
     }
 
@@ -2024,6 +2593,86 @@ mod tests {
             ],
             "uploads a new texture",
         );
+    }
+
+    #[test]
+    fn only_the_module_transport_frames_http() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let transport = "crates/luxforge-core/src/capabilities/transport";
+        // The transport and its tests may; a longer name and the rules file are not the token.
+        write_all(
+            root,
+            &[
+                (
+                    &format!("{transport}/agent.rs"),
+                    "use ureq_proto::Error;\nlet h = httparse::Status::Partial;\n",
+                ),
+                (
+                    &format!("{transport}/tests.rs"),
+                    "let e = ureq_proto::Error::HttpParseTooManyHeaders;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/capabilities/context.rs",
+                    "use my_ureq_proto::x;\nlet agent = ureq::Agent::new_with_defaults();\n",
+                ),
+                (RULES_FILE, "tokens: &[\"ureq_proto::\", \"httparse::\"],\n"),
+                (
+                    "crates/luxforge-core/Cargo.toml",
+                    "[dependencies]\nureq.workspace = true\nureq-proto.workspace = true\n",
+                ),
+                (
+                    "crates/luxforge-testkit/Cargo.toml",
+                    "[dependencies]\nurl.workspace = true\n",
+                ),
+            ],
+        );
+        let rules = ["http-framing", "http-client-crates"];
+        assert!(read(root, &rules).is_ok());
+        // Anywhere else, test code included, it is refused.
+        refuses_each(
+            root,
+            "http-framing",
+            &[
+                (
+                    "crates/luxforge-testkit/src/server.rs",
+                    "let mut headers = [httparse::EMPTY_HEADER; 64];\n",
+                ),
+                (
+                    "crates/luxforge-core/src/capabilities/resources.rs",
+                    "use ureq_proto::client::Call;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/capabilities/proof_tests.rs",
+                    "let call = ureq_proto::client::Call::new(request);\n",
+                ),
+                (
+                    "xtask/src/scenario/capabilities.rs",
+                    "let parsed = httparse::Response::new(&mut headers);\n",
+                ),
+            ],
+            "speaks HTTP/1.1",
+        );
+        for (path, text) in [
+            (
+                "crates/luxforge-testkit/Cargo.toml",
+                "[dev-dependencies]\nureq-proto = \"0.6\"\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[dependencies]\nclient = { package = \"ureq\", version = \"3\" }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(&format!("{path}:"))
+                    && error.contains("may depend on ureq")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
     }
 
     #[test]
@@ -2264,6 +2913,120 @@ mod tests {
     }
 
     #[test]
+    fn only_the_dispatcher_checks_a_mutation_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        fs::create_dir_all(core.join("api")).unwrap();
+        fs::create_dir_all(core.join("capabilities")).unwrap();
+        // The dispatcher checks both envelopes; a test may check one itself.
+        for (file, text) in [
+            (
+                core.join("api/params.rs"),
+                "Self::Revision => Mutation::deserialize(field).map(|mutation| mutation.validate()),\n\
+                 Self::Request => MutationRequest::deserialize(field).map(|mutation| mutation.validate()),\n",
+            ),
+            (
+                core.join("model.rs"),
+                "#[cfg(test)]\nmod tests {\n    fn t() { mutation.validate().unwrap(); }\n}\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["one-envelope-check"]).unwrap(), (1, 0));
+        // A handler, a service or a store that checks its own envelope is refused.
+        for file in [
+            core.join("api/methods.rs"),
+            core.join("capabilities/settings.rs"),
+        ] {
+            fs::write(&file, "    p.mutation.validate()?;\n").unwrap();
+            let error = refusal(
+                tmp.path(),
+                &["one-envelope-check"],
+                &file.display().to_string(),
+            );
+            assert!(error.contains("a handler never checks its own"), "{error}");
+            fs::remove_file(&file).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["one-envelope-check"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_desktop_words_a_start_refusal_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("crates/luxforge-app/src");
+        let app = src.join("app");
+        let state = src.join("state");
+        fs::create_dir_all(&app).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        // The view model's editability rule words it, once; tests may assert the words.
+        for (file, text) in [
+            (
+                state.join("mod.rs"),
+                "const NOT_CURRENT: &str = \"Return to the current state before editing\";\n\
+                 const IN_FLIGHT: &str = \"Waiting for the last request\";\n\
+                 #[cfg(test)]\n\
+                 mod tests {\n\
+                     fn t() { assert_eq!(r, \"Waiting for the last request\"); }\n\
+                 }\n",
+            ),
+            (
+                app.join("slider_tests.rs"),
+                "assert_eq!(status, \"Waiting for the last request\");\n",
+            ),
+            (
+                app.join("preset.rs"),
+                "let busy = \"Waiting for the last preset request\";\n",
+            ),
+            (
+                app.join("release.rs"),
+                "Some(\"Return to the current state to apply\".into())\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(
+            read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
+            (3, 0)
+        );
+        // A start site, the refusal itself or a model wording its own is a second copy.
+        for (file, text) in [
+            (
+                app.join("pointer.rs"),
+                "self.status = \"Return to the current state before picking\".into();\n",
+            ),
+            (
+                app.join("gesture.rs"),
+                "const IN_FLIGHT: &str = \"Waiting for the last request\";\n",
+            ),
+            (
+                state.join("masks.rs"),
+                "(!enabled).then(|| \"Waiting for the last request\".to_owned())\n",
+            ),
+        ] {
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["desktop-start-refusal"], text);
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                error.contains(&format!("{name}:1")) && error.contains("worded once"),
+                "{error}"
+            );
+            fs::remove_file(&file).unwrap();
+        }
+        // Its home words each case once.
+        let home = state.join("mod.rs");
+        let before = fs::read_to_string(&home).unwrap();
+        let twice = format!("{before}let again = \"Waiting for the last request\";\n");
+        fs::write(&home, &twice).unwrap();
+        let error = refusal(tmp.path(), &["desktop-start-refusal"], &twice);
+        assert!(error.contains("worded once"), "{error}");
+        fs::write(&home, before).unwrap();
+        assert_eq!(
+            read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
+            (3, 0)
+        );
+    }
+
+    #[test]
     fn the_desktop_reads_the_crop_from_recipe_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let app = tmp.path().join("crates/luxforge-app/src/app");
@@ -2299,6 +3062,100 @@ mod tests {
             fs::remove_file(&file).unwrap();
         }
         assert_eq!(read(tmp.path(), &["desktop-crop-rows"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_desktop_reads_the_crop_angle_from_its_declared_parameter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("crates/luxforge-app/src");
+        let state = src.join("state");
+        fs::create_dir_all(&state).unwrap();
+        // The frame's geometry clamps to the core's range; a test module and a test item may name
+        // it to check that clamp; a comment names nothing.
+        for (file, text) in [
+            (
+                src.join("crop_draft.rs"),
+                "self.stage.angle = degrees.clamp(MIN_ANGLE, MAX_ANGLE);
+"
+                .to_owned(),
+            ),
+            (
+                src.join("app_tests.rs"),
+                "assert_eq!(angle, MAX_ANGLE);
+"
+                .to_owned(),
+            ),
+            (
+                state.join("tools.rs"),
+                "// Not MIN_ANGLE: the declared range.
+#[cfg(test)]
+mod tests {
+                     fn t() { assert_eq!(spec.min, MIN_ANGLE); }
+}
+"
+                .to_owned(),
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["declared-crop-angle"]).unwrap(), (1, 0));
+        // An angle control that takes its rail from the core's constants is a second path.
+        for text in [
+            "let rail = AngleRailModel { min: MIN_ANGLE, max: MAX_ANGLE };
+",
+            "use luxforge_core::{CropStage, MAX_ANGLE};
+",
+        ] {
+            let file = state.join("crop_angle.rs");
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["declared-crop-angle"], text);
+            assert!(
+                error.contains("crop_angle.rs:1") && error.contains("declared parameter"),
+                "{error}"
+            );
+            fs::remove_file(&file).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["declared-crop-angle"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_desktop_resolves_a_group_reset_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("crates/luxforge-app/src");
+        let state = src.join("state");
+        let app = src.join("app");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&app).unwrap();
+        // The tools panel model resolves it; a test file may resolve one to check it.
+        for (file, text) in [
+            (
+                state.join("tools.rs"),
+                "let reset = luxforge_core::resolve_group_reset(owner, group, kind, target);\n",
+            ),
+            (
+                app.join("controls_tests.rs"),
+                "luxforge_core::resolve_group_reset(&basic.id, control, kind, None)\n",
+            ),
+            (
+                app.join("controls.rs"),
+                "let reset = section.group_reset(&path).cloned();\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["desktop-group-reset"]).unwrap(), (1, 0));
+        // A second resolution in the app is refused.
+        let file = app.join("controls.rs");
+        let before = fs::read_to_string(&file).unwrap();
+        let text = "luxforge_core::resolve_group_reset(owner, at_path(controls, path)?, kind, t)\n";
+        fs::write(&file, text).unwrap();
+        let error = refusal(tmp.path(), &["desktop-group-reset"], text);
+        assert!(
+            error.contains("controls.rs:1") && error.contains("group's reset"),
+            "{error}"
+        );
+        fs::write(&file, before).unwrap();
+        assert_eq!(read(tmp.path(), &["desktop-group-reset"]).unwrap(), (1, 0));
     }
 
     #[test]
@@ -2455,6 +3312,286 @@ mod tests {
                 ),
             ],
             "one shared test reference",
+        );
+    }
+
+    #[test]
+    fn tests_wait_and_hold_work_only_through_the_shared_wait_and_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let rules = &["test-waits", "test-gates"];
+        let surface = "crates/luxforge-ui/src/photo_surface.rs";
+        let worker = "fn worker() {\n    std::thread::sleep(STEP);\n}\n";
+        // The shared crate's one wait and its gate, each production home's one sleep, the core's
+        // production blocking points, and tests that wait through the shared crate may.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-testbase/src/wait.rs",
+                    "        thread::sleep(POLL);\n",
+                ),
+                (
+                    "crates/luxforge-testbase/src/gate.rs",
+                    "    changed: Condvar,\n            changed: Condvar::new(),\n",
+                ),
+                (surface, worker),
+                (
+                    "crates/luxforge-core/src/modules/capabilities_proof.rs",
+                    "            thread::sleep(rest);\n",
+                ),
+                (
+                    "crates/luxforge-core/src/latest.rs",
+                    "    changed: Condvar,\n",
+                ),
+                (
+                    "crates/luxforge-core/src/preview/tests.rs",
+                    "    wait_until(\"the frame\", || queue.poll().is_some());\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, rules).unwrap(), (6, 0));
+        // A test's own sleep, spin or gate anywhere else, test code and comments included.
+        refuses_each(
+            root,
+            "test-waits",
+            &[
+                (
+                    "crates/luxforge-core/src/api/owner/export_tests.rs",
+                    "            std::thread::sleep(Duration::from_millis(1));\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/masks_tests.rs",
+                    "        std::thread::yield_now();\n",
+                ),
+                (
+                    "crates/luxforge-process/tests/counters.rs",
+                    "    // Spin, then thread::sleep(ms) until the counter moves.\n",
+                ),
+            ],
+            "luxforge_testbase::wait_until",
+        );
+        refuses_each(
+            root,
+            "test-gates",
+            &[
+                (
+                    "crates/luxforge-app/src/app/preview_failure_tests.rs",
+                    "struct Gate {\n    opened: Condvar,\n}\n",
+                ),
+                (
+                    "crates/luxforge-testkit/src/proof.rs",
+                    "    wake: Condvar,\n",
+                ),
+            ],
+            "luxforge_testbase::Gate",
+        );
+        // A production home holds its one sleep only: a second, in the tests beside it, is a
+        // test's own wait, while the next home's one sleep is its own.
+        write_all(
+            root,
+            &[(
+                surface,
+                &format!("{worker}#[cfg(test)]\nmod tests {{\n    std::thread::sleep(STEP);\n}}\n"),
+            )],
+        );
+        let error = refusal(root, &["test-waits"], "a second sleep in a home");
+        assert!(
+            error.contains(&format!("{surface}:6:")) && error.contains("source rule `test-waits`"),
+            "{error}"
+        );
+        write_all(root, &[(surface, worker)]);
+        assert_eq!(read(root, rules).unwrap(), (6, 0));
+    }
+
+    #[test]
+    fn every_percentile_is_read_from_the_one_distribution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let rule = &["one-distribution"];
+        // The one definition, and a crate's timing test and a timing tool that read through it.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-testbase/src/distribution.rs",
+                    "    let rank = (percent * sorted.len()).div_ceil(100).clamp(1, sorted.len());\n    pub fn percentile(&self, percent: usize) -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/render/spatial.rs",
+                    "            let ms = Distribution::of(samples).expect(\"runs ran\");\n            println!(\"p50 {:.0} ms\", ms.p50);\n",
+                ),
+                (
+                    "xtask/src/editor_latency.rs",
+                    "    let input_p95 = stats::Distribution::of(latencies.clone()).map(|d| d.p95);\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, rule).unwrap(), (2, 0));
+        // Each shape a second definition took, in test code and tools alike, comments included.
+        refuses_each(
+            root,
+            "one-distribution",
+            &[
+                (
+                    "crates/luxforge-core/src/capabilities/proof_tests.rs",
+                    "fn percentiles(samples: &mut [f64]) -> (f64, f64) {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/render/linear.rs",
+                    "    fn percentile(values: &[f64], percentile: f64) -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/source.rs",
+                    "        let median = |mut values: Vec<f64>| {\n",
+                ),
+                (
+                    "crates/luxforge-raw/src/lib.rs",
+                    "        fn p50_p95(values: impl Iterator<Item = u128>) -> (u128, u128) {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/modules/presence/oracle.rs",
+                    "            let p50 = samples[samples.len() / 2];\n",
+                ),
+                (
+                    "crates/luxforge-core/tests/resources_cost.rs",
+                    "    let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];\n",
+                ),
+                (
+                    "xtask/src/mask_range_smoke.rs",
+                    "        let rank = (latencies.len() * percent).div_ceil(100).max(1) - 1;\n",
+                ),
+                (
+                    "xtask/src/stats.rs",
+                    "    let percentile = |percent: usize| -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-process/tests/cost.rs",
+                    "// fn median of the samples, by hand\n",
+                ),
+            ],
+            "luxforge_testbase::Distribution",
+        );
+    }
+
+    #[test]
+    fn the_shared_test_base_may_depend_on_no_workspace_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-testbase/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-testbase\"\n\n[dependencies]\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["core-free-test-base"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            (
+                "the core",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
+            ),
+            (
+                "the test kit, which depends on the core",
+                "[dev-dependencies]\nluxforge-testkit = { path = \"../luxforge-testkit\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}\n{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-testbase/Cargo.toml:")
+                    && error.contains("no workspace crate")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_source_work_reads_an_original_or_an_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        fs::create_dir_all(core.join("editor")).unwrap();
+        fs::create_dir_all(core.join("artifacts")).unwrap();
+        fs::create_dir_all(core.join("api")).unwrap();
+        // The source work reads both; the reads are defined, re-exported and tested at home, where
+        // the rule does not look, and the owner's worker runs the source work.
+        for (file, text) in [
+            (
+                core.join("editor/source.rs"),
+                "let bytes = read_bounded_file(&mut file)?;
+                 let prepared = EditorService::prepare_file(&path, target, cancel)?;
+                 .map(|read| artifacts::read_verified(read, cancel))
+",
+            ),
+            (
+                core.join("source.rs"),
+                "pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
+",
+            ),
+            (
+                core.join("artifacts/store.rs"),
+                "pub(crate) fn read_verified(read: &ArtifactRead) {}
+                 #[cfg(test)]
+mod tests {
+    fn t() { read_verified(&read, &never).unwrap(); }
+}
+",
+            ),
+            (
+                core.join("lib.rs"),
+                "pub(crate) use source::{open_source_bytes, read_bounded_file};
+",
+            ),
+            (
+                core.join("api/owner.rs"),
+                "let mut prepared = work.run(reads, cancel)?;
+",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(
+            read(tmp.path(), &["one-source-preparation"]).unwrap(),
+            (1, 0)
+        );
+        // A synchronous service mode, a read on the worker beside the source work, and a test that
+        // reads and adopts by hand are all refused.
+        for (file, text) in [
+            (
+                core.join("editor.rs"),
+                "    allow_sync_source: bool,
+",
+            ),
+            (
+                core.join("api/owner.rs"),
+                "EditorService::prepare_file(&key.path, target, cancel)
+",
+            ),
+            (
+                core.join("editor/artifact_store.rs"),
+                "let verified = artifacts::read_verified(read, &never)?;
+",
+            ),
+            (
+                core.join("editor/artifact_tests.rs"),
+                "let verified = crate::artifacts::read_verified(&reads[0], &never).unwrap();
+",
+            ),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, text).unwrap();
+            let error = refusal(
+                tmp.path(),
+                &["one-source-preparation"],
+                &file.display().to_string(),
+            );
+            assert!(error.contains("only the source work"), "{error}");
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(
+            read(tmp.path(), &["one-source-preparation"]).unwrap(),
+            (1, 0)
         );
     }
 

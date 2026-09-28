@@ -789,16 +789,15 @@ mod tests {
                 board
                     .begin(spec("preview.render"))
                     .finish(Outcome::Completed);
-                samples.push(start.elapsed().as_nanos() as u64);
+                samples.push(start.elapsed().as_nanos() as f64);
             }
             let mean = total.elapsed().as_nanos() as f64 / ITERATIONS as f64;
-            samples.sort_unstable();
-            let at = |quantile: f64| samples[((samples.len() - 1) as f64 * quantile) as usize];
+            let ns = luxforge_testbase::Distribution::of(samples).expect("iterations ran");
             println!(
-                "begin+finish, {label}: p50 {} ns, p95 {} ns, p99 {} ns, mean {mean:.0} ns including the timer, over {ITERATIONS} iterations",
-                at(0.50),
-                at(0.95),
-                at(0.99)
+                "begin+finish, {label}: p50 {:.0} ns, p95 {:.0} ns, p99 {:.0} ns, mean {mean:.0} ns including the timer, over {ITERATIONS} iterations",
+                ns.p50,
+                ns.p95,
+                ns.percentile(99)
             );
         }
     }

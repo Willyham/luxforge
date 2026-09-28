@@ -26,7 +26,6 @@ use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -796,13 +795,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
 
     // The first move opens the draft. Its target is the open mask, so the previewed stack is the
     // masked layer the release will commit rather than the global one.
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.3,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     let target = masking.editor.draft_target("set-basic");
     assert_eq!(target.mask.as_ref(), Some(&mask));
     assert!(
@@ -830,12 +823,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
     );
 
     // Committing it writes exactly one masked layer.
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderReleased {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-        }));
+    let _ = testing::let_go(&mut masking.editor, "set-basic", "exposure");
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Commit));
     assert!(
         masking.editor.gesture.is_none(),
@@ -928,6 +916,19 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
     assert!(panel.components[0].down_reason.is_some());
     assert!(panel.components[0].delete_reason.is_none());
     assert!(panel.components[1].delete_reason.is_none());
+
+    // While nothing can be edited, a row names why in the one editability rule's words: a request
+    // in flight, and a historical entry on screen, each as itself.
+    masking.editor.busy = true;
+    masking.editor.rederive();
+    let row = &masking.editor.workspace.masks.components[1];
+    assert_eq!(row.down_reason.as_deref(), Some(crate::state::IN_FLIGHT));
+    masking.editor.busy = false;
+    masking.editor.session.preview.selection =
+        luxforge_core::HistorySelection::Entry(luxforge_core::EntryId::new());
+    masking.editor.rederive();
+    let row = &masking.editor.workspace.masks.components[1];
+    assert_eq!(row.down_reason.as_deref(), Some(crate::state::NOT_CURRENT));
 }
 
 /// The overlay is per-client view state: Shift+M toggles it, `O` keeps meaning thirds, and the
@@ -1061,13 +1062,7 @@ fn a_mask_controls_request_matches_json_and_a_drag_rederives_one_section() {
             .collect()
     };
     let before = versions(&masking.editor);
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.2,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.2);
     let after = versions(&masking.editor);
     assert_eq!(before.len(), after.len());
     let moved: Vec<&str> = before
@@ -2156,14 +2151,12 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
         )
         .expect("a preview job");
     masking.editor.request_preview(job);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while evidence(&masking.editor).awaiting.is_some() {
-        assert!(Instant::now() < deadline, "the frame never arrived");
+    luxforge_testbase::wait_until("the refused overlay frame", || {
         let _ = masking
             .editor
             .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        evidence(&masking.editor).awaiting.is_none()
+    });
 
     let run = evidence(&masking.editor);
     assert!(
@@ -2535,14 +2528,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     masking.enter_mask_mode();
     // The committed frame is on screen and nothing else is queued, so every frame the queue holds
     // from here on is one the gesture asked for.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while masking.editor.preview_queue.is_busy() {
-        assert!(Instant::now() < deadline, "the opening frame never arrived");
-        let _ = masking
-            .editor
-            .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    drain_queue(&mut masking);
     let presented = masking.editor.presented_generation;
     assert_eq!(masking.editor.displayed_draft_revision, None);
     let log = attach_log(&mut masking.editor);
@@ -2622,14 +2608,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
 
     // The drag's drafted jobs run to their end through the editor's real queue and worker, and not
     // one of their frames is presented.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while masking.editor.preview_queue.is_busy() {
-        assert!(Instant::now() < deadline, "the drafted jobs never ended");
-        let _ = masking
-            .editor
-            .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    drain_queue(&mut masking);
     assert_eq!(
         masking.editor.presented_generation, presented,
         "no frame was presented after Discard"
@@ -2754,14 +2733,12 @@ fn event_names(records: &[Value]) -> Vec<String> {
 
 /// Wait for the preview queue to finish what it holds, taking each result up as the runtime does.
 fn drain_queue(masking: &mut Masking) {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while masking.editor.preview_queue.is_busy() {
-        assert!(Instant::now() < deadline, "the preview queue never drained");
+    luxforge_testbase::wait_until("the preview queue drains", || {
         let _ = masking
             .editor
             .update(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !masking.editor.preview_queue.is_busy()
+    });
 }
 
 /// (a) Apply pressed before `draft.begin` has answered is not lost: the draft commits, with every
@@ -2970,13 +2947,7 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
     let presented = masking.editor.presented_generation;
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.3,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
     assert!(
         masking.editor.preview_queue.is_busy(),
@@ -2999,13 +2970,7 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
 #[test]
 fn race_f_a_discard_never_adopts_a_session_that_still_holds_the_draft() {
     let mut masking = Masking::opened();
-    let _ = masking
-        .editor
-        .update(Message::Control(ControlMessage::SliderMoved {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            value: 0.3,
-        }));
+    let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
     masking.draft(DraftMessage::Cancel);
     let draft_id = testing::core_draft(&masking.editor)
@@ -3112,7 +3077,7 @@ fn every_start_answers_to_the_one_refusal() {
         "Apply or Cancel the mask gesture before cropping"
     );
     assert_eq!(
-        masking.editor.pick_refusal().as_deref(),
+        masking.editor.gesture_refusal(Starting::Pick).as_deref(),
         Some("Apply or Cancel the mask gesture before picking from the photograph")
     );
     assert_eq!(

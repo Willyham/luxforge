@@ -137,9 +137,7 @@ fn color_value(parameters: &Map<String, Value>) -> Result<[u8; 3], Error> {
 
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<PixelReplace, Error> {
     if effect_id != PIXEL_EFFECT {
-        return Err(Error::incompatible(format!(
-            "unavailable effect {effect_id}"
-        )));
+        return Err(Error::unavailable_effect(effect_id, &[]));
     }
     if format != EFFECT_FORMAT {
         return Err(Error::incompatible(format!(

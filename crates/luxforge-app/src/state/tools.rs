@@ -6,12 +6,12 @@ use crate::{
     state::{
         Inputs, MenuTarget,
         capabilities::{self, CapabilityModel, TaskControl},
-        control_tree::walk,
+        control_tree::{Walk, walk},
         fields::{
             action_params, channel_text, field_id, labelled, parse_field, undeclared_label,
             unsupported_label,
         },
-        number::{NumberSpec, number_text},
+        number::NumberSpec,
         palette::PaletteAction,
         presets::{PresetsModel, presets_model},
     },
@@ -19,8 +19,8 @@ use crate::{
 use luxforge_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
     CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, LayerDescription,
-    MAX_ANGLE, MIN_ANGLE, MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor,
-    ParameterKind, RailDecoration, RecipeDescription, ResetAction, SourceTag,
+    MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration,
+    RecipeDescription, ResetAction, SourceTag,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -68,7 +68,11 @@ pub(crate) struct CurveSamples {
 pub(crate) enum NumberControlStyle {
     Slider,
     Field,
-    Stepper,
+    /// The − and + buttons either side of the value box, or of a rail between them when `rail` is
+    /// set: the crop angle's, which a drag moves on the parameter's fine step.
+    Stepper {
+        rail: bool,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChoiceControlStyle {
@@ -169,6 +173,10 @@ pub(crate) struct SectionModel {
     pub(crate) active: bool,
     pub(crate) unavailable: Option<String>,
     pub(crate) reset: Option<ResetRef>,
+    /// The resolved reset of the one group a headerless module's controls consist of, at path
+    /// `[0]` ([`headerless_group`]). The panel draws no header for that group, so no
+    /// [`GroupControl`] carries it, but a `ResetGroup` naming the group still runs it.
+    pub(crate) headerless_reset: Option<ResetRef>,
     /// The module's status and settings, above its controls, when it declares settings,
     /// resources, an activation or tasks.
     pub(crate) capability: Option<CapabilityModel>,
@@ -207,6 +215,94 @@ impl SectionModel {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The section draws its controls: it is expanded, its module is available, and a capability
+    /// module's settings view is not standing in for them.
+    pub(crate) fn shows_controls(&self) -> bool {
+        self.expanded
+            && self.unavailable.is_none()
+            && !self.capability.as_ref().is_some_and(|capability| {
+                capability.view == capabilities::CapabilityView::Settings && !capability.loading
+            })
+    }
+
+    /// The one top-level group a `layout: tabs` section shows: the selected tab's, or the first
+    /// when the selection names none. `None` for a stacked section, or a tabbed one with no group,
+    /// which draws its controls stacked.
+    pub(crate) fn visible_tab(&self) -> Option<&GroupControl> {
+        let SectionLayout::Tabs { selected } = self.layout else {
+            return None;
+        };
+        let mut groups = self.controls.iter().filter_map(|control| match control {
+            ControlModel::Group(group) => Some(group),
+            _ => None,
+        });
+        let first = groups.next()?;
+        Some(match selected {
+            0 => first,
+            selected => groups.nth(selected - 1).unwrap_or(first),
+        })
+    }
+
+    /// Every curve this section has on screen, in the order the panel draws them: none while the
+    /// section is collapsed, unavailable or showing its capability settings; in a tabbed section
+    /// only the visible tab's; and none inside a collapsed group. The section already holds only the
+    /// controls that apply to the photo's source kind, each resolved to the variant that provides
+    /// it, so this is the whole of "which curves are visible". No allocation beyond the walk's
+    /// one frame per open group.
+    pub(crate) fn shown_curves(&self) -> ShownCurves<'_> {
+        let controls: &[ControlModel] = if self.shows_controls() {
+            &self.controls
+        } else {
+            &[]
+        };
+        ShownCurves {
+            walk: walk(controls),
+            tab: self.visible_tab(),
+        }
+    }
+
+    /// The reset of the group at `path` in this section's module, as this section resolved it
+    /// for the photo's source kind and the bound target: on a RAW photo's global target White
+    /// balance's reset is the RAW development's As shot.
+    pub(crate) fn group_reset(&self, path: &[usize]) -> Option<&ResetRef> {
+        if path == [0] && self.headerless_reset.is_some() {
+            return self.headerless_reset.as_ref();
+        }
+        walk(&self.controls).find_map(|control| match control {
+            ControlModel::Group(group) if group.path == path => group.reset.as_ref(),
+            _ => None,
+        })
+    }
+}
+
+/// The curves a section has on screen ([`SectionModel::shown_curves`]).
+pub(crate) struct ShownCurves<'a> {
+    walk: Walk<'a, ControlModel>,
+    /// The visible tab of a tabbed section, whose own disclosure does not hide it.
+    tab: Option<&'a GroupControl>,
+}
+
+impl<'a> Iterator for ShownCurves<'a> {
+    type Item = &'a CurveControl;
+
+    fn next(&mut self) -> Option<&'a CurveControl> {
+        loop {
+            match self.walk.next()? {
+                ControlModel::Curve(curve) => return Some(curve),
+                ControlModel::Group(group) => {
+                    let shown = match self.tab {
+                        Some(tab) if self.walk.depth() == 1 => std::ptr::eq(group, tab),
+                        _ => group.expanded,
+                    };
+                    if !shown {
+                        self.walk.skip_children();
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -500,18 +596,6 @@ pub(crate) struct PresetChip {
     pub(crate) chosen: bool,
 }
 
-/// The angle's rail while a crop draft is open: the angle's range, the draft's angle on it and
-/// the step a drag moves in. The rail's gesture is live for the whole draft, so its handle reads
-/// accent while the draft is open, as the crop reference draws it.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AngleRailModel {
-    pub(crate) min: f64,
-    pub(crate) max: f64,
-    pub(crate) value: f64,
-    pub(crate) step: f64,
-    pub(crate) live: bool,
-}
-
 /// The crop draft's own controls, rendered by the host for a declared crop-frame interaction.
 ///
 /// Idle, the same Ratio and Angle controls read the displayed entry's committed crop exactly as a
@@ -533,18 +617,12 @@ pub(crate) struct CropSectionModel {
     /// The ratio is locked: the lock reads selected.
     pub(crate) locked: bool,
     pub(crate) can_swap: bool,
-    pub(crate) angle: String,
-    pub(crate) angle_id: String,
-    /// The crop action and its angle parameter, which name the angle field for editing.
-    pub(crate) angle_action: String,
-    pub(crate) angle_parameter: String,
-    /// The angle's box is open for typing; otherwise it shows the angle with its unit.
-    pub(crate) angle_editing: bool,
-    /// The angle's rail: the draft's angle while drafting, the committed one while idle.
-    pub(crate) angle_rail: Option<AngleRailModel>,
+    /// The crop action's declared angle as the generic stepper with its rail: the draft's angle
+    /// while drafting, the committed one while idle, and the text as typed while its box is open.
+    /// The rail's gesture is live for the whole draft, so its handle reads accent while the draft
+    /// is open, as the crop reference draws it. `None` when the action declares no number angle.
+    pub(crate) angle: Option<SliderControl>,
     pub(crate) guide: bool,
-    /// How far one nudge button moves the angle, in degrees.
-    pub(crate) nudge: f64,
     /// The draft's own numbers, so what is on screen is observable without a debugger: each a
     /// name and its value.
     pub(crate) readout: Vec<(String, String)>,
@@ -647,7 +725,11 @@ fn section(
     // A stacked module whose controls are one group draws that group's controls directly: a
     // header naming the only group repeats the band above it. The children keep their declared
     // paths under the group, so a nested group's key and reset still name its real position.
-    match headerless_group(module) {
+    let headerless = headerless_group(module);
+    let headerless_reset = headerless
+        .and(module.controls.first())
+        .and_then(|group| group_reset(&module.id, group, inputs));
+    match headerless {
         Some(children) => {
             for (index, control) in children.iter().enumerate() {
                 controls.push(control_model(
@@ -683,6 +765,7 @@ fn section(
         // rather than dropping it, because a header that loses its icon changes height and every
         // control under it moves on each commit round trip. The disabled header offers no press.
         reset: ResetRef::of(module.reset.as_ref()),
+        headerless_reset,
         capability: capabilities::section(module, inputs),
         controls,
         layout,
@@ -718,6 +801,16 @@ pub(crate) fn headerless_group(module: &ModuleDescriptor) -> Option<&[Control]> 
         [Control::Group { controls, .. }] => Some(controls),
         _ => None,
     }
+}
+
+/// The reset `group`, declared by `owner`, runs on the open photo through the bound target. A
+/// group's reset resolves through the same rule as its controls: on a RAW photo's global target,
+/// White balance's reset is the RAW development's As shot.
+fn group_reset(owner: &str, group: &Control, inputs: &Inputs<'_>) -> Option<ResetRef> {
+    ResetRef::of(
+        luxforge_core::resolve_group_reset(owner, group, source_kind(inputs.state), inputs.target)
+            .map(|resolved| resolved.reset),
+    )
 }
 
 /// The declared group at `path` is drawn without a header, so it has nothing to collapse.
@@ -767,20 +860,12 @@ fn owns_mode(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
     module.canvas.is_some() && inputs.session.workspace.mode == module.id
 }
 
-/// Why editing this module is disabled, in the words the status bar would use.
+/// Why editing this module is disabled, in the words the status bar would use: its provider's
+/// unavailability first, then the one editability rule ([`Inputs::edit_refusal`]).
 fn disabled_reason(unavailable: Option<&str>, inputs: &Inputs<'_>) -> Option<String> {
-    if let Some(reason) = unavailable {
-        return Some(reason.to_owned());
-    }
-    if inputs.state.is_none() {
-        return Some("No photograph is open".into());
-    }
-    if !inputs.session.preview.can_edit() {
-        return Some("Return to current to edit".into());
-    }
-    inputs
-        .busy
-        .then(|| "Waiting for the last request".to_owned())
+    unavailable
+        .map(str::to_owned)
+        .or_else(|| inputs.edit_refusal.clone())
 }
 
 /// The current recipe holds a layer of one of this module's effects **for the bound target**, and
@@ -851,6 +936,9 @@ fn digest(
     scope.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
+    // The reason a disabled section shows changes while it stays disabled, such as from a
+    // historical preview to a request in flight.
+    inputs.edit_refusal.hash(&mut hasher);
     // Which controls apply depends on the photo's kind and the target, and a control a variant
     // provides reads its providing module's fields, layers and canvas, so those are this section's
     // inputs too.
@@ -1026,8 +1114,8 @@ fn contains_curve(controls: &[Control]) -> bool {
 /// crop and shows the same fields, so it follows those instead.
 fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
     let fields = format!(
-        "{}|{:?}|{}|{}|{}|{}|{}|{:?}",
-        inputs.crop_angle,
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{:?}",
+        frame.and_then(|frame| inputs.fields.get(frame.action, frame.angle)),
         inputs.editing,
         inputs.crop_custom.0,
         inputs.crop_custom.1,
@@ -1095,19 +1183,9 @@ fn resolved_model(
         Rendered::Group {
             label,
             controls,
-            reset,
             collapsed,
         } => {
-            // A group's reset resolves through the same rule as its controls: on a RAW photo's
-            // global target, White balance's reset is the RAW development's As shot.
-            let reset = luxforge_core::resolve_group_reset(
-                owner.id(),
-                control,
-                source_kind(inputs.state),
-                inputs.target,
-            )
-            .map(|resolved| resolved.reset)
-            .or(reset);
+            let reset = group_reset(owner.id(), control, inputs);
             let controls: Vec<ControlModel> = controls
                 .iter()
                 .enumerate()
@@ -1119,7 +1197,7 @@ fn resolved_model(
                 .collect();
             ControlModel::Group(GroupControl {
                 label: label.to_owned(),
-                reset: ResetRef::of(reset),
+                reset,
                 path: path.to_vec(),
                 expanded: inputs
                     .control_ui
@@ -1147,7 +1225,7 @@ fn resolved_model(
                 slider.style = match style {
                     NumberStyle::Slider => NumberControlStyle::Slider,
                     NumberStyle::Field => NumberControlStyle::Field,
-                    NumberStyle::Stepper => NumberControlStyle::Stepper,
+                    NumberStyle::Stepper => NumberControlStyle::Stepper { rail: false },
                 };
                 slider.rail = rail_style(rail);
             }
@@ -1591,7 +1669,7 @@ fn slider(
         id: field_id(action, parameter, None),
         // The value carries the unit, so the label does not repeat it.
         label: label.to_owned(),
-        unit: declared.unit.clone(),
+        unit: declared.unit.as_deref().map(unit_symbol),
         spec,
         style: NumberControlStyle::Slider,
         rail: RailStyle::Plain,
@@ -1612,6 +1690,15 @@ fn slider(
         invalid,
         default: crate::state::fields::seed_text(declared),
         reset: None,
+    }
+}
+
+/// A declared unit as a value shows it: `deg` is the degree sign, which sits against the number
+/// (`2.4°`); every other unit is shown as declared.
+fn unit_symbol(unit: &str) -> String {
+    match unit {
+        "deg" => "\u{b0}".to_owned(),
+        unit => unit.to_owned(),
     }
 }
 
@@ -1768,15 +1855,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             field_id(frame.fit_action, "custom-width", None),
             field_id(frame.fit_action, "custom-height", None),
         ),
-        angle: inputs.crop_angle.to_owned(),
-        angle_id: field_id(frame.action, frame.angle, None),
-        angle_action: frame.action.to_owned(),
-        angle_parameter: frame.angle.to_owned(),
-        angle_editing: inputs
-            .editing
-            .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle),
         guide: inputs.crop_guide,
-        nudge: crate::crop_draft::ANGLE_STEP,
         enabled,
         ..CropSectionModel::default()
     };
@@ -1784,6 +1863,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         // Idle, the box and the rail show the committed angle, and the box shows what is being
         // typed while it is open.
         let committed = committed_crop(frame, inputs);
+        let angle = angle_control(frame, inputs, committed.angle, false);
         let locked = committed.aspect.is_some();
         let chosen = committed
             .aspect
@@ -1793,18 +1873,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             });
         return CropSectionModel {
             presets: preset_chips(&presets, chosen),
-            angle: if base.angle_editing {
-                base.angle.clone()
-            } else {
-                number_text(committed.angle)
-            },
-            angle_rail: Some(AngleRailModel {
-                min: MIN_ANGLE,
-                max: MAX_ANGLE,
-                value: committed.angle,
-                step: crate::crop_draft::ANGLE_RAIL_STEP,
-                live: false,
-            }),
+            angle,
             lock_label: lock_label(locked),
             locked,
             can_swap: enabled && locked,
@@ -1821,15 +1890,55 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         can_apply: inputs.apply_refusal.is_none(),
         can_reapply: !inputs.busy,
         readout: readout(draft, frame.action),
-        angle_rail: Some(AngleRailModel {
-            min: MIN_ANGLE,
-            max: MAX_ANGLE,
-            value: draft.stage.angle,
-            step: crate::crop_draft::ANGLE_RAIL_STEP,
-            live: true,
-        }),
+        angle: angle_control(frame, inputs, draft.stage.angle, true),
         ..base
     }
+}
+
+/// The crop angle as the generic stepper, with the rail between its buttons: `angle` on the rail
+/// and in the box, formatted as its parameter declares, and the text as typed while the box is
+/// open. The value never follows the typed text, so the rail stays on the frame's angle until a
+/// number is submitted. `live` marks the rail's gesture live: the draft is open.
+fn angle_control(
+    frame: &CropFrame<'_>,
+    inputs: &Inputs<'_>,
+    angle: f64,
+    live: bool,
+) -> Option<SliderControl> {
+    let declared = frame.module.action(frame.action)?.parameter(frame.angle)?;
+    let spec = NumberSpec::of(declared)?;
+    let typing = inputs
+        .editing
+        .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle);
+    let text = if typing {
+        inputs
+            .fields
+            .get(frame.action, frame.angle)
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        spec.format(angle)
+    };
+    let invalid = if typing {
+        parse_field(declared, &text).err()
+    } else {
+        None
+    };
+    let mut control = slider(
+        frame.action,
+        frame.angle,
+        "",
+        declared,
+        spec,
+        &text,
+        invalid,
+        typing,
+        inputs,
+    );
+    control.value = angle;
+    control.style = NumberControlStyle::Stepper { rail: true };
+    control.dragging = live;
+    Some(control)
 }
 
 /// One chip per declared ratio preset, with `chosen` the option that reads selected.
@@ -1957,7 +2066,6 @@ pub(crate) enum Rendered<'a> {
     Group {
         label: &'a str,
         controls: &'a [Control],
-        reset: Option<&'a ResetAction>,
         collapsed: bool,
     },
     Number {
@@ -2031,13 +2139,11 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
         Control::Group {
             label,
             controls,
-            reset,
             collapsed,
             ..
         } => Rendered::Group {
             label,
             controls,
-            reset: reset.as_ref(),
             collapsed: *collapsed,
         },
         Control::Number {

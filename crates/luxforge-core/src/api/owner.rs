@@ -4,7 +4,7 @@
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
     announce_once,
-    methods::{self, Planned, Retries, Route},
+    methods::{self, Changed, Planned, Retries, Route},
     params::{NoParams, host_params},
 };
 #[cfg(test)]
@@ -15,11 +15,11 @@ use crate::{
     PreparationNeeds, PreviewJob, ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, Report},
-    artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
+    artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection},
     capabilities::host::CapabilityHost,
-    editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
+    editor::{Prepared, Preparing, SourceSignature, SourceWork},
     jobs::{CANCELLED, Family, JobControl, JobKind, Jobs, JoinKey, Opened, Output, Release},
-    source::{PlaneGate, RawPrepared},
+    source::PlaneGate,
 };
 use point::{POINT_QUEUE_CAPACITY, PointWorker};
 use requests::{RequestKey, RequestTable};
@@ -42,7 +42,6 @@ use std::{thread, time::Duration};
 
 #[cfg(test)]
 mod artifact_tests;
-pub(super) mod capability;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -267,11 +266,9 @@ pub(crate) struct SourceFlightKey {
 }
 
 enum SourceTaskKind {
-    /// Read and decode the original, developing a known RAW at the requested entry gains.
-    File(Option<Box<FilePreparation>>),
-    Develop(RawDevelopment),
-    /// The asset's source is already prepared; only its artifacts need reading.
-    Artifacts(AssetId),
+    /// Prepare an original, a RAW development or artifacts: the service's own source work, which
+    /// the service completes ([`EditorService::complete_preparation`]).
+    Prepare(SourceWork),
     /// Remove the object files the owner's collection left unrecorded, and stale staged files.
     Collect(Collection),
 }
@@ -280,24 +277,25 @@ impl SourceTaskKind {
     /// The job kind this task is recorded as, and the asset it works on when one is known.
     fn job(&self) -> (JobKind, Option<AssetId>) {
         match self {
-            Self::File(_) => (JobKind::Prepare, None),
-            Self::Develop(request) => (JobKind::Develop, Some(request.asset_id.clone())),
-            Self::Artifacts(asset_id) => (JobKind::Artifacts, Some(asset_id.clone())),
+            Self::Prepare(SourceWork::File { .. }) => (JobKind::Prepare, None),
+            Self::Prepare(SourceWork::Develop(request)) => {
+                (JobKind::Develop, Some(request.asset_id.clone()))
+            }
+            Self::Prepare(SourceWork::Artifacts(asset_id)) => {
+                (JobKind::Artifacts, Some(asset_id.clone()))
+            }
             Self::Collect(_) => (JobKind::Collect, None),
         }
     }
 }
 
 enum SourceResult {
-    File(PreparedFile, Vec<VerifiedArtifact>),
-    Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
-    Artifacts(AssetId, Vec<VerifiedArtifact>),
+    Prepared(Box<Prepared>),
     Collected(Collected),
 }
 
 struct SourceTask {
     id: JobId,
-    key: SourceFlightKey,
     /// The job's control in the one job table: its flag is what the worker checks between steps.
     control: Arc<JobControl>,
     kind: SourceTaskKind,
@@ -340,47 +338,85 @@ impl SourceQueue {
         }
     }
 
-    /// Prepare an original and its artifacts for the requested entry.
-    fn enqueue_file(
+    /// Queue one source job's work and the artifacts it reads after it, or join the queued or
+    /// running job doing the same. A development is admitted only while queued developments pin
+    /// fewer than [`MAX_QUEUED_MOSAICS`] distinct mosaics, or the one it pins already.
+    fn enqueue(
         &mut self,
         jobs: &mut Jobs,
         client: ClientId,
-        path: PathBuf,
-        target: Option<FilePreparation>,
+        work: SourceWork,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<JobId, Error> {
-        let (canonical, signature) = EditorService::request_signature(&path)?;
-        let key = SourceFlightKey {
-            path: canonical,
-            signature: Some(signature),
-            expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
-            gains_bits: target
-                .as_ref()
-                .and_then(|target| target.raw.as_ref())
-                .map(|raw| raw.gains.map(f32::to_bits)),
-            artifacts: flight_artifacts(&artifacts),
+        let (key, sensor) = match &work {
+            SourceWork::File {
+                path,
+                signature,
+                target,
+            } => (
+                SourceFlightKey {
+                    path: path.clone(),
+                    signature: Some(signature.clone()),
+                    expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
+                    gains_bits: target
+                        .as_ref()
+                        .and_then(|target| target.raw.as_ref())
+                        .map(|raw| raw.gains.map(f32::to_bits)),
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
+            SourceWork::Develop(request) => {
+                let key = SourceFlightKey {
+                    path: request.asset_id.as_str().into(),
+                    signature: Some(request.signature.clone()),
+                    expected_fingerprint: Some(request.fingerprint.clone()),
+                    gains_bits: Some(request.gains.map(f32::to_bits)),
+                    artifacts: flight_artifacts(&artifacts),
+                };
+                if let Some(id) = jobs.join(&JoinKey::Source(key.clone()), client) {
+                    return Ok(id);
+                }
+                let sensor = Arc::downgrade(&request.sensor);
+                self.admit_mosaic(&sensor)?;
+                (key, Some(sensor))
+            }
+            SourceWork::Artifacts(asset_id) => (
+                SourceFlightKey {
+                    path: asset_id.as_str().into(),
+                    signature: None,
+                    expected_fingerprint: None,
+                    gains_bits: None,
+                    artifacts: flight_artifacts(&artifacts),
+                },
+                None,
+            ),
         };
-        let kind = SourceTaskKind::File(target.map(Box::new));
-        self.submit(jobs, client, key, kind, artifacts, None, true)
+        let kind = SourceTaskKind::Prepare(work);
+        self.submit(jobs, client, key, kind, artifacts, sensor, true)
     }
 
-    /// Read and verify an asset's artifacts when its source is already prepared.
-    fn enqueue_artifacts(
-        &mut self,
-        jobs: &mut Jobs,
-        client: ClientId,
-        asset_id: AssetId,
-        artifacts: Vec<ArtifactRead>,
-    ) -> Result<JobId, Error> {
-        let key = SourceFlightKey {
-            path: asset_id.as_str().into(),
-            signature: None,
-            expected_fingerprint: None,
-            gains_bits: None,
-            artifacts: flight_artifacts(&artifacts),
-        };
-        let kind = SourceTaskKind::Artifacts(asset_id);
-        self.submit(jobs, client, key, kind, artifacts, None, true)
+    /// Refuse a development of a mosaic no queued development pins yet once they pin
+    /// [`MAX_QUEUED_MOSAICS`] distinct mosaics between them.
+    fn admit_mosaic(&self, sensor: &Weak<luxforge_raw::RawSource>) -> Result<(), Error> {
+        let mut distinct = Vec::<&Weak<luxforge_raw::RawSource>>::new();
+        for existing in self.sensors.values() {
+            if existing.strong_count() > 0
+                && !distinct.iter().any(|seen| Weak::ptr_eq(seen, existing))
+            {
+                distinct.push(existing);
+            }
+        }
+        if distinct.len() >= MAX_QUEUED_MOSAICS
+            && !distinct
+                .iter()
+                .any(|existing| Weak::ptr_eq(existing, sensor))
+        {
+            return Err(Error::source_queue_full(
+                "RAW mosaic queue is full; retry after the active development",
+            ));
+        }
+        Ok(())
     }
 
     /// A collection: either a client asked for it explicitly, or [`OwnerHandle::launch`] queued it
@@ -424,7 +460,6 @@ impl SourceQueue {
         let (job_kind, asset_id) = kind.job();
         let task = SourceTask {
             id: id.clone(),
-            key,
             control: control.clone(),
             kind,
             artifacts,
@@ -432,7 +467,7 @@ impl SourceQueue {
         match self.sender.try_send(task) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(Error::resource_limit("source preparation queue is full"));
+                return Err(Error::source_queue_full("source preparation queue is full"));
             }
             Err(TrySendError::Disconnected(_)) => {
                 return Err(Error::protocol("source preparation worker stopped"));
@@ -450,45 +485,6 @@ impl SourceQueue {
             self.sensors.insert(id.clone(), sensor);
         }
         Ok(id)
-    }
-
-    fn enqueue_development(
-        &mut self,
-        jobs: &mut Jobs,
-        client: ClientId,
-        request: RawDevelopment,
-        artifacts: Vec<ArtifactRead>,
-    ) -> Result<JobId, Error> {
-        let key = SourceFlightKey {
-            path: request.asset_id.as_str().into(),
-            signature: Some(request.signature.clone()),
-            expected_fingerprint: Some(request.fingerprint.clone()),
-            gains_bits: Some(request.gains.map(f32::to_bits)),
-            artifacts: flight_artifacts(&artifacts),
-        };
-        if let Some(id) = jobs.join(&JoinKey::Source(key.clone()), client) {
-            return Ok(id);
-        }
-        let sensor = Arc::downgrade(&request.sensor);
-        let mut distinct = Vec::<&Weak<luxforge_raw::RawSource>>::new();
-        for existing in self.sensors.values() {
-            if existing.strong_count() > 0
-                && !distinct.iter().any(|seen| Weak::ptr_eq(seen, existing))
-            {
-                distinct.push(existing);
-            }
-        }
-        if distinct.len() >= MAX_QUEUED_MOSAICS
-            && !distinct
-                .iter()
-                .any(|existing| Weak::ptr_eq(existing, &sensor))
-        {
-            return Err(Error::resource_limit(
-                "RAW mosaic queue is full; retry after the active development",
-            ));
-        }
-        let kind = SourceTaskKind::Develop(request);
-        self.submit(jobs, client, key, kind, artifacts, Some(sensor), true)
     }
 
     /// A job that is ready at once: an import or preparation the verified cache already answers.
@@ -521,12 +517,8 @@ impl SourceQueue {
     }
 }
 
-/// Queue one source job that prepares exactly what `needs` names — the asset's original, its RAW
-/// development at the named gains and the named artifacts — and nothing re-derived from the request
-/// that was refused. An original the cache does not hold is prepared and developed at those gains
-/// in the same job; one it holds is redeveloped only when its planes do not hold them; artifacts
-/// that became ready since they were named are left out. Needs with nothing left to prepare answer
-/// with a job that is already ready.
+/// Queue the source job that prepares exactly what `needs` names ([`EditorService::preparation`]),
+/// or answer with a job that is already ready when nothing is left to prepare.
 fn queue_preparation(
     service: &EditorService,
     sources: &mut SourceQueue,
@@ -534,34 +526,28 @@ fn queue_preparation(
     client: ClientId,
     needs: &PreparationNeeds,
 ) -> Result<JobId, Error> {
-    let asset_id = &needs.asset_id;
-    let artifacts = service.artifact_reads(&needs.artifacts)?;
-    let Some(state) = service.cached_state(asset_id)? else {
-        let state = service.state(asset_id)?;
-        let id = sources.enqueue_file(
-            jobs,
-            client,
-            state.asset.locator,
-            Some(service.file_preparation(asset_id, Some(&needs.entry_id))?),
-            artifacts,
-        )?;
-        service.evict_development();
-        return Ok(id);
-    };
-    let development = match needs.gains {
-        Some(gains) => service.raw_development(asset_id, gains)?,
-        None => None,
-    };
-    if let Some(request) = development {
-        let id = sources.enqueue_development(jobs, client, request, artifacts)?;
-        service.evict_development();
-        return Ok(id);
+    match service.preparation(needs)? {
+        Preparing::Ready(state) => sources.ready(jobs, client, *state),
+        Preparing::Work(work, reads) => queue_work(service, sources, jobs, client, work, reads),
     }
-    if artifacts.is_empty() {
-        sources.ready(jobs, client, state)
-    } else {
-        sources.enqueue_artifacts(jobs, client, state.asset.id, artifacts)
+}
+
+/// Queue one source job's work, and release the cache's float planes once work that allocates
+/// planes of its own is queued.
+fn queue_work(
+    service: &EditorService,
+    sources: &mut SourceQueue,
+    jobs: &mut Jobs,
+    client: ClientId,
+    work: SourceWork,
+    reads: Vec<ArtifactRead>,
+) -> Result<JobId, Error> {
+    let decodes = work.decodes();
+    let id = sources.enqueue(jobs, client, work, reads)?;
+    if decodes {
+        service.evict_development();
     }
+    Ok(id)
 }
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
@@ -582,25 +568,23 @@ impl SourceHold {
 /// The activity one source task publishes, with the original's file name as its detail line.
 fn source_activity(task: &SourceTask) -> ActivitySpec {
     match &task.kind {
-        SourceTaskKind::File(_) => ActivitySpec {
+        SourceTaskKind::Prepare(SourceWork::File { path, .. }) => ActivitySpec {
             kind: "source.prepare",
             label: "Preparing original",
-            detail: task
-                .key
-                .path
+            detail: path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned()),
             asset_id: None,
             job_id: Some(task.id.to_string()),
         },
-        SourceTaskKind::Develop(request) => ActivitySpec {
+        SourceTaskKind::Prepare(SourceWork::Develop(request)) => ActivitySpec {
             kind: "source.develop",
             label: "Developing RAW",
             detail: request.file_name.clone(),
             asset_id: Some(request.asset_id.clone()),
             job_id: Some(task.id.to_string()),
         },
-        SourceTaskKind::Artifacts(asset_id) => ActivitySpec {
+        SourceTaskKind::Prepare(SourceWork::Artifacts(asset_id)) => ActivitySpec {
             kind: "artifacts.read",
             label: "Verifying artifacts",
             detail: None,
@@ -617,80 +601,27 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
     }
 }
 
-/// Read and verify every listed artifact on the source worker, stopping at the first that is
-/// missing, corrupt or cancelled.
-fn read_artifacts(
-    reads: &[ArtifactRead],
-    cancel: &AtomicBool,
-) -> Result<Vec<VerifiedArtifact>, Error> {
-    reads
-        .iter()
-        .map(|read| artifacts::read_verified(read, cancel))
-        .collect()
-}
-
-/// One source task's work on the worker: decode the original and develop a RAW, read and verify
-/// artifacts, or remove a collection's files. A developed RAW's linear planes hold a lease on the
-/// worker's memory gate until they are released.
+/// One source task's work on the worker: the service's own preparation ([`SourceWork::run`]), or a
+/// collection's removal of files. A developed RAW's linear planes hold a lease on the worker's
+/// memory gate until they are released.
 fn run_source_task(
     kind: SourceTaskKind,
-    key: &SourceFlightKey,
     reads: &[ArtifactRead],
     cancel: &AtomicBool,
     gate: &Arc<PlaneGate>,
 ) -> Result<SourceResult, Error> {
-    let mut result = match kind {
-        SourceTaskKind::File(target) => {
-            EditorService::prepare_file_cancel(&key.path, target.as_deref(), cancel).and_then(
-                |prepared| {
-                    if Some(&prepared.signature) != key.signature.as_ref() {
-                        return Err(Error::conflict("source changed after job was queued"));
-                    }
-                    if key
-                        .expected_fingerprint
-                        .as_deref()
-                        .is_some_and(|expected| expected != prepared.fingerprint)
-                    {
-                        return Err(Error::source_unavailable(
-                            "original source fingerprint changed",
-                        ));
-                    }
-                    let verified = read_artifacts(reads, cancel)?;
-                    Ok(SourceResult::File(prepared, verified))
-                },
-            )
+    match kind {
+        SourceTaskKind::Prepare(work) => {
+            let mut prepared = work.run(reads, cancel)?;
+            if let Some(linear) = prepared.linear_mut() {
+                linear.hold(gate.lease());
+            }
+            Ok(SourceResult::Prepared(Box::new(prepared)))
         }
-        SourceTaskKind::Develop(request) => RawPrepared::develop(
-            request.sensor.clone(),
-            request.capture.clone(),
-            request.fingerprint.clone(),
-            request.gains,
-            cancel,
-        )
-        .and_then(|developed| {
-            let verified = read_artifacts(reads, cancel)?;
-            Ok(SourceResult::Develop(request, developed, verified))
-        }),
-        SourceTaskKind::Artifacts(asset_id) => read_artifacts(reads, cancel)
-            .map(|verified| SourceResult::Artifacts(asset_id, verified)),
         SourceTaskKind::Collect(collection) => {
             artifacts::collect_files(&collection, cancel).map(SourceResult::Collected)
         }
-    };
-    if let Ok(prepared) = &mut result {
-        let raw = match prepared {
-            SourceResult::File(file, _) => match &mut file.source {
-                crate::source::PreparedSource::Raw(raw) => Some(raw),
-                _ => None,
-            },
-            SourceResult::Develop(_, raw, _) => Some(raw),
-            SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
-        };
-        if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
-            linear.hold(gate.lease());
-        }
     }
-    result
 }
 
 fn source_worker(
@@ -711,10 +642,7 @@ fn source_worker(
         // A previous RAW result/cache or active/pending preview may still pin its large float
         // planes. Wait on the worker, never the catalog owner, before another source allocation:
         // the last release or a stop wakes it. Artifact work allocates no planes and never waits.
-        if matches!(
-            task.kind,
-            SourceTaskKind::File(_) | SourceTaskKind::Develop(_)
-        ) {
+        if matches!(&task.kind, SourceTaskKind::Prepare(work) if work.decodes()) {
             gate.wait_released(task.control.flag());
         }
         if task.control.is_cancelled() {
@@ -737,13 +665,7 @@ fn source_worker(
         // waiting on it and the board agree, and the worker lives on for the next task.
         let result = catch_unwind(AssertUnwindSafe(|| {
             hold.wait();
-            run_source_task(
-                task.kind,
-                &task.key,
-                &task.artifacts,
-                task.control.flag(),
-                &gate,
-            )
+            run_source_task(task.kind, &task.artifacts, task.control.flag(), &gate)
         }))
         .unwrap_or_else(|_| Err(Error::internal("the source job stopped unexpectedly")));
         // The activity ends before the owner learns the result, so a client that reads the job as
@@ -887,7 +809,6 @@ impl OwnerHandle {
         hold: SourceHold,
     ) -> Result<(Self, JoinHandle<()>), Error> {
         let mut service = EditorService::open_with(catalog, registry)?;
-        service.disable_sync_source();
         let render = service.render_context().clone();
         let (sender, receiver) = sync_channel(64);
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
@@ -1349,6 +1270,13 @@ pub(super) struct Owner {
 }
 
 impl Owner {
+    /// A client's authority, part of its session and fixed when it registered.
+    pub(super) fn authority(&self, client: ClientId) -> ClientAuthority {
+        self.sessions
+            .get(&client)
+            .map_or(ClientAuthority::Edit, |session| session.authority)
+    }
+
     /// Answer one request: find its method, answer a retry from the request table when the method
     /// declares the owner answers its retries, otherwise call its handler, then record the events
     /// its changes announced. A sample through a spatial layer is only planned here: the point
@@ -1381,6 +1309,8 @@ impl Owner {
     fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
         let method = methods::find(&self.service, &request.method)
             .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
+        // Every mutation envelope is checked here, once, before any handler runs.
+        method.envelope().check(&request.params)?;
         // A retried mutation whose method declares the owner answers it is answered from the
         // request table, and its handler does not run again; the catalog answers the others.
         let key = match method.retries() {
@@ -1403,6 +1333,19 @@ impl Owner {
         }
         let result = match method.route() {
             Route::Owner(handler) => handler(self, &call).map(Planned::Value),
+            // A task queues a capability job and announces nothing: the task is announced when it
+            // succeeds. It samples its asset's current entry before it is queued, so an
+            // unprepared source or artifact is refused naming what it needs, as below.
+            Route::Task(task_id) => self
+                .host
+                .task(
+                    &mut self.jobs,
+                    &self.service,
+                    task_id,
+                    &request.params,
+                    &call.origin,
+                )
+                .map(Planned::Value),
             Route::Service => {
                 let session = self.sessions.entry(client).or_default();
                 // Read only for a method that can change something, so a read or a draft's
@@ -1411,25 +1354,20 @@ impl Owner {
                     .mutates()
                     .then(|| subject(session, &request.params))
                     .flatten();
-                let result = method.plan(&mut self.service, session, &request.params);
-                // A service answer says whether it changed anything: a no-op and a retry answered
-                // from a store's request log did not. A planned sample carries no envelope.
-                if let Ok(planned) = &result
-                    && methods::mutates(&method, planned.value())
-                {
-                    let origin = match subject {
-                        Some(asset_id) => call.origin.clone().changed(
-                            asset_id,
-                            planned
-                                .value()
-                                .and_then(|value| value.get("revision"))
-                                .and_then(Value::as_u64),
-                        ),
-                        None => call.origin.clone(),
-                    };
-                    announce_once(&mut self.announced, &origin);
-                }
-                result
+                // The handler reports what it changed: a no-op and a retry answered from a
+                // store's request log changed nothing, and an asset's change names its revision.
+                method
+                    .plan(&mut self.service, session, &request.params)
+                    .map(|(planned, changed)| {
+                        if let Changed::Something { revision } = changed {
+                            let origin = match subject {
+                                Some(asset_id) => call.origin.clone().changed(asset_id, revision),
+                                None => call.origin.clone(),
+                            };
+                            announce_once(&mut self.announced, &origin);
+                        }
+                        planned
+                    })
             }
         };
         // A stack whose source or artifacts are not prepared queues exactly what the refusal
@@ -1629,19 +1567,9 @@ impl Owner {
         let service = &mut self.service;
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
-                SourceResult::File(file, verified) => {
-                    let (state, created) = service.import_prepared(file)?;
-                    service.adopt_artifacts(verified);
+                SourceResult::Prepared(prepared) => {
+                    let (state, created) = service.complete_preparation(*prepared)?;
                     Ok(Completed::Asset(Box::new(state), created))
-                }
-                SourceResult::Develop(request, developed, verified) => {
-                    let state = service.install_development(&request, developed)?;
-                    service.adopt_artifacts(verified);
-                    Ok(Completed::Asset(Box::new(state), false))
-                }
-                SourceResult::Artifacts(asset_id, verified) => {
-                    service.adopt_artifacts(verified);
-                    Ok(Completed::Asset(Box::new(service.state(&asset_id)?), false))
                 }
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
@@ -1743,24 +1671,22 @@ pub(super) fn catalog_import(
     call: &Call<'_>,
     params: Import,
 ) -> Result<Value, Error> {
-    params.mutation.validate()?;
-    let (id, status) = match owner.service.cached_import(&params.path)? {
-        Some(state) => (
-            owner.sources.ready(&mut owner.jobs, call.client, state)?,
+    let (id, status) = match owner.service.importing(&params.path)? {
+        Preparing::Ready(state) => (
+            owner.sources.ready(&mut owner.jobs, call.client, *state)?,
             JobStatus::Ready,
         ),
-        None => {
-            let expected = owner.service.known_file_preparation(&params.path)?;
-            let id = owner.sources.enqueue_file(
+        Preparing::Work(work, reads) => (
+            queue_work(
+                &owner.service,
+                &mut owner.sources,
                 &mut owner.jobs,
                 call.client,
-                params.path,
-                expected,
-                Vec::new(),
-            )?;
-            owner.service.evict_development();
-            (id, JobStatus::Queued)
-        }
+                work,
+                reads,
+            )?,
+            JobStatus::Queued,
+        ),
     };
     owner.jobs.set_origin(&id, call.origin.clone());
     owner.latest_import.insert(call.client, id.clone());
@@ -1868,9 +1794,8 @@ pub(super) fn source_prepare(
 pub(super) fn artifact_collect(
     owner: &mut Owner,
     call: &Call<'_>,
-    params: Collect,
+    _: Collect,
 ) -> Result<Value, Error> {
-    params.mutation.validate()?;
     let collection = owner.service.plan_collection()?;
     let root = collection.root.clone();
     let id = owner.sources.enqueue_maintenance(
@@ -2021,8 +1946,7 @@ mod tests {
             import_params(path),
         );
         let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_until("the import to become ready", || {
             let status = ok(
                 owner,
                 client,
@@ -2031,17 +1955,11 @@ mod tests {
                 json!({"job_id": job_id}),
             );
             match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the import never became ready: {status}"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 other => panic!("unexpected import job {other:?}: {status}"),
             }
-        }
+        });
         ok(
             owner,
             client,
@@ -2065,21 +1983,12 @@ mod tests {
     }
 
     /// Poll `job.read` until the job leaves `queued` or `running`. Nothing in the owner
-    /// polls: this is the test standing in for a client that would rather be told, and it fails on
-    /// a deadline instead of spinning forever.
+    /// polls: this is the test standing in for a client that would rather be told.
     fn settled(owner: &OwnerHandle, client: ClientId, job_id: &Value) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
+        luxforge_testbase::wait_for("the analysis job to settle", || {
             let read = ok(owner, client, "read", "job.read", json!({"job_id": job_id}));
-            if !matches!(read["status"].as_str(), Some("queued" | "running")) {
-                return read;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the analysis job never settled"
-            );
-            std::thread::yield_now();
-        }
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        })
     }
 
     /// The exact report the contract says a target must produce: render that entry's own stack from
@@ -2136,37 +2045,24 @@ mod tests {
     }
 
     fn wait_source(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
-        let start = std::time::Instant::now();
-        loop {
+        luxforge_testbase::wait_for("the source job to complete", || {
             let status = request(owner, client, "job.read", json!({"job_id":id}));
             assert!(status.error.is_none(), "{:?}", status.error);
             let status = status.result.unwrap();
             match status["status"].as_str() {
-                Some("ready" | "failed") => return status,
-                Some("queued" | "running")
-                    if start.elapsed() < std::time::Duration::from_secs(5) =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(1))
-                }
+                Some("ready" | "failed") => Some(status),
+                Some("queued" | "running") => None,
                 other => panic!("source job did not complete: {other:?}: {status}"),
             }
-        }
+        })
     }
 
     /// A source job's settled status, waiting as long as a photo-sized RAW development takes.
     fn wait_development(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        loop {
+        luxforge_testbase::wait_for("the source job to settle", || {
             let status = ok(owner, client, "status", "job.read", json!({"job_id": id}));
-            if !matches!(status["status"].as_str(), Some("queued" | "running")) {
-                return status;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the source job never settled: {status}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        })
     }
 
     /// On a real RAW file: `render.sample` names no entry, so it samples the session's selection.
@@ -2267,25 +2163,19 @@ mod tests {
         .unwrap();
         let a_id = a["job_id"].as_str().unwrap();
         let b_id = b["job_id"].as_str().unwrap();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        let mut a_ready = false;
-        let mut b_ready = false;
-        while !(a_ready && b_ready) && std::time::Instant::now() < until {
-            let a_status = request(&owner, first, "job.read", json!({"job_id":a_id}))
-                .result
-                .unwrap();
-            let b_status = request(&owner, second, "job.read", json!({"job_id":b_id}))
-                .result
-                .unwrap();
-            assert_ne!(a_status["status"], "failed", "{a_status}");
-            assert_ne!(b_status["status"], "failed", "{b_status}");
-            a_ready = a_status["status"] == "ready";
-            b_ready = b_status["status"] == "ready";
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(
-            a_ready && b_ready,
-            "second RAW import stalled behind retained first float"
+        luxforge_testbase::wait_until(
+            "both RAW imports, the second not stalled behind the retained first float",
+            || {
+                let a_status = request(&owner, first, "job.read", json!({"job_id":a_id}))
+                    .result
+                    .unwrap();
+                let b_status = request(&owner, second, "job.read", json!({"job_id":b_id}))
+                    .result
+                    .unwrap();
+                assert_ne!(a_status["status"], "failed", "{a_status}");
+                assert_ne!(b_status["status"], "failed", "{b_status}");
+                a_status["status"] == "ready" && b_status["status"] == "ready"
+            },
         );
         let assets = request(&owner, first, "catalog.list", json!({}))
             .result
@@ -2296,12 +2186,7 @@ mod tests {
         assert_eq!(assets.len(), 2);
         for (client, asset) in [(first, &assets[0]), (second, &assets[1])] {
             let asset_id = &asset["id"];
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-            loop {
-                assert!(
-                    std::time::Instant::now() < until,
-                    "evicted RAW never became sampleable"
-                );
+            luxforge_testbase::wait_until("the evicted RAW to become sampleable", || {
                 let sample = request(
                     &owner,
                     client,
@@ -2309,30 +2194,25 @@ mod tests {
                     json!({"asset_id":asset_id,"x":100,"y":100}),
                 );
                 match sample.error {
-                    None => break,
+                    None => true,
                     Some(error) if error.code == "preparation-required" => {
-                        let prepared = loop {
+                        let prepared = luxforge_testbase::wait_for("the RAW preparation", || {
                             let status =
                                 request(&owner, client, "job.read", json!({"job_id":error.job_id}))
                                     .result
                                     .unwrap();
                             match status["status"].as_str() {
-                                Some("ready" | "failed") => break status,
-                                Some("queued" | "running") => {
-                                    assert!(
-                                        std::time::Instant::now() < until,
-                                        "RAW preparation stalled: {status}"
-                                    );
-                                    std::thread::sleep(std::time::Duration::from_millis(20));
-                                }
+                                Some("ready" | "failed") => Some(status),
+                                Some("queued" | "running") => None,
                                 other => panic!("invalid source state: {other:?}"),
                             }
-                        };
+                        });
                         assert_eq!(prepared["status"], "ready", "{prepared}");
+                        false
                     }
                     Some(error) => panic!("RAW sample failed: {error:?}"),
                 }
-            }
+            });
         }
         owner.stop();
         join.join().unwrap();
@@ -2359,38 +2239,108 @@ mod tests {
             )
             .unwrap(),
         );
-        let request = |path: &Path, sensor: Arc<luxforge_raw::RawSource>| RawDevelopment {
-            asset_id: AssetId::new(),
-            signature: EditorService::request_signature(path).unwrap().1,
-            fingerprint: "test".into(),
-            gains: sensor.metadata().as_shot_gains,
-            sensor,
-            capture: Arc::default(),
-            file_name: None,
-        };
+        let request =
+            |path: &Path, sensor: Arc<luxforge_raw::RawSource>| crate::editor::RawDevelopment {
+                asset_id: AssetId::new(),
+                signature: EditorService::request_signature(path).unwrap().1,
+                fingerprint: "test".into(),
+                gains: sensor.metadata().as_shot_gains,
+                sensor,
+                capture: Arc::default(),
+                file_name: None,
+            };
         let a = request(&first_path, first_sensor);
         let b = request(&second_path, second_sensor);
         let (mut sources, mut jobs, receiver) = source_queue();
         let first = sources
-            .enqueue_development(&mut jobs, ClientId(1), a.clone(), Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::Develop(Box::new(a.clone())),
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(
             sources
-                .enqueue_development(&mut jobs, ClientId(2), a, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    ClientId(2),
+                    SourceWork::Develop(Box::new(a)),
+                    Vec::new()
+                )
                 .unwrap(),
             first
         );
         let refusal = sources
-            .enqueue_development(&mut jobs, ClientId(3), b.clone(), Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(3),
+                SourceWork::Develop(Box::new(b.clone())),
+                Vec::new(),
+            )
             .unwrap_err();
         assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
-        assert!(refusal.detail.starts_with("RAW mosaic queue is full"));
+        assert_eq!(
+            refusal.detail,
+            "RAW mosaic queue is full; retry after the active development"
+        );
+        assert!(refusal.retries_after_source_job(), "{:?}", refusal.data);
         drop(receiver.try_recv().unwrap());
         jobs.finish(&first, Err(Error::conflict("finished")));
         sources.complete(&first);
         assert!(
             sources
-                .enqueue_development(&mut jobs, ClientId(3), b, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    ClientId(3),
+                    SourceWork::Develop(Box::new(b)),
+                    Vec::new()
+                )
+                .is_ok()
+        );
+    }
+
+    /// A full source preparation queue refuses the next job as `resource-limit` whose data says a
+    /// source job ending makes room, with its message unchanged; once the worker takes one task,
+    /// the same request is admitted.
+    #[test]
+    fn a_full_source_queue_refuses_with_data_that_says_retry_after_a_source_job() {
+        let (mut sources, mut jobs, receiver) = source_queue();
+        for _ in 0..SOURCE_QUEUE_CAPACITY {
+            sources
+                .enqueue(
+                    &mut jobs,
+                    ClientId(1),
+                    SourceWork::Artifacts(AssetId::new()),
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        let asset = AssetId::new();
+        let refusal = sources
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::Artifacts(asset.clone()),
+                Vec::new(),
+            )
+            .unwrap_err();
+        assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
+        assert_eq!(refusal.detail, "source preparation queue is full");
+        assert_eq!(
+            refusal.data.as_deref(),
+            Some(&json!({"retry": "after-source-job"}))
+        );
+        assert!(refusal.retries_after_source_job());
+        drop(receiver.try_recv().unwrap());
+        assert!(
+            sources
+                .enqueue(
+                    &mut jobs,
+                    ClientId(1),
+                    SourceWork::Artifacts(asset),
+                    Vec::new()
+                )
                 .is_ok()
         );
     }
@@ -2410,11 +2360,21 @@ mod tests {
         let first = ClientId(1);
         let second = ClientId(2);
         let id = sources
-            .enqueue_file(&mut jobs, first, fixture(), None, Vec::new())
+            .enqueue(
+                &mut jobs,
+                first,
+                SourceWork::file(&fixture(), None).unwrap(),
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(
             sources
-                .enqueue_file(&mut jobs, second, fixture(), None, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    second,
+                    SourceWork::file(&fixture(), None).unwrap(),
+                    Vec::new()
+                )
                 .unwrap(),
             id
         );
@@ -2432,7 +2392,12 @@ mod tests {
         assert!(task.control.is_cancelled(), "the worker sees the stop");
         assert_ne!(
             sources
-                .enqueue_file(&mut jobs, first, fixture(), None, Vec::new())
+                .enqueue(
+                    &mut jobs,
+                    first,
+                    SourceWork::file(&fixture(), None).unwrap(),
+                    Vec::new()
+                )
                 .unwrap(),
             id
         );
@@ -2444,13 +2409,23 @@ mod tests {
         let path = temp("source-flight-changed.jpg");
         std::fs::copy(fixture(), &path).unwrap();
         let first = sources
-            .enqueue_file(&mut jobs, ClientId(1), path.clone(), None, Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::file(&path.clone(), None).unwrap(),
+                Vec::new(),
+            )
             .unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[0] = 0;
         std::fs::write(&path, bytes).unwrap();
         let second = sources
-            .enqueue_file(&mut jobs, ClientId(2), path.clone(), None, Vec::new())
+            .enqueue(
+                &mut jobs,
+                ClientId(2),
+                SourceWork::file(&path.clone(), None).unwrap(),
+                Vec::new(),
+            )
             .unwrap();
         assert_ne!(first, second);
         std::fs::remove_file(path).unwrap();
@@ -2570,7 +2545,7 @@ mod tests {
         let photo = temp("source-wait.jpg");
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let hold = gate.clone();
         let (owner, join) = OwnerHandle::start_observed(
             &catalog,
@@ -2619,7 +2594,7 @@ mod tests {
             json!({"job_id": job}),
         );
         for_job
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(luxforge_testbase::HANG)
             .expect("leaving the job ends the client's wait for it")
             .unwrap();
         assert!(
@@ -2628,7 +2603,7 @@ mod tests {
         );
         gate.open();
         for_room
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(luxforge_testbase::HANG)
             .expect("the worker finishing the job makes room")
             .unwrap();
         owner.stop();
@@ -2854,16 +2829,14 @@ mod tests {
         };
         let queued = call(viewer, "import", "catalog.import", import_params(fixture()));
         let job_id = queued["job_id"].as_str().unwrap();
-        let imported = loop {
+        let imported = luxforge_testbase::wait_for("the import job to finish", || {
             let status = call(viewer, "status", "job.read", json!({"job_id":job_id}));
             match status["status"].as_str() {
-                Some("ready") => break status["result"].clone(),
-                Some("queued" | "running") => {
-                    std::thread::sleep(std::time::Duration::from_millis(1))
-                }
+                Some("ready") => Some(status["result"].clone()),
+                Some("queued" | "running") => None,
                 other => panic!("unexpected import job {other:?}: {status}"),
             }
-        };
+        });
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
         let baseline = call(
@@ -3365,7 +3338,7 @@ mod tests {
     fn racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest() {
         let catalog = temp("analysis-race.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let mut registry = ModuleRegistry::builtin();
         registry
             .register(crate::modules::HeldModule::shared(gate.clone()))
@@ -3664,14 +3637,7 @@ mod tests {
         let source = jpeg.rgba.clone();
         let mut queue = crate::PreviewQueue::default();
         queue.request(job);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let result = loop {
-            if let Some(result) = queue.poll() {
-                break result;
-            }
-            assert!(std::time::Instant::now() < deadline, "no preview arrived");
-            std::thread::yield_now();
-        };
+        let result = luxforge_testbase::wait_for("a preview", || queue.poll());
         let exact = result.exact().expect("the exact phase");
         let raster = exact.result.as_ref().expect("a frame");
         let report = exact.report.clone().expect("the job asked for a report");
@@ -3787,18 +3753,9 @@ mod tests {
     /// Read `activity.list` until `wanted` holds. The work under test is held at a gate, so what
     /// this waits for is a worker reaching that gate, never a race with how fast it works.
     fn listed(owner: &OwnerHandle, client: ClientId, wanted: impl Fn(&Value) -> bool) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
-            let list = ok(owner, client, "list", "activity.list", json!({}));
-            if wanted(&list) {
-                return list;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "activity.list never showed the work: {list}"
-            );
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_for("activity.list to show the work", || {
+            Some(ok(owner, client, "list", "activity.list", json!({}))).filter(|list| wanted(list))
+        })
     }
 
     fn active_kind(list: &Value, kind: &str) -> bool {
@@ -3819,8 +3776,8 @@ mod tests {
         let photo = temp("activity-photo.jpg");
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
-        let source_gate = crate::modules::RenderGate::open_gate();
-        let render_gate = crate::modules::RenderGate::open_gate();
+        let source_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let render_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let mut registry = ModuleRegistry::builtin();
         registry
             .register(crate::modules::HeldModule::shared(render_gate.clone()))
@@ -3891,18 +3848,12 @@ mod tests {
         // The worker begins the activity and then tells the owner it started, so the job reads as
         // running a moment after it is listed; it is held there, and still listed, until the
         // gate opens.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while request(&owner, client, "job.read", json!({"job_id": job_id}))
-            .result
-            .unwrap()["status"]
-            != json!("running")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the held job never read as running"
-            );
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the held job to read as running", || {
+            request(&owner, client, "job.read", json!({"job_id": job_id}))
+                .result
+                .unwrap()["status"]
+                == json!("running")
+        });
         assert!(active_kind(
             &ok(&owner, client, "held", "activity.list", json!({})),
             "source.prepare"
@@ -3975,12 +3926,10 @@ mod tests {
         let mut queue = crate::PreviewQueue::default();
         queue.set_activity(owner.activity());
         queue.request(job);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while queue.is_busy() {
+        luxforge_testbase::wait_until("the preview queue to go idle", || {
             let _ = queue.poll();
-            assert!(std::time::Instant::now() < deadline, "no preview arrived");
-            std::thread::yield_now();
-        }
+            !queue.is_busy()
+        });
 
         let events = ok(
             &owner,
@@ -4087,9 +4036,9 @@ mod tests {
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
         std::fs::create_dir_all(&exports).unwrap();
-        let source_gate = crate::modules::RenderGate::open_gate();
-        let render_gate = crate::modules::RenderGate::open_gate();
-        let export_gate = crate::modules::RenderGate::open_gate();
+        let source_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let render_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let export_gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let probe = Arc::new(crate::capabilities::testing::Probe::default());
         let mut registry = ModuleRegistry::builtin();
         registry
@@ -4116,19 +4065,16 @@ mod tests {
             });
         };
         let until_running = |job_id: &Value| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            while ok(
-                &owner,
-                client,
-                "poll",
-                "job.read",
-                json!({"job_id": job_id}),
-            )["status"]
-                != json!("running")
-            {
-                assert!(std::time::Instant::now() < deadline, "the job never ran");
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_until("the job to run", || {
+                ok(
+                    &owner,
+                    client,
+                    "poll",
+                    "job.read",
+                    json!({"job_id": job_id}),
+                )["status"]
+                    == json!("running")
+            });
         };
 
         // Source: listed as its worker begins it, and running once the owner hears so.
@@ -4226,29 +4172,23 @@ mod tests {
         );
         export_gate.open();
         owner.hold_exports(None);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while ok(
-            &owner,
-            client,
-            "poll",
-            "job.read",
-            json!({"job_id": export}),
-        )["status"]
-            == json!("running")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the export never ended"
-            );
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the export to end", || {
+            ok(
+                &owner,
+                client,
+                "poll",
+                "job.read",
+                json!({"job_id": export}),
+            )["status"]
+                != json!("running")
+        });
         assert_eq!(
             agreeing(&owner, client, &export, "export")["status"],
             "ready"
         );
 
         // Capability: an activation held by its module on the module lane.
-        probe.hold.store(true, Ordering::SeqCst);
+        probe.hold.shut();
         let activation = ok(
             &owner,
             client,
@@ -4263,23 +4203,17 @@ mod tests {
             (running["kind"].clone(), running["module_id"].clone()),
             (json!("activate"), json!("test.lane0"))
         );
-        probe.hold.store(false, Ordering::SeqCst);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while ok(
-            &owner,
-            client,
-            "poll",
-            "job.read",
-            json!({"job_id": activation}),
-        )["status"]
-            == json!("running")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the activation never ended"
-            );
-            std::thread::yield_now();
-        }
+        probe.hold.open();
+        luxforge_testbase::wait_until("the activation to end", || {
+            ok(
+                &owner,
+                client,
+                "poll",
+                "job.read",
+                json!({"job_id": activation}),
+            )["status"]
+                != json!("running")
+        });
         assert_eq!(
             agreeing(&owner, client, &activation, "module.activate")["status"],
             "ready"
@@ -4317,7 +4251,7 @@ mod tests {
         let photo = temp("source-panic.jpg");
         let _ = std::fs::remove_file(&catalog);
         std::fs::copy(fixture(), &photo).unwrap();
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
         let armed = Arc::new(AtomicBool::new(true));
         let (hold, fault) = (gate.clone(), armed.clone());
@@ -4354,7 +4288,7 @@ mod tests {
         ];
         gate.open();
         for wait in waits {
-            wait.recv_timeout(Duration::from_secs(20))
+            wait.recv_timeout(luxforge_testbase::HANG)
                 .expect("the wait is released")
                 .expect("the owner answered the wait");
         }
@@ -4444,7 +4378,7 @@ mod tests {
         let job_id = queued["job_id"].clone();
         let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
         waiting(&owner, client, Some(job))
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(luxforge_testbase::HANG)
             .expect("the wait is released")
             .expect("the owner answered the wait");
         let status = ok(
@@ -4979,22 +4913,16 @@ mod tests {
             json!({"asset_id": asset, "destination": exported, "mutation": request("export-1")});
         let first = ok(&owner, client, "export", "export.jpeg", export.clone());
         assert_eq!(first["deduplicated"], json!(false));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while ok(
-            &owner,
-            client,
-            "read",
-            "job.read",
-            json!({"job_id": first["job_id"]}),
-        )["status"]
-            != "ready"
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the export never finished"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        luxforge_testbase::wait_until("the export to finish", || {
+            ok(
+                &owner,
+                client,
+                "read",
+                "job.read",
+                json!({"job_id": first["job_id"]}),
+            )["status"]
+                == "ready"
+        });
         let (events, exported_at) = events_after(&owner, client, 0);
         assert_eq!(
             events.last(),
@@ -5219,6 +5147,81 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// Every mutating method `schema.list` lists — the host's, a module action, a `mask.*` command
+    /// and a module's task — has its envelope checked once, by the dispatcher, before any handler
+    /// runs: a request identity or actor out of range is refused in the envelope's words although
+    /// every other field is missing, which the handler's own parse, or a permission grant's
+    /// authority check, would have refused first, and nothing is announced.
+    #[test]
+    fn every_mutating_method_has_its_envelope_checked_before_its_handler_runs() {
+        let catalog = temp("envelope.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(crate::CapabilitiesProofModule::new(
+                "http://127.0.0.1:9",
+            )))
+            .unwrap();
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        let client = owner.register();
+        let schema = ok(&owner, client, "schema", "schema.list", json!({}));
+        let listed = schema["methods"].as_object().expect("the methods");
+        let (_, before) = events_after(&owner, client, 0);
+        let mut checked = Vec::new();
+        for (name, method) in listed {
+            let Some(envelope) = method.get("mutation").and_then(Value::as_str) else {
+                continue;
+            };
+            let sent = |request_id: &str, actor: &str| {
+                let mut mutation = json!({"request_id": request_id, "actor": actor});
+                if envelope == "revision" {
+                    mutation["expected_revision"] = json!(0);
+                }
+                json!({"mutation": mutation})
+            };
+            for (params, refusal) in [
+                (
+                    sent("", "test"),
+                    "request_id must contain 1..128 characters",
+                ),
+                (
+                    sent("request", &"a".repeat(129)),
+                    "actor must contain 1..128 characters",
+                ),
+            ] {
+                let error = failure(&owner, client, name, name, params);
+                assert_eq!(
+                    (error.code.as_str(), error.message.as_str()),
+                    ("validation", refusal),
+                    "{name}"
+                );
+            }
+            checked.push(name.as_str());
+        }
+        for family in ["edit.", "mask.", "task.", "module.", "preset.", "history."] {
+            assert!(
+                checked.iter().any(|name| name.starts_with(family)),
+                "a {family}* method is checked: {checked:?}"
+            );
+        }
+        for name in [
+            "catalog.import",
+            "artifact.collect",
+            "export.jpeg",
+            "draft.commit",
+        ] {
+            assert!(checked.contains(&name), "{name}");
+        }
+        assert_eq!(
+            events_after(&owner, client, 0).1,
+            before,
+            "nothing was announced"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// Hold the point worker before each evaluation: `reached` receives once per sample it takes,
     /// and each send on `release` lets one go.
     fn hold_points(owner: &OwnerHandle) -> (std::sync::mpsc::Receiver<()>, SyncSender<()>) {
@@ -5319,7 +5322,7 @@ mod tests {
         std::thread::scope(|scope| {
             let held = scope.spawn(|| sample(sampler, "held", 10, 10));
             reached
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(luxforge_testbase::HANG)
                 .expect("the point worker took the sample");
             // The owner is free: another client reads state and commits while the sample is held.
             let before = send(
@@ -5459,17 +5462,12 @@ mod tests {
             };
             let running = sample(clients[0]);
             reached
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(luxforge_testbase::HANG)
                 .expect("the first sample is being evaluated");
             let waiting: Vec<_> = clients[1..].iter().map(|client| sample(*client)).collect();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while owner.points_waiting() < POINT_QUEUE_CAPACITY {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the queue never filled"
-                );
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_until("the point queue to fill", || {
+                owner.points_waiting() >= POINT_QUEUE_CAPACITY
+            });
             let refused = failure(
                 &owner,
                 editor,

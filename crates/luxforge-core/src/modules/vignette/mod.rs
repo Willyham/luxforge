@@ -20,10 +20,10 @@
 mod unit;
 
 use super::{
-    ColorOperation, EffectDescriptor, EffectStage, PointwiseColor, Processing, Stage,
-    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    ColorOperation, EffectStage, PointwiseColor, Processing, Stage,
+    field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error};
+use crate::Error;
 use std::sync::Arc;
 
 /// The one finish-stage effect of the Vignette module: every implemented Vignette parameter of a
@@ -33,9 +33,6 @@ use std::sync::Arc;
 /// e.g. `luxforge.basic.adjust`), so the closest one-word form of the design's "post-crop
 /// vignette" name is used instead of a literal hyphen.
 pub const VIGNETTE_EFFECT: &str = "luxforge.vignette.postcrop";
-
-pub(super) const SET_VIGNETTE: &str = "set-vignette";
-pub(super) const RESET_VIGNETTE: &str = "reset-vignette";
 
 const AMOUNT: &str = "amount";
 const MIDPOINT: &str = "midpoint";
@@ -81,42 +78,27 @@ pub type VignetteModule = FieldPatchModule<Vignette>;
 
 impl FieldPatch for Vignette {
     fn spec() -> Spec {
-        Spec {
-            id: "luxforge.vignette",
-            title: GROUP_LABEL,
-            hint: "Darken or lighten the corners after the crop",
-            noun: "vignette",
-            effect: EffectDescriptor {
-                id: VIGNETTE_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Finish,
-                order: 0,
-                maskable: false,
-                artifacts: false,
-                single: true,
-                sources: Vec::new(),
-            },
-            set: ActionText {
-                id: SET_VIGNETTE,
-                title: "Set Vignette",
-                notes: "merges the named Vignette fields into the stack's one Vignette \
-                         layer. A missing key means that field's own default (amount 0, \
-                         midpoint 50, roundness 0, feather 50), not neutral 0 for every \
-                         field: unlike Basic, midpoint and feather default away from 0. \
-                         The host places the layer at the end of the stack, after the \
-                         geometry tail, on the first commit whose merged amount is \
-                         non-zero, and updates it there in place afterwards; a patch that \
-                         changes nothing is a reported no-op, and a first set whose \
-                         merged amount is still 0 commits no layer at all.",
-            },
-            reset: ActionText {
-                id: RESET_VIGNETTE,
-                title: "Reset Vignette",
-                notes: "returns the stack's one Vignette layer to its all-default \
-                         payload, keeping its identity and position; a no-op without one \
-                         and when it is already all default.",
-            },
-            fields: vec![
+        Spec::new(
+            "luxforge.vignette",
+            GROUP_LABEL,
+            "Darken or lighten the corners after the crop",
+            VIGNETTE_EFFECT,
+            EffectStage::Finish,
+        )
+        .set_notes(
+            "merges the named Vignette fields into the stack's one Vignette layer. A missing key \
+             means that field's own default (amount 0, midpoint 50, roundness 0, feather 50), not \
+             neutral 0 for every field: unlike Basic, midpoint and feather default away from 0. \
+             The host places the layer at the end of the stack, after the geometry tail, on the \
+             first commit whose merged amount is non-zero, and updates it there in place \
+             afterwards; a patch that changes nothing is a reported no-op, and a first set whose \
+             merged amount is still 0 commits no layer at all.",
+        )
+        .reset_notes(
+            "returns the stack's one Vignette layer to its all-default payload, keeping its \
+             identity and position; a no-op without one and when it is already all default.",
+        )
+        .fields([
                 vignette_field(
                     AMOUNT,
                     "Amount",
@@ -151,35 +133,20 @@ impl FieldPatch for Vignette {
                     "the width of the falloff transition, as a fraction of the shape radius; a missing key \
                      defaults to 50.",
                 ),
-            ],
-            groups: vec![Group {
-                label: GROUP_LABEL,
-                fields: FIELDS.to_vec(),
-                collapsed: false,
-                extra: Vec::new(),
-                reset_variants: Vec::new(),
-            }],
-            queries: Vec::new(),
-            canvas: None,
-            collapsed: true,
-            layout: crate::ModuleLayout::Stacked,
-            developer: false,
-        }
+        ])
+        .group(Group::new(GROUP_LABEL, FIELDS))
+        .collapsed()
     }
 
     /// The layer as a whole is neutral exactly when `amount` is 0, whatever the other three
     /// fields hold: the frozen mask geometry never runs when the amount equation is itself the
-    /// identity.
+    /// identity, so the shared field patch compiles such a layer to no units and never asks
+    /// [`FieldPatch::compile`] to build a mask for it.
     fn is_neutral(&self, values: &Values<'_>) -> bool {
         values.number(AMOUNT) == 0.0
     }
 
     fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
-        // The mask never has to be built for a neutral layer, and the identity byte path and
-        // shared source buffer are kept.
-        if self.is_neutral(values) {
-            return Ok(Processing::Color(ColorOperation::neutral()));
-        }
         let unit: Arc<dyn PointwiseColor> = Arc::new(unit::Vignette::new(
             values.number(AMOUNT),
             values.number(MIDPOINT),
@@ -194,14 +161,13 @@ impl FieldPatch for Vignette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Layer;
     use crate::modules::check_parameters;
-    use crate::modules::{
-        ActionInput, ActionPlan, Control, FixedStage, ParameterKind, ResetAction, ToolModule,
-    };
+    use crate::modules::{ActionInput, ActionPlan, FixedStage, ToolModule};
+    use crate::{EFFECT_FORMAT, Layer};
+    use serde_json::Value;
     use serde_json::json;
-    use serde_json::{Map, Value};
 
+    const SET_VIGNETTE: &str = "set-vignette";
     const STAGE: Stage = Stage {
         width: 480,
         height: 320,
@@ -221,129 +187,6 @@ mod tests {
                 .reading([0, 0, 0, 255])
                 .context(layers, &crate::ModuleRegistry::builtin()),
         )
-    }
-
-    #[test]
-    fn the_descriptor_declares_one_finish_effect_collapsed_group_and_two_actions() {
-        let module = VignetteModule::new();
-        let descriptor = module.descriptor();
-        descriptor.validate().expect("a valid descriptor");
-        assert_eq!(descriptor.id, "luxforge.vignette");
-        assert_eq!(descriptor.title, "Vignette");
-        assert_eq!(
-            descriptor.hint.as_deref(),
-            Some("Darken or lighten the corners after the crop")
-        );
-        assert!(!descriptor.developer);
-        assert!(descriptor.collapsed, "the section starts collapsed");
-        assert_eq!(descriptor.effects.len(), 1);
-        assert_eq!(descriptor.effects[0].id, VIGNETTE_EFFECT);
-        assert_eq!(descriptor.effects[0].format, EFFECT_FORMAT);
-        assert_eq!(descriptor.effects[0].stage, EffectStage::Finish);
-        assert_eq!(descriptor.effects[0].order, 0);
-        assert_eq!(
-            descriptor.reset,
-            Some(ResetAction {
-                action: RESET_VIGNETTE.into(),
-                preset: Map::new(),
-            })
-        );
-        assert!(descriptor.canvas.is_none());
-        assert!(descriptor.queries.is_empty());
-
-        let set = descriptor.action(SET_VIGNETTE).expect("set-vignette");
-        assert!(set.patch);
-        assert_eq!(set.parameters.len(), 4);
-        assert_eq!(
-            set.parameters
-                .iter()
-                .map(|parameter| parameter.name.as_str())
-                .collect::<Vec<_>>(),
-            FIELDS,
-        );
-        for (name, (min, max), default) in [
-            (AMOUNT, (-100.0, 100.0), 0.0),
-            (MIDPOINT, (0.0, 100.0), 50.0),
-            (ROUNDNESS, (-100.0, 100.0), 0.0),
-            (FEATHER, (0.0, 100.0), 50.0),
-        ] {
-            let parameter = set.parameter(name).unwrap_or_else(|| panic!("{name}"));
-            assert_eq!(parameter.kind, ParameterKind::Number { min, max }, "{name}");
-            assert!(!parameter.required, "{name}");
-            assert_eq!(parameter.default, Some(json!(default)), "{name}");
-            assert_eq!(parameter.unit, None, "{name}");
-            assert_eq!(parameter.step, Some(1.0), "{name}");
-            assert_eq!(parameter.precision, Some(0), "{name}");
-            assert!(!parameter.notes.is_empty(), "{name}");
-        }
-        assert_eq!(set.parameter(AMOUNT).unwrap().zero, Some(0.0));
-        assert_eq!(set.parameter(ROUNDNESS).unwrap().zero, Some(0.0));
-
-        let reset = descriptor.action(RESET_VIGNETTE).expect("reset-vignette");
-        assert!(!reset.patch);
-        assert!(reset.parameters.is_empty());
-
-        assert_eq!(descriptor.controls.len(), 1);
-        match &descriptor.controls[0] {
-            Control::Group {
-                label,
-                controls,
-                reset,
-                collapsed,
-                ..
-            } => {
-                assert_eq!(label, "Vignette");
-                assert!(!collapsed, "the one group itself is not collapsed");
-                assert_eq!(controls.len(), 4);
-                let names: Vec<&str> = controls
-                    .iter()
-                    .map(|control| match control {
-                        Control::Number { parameter, .. } => parameter.as_str(),
-                        other => panic!("expected a Number control, got {other:?}"),
-                    })
-                    .collect();
-                assert_eq!(
-                    names, FIELDS,
-                    "Amount, Midpoint, Roundness, Feather in order"
-                );
-                for control in controls {
-                    if let Control::Number { style, rail, .. } = control {
-                        assert_eq!(*style, crate::NumberStyle::Slider);
-                        assert!(rail.is_none(), "rails are plain");
-                    }
-                }
-                let reset = reset.as_ref().expect("the group has a reset");
-                assert_eq!(reset.action, SET_VIGNETTE);
-                assert_eq!(
-                    reset.preset,
-                    json!({"amount": 0.0, "midpoint": 50.0, "roundness": 0.0, "feather": 50.0})
-                        .as_object()
-                        .cloned()
-                        .unwrap()
-                );
-            }
-            other => panic!("expected a Group control, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn module_list_and_schema_list_report_the_vignette_effect_and_both_actions() {
-        use crate::modules::ModuleRegistry;
-        let registry = ModuleRegistry::builtin();
-        let descriptors = serde_json::to_value(registry.descriptors()).expect("descriptor JSON");
-        let vignette = descriptors
-            .as_array()
-            .expect("an array")
-            .iter()
-            .find(|descriptor| descriptor["id"] == json!("luxforge.vignette"))
-            .expect("the vignette module is registered");
-        assert_eq!(vignette["collapsed"], json!(true));
-        assert_eq!(
-            vignette["effects"][0],
-            json!({"id": VIGNETTE_EFFECT, "format": EFFECT_FORMAT, "stage": "finish", "order": 0, "single": true})
-        );
-        assert!(registry.action(SET_VIGNETTE).is_some());
-        assert!(registry.action(RESET_VIGNETTE).is_some());
     }
 
     // ------------------------------------------------------------------------------------------

@@ -5,7 +5,9 @@ use super::{
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
-    Snapshot, open_source_bytes, read_bounded_file,
+    Snapshot,
+    artifacts::{self, ArtifactRead, VerifiedArtifact},
+    open_source_bytes, read_bounded_file,
     source::{PreparedSource, RawPreparation, RawPrepared},
 };
 use rusqlite::{OptionalExtension, params};
@@ -146,12 +148,117 @@ impl FilePreparation {
     }
 }
 
-impl EditorService {
-    /// The catalog owner disables synchronous source misses; workers prepare these separately.
-    pub(crate) fn disable_sync_source(&mut self) {
-        self.allow_sync_source = false;
+/// One source job's preparation: what the catalog owner queues on its source worker, and what the
+/// blocking helpers ([`EditorService::import`], [`EditorService::prepare`]) run on the caller's
+/// thread. Either way it is the same work, run by [`Self::run`] and completed by the service's one
+/// completion, so no caller prepares an original or an artifact any other way.
+#[derive(Debug)]
+pub(crate) enum SourceWork {
+    /// Read and decode the original at `path`, which must still have `signature`, checking a
+    /// known file against `target` and developing a known RAW at its entry's gains.
+    File {
+        path: PathBuf,
+        signature: SourceSignature,
+        target: Option<Box<FilePreparation>>,
+    },
+    /// Redevelop the cached RAW mosaic at new gains.
+    Develop(Box<RawDevelopment>),
+    /// The asset's source is already prepared; only its artifacts need reading.
+    Artifacts(AssetId),
+}
+
+/// What preparing one import or one set of needs takes: nothing, because the verified cache
+/// already answers it, or one source job's work and the artifacts it reads and verifies after it.
+#[derive(Debug)]
+pub(crate) enum Preparing {
+    Ready(Box<EditorState>),
+    Work(SourceWork, Vec<ArtifactRead>),
+}
+
+/// What one source job prepared, for [`EditorService::complete_preparation`] to adopt.
+pub(crate) enum Prepared {
+    File(PreparedFile, Vec<VerifiedArtifact>),
+    Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
+    Artifacts(AssetId, Vec<VerifiedArtifact>),
+}
+
+impl SourceWork {
+    /// The preparation of the original at `path` as it is now, checked against `target` when the
+    /// file is already an asset. Fails when the path is not a regular file.
+    pub(crate) fn file(path: &Path, target: Option<FilePreparation>) -> Result<Self, Error> {
+        let (path, signature) = EditorService::request_signature(path)?;
+        Ok(Self::File {
+            path,
+            signature,
+            target: target.map(Box::new),
+        })
     }
 
+    /// Whether the work allocates a RAW's float planes, so it waits for earlier planes to be
+    /// released first. Artifact work allocates none.
+    pub(crate) fn decodes(&self) -> bool {
+        matches!(self, Self::File { .. } | Self::Develop(_))
+    }
+
+    /// Run the work: decode the original and develop a RAW, or redevelop a cached mosaic, and then
+    /// read and verify `reads`, stopping at the first that is missing, corrupt or cancelled. Reads
+    /// no catalog, so the source worker runs it off the owner thread; the blocking helpers run it
+    /// on theirs.
+    pub(crate) fn run(
+        self,
+        reads: &[ArtifactRead],
+        cancel: &AtomicBool,
+    ) -> Result<Prepared, Error> {
+        let read = || -> Result<Vec<VerifiedArtifact>, Error> {
+            reads
+                .iter()
+                .map(|read| artifacts::read_verified(read, cancel))
+                .collect()
+        };
+        match self {
+            Self::File {
+                path,
+                signature,
+                target,
+            } => {
+                let prepared = EditorService::prepare_file(&path, target.as_deref(), cancel)?;
+                if prepared.signature != signature {
+                    return Err(Error::conflict("source changed after job was queued"));
+                }
+                Ok(Prepared::File(prepared, read()?))
+            }
+            Self::Develop(request) => {
+                let developed = RawPrepared::develop(
+                    request.sensor.clone(),
+                    request.capture.clone(),
+                    request.fingerprint.clone(),
+                    request.gains,
+                    cancel,
+                )?;
+                Ok(Prepared::Develop(*request, developed, read()?))
+            }
+            Self::Artifacts(asset_id) => Ok(Prepared::Artifacts(asset_id, read()?)),
+        }
+    }
+}
+
+impl Prepared {
+    /// The developed RAW planes this preparation allocated, if any, so the source worker can hold
+    /// them against its memory gate.
+    pub(crate) fn linear_mut(&mut self) -> Option<&mut crate::LinearImage> {
+        let raw = match self {
+            Self::File(file, _) => match &mut file.source {
+                PreparedSource::Raw(raw) => raw,
+                PreparedSource::Jpeg(_) => return None,
+            },
+            Self::Develop(_, raw, _) => raw,
+            Self::Artifacts(..) => return None,
+        };
+        raw.linear.as_mut()
+    }
+}
+
+impl EditorService {
     pub(crate) fn request_signature(path: &Path) -> Result<(PathBuf, SourceSignature), Error> {
         let (canonical, metadata, signature) = located_signature(path)?;
         if !metadata.is_file() {
@@ -178,13 +285,10 @@ impl EditorService {
             .transpose()
     }
 
-    /// Read, hash and decode from the same bounded, stable read-only file handle on a worker.
-    pub(crate) fn prepare_file(path: &Path) -> Result<PreparedFile, Error> {
-        Self::prepare_file_cancel(path, None, &AtomicBool::new(false))
-    }
-
-    /// [`Self::prepare_file`] under a cancellation flag. A known RAW is developed at its entry's gains.
-    pub(crate) fn prepare_file_cancel(
+    /// Read, hash and decode an original from the same bounded, stable read-only file handle, under
+    /// a cancellation flag: the one read of an original, which only [`SourceWork::run`] makes. A
+    /// known file is checked against `target`, and a known RAW is developed at its entry's gains.
+    fn prepare_file(
         path: &Path,
         target: Option<&FilePreparation>,
         cancel: &AtomicBool,
@@ -243,17 +347,14 @@ impl EditorService {
         })
     }
 
-    pub(crate) fn known_file_preparation(
-        &self,
-        path: &Path,
-    ) -> Result<Option<FilePreparation>, Error> {
+    fn known_file_preparation(&self, path: &Path) -> Result<Option<FilePreparation>, Error> {
         let (canonical, signature) = Self::request_signature(path)?;
         self.asset_for_source(&canonical, &signature.file_identity)?
             .map(|(id, _)| self.file_preparation(&id, None))
             .transpose()
     }
 
-    pub(crate) fn file_preparation(
+    fn file_preparation(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
@@ -279,7 +380,7 @@ impl EditorService {
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
-    pub(crate) fn cached_import(&self, path: &Path) -> Result<Option<EditorState>, Error> {
+    fn cached_import(&self, path: &Path) -> Result<Option<EditorState>, Error> {
         let (canonical, _, signature) = located_signature(path)?;
         let Some((id, _)) = self.asset_for_source(&canonical, &signature.file_identity)? else {
             return Ok(None);
@@ -339,8 +440,8 @@ impl EditorService {
     }
 
     /// What one saved entry's stack needs prepared, or the current one's: what `source.prepare`
-    /// queues.
-    pub(crate) fn entry_needs(
+    /// queues, and what [`Self::prepare`] prepares.
+    pub fn entry_needs(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
@@ -417,7 +518,7 @@ impl EditorService {
         }
     }
 
-    pub(crate) fn install_development(
+    fn install_development(
         &self,
         request: &RawDevelopment,
         developed: RawPrepared,
@@ -468,19 +569,102 @@ impl EditorService {
             .map(|_| state))
     }
 
-    /// Direct service clients may prepare synchronously; the API owner never calls this path.
-    pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
+    /// What importing `path` takes: nothing when the verified cache already holds this file, and
+    /// otherwise the preparation of the file, checked against the asset it already is, if any.
+    /// What `catalog.import` queues, and what [`Self::import`] runs.
+    pub(crate) fn importing(&self, path: &Path) -> Result<Preparing, Error> {
+        if let Some(state) = self.cached_import(path)? {
+            return Ok(Preparing::Ready(Box::new(state)));
+        }
         let target = self.known_file_preparation(path)?;
-        let prepared = Self::prepare_file_cancel(path, target.as_ref(), &AtomicBool::new(false))?;
-        self.import_prepared(prepared).map(|(state, _)| state)
+        Ok(Preparing::Work(SourceWork::file(path, target)?, Vec::new()))
+    }
+
+    /// What preparing exactly what `needs` names takes — the asset's original, its RAW development
+    /// at the named gains and the named artifacts — and nothing re-derived from the request that
+    /// was refused. An original the cache does not hold is prepared and developed at the entry's
+    /// gains in the same job; one it holds is redeveloped only when its planes do not hold them;
+    /// artifacts that became ready since they were named are left out. Needs with nothing left to
+    /// prepare are ready at once. What `source.prepare` and a refused evaluation queue, and what
+    /// [`Self::prepare`] runs.
+    pub(crate) fn preparation(&self, needs: &PreparationNeeds) -> Result<Preparing, Error> {
+        let asset_id = &needs.asset_id;
+        let reads = self.artifact_reads(&needs.artifacts)?;
+        let Some(state) = self.cached_state(asset_id)? else {
+            let state = self.state(asset_id)?;
+            let target = self.file_preparation(asset_id, Some(&needs.entry_id))?;
+            let work = SourceWork::file(&state.asset.locator, Some(target))?;
+            return Ok(Preparing::Work(work, reads));
+        };
+        let development = match needs.gains {
+            Some(gains) => self.raw_development(asset_id, gains)?,
+            None => None,
+        };
+        Ok(match development {
+            Some(request) => Preparing::Work(SourceWork::Develop(Box::new(request)), reads),
+            None if reads.is_empty() => Preparing::Ready(Box::new(state)),
+            None => Preparing::Work(SourceWork::Artifacts(state.asset.id), reads),
+        })
+    }
+
+    /// Import `path` on the caller's thread, blocking: the catalog owner's own import
+    /// ([`Self::importing`]), its source job's own work ([`SourceWork::run`]) and its own
+    /// completion ([`Self::complete_preparation`]), in turn. For tests and the harness; the catalog
+    /// owner queues the work on its source worker instead.
+    pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
+        let preparing = self.importing(path)?;
+        self.run_preparation(preparing)
+    }
+
+    /// Prepare exactly what `needs` names on the caller's thread, blocking: the catalog owner's own
+    /// planning ([`Self::preparation`]), its source job's own work ([`SourceWork::run`]) and its own
+    /// completion ([`Self::complete_preparation`]), in turn, so a reopened RAW develops at its
+    /// entry's own gains exactly as it does on the owner. `needs` is what a
+    /// `preparation-required` refusal names ([`Error::needs`]) or what [`Self::entry_needs`]
+    /// answers. For tests and the harness; the catalog owner queues the work on its source worker
+    /// instead.
+    pub fn prepare(&mut self, needs: &PreparationNeeds) -> Result<EditorState, Error> {
+        let preparing = self.preparation(needs)?;
+        self.run_preparation(preparing)
+    }
+
+    fn run_preparation(&mut self, preparing: Preparing) -> Result<EditorState, Error> {
+        let (work, reads) = match preparing {
+            Preparing::Ready(state) => return Ok(*state),
+            Preparing::Work(work, reads) => (work, reads),
+        };
+        // As on the owner: the cache's float planes go before another development is allocated.
+        if work.decodes() {
+            self.evict_development();
+        }
+        let prepared = work.run(&reads, &AtomicBool::new(false))?;
+        self.complete_preparation(prepared).map(|(state, _)| state)
+    }
+
+    /// Complete one source job's preparation, on the thread that owns the catalog: commit an
+    /// import, or adopt a new original, a development and the verified artifacts into the caches.
+    /// The one completion, which the catalog owner runs for each source job and the blocking
+    /// helpers run after the same work. The bool says whether a new asset was inserted, for event
+    /// publication.
+    pub(crate) fn complete_preparation(
+        &mut self,
+        prepared: Prepared,
+    ) -> Result<(EditorState, bool), Error> {
+        let (completed, verified) = match prepared {
+            Prepared::File(file, verified) => (self.import_prepared(file)?, verified),
+            Prepared::Develop(request, developed, verified) => (
+                (self.install_development(&request, developed)?, false),
+                verified,
+            ),
+            Prepared::Artifacts(asset_id, verified) => ((self.state(&asset_id)?, false), verified),
+        };
+        self.adopt_artifacts(verified);
+        Ok(completed)
     }
 
     /// Complete an import only after a worker has verified and decoded its exact source bytes.
     /// The bool says whether a new asset was inserted for event publication.
-    pub(crate) fn import_prepared(
-        &mut self,
-        prepared: PreparedFile,
-    ) -> Result<(EditorState, bool), Error> {
+    fn import_prepared(&mut self, prepared: PreparedFile) -> Result<(EditorState, bool), Error> {
         let PreparedFile {
             canonical,
             signature,
@@ -597,6 +781,10 @@ impl EditorService {
         ))
     }
 
+    /// The asset's prepared original from the verified cache, once its file still has the
+    /// signature it was prepared under. Nothing is read here: a cache miss is
+    /// `preparation-required`, which the evaluation that asked names with everything its stack
+    /// needs ([`Self::needing`]), and a source job prepares ([`SourceWork`]).
     pub(super) fn verified_prepared(&self, asset: &AssetRecord) -> Result<PreparedSource, Error> {
         let signature = original_signature(asset)?;
         let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
@@ -616,31 +804,7 @@ impl EditorService {
         {
             return Ok(cached.source.clone());
         }
-        if !self.allow_sync_source {
-            return Err(Error::preparation_required("source preparation required"));
-        }
-        let prepared = Self::prepare_file(&asset.locator)?;
-        if prepared.signature != signature || prepared.fingerprint != asset.fingerprint {
-            return Err(Error::source_unavailable(
-                "original source fingerprint changed",
-            ));
-        }
-        match (&asset.source, &prepared.source) {
-            (SourceKind::Jpeg, PreparedSource::Jpeg(_)) => {}
-            (SourceKind::Raw { metadata }, PreparedSource::Raw(raw))
-                if **metadata == *raw.sensor.metadata() => {}
-            _ => {
-                return Err(Error::incompatible(
-                    "original source interpretation changed",
-                ));
-            }
-        }
-        self.source_cache.replace(Some(CachedSource {
-            asset_id: asset.id.clone(),
-            signature,
-            source: prepared.source.clone(),
-        }));
-        Ok(prepared.source)
+        Err(Error::preparation_required("source preparation required"))
     }
 }
 
@@ -661,10 +825,9 @@ pub(super) fn validate_source_recipe(
         if let Some((module, effect)) = registry.effect(&layer.effect_id)
             && !effect.applies_to(kind)
         {
-            return Err(Error::incompatible(crate::modules::not_applicable(
-                &module.descriptor().title,
-                kind,
-            )));
+            return Err(module
+                .descriptor()
+                .not_applicable_refusal(crate::ErrorKind::Incompatible, kind));
         }
     }
     reject_superseded_fields(registry, kind, recipe)?;
@@ -722,7 +885,7 @@ fn reject_superseded_fields(
             if let Some(value) = values.get(field.parameter)
                 && Some(value) != parameter.default.as_ref()
             {
-                return Err(Error::incompatible(registry.superseded_refusal(field)));
+                return Err(registry.superseded_error(crate::ErrorKind::Incompatible, field));
             }
         }
     }
@@ -1001,19 +1164,19 @@ mod tests {
     #[test]
     fn known_file_preparation_checks_bytes_and_source_kind() {
         let path = fixture();
-        let prepared = EditorService::prepare_file(&path).unwrap();
+        let never = AtomicBool::new(false);
+        let prepared = EditorService::prepare_file(&path, None, &never).unwrap();
         let target = FilePreparation {
             fingerprint: prepared.fingerprint.clone(),
             raw: None,
         };
-        EditorService::prepare_file_cancel(&path, Some(&target), &AtomicBool::new(false))
-            .expect("matching JPEG target");
+        EditorService::prepare_file(&path, Some(&target), &never).expect("matching JPEG target");
         let wrong = FilePreparation {
             fingerprint: "different bytes".into(),
             ..target
         };
         assert_eq!(
-            EditorService::prepare_file_cancel(&path, Some(&wrong), &AtomicBool::new(false))
+            EditorService::prepare_file(&path, Some(&wrong), &never)
                 .unwrap_err()
                 .kind,
             ErrorKind::SourceUnavailable
@@ -1157,6 +1320,11 @@ mod tests {
                 module.descriptor().title
             )
         );
+        assert_eq!(
+            refused.data.as_deref(),
+            Some(&json!({"source": "jpeg", "module_id": module.descriptor().id})),
+            "the kind and the module are data, not only prose"
+        );
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {
@@ -1194,14 +1362,16 @@ mod tests {
             recipe.layers.push(layer);
             recipe
         };
-        for (payload, detail) in [
+        for (payload, detail, by) in [
             (
                 json!({"temperature": 12.0}),
                 "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+                ("set-basic.temperature", "set-raw.temperature"),
             ),
             (
                 json!({"tint": -3.0, "exposure": 0.5}),
                 "on a RAW photo, Tint is the source development's: set-raw tint",
+                ("set-basic.tint", "set-raw.tint"),
             ),
         ] {
             let refused =
@@ -1209,6 +1379,11 @@ mod tests {
                     .unwrap_err();
             assert_eq!(refused.kind, ErrorKind::Incompatible, "{payload}");
             assert_eq!(refused.detail, detail, "{payload}");
+            assert_eq!(
+                refused.data.as_deref(),
+                Some(&json!({"source": "raw", "field": by.0, "by": by.1})),
+                "{payload}"
+            );
             let mut on_jpeg = with(basic(payload.clone(), None));
             on_jpeg.layers.remove(0);
             validate_source_recipe(&registry, &jpeg, &on_jpeg).expect("Basic's own on a JPEG");
@@ -1544,19 +1719,7 @@ mod tests {
         let needs = refused.needs().expect("a refusal names what it needs");
         assert_eq!(needs.entry_id, state.current_entry.id);
         assert_eq!(needs.gains, Some(payload.gains));
-        let request = service
-            .raw_development(&initial.asset.id, payload.gains)
-            .unwrap()
-            .unwrap();
-        let developed = RawPrepared::develop(
-            request.sensor.clone(),
-            request.capture.clone(),
-            request.fingerprint.clone(),
-            request.gains,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        service.install_development(&request, developed).unwrap();
+        service.prepare(needs).unwrap();
         assert!(matches!(
             service
                 .preview_job(&initial.asset.id, None, None, None, None)
@@ -1613,12 +1776,92 @@ mod tests {
         assert_eq!(again.asset, imported.asset);
         drop(service);
 
-        let service = EditorService::open(&catalog).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
         let state = service.state(&imported.asset.id).unwrap();
         assert_eq!(state.asset.source, imported.asset.source);
         service
-            .verified_prepared(&state.asset)
+            .prepare(&service.entry_needs(&state.asset.id, None).unwrap())
             .expect("a preparation after reopen accepts the decoded interpretation");
+        service
+            .verified_prepared(&state.asset)
+            .expect("the prepared original is cached");
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A RAW whose current entry holds a custom white balance, reopened: the blocking helper runs
+    /// the owner's one preparation, which decodes the original and develops it at that entry's own
+    /// gains in the same job — no as-shot development, no redevelopment and no adoption written by
+    /// hand — and the reopened render equals the one the first session made after its own
+    /// redevelopment. Run with LUXFORGE_RAW_FIXTURE pointing to a private qualified NEF, RAF or
+    /// DNG.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_reopened_raw_with_a_custom_white_balance_develops_at_its_entrys_own_gains() {
+        let path = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("fixture path"));
+        let catalog = temp("raw-custom-reopen.sqlite");
+        let (asset, gains, rendered) = {
+            let mut service = EditorService::open(&catalog).unwrap();
+            let initial = service.import(&path).unwrap();
+            let asset = initial.asset.id;
+            let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
+            let gain = (f64::from(as_shot.gains[0]) * 1.1).min(16.0);
+            service
+                .apply_action(
+                    &asset,
+                    mutation(0, "raw-red"),
+                    "set-raw-red-gain",
+                    json!({"gain": gain}),
+                )
+                .unwrap();
+            let current = service.state(&asset).unwrap().current_entry;
+            let gains = raw_payload(&current.snapshot.recipe).unwrap().gains;
+            assert_ne!(gains, as_shot.gains, "a custom white balance");
+            // The first session redevelops the cached mosaic at the new gains.
+            let refused = service.render_current(&asset).unwrap_err();
+            assert_eq!(refused.needs().unwrap().gains, Some(gains));
+            service.prepare(refused.needs().unwrap()).unwrap();
+            let rendered = service.render_current(&asset).unwrap();
+            (asset, gains, rendered)
+        };
+
+        let mut service = EditorService::open(&catalog).unwrap();
+        assert_eq!(
+            service.inspect_source(&asset, None).unwrap()["readiness"],
+            "preparation-required"
+        );
+        let needs = service.entry_needs(&asset, None).unwrap();
+        assert_eq!(needs.gains, Some(gains));
+        // One file preparation, targeted at the entry's gains.
+        let Preparing::Work(SourceWork::File { target, .. }, _) =
+            service.preparation(&needs).unwrap()
+        else {
+            panic!("a reopened original is prepared from its file");
+        };
+        assert_eq!(target.unwrap().raw.unwrap().gains, gains);
+        service.prepare(&needs).unwrap();
+        {
+            let cache = service.source_cache.borrow();
+            let Some(PreparedSource::Raw(raw)) = cache.as_ref().map(|cached| &cached.source) else {
+                panic!("the RAW original is cached");
+            };
+            assert_eq!(raw.gains, gains, "developed at the entry's own gains");
+            assert!(raw.linear.is_some(), "and developed in the same job");
+        }
+        assert!(service.raw_development(&asset, gains).unwrap().is_none());
+        assert_eq!(
+            service.inspect_source(&asset, None).unwrap()["readiness"],
+            "ready"
+        );
+        let reopened = service.render_current(&asset).unwrap();
+        assert_eq!(
+            (reopened.width, reopened.height),
+            (rendered.width, rendered.height)
+        );
+        assert!(
+            reopened.rgba == rendered.rgba,
+            "the reopened render equals the redeveloped one"
+        );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -1702,11 +1945,14 @@ mod tests {
             std::fs::metadata(&replacement).unwrap().len()
         );
         std::fs::copy(replacement, &source).unwrap();
+        // The changed signature is a cache miss, and the preparation that reads the file again
+        // finds other bytes.
+        let refused = service
+            .preview_job(&asset, None, None, None, None)
+            .unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::PreparationRequired);
         assert_eq!(
-            service
-                .preview_job(&asset, None, None, None, None)
-                .unwrap_err()
-                .kind,
+            service.prepare(refused.needs().unwrap()).unwrap_err().kind,
             ErrorKind::SourceUnavailable
         );
         drop(service);

@@ -7,7 +7,14 @@
 //! [`FieldPatch::compile`]. A field is any parameter of the field vocabulary: a number, an
 //! integer, a boolean, an enum, a colour or a curve. Everything the modules share lives here once:
 //! the descriptor built from the table, parsing, planning a commit, update or no-op, payload
-//! validation, the canonical stored form, values, history labels, the recipe row and neutrality.
+//! validation, the canonical stored form, values, history labels, the recipe row, neutrality and
+//! the neutral layer's compilation.
+//!
+//! [`Spec::new`] derives the actions' identities and words and fixes the effect's shared fields,
+//! and building a spec refuses a malformed table — a field its control cannot draw, a missing or
+//! invalid default, a group entry that names no field, a field in no group or in two — when the
+//! module is constructed, so registering a built-in field-patch module is its own directory and
+//! one line in [`crate::builtin_modules`].
 //!
 //! Every comparison is between canonical values, never between JSON spellings, so `{}` and a
 //! payload that spells a default out (`{"exposure": 0}`, `{"midpoint": 50}`) are the same state and
@@ -23,11 +30,12 @@
 
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, ChoiceStyle,
-    ColorStyle, Control, ControlVariant, EffectDescriptor, LayerUpdate, ModuleDescriptor,
-    ModuleLayout, NewLayer, NumberStyle, ParameterDescriptor, ParameterKind, Processing,
-    RailDecoration, ResetAction, Stage, StageContext, ToolModule, check_value, summary_value,
+    ColorOperation, ColorStyle, Control, ControlVariant, EffectDescriptor, EffectStage,
+    LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, NumberStyle, ParameterDescriptor,
+    ParameterKind, Processing, RailDecoration, ResetAction, SpatialOperation, Stage, StageContext,
+    ToolModule, check_value, summary_value,
 };
-use crate::{Error, SourceTag};
+use crate::{EFFECT_FORMAT, Error, SourceTag};
 use serde_json::{Map, Number, Value};
 
 /// A finite f64 as a JSON number. Every value written here is finite, so the fallback is never
@@ -346,51 +354,211 @@ impl Field {
 }
 
 /// A group of controls on the module's section. Its reset sets exactly its fields to their
-/// defaults, and a patch that does so is labelled `Reset <label>` however it was sent.
+/// defaults, and a patch that does so is labelled `Reset <label>` however it was sent. Every field
+/// of the table belongs to exactly one group, which [`Spec`]'s build checks.
 pub struct Group {
-    pub label: &'static str,
-    pub fields: Vec<&'static str>,
-    pub collapsed: bool,
+    label: &'static str,
+    fields: Vec<&'static str>,
+    collapsed: bool,
     /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
     /// curve control whose channels are the group's curve fields.
-    pub extra: Vec<Control>,
+    extra: Vec<Control>,
     /// The resets other modules provide in the group reset's place on a photo of one source kind
     /// ([`ControlVariant::reset`]).
-    pub reset_variants: Vec<ControlVariant>,
+    reset_variants: Vec<ControlVariant>,
+}
+
+impl Group {
+    /// An expanded group of these fields, by name, with no extra controls or reset variants.
+    pub fn new(label: &'static str, fields: impl IntoIterator<Item = &'static str>) -> Self {
+        Self {
+            label,
+            fields: fields.into_iter().collect(),
+            collapsed: false,
+            extra: Vec::new(),
+            reset_variants: Vec::new(),
+        }
+    }
+
+    /// The group starts collapsed.
+    pub fn collapsed(mut self) -> Self {
+        self.collapsed = true;
+        self
+    }
+
+    /// A control drawn after the group's own field controls.
+    pub fn extra(mut self, control: Control) -> Self {
+        self.extra.push(control);
+        self
+    }
+
+    /// The reset another module provides in this group reset's place on a photo of one source
+    /// kind.
+    pub fn reset_variant(mut self, variant: ControlVariant) -> Self {
+        self.reset_variants.push(variant);
+        self
+    }
 }
 
 /// An action's identity and the words discovery shows for it.
-pub struct ActionText {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub notes: &'static str,
+struct ActionText {
+    id: String,
+    title: String,
+    notes: String,
 }
 
 /// Everything a field-patch module declares: its identity, its one effect, its two actions, the
 /// field table and how the fields are grouped and laid out. The descriptor is built from it once.
+///
+/// A spec is made only by [`Spec::new`], which derives what every field-patch module shares and
+/// fixes what none may change: the effect's format is [`EFFECT_FORMAT`], it declares no artifacts,
+/// it is `single` (the module owns one layer per target) and it applies to every source kind.
 pub struct Spec {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub hint: &'static str,
-    /// The word payload errors use: `unknown basic field exposure`.
-    pub noun: &'static str,
-    pub effect: EffectDescriptor,
-    /// The field patch, `set-<name>`.
-    pub set: ActionText,
-    /// The action that returns the layer to its all-default payload, `reset-<name>`.
-    pub reset: ActionText,
+    id: &'static str,
+    title: &'static str,
+    hint: &'static str,
+    /// The word payload errors use, `unknown basic field exposure`: the last segment of the id.
+    noun: &'static str,
+    effect: EffectDescriptor,
+    /// The field patch, `set-<noun>`.
+    set: ActionText,
+    /// The action that returns the layer to its all-default payload, `reset-<noun>`.
+    reset: ActionText,
     /// Every field, in the payload's declared order.
-    pub fields: Vec<Field>,
-    pub groups: Vec<Group>,
-    pub queries: Vec<ActionDescriptor>,
-    pub canvas: Option<CanvasInteraction>,
-    pub collapsed: bool,
-    pub layout: ModuleLayout,
+    fields: Vec<Field>,
+    groups: Vec<Group>,
+    queries: Vec<ActionDescriptor>,
+    canvas: Option<CanvasInteraction>,
+    collapsed: bool,
+    layout: ModuleLayout,
     /// Whether the module is a developer proof, listed and registered only in developer mode.
-    pub developer: bool,
+    developer: bool,
 }
 
 impl Spec {
+    /// The spec of module `id`, titled `title`, owning one layer of `effect_id` at `stage`.
+    ///
+    /// The noun is the id's last segment (`luxforge.basic` is `basic`); the actions are
+    /// `set-<noun>`, titled `Set <title>`, and `reset-<noun>`, titled `Reset <title>`, each with
+    /// the notes every field-patch module's action shares until the module says more. The effect
+    /// takes order 0, is not maskable, and holds the forced fields; the module adds its fields,
+    /// groups and everything else through the methods below.
+    pub fn new(
+        id: &'static str,
+        title: &'static str,
+        hint: &'static str,
+        effect_id: &str,
+        stage: EffectStage,
+    ) -> Self {
+        let noun = id.rsplit('.').next().unwrap_or(id);
+        Self {
+            id,
+            title,
+            hint,
+            noun,
+            effect: EffectDescriptor {
+                id: effect_id.into(),
+                format: EFFECT_FORMAT,
+                stage,
+                order: 0,
+                maskable: false,
+                artifacts: false,
+                single: true,
+                sources: Vec::new(),
+            },
+            set: ActionText {
+                id: format!("set-{noun}"),
+                title: format!("Set {title}"),
+                notes: format!(
+                    "merges the named {noun} fields into the stack's one {title} layer, which the \
+                     host places by its effect's declared stage and order on the first non-neutral \
+                     value and updates in place afterwards; omitted fields keep their stored values \
+                     and a patch that changes nothing is a reported no-op"
+                ),
+            },
+            reset: ActionText {
+                id: format!("reset-{noun}"),
+                title: format!("Reset {title}"),
+                notes: format!(
+                    "returns the stack's one {title} layer to its neutral payload, keeping its \
+                     identity and position; a no-op without one and when it is already neutral"
+                ),
+            },
+            fields: Vec::new(),
+            groups: Vec::new(),
+            queries: Vec::new(),
+            canvas: None,
+            collapsed: false,
+            layout: ModuleLayout::Stacked,
+            developer: false,
+        }
+    }
+
+    /// The order the effect takes among layers of its stage.
+    pub fn order(mut self, order: u16) -> Self {
+        self.effect.order = order;
+        self
+    }
+
+    /// The effect may be bound to a mask, so the module's actions take a mask target.
+    pub fn maskable(mut self) -> Self {
+        self.effect.maskable = true;
+        self
+    }
+
+    /// The field patch's notes, where the module says more than the shared sentence, such as
+    /// where the host places its layer.
+    pub fn set_notes(mut self, notes: impl Into<String>) -> Self {
+        self.set.notes = notes.into();
+        self
+    }
+
+    /// The module reset's notes, where the module says more than the shared sentence.
+    pub fn reset_notes(mut self, notes: impl Into<String>) -> Self {
+        self.reset.notes = notes.into();
+        self
+    }
+
+    /// Every field, in the payload's declared order.
+    pub fn fields(mut self, fields: impl IntoIterator<Item = Field>) -> Self {
+        self.fields.extend(fields);
+        self
+    }
+
+    /// The next group of the module's section.
+    pub fn group(mut self, group: Group) -> Self {
+        self.groups.push(group);
+        self
+    }
+
+    /// A read-only query the module answers through [`FieldPatch::query`].
+    pub fn query(mut self, query: ActionDescriptor) -> Self {
+        self.queries.push(query);
+        self
+    }
+
+    pub fn canvas(mut self, canvas: CanvasInteraction) -> Self {
+        self.canvas = Some(canvas);
+        self
+    }
+
+    /// The module's section starts collapsed.
+    pub fn collapsed(mut self) -> Self {
+        self.collapsed = true;
+        self
+    }
+
+    pub fn layout(mut self, layout: ModuleLayout) -> Self {
+        self.layout = layout;
+        self
+    }
+
+    /// The module is a developer proof, listed and registered only in developer mode.
+    pub fn developer(mut self) -> Self {
+        self.developer = true;
+        self
+    }
+
     fn field(&self, name: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.name() == name)
     }
@@ -402,22 +570,66 @@ impl Spec {
             .collect()
     }
 
-    /// The spec with every declared default in its canonical spelling, and the descriptor built
-    /// from it, or the refusal of the first field [`Field::check`] refuses.
-    fn build(mut self) -> Result<(Self, ModuleDescriptor), Error> {
+    /// Whether the table's fields and its groups agree: every name a group lists is a declared
+    /// field, and every field is listed exactly once across the groups, so each field has a
+    /// control and a group reset that resets it. `O(fields × entries)`, once per build.
+    fn check_groups(&self) -> Result<(), String> {
+        for group in &self.groups {
+            if let Some(name) = group.fields.iter().find(|name| self.field(name).is_none()) {
+                return Err(format!(
+                    "group {} lists {name}, which is not a declared field",
+                    group.label
+                ));
+            }
+        }
+        for field in &self.fields {
+            let name = field.name();
+            match self
+                .groups
+                .iter()
+                .flat_map(|group| &group.fields)
+                .filter(|listed| **listed == name)
+                .count()
+            {
+                1 => {}
+                0 => return Err(format!("field {name} is in no group")),
+                count => {
+                    return Err(format!(
+                        "field {name} is listed {count} times in the groups, not once"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The spec with every declared default in its canonical spelling, the descriptor built from
+    /// it and the shape its processing takes, or the refusal of a stage no field patch can own, of
+    /// the first field [`Field::check`] refuses, or of groups that do not list every field exactly
+    /// once.
+    fn build(mut self) -> Result<(Self, ModuleDescriptor, Shape), Error> {
+        let id = self.id;
+        let refused =
+            |reason: String| Error::validation(format!("field-patch module {id}: {reason}"));
+        let stage = self.effect.stage;
+        let shape = Shape::of(stage).ok_or_else(|| {
+            refused(format!(
+                "a field patch cannot own a {} effect",
+                stage.as_str()
+            ))
+        })?;
         for field in &mut self.fields {
-            field.check().map_err(|reason| {
-                Error::validation(format!("field-patch module {}: {reason}", self.id))
-            })?;
+            field.check().map_err(refused)?;
             field.parameter.default = Some(field.canonical(field.default_value()));
         }
+        self.check_groups().map_err(refused)?;
         let descriptor = self.descriptor();
-        Ok((self, descriptor))
+        Ok((self, descriptor, shape))
     }
 
     /// The descriptor of a checked spec: each group draws its fields' own controls then its extra
     /// controls, its reset is the patch of its fields to their defaults, and every variant a field
-    /// or group declares is folded onto its control.
+    /// or group declares is folded onto its control. A checked group names only declared fields.
     fn descriptor(&self) -> ModuleDescriptor {
         let controls = self
             .groups
@@ -427,12 +639,12 @@ impl Spec {
                 let control = Control::group(
                     group.label,
                     fields()
-                        .filter_map(|field| field.own_control(self.set.id))
+                        .filter_map(|field| field.own_control(&self.set.id))
                         .chain(group.extra.iter().cloned())
                         .collect(),
                 )
                 .field_reset(ResetAction {
-                    action: self.set.id.into(),
+                    action: self.set.id.clone(),
                     preset: fields()
                         .map(|field| (field.name().to_owned(), field.default_value().clone()))
                         .collect(),
@@ -452,9 +664,9 @@ impl Spec {
             effects: vec![self.effect.clone()],
             actions: vec![
                 ActionDescriptor {
-                    id: self.set.id.into(),
-                    title: self.set.title.into(),
-                    notes: self.set.notes.into(),
+                    id: self.set.id.clone(),
+                    title: self.set.title.clone(),
+                    notes: self.set.notes.clone(),
                     summary: None,
                     patch: true,
                     parameters: self
@@ -464,9 +676,9 @@ impl Spec {
                         .collect(),
                 },
                 ActionDescriptor {
-                    id: self.reset.id.into(),
-                    title: self.reset.title.into(),
-                    notes: self.reset.notes.into(),
+                    id: self.reset.id.clone(),
+                    title: self.reset.title.clone(),
+                    notes: self.reset.notes.clone(),
                     summary: None,
                     patch: false,
                     parameters: Vec::new(),
@@ -475,7 +687,7 @@ impl Spec {
             queries: self.queries.clone(),
             controls,
             reset: Some(ResetAction {
-                action: self.reset.id.into(),
+                action: self.reset.id.clone(),
                 preset: Map::new(),
             }),
             canvas: self.canvas.clone(),
@@ -484,6 +696,34 @@ impl Spec {
             layout: self.layout,
             availability: Availability::Available,
             ..ModuleDescriptor::default()
+        }
+    }
+}
+
+/// The shape of the processing a field patch's effect compiles to, by its stage: pointwise colour
+/// for a colour or finish effect, a spatial operation for a spatial one. No other stage can hold a
+/// field patch.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    Color,
+    Spatial,
+}
+
+impl Shape {
+    fn of(stage: EffectStage) -> Option<Self> {
+        match stage {
+            EffectStage::Color | EffectStage::Finish => Some(Self::Color),
+            EffectStage::Spatial => Some(Self::Spatial),
+            EffectStage::Source | EffectStage::Geometry | EffectStage::Pixel => None,
+        }
+    }
+
+    /// What a neutral layer compiles to: no units, which the host drops entirely, keeping the
+    /// identity byte path and the shared source buffer.
+    fn neutral(self) -> Processing {
+        match self {
+            Self::Color => Processing::Color(ColorOperation::neutral()),
+            Self::Spatial => Processing::Spatial(SpatialOperation::neutral()),
         }
     }
 }
@@ -532,12 +772,14 @@ pub trait FieldPatch: Send + Sync + 'static {
     where
         Self: Sized;
 
-    /// The processing these canonical values compile to at the layer's input stage.
+    /// The processing these canonical values compile to at the layer's input stage. It is asked
+    /// only for values [`FieldPatch::is_neutral`] calls not neutral: a neutral layer compiles to no
+    /// units, in its effect stage's shape, once for every field-patch module.
     fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error>;
 
-    /// Whether these values change nothing, so a first set that reaches them commits no layer. The
-    /// default is every field at its default; the vignette's is an amount of 0, whatever its shape
-    /// fields hold.
+    /// Whether these values change nothing, so a first set that reaches them commits no layer and
+    /// a layer holding them compiles to no units. The default is every field at its default; the
+    /// vignette's is an amount of 0, whatever its shape fields hold.
     fn is_neutral(&self, values: &Values<'_>) -> bool {
         values.is_default()
     }
@@ -561,20 +803,23 @@ pub struct FieldPatchModule<M> {
     module: M,
     spec: Spec,
     descriptor: ModuleDescriptor,
+    shape: Shape,
 }
 
 impl<M: FieldPatch + Default> FieldPatchModule<M> {
-    /// The module built from its spec. A spec is a static table, so one [`Field::check`] refuses —
-    /// a field outside the vocabulary, without a valid default, or declaring a rail or variants
-    /// its control cannot carry — is a defect the module's construction reports at once.
+    /// The module built from its spec. A spec is a static table, so one its build refuses — a
+    /// stage no field patch can own, a field outside the vocabulary, without a valid default or
+    /// declaring a rail or variants its control cannot carry, or groups that do not list every
+    /// field exactly once — is a defect the module's construction reports at once.
     pub fn new() -> Self {
-        let (spec, descriptor) = M::spec()
+        let (spec, descriptor, shape) = M::spec()
             .build()
             .unwrap_or_else(|error| panic!("{}", error.detail));
         Self {
             module: M::default(),
             spec,
             descriptor,
+            shape,
         }
     }
 }
@@ -608,9 +853,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
         let spec = &self.spec;
         let noun = spec.noun;
         if effect_id != spec.effect.id {
-            return Err(Error::incompatible(format!(
-                "unavailable effect {effect_id}"
-            )));
+            return Err(Error::unavailable_effect(effect_id, &[]));
         }
         if format != spec.effect.format {
             return Err(Error::incompatible(format!(
@@ -921,6 +1164,12 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         stage: Stage,
     ) -> Result<Processing, Error> {
         let values = self.read(effect_id, format, payload)?;
+        // A neutral layer, by the module's own rule, compiles to no units in its stage's shape,
+        // which the host drops entirely: the identity byte path and the shared source buffer are
+        // kept, and the module is never asked to compile it.
+        if self.module.is_neutral(&values) {
+            return Ok(self.shape.neutral());
+        }
         self.module.compile(&values, stage)
     }
 }
@@ -928,8 +1177,8 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{ColorOperation, CurveChannel, EffectStage, FixedStage};
-    use crate::{EFFECT_FORMAT, Layer, ModuleRegistry};
+    use crate::modules::{CurveChannel, FixedStage};
+    use crate::{Layer, ModuleRegistry};
     use serde_json::json;
 
     const EFFECT: &str = "luxforge.test-patch.adjust";
@@ -948,96 +1197,65 @@ mod tests {
 
     impl FieldPatch for Test {
         fn spec() -> Spec {
-            Spec {
-                id: "luxforge.test-patch",
-                title: "Test patch",
-                hint: "Every field kind",
-                noun: "test",
-                effect: EffectDescriptor {
-                    id: EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Color,
-                    order: 0,
-                    maskable: true,
-                    artifacts: false,
-                    single: true,
-                    sources: Vec::new(),
-                },
-                set: ActionText {
-                    id: SET,
-                    title: "Set test patch",
-                    notes: "",
-                },
-                reset: ActionText {
-                    id: RESET,
-                    title: "Reset test patch",
-                    notes: "",
-                },
-                fields: vec![
-                    Field::slider("level", "Level", "").variant(ControlVariant::control(
-                        SourceTag::Raw,
-                        "luxforge.other",
-                        Control::number("set-other", "level", "Level"),
-                    )),
-                    Field::new(
-                        ParameterDescriptor::number("midpoint", 0.0, 100.0).default(50),
-                        "Midpoint",
-                    ),
-                    Field::new(ParameterDescriptor::boolean("on").default(false), "Enabled"),
-                    Field::new(
-                        ParameterDescriptor::enumeration("mode", ["one", "two"]).default("one"),
-                        "Mode",
-                    ),
-                    Field::new(
-                        ParameterDescriptor::color("tint").default(json!([0, 0, 0])),
-                        "Tint",
-                    ),
-                    Field::new(
-                        ParameterDescriptor::curve("curve", 2, 4).default(json!([[0, 0], [1, 1]])),
-                        "Curve",
-                    ),
-                ],
-                groups: vec![
-                    Group {
-                        label: "Level",
-                        fields: vec!["level", "midpoint"],
-                        collapsed: false,
-                        extra: Vec::new(),
-                        reset_variants: vec![ControlVariant::reset(
-                            SourceTag::Raw,
-                            "luxforge.other",
-                            ResetAction {
-                                action: "reset-other".into(),
-                                preset: Map::new(),
-                            },
-                        )],
+            Spec::new(
+                "luxforge.test-patch",
+                "Test patch",
+                "Every field kind",
+                EFFECT,
+                EffectStage::Color,
+            )
+            .maskable()
+            .fields([
+                Field::slider("level", "Level", "").variant(ControlVariant::control(
+                    SourceTag::Raw,
+                    "luxforge.other",
+                    Control::number("set-other", "level", "Level"),
+                )),
+                Field::new(
+                    ParameterDescriptor::number("midpoint", 0.0, 100.0).default(50),
+                    "Midpoint",
+                ),
+                Field::new(ParameterDescriptor::boolean("on").default(false), "Enabled"),
+                Field::new(
+                    ParameterDescriptor::enumeration("mode", ["one", "two"]).default("one"),
+                    "Mode",
+                ),
+                Field::new(
+                    ParameterDescriptor::color("tint").default(json!([0, 0, 0])),
+                    "Tint",
+                ),
+                Field::new(
+                    ParameterDescriptor::curve("curve", 2, 4).default(json!([[0, 0], [1, 1]])),
+                    "Curve",
+                ),
+            ])
+            .group(
+                Group::new("Level", ["level", "midpoint"]).reset_variant(ControlVariant::reset(
+                    SourceTag::Raw,
+                    "luxforge.other",
+                    ResetAction {
+                        action: "reset-other".into(),
+                        preset: Map::new(),
                     },
-                    Group {
-                        label: "Look",
-                        fields: vec!["on", "mode", "tint", "curve"],
-                        collapsed: false,
-                        extra: vec![Control::curve(
-                            SET,
-                            vec![CurveChannel {
-                                parameter: "curve".into(),
-                                label: "Curve".into(),
-                            }],
-                            "Curve",
-                            "sample-curve",
-                        )],
-                        reset_variants: Vec::new(),
-                    },
-                ],
-                queries: Vec::new(),
-                canvas: None,
-                collapsed: false,
-                layout: ModuleLayout::Stacked,
-                developer: false,
-            }
+                )),
+            )
+            .group(
+                Group::new("Look", ["on", "mode", "tint", "curve"]).extra(Control::curve(
+                    SET,
+                    vec![CurveChannel {
+                        parameter: "curve".into(),
+                        label: "Curve".into(),
+                    }],
+                    "Curve",
+                    "sample-curve",
+                )),
+            )
         }
 
+        /// Only a layer the neutrality rule calls not neutral reaches the module, so this answer
+        /// shows which compilations the shared short-circuit answered instead.
         fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
-            Ok(Processing::Color(ColorOperation::neutral()))
+            Err(Error::validation("compiled by the module"))
         }
     }
 
@@ -1129,7 +1347,7 @@ mod tests {
                 json!({"level": 101}),
                 "parameter level must be a number within -100..=100",
             ),
-            (json!({"other": 1}), "unknown test field other"),
+            (json!({"other": 1}), "unknown test-patch field other"),
         ] {
             let error = module
                 .validate_payload(EFFECT, EFFECT_FORMAT, &payload)
@@ -1264,20 +1482,133 @@ mod tests {
         ));
     }
 
-    /// A spec is refused when it is built, naming the field, when a field is outside the
-    /// vocabulary, lacks a valid default, or declares what its control cannot draw or carry.
+    /// `Spec::new` derives the actions from the id and title, and every effect it makes holds the
+    /// fields no field-patch module may change: the shared format, no artifacts, `single` and every
+    /// source kind. Only the order and the maskable flag are the module's to set.
+    #[test]
+    fn a_spec_derives_its_actions_and_forces_the_effects_shared_fields() {
+        let module = module();
+        let descriptor = module.descriptor();
+        assert_eq!(
+            descriptor.effects,
+            [EffectDescriptor {
+                id: EFFECT.into(),
+                format: EFFECT_FORMAT,
+                stage: EffectStage::Color,
+                order: 0,
+                maskable: true,
+                artifacts: false,
+                single: true,
+                sources: Vec::new(),
+            }]
+        );
+        let actions: Vec<(&str, &str, &str, bool)> = descriptor
+            .actions
+            .iter()
+            .map(|action| {
+                (
+                    action.id.as_str(),
+                    action.title.as_str(),
+                    action.notes.as_str(),
+                    action.patch,
+                )
+            })
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                (
+                    SET,
+                    "Set Test patch",
+                    "merges the named test-patch fields into the stack's one Test patch layer, \
+                     which the host places by its effect's declared stage and order on the first \
+                     non-neutral value and updates in place afterwards; omitted fields keep their \
+                     stored values and a patch that changes nothing is a reported no-op",
+                    true,
+                ),
+                (
+                    RESET,
+                    "Reset Test patch",
+                    "returns the stack's one Test patch layer to its neutral payload, keeping its \
+                     identity and position; a no-op without one and when it is already neutral",
+                    false,
+                ),
+            ]
+        );
+        assert_eq!(
+            descriptor.reset.as_ref().map(|r| r.action.as_str()),
+            Some(RESET)
+        );
+
+        let spec = Spec::new(
+            "luxforge.other",
+            "Other",
+            "",
+            "luxforge.other.fx",
+            EffectStage::Finish,
+        )
+        .order(7)
+        .set_notes("its own words")
+        .reset_notes("its own reset");
+        assert_eq!(
+            (spec.noun, spec.effect.order, spec.effect.maskable),
+            ("other", 7, false)
+        );
+        assert_eq!(
+            (spec.set.notes.as_str(), spec.reset.notes.as_str()),
+            ("its own words", "its own reset")
+        );
+    }
+
+    /// A layer the module's own neutrality rule calls neutral compiles to no units, in the shape
+    /// its effect's stage takes, without asking the module; any other layer is the module's.
+    #[test]
+    fn a_neutral_layer_compiles_to_no_units_in_its_stages_shape_without_the_module() {
+        let module = module();
+        for neutral in [json!({}), json!({"midpoint": 50, "on": false})] {
+            let Ok(Processing::Color(operation)) =
+                module.compile(EFFECT, EFFECT_FORMAT, &neutral, STAGE)
+            else {
+                panic!("{neutral} compiles to the neutral colour operation");
+            };
+            assert!(operation.is_empty(), "{neutral}");
+        }
+        assert_eq!(
+            module
+                .compile(EFFECT, EFFECT_FORMAT, &json!({"on": true}), STAGE)
+                .err()
+                .map(|error| error.detail),
+            Some("compiled by the module".to_owned())
+        );
+        for (stage, color) in [
+            (EffectStage::Color, true),
+            (EffectStage::Finish, true),
+            (EffectStage::Spatial, false),
+        ] {
+            match Shape::of(stage).expect("a field patch stage").neutral() {
+                Processing::Color(operation) if color => assert!(operation.is_empty()),
+                Processing::Spatial(operation) if !color => assert!(operation.is_empty()),
+                _ => panic!("{} compiles to the wrong shape", stage.as_str()),
+            }
+        }
+    }
+
+    /// A spec is refused when it is built, naming the field or group, when its effect is at a stage
+    /// no field patch can own, a field is outside the vocabulary, lacks a valid default, or declares
+    /// what its control cannot draw or carry, and when a group names a field the table does not
+    /// declare or a field is in no group or in more than one.
     #[test]
     fn a_spec_is_refused_where_a_field_declares_what_its_control_cannot_carry() {
-        type Change = fn(&mut Vec<Field>);
+        type Change = fn(&mut Spec);
         let refused = |change: Change| {
             let mut spec = Test::spec();
-            change(&mut spec.fields);
+            change(&mut spec);
             spec.build().err().expect("the spec is refused").detail
         };
-        let cases: [(Change, &str); 7] = [
+        let cases: [(Change, &str); 12] = [
             (
-                |fields| {
-                    fields[2].variants.push(ControlVariant::control(
+                |spec| {
+                    spec.fields[2].variants.push(ControlVariant::control(
                         SourceTag::Raw,
                         "luxforge.other",
                         Control::toggle("set-other", "on", "On"),
@@ -1286,28 +1617,51 @@ mod tests {
                 "field on: its toggle control cannot carry variants",
             ),
             (
-                |fields| fields[4].rail = Some(RailDecoration::Hue),
+                |spec| spec.fields[4].rail = Some(RailDecoration::Hue),
                 "field tint: its color control cannot carry a rail",
             ),
             (
-                |fields| fields[5].control = FieldControl::Number(NumberStyle::Slider),
+                |spec| spec.fields[5].control = FieldControl::Number(NumberStyle::Slider),
                 "field curve: a number control cannot draw its curve parameter",
             ),
             (
-                |fields| fields[3].control = FieldControl::Toggle,
+                |spec| spec.fields[3].control = FieldControl::Toggle,
                 "field mode: a toggle control cannot draw its enum parameter",
             ),
             (
-                |fields| fields.push(Field::new(ParameterDescriptor::string("name", 8), "Name")),
+                |spec| {
+                    spec.fields
+                        .push(Field::new(ParameterDescriptor::string("name", 8), "Name"))
+                },
                 "field name: a field patch cannot hold its string parameter",
             ),
             (
-                |fields| fields[1].parameter.default = None,
+                |spec| spec.fields[1].parameter.default = None,
                 "field midpoint declares no default",
             ),
             (
-                |fields| fields[3].parameter.default = Some(json!("three")),
+                |spec| spec.fields[3].parameter.default = Some(json!("three")),
                 "field mode's default is invalid: parameter mode must be one of one, two",
+            ),
+            (
+                |spec| spec.groups[0].fields[1] = "midpiont",
+                "group Level lists midpiont, which is not a declared field",
+            ),
+            (
+                |spec| spec.groups[1].fields.retain(|name| *name != "tint"),
+                "field tint is in no group",
+            ),
+            (
+                |spec| spec.groups[1].fields.push("level"),
+                "field level is listed 2 times in the groups, not once",
+            ),
+            (
+                |spec| spec.groups[0].fields.push("level"),
+                "field level is listed 2 times in the groups, not once",
+            ),
+            (
+                |spec| spec.effect.stage = EffectStage::Pixel,
+                "a field patch cannot own a pixel effect",
             ),
         ];
         for (change, expected) in cases {

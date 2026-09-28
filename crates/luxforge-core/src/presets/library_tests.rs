@@ -390,7 +390,10 @@ fn an_update_applies_then_is_a_no_op_then_conflicts_on_a_rename() {
     let mut service = EditorService::open(&path).expect("a catalog");
     let soft_preset = create(&mut service, "Soft", Some("Looks")).expect("a preset");
     create(&mut service, "Warm", Some("Looks")).expect("a preset");
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // An update stamps the catalog clock, so it lands after the preset's creation.
+    luxforge_testbase::wait_until("the catalog clock to pass the preset's creation", || {
+        crate::editor::now_ms() > soft_preset.updated_ms
+    });
 
     let changed = set(json!({"set-vignette": {"amount": -18}}));
     let applied = service

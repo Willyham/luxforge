@@ -45,7 +45,10 @@ pub(crate) struct HistoryRow {
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PreviewControls {
+    /// Return to current can run: no request is in flight.
     pub(crate) can_return: bool,
+    /// Restore can run: no request is in flight and the app's history refusal
+    /// ([`Inputs::history_refusal`]), which an open draft holds, has nothing to say.
     pub(crate) can_restore: bool,
 }
 
@@ -63,8 +66,8 @@ pub(crate) struct StatePanelModel {
     pub(crate) can_load_older: bool,
     pub(crate) preview: Option<PreviewControls>,
     pub(crate) menu: Option<MenuTarget>,
-    /// A request is in flight, so nothing here may start another.
-    pub(crate) busy: bool,
+    /// A version chip, a history row and Load older can start their request: none is in flight.
+    pub(crate) can_select: bool,
 }
 
 /// How a history row names who made its entry: this desktop's own entries read `you`, another
@@ -116,10 +119,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
         can_load_older: inputs.history.next_before_sequence.is_some(),
         preview: (!inputs.session.preview.can_edit()).then_some(PreviewControls {
             can_return: !inputs.busy,
-            can_restore: !inputs.busy,
+            can_restore: !inputs.busy && inputs.history_refusal.is_none(),
         }),
         menu: inputs.menu.cloned(),
-        busy: inputs.busy,
+        can_select: !inputs.busy,
     }
 }
 

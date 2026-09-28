@@ -82,28 +82,17 @@ impl EditorService {
         match query_id {
             crate::mask::commands::LIST => encode(self.mask_listing(asset_id, entry_id)),
             crate::mask::commands::SAMPLE_INPUT => {
-                let (target, values) = MaskTarget::split(parameters)?;
-                let coordinate = |name: &str| {
-                    values
-                        .get(name)
-                        .and_then(Value::as_u64)
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or_else(|| {
-                            Error::validation(format!(
-                                "missing required parameter {name} for {query_id}"
-                            ))
-                        })
-                };
-                let mask = target.mask.as_ref().ok_or_else(|| {
-                    Error::validation(format!("missing required parameter mask for {query_id}"))
-                })?;
-                encode(self.mask_input_sample(
-                    asset_id,
-                    entry_id,
-                    mask,
-                    coordinate("x")?,
-                    coordinate("y")?,
-                ))
+                // Its declared parameters, which the generic check has required and checked.
+                #[derive(serde::Deserialize)]
+                struct SampleInput {
+                    mask: MaskId,
+                    x: u32,
+                    y: u32,
+                }
+                let SampleInput { mask, x, y } =
+                    serde_json::from_value(Value::Object(parameters.clone()))
+                        .map_err(|error| Error::internal(error.to_string()))?;
+                encode(self.mask_input_sample(asset_id, entry_id, &mask, x, y))
             }
             other => Err(Error::validation(format!("unknown query {other}"))),
         }
@@ -258,42 +247,25 @@ pub fn mask_target_parameter() -> crate::ParameterDescriptor {
     )
 }
 
-/// Take the `mask` target out of a request before the action's own parameters are checked, so no
-/// module's `parse`, `plan` or `compile` ever sees it (`docs/design/masking.md`, "How a mask reaches
-/// an effect").
-///
-/// Sending it to an action that does not accept one is a `validation` error naming the action, not a
-/// silently ignored field: an agent that believes it edited through a mask must be told it did not.
-pub(super) fn take_mask_target(
-    registry: &ModuleRegistry,
-    action_id: &str,
-    parameters: &mut Value,
-) -> Result<Option<MaskId>, Error> {
-    let Some(object) = parameters.as_object_mut() else {
-        return Ok(None);
-    };
-    let Some(field) = object.remove(MASK_FIELD) else {
-        return Ok(None);
-    };
-    if !registry.action_accepts_mask(action_id) {
-        return Err(Error::validation(format!(
-            "action {action_id} does not accept a mask target"
-        )));
-    }
-    // The generic check of the identity kind, the one every mask identity takes.
-    crate::check_value(&mask_target_parameter(), &field)?;
-    let text = field
-        .as_str()
-        .expect("an identity the check accepted is a string");
-    Ok(Some(MaskId::parse(text)?))
+/// What carries the host's optional `mask` target: an action or a query, by its identity. Those of
+/// a module that declares a maskable effect accept it.
+#[derive(Clone, Copy)]
+pub(super) enum Targeted<'a> {
+    Action(&'a str),
+    Query(&'a str),
 }
 
-/// Take the optional `mask` target out of a module query's request, exactly as
-/// [`take_mask_target`] does for an action: a query of a module whose effect is maskable carries
-/// it, and sending it to any other query is a `validation` error naming the query.
-pub(super) fn take_query_mask_target(
+/// Take the `mask` target out of an action's or a query's request before its own parameters are
+/// checked, so no module's `parse`, `plan`, `compile` or `query` ever sees it
+/// (`docs/design/masking.md`, "How a mask reaches an effect"). The one target check: a commit, a
+/// drafted gesture's beginning and a query all take their mask here.
+///
+/// Sending it to an action or query that does not accept one is a `validation` error naming it, not
+/// a silently ignored field: an agent that believes it edited through a mask must be told it did
+/// not.
+pub(super) fn take_mask_target(
     registry: &ModuleRegistry,
-    query_id: &str,
+    targeted: Targeted<'_>,
     parameters: &mut Value,
 ) -> Result<Option<MaskId>, Error> {
     let Some(field) = parameters
@@ -302,11 +274,16 @@ pub(super) fn take_query_mask_target(
     else {
         return Ok(None);
     };
-    if !registry.query_accepts_mask(query_id) {
+    let (accepts, what, id) = match targeted {
+        Targeted::Action(id) => (registry.action_accepts_mask(id), "action", id),
+        Targeted::Query(id) => (registry.query_accepts_mask(id), "query", id),
+    };
+    if !accepts {
         return Err(Error::validation(format!(
-            "query {query_id} does not accept a mask target"
+            "{what} {id} does not accept a mask target"
         )));
     }
+    // The generic check of the identity kind, the one every mask identity takes.
     crate::check_value(&mask_target_parameter(), &field)?;
     let text = field
         .as_str()
@@ -386,6 +363,51 @@ mod tests {
     use rusqlite::{Connection, params};
     use serde_json::json;
     use std::path::Path;
+
+    /// An action's and a query's `mask` target take the one target check: taken out of the request
+    /// so the module never sees it, checked as an identity, and refused by name where the action or
+    /// query does not accept one, a field left in place.
+    #[test]
+    fn an_action_and_a_query_take_their_mask_target_through_one_check() {
+        let registry = ModuleRegistry::builtin();
+        let mask = MaskId::new();
+        for targeted in [
+            Targeted::Action("set-basic"),
+            Targeted::Query("neutral-sample"),
+        ] {
+            let mut request = json!({"mask": mask.as_str(), "x": 1});
+            assert_eq!(
+                take_mask_target(&registry, targeted, &mut request).unwrap(),
+                Some(mask.clone())
+            );
+            assert_eq!(request, json!({"x": 1}), "the module never sees the target");
+            let mut untargeted = json!({"x": 1});
+            assert_eq!(
+                take_mask_target(&registry, targeted, &mut untargeted).unwrap(),
+                None
+            );
+            let error = take_mask_target(&registry, targeted, &mut json!({"mask": "not-a-mask"}))
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
+        }
+        for (targeted, refusal) in [
+            (
+                Targeted::Action("crop"),
+                "action crop does not accept a mask target",
+            ),
+            (
+                Targeted::Query("no-such-query"),
+                "query no-such-query does not accept a mask target",
+            ),
+        ] {
+            let error = take_mask_target(&registry, targeted, &mut json!({"mask": mask.as_str()}))
+                .unwrap_err();
+            assert_eq!(
+                (error.kind, error.detail.as_str()),
+                (ErrorKind::Validation, refusal)
+            );
+        }
+    }
 
     /// One stored mask with a component the host can compile, which is what a persisted masked stack
     /// looks like. A component of a kind this build knows nothing about is its own case and is
@@ -524,6 +546,9 @@ mod tests {
             reopened.current_entry.snapshot.recipe.layers.len()
         );
         // A later mutation writes the mask table on in its own snapshot: one persistence path.
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let next = service
             .apply_pixel(
                 &asset,
@@ -720,6 +745,9 @@ mod tests {
             "the global layer, then the masks in their own order"
         );
         // The stack renders and samples: a masked layer is evaluable the moment it is creatable.
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         service.render_current(&asset).unwrap();
 
         // A target the stack does not hold is refused, and nothing is written.
@@ -809,6 +837,9 @@ mod tests {
         let before = stored_entry_json(&catalog, &dangling.id);
 
         let mut service = EditorService::open(&catalog).unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let revision = service.state(&asset).unwrap().revision;
         let expected = format!(
             "layer {} references mask {}, which this recipe does not carry",
@@ -835,7 +866,7 @@ mod tests {
                     )
                 })
                 .unwrap_err(),
-            // Planning compiles the stored stack before it asks a module for a plan.
+            // Planning checks the stored stack's structure before it asks a module for a plan.
             service
                 .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
                 .unwrap_err(),

@@ -1669,24 +1669,23 @@ mod tests {
         for _ in 0..15 {
             let start = std::time::Instant::now();
             let proxy = source.proxy(plan).expect("a proxy");
-            samples.push(start.elapsed());
+            samples.push(start.elapsed().as_secs_f64() * 1000.0);
             assert_eq!(proxy.dimensions(), (plan.width, plan.height));
         }
         // The first build carries the Rayon pool's first use and the first touch of the two fresh
         // buffers, which is what the first job after a window resize actually pays; the rest is
         // the steady-state cost of rebuilding one.
         let cold = samples[0];
-        samples.sort_unstable();
+        let ms = luxforge_testbase::Distribution::of(samples).expect("builds ran");
         println!(
-            "24 MP proxy build {}x{} -> {}x{}: cold {:?}, warm p50 {:?}, min {:?}, max {:?}",
+            "24 MP proxy build {}x{} -> {}x{}: cold {cold:.2} ms, warm p50 {:.2} ms, min {:.2} ms, max {:.2} ms",
             source.dimensions().0,
             source.dimensions().1,
             plan.width,
             plan.height,
-            cold,
-            samples[samples.len() / 2],
-            samples[0],
-            samples[samples.len() - 1]
+            ms.p50,
+            ms.min,
+            ms.max
         );
     }
 
@@ -1790,18 +1789,13 @@ mod tests {
                 for _ in 0..25 {
                     let start = std::time::Instant::now();
                     let frame = once();
-                    samples.push(start.elapsed());
+                    samples.push(start.elapsed().as_secs_f64() * 1000.0);
                     std::hint::black_box(frame);
                 }
-                samples.sort_unstable();
+                let ms = luxforge_testbase::Distribution::of(samples).expect("renders ran");
                 println!(
-                    "{fixture} proxy {}x{} {name}: p50 {:?}, p95 {:?}, min {:?}, max {:?}",
-                    plan.width,
-                    plan.height,
-                    samples[samples.len() / 2],
-                    samples[samples.len() * 95 / 100],
-                    samples[0],
-                    samples[samples.len() - 1]
+                    "{fixture} proxy {}x{} {name}: p50 {:.2} ms, p95 {:.2} ms, min {:.2} ms, max {:.2} ms",
+                    plan.width, plan.height, ms.p50, ms.p95, ms.min, ms.max
                 );
             };
             measure("unmasked full Basic", &unmasked, true);

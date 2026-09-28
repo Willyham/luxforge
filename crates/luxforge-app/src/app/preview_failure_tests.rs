@@ -30,54 +30,26 @@ use luxforge_core::{
     HistoryEntry, Layer, LayerId, ModuleDescriptor, ModuleRegistry, POINTER_MODE, PointwiseColor,
     PreviewJob, PreviewSource, Processing, SourceImage, Stage, StageContext, ToolModule, Zoom,
 };
+use luxforge_testbase::{Gate, wait_until};
 use serde_json::{Map, Value, json};
 use std::{
     cell::RefCell,
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak},
-    time::{Duration, Instant},
+    sync::{Arc, Weak},
 };
 
 /// The effect a [`Hold`] puts ahead of the stack of the job it holds.
 const HELD_EFFECT: &str = "test.held.effect";
 
-/// A gate a render waits at, row by row, while it is shut. It is a pointwise colour unit that
-/// leaves every pixel as it found it, so a job carrying it renders the frame it would render
-/// without it; all it changes is *when* that render can finish.
-struct Gate {
-    state: Mutex<GateState>,
-    opened: Condvar,
-}
+/// The shared test gate as a pointwise colour unit a render passes row by row. It leaves every
+/// pixel as it found it, so a job carrying it renders the frame it would render without it; all it
+/// changes is *when* that render can finish.
+#[derive(Debug)]
+struct HeldUnit(Arc<Gate>);
 
-struct GateState {
-    shut: bool,
-    /// Renders waiting here now.
-    waiting: usize,
-}
-
-impl Gate {
-    fn lock(&self) -> MutexGuard<'_, GateState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Whether a render is waiting here, which nothing but the test that shut the gate can end.
-    fn holding(&self) -> bool {
-        let state = self.lock();
-        state.shut && state.waiting > 0
-    }
-}
-
-impl PointwiseColor for Gate {
+impl PointwiseColor for HeldUnit {
     fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
-        let mut state = self.lock();
-        while state.shut {
-            state.waiting += 1;
-            state = self
-                .opened
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
-            state.waiting -= 1;
-        }
+        self.0.pass();
     }
     fn is_finite(&self) -> bool {
         true
@@ -87,7 +59,7 @@ impl PointwiseColor for Gate {
     }
 }
 
-/// The module that compiles [`HELD_EFFECT`] to one [`Gate`].
+/// The module that compiles [`HELD_EFFECT`] to one [`HeldUnit`].
 struct HeldModule {
     descriptor: ModuleDescriptor,
     gate: Arc<Gate>,
@@ -113,7 +85,7 @@ impl ToolModule for HeldModule {
         Ok("held render".into())
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
-        let unit: Arc<dyn PointwiseColor> = self.gate.clone();
+        let unit: Arc<dyn PointwiseColor> = Arc::new(HeldUnit(self.gate.clone()));
         Ok(Processing::Color(ColorOperation::new(vec![unit])))
     }
 }
@@ -135,13 +107,8 @@ struct Hold(Arc<Gate>);
 
 impl Hold {
     fn shut() -> Self {
-        let gate = Arc::new(Gate {
-            state: Mutex::new(GateState {
-                shut: true,
-                waiting: 0,
-            }),
-            opened: Condvar::new(),
-        });
+        let gate = Arc::new(Gate::new());
+        gate.shut();
         GATES.with(|gates| gates.borrow_mut().push(Arc::downgrade(&gate)));
         Self(gate)
     }
@@ -189,27 +156,23 @@ impl Hold {
     }
 
     fn open(&self) {
-        self.0.lock().shut = false;
-        self.0.opened.notify_all();
+        self.0.open();
     }
 
     /// Wait until the held job is inside its render, so a newer request finds it running and
     /// unable to finish, rather than about to answer cancelled before its first row.
     fn reached(&self, editor: &Editor, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !self.0.holding() {
+        wait_until(&format!("{what} reaching its gate"), || {
+            if self.0.holding() {
+                return true;
+            }
             assert!(
                 editor.preview_queue.is_busy() && !editor.preview_queue.ready(),
                 "{what} can never reach its gate: the job ended first: {}",
                 editor.status
             );
-            assert!(
-                Instant::now() < deadline,
-                "{what} never reached its gate: {}",
-                editor.status
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+            false
+        });
     }
 }
 
@@ -221,22 +184,21 @@ impl Drop for Hold {
 
 /// Deliver worker results with `poll` until `done` holds, failing at once when nothing more can
 /// arrive: the queue has nothing running, waiting or ready, or its running job is held at a gate
-/// this test has not opened and nothing is ready. The deadline is only a backstop for a render that
-/// is still progressing: these tests assert what is shown, never how fast.
-fn wait_for(
+/// this test has not opened and nothing is ready. The hang bound is only a backstop for a render
+/// that is still progressing: these tests assert what is shown, never how fast.
+fn deliver_until(
     editor: &mut Editor,
     what: &str,
     done: impl Fn(&Editor) -> bool,
     poll: impl Fn(&mut Editor),
 ) {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
+    wait_until(what, || {
         if done(editor) {
-            return;
+            return true;
         }
         poll(editor);
         if done(editor) {
-            return;
+            return true;
         }
         let queue = &editor.preview_queue;
         assert!(
@@ -257,18 +219,13 @@ fn wait_for(
              opened: {}",
             editor.status
         );
-        assert!(
-            Instant::now() < deadline,
-            "{what} never happened: {}",
-            editor.status
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        false
+    });
 }
 
-/// Deliver worker results through `update` until `done` holds; see [`wait_for`].
+/// Deliver worker results through `update` until `done` holds; see [`deliver_until`].
 fn poll_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
-    wait_for(editor, what, done, |editor| {
+    deliver_until(editor, what, done, |editor| {
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     });
 }
@@ -381,7 +338,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     });
 
     assert_eq!(
-        editor.render_error.as_ref().map(|(kind, _)| *kind),
+        editor.render_error.as_ref().map(|error| error.kind),
         Some(ErrorKind::ResourceLimit)
     );
     assert!(
@@ -451,7 +408,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
         editor.presenter.photo().is_some()
     });
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
-    assert_eq!(editor.render_error, None);
+    assert!(editor.render_error.is_none());
     assert_eq!(editor.workspace.canvas.photo, PhotoView::Plain);
 
     let records = logged(&mut editor, &log);
@@ -595,8 +552,8 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         "{}",
         editor.status
     );
-    assert_eq!(
-        editor.render_error, None,
+    assert!(
+        editor.render_error.is_none(),
         "the photograph's own state did not fail"
     );
     assert!(editor.presenter.photo().is_some());
@@ -713,7 +670,7 @@ fn committed_elsewhere(
 /// [`poll_until`] through `dispatch`, so the mode a draft's end asks the session for is still
 /// there to read afterwards rather than folded into a task this test never runs.
 fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
-    wait_for(editor, what, done, |editor| {
+    deliver_until(editor, what, done, |editor| {
         let _ = editor.dispatch(Message::Preview(PreviewMessage::Poll));
     });
 }
@@ -784,7 +741,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     );
     assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
-    assert_eq!(editor.render_error, None);
+    assert!(editor.render_error.is_none());
     let records = logged(&mut editor, &log);
     assert_eq!(
         events(&records, "preview_exact_cancelled"),
@@ -925,7 +882,7 @@ fn a_draft_shows_its_input_stage_in_the_update_that_takes_it_up() {
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
     let draft = editor.draft_generation.expect("the draft's job");
     // Nothing is taken up until the stage is ready, so one `Poll` takes it up.
-    wait_for(
+    deliver_until(
         &mut editor,
         "the draft's input stage",
         |editor| editor.preview_queue.ready(),

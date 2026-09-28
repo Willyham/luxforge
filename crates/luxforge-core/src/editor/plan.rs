@@ -2,7 +2,7 @@ use super::{
     ActionResult, AssetRecord, EditorService, EditorState, MutationResult,
     entries::Head,
     history::{Change, CommittedAction, Touched, request_input},
-    masks::{recipe_for_target, resolve_mask_target, take_mask_target, take_query_mask_target},
+    masks::{Targeted, recipe_for_target, resolve_mask_target, take_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
-        StageContext, StageQuestions, action_label, check_parameters, not_applicable,
+        StageContext, StageQuestions, action_label, check_parameters, check_target, not_applicable,
     },
     render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
@@ -58,7 +58,8 @@ impl<'r> Prepared<'r> {
             ActionRef::Module(module, declared) => {
                 module.descriptor().check_available()?;
                 let mut parameters = parameters;
-                let mask = take_mask_target(registry, action_id, &mut parameters)?;
+                let mask =
+                    take_mask_target(registry, Targeted::Action(action_id), &mut parameters)?;
                 let checked = check_parameters(declared, &parameters)?;
                 let input = module.parse(action_id, &checked)?;
                 // The module labels a request its template cannot describe, such as a field patch;
@@ -270,7 +271,7 @@ impl EditorService {
     ) -> Result<T, Error> {
         check_askable(&self.registry, module, asset.source.tag(), mask, input)?;
         validate_source_recipe(&self.registry, asset, recipe)?;
-        // Planning compiles the stack, so its artifacts are bound first.
+        // A stage question compiles the stack, so its artifacts are bound first.
         let bound = self.bound(recipe)?;
         // A target the stack does not hold is refused here, before a module plans anything.
         resolve_mask_target(&bound, mask)?;
@@ -294,12 +295,17 @@ impl EditorService {
 
     /// Build the questions a module may ask about one stack of `asset` and hand them to `answer`.
     ///
-    /// The output stage is compiled from the asset's dimensions before anything is asked, which is
-    /// `O(layers)` and also refuses a stack that cannot compile. Everything else is answered only
-    /// when asked ([`HostStage`]): a prefix stage compiles that prefix, and the first question that
-    /// reads a pixel or the sensor resolves the verified source, and for a RAW stack its linear
-    /// settings, strictly, once for the whole context. A plan that reads no pixel therefore never
-    /// needs the original prepared or a RAW developed. Nothing is rasterized either way.
+    /// The stack's structure is checked first ([`Recipe::validate`], `O(layers · masks)`, no
+    /// provider asked), so a stack naming a mask it does not carry is refused in those words before
+    /// a module is asked anything. Nothing is compiled up front: every question is answered only
+    /// when asked ([`HostStage`]). The output stage and a prefix stage compile that prefix, and the
+    /// first question that reads a pixel or the sensor resolves the verified source, and for a RAW
+    /// stack its linear settings, strictly, once for the whole context. A plan that asks for no
+    /// stage therefore compiles nothing: a drafted preview compiles the stack the plan produced when
+    /// it is evaluated ([`Self::evaluation`]), its one owner compile, and a commit when it is
+    /// admitted ([`Self::admit`]), and either refuses a stack that cannot compile. A plan that
+    /// reads no pixel never needs the original prepared or a RAW developed. Nothing is rasterized
+    /// either way.
     pub(super) fn with_stage_context<T>(
         &self,
         asset: &AssetRecord,
@@ -307,10 +313,7 @@ impl EditorService {
         target: Option<&MaskId>,
         answer: impl FnOnce(&StageContext<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let stage = self
-            .registry
-            .compile(asset.width, asset.height, recipe)?
-            .stage();
+        recipe.validate()?;
         let questions = HostStage {
             service: self,
             asset,
@@ -320,7 +323,6 @@ impl EditorService {
             sample_prefixes: RefCell::new(HashMap::new()),
         };
         answer(&StageContext {
-            stage,
             layers: &recipe.layers,
             registry: &self.registry,
             target,
@@ -351,7 +353,9 @@ impl EditorService {
             .ok_or_else(|| Error::validation(format!("unknown query {query_id}")))?;
         let mut parameters = parameters;
         let mask = match query {
-            QueryRef::Module(..) => take_query_mask_target(&registry, query_id, &mut parameters)?,
+            QueryRef::Module(..) => {
+                take_mask_target(&registry, Targeted::Query(query_id), &mut parameters)?
+            }
             QueryRef::Host(_) => None,
         };
         let checked = check_parameters(query.descriptor(), &parameters)?;
@@ -407,6 +411,49 @@ impl EditorService {
             parameters: fields.clone(),
         };
         check_askable(&self.registry, module, kind, mask, Some(&input))
+    }
+
+    /// The target a gesture of `action_id` on `asset_id` edits, checked when `draft.begin` opens
+    /// it through the checks its commit runs, so it is refused in the commit's words before any
+    /// field is drafted: the target is the request the commit will send with no field set yet.
+    ///
+    /// A `mask.*` gesture's target is the identities its command addresses, checked as a patch is
+    /// ([`crate::modules::check_target`]): each must be one the command declares and every one the
+    /// command requires must be named, so a stroke deletion, whose stroke a draft does not take, is
+    /// refused here. A module action's target is the host's one `mask` field, taken by the one
+    /// target check a commit and a query take ([`take_mask_target`]); anything else, a component
+    /// included, is a field the action does not declare, since a module edits a layer through the
+    /// whole mask. Then the draft is refused for what the photo is, as [`Self::check_draft`]
+    /// refuses it. Reads the asset's head, usually cached, and plans nothing.
+    pub(crate) fn draft_target(
+        &self,
+        asset_id: &AssetId,
+        action_id: &str,
+        target: MaskTarget,
+    ) -> Result<Option<MaskTarget>, Error> {
+        let action = self
+            .registry
+            .resolve_action(action_id)
+            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
+        let mut request = target.request(Value::Null);
+        let target = match action {
+            ActionRef::Host(command) => {
+                check_target(&command.action, &request)?;
+                Some(target)
+            }
+            ActionRef::Module(_, declared) => {
+                let mask =
+                    take_mask_target(&self.registry, Targeted::Action(action_id), &mut request)?;
+                check_target(declared, &request)?;
+                mask.map(|mask| MaskTarget {
+                    mask: Some(mask),
+                    ..MaskTarget::default()
+                })
+            }
+        };
+        let mask = target.as_ref().and_then(|target| target.mask.as_ref());
+        self.check_draft(asset_id, action_id, mask, &Map::new())?;
+        Ok(target)
     }
 
     /// The recipe an open draft would produce: the current snapshot with the draft's action planned
@@ -696,7 +743,7 @@ pub(super) fn check_superseded(
         if let Some(field) = superseded.iter().find(|field| {
             field.source == kind && field.action == input.action_id && field.parameter == name
         }) {
-            return Err(Error::validation(registry.superseded_refusal(field)));
+            return Err(registry.superseded_error(ErrorKind::Validation, field));
         }
     }
     Ok(())
@@ -892,7 +939,7 @@ pub(super) fn edited(
         registry
             .effect(effect_id)
             .map(|(_, effect)| effect.format)
-            .ok_or_else(|| Error::incompatible(format!("unavailable effect {effect_id}")))
+            .ok_or_else(|| Error::unavailable_effect(effect_id, &[]))
     };
     match edit {
         LayerEdit::Commit(new) => {
@@ -1774,6 +1821,9 @@ mod tests {
 
         let mut service =
             EditorService::open_with(&catalog, registry(EffectStage::Finish)).unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let before = service.state(&asset).unwrap();
         let (entries, requests) = (rows(&service, "entries"), rows(&service, "requests"));
         let error = service
@@ -1891,6 +1941,7 @@ mod tests {
         .expect_err("no provider declares the effect");
         assert_eq!(unknown.kind, ErrorKind::Incompatible);
         assert_eq!(unknown.detail, "unavailable effect test.nobody");
+        assert_eq!(unknown.unavailable_effect_id(), Some("test.nobody"));
     }
 
     /// The 480x320 fixture's crop journey: an exact copy at angle zero, in-place updates that keep
@@ -2177,7 +2228,10 @@ mod tests {
             );
         }
 
-        let service = EditorService::open(&catalog).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let stack = service
             .state(&asset)
             .unwrap()
@@ -2609,6 +2663,43 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A stage context compiles nothing up front: a plan that asks for no stage costs the owner no
+    /// compile, and the output stage is compiled only when a module asks for it, to the stage the
+    /// whole stack's compile answers.
+    #[test]
+    fn a_stage_context_compiles_the_output_stage_only_when_asked() {
+        let catalog = temp("lazy-stage.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_transform(&asset, mutation(0, "turn"), Transform::RotateRight)
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let (asset, recipe) = (&state.asset, &state.current_entry.snapshot.recipe);
+        let whole = service
+            .registry
+            .compile(asset.width, asset.height, recipe)
+            .unwrap()
+            .stage();
+        assert_eq!((whole.width, whole.height), (asset.height, asset.width));
+        crate::modules::stack_compiles::take();
+        service
+            .with_stage_context(asset, recipe, None, |_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            crate::modules::stack_compiles::take(),
+            0,
+            "a context asked nothing compiles nothing"
+        );
+        let stage = service
+            .with_stage_context(asset, recipe, None, |context| context.stage())
+            .unwrap();
+        assert_eq!(crate::modules::stack_compiles::take(), 1);
+        assert_eq!(stage, whole);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// The frame a preview job renders, on this thread.
     fn preview_frame(service: &EditorService, job: &crate::PreviewJob) -> Raster {
         job.evaluation
@@ -2687,14 +2778,16 @@ mod tests {
             parameters: fields.as_object().unwrap().clone(),
         };
         let mask = MaskId::new();
-        for (fields, detail) in [
+        for (fields, detail, data) in [
             (
                 json!({"temperature": 20.0}),
                 "on a RAW photo, Temperature is the source development's: set-raw temperature (K)",
+                json!({"source": "raw", "field": "set-basic.temperature", "by": "set-raw.temperature"}),
             ),
             (
                 json!({"exposure": 0.5, "tint": 4.0}),
                 "on a RAW photo, Tint is the source development's: set-raw tint",
+                json!({"source": "raw", "field": "set-basic.tint", "by": "set-raw.tint"}),
             ),
         ] {
             let error = check_superseded(
@@ -2706,6 +2799,7 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Validation, "{fields}");
             assert_eq!(error.detail, detail, "{fields}");
+            assert_eq!(error.data.as_deref(), Some(&data), "{fields}");
             check_superseded(
                 &registry,
                 crate::SourceTag::Raw,

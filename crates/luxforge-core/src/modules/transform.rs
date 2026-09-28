@@ -254,9 +254,7 @@ pub(crate) fn stored_orientation(layer: &Layer) -> Result<Orientation, Error> {
 
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation, Error> {
     if effect_id != ORIENTATION_EFFECT {
-        return Err(Error::incompatible(format!(
-            "unavailable effect {effect_id}"
-        )));
+        return Err(Error::unavailable_effect(effect_id, &[]));
     }
     if format != EFFECT_FORMAT {
         return Err(Error::incompatible(format!(
@@ -487,7 +485,6 @@ mod tests {
             .plan(
                 &input,
                 &StageContext {
-                    stage: STAGE,
                     layers,
                     registry: &ModuleRegistry::builtin(),
                     target: None,

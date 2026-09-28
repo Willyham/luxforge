@@ -253,20 +253,6 @@ impl Editor {
             .is_some_and(|gesture| gesture.kind.armed())
     }
 
-    /// Why a mask gesture cannot start, in the words the status bar uses.
-    fn mask_refusal(&self) -> Option<String> {
-        if let Some(reason) = self.gesture_refusal(Starting::Mask) {
-            return Some(reason);
-        }
-        if !self.session.preview.can_edit() {
-            return Some("Return to the current state before editing".into());
-        }
-        if self.state.is_none() {
-            return Some("No photograph is open".into());
-        }
-        self.busy.then(|| "Waiting for the last request".to_owned())
-    }
-
     /// The kind of the component the panel has selected, as the listing reports it.
     fn selected_component_kind(&self) -> Option<String> {
         let component = self.selected_component.as_ref()?;
@@ -326,10 +312,7 @@ impl Editor {
         target: MaskTarget,
         fields: Map<String, Value>,
     ) -> Task<Message> {
-        if let Some(reason) = self
-            .gesture_refusal(Starting::MaskCommand)
-            .or_else(|| (!self.editable()).then(|| self.edit_refusal()))
-        {
+        if let Some(reason) = self.gesture_refusal(Starting::MaskCommand) {
             self.status = reason;
             return Task::none();
         }
@@ -349,17 +332,6 @@ impl Editor {
         // that case above, so reaching here means this one went out and its answer is ours.
         self.mask_command_in_flight = true;
         Task::batch([disarm, sent])
-    }
-
-    /// Why an edit is refused right now, in the words the status bar uses.
-    fn edit_refusal(&self) -> String {
-        if self.state.is_none() {
-            "No photograph is open".into()
-        } else if !self.session.preview.can_edit() {
-            "Return to the current state before editing".into()
-        } else {
-            "Waiting for the last request".into()
-        }
     }
 
     /// One Masks-panel message.
@@ -891,7 +863,7 @@ impl Editor {
         kind: String,
         mask: Option<MaskId>,
     ) -> Task<Message> {
-        if let Some(reason) = self.mask_refusal() {
+        if let Some(reason) = self.gesture_refusal(Starting::Mask) {
             self.status = reason;
             return Task::none();
         }
@@ -973,7 +945,7 @@ impl Editor {
 
     /// Open a gesture that patches one existing component's geometry.
     fn edit_shape(&mut self, component: String) -> Task<Message> {
-        if let Some(reason) = self.mask_refusal() {
+        if let Some(reason) = self.gesture_refusal(Starting::Mask) {
             self.status = reason;
             return Task::none();
         }

@@ -86,7 +86,7 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"draft":{"start":true}},
         {"draft":{"reapply":true}},
         {"draft":{"angle":7.5}},
-        {"draft":{"nudge":-0.5}},
+        {"draft":{"nudge":-1}},
         {"draft":{"angle_rail":[0.25,0.75]}},
         {"draft":{"preset":"3:2"}},
         {"draft":{"rect":[10.0,20.0,300.0,200.0]}},
@@ -167,6 +167,11 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         ),
         (json!({"draft":{"start":false}}), "takes true"),
         (json!({"draft":{"angle":"7"}}), "invalid type: string \"7\""),
+        (json!({"draft":{"nudge":2}}), "takes -1 or 1"),
+        (
+            json!({"draft":{"nudge":-0.5}}),
+            "invalid type: floating point",
+        ),
         (json!({"draft":{"rect":[1,2,0,4]}}), "positive extents"),
         (json!({"draft":{"rect":[1,2,3]}}), "invalid length 3"),
         (

@@ -374,7 +374,8 @@ pub(crate) enum CropPointer {
 }
 
 /// Every crop draft change is one message, so a script can drive the whole editor through the
-/// update function without simulating a pointer.
+/// update function without simulating a pointer. The angle is not among them: it is the generic
+/// stepper of the frame's declared `angle` field, whose [`ControlMessage`]s the crop driver takes.
 #[derive(Clone, Debug)]
 pub(crate) enum CropMessage {
     /// Open a draft on the current stack. Apply, Cancel and Reapply are the one draft lifecycle's
@@ -383,15 +384,6 @@ pub(crate) enum CropMessage {
     /// The truncated preview job for the input stage of a start or a reapply.
     PreviewReady(Result<Box<PreviewJob>, String>),
     Pointer(CropPointer),
-    AngleText(String),
-    SubmitAngle,
-    /// The angle's rail was dragged to this fraction of its range.
-    AngleRail(f64),
-    /// The drag on the angle's rail ended.
-    AngleRailReleased,
-    NudgeAngle(f64),
-    /// The angle back to 0: a double-click on its rail.
-    ResetAngle,
     /// The index of one generated ratio preset.
     Preset(usize),
     CustomWidth(String),
@@ -696,12 +688,6 @@ pub(crate) enum ControlMessage {
         action: String,
         parameter: Option<String>,
     },
-    /// A slider drag: the field text follows the pointer and no request is sent.
-    SliderMoved {
-        action: String,
-        parameter: String,
-        value: f64,
-    },
     /// A slider rail position in 0..=1; the host maps it through the descriptor's soft range.
     Fraction {
         action: String,
@@ -714,7 +700,8 @@ pub(crate) enum ControlMessage {
         parameter: String,
         value: Value,
     },
-    /// The end of a continuous control gesture.
+    /// The end of a continuous control gesture: it commits the open draft of the control drafting,
+    /// and a control that does not draft runs its action once, exactly as Enter in the field does.
     Released {
         action: String,
         parameter: String,
@@ -768,12 +755,6 @@ pub(crate) enum ControlMessage {
         identity: CurveSampleIdentity,
         result: Result<Value, String>,
     },
-    /// A slider drag ended: it commits the open draft of a patch action, and otherwise runs the
-    /// control's action once, exactly as Enter in the field does.
-    SliderReleased {
-        action: String,
-        parameter: String,
-    },
     /// Return one generated field to its declared default. On a patch action that is one action
     /// submitting that field alone; otherwise it only refills the text, as it always has.
     ResetField {
@@ -785,9 +766,6 @@ pub(crate) enum ControlMessage {
         action: String,
         parameter: String,
     },
-    /// Typing ended without committing.
-    #[allow(dead_code)]
-    CancelEdit,
     /// Collapse or expand one module's section.
     ToggleSection(String),
     /// Return one module to its neutral state through its declared reset action.
@@ -797,6 +775,56 @@ pub(crate) enum ControlMessage {
         module_id: String,
         path: Vec<usize>,
     },
+}
+
+impl ControlMessage {
+    /// The one declared field a message names, as `(action, parameter)`: every message a number,
+    /// colour or curve control sends. Section, group and tab messages name none.
+    pub(crate) fn field(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Field {
+                action, parameter, ..
+            }
+            | Self::Fraction {
+                action, parameter, ..
+            }
+            | Self::Discrete {
+                action, parameter, ..
+            }
+            | Self::Released { action, parameter }
+            | Self::Step {
+                action, parameter, ..
+            }
+            | Self::KeyNudge {
+                action, parameter, ..
+            }
+            | Self::FieldNudge {
+                action, parameter, ..
+            }
+            | Self::TogglePicker { action, parameter }
+            | Self::Picker {
+                action, parameter, ..
+            }
+            | Self::Curve {
+                action, parameter, ..
+            }
+            | Self::ResetField { action, parameter }
+            | Self::EditValue { action, parameter } => Some((action, parameter)),
+            Self::Submit {
+                action,
+                parameter: Some(parameter),
+            } => Some((action, parameter)),
+            Self::Submit {
+                parameter: None, ..
+            }
+            | Self::ToggleGroup { .. }
+            | Self::SelectTab { .. }
+            | Self::CurveSampled { .. }
+            | Self::ToggleSection(_)
+            | Self::ResetModule(_)
+            | Self::ResetGroup { .. } => None,
+        }
+    }
 }
 
 /// Running a declared action, or copying the request one would send. Handled in `app/actions.rs`.

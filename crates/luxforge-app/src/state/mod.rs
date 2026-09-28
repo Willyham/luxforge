@@ -22,8 +22,8 @@ pub(crate) mod tracked;
 use crate::{crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
 use luxforge_core::{
-    ClientSession, ComponentId, ComponentMode, EditorState, EntryId, ErrorKind, HistoryPage,
-    MaskId, ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
+    ClientSession, ComponentId, ComponentMode, EditorState, EntryId, HistoryPage, MaskId,
+    ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -142,6 +142,42 @@ impl Stamps {
     }
 }
 
+/// Why a start that needs the editable state is refused with no photograph open.
+pub(crate) const NO_PHOTOGRAPH: &str = "No photograph is open";
+/// Why a start that needs the editable state is refused while a history entry is previewed.
+pub(crate) const NOT_CURRENT: &str = "Return to the current state before editing";
+/// Why a start that waits for requests is refused while one is in flight.
+pub(crate) const IN_FLIGHT: &str = "Waiting for the last request";
+
+/// The editable state, as one rule: a photograph is open ([`NO_PHOTOGRAPH`]) and the current state,
+/// not a previewed entry, is on screen ([`NOT_CURRENT`]). `None` is editable. The app's one start
+/// refusal (`Editor::gesture_refusal`) asks this for every start that takes its editable half, and
+/// [`edit_refusal`] adds the busy half for the models.
+pub(crate) fn editable_refusal(
+    state: Option<&EditorState>,
+    session: &ClientSession,
+) -> Option<&'static str> {
+    if state.is_none() {
+        return Some(NO_PHOTOGRAPH);
+    }
+    (!session.preview.can_edit()).then_some(NOT_CURRENT)
+}
+
+/// Why an edit cannot start now, in the words the status bar and a disabled section use: the
+/// editable state ([`editable_refusal`]), then no request in flight ([`IN_FLIGHT`]). `None` is
+/// editable. It is what the app refuses an edit with (a start taking the editable and busy halves)
+/// when no draft is open, computed once per derivation into [`Inputs::edit_refusal`] for every
+/// model that reads it.
+pub(crate) fn edit_refusal(
+    state: Option<&EditorState>,
+    session: &ClientSession,
+    busy: bool,
+) -> Option<String> {
+    editable_refusal(state, session)
+        .or(busy.then_some(IN_FLIGHT))
+        .map(str::to_owned)
+}
+
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
     /// Whether the large inputs below may have changed since a section was last built.
@@ -189,6 +225,10 @@ pub(crate) struct Inputs<'a> {
     pub(crate) preset_refusal: Option<String>,
     pub(crate) gallery_refusal: Option<String>,
     pub(crate) history_refusal: Option<String>,
+    /// Why nothing can be edited now ([`edit_refusal`]), computed once per derivation: the title
+    /// bar's Undo and Redo, the canvas's modes and picks, every module section and the Masks panel
+    /// read this answer rather than a rule of their own.
+    pub(crate) edit_refusal: Option<String>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// The masks of the displayed entry as `mask.list` last answered them.
     pub(crate) masks: Option<&'a MaskListing>,
@@ -223,7 +263,6 @@ pub(crate) struct Inputs<'a> {
     pub(crate) target: Option<&'a MaskId>,
     /// The draft's own input stage is on the GPU and the current state is shown.
     pub(crate) drafting: bool,
-    pub(crate) crop_angle: &'a str,
     pub(crate) crop_custom: (&'a str, &'a str),
     pub(crate) crop_guide: bool,
     pub(crate) crop_option: bool,
@@ -232,8 +271,7 @@ pub(crate) struct Inputs<'a> {
     pub(crate) status: &'a str,
     pub(crate) busy: bool,
     pub(crate) can_open: bool,
-    /// An export can start: a photograph is open, no request or dialog is in flight and this window
-    /// is not already exporting.
+    /// An export can start: the app's export refusal has nothing to say.
     pub(crate) can_export: bool,
     /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
@@ -260,7 +298,7 @@ pub(crate) struct Inputs<'a> {
     /// that frame's own phase. `None` before any frame is on screen.
     pub(crate) render: Option<status::RenderTime>,
     /// The last preview failure, cleared by the next successful upload.
-    pub(crate) render_error: Option<&'a (ErrorKind, String)>,
+    pub(crate) render_error: Option<&'a luxforge_core::Error>,
     pub(crate) pointer: Option<(u32, u32)>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
     /// identity and generation it arrived under. `None` before the first one arrives.
@@ -376,9 +414,13 @@ impl Built {
         let stamps = &inputs.stamps;
         let state = state_key(inputs);
         let session = stamps.session;
-        let render_error = inputs
-            .render_error
-            .map(|(kind, detail)| (kind.code(), detail.as_str()));
+        let render_error = inputs.render_error.map(|error| {
+            (
+                error.kind.code(),
+                error.detail.as_str(),
+                error.unavailable_effect_id(),
+            )
+        });
         let title = key((
             (
                 inputs.busy,
@@ -404,6 +446,7 @@ impl Built {
             inputs.display_entry,
             state,
             (inputs.busy, inputs.version_form_open, inputs.version_name),
+            &inputs.history_refusal,
         ));
         let canvas = key((
             (stamps.modules, stamps.capabilities, stamps.menu, session),
@@ -475,7 +518,7 @@ impl Built {
             (stamps.current_recipe, stamps.recipe, stamps.menu, session),
             (stamps.presets, stamps.preset_form, stamps.capabilities),
             (inputs.busy, inputs.developer, inputs.modules_ready),
-            (inputs.crop_angle, inputs.crop_custom, inputs.crop_guide),
+            (inputs.crop_custom, inputs.crop_guide),
             (inputs.editing, inputs.dragging),
             drafting_key(inputs.draft.is_some()),
             (&inputs.preset_refusal, inputs.slider_draft, inputs.target),
@@ -791,8 +834,7 @@ mod tests {
         status: String,
         busy: bool,
         developer: bool,
-        crop_angle: String,
-        render_error: Option<(luxforge_core::ErrorKind, String)>,
+        render_error: Option<luxforge_core::Error>,
         analysis: Option<histogram::Analysis>,
         analysis_updating: bool,
         readout: Option<histogram::Readout>,
@@ -841,7 +883,6 @@ mod tests {
                 status: "ready".into(),
                 busy: false,
                 developer: false,
-                crop_angle: "0".into(),
                 render_error: None,
                 analysis: None,
                 analysis_updating: false,
@@ -937,6 +978,7 @@ mod tests {
                 history_refusal: (self.slider_draft.is_some() || self.draft.is_some()).then(|| {
                     "Finish the open draft before undoing, redoing or restoring".to_owned()
                 }),
+                edit_refusal: edit_refusal(self.state.as_ref(), &self.session, self.busy),
                 draft: self.draft.as_ref(),
                 masks: self.masks.as_ref(),
                 selected_mask: self.selected_mask.as_ref(),
@@ -956,7 +998,6 @@ mod tests {
                     .as_ref()
                     .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
                 drafting: self.draft.is_some(),
-                crop_angle: &self.crop_angle,
                 crop_custom: ("5", "4"),
                 crop_guide: false,
                 crop_option: false,
@@ -1121,6 +1162,51 @@ mod tests {
         );
     }
 
+    /// Restore commits, so the panel offers it only where the app's history refusal would let it
+    /// run: never while a draft is held or a request is in flight. Return to current is a
+    /// selection, which a held draft does not refuse.
+    #[test]
+    fn restore_is_disabled_while_the_history_refusal_holds() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let older = entry(&asset, 1, None);
+        scene.list(older.clone());
+        scene.display_entry = Some(older.id.clone());
+        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id);
+        let preview = |scene: &Scene| scene.derive().panel.preview.expect("preview controls");
+        assert_eq!(
+            preview(&scene),
+            panel::PreviewControls {
+                can_return: true,
+                can_restore: true
+            }
+        );
+        scene.slider_draft = Some(("fixture-set".into(), "amount".into(), false));
+        assert!(scene.inputs().history_refusal.is_some());
+        assert_eq!(
+            preview(&scene),
+            panel::PreviewControls {
+                can_return: true,
+                can_restore: false
+            },
+            "a held draft refuses Restore"
+        );
+        scene.slider_draft = None;
+        scene.busy = true;
+        let workspace = scene.derive();
+        assert_eq!(
+            workspace.panel.preview,
+            Some(panel::PreviewControls {
+                can_return: false,
+                can_restore: false
+            })
+        );
+        assert!(
+            !workspace.panel.can_select,
+            "no selection while a request is in flight"
+        );
+    }
+
     #[test]
     fn an_entry_off_the_lineage_is_marked_as_a_branch() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
@@ -1153,7 +1239,7 @@ mod tests {
             section(&scene.derive(), &crop.id)
                 .disabled_reason
                 .as_deref(),
-            Some("Return to current to edit")
+            Some(NOT_CURRENT)
         );
         scene.session.preview.selection = luxforge_core::HistorySelection::Current;
         scene.busy = true;
@@ -1240,17 +1326,18 @@ mod tests {
             assert_eq!(chosen(&model), ["Free"]);
             assert!(!model.locked && !model.can_swap);
             assert_eq!(model.lock_label, "Lock ratio");
-            assert_eq!(model.angle, "0");
+            let angle = model.angle.as_ref().expect("the angle's stepper");
             assert_eq!(
-                model.angle_rail,
-                Some(tools::AngleRailModel {
-                    min: -45.0,
-                    max: 45.0,
-                    value: 0.0,
-                    step: crate::crop_draft::ANGLE_RAIL_STEP,
-                    live: false,
-                })
+                angle.style,
+                tools::NumberControlStyle::Stepper { rail: true }
             );
+            assert_eq!(
+                (angle.display.as_str(), angle.unit.as_deref(), angle.value),
+                ("0.0", Some("\u{b0}"), 0.0)
+            );
+            assert_eq!((angle.spec.min, angle.spec.max), (-45.0, 45.0));
+            assert_eq!((angle.spec.step, angle.spec.fine_step), (0.5, 0.05));
+            assert!(!angle.dragging, "the rail rests while idle");
             assert!(model.readout.is_empty() && !model.can_apply);
             assert_eq!(model.presets.len(), 7, "every declared ratio is a chip");
         }
@@ -1278,8 +1365,8 @@ mod tests {
         );
         let model = idle(vec![crop_layer(straightened)]);
         assert_eq!(chosen(&model), ["Original"]);
-        assert_eq!(model.angle, "2.4");
-        assert_eq!(model.angle_rail.map(|rail| rail.value), Some(2.4));
+        let angle = model.angle.expect("the angle's stepper");
+        assert_eq!((angle.display.as_str(), angle.value), ("2.4", 2.4));
 
         // An off-centre rectangle no ratio produces reads as Free, at its own angle.
         let free = CropPayload {
@@ -1292,7 +1379,7 @@ mod tests {
         let model = idle(vec![crop_layer(free)]);
         assert_eq!(chosen(&model), ["Free"]);
         assert!(!model.locked);
-        assert_eq!(model.angle, "7");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "7.0");
 
         // Behind a quarter turn the crop's input stage is portrait. A 16:9 fitted there reads as
         // 16:9 only because the turn is read: on the unturned stage the same payload is 480 × 120.
@@ -1334,13 +1421,13 @@ mod tests {
         let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["1:1"]);
         assert!(model.locked);
-        assert_eq!(model.angle, "3");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "3.0");
         // A row without a stage, which the core reports after a layer it cannot compile, reads as
         // Free at the crop's own angle rather than as a guess.
         row(&mut scene).input_stage = None;
         let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["Free"]);
-        assert_eq!(model.angle, "3");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "3.0");
     }
 
     /// The idle controls read the displayed entry, not the current one, and a historical preview or
@@ -1381,11 +1468,11 @@ mod tests {
             ["Free"],
             "rows that describe another entry are not the displayed entry's crop"
         );
-        assert_eq!(model.angle, "0");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "0.0");
         scene.describe_displayed();
         let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["Free"], "the displayed entry has no crop");
-        assert_eq!(model.angle, "0");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "0.0");
     }
 
     #[test]
@@ -2533,10 +2620,7 @@ mod tests {
         // An unavailable provider on its own is reported by its section header, not by a notice.
         assert!(scene.derive().canvas.notices.is_empty());
 
-        scene.render_error = Some((
-            luxforge_core::ErrorKind::Incompatible,
-            format!("unavailable effect {effect} (layers l1)"),
-        ));
+        scene.render_error = Some(luxforge_core::Error::unavailable_effect(&effect, &["l1"]));
         let notice = &scene.derive().canvas.notices[0];
         assert_eq!(notice.title, "Preview is stale");
         assert_eq!(
@@ -2546,9 +2630,9 @@ mod tests {
         assert!(notice.actions.is_empty(), "Locate is a later feature");
 
         // A layer nothing provides is still named, by its effect identity.
-        scene.render_error = Some((
-            luxforge_core::ErrorKind::Incompatible,
-            "unavailable effect other.effect (layers l1)".into(),
+        scene.render_error = Some(luxforge_core::Error::unavailable_effect(
+            "other.effect",
+            &["l1"],
         ));
         assert_eq!(
             scene.derive().canvas.notices[0].body,
@@ -2563,15 +2647,49 @@ mod tests {
             (luxforge_core::ErrorKind::FileAccess, "Original not found"),
             (luxforge_core::ErrorKind::ResourceLimit, "Rendering limit"),
         ] {
-            scene.render_error = Some((kind, "the detail".into()));
+            scene.render_error = Some(luxforge_core::Error::new(kind, "the detail"));
             let notice = &scene.derive().canvas.notices[0];
             assert_eq!(notice.title, title, "{kind:?}");
             assert_eq!(notice.body, "the detail");
             assert!(notice.actions.is_empty());
         }
         // A kind the workspace has nothing to say about is left to the status bar.
-        scene.render_error = Some((luxforge_core::ErrorKind::Internal, "boom".into()));
+        scene.render_error = Some(luxforge_core::Error::internal("boom"));
         assert!(scene.derive().canvas.notices.is_empty());
+    }
+
+    /// The canvas reads what a failure is from its kind and data, never its message: the stale
+    /// notice follows the effect the data names whatever the message says, and a message that
+    /// merely reads like an unavailable effect, with no data behind it, is not one.
+    #[test]
+    fn a_render_failure_is_read_from_its_data_not_its_message() {
+        let unavailable = ModuleDescriptor {
+            availability: Availability::Unavailable {
+                reason: "disabled by --disable-module".into(),
+            },
+            ..crop_descriptor()
+        };
+        let effect = unavailable.effects[0].id.clone();
+        let mut scene = Scene::new(vec![unavailable]).opened(Vec::new());
+
+        scene.render_error = Some(
+            luxforge_core::Error::incompatible("a reworded refusal")
+                .with_data(serde_json::json!({ "effect_id": effect })),
+        );
+        let notice = &scene.derive().canvas.notices[0];
+        assert_eq!(notice.title, "Preview is stale");
+        assert_eq!(
+            notice.body,
+            "Crop is unavailable: disabled by --disable-module"
+        );
+
+        scene.render_error = Some(luxforge_core::Error::incompatible(format!(
+            "unavailable effect {effect} (layers l1)"
+        )));
+        assert!(
+            scene.derive().canvas.notices.is_empty(),
+            "an incompatible failure without the data is not an unavailable effect"
+        );
     }
 
     #[test]
@@ -2584,10 +2702,7 @@ mod tests {
         };
         let effect = unavailable.effects[0].id.clone();
         let scene = Scene::new(vec![unavailable]).opened(Vec::new());
-        let render_error = Some((
-            luxforge_core::ErrorKind::Incompatible,
-            format!("unavailable effect {effect} (layers l1)"),
-        ));
+        let render_error = Some(luxforge_core::Error::unavailable_effect(&effect, &["l1"]));
         let mut inputs = scene.inputs();
         inputs.photo = false;
         inputs.render_error = render_error.as_ref();
@@ -2791,10 +2906,7 @@ mod tests {
         let workspace = scene.derive();
         let section = section(&workspace, &crop.id);
         assert!(!section.enabled);
-        assert_eq!(
-            section.disabled_reason.as_deref(),
-            Some("Return to current to edit")
-        );
+        assert_eq!(section.disabled_reason.as_deref(), Some(NOT_CURRENT));
         assert!(
             section.reset.is_some(),
             "a section that cannot edit keeps its reset, dimmed, so the header keeps its height"
@@ -2876,7 +2988,7 @@ mod tests {
         );
         assert!(matches!(amount.rail, tools::RailStyle::Temperature));
         assert!(
-            matches!(controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
+            matches!(controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper { rail: false })
         );
         assert!(
             matches!(controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
@@ -3290,10 +3402,7 @@ mod tests {
         );
         scene.busy = false;
         scene.session.preview.selection = luxforge_core::HistorySelection::Entry(EntryId::new());
-        assert_eq!(
-            enabled(&scene),
-            (false, Some("Return to current to edit".into()))
-        );
+        assert_eq!(enabled(&scene), (false, Some(NOT_CURRENT.into())));
         scene.session.preview.selection = luxforge_core::HistorySelection::Current;
         scene.draft = Some(CropDraft::neutral(
             luxforge_core::CropStage {

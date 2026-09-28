@@ -7,12 +7,7 @@
 
 use luxforge_testkit::{JsonProcess, client::request_id, fixtures};
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
-
-const JOB_TIMEOUT: Duration = Duration::from_secs(180);
+use std::path::{Path, PathBuf};
 
 /// One `luxforge-json` process over one catalog.
 fn start(catalog: &Path) -> JsonProcess {
@@ -67,7 +62,7 @@ fn mutation(state: &Value, request_id: &str) -> Value {
 }
 
 fn wait_job(client: &mut JsonProcess, job_id: &str) -> Value {
-    let status = client.settle("job.read", &json!(job_id), JOB_TIMEOUT);
+    let status = client.settle("job.read", &json!(job_id));
     assert_eq!(status["status"], "ready", "RAW source job: {status}");
     status
 }

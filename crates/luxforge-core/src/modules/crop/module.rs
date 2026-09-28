@@ -103,6 +103,8 @@ fn aspect_options() -> Vec<String> {
 fn angle_parameter() -> ParameterDescriptor {
     ParameterDescriptor::number("angle", MIN_ANGLE, MAX_ANGLE)
         .default(0.0)
+        .step(0.5)
+        .fine_step(0.05)
         .unit("deg")
         .notes("straightening angle, positive turns the image clockwise on screen")
 }
@@ -429,9 +431,7 @@ fn box_rect(payload: &CropPayload, stage: &CropStage) -> BoxRect {
 
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<CropPayload, Error> {
     if effect_id != CROP_EFFECT {
-        return Err(Error::incompatible(format!(
-            "unavailable effect {effect_id}"
-        )));
+        return Err(Error::unavailable_effect(effect_id, &[]));
     }
     if format != EFFECT_FORMAT {
         return Err(Error::incompatible(format!(
@@ -514,7 +514,7 @@ impl ToolModule for CropModule {
                     payload(&layer.effect_id, layer.effect_format, &layer.payload)?,
                 )),
             ),
-            None => (context.stage, None),
+            None => (context.stage()?, None),
         };
         let current = existing.as_ref().map(|(_, payload)| payload);
         match input.action_id.as_str() {
@@ -667,7 +667,6 @@ mod tests {
         module.plan(
             &input,
             &StageContext {
-                stage: if layers.is_empty() { INPUT } else { FINAL },
                 layers,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,
@@ -678,14 +677,20 @@ mod tests {
         )
     }
 
-    /// The crop layer, which is in a stack of this many layers, receives [`INPUT`]; planning a
-    /// crop never samples a pixel.
+    /// The crop layer, which is in a stack of this many layers, receives [`INPUT`], and a stack of
+    /// layers produces [`FINAL`]; planning a crop never samples a pixel.
     struct CropInput(usize);
 
     impl crate::modules::StageQuestions for CropInput {
         fn stage_before(&self, index: usize) -> Result<Stage, Error> {
-            assert!(index < self.0, "the crop layer is in the stack");
-            Ok(INPUT)
+            match index {
+                0 if self.0 == 0 => Ok(INPUT),
+                index if index == self.0 => Ok(FINAL),
+                index => {
+                    assert!(index < self.0, "the crop layer is in the stack");
+                    Ok(INPUT)
+                }
+            }
         }
         fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
             panic!("planning a crop never samples a pixel")
@@ -745,6 +750,9 @@ mod tests {
         assert!(!angle.required);
         assert_eq!(angle.default, Some(Value::from(0.0)));
         assert_eq!(angle.unit.as_deref(), Some("deg"));
+        // The steps a stepper and an agent move the angle by: the ±0.5° buttons and the rail's,
+        // and an Option nudge's, 0.05°.
+        assert_eq!((angle.step, angle.fine_step), (Some(0.5), Some(0.05)));
         assert_eq!(
             angle.kind,
             ParameterKind::Number {

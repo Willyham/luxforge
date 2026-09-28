@@ -99,43 +99,25 @@ impl Status {
     }
 }
 
-/// How to count the editor processes a component started. The count is always read from what the
-/// component itself recorded, so a run that stopped early reports the launches it actually made.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Launches {
-    /// No editor process at all (`check`, the core acceptance journey, core timing diagnostics
-    /// and fixture generation), or one that keeps no `launches` list of its own (`raw-authentic`'s
-    /// `cargo test` processes).
-    None,
-    /// A run of the scenario library's launch envelope — every smoke scenario, `editor-latency`,
-    /// `measure` and `hardening` — which lists every editor process it started under `launches`,
-    /// however many it makes.
-    Recorded,
-    RawEditor,
+/// How many editor processes a component started, from its own `run/result.json`: a run of the
+/// scenario library's launch envelope — every smoke scenario, `editor-latency`, `measure` and
+/// `hardening` — lists every editor process it started under `launches`, so a run that stopped
+/// early reports the launches it actually made. A component that starts no editor (`check`, the
+/// core acceptance journey, core timing diagnostics, fixture generation and `raw-authentic`'s
+/// `cargo test` processes) keeps no such list, and counts none.
+fn launches(result: Option<&Value>) -> u64 {
+    result.map_or(0, |result| {
+        result["launches"].as_array().map_or(0, Vec::len) as u64
+    })
 }
 
-impl Launches {
-    /// The count, from the component's own `run/result.json`.
-    fn count(self, result: Option<&Value>) -> u64 {
-        let Some(result) = result else { return 0 };
-        match self {
-            Self::None => 0,
-            Self::Recorded => result["launches"].as_array().map_or(0, Vec::len) as u64,
-            // Each trial is a scripted edit launch and a reopen launch.
-            Self::RawEditor => 2 * result["runs"].as_array().map_or(0, Vec::len) as u64,
-        }
-    }
-}
-
-/// One planned component: the arguments it gets, where its result lives and how to count its
-/// launches.
+/// One planned component: the arguments it gets and where its result lives.
 struct Spec {
     name: String,
     tier: &'static str,
     args: Vec<String>,
     /// The result file inside the component's own `run/` directory, when it writes one.
     result: Option<&'static str>,
-    launches: Launches,
     /// Whether the component takes `--output`, `--binary` and `--manifest`.
     output: bool,
     binary: bool,
@@ -150,31 +132,11 @@ fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
         tier,
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         result: None,
-        launches: Launches::None,
         output: true,
         binary: false,
         manifest: false,
         skip: None,
     }
-}
-
-/// The manifest's own sources, `(id, absolute path)`, so `plan` can build one `raw-panel` component
-/// per source without repeating `raw-editor`'s own full validation, which stays the authority when
-/// `raw-editor` itself runs. `path` resolves the same way every other manifest-relative path here
-/// does: as given when absolute, otherwise joined to the manifest's own directory.
-fn manifest_sources(path: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let manifest: Value = read_json(path)?;
-    let base = path.parent().ok_or("Manifest has no parent")?;
-    manifest["sources"]
-        .as_array()
-        .ok_or("RAW manifest needs a sources array")?
-        .iter()
-        .map(|source| -> Result<(String, PathBuf)> {
-            let id = source["id"].as_str().ok_or("RAW source needs an id")?;
-            let raw_path = source["path"].as_str().ok_or("RAW source needs a path")?;
-            Ok((id.to_owned(), absolute(base, Path::new(raw_path))))
-        })
-        .collect()
 }
 
 /// One `cargo test` invocation `raw-authentic` runs: the package and integration-test binary that
@@ -240,7 +202,7 @@ fn owner_dir(sources: &[(String, PathBuf)]) -> Result<PathBuf> {
 pub fn authentic(root: &Path, manifest_path: &Path, out: &Path) -> Result {
     ensure(!out.exists(), "RAW authentic output must be new")?;
     fs::create_dir_all(out)?;
-    let sources = manifest_sources(manifest_path)?;
+    let sources = raw::sources(manifest_path)?;
     let dir = owner_dir(&sources)?;
     let mut result = json!({
         "status":"failed",
@@ -288,10 +250,10 @@ pub fn authentic(root: &Path, manifest_path: &Path, out: &Path) -> Result {
 /// order, after everything else in the tier and behind the host-wide timing lock, so nothing else
 /// on the machine is competing with them from this command.
 ///
-/// `manifest` is the manifest's own sources, `(id, absolute path)`, read once by the caller; `None`
-/// when `--manifest` was not given. Building one `raw-panel` component per source and one RAW
-/// `performance` component needs the source list itself, not just whether a manifest was given, so
-/// this differs from `raw-editor`'s own `--manifest` forwarding, which the subprocess reads itself.
+/// `manifest` is the manifest's own sources, `(id, absolute path)`, read once by the caller through
+/// the one RAW manifest reader; `None` when `--manifest` was not given. Building one `raw-editor`
+/// and one `raw-panel` component per source and one RAW `performance` component needs the source
+/// list itself, not just whether a manifest was given.
 fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> Vec<Spec> {
     let mut specs = Vec::new();
     if !fixtures && tier != Tier::Quick {
@@ -315,7 +277,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         {
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     &format!("smoke-{}", scenario.name),
@@ -326,26 +287,38 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         }
     }
     if tier == Tier::Full {
-        specs.push(Spec {
-            result: Some("result.json"),
-            launches: Launches::RawEditor,
-            binary: true,
-            manifest: true,
-            skip: manifest.is_none().then_some("no --manifest"),
-            ..spec("raw-editor", "full", &["raw-editor"])
-        });
+        let sources = manifest.unwrap_or(&[]);
+        // The RAW editor journey once per manifest source, each run given the manifest that lists
+        // it. Without a manifest there is nothing to run it over, and the skip says so.
+        if manifest.is_none() {
+            specs.push(Spec {
+                skip: Some("no --manifest"),
+                ..spec("raw-editor", "full", &[])
+            });
+        }
+        for (id, path) in sources {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                binary: true,
+                manifest: true,
+                ..spec(
+                    &format!("raw-editor-{id}"),
+                    "full",
+                    &["smoke", "--scenario", "raw-editor", "--source", &path],
+                )
+            });
+        }
         specs.push(Spec {
             result: Some("result.json"),
             manifest: true,
             skip: manifest.is_none().then_some("no --manifest"),
             ..spec("raw-authentic", "full", &["raw-authentic"])
         });
-        let sources = manifest.unwrap_or(&[]);
         for (id, path) in sources {
             let path = path.to_string_lossy().into_owned();
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     &format!("raw-panel-{id}"),
@@ -358,7 +331,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             let path = path.to_string_lossy().into_owned();
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     "raw-performance",
@@ -369,7 +341,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         }
         specs.push(Spec {
             result: Some("result.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("hardening", "full", &["hardening"])
         });
@@ -387,7 +358,6 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         specs.push(Spec {
             args: vec!["editor-latency".into(), "--source".into(), twenty_four_mp()],
             result: Some("latency.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("editor-latency", "timing", &[])
         });
@@ -400,13 +370,11 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 "burst".into(),
             ],
             result: Some("latency.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("editor-latency-burst", "timing", &[])
         });
         specs.push(Spec {
             result: Some("measurements.json"),
-            launches: Launches::Recorded,
             binary: true,
             ..spec("measure", "timing", &["measure"])
         });
@@ -434,6 +402,9 @@ struct Entry {
     /// The one-minute load average when this component started, for timing components: a figure is
     /// only as good as the host was.
     load: Option<f64>,
+    /// The component's own report inside its `run/` directory, when it writes one: for a timing
+    /// component, the file whose `rows` the summary collects.
+    result: Option<&'static str>,
 }
 
 impl Entry {
@@ -450,24 +421,9 @@ impl Entry {
             "launches":self.launches,
             "load_average_1m":self.load,
             "load_threshold":self.load.map(|_| launch::LOAD_THRESHOLD),
-            "unreliable":self.load.map(|load| launch::unreliable(Some(load))),
+            "reliability":self.load.map(|load| launch::reliability(Some(load))),
         })
     }
-}
-
-/// The one-minute load average, or nothing where `sysctl` cannot report it.
-///
-/// One reader, shared with any scenario that records a timing figure of its own, because the
-/// repository's rule is that a figure travels with the load it was taken at (`AGENTS.md`) and two
-/// readers could disagree about what that load was.
-pub(crate) fn load_average(root: &Path) -> Option<f64> {
-    let text = output(root, "sysctl", &["-n", "vm.loadavg"]).ok()?;
-    text.trim()
-        .trim_matches(['{', '}'])
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
 }
 
 /// The first line of the failure: the component's own `error` field when it wrote one, otherwise
@@ -541,31 +497,6 @@ fn escape(text: &str) -> String {
     text.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
-fn unit(metric: &str) -> &'static str {
-    if metric.contains("_mib") {
-        "MiB"
-    } else if metric.contains("cpu_percent") {
-        "% of one core"
-    } else if metric.contains("_fps") {
-        "fps"
-    } else if metric.ends_with("_s") {
-        "s"
-    } else {
-        "ms"
-    }
-}
-
-/// How a figure taken at this load is labelled. Every timing row and verdict carries the load and
-/// the threshold, whichever side of it the host was on, so a summary always says what it was
-/// measured against.
-fn reliability(load: Option<f64>) -> &'static str {
-    if launch::unreliable(load) {
-        "unreliable"
-    } else {
-        "ok"
-    }
-}
-
 /// Why a figure cannot be compared against its target.
 fn too_loaded(load: Option<f64>) -> String {
     format!(
@@ -575,41 +506,38 @@ fn too_loaded(load: Option<f64>) -> String {
     )
 }
 
-fn row(
-    source: &str,
-    metric: &str,
-    p50: Value,
-    p95: Value,
-    count: usize,
-    load: Option<f64>,
-) -> Value {
-    json!({"metric":metric,"unit":unit(metric),"p50":p50,"p95":p95,"count":count,"source":source,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD,"reliability":reliability(load)})
+/// One summary row from one row of a timing component's report: its metric, unit, p50, p95 and
+/// sample count, where it came from, and the one load record ([`launch::load`]) of the load its
+/// component started at. A row the run never reached has no distribution, so it reads as a
+/// zero-sample row with no figures.
+fn summary_row(source: &str, row: &Value, load: Option<f64>) -> Value {
+    let distribution = &row["distribution"];
+    let mut summary = json!({
+        "metric":row["metric"],
+        "unit":row["unit"],
+        "p50":distribution["p50"],
+        "p95":distribution["p95"],
+        "count":distribution["count"].as_u64().unwrap_or(0),
+        "source":source,
+    });
+    scenario::launch::stamp(&mut summary, &launch::load(load));
+    summary
 }
 
-/// How many values fed one `measure` summary statistic: the same collection the runner itself does,
-/// counted rather than assumed from the sample argument.
-fn measured(result: &Value, workload: &str, metric: &str) -> usize {
-    result["runs"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .filter(|run| run["workload"] == workload)
-        .map(|run| match &run[metric] {
-            Value::Array(values) => values.iter().filter(|v| v.is_f64() || v.is_i64()).count(),
-            Value::Null => 0,
-            _ => 1,
-        })
-        .sum()
-}
-
-/// Which file answers a provisional target.
+/// Which statistic of a row's distribution answers a target.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum From {
-    Latency,
-    Measure,
-    /// `editor-latency --mode burst`'s own report: a wild, undrained drag.
-    Burst,
+enum Statistic {
+    P50,
+    P95,
+}
+
+impl Statistic {
+    fn name(self) -> &'static str {
+        match self {
+            Self::P50 => "p50",
+            Self::P95 => "p95",
+        }
+    }
 }
 
 /// Which side of `limit` is a pass. Every target before the instant-preview design was an upper
@@ -621,14 +549,16 @@ enum Direction {
     AtLeast,
 }
 
-/// A provisional target from the performance specification with the exact JSON path that answers
-/// it. `strict` is the comparison the specification wrote (`<`/`>` rather than `<=`/`>=`), and
-/// `scale` converts the stored figure into `unit`.
+/// A provisional target from the performance specification with the report row that answers it:
+/// the `metric` row of `source`'s `rows`, read at `statistic`. `strict` is the comparison the
+/// specification wrote (`<`/`>` rather than `<=`/`>=`), and `scale` converts the stored figure into
+/// `unit`. The sample count is always the row's own distribution count.
 struct Target {
     text: &'static str,
-    from: From,
-    path: &'static str,
-    count: Option<&'static str>,
+    /// The report, relative to the verification output: `<component>/run/<file>`.
+    source: &'static str,
+    metric: &'static str,
+    statistic: Statistic,
     unit: &'static str,
     limit: f64,
     /// A second, looser bound in the same direction: a figure past `limit` but inside this one is
@@ -640,12 +570,17 @@ struct Target {
     note: &'static str,
 }
 
+const LATENCY: &str = "editor-latency/run/latency.json";
+const MEASURE: &str = "measure/run/measurements.json";
+/// `editor-latency --mode burst`'s own report: a wild, undrained drag.
+const BURST: &str = "editor-latency-burst/run/latency.json";
+
 const TARGETS: [Target; 10] = [
     Target {
         text: "Warm 24 MP slider-to-presented-frame p95 < 16 ms, acceptable below 32 ms",
-        from: From::Latency,
-        path: "/timings_ms/input_to_presented_frame/p95",
-        count: Some("/timings_ms/input_to_presented_frame/count"),
+        source: LATENCY,
+        metric: "input_to_presented_frame",
+        statistic: Statistic::P95,
         unit: "ms",
         limit: 16.0,
         acceptable: Some(32.0),
@@ -656,9 +591,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "Settled exact histogram p95 < 200 ms after the final input, 24 MP",
-        from: From::Latency,
-        path: "/timings_ms/final_input_to_settled_histogram/p95",
-        count: Some("/timings_ms/final_input_to_settled_histogram/count"),
+        source: LATENCY,
+        metric: "final_input_to_settled_histogram",
+        statistic: Statistic::P95,
         unit: "ms",
         limit: 200.0,
         acceptable: None,
@@ -669,9 +604,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "Scratch aggregate at most 64 MiB",
-        from: From::Latency,
-        path: "/resources/scratch/peak_bytes",
-        count: None,
+        source: LATENCY,
+        metric: "scratch_peak_bytes",
+        statistic: Statistic::P50,
         unit: "MiB",
         limit: 64.0,
         acceptable: None,
@@ -682,9 +617,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "24 MP single-image edit working set <= 600 MiB CPU-resident",
-        from: From::Measure,
-        path: "/summary/24mp/sampled_peak_rss_mib/p50",
-        count: None,
+        source: MEASURE,
+        metric: "24mp.sampled_peak_rss_mib",
+        statistic: Statistic::P50,
         unit: "MiB",
         limit: 600.0,
         acceptable: None,
@@ -695,9 +630,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "60 MP peak <= 1 GiB process RSS",
-        from: From::Measure,
-        path: "/summary/60mp/sampled_peak_rss_mib/p50",
-        count: None,
+        source: MEASURE,
+        metric: "60mp.sampled_peak_rss_mib",
+        statistic: Statistic::P50,
         unit: "MiB",
         limit: 1024.0,
         acceptable: None,
@@ -708,9 +643,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "Idle CPU < 1% of one core over 30 s",
-        from: From::Measure,
-        path: "/idle/cpu_percent_one_core",
-        count: None,
+        source: MEASURE,
+        metric: "idle.cpu_percent_one_core",
+        statistic: Statistic::P50,
         unit: "% of one core",
         limit: 1.0,
         acceptable: None,
@@ -721,9 +656,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "Launch to usable empty shell p95 < 1 s warm",
-        from: From::Measure,
-        path: "/summary/empty/launch_to_observed_frame_ms/p95",
-        count: None,
+        source: MEASURE,
+        metric: "empty.launch_to_observed_frame_ms",
+        statistic: Statistic::P95,
         unit: "ms",
         limit: 1000.0,
         acceptable: None,
@@ -734,9 +669,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "Uncached 24 MP JPEG to Fit preview p95 < 750 ms",
-        from: From::Measure,
-        path: "/summary/24mp/open_to_raster_ms/p95",
-        count: None,
+        source: MEASURE,
+        metric: "24mp.open_to_raster_ms",
+        statistic: Statistic::P95,
         unit: "ms",
         limit: 750.0,
         acceptable: None,
@@ -747,13 +682,13 @@ const TARGETS: [Target; 10] = [
     },
     // The instant-preview design's provisional burst target (docs/design/instant-preview.md,
     // "Goal"): a wild, undrained drag the drained-drag report above cannot answer at all. The
-    // design's own drained-drag figure read the same drag report and JSON path as the warm 24 MP
-    // row above, so it never had a target of its own here; only the owner's 16/32 ms row does.
+    // design's own drained-drag figure read the same drag report and row as the warm 24 MP row
+    // above, so it never had a target of its own here; only the owner's 16/32 ms row does.
     Target {
         text: "Instant preview: burst presented frames per second >= 30",
-        from: From::Burst,
-        path: "/burst/presented_fps",
-        count: None,
+        source: BURST,
+        metric: "presented_fps",
+        statistic: Statistic::P50,
         unit: "fps",
         limit: 30.0,
         acceptable: None,
@@ -764,9 +699,9 @@ const TARGETS: [Target; 10] = [
     },
     Target {
         text: "Instant preview: burst presented-frame staleness p95 <= 50 ms",
-        from: From::Burst,
-        path: "/burst/staleness_ms/p95",
-        count: Some("/burst/staleness_ms/count"),
+        source: BURST,
+        metric: "staleness_ms",
+        statistic: Statistic::P95,
         unit: "ms",
         limit: 50.0,
         acceptable: None,
@@ -778,35 +713,31 @@ const TARGETS: [Target; 10] = [
 ];
 
 impl Target {
-    fn file(&self) -> &'static str {
-        match self.from {
-            From::Latency => "editor-latency/run/latency.json",
-            From::Measure => "measure/run/measurements.json",
-            From::Burst => "editor-latency-burst/run/latency.json",
-        }
-    }
-    /// Sample count for the figure: the distribution's own count where the file records one, the
-    /// number of collected values for a `measure` statistic, and one for a single observation.
-    fn samples(&self, result: &Value) -> usize {
-        if let Some(pointer) = self.count {
-            return result.pointer(pointer).and_then(Value::as_u64).unwrap_or(0) as usize;
-        }
-        match self.path.split('/').collect::<Vec<_>>()[..] {
-            ["", "summary", workload, metric, _] => measured(result, workload, metric),
-            _ => 1,
-        }
+    /// The component whose report answers this target.
+    fn component(&self) -> &'static str {
+        self.source.split('/').next().unwrap_or(self.source)
     }
     fn verdict(&self, result: Option<&Value>, timing: bool, load: Option<f64>) -> Value {
+        let source = format!("{} {} {}", self.source, self.metric, self.statistic.name());
+        let unmeasured = |why: String| {
+            let mut verdict = json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":source,"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":why,"note":self.note});
+            scenario::launch::stamp(&mut verdict, &launch::load(load));
+            verdict
+        };
         let Some(result) = result else {
-            let why = if timing {
-                format!("{} was not written", self.file())
+            return unmeasured(if timing {
+                format!("{} was not written", self.source)
             } else {
                 "timing tier did not run".into()
-            };
-            return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":why,"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD});
+            });
         };
-        let Some(raw) = result.pointer(self.path).and_then(Value::as_f64) else {
-            return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":format!("{} holds no {}",self.file(),self.path),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD});
+        let Some((raw, samples)) = stats::distribution(result, self.metric).and_then(|d| {
+            Some((
+                d[self.statistic.name()].as_f64()?,
+                d["count"].as_u64().unwrap_or(0),
+            ))
+        }) else {
+            return unmeasured(format!("{} holds no {} row", self.source, self.metric));
         };
         let value = raw * self.scale;
         let within = |limit: f64| match (self.direction, self.strict) {
@@ -829,7 +760,9 @@ impl Target {
         } else {
             "miss"
         };
-        json!({"target":self.text,"unit":self.unit,"limit":self.limit,"acceptable_limit":self.acceptable,"source":format!("{} {}",self.file(),self.path),"measured":value,"samples":self.samples(result),"verdict":verdict,"reason":over.then(|| too_loaded(load)),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD})
+        let mut verdict = json!({"target":self.text,"unit":self.unit,"limit":self.limit,"acceptable_limit":self.acceptable,"source":source,"measured":value,"samples":samples,"verdict":verdict,"reason":over.then(|| too_loaded(load)),"note":self.note});
+        scenario::launch::stamp(&mut verdict, &launch::load(load));
+        verdict
     }
 }
 
@@ -844,108 +777,31 @@ fn load_of(entries: &[Entry], component: &str) -> Option<f64> {
         .and_then(|e| e.load)
 }
 
-/// One timing row from a [`stats::Distribution`]-shaped value: `p50`/`p95` and its own `count`, the
-/// same way for every timing tool now that they all write the one shape. A bare scalar (a one-shot
-/// core step, an idle observation, burst frames per second) has no p95 and is its own one-sample
-/// count; `Value::Null` (a metric the run never reached) reads as a zero-sample row either way.
-fn distribution_row(source: &str, metric: &str, value: &Value, load: Option<f64>) -> Value {
-    let (p50, p95, count) = if value.is_object() {
-        (
-            value["p50"].clone(),
-            value["p95"].clone(),
-            value["count"].as_u64().unwrap_or(0) as usize,
-        )
-    } else {
-        (value.clone(), Value::Null, usize::from(!value.is_null()))
-    };
-    row(source, metric, p50, p95, count, load)
-}
-
-/// Every timing row and target verdict the directory can answer so far. Both are recomputed on each
-/// write, so a run that stops early still leaves the rows of the components that finished.
+/// Every timing row and target verdict the directory can answer so far: one loop over every timing
+/// component's report, each written in the one `rows` shape, and each target read from its row.
+/// Both are recomputed on each write, so a run that stops early still leaves the rows of the
+/// components that finished.
 fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>) {
     let mut rows = Vec::new();
-    let performance = optional(&out.join("editor-performance/run/result.json"));
-    let latency = optional(&out.join("editor-latency/run/latency.json"));
-    let measure = optional(&out.join("measure/run/measurements.json"));
-    let burst = optional(&out.join("editor-latency-burst/run/latency.json"));
-    if let Some(result) = &performance {
-        let load = load_of(entries, "editor-performance");
-        let source = "editor-performance/run/result.json";
-        // `import` and the other one-shot core steps are single values, not distributions; the
-        // generic row reads them as a one-sample figure with no p95 rather than a percentile they
-        // cannot support.
-        for (metric, value) in result["timings_ms"].as_object().into_iter().flatten() {
-            rows.push(distribution_row(source, metric, value, load));
+    for entry in entries.iter().filter(|e| e.tier == "timing") {
+        let Some(file) = entry.result else { continue };
+        let source = format!("{}/run/{file}", entry.component);
+        let Some(report) = optional(&out.join(&source)) else {
+            continue;
+        };
+        for row in stats::rows(&report) {
+            rows.push(summary_row(&source, row, entry.load));
         }
-    }
-    if let Some(result) = &latency {
-        let load = load_of(entries, "editor-latency");
-        let source = "editor-latency/run/latency.json";
-        for (metric, value) in result["timings_ms"].as_object().into_iter().flatten() {
-            rows.push(distribution_row(source, metric, value, load));
-        }
-    }
-    if let Some(result) = &measure {
-        let load = load_of(entries, "measure");
-        let source = "measure/run/measurements.json";
-        for workload in ["empty", "24mp", "60mp"] {
-            for metric in [
-                "launch_to_observed_frame_ms",
-                "sampled_peak_rss_mib",
-                "open_to_raster_ms",
-                "request_to_capture_ms",
-            ] {
-                let stat = &result["summary"][workload][metric];
-                rows.push(distribution_row(
-                    source,
-                    &format!("{workload}.{metric}"),
-                    stat,
-                    load,
-                ));
-            }
-        }
-        // The idle block is one observation, not a distribution, and it is absent from a run that
-        // never reached it.
-        for metric in ["cpu_percent_one_core", "rss_mib_peak", "duration_s"] {
-            let value = &result["idle"][metric];
-            rows.push(distribution_row(
-                source,
-                &format!("idle.{metric}"),
-                value,
-                load,
-            ));
-        }
-    }
-    if let Some(result) = &burst {
-        let load = load_of(entries, "editor-latency-burst");
-        let source = "editor-latency-burst/run/latency.json";
-        for metric in ["staleness_ms", "frame_gap_ms"] {
-            let value = &result["burst"][metric];
-            rows.push(distribution_row(
-                source,
-                &format!("burst.{metric}"),
-                value,
-                load,
-            ));
-        }
-        // Frames per second is one observation over the whole run, not a distribution.
-        rows.push(distribution_row(
-            source,
-            "burst.presented_fps",
-            &result["burst"]["presented_fps"],
-            load,
-        ));
     }
     let targets = TARGETS
         .iter()
         .map(|target| {
-            let (result, component) = match target.from {
-                From::Latency => (latency.as_ref(), "editor-latency"),
-                From::Measure => (measure.as_ref(), "measure"),
-                From::Burst => (burst.as_ref(), "editor-latency-burst"),
-            };
-            target.verdict(result, tier.timing(), load_of(entries, component))
+            let result = optional(&out.join(target.source));
+            target.verdict(
+                result.as_ref(),
+                tier.timing(),
+                load_of(entries, target.component()),
+            )
         })
         .collect();
     (rows, targets)
@@ -1244,6 +1100,7 @@ fn component(
         artifacts: vec![s.name.clone()],
         launches: 0,
         load,
+        result: s.result,
     };
     if let Err(error) = fs::create_dir_all(&dir) {
         entry.status = Status::Failed;
@@ -1274,9 +1131,7 @@ fn component(
                 .result
                 .and_then(|name| optional(&dir.join("run").join(name)));
             entry.exit_code = code;
-            entry.launches = s
-                .launches
-                .count(optional(&dir.join("run/result.json")).as_ref());
+            entry.launches = launches(optional(&dir.join("run/result.json")).as_ref());
             entry.status = match (timed_out, code) {
                 (true, _) => Status::TimedOut,
                 (false, Some(0)) => Status::Passed,
@@ -1393,6 +1248,7 @@ fn refuse(out: &Path, tier: Tier, specs: &[Spec], why: &str) -> Result {
             artifacts: vec![s.name.clone()],
             launches: 0,
             load: None,
+            result: s.result,
         })
         .collect();
     let header = json!({
@@ -1428,7 +1284,7 @@ pub fn run(
     let manifest = manifest.map(|path| absolute(root, &path));
     let raw_sources = manifest
         .as_deref()
-        .map(manifest_sources)
+        .map(raw::sources)
         .transpose()?
         .unwrap_or_default();
     let specs = plan(
@@ -1503,6 +1359,7 @@ pub fn run(
             artifacts: vec![s.name.clone()],
             launches: 0,
             load: None,
+            result: s.result,
         })
         .collect();
 
@@ -1575,7 +1432,9 @@ pub fn run(
                 }
             }
         }
-        let load = (s.tier == "timing").then(|| load_average(root)).flatten();
+        let load = (s.tier == "timing")
+            .then(|| launch::load_average(root))
+            .flatten();
         let env = (s.tier == "timing")
             .then(|| gate.as_ref().map(launch::TimingGate::child_env))
             .flatten();
@@ -1633,10 +1492,9 @@ mod tests {
                 "measure"
             ]
         );
-        // A manifest with no sources is `full`'s minimal manifest case: `raw-editor` and
-        // `raw-authentic` run, but there is nothing to build a `raw-panel` or RAW `performance`
-        // component from.
-        let full = names(Tier::Full, Some(&[]), true);
+        // Without a manifest, `full` lists `raw-editor` and `raw-authentic`, skipped, and has no
+        // source to build a `raw-panel` or RAW `performance` component from.
+        let full = names(Tier::Full, None, true);
         assert_eq!(&full[..2], ["check", "editor-acceptance"]);
         // Every rendered scenario, then the RAW components and hardening, then the timing
         // components last.
@@ -1662,20 +1520,21 @@ mod tests {
         assert_eq!(names(Tier::Timing, None, false)[0], "generate-fixtures");
     }
     #[test]
-    fn full_adds_one_raw_panel_component_per_source_and_one_raw_performance_run() {
+    fn full_adds_raw_editor_and_raw_panel_components_per_source_and_one_raw_performance_run() {
         let sources = [
             ("z6".to_owned(), PathBuf::from("/tmp/z6.nef")),
             ("x100vi".to_owned(), PathBuf::from("/tmp/x100vi.raf")),
         ];
         let full = plan(Tier::Full, Some(&sources), true);
         let names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
-        // One `raw-panel` component per manifest source, named by source id, and one RAW
-        // `performance` run over the first source, all between `raw-editor`/`raw-authentic` and
+        // One `raw-editor` and one `raw-panel` component per manifest source, named by source id,
+        // around `raw-authentic`, and one RAW `performance` run over the first source, all before
         // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 10..],
+            &names[names.len() - 11..],
             [
-                "raw-editor",
+                "raw-editor-z6",
+                "raw-editor-x100vi",
                 "raw-authentic",
                 "raw-panel-z6",
                 "raw-panel-x100vi",
@@ -1700,6 +1559,31 @@ mod tests {
         );
         assert!(panel_z6.binary && panel_z6.output && !panel_z6.manifest);
         assert_eq!(panel_z6.skip, None);
+        // The journey is the `raw-editor` smoke row, given the manifest that lists its source.
+        let editor_z6 = full.iter().find(|s| s.name == "raw-editor-z6").unwrap();
+        assert_eq!(
+            arguments(
+                editor_z6,
+                Path::new("/v/raw-editor-z6"),
+                Path::new("/bin/luxforge"),
+                Some(Path::new("/m.json"))
+            ),
+            [
+                "smoke",
+                "--scenario",
+                "raw-editor",
+                "--source",
+                "/tmp/z6.nef",
+                "--output",
+                "/v/raw-editor-z6/run",
+                "--binary",
+                "/bin/luxforge",
+                "--manifest",
+                "/m.json"
+            ]
+        );
+        assert_eq!(editor_z6.result, Some("result.json"));
+        assert!(smoke::find("raw-editor").is_ok_and(|row| row.listed()));
         let performance = full.iter().find(|s| s.name == "raw-performance").unwrap();
         assert_eq!(
             performance.args,
@@ -1711,13 +1595,11 @@ mod tests {
                 "/tmp/z6.nef"
             ]
         );
-        // Without a manifest there is no source to run either component over.
+        // Without a manifest there is no source to run any of them over.
         let without = plan(Tier::Full, None, true);
-        assert!(
-            without
-                .iter()
-                .all(|s| !s.name.starts_with("raw-panel") && s.name != "raw-performance")
-        );
+        assert!(without.iter().all(|s| !s.name.starts_with("raw-panel")
+            && !s.name.starts_with("raw-editor-")
+            && s.name != "raw-performance"));
     }
     #[test]
     fn a_missing_manifest_skips_raw_editor_instead_of_passing_it() {
@@ -1726,8 +1608,13 @@ mod tests {
             let s = without.iter().find(|s| s.name == name).unwrap();
             assert_eq!(s.skip, Some("no --manifest"), "{name}");
         }
-        let with = plan(Tier::Full, Some(&[]), true);
-        for name in ["raw-editor", "raw-authentic"] {
+        let with = plan(
+            Tier::Full,
+            Some(&[("z6".to_owned(), PathBuf::from("/raw/z6.nef"))]),
+            true,
+        );
+        assert!(with.iter().all(|s| s.name != "raw-editor"));
+        for name in ["raw-editor-z6", "raw-authentic"] {
             assert!(
                 with.iter().find(|s| s.name == name).unwrap().skip.is_none(),
                 "{name}"
@@ -1811,6 +1698,7 @@ mod tests {
             artifacts: vec![format!("{component}/run/result.json")],
             launches: 1,
             load: Some(3.5),
+            result: Some("result.json"),
         }
     }
     #[test]
@@ -1851,22 +1739,14 @@ mod tests {
     }
     #[test]
     fn target_verdicts_follow_the_measured_figure() {
-        let latency = json!({
-            "timings_ms":{
-                "input_to_presented_frame":{"count":30,"p50":74.8,"p95":83.4},
-                "final_input_to_settled_histogram":{"count":30,"p50":99.7,"p95":250.0},
-            },
-            "resources":{"scratch":{"peak_bytes":14_116_000}},
-        });
+        let latency = json!({"rows":[
+            stats::row("input_to_presented_frame", "ms", [74.8, 83.4].repeat(15)),
+            stats::row("final_input_to_settled_histogram", "ms", [99.7, 250.0].repeat(15)),
+            stats::scalar("scratch_peak_bytes", "bytes", Some(14_116_000.0)),
+        ]});
         let verdicts: Vec<Value> = TARGETS
             .iter()
-            .map(|t| {
-                t.verdict(
-                    matches!(t.from, From::Latency).then_some(&latency),
-                    true,
-                    None,
-                )
-            })
+            .map(|t| t.verdict((t.source == LATENCY).then_some(&latency), true, None))
             .collect();
         assert_eq!(
             verdicts[0]["verdict"], "miss",
@@ -1874,8 +1754,13 @@ mod tests {
         );
         assert_eq!(verdicts[0]["acceptable_limit"], 32.0);
         assert_eq!(verdicts[0]["measured"], 83.4);
+        assert_eq!(
+            verdicts[0]["source"],
+            "editor-latency/run/latency.json input_to_presented_frame p95"
+        );
         for (p95, expected) in [(12.0, "pass"), (20.0, "acceptable"), (32.0, "miss")] {
-            let banded = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50":p95 - 1.0,"p95":p95}}});
+            let banded =
+                json!({"rows":[stats::row("input_to_presented_frame", "ms", [p95 - 1.0, p95])]});
             assert_eq!(
                 TARGETS[0].verdict(Some(&banded), true, None)["verdict"],
                 expected,
@@ -1886,6 +1771,7 @@ mod tests {
         assert_eq!(verdicts[1]["verdict"], "miss");
         assert_eq!(verdicts[2]["verdict"], "pass");
         assert!(verdicts[2]["measured"].as_f64().unwrap() < 64.0);
+        assert_eq!(verdicts[2]["samples"], 1);
         // The measure file was never written, so its targets are unmeasured, never passes.
         assert_eq!(verdicts[3]["verdict"], "not_measured");
         assert_eq!(
@@ -1900,16 +1786,19 @@ mod tests {
             "editor-latency-burst/run/latency.json was not written"
         );
         assert_eq!(verdicts[9]["verdict"], "not_measured");
-        // A file that exists but holds no such path is also unmeasured, with the path named.
-        let empty = json!({"timings_ms":{}});
-        let missing = TARGETS[0].verdict(Some(&empty), true, None);
-        assert_eq!(missing["verdict"], "not_measured");
-        assert!(
-            missing["reason"]
-                .as_str()
-                .unwrap()
-                .contains("/timings_ms/input_to_presented_frame/p95")
-        );
+        // A report that exists but holds no such row, or a row with no samples, is also
+        // unmeasured, with the row named.
+        for empty in [
+            json!({"rows":[]}),
+            json!({"rows":[stats::row("input_to_presented_frame", "ms", Vec::new())]}),
+        ] {
+            let missing = TARGETS[0].verdict(Some(&empty), true, None);
+            assert_eq!(missing["verdict"], "not_measured");
+            assert_eq!(
+                missing["reason"],
+                "editor-latency/run/latency.json holds no input_to_presented_frame row"
+            );
+        }
         // Outside the timing tier the reason is the tier, not a missing file.
         assert_eq!(
             TARGETS[0].verdict(None, false, None)["reason"],
@@ -1917,38 +1806,47 @@ mod tests {
         );
     }
     #[test]
-    fn measure_targets_read_their_own_summary_and_sample_counts() {
-        let measure = json!({
-            "runs":[
-                {"workload":"24mp","sampled_peak_rss_mib":500.0,"open_to_raster_ms":[100.0,110.0]},
-                {"workload":"24mp","sampled_peak_rss_mib":520.0,"open_to_raster_ms":[120.0]},
-                {"workload":"60mp","sampled_peak_rss_mib":975.0},
-            ],
-            "summary":{
-                "24mp":{"sampled_peak_rss_mib":{"p50":510.0},"open_to_raster_ms":{"p95":120.0}},
-                "60mp":{"sampled_peak_rss_mib":{"p50":1100.0}},
-                "empty":{"launch_to_observed_frame_ms":{"p95":1200.0}},
-            },
-            "idle":{"cpu_percent_one_core":0.93},
-        });
+    fn measure_targets_read_their_own_rows_and_sample_counts() {
+        let mut rows = vec![
+            stats::row("24mp.sampled_peak_rss_mib", "MiB", [500.0, 520.0]),
+            stats::row("24mp.open_to_raster_ms", "ms", [100.0, 110.0, 120.0]),
+            stats::row("60mp.sampled_peak_rss_mib", "MiB", [1100.0]),
+            stats::row("empty.launch_to_observed_frame_ms", "ms", [900.0, 1200.0]),
+        ];
+        rows.extend(
+            stats::IdleWindow {
+                duration_s: 30.1,
+                cpu_percent_one_core: 0.93,
+                rss_mib_start: 300.0,
+                rss_mib_end: 301.0,
+                rss_mib_peak: 302.0,
+            }
+            .rows(),
+        );
+        let measure = json!({ "rows": rows });
         let verdict = |index: usize| TARGETS[index].verdict(Some(&measure), true, Some(2.5));
+        // Nearest-rank p50 of two samples is the smaller one.
+        assert_eq!(verdict(3)["measured"], 500.0);
         assert_eq!(verdict(3)["verdict"], "pass");
         assert_eq!(verdict(3)["samples"], 2);
         assert_eq!(verdict(3)["load_average_1m"], 2.5);
+        assert_eq!(verdict(3)["reliability"], "reliable");
         assert_eq!(verdict(4)["verdict"], "miss");
         assert_eq!(verdict(5)["verdict"], "pass");
+        assert_eq!(verdict(5)["samples"], 1);
         assert_eq!(verdict(6)["verdict"], "miss");
         assert_eq!(verdict(7)["verdict"], "pass");
         assert_eq!(verdict(7)["samples"], 3);
     }
     #[test]
     fn burst_targets_read_their_own_report_and_the_fps_row_is_a_lower_bound() {
-        let passing = json!({
-            "burst":{
-                "presented_fps":42.0,
-                "staleness_ms":{"count":300,"p50":18.0,"p95":41.0},
-            },
-        });
+        let report = |fps: f64, staleness: f64| {
+            json!({"rows":[
+                stats::scalar("presented_fps", "fps", Some(fps)),
+                stats::row("staleness_ms", "ms", std::iter::repeat_n(staleness, 300)),
+            ]})
+        };
+        let passing = report(42.0, 41.0);
         let verdict =
             |index: usize, result: &Value| TARGETS[index].verdict(Some(result), true, Some(2.5));
         // 42 fps clears the >= 30 lower bound; a figure below it misses instead of passing, which
@@ -1957,46 +1855,93 @@ mod tests {
         assert_eq!(verdict(8, &passing)["measured"], 42.0);
         assert_eq!(verdict(9, &passing)["verdict"], "pass");
         assert_eq!(verdict(9, &passing)["samples"], 300);
-        let failing =
-            json!({"burst":{"presented_fps":18.0,"staleness_ms":{"count":300,"p95":61.0}}});
+        let failing = report(18.0, 61.0);
         assert_eq!(verdict(8, &failing)["verdict"], "miss");
         assert_eq!(verdict(9, &failing)["verdict"], "miss");
     }
+    /// The collector is one loop over every timing component's `rows`: whatever rows a report
+    /// holds become summary rows with their own source, sample count and the one load record of
+    /// the load their component started at, and a component that wrote nothing adds none.
+    #[test]
+    fn the_collector_reads_every_timing_report_through_one_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path();
+        let write = |source: &str, report: Value| {
+            let path = out.join(source);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            write_json(&path, &report).unwrap();
+        };
+        write(
+            "editor-performance/run/result.json",
+            json!({"rows":[stats::scalar("import", "ms", Some(12.0))]}),
+        );
+        write(
+            "editor-latency/run/latency.json",
+            json!({"rows":[
+                stats::row("input_to_presented_frame", "ms", (1..=20).map(f64::from)),
+                stats::row("gpu_upload", "ms", Vec::new()),
+            ]}),
+        );
+        write(
+            "editor-latency-burst/run/latency.json",
+            json!({"rows":[stats::scalar("photo_upload_bytes", "bytes", Some(1024.0))]}),
+        );
+        let timing = |component: &str, file: &'static str, load: Option<f64>| {
+            let mut entry = entry(component, Status::Passed);
+            entry.tier = "timing".into();
+            entry.result = Some(file);
+            entry.load = load;
+            entry
+        };
+        let entries = [
+            // A rendered scenario's result is never read for rows.
+            entry("smoke-load", Status::Passed),
+            timing("editor-performance", "result.json", Some(3.0)),
+            timing("editor-latency", "latency.json", Some(9.0)),
+            timing("editor-latency-burst", "latency.json", None),
+            timing("measure", "measurements.json", Some(3.0)),
+        ];
+        let (rows, targets) = collect(out, Tier::Timing, &entries);
+        let metrics: Vec<&str> = rows.iter().map(|r| r["metric"].as_str().unwrap()).collect();
+        assert_eq!(
+            metrics,
+            [
+                "import",
+                "input_to_presented_frame",
+                "gpu_upload",
+                "photo_upload_bytes"
+            ]
+        );
+        assert_eq!(
+            rows[1],
+            json!({"metric":"input_to_presented_frame","unit":"ms","p50":10.0,"p95":19.0,"count":20,
+                "source":"editor-latency/run/latency.json","load_average_1m":9.0,"load_threshold":8.0,
+                "reliability":"unreliable"})
+        );
+        assert_eq!(rows[0]["reliability"], "reliable");
+        assert_eq!(rows[2]["count"], 0);
+        assert_eq!(rows[2]["p95"], Value::Null);
+        assert_eq!(rows[3]["unit"], "bytes");
+        assert_eq!(rows[3]["load_average_1m"], Value::Null);
+        assert_eq!(targets.len(), TARGETS.len());
+        assert_eq!(targets[0]["verdict"], "unreliable");
+        assert_eq!(targets[3]["verdict"], "not_measured");
+    }
     #[test]
     fn launch_counts_come_from_what_each_component_recorded() {
-        assert_eq!(Launches::None.count(Some(&json!({}))), 0);
-        assert_eq!(Launches::Recorded.count(None), 0);
-        assert_eq!(
-            Launches::Recorded.count(Some(&json!({"launches":[{"exit_code":0}]}))),
-            1
-        );
+        // A component that starts no editor keeps no list, and one that never wrote a result
+        // started none it can prove.
+        assert_eq!(launches(Some(&json!({}))), 0);
+        assert_eq!(launches(None), 0);
+        assert_eq!(launches(Some(&json!({"exit_code":0}))), 0);
+        assert_eq!(launches(Some(&json!({"launches":[{"exit_code":0}]}))), 1);
         // A launch its watcher stopped, as `measure`'s idle process and `hardening`'s ordinary
-        // launches are, is listed with no exit code and counted like any other.
+        // launches are, is listed with no exit code and counted like any other; a `raw-editor`
+        // run lists its edit and its reopen.
         let four = json!({"launches":[{"exit_code":0},{"exit_code":0},{"exit_code":0},{"exit_code":null,"stopped":true}]});
-        assert_eq!(Launches::Recorded.count(Some(&four)), 4);
-        assert_eq!(Launches::Recorded.count(Some(&json!({"exit_code":0}))), 0);
-        assert_eq!(
-            Launches::RawEditor.count(Some(&json!({"runs":[{},{},{}]}))),
-            6
-        );
-        // Every component that launches the editor through the scenario library's envelope is
-        // counted from its recorded list; only `raw-editor` still counts its own way.
-        let manifest = [("z6".to_owned(), PathBuf::from("/raw/z6.nef"))];
-        for spec in plan(Tier::Full, Some(&manifest), true) {
-            let expected = match spec.name.as_str() {
-                "raw-editor" => Launches::RawEditor,
-                "editor-latency"
-                | "editor-latency-burst"
-                | "measure"
-                | "hardening"
-                | "raw-performance" => Launches::Recorded,
-                name if name.starts_with("smoke-") || name.starts_with("raw-panel-") => {
-                    Launches::Recorded
-                }
-                _ => Launches::None,
-            };
-            assert_eq!(spec.launches, expected, "{}", spec.name);
-        }
+        assert_eq!(launches(Some(&four)), 4);
+        let raw_editor = json!({"scenario":"raw-editor","launches":[{"evidence":"edit","exit_code":0},{"evidence":"reopen","exit_code":0}]});
+        assert_eq!(launches(Some(&raw_editor)), 2);
     }
     #[test]
     fn an_all_passed_plan_is_the_only_ok_outcome() {
@@ -2071,15 +2016,6 @@ mod tests {
                 .contains("must be new")
         );
     }
-    #[test]
-    fn a_rows_unit_comes_from_the_metric_the_runner_named() {
-        assert_eq!(unit("input_to_presented_frame"), "ms");
-        assert_eq!(unit("24mp.open_to_raster_ms"), "ms");
-        assert_eq!(unit("24mp.sampled_peak_rss_mib"), "MiB");
-        assert_eq!(unit("idle.rss_mib_peak"), "MiB");
-        assert_eq!(unit("idle.cpu_percent_one_core"), "% of one core");
-        assert_eq!(unit("idle.duration_s"), "s");
-    }
     /// A block of "scenarios" that are nothing but sleeps, so the pool's ordering and placement can
     /// be tested without launching an editor. The first one outlasts all the others, so completion
     /// order cannot be list order.
@@ -2117,6 +2053,7 @@ mod tests {
                 artifacts: vec![s.name.clone()],
                 launches: 0,
                 load: None,
+                result: s.result,
             })
             .collect();
         let progress = Mutex::new(Progress {
@@ -2248,36 +2185,28 @@ mod tests {
 
     #[test]
     fn load_over_the_threshold_marks_rows_and_verdicts_unreliable() {
-        let quiet = row(
-            "measure/run/measurements.json",
-            "24mp.open_to_raster_ms",
-            json!(120.0),
-            json!(140.0),
-            5,
-            Some(5.7),
-        );
-        assert_eq!(quiet["reliability"], "ok");
+        let row = stats::row("24mp.open_to_raster_ms", "ms", [120.0, 140.0]);
+        let quiet = summary_row("measure/run/measurements.json", &row, Some(5.7));
+        assert_eq!(quiet["reliability"], "reliable");
         assert_eq!(quiet["load_threshold"], 8.0);
-        let busy = row(
-            "measure/run/measurements.json",
-            "24mp.open_to_raster_ms",
-            json!(120.0),
-            json!(140.0),
-            5,
-            Some(19.4),
-        );
+        let busy = summary_row("measure/run/measurements.json", &row, Some(19.4));
         assert_eq!(busy["reliability"], "unreliable");
         assert_eq!(busy["load_average_1m"], 19.4);
         assert_eq!(busy["load_threshold"], 8.0);
 
         // The same figure is a pass below the threshold and neither a pass nor a miss above it.
-        let latency =
-            json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50":9.5,"p95":12.4}}});
+        let latency = json!({"rows":[stats::row(
+            "input_to_presented_frame",
+            "ms",
+            [9.5, 12.4].repeat(15),
+        )]});
         let below = TARGETS[0].verdict(Some(&latency), true, Some(5.7));
         assert_eq!(below["verdict"], "pass");
         assert_eq!(below["reason"], Value::Null);
+        assert_eq!(below["reliability"], "reliable");
         let above = TARGETS[0].verdict(Some(&latency), true, Some(19.4));
         assert_eq!(above["verdict"], "unreliable");
+        assert_eq!(above["reliability"], "unreliable");
         assert_eq!(above["measured"], 12.4);
         assert_eq!(above["samples"], 30);
         assert!(
@@ -2287,8 +2216,11 @@ mod tests {
             above["reason"]
         );
         // A miss is withheld the same way.
-        let missing =
-            json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50":180.0,"p95":220.0}}});
+        let missing = json!({"rows":[stats::row(
+            "input_to_presented_frame",
+            "ms",
+            [180.0, 220.0].repeat(15),
+        )]});
         assert_eq!(
             TARGETS[0].verdict(Some(&missing), true, Some(5.7))["verdict"],
             "miss"

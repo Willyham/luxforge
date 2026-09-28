@@ -35,9 +35,14 @@ pub enum Source {
     /// These fixtures, unless `--source` names a photograph to open instead.
     Default(&'static [&'static str]),
     /// Only the photograph `--source` names: no checkout holds one, so the scenario is outside
-    /// `rendered`.
-    Supplied,
+    /// `rendered`. A `listed` one must also be given the RAW manifest that lists the photograph, as
+    /// `--manifest`: the run keeps a copy of it as [`MANIFEST`], which its checks read, and which a
+    /// replay reads again.
+    Supplied { listed: bool },
 }
+
+/// Where a run whose source is `listed` keeps its copy of the RAW manifest.
+pub const MANIFEST: &str = "manifest.json";
 
 /// Waits for a launched editor in place of the ordinary wait, and returns what it recorded; see
 /// [`crate::scenario::launch::Watcher`].
@@ -59,6 +64,8 @@ pub struct LaunchSpec {
     pub developer: bool,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
+    /// A process deadline of its own in place of the run's.
+    pub deadline: Option<Duration>,
 }
 
 /// A scenario's one launch, as the rows spell it with `..APP`.
@@ -70,6 +77,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     disable: &[],
     developer: false,
     watch: None,
+    deadline: None,
 };
 
 /// The scenario's own checks, over every launch's evidence once its plan has held, in launch order.
@@ -99,12 +107,17 @@ pub struct Scenario {
 impl Scenario {
     /// Whether `verify --tier rendered` runs it: everything a checkout can open.
     pub fn rendered(&self) -> bool {
-        !matches!(self.source, Source::Supplied)
+        !matches!(self.source, Source::Supplied { .. })
     }
 
     /// Whether `--source` may replace what it opens.
     pub fn takes_source(&self) -> bool {
-        matches!(self.source, Source::Default(_) | Source::Supplied)
+        matches!(self.source, Source::Default(_) | Source::Supplied { .. })
+    }
+
+    /// Whether it needs `--manifest`.
+    pub fn listed(&self) -> bool {
+        matches!(self.source, Source::Supplied { listed: true })
     }
 
     /// What it opens: `given` when `--source` named one, else its own fixtures.
@@ -120,7 +133,7 @@ impl Scenario {
             (Source::Fixtures(fixtures) | Source::Default(fixtures), None) => {
                 Ok(fixtures.iter().map(|fixture| root.join(fixture)).collect())
             }
-            (Source::Supplied, None) => {
+            (Source::Supplied { .. }, None) => {
                 Err(format!("The {} scenario needs --source RAW_FILE", self.name).into())
             }
         }
@@ -669,10 +682,34 @@ pub static SCENARIOS: &[Scenario] = &[
             ..APP
         }],
         verify: raw_panel::verify,
-        source: Source::Supplied,
+        source: Source::Supplied { listed: false },
         window: Some(PANELLED),
         note: None,
         own: None,
+    },
+    Scenario {
+        name: raw_editor::SCENARIO,
+        about: "RAW exposure, gains, white balance, neutral pick, geometry, undo and history over a manifest-listed RAW file, then a reopen",
+        launches: &[
+            LaunchSpec {
+                name: raw_editor::EDIT,
+                plan: raw_editor::edit_plan,
+                deadline: Some(raw_editor::DEADLINE),
+                ..APP
+            },
+            LaunchSpec {
+                name: raw_editor::REOPEN,
+                plan: raw_editor::reopen_plan,
+                catalog: Some(raw_editor::EDIT),
+                deadline: Some(raw_editor::DEADLINE),
+                ..APP
+            },
+        ],
+        verify: raw_editor::verify,
+        source: Source::Supplied { listed: true },
+        window: None,
+        note: Some(raw_editor::NOTE),
+        own: Some(raw_editor::run),
     },
 ];
 
@@ -710,7 +747,10 @@ pub fn list(root: &Path) -> String {
             Source::Fixtures([]) => "nothing".to_owned(),
             Source::Fixtures(fixtures) => fixtures.join(" "),
             Source::Default(fixtures) => format!("{} or --source", fixtures.join(" ")),
-            Source::Supplied => "--source RAW (not in rendered)".to_owned(),
+            Source::Supplied { listed: false } => "--source RAW (not in rendered)".to_owned(),
+            Source::Supplied { listed: true } => {
+                "--source RAW and a --manifest listing it (not in rendered)".to_owned()
+            }
         };
         let window = scenario
             .window
@@ -733,7 +773,7 @@ fn execute(run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Resu
 }
 
 /// Run one scenario into `out`, over its own fixtures or, for a scenario that takes one, the
-/// photograph `--source` names.
+/// photograph `--source` names, with the RAW manifest `--manifest` names when its source is listed.
 pub fn dispatch(
     root: &Path,
     out: &Path,
@@ -741,14 +781,38 @@ pub fn dispatch(
     bin: &Path,
     timeout: Duration,
     source: Option<Vec<PathBuf>>,
+    manifest: Option<&Path>,
 ) -> Result {
     let scenario = find(name)?;
     let sources = scenario.sources(root, source)?;
-    execute(
-        Run::start(root, out, name, bin, timeout)?,
-        scenario,
-        sources,
-    )
+    ensure(
+        scenario.listed() == manifest.is_some(),
+        if scenario.listed() {
+            format!("The {name} scenario needs --manifest FILE listing its source")
+        } else {
+            format!("--manifest is only for {}", listed().join(" and "))
+        },
+    )?;
+    if let Some(manifest) = manifest {
+        ensure(
+            manifest.is_file(),
+            format!("{} is missing", manifest.display()),
+        )?;
+    }
+    let run = Run::start(root, out, name, bin, timeout)?;
+    if let Some(manifest) = manifest {
+        fs::copy(manifest, run.out().join(MANIFEST))?;
+    }
+    execute(run, scenario, sources)
+}
+
+/// The scenarios `--manifest` must be given to.
+fn listed() -> Vec<&'static str> {
+    SCENARIOS
+        .iter()
+        .filter(|scenario| scenario.listed())
+        .map(|scenario| scenario.name)
+        .collect()
 }
 
 /// Rerun a recorded run's checks without launching: `recorded` is copied into `out` and the
@@ -768,7 +832,25 @@ pub fn verify_only(
 
 /// Every launch of `scenario` over `sources`, in order, each checked against its plan as soon as
 /// it exits, then the scenario's own checks over all of them.
-pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Result {
+pub fn launch_all(run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Result {
+    launch_planned(run, scenario, sources, |_, sources| {
+        Ok(scenario
+            .launches
+            .iter()
+            .map(|spec| (spec.plan)(sources))
+            .collect())
+    })
+}
+
+/// [`launch_all`] with each launch's plan from `plans`, which is given the run once its sources
+/// are hashed: a row whose plans read more than its sources, as `raw-editor`'s read its source's
+/// manifest entry, plans in its own function and launches through this one.
+pub fn launch_planned(
+    mut run: Run,
+    scenario: &Scenario,
+    sources: Vec<PathBuf>,
+    plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+) -> Result {
     if let Some(note) = scenario.note {
         run.note(note);
     }
@@ -787,9 +869,13 @@ pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> R
             )?;
         }
         run.hash(&sources)?;
+        let plans = plans(run, &sources)?;
+        ensure(
+            plans.len() == scenario.launches.len(),
+            "A plan for every launch",
+        )?;
         let mut checked = Vec::with_capacity(scenario.launches.len());
-        for spec in scenario.launches {
-            let plan = (spec.plan)(&sources);
+        for (spec, plan) in scenario.launches.iter().zip(plans) {
             if let Some(earlier) = spec.catalog {
                 let catalog = run.out().join(earlier).join("catalog.sqlite");
                 ensure(catalog.is_file(), format!("Launch {earlier} wrote no catalog"))?;
@@ -843,6 +929,9 @@ fn launch_of(
     }
     if let Some((file, watch)) = spec.watch {
         launch = launch.watch(Box::new(watch)).keep(file);
+    }
+    if let Some(deadline) = spec.deadline {
+        launch = launch.deadline(deadline);
     }
     launch
 }
@@ -1152,6 +1241,7 @@ mod tests {
                 &tmp.path().join("absent"),
                 Duration::from_millis(100),
                 None,
+                None,
             )
             .is_err()
         );
@@ -1161,6 +1251,32 @@ mod tests {
         );
         assert!(out.join("reproduce.md").is_file());
         assert!(!out.join("app/frame-1.png").exists());
+    }
+
+    /// `--manifest` goes to exactly the scenarios whose source is listed, and a run refused for it
+    /// writes nothing.
+    #[test]
+    fn a_manifest_is_given_exactly_to_a_listed_scenario() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, out) = (root().unwrap(), tmp.path().join("out"));
+        let manifest = tmp.path().join("manifest.json");
+        fs::write(&manifest, "{}").unwrap();
+        let bin = tmp.path().join("absent");
+        let refusal = |name: &str, source: Option<Vec<PathBuf>>, manifest: Option<&Path>| {
+            dispatch(&root, &out, name, &bin, Duration::ZERO, source, manifest)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            refusal("load", None, Some(&manifest)),
+            "--manifest is only for raw-editor"
+        );
+        let photo = Some(vec![tmp.path().join("photo.NEF")]);
+        assert!(refusal("raw-editor", photo.clone(), None).contains("needs --manifest"));
+        assert!(
+            refusal("raw-editor", photo, Some(&tmp.path().join("gone.json"))).contains("missing")
+        );
+        assert!(!out.exists());
     }
 
     #[test]
@@ -1238,7 +1354,8 @@ mod tests {
             );
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
-        assert_eq!(sourced(), ["performance", "raw-panel"]);
+        assert_eq!(sourced(), ["performance", "raw-panel", "raw-editor"]);
+        assert_eq!(listed(), ["raw-editor"]);
         assert!(find("nothing").is_err());
     }
 
@@ -1307,11 +1424,26 @@ mod tests {
             {
                 continue;
             }
+            // A supplied source is given again: the one the recorded run's first launch opened.
+            let source = matches!(scenario.source, Source::Supplied { .. }).then(|| {
+                let recorded = read_json(&run.join("result.json")).unwrap();
+                let command = recorded["launches"][0]["command"].as_array().unwrap();
+                command
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--open")
+                    .map(|pair| PathBuf::from(pair[1].as_str().unwrap()))
+                    .collect::<Vec<_>>()
+            });
             let replay = |mutated: Option<Mutation>| {
                 let out = tempfile::tempdir().unwrap();
                 mutation::set(mutated);
-                let outcome =
-                    verify_only(&root, &run, &out.path().join("replay"), scenario.name, None);
+                let outcome = verify_only(
+                    &root,
+                    &run,
+                    &out.path().join("replay"),
+                    scenario.name,
+                    source.clone(),
+                );
                 let changed = mutation::changed();
                 mutation::set(None);
                 (outcome.map_err(|error| error.to_string()), changed)

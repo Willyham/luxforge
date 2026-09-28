@@ -834,7 +834,6 @@ mod tests {
     use crate::editor::test_support::{
         SHRINK_ACTION, ShrinkModule, fixture, mutation, shrink, temp,
     };
-    use std::time::{Duration, Instant};
 
     #[test]
     fn a_truncated_preview_job_renders_the_layer_prefix_and_rejects_an_out_of_range_count() {
@@ -859,14 +858,9 @@ mod tests {
                 .unwrap();
             let mut queue = PreviewQueue::default();
             queue.request(job);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Some(result) = queue.poll() {
-                    return result.into_raster().unwrap();
-                }
-                assert!(Instant::now() < deadline, "the preview worker answered");
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_for("the preview worker's answer", || queue.poll())
+                .into_raster()
+                .unwrap()
         };
         let full = rendered(&service, None);
         assert_eq!((full.width, full.height), (100, 100));
@@ -920,14 +914,9 @@ mod tests {
         let rendered = |job: PreviewJob| -> Raster {
             let mut queue = PreviewQueue::default();
             queue.request(job);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Some(result) = queue.poll() {
-                    return result.into_raster().unwrap();
-                }
-                assert!(Instant::now() < deadline, "the preview worker answered");
-                std::thread::yield_now();
-            }
+            luxforge_testbase::wait_for("the preview worker's answer", || queue.poll())
+                .into_raster()
+                .unwrap()
         };
         let whole = service.render_entry(&asset, &original).unwrap();
         assert_eq!((whole.width, whole.height), (480, 320));
@@ -998,12 +987,11 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// A drafted preview job compiles the stack it evaluates once, on the catalog owner, and its
-    /// worker renders that compilation: the whole frame, and a viewport region that declines to the
-    /// whole-frame path, compile nothing more. Planning the draft's action compiles the stage
-    /// context it plans against, exactly as the draft's commit does; with the evaluation's, that is
-    /// every compile the owner makes. The frame is byte for byte the one a fresh compilation of the
-    /// same stack renders.
+    /// A drafted preview job compiles its stack once, on the catalog owner, and its worker renders
+    /// that compilation: the whole frame, and a viewport region that declines to the whole-frame
+    /// path, compile nothing more. Planning the draft's action asks its lazy stage context for no
+    /// stage, so the evaluation's compile of the drafted stack is the only one the owner makes. The
+    /// frame is byte for byte the one a fresh compilation of the same stack renders.
     #[test]
     fn a_drafted_preview_job_compiles_its_stack_once_and_its_worker_compiles_nothing() {
         let catalog = temp("drafted-preview-compiles.sqlite");
@@ -1026,8 +1014,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             crate::modules::stack_compiles::take(),
-            2,
-            "the draft's plan compiled its stage context and the evaluation its drafted stack"
+            1,
+            "the owner compiled the drafted stack once, for its evaluation, and nothing to plan it"
         );
         assert_eq!(
             context.compiles() - before,
@@ -1058,16 +1046,9 @@ mod tests {
             job.viewport = viewport;
             job.intent = crate::PreviewIntent::Settle;
             queue.request(job);
-            let deadline = Instant::now() + Duration::from_secs(60);
-            let result = loop {
-                if let Some(result) = queue.poll()
-                    && result.exact().is_some()
-                {
-                    break result;
-                }
-                assert!(Instant::now() < deadline, "the preview worker answered");
-                std::thread::yield_now();
-            };
+            let result = luxforge_testbase::wait_for("the preview worker's exact answer", || {
+                queue.poll().filter(|result| result.exact().is_some())
+            });
             assert_eq!(result.viewport_declined.is_some(), viewport.is_some());
             let frame = result.into_raster().unwrap();
             assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref(), "{viewport:?}");
@@ -1101,7 +1082,6 @@ mod tests {
             asset
         };
         let mut service = EditorService::open(&catalog).unwrap();
-        service.disable_sync_source();
         let state = service.state(&asset).unwrap();
         let original = service.history(&asset, None, 10).unwrap().entries[1].clone();
         assert_eq!(original.action_id, "original");

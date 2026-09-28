@@ -1,14 +1,13 @@
+use luxforge_testbase::wait_for;
 use luxforge_testkit::{JsonProcess, fixtures};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Command, Stdio},
-    time::Duration,
 };
 
 const BINARY: &str = env!("CARGO_BIN_EXE_luxforge-json");
-const JOB_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
@@ -35,7 +34,7 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
     let imported: Value = serde_json::from_str(&line).unwrap();
     assert!(imported.get("error").is_none());
     let job_id = imported["result"]["job_id"].as_str().unwrap();
-    let asset = loop {
+    let asset = wait_for("the import job", || {
         writeln!(
             input,
             "{}",
@@ -48,11 +47,11 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
         let status: Value = serde_json::from_str(&line).unwrap();
         assert!(status.get("error").is_none(), "{status}");
         match status["result"]["status"].as_str() {
-            Some("ready") => break status["result"]["result"]["asset"]["id"].clone(),
-            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(1)),
+            Some("ready") => Some(status["result"]["result"]["asset"]["id"].clone()),
+            Some("queued" | "running") => None,
             other => panic!("unexpected source job {other:?}: {status}"),
         }
-    };
+    });
     writeln!(
         input,
         "{}",
@@ -201,7 +200,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         "catalog.import",
         json!({"path": fixture, "mutation": {"request_id": "cli-import", "actor": "cli-test"}}),
     );
-    let imported = client.settle("job.read", &imported["job_id"], JOB_TIMEOUT);
+    let imported = client.settle("job.read", &imported["job_id"]);
     assert_eq!(imported["status"], "ready", "{imported}");
     let asset = imported["result"]["asset"]["id"].clone();
     let module = "luxforge.capabilities";
@@ -238,7 +237,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     // After Allow the install is sent again as a new request: the refused one changed nothing.
     let installed = client.call("module.resource.install", install("cli-install-2"));
     assert_eq!(
-        client.settle("job.read", &installed["job_id"], JOB_TIMEOUT)["status"],
+        client.settle("job.read", &installed["job_id"])["status"],
         "ready"
     );
     let activating = client.call(
@@ -246,7 +245,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         json!({"module_id": module, "mutation": {"request_id": "cli-activate", "actor": "cli-test"}}),
     );
     assert_eq!(
-        client.settle("job.read", &activating["job_id"], JOB_TIMEOUT)["status"],
+        client.settle("job.read", &activating["job_id"])["status"],
         "ready"
     );
     // A refused request changed nothing, so asking again after Allow keeps its request_id.
@@ -273,7 +272,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         "a retry starts no second job"
     );
     assert_eq!(retried["job_id"], queued["job_id"]);
-    let job = client.settle("job.read", &queued["job_id"], JOB_TIMEOUT);
+    let job = client.settle("job.read", &queued["job_id"]);
     assert_eq!(job["status"], "ready", "{job}");
     let artifact = job["result"]["artifacts"][0].clone();
     let gains = job["result"]["result"]["gains"].clone();

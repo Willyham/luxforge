@@ -5,9 +5,8 @@
 
 use luxforge_testkit::{JsonProcess, client::request_id, fixtures};
 use serde_json::{Map, Value, json};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
-const JOB_TIMEOUT: Duration = Duration::from_secs(60);
 const ACTOR: &str = "presets-json-cli";
 
 /// A fresh `{request_id, actor}` envelope, so every call is a new request.
@@ -45,7 +44,7 @@ impl Journey for JsonProcess {
             json!({"path": path, "mutation": request()}),
         )["job_id"]
             .clone();
-        let status = self.settle("job.read", &job, JOB_TIMEOUT);
+        let status = self.settle("job.read", &job);
         assert_eq!(status["status"], "ready", "{status}");
         status["result"]["asset"].clone()
     }

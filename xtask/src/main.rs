@@ -354,20 +354,6 @@ fn main_result() -> Result {
             a.done()?;
             raw::corpus(&manifest, &out)?;
         }
-        "raw-editor" => {
-            let manifest = absolute(&root, &a.path("--manifest")?);
-            let out = absolute(&root, &a.path("--output")?);
-            let samples = samples(&mut a, 3)?;
-            let selected_binary = a.value("--binary")?.map(PathBuf::from);
-            a.done()?;
-            let bin = selected_binary
-                .as_ref()
-                .map(|path| absolute(&root, path))
-                .map(Ok)
-                .unwrap_or_else(|| binary(&root))?;
-            let _gate = launch::TimingGate::acquire()?;
-            raw_editor::run(&root, &manifest, &out, &bin, samples)?;
-        }
         "raw-authentic" => {
             let manifest = absolute(&root, &a.path("--manifest")?);
             let out = absolute(&root, &a.path("--output")?);
@@ -501,6 +487,11 @@ fn main_result() -> Result {
                 return Ok(());
             }
             let scenario = scenario.unwrap_or_else(|| "load".into());
+            // A replay reads the recorded run's own copy of the manifest, so only a new run takes
+            // one.
+            let manifest = a
+                .value("--manifest")?
+                .map(|path| absolute(&root, Path::new(&path)));
             a.done()?;
             let timeout = std::time::Duration::from_secs(35);
             // The row is found before anything is built, so an unknown name or a `--source` the
@@ -514,6 +505,7 @@ fn main_result() -> Result {
                 &bin,
                 timeout,
                 source.map(|source| vec![source]),
+                manifest.as_deref(),
             )?;
         }
         "verify" => {
@@ -586,7 +578,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }
