@@ -1,0 +1,23 @@
+[package]
+name = "luxforge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "luxforge-json"
+path = "src/json.rs"
+
+[dependencies]
+luxforge-core = { path = "../luxforge-core" }
+serde_json.workspace = true
+
+[dev-dependencies]
+luxforge-reference = { path = "../luxforge-reference" }
+luxforge-testbase = { path = "../luxforge-testbase" }
+luxforge-testkit = { path = "../luxforge-testkit" }
+
+[lints]
+workspace = true

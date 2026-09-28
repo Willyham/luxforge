@@ -113,7 +113,7 @@
         {
           "kind": "file",
           "label": "Authentic RAW JSON tests",
-          "target": "crates/luxforge-app/tests/raw_json_cli.rs",
+          "target": "crates/luxforge-cli/tests/raw_json_cli.rs",
           "relevance": "The other `#[ignore]`d authentic-file suite `full` should run with a manifest."
         }
       ],
@@ -1044,7 +1044,7 @@
         {
           "kind": "file",
           "label": "One of three app CLI test binaries",
-          "target": "crates/luxforge-app/tests/json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli.rs",
           "relevance": "One of the three binaries this task merges into one."
         },
         {

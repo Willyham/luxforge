@@ -77,7 +77,7 @@ The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts an
 
 ## Scripting it
 
-Every operation in the editor is a JSON request. You can talk to the running app, or start a headless owner of the same catalog and send it one request per line:
+Every operation in the editor is a JSON request. You can talk to the running app, or start a headless owner of the same catalog and send it one request per line. `cargo xtask build --release` builds it with the editor, and `cargo build --release -p luxforge-cli` builds it alone, without the GUI stack:
 
 ```sh
 target/release/luxforge-json --catalog path/to/catalog.sqlite
@@ -107,7 +107,8 @@ Luxforge is written in Rust with a deliberately small core. The core owns the ca
 | `luxforge-process` | CPU, memory and GPU counters for the editor process |
 | `luxforge-raw` | RAW decoding and development |
 | `luxforge-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
-| `luxforge-app` | The desktop app and the headless `luxforge-json` binary |
+| `luxforge-app` | The desktop app |
+| `luxforge-cli` | The headless `luxforge-json` binary and where the application keeps its files; builds without the GUI stack |
 | `luxforge-evidence` | The evidence script's step types, shared by the desktop and `xtask` so a scripted run and a hand-written one read the same shape |
 | `luxforge-reference` | Independent f64 references (colour, mask, mixer, Presence, range, tone, vignette, white balance) that production is tested against; depends on no workspace crate |
 | `luxforge-testbase` | The one gate and hang-bounded wait every test orders its steps by; depends on no workspace crate, never shipped |

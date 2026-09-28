@@ -1,8 +1,9 @@
 //! Starting and stopping the desktop: the registry this run serves, the capability host's paths,
 //! catalog ownership and the Iced application, and the shutdown that releases them.
 use super::{Editor, message::Message, tasks};
-use crate::{Config, paths::Paths};
+use crate::Config;
 use iced::Task;
+use luxforge_cli::Paths;
 use luxforge_core::{
     ClientAuthority, ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
@@ -64,24 +65,19 @@ pub(super) fn registry(
     }
 }
 
-/// Where the capability host keeps module settings, grants and resources, and which secret store
-/// it uses. An evidence run keeps all of it inside its evidence directory with an in-memory store,
-/// so it never touches the person's configuration or login keychain. Nothing is created here: the
-/// host creates a directory on its first write.
+/// Where the capability host keeps module settings, grants and resources, under the run's
+/// resolved paths, and which secret store it uses. An evidence run keeps all of it inside its
+/// evidence directory with an in-memory store, so it never touches the person's configuration or
+/// login keychain. Nothing is created here: the host creates a directory on its first write.
 pub(super) fn host_config(config: &Config) -> HostConfig {
-    let (paths, secrets): (_, Arc<dyn SecretStore>) = match &config.evidence {
-        Some(evidence) => (
-            Paths::resolve(Some(&evidence.join("host"))),
-            Arc::new(MemorySecretStore::new()),
-        ),
-        None => (
-            Paths::resolve(config.data_root.as_ref()),
-            platform_secret_store(),
-        ),
+    let secrets: Arc<dyn SecretStore> = match &config.evidence {
+        Some(_) => Arc::new(MemorySecretStore::new()),
+        None => platform_secret_store(),
     };
+    let paths = config.paths.as_ref();
     HostConfig {
-        config_dir: paths.as_ref().map(Paths::module_config),
-        resource_dir: paths.as_ref().map(Paths::module_resources),
+        config_dir: paths.map(Paths::module_config),
+        resource_dir: paths.map(Paths::module_resources),
         secrets,
         ..HostConfig::unconfigured()
     }
@@ -92,7 +88,9 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     let catalog = match (&config.catalog, &config.evidence) {
         (Some(catalog), _) => catalog.clone(),
         (None, Some(evidence)) => evidence.join("catalog.sqlite"),
-        (None, None) => Paths::resolve(config.data_root.as_ref())
+        (None, None) => config
+            .paths
+            .as_ref()
             .ok_or("no usable application data directory; pass --data-root")?
             .config
             .join("catalog.sqlite"),

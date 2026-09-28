@@ -11,12 +11,12 @@ mod crop_draft;
 mod diagnostics;
 mod mask_canvas;
 mod mask_draft;
-mod paths;
 mod state;
 mod view;
 mod window_frame;
 use app::evidence::Step;
 use diagnostics::Diagnostics;
+use luxforge_cli::Paths;
 use std::{collections::VecDeque, path::PathBuf};
 
 #[derive(Clone, Default)]
@@ -30,6 +30,8 @@ struct Config {
     /// The renderer, the window surface and its readbacks are unaffected.
     hidden: bool,
     data_root: Option<PathBuf>,
+    /// Where this run keeps its files, resolved once at startup by [`Config::resolve_paths`].
+    paths: Option<Paths>,
     catalog: Option<PathBuf>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
@@ -48,6 +50,16 @@ impl Config {
     /// if the log file could not be created; they then fall back to stderr.
     fn wants_events(&self) -> bool {
         self.evidence.is_some() || self.data_root.is_some()
+    }
+
+    /// Where this run keeps its files. An evidence run keeps them inside its evidence directory,
+    /// so it never touches the person's configuration; any other run keeps them under
+    /// `--data-root` or the platform's application directories. Resolving creates nothing.
+    fn resolve_paths(&self) -> Option<Paths> {
+        match &self.evidence {
+            Some(evidence) => Paths::resolve(Some(&evidence.join("host"))),
+            None => Paths::resolve(self.data_root.as_ref()),
+        }
     }
 }
 
@@ -143,16 +155,13 @@ fn arguments() -> Result<Config, String> {
             .unwrap_or_default()
             .as_nanos()
     );
-    let resolved = paths::Paths::resolve(config.data_root.as_ref());
-    // Config and cache are deliberately not created until they have real work.
-    if let Some(paths) = &resolved {
-        debug_assert!(paths.config != paths.cache);
-    }
+    // The directories are deliberately not created until they have real work.
+    config.paths = config.resolve_paths();
     let log_dir = config.evidence.clone().or_else(|| {
         config
             .data_root
             .as_ref()
-            .and(resolved.as_ref().map(|p| p.logs.clone()))
+            .and(config.paths.as_ref().map(|p| p.logs.clone()))
     });
     if let Some(dir) = log_dir {
         let start = || -> std::io::Result<Diagnostics> {

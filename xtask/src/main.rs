@@ -167,7 +167,14 @@ fn cargo_command() -> Command {
 }
 fn cargo(root: &Path, op: &str, release: bool) -> Result {
     let mut args = match op {
-        "build" => vec!["build", "--locked", "--package", "luxforge-app"],
+        "build" => vec![
+            "build",
+            "--locked",
+            "--package",
+            "luxforge-app",
+            "--package",
+            "luxforge-cli",
+        ],
         "test" => vec!["test", "--locked", "--workspace"],
         "fmt" => vec!["fmt", "--all", "--", "--check"],
         "lint" => vec![

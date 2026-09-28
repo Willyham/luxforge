@@ -607,7 +607,7 @@
         {
           "kind": "file",
           "label": "Headless JSON binary",
-          "target": "crates/luxforge-app/src/json.rs",
+          "target": "crates/luxforge-cli/src/json.rs",
           "relevance": "Its flags and registry assembly."
         },
         {

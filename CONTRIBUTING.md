@@ -5,7 +5,8 @@ Read [AGENTS.md](AGENTS.md) first. It holds the pillars, workflow and engineerin
 ## Layout
 
 - `crates/luxforge-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
-- `crates/luxforge-app`: Iced desktop adapter plus the desktop and headless `luxforge-json` binaries.
+- `crates/luxforge-app`: Iced desktop adapter and the `luxforge` desktop binary.
+- `crates/luxforge-cli`: the headless `luxforge-json` binary, built without the GUI stack.
 - `xtask`: all development, check, evidence and packaging commands.
 - The full crate list, with what each one holds and depends on, is in [architecture](docs/design/architecture.md#workspace).
 - `docs/`: product, design, spec, engineering and research documentation.

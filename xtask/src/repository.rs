@@ -242,6 +242,7 @@ const TEXT: &[&str] = &["rs", "toml", "md", "json", "wgsl", "txt"];
 const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-core/src",
     "crates/luxforge-app/src",
+    "crates/luxforge-cli/src",
     "crates/luxforge-ui/src",
     "crates/luxforge-raw/src",
     "crates/luxforge-process/src",
@@ -253,6 +254,7 @@ const SHIPPED_SOURCES: &[&str] = &[
 const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-core",
     "crates/luxforge-app",
+    "crates/luxforge-cli",
     "crates/luxforge-ui",
     "crates/luxforge-raw",
     "crates/luxforge-process",
@@ -918,6 +920,8 @@ const EVERY_TABLE: &[Table] = &[Table::Normal, Table::Dev, Table::Build, Table::
 enum Depends {
     /// A dependency on exactly this crate.
     On(&'static str),
+    /// A dependency on any one of these crates.
+    Any(&'static [&'static str]),
     /// A dependency on any crate whose name starts with this.
     Prefixed(&'static str),
     /// `crate` with `feature` anywhere in its declaration.
@@ -1026,6 +1030,24 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "luxforge-testbase may depend on no workspace crate and no path, so the core's \
                  and the widget crate's tests can use it",
+    },
+    // The headless binary builds without the GUI stack: no window, renderer or dialog crate, and
+    // not the widget crate or the desktop that bring them.
+    DependencyRule {
+        name: "headless-cli",
+        refuses: Depends::Any(&[
+            "iced",
+            "iced_wgpu",
+            "wgpu",
+            "rfd",
+            "luxforge-ui",
+            "luxforge-app",
+        ]),
+        manifests: &["crates/luxforge-cli"],
+        tables: &[Table::Normal],
+        allowed: &[],
+        reason: "luxforge-cli builds the headless luxforge-json binary and may not depend on the \
+                 GUI stack (iced, wgpu, rfd, luxforge-ui or luxforge-app)",
     },
 ];
 
@@ -1372,6 +1394,7 @@ impl Depends {
         let named = |test: &dyn Fn(&str) -> bool| dependency.names.iter().any(|n| test(n));
         match self {
             Depends::On(name) => named(&|n| n == name),
+            Depends::Any(names) => named(&|n| names.contains(&n)),
             Depends::Prefixed(prefix) => named(&|n| n.starts_with(prefix)),
             Depends::Feature {
                 dependency: name,
@@ -3665,6 +3688,53 @@ mod tests {
             assert!(
                 error.contains("luxforge-testbase/Cargo.toml:")
                     && error.contains("no workspace crate")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_headless_cli_may_not_depend_on_the_gui_stack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-cli/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-cli\"\n\n[dependencies]\n\
+                     luxforge-core = { path = \"../luxforge-core\" }\n\
+                     serde_json.workspace = true\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["headless-cli"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        // A test may drive a GUI crate; the binary never links one.
+        fs::write(
+            &manifest,
+            format!("{clean}\n[dev-dependencies]\niced.workspace = true\n"),
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            ("Iced", "iced.workspace = true\n"),
+            ("Iced's renderer", "iced_wgpu.workspace = true\n"),
+            ("wgpu", "wgpu = { version = \"27\" }\n"),
+            ("the dialog crate", "rfd.workspace = true\n"),
+            (
+                "the widget crate",
+                "luxforge-ui = { path = \"../luxforge-ui\" }\n",
+            ),
+            (
+                "the desktop",
+                "luxforge-app = { path = \"../luxforge-app\" }\n",
+            ),
+            (
+                "Iced under another name",
+                "gui = { package = \"iced\", version = \"0.14\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-cli/Cargo.toml:")
+                    && error.contains("GUI stack")
                     && error.contains("DEPENDENCY_RULES"),
                 "{what}: {error}"
             );
