@@ -825,15 +825,16 @@
     },
     {
       "id": "TASK-012",
-      "description": "Decide whether a spatial operation with a large summed halo runs in larger tiles, so Texture and Dehaze stop recomputing the margin Clarity needs around every tile.",
-      "status": "blocked",
+      "description": "Run a spatial operation with a large summed halo in larger tiles, so Texture and Dehaze stop recomputing the margin Clarity needs around every tile.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Wave 3, speed. Blocked on the owner's decision; measured, not implemented.",
+        "Wave 3, speed. Decided on 2026-09-28 by the integrator under the owner's delegation and implemented: an operation whose summed halo at its stage is at most 128 px keeps 512 px tiles, and one past it runs in 1024 px tiles (luxforge_raw::spatial_tile, through the one Tiling knob the render, the point sample, the windowed proxy and the tests share).",
         "A render the spatial target holds to fewer tiles than the pool has workers already spreads each tile's passes over the pool, so a 60 MP render with all three Presence fields uses about twelve cores and takes about 3.4 s. What remains is work repeated in the halo: in 512 px tiles Dehaze computes 5.2 times the stage and Texture 4.9 times, because each tile carries Clarity's 327 px halo, and the render spends about twice the CPU time it did when two tiles ran with serial passes.",
         "Measured with 1024 px tiles and pooled passes on the generated 60 MP JPEG (5 samples, load 8 to 12): all three fields 2.09 s against 3.67 s in 512 px tiles on the same run, Texture and Clarity 1.62 s against 2.63 s, with total CPU time back to the serial-pass figure. One tile's working set is then 208.5 MiB, so batches hold one tile inside the 256 MiB target. The frame was byte-identical to the 512 px render for Texture with Clarity and for all three fields on the 24 MP and 60 MP fixtures.",
         "Samples through a spatial layer are now answered by a dedicated point worker, off the catalog owner, so a larger tile costs only the sampling client its own wait, not every other client: the pointer readout goes from 104 to 107 ms to 217 to 218 ms with all three fields at 60 MP, and from 13 to 50 ms with Texture alone (9 interior points, each equal to the rendered byte), but no longer delays another client's request the way it would when sampling ran on the owner. Byte identity across tile sizes is asserted by tests and holds on these fixtures, but the box passes' running sums start at each rectangle's edge, so it rests on evidence rather than construction.",
-        "A tile size chosen from the summed halo (512 px for a small one, 1024 px once it passes some bound) would keep samples through a small-halo stack as cheap as today."
+        "A tile size chosen from the summed halo keeps samples through a small-halo stack as cheap as before.",
+        "Evidence: presence_tile_sizes put the bound where 1024 px tiles turn faster, 17 to 51% past 128 px and at most 14% below it (Texture alone 9 to 14% slower), with samples three to four times dearer; every Presence combination rendered the same SHA-256 in 512 and 1024 px tiles on the generated 24 MP, 60 MP and presence fixtures, and the frames with the rule matched the 512 px build's. Against the 512 px build, stacks now in 1024 px tiles render 22 to 58% faster (all three fields at 60 MP 1.5 to 1.6 s against 3.0 to 3.5 s, M4, load 12 to 20, 5 renders per stack and run, back to back and reversed) and their samples cost 1.9 to 3.8 times as much; RAW samples through Clarity on the Z6, X100VI and Air 2S equal the render in both tilings (docs/decisions.md, post-consolidation review; docs/specs/performance.md, Tile size by summed halo and In tiles sized by the summed halo)."
       ],
       "context_links": [
         {
@@ -853,7 +854,7 @@
           "kind": "file",
           "label": "Rendering and limits",
           "target": "docs/design/architecture.md",
-          "relevance": "The spatial stage boundary, 512 px tiles and the 256 MiB target that sets batch concurrency.",
+          "relevance": "The spatial stage boundary, its tile sizes and the 256 MiB target that sets batch concurrency.",
           "locator": "Rendering and limits"
         },
         {
