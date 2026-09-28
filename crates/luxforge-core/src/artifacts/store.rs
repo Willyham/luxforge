@@ -6,11 +6,11 @@ use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
     lock,
 };
-#[cfg(test)]
-use crate::ErrorKind;
 use crate::{
-    Error, atomic_file,
-    editor::{SourceSignature, source_signature, source_signature_for_handle},
+    Error, ErrorKind,
+    atomic_file::{self, file_error},
+    capabilities::document::JsonDocument,
+    editor::{SourceSignature, now_ms, source_signature, source_signature_for_handle},
     modules::valid_identity,
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 pub(crate) const OBJECTS: &str = "objects";
@@ -44,23 +44,15 @@ const CHUNK: usize = 64 * 1024;
 /// to hand to the catalog. Only workers take it; the catalog owner never waits on it.
 static OBJECT_DECISIONS: Mutex<()> = Mutex::new(());
 
+/// `manifest.json`: `{format: 1, catalog_id}`.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
-    format: u32,
     catalog_id: String,
 }
 
-fn access(context: &str, error: &io::Error) -> Error {
-    Error::file_access(format!("{context}: {}", error.kind()))
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
+fn manifest(root: &Path) -> JsonDocument<Manifest> {
+    JsonDocument::new(root, MANIFEST, MAX_MANIFEST_BYTES, MANIFEST_FORMAT)
 }
 
 /// Fill `buffer` from `file`, retrying interrupted reads; `0` is the end of the file.
@@ -103,7 +95,7 @@ pub(crate) enum RootState {
 pub(crate) fn root_state(root: &Path, catalog_id: &str) -> Result<RootState, Error> {
     match fs::metadata(root) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(RootState::Absent),
-        Err(error) => return Err(access("cannot read artifact directory", &error)),
+        Err(error) => return Err(file_error("cannot read artifact directory", error.kind())),
         Ok(metadata) if !metadata.is_dir() => {
             return Ok(RootState::Foreign(format!(
                 "artifact directory {} is not a directory",
@@ -112,32 +104,21 @@ pub(crate) fn root_state(root: &Path, catalog_id: &str) -> Result<RootState, Err
         }
         Ok(_) => {}
     }
-    let mut file = match File::open(root.join(MANIFEST)) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(RootState::Unmarked),
-        Err(error) => return Err(access("cannot read artifact manifest", &error)),
-        Ok(file) => file,
+    // A manifest that is too large, not JSON, of another format or another shape is kept as it is
+    // and makes the root another catalog's.
+    let manifest = match manifest(root).read() {
+        Ok(None) => return Ok(RootState::Unmarked),
+        Ok(Some(manifest)) => manifest,
+        Err(error)
+            if matches!(
+                error.kind,
+                ErrorKind::Incompatible | ErrorKind::ResourceLimit
+            ) =>
+        {
+            return Ok(RootState::Foreign(error.detail));
+        }
+        Err(error) => return Err(error),
     };
-    let mut text = Vec::new();
-    (&mut file)
-        .take(MAX_MANIFEST_BYTES + 1)
-        .read_to_end(&mut text)
-        .map_err(|error| access("cannot read artifact manifest", &error))?;
-    let manifest = (text.len() as u64 <= MAX_MANIFEST_BYTES)
-        .then(|| serde_json::from_slice::<Manifest>(&text).ok())
-        .flatten();
-    let Some(manifest) = manifest else {
-        return Ok(RootState::Foreign(format!(
-            "artifact directory {} has an unreadable manifest",
-            root.display()
-        )));
-    };
-    if manifest.format != MANIFEST_FORMAT {
-        return Ok(RootState::Foreign(format!(
-            "artifact directory {} has manifest format {}; expected {MANIFEST_FORMAT}",
-            root.display(),
-            manifest.format
-        )));
-    }
     if manifest.catalog_id != catalog_id {
         return Ok(RootState::Foreign(format!(
             "artifact directory {} belongs to catalog {}",
@@ -153,12 +134,12 @@ pub(crate) fn root_state(root: &Path, catalog_id: &str) -> Result<RootState, Err
 fn object_holds(path: &Path, bytes: &[u8]) -> Result<bool, Error> {
     let mut file = match File::open(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(access("cannot read artifact", &error)),
+        Err(error) => return Err(file_error("cannot read artifact", error.kind())),
         Ok(file) => file,
     };
     let metadata = file
         .metadata()
-        .map_err(|error| access("cannot read artifact", &error))?;
+        .map_err(|error| file_error("cannot read artifact", error.kind()))?;
     if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
         return Ok(false);
     }
@@ -166,7 +147,7 @@ fn object_holds(path: &Path, bytes: &[u8]) -> Result<bool, Error> {
     let mut offset = 0;
     loop {
         let read = read_chunk(&mut file, &mut buffer)
-            .map_err(|error| access("cannot read artifact", &error))?;
+            .map_err(|error| file_error("cannot read artifact", error.kind()))?;
         if read == 0 {
             return Ok(offset == bytes.len());
         }
@@ -245,7 +226,7 @@ impl ArtifactWriter {
             match object_holds(&object, bytes) {
                 Ok(true) => Ok(()),
                 Ok(false) => atomic_file::publish(&staged, &object)
-                    .map_err(|error| access("cannot publish artifact", &error)),
+                    .map_err(|error| file_error("cannot publish artifact", error.kind())),
                 Err(error) => Err(error),
             }
         };
@@ -277,7 +258,7 @@ impl ArtifactWriter {
         }
         for directory in [OBJECTS, TEMPORARY] {
             fs::create_dir_all(self.root.join(directory))
-                .map_err(|error| access("cannot create artifact directory", &error))?;
+                .map_err(|error| file_error("cannot create artifact directory", error.kind()))?;
         }
         Ok(())
     }
@@ -287,11 +268,11 @@ impl ArtifactWriter {
     fn claim(&self) -> Result<(), Error> {
         let temporary = self.root.join(TEMPORARY);
         fs::create_dir_all(&temporary)
-            .map_err(|error| access("cannot create artifact directory", &error))?;
+            .map_err(|error| file_error("cannot create artifact directory", error.kind()))?;
         let occupied = match fs::read_dir(self.root.join(OBJECTS)) {
             Ok(mut entries) => entries.next().is_some(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(access("cannot read artifact directory", &error)),
+            Err(error) => return Err(file_error("cannot read artifact directory", error.kind())),
         };
         if occupied {
             return Err(Error::incompatible(format!(
@@ -299,15 +280,13 @@ impl ArtifactWriter {
                 self.root.display()
             )));
         }
-        let manifest = serde_json::to_vec(&Manifest {
-            format: MANIFEST_FORMAT,
+        let manifest = manifest(&self.root).encode(&Manifest {
             catalog_id: self.catalog_id.clone(),
-        })
-        .map_err(|error| Error::internal(error.to_string()))?;
+        })?;
         let staged = self.stage(&manifest)?;
         atomic_file::publish(&staged, &self.root.join(MANIFEST)).map_err(|error| {
             let _ = fs::remove_file(&staged);
-            access("cannot write artifact manifest", &error)
+            file_error("cannot write artifact manifest", error.kind())
         })
     }
 
@@ -318,7 +297,7 @@ impl ArtifactWriter {
             .join(TEMPORARY)
             .join(uuid::Uuid::new_v4().simple().to_string());
         atomic_file::stage(&staged, bytes)
-            .map_err(|error| access("cannot stage artifact", &error))?;
+            .map_err(|error| file_error("cannot stage artifact", error.kind()))?;
         Ok(staged)
     }
 }
@@ -360,11 +339,11 @@ pub(crate) fn read_verified(
     let path = object_path(&read.root, id);
     let mut file = match File::open(&path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(missing()),
-        Err(error) => return Err(access("cannot read artifact", &error)),
+        Err(error) => return Err(file_error("cannot read artifact", error.kind())),
         Ok(file) => file,
     };
     let stat = |metadata: io::Result<fs::Metadata>| {
-        metadata.map_err(|error| access("cannot read artifact", &error))
+        metadata.map_err(|error| file_error("cannot read artifact", error.kind()))
     };
     let handle_before = stat(file.metadata())?;
     let path_before = stat(path.metadata())?;
@@ -384,7 +363,7 @@ pub(crate) fn read_verified(
     (&mut file)
         .take(read.bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| access("cannot read artifact", &error))?;
+        .map_err(|error| file_error("cannot read artifact", error.kind()))?;
     cancelled(cancel)?;
     if bytes.len() as u64 != read.bytes || format!("{:x}", Sha256::digest(&bytes)) != id.sha256() {
         return Err(corrupt());
@@ -451,12 +430,13 @@ pub(crate) fn collect_files(
     }
     let listing = |directory: &Path| match fs::read_dir(directory) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(access("cannot read artifact directory", &error)),
+        Err(error) => Err(file_error("cannot read artifact directory", error.kind())),
         Ok(entries) => Ok(Some(entries)),
     };
     for entry in listing(&root.join(OBJECTS))?.into_iter().flatten() {
         cancelled(cancel)?;
-        let entry = entry.map_err(|error| access("cannot read artifact directory", &error))?;
+        let entry =
+            entry.map_err(|error| file_error("cannot read artifact directory", error.kind()))?;
         let Some(id) = entry
             .file_name()
             .to_str()
@@ -474,16 +454,17 @@ pub(crate) fn collect_files(
         match fs::remove_file(entry.path()) {
             Ok(()) => collected.objects += 1,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(access("cannot remove artifact", &error)),
+            Err(error) => return Err(file_error("cannot remove artifact", error.kind())),
         }
     }
     let now = SystemTime::now();
     for entry in listing(&root.join(TEMPORARY))?.into_iter().flatten() {
         cancelled(cancel)?;
-        let entry = entry.map_err(|error| access("cannot read artifact directory", &error))?;
+        let entry =
+            entry.map_err(|error| file_error("cannot read artifact directory", error.kind()))?;
         let metadata = entry
             .metadata()
-            .map_err(|error| access("cannot read staged artifact", &error))?;
+            .map_err(|error| file_error("cannot read staged artifact", error.kind()))?;
         let stale = metadata
             .modified()
             .ok()
@@ -493,7 +474,9 @@ pub(crate) fn collect_files(
             match fs::remove_file(entry.path()) {
                 Ok(()) => collected.temporary += 1,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(access("cannot remove staged artifact", &error)),
+                Err(error) => {
+                    return Err(file_error("cannot remove staged artifact", error.kind()));
+                }
             }
         }
     }
@@ -623,6 +606,49 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert!(error.detail.contains("holds objects but no manifest"));
         assert!(!root.join(MANIFEST).exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_of_another_format_shape_or_size_makes_the_root_foreign_and_is_kept() {
+        let directory = temp("manifest");
+        let root = directory.join("catalog.artifacts");
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(root_state(&root, "catalog-a").unwrap(), RootState::Unmarked);
+        let oversized = format!(
+            r#"{{"format":1,"catalog_id":"{}"}}"#,
+            "a".repeat(MAX_MANIFEST_BYTES as usize)
+        );
+        for (text, reason) in [
+            (
+                r#"{"format":2,"catalog_id":"catalog-a"}"#,
+                "manifest format 2 is not supported",
+            ),
+            (r#"{"catalog_id":"catalog-a"}"#, "no manifest format marker"),
+            (
+                r#"{"format":1,"catalog":"catalog-a"}"#,
+                "not a manifest file",
+            ),
+            ("not json", "not valid JSON"),
+            (oversized.as_str(), "is larger than 4096 bytes"),
+        ] {
+            fs::write(root.join(MANIFEST), text).unwrap();
+            let RootState::Foreign(detail) = root_state(&root, "catalog-a").unwrap() else {
+                panic!("{text} was not refused");
+            };
+            assert!(detail.contains(reason), "{detail}");
+            let refused = writer(&root, "catalog-a")
+                .write(b"bytes", meta(), "test.writer")
+                .unwrap_err();
+            assert_eq!(refused.kind, ErrorKind::Incompatible, "{refused}");
+            assert_eq!(fs::read_to_string(root.join(MANIFEST)).unwrap(), text);
+        }
+        // A claim writes the one document shape, which reads back as this catalog's.
+        fs::remove_file(root.join(MANIFEST)).unwrap();
+        writer(&root, "catalog-a")
+            .write(b"bytes", meta(), "test.writer")
+            .unwrap();
+        assert_eq!(root_state(&root, "catalog-a").unwrap(), RootState::Ready);
         fs::remove_dir_all(directory).unwrap();
     }
 

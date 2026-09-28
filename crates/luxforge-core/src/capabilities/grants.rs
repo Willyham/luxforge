@@ -8,13 +8,10 @@ use super::{
 };
 #[cfg(test)]
 use crate::ErrorKind;
-use crate::{AssetId, Error};
+use crate::{AssetId, Error, editor::now_ms};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::{
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::PathBuf;
 
 /// The only grants file format this build reads or writes.
 pub const GRANTS_FORMAT: u32 = 1;
@@ -35,14 +32,6 @@ pub const LIST: &str = "module.permission.list";
 
 /// The longest revocation reason a client may give, in characters.
 pub const MAX_REASON: usize = 256;
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 /// The capability kind a grant covers, which decides the shape of its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -125,7 +114,7 @@ impl GrantScope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Revocation {
-    pub ms: u64,
+    pub ms: i64,
     pub reason: String,
 }
 
@@ -144,7 +133,7 @@ pub struct Grant {
     pub actor: String,
     /// The grant request's identity, kept as its provenance.
     pub request_id: String,
-    pub created_ms: u64,
+    pub created_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked: Option<Revocation>,
 }
@@ -169,7 +158,7 @@ pub struct Denial {
     pub kind: GrantKind,
     pub scope: GrantScope,
     pub actor: String,
-    pub ms: u64,
+    pub ms: i64,
 }
 
 impl Denial {
@@ -744,7 +733,7 @@ mod tests {
             scope: download_scope(&format!("/{index}")),
             actor: "permissions".into(),
             request_id: format!("download-request-{index}"),
-            created_ms: index as u64,
+            created_ms: index as i64,
             revoked: None,
         };
         let remote_scope = || {
@@ -765,7 +754,7 @@ mod tests {
             scope: remote_scope(),
             actor: "permissions".into(),
             request_id: format!("remote-request-{index}"),
-            created_ms: 10_000 - index as u64,
+            created_ms: 10_000 - index as i64,
             revoked: None,
         };
         let document = Document {

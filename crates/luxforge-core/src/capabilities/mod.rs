@@ -8,7 +8,7 @@ pub mod consent;
 pub mod context;
 pub mod data;
 pub mod descriptor;
-mod document;
+pub(crate) mod document;
 pub mod endpoint;
 pub mod grants;
 pub mod host;

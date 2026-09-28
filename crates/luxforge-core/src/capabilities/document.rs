@@ -1,10 +1,11 @@
-//! The one store of the small JSON files the host owns outside every catalog: the settings document,
-//! the grants document and each installed resource's `installed.json`. A [`JsonDocument`] is one
-//! file of one shape `T`, `{format: <marker>, ...T}`, of at most `max_bytes`. Every call reads the
-//! file again, so two processes never act on a stale copy. A file of another format, or one that is
-//! not the current shape, is refused with `incompatible` and never rewritten. A change is one
-//! locked read-modify-write through the shared durable write, so a failure at any point leaves the
-//! previous file. See `docs/design/module-capabilities.md#settings-store`.
+//! The one store of the small format-marked JSON files kept outside every catalog: the settings
+//! document, the grants document, each installed resource's `installed.json` and the artifact
+//! root's `manifest.json`. A [`JsonDocument`] is one file of one shape `T`,
+//! `{format: <marker>, ...T}`, of at most `max_bytes`. Every call reads the file again, so two
+//! processes never act on a stale copy. A file of another format, or one that is not the current shape, is refused with
+//! `incompatible` and never rewritten. A change is one locked read-modify-write through the shared
+//! durable write, so a failure at any point leaves the previous file. See
+//! `docs/design/module-capabilities.md#settings-store`.
 use crate::{Error, atomic_file};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -132,7 +133,8 @@ impl<T: Serialize + DeserializeOwned> JsonDocument<T> {
         self.save(&bytes)
     }
 
-    fn encode(&self, document: &T) -> Result<Vec<u8>, Error> {
+    /// The bytes [`Self::write`] would write, for a writer that places them itself.
+    pub(crate) fn encode(&self, document: &T) -> Result<Vec<u8>, Error> {
         serde_json::to_vec_pretty(&Stored {
             format: self.format,
             document,
