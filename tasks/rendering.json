@@ -589,7 +589,7 @@
     {
       "id": "TASK-009",
       "description": "Build the proxy's box downscale in row bands instead of one full-window float intermediate, compile the proxy stage once per job instead of twice, and drop the previous cached proxy before building its replacement.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 3, speed. Three independent proxy-build costs the design already bounds in principle but the code does not yet honour.",
