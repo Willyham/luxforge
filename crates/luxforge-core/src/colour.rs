@@ -197,12 +197,6 @@ pub mod srgb {
         }
     }
 
-    /// [`Quantizer::channel`], for a caller that quantizes one value.
-    #[inline]
-    pub(crate) fn quantize_channel(value: f64) -> u8 {
-        quantizer().channel(value)
-    }
-
     /// [`Quantizer::pixel`], for a caller that quantizes one pixel.
     #[inline]
     pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
@@ -548,7 +542,7 @@ mod tests {
         for code in 0..=255u8 {
             let linear = srgb::decode_u8(code);
             assert_eq!(srgb::quantizer().rounded(linear), code);
-            assert_eq!(srgb::quantize_channel(linear), code);
+            assert_eq!(srgb::quantizer().channel(linear), code);
         }
     }
 

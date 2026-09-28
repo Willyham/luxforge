@@ -3,8 +3,7 @@ use crate::ErrorKind;
 use crate::{
     Error, Recipe, SnapshotId, SourceImage,
     colour::srgb::{
-        Quantizer, decode_pixel, decode_pixel_in, decode_table, quantize_channel, quantize_pixel,
-        quantizer,
+        Quantizer, decode_pixel, decode_pixel_in, decode_table, quantize_pixel, quantizer,
     },
     mask_field::MaskField,
     modules::{
@@ -2180,7 +2179,7 @@ mod tests {
     use crate::{
         AssetId, EFFECT_FORMAT, Layer, LayerId, MAX_COLOR_UNITS, ORIENTATION_EFFECT, Orientation,
         PIXEL_EFFECT, PixelReplace, PointwiseColor, Recipe, Snapshot, Transform,
-        colour::srgb::{CODE_BINS, quantize_channel},
+        colour::srgb::{CODE_BINS, quantizer},
         modules::{
             ActionInput, ActionPlan, Availability, BoxRect, CropPayload, CropStage,
             EffectDescriptor, EffectStage, ModuleDescriptor, StageContext, ToolModule,
@@ -4260,7 +4259,7 @@ mod tests {
         let thresholds = quantizer_reference_thresholds();
         let check = |value| {
             assert_eq!(
-                quantize_channel(value),
+                quantizer().channel(value),
                 quantizer_search_reference(&thresholds, value),
                 "value {value:?}, bits {:#018x}",
                 value.to_bits()
@@ -4292,7 +4291,7 @@ mod tests {
         let thresholds = quantizer_reference_thresholds();
         let check = |value| {
             assert_eq!(
-                quantize_channel(value),
+                quantizer().channel(value),
                 quantizer_search_reference(&thresholds, value),
                 "value {value:?}, bits {:#018x}",
                 value.to_bits()
