@@ -3,7 +3,7 @@
   "plan_id": "desktop",
   "title": "Desktop application, view model and widgets",
   "objective": "Finish the desktop's one-path work and make its structure match its documented layers: the defects fixed, the crop fully on the one draft driver with a declared angle stepper and a proxy stage, one start refusal, draft rounds that cost no extra frame, state owned by the seam that uses it, evidence that drives the shipped paths and the live-agent path, layers the repository check can enforce, and tests that prove each behaviour once.",
-  "context_summary": "The consolidation gave the desktop one pure draft state machine behind one gesture slot and refusal function, one owner call helper, one frame presenter, an idle loop that is asleep and a descriptor-driven control path with no module names in production UI code. It left the crop with its own lifecycle, refusal, notice and angle control beside the one driver, evidence-only slider messages, draft.begin/cancel/reapply as runtime hops, a 117-field Editor whose seams are files rather than owners, an unmeasured per-region derivation framework, layering leaks the boundary check cannot see, and about 950 lines of mock panels in the widget crate. Decisions: docs/decisions.md \"Post-consolidation review\"; constraints: docs/design/post-consolidation.md; the desktop design: docs/design/develop-workspace.md. Every Iced runtime hop costs about one displayed frame on the M4 (performance rule 12), which is why gesture owner calls stay synchronous.",
+  "context_summary": "Waves 1 to 3 put the desktop's shared mechanisms on one path: one pure draft state machine behind one gesture slot and one start refusal, the crop on the one draft driver with a declared angle stepper and a proxy input stage at Fit, `draft.begin`, `draft.cancel` and `draft.reapply` answered synchronously, the armed brush as view state, one frame presenter, an idle loop that is asleep, a descriptor-driven control path with no module names in production UI code, and no stack or preview job kept between messages (the `desktop-keeps-no-stack` and `desktop-keeps-no-preview-job` repository rows). What remains is structure and tests: a 147-field `Editor` whose seams are files rather than owners, presentation state spread across seams, an unmeasured per-region derivation framework, evidence settle calls in production seams, layering leaks the source rules cannot see, mock panels in the widget crate, hand-written widget forwarding, a headless binary that builds the GUI stack, live-agent changes never rendered in evidence and duplicate tests; plus surface ids for the library. Decisions: docs/decisions.md \"Post-consolidation review\"; constraints: docs/design/post-consolidation.md; the desktop design: docs/design/develop-workspace.md. Every Iced runtime hop costs about one displayed frame on the M4 (performance rule 12), which is why gesture owner calls stay synchronous.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -898,9 +898,11 @@
       "extra_context": [
         "Wave 4, structure.",
         "Owner decision (2026-09-26): the per-region derivation keys are removed if the logged derivation stays under about 0.2 ms per message; otherwise only the heavy region is keyed, on one value.",
-        "Today's machinery is four layers deep and was added with no measurement: `Tracked` stamps on 16 inputs (`state/tracked.rs`), `state/mod.rs`'s `Stamps` and `Built` with eight hand-listed region keys over the roughly 70-field `Inputs`, per-section digests in `state/tools.rs` (which on every tools refresh format `module.availability` with `{:?}`, serialize every layer payload to JSON, and for crop re-parse the committed crop and rebuild the aspect-preset list), and a debug-only `check_kept` re-derivation that catches a key missing an input.",
-        "The per-input cost recorded before this machinery existed put update, derivation and view together under 0.15 ms per input; the commit that added the keys did not re-measure, and nothing outside tests reads `SectionModel.version` today. `view()` still rebuilds every widget of every section on every message regardless of the keys, so the machinery optimizes the cheaper half of the budget. While a crop or mask draft is open, the canvas, masks and tools regions already re-derive on every message including preview polls and timer ticks, and the whole `ClientSession`, with a brush draft's whole path, is deep-compared every message.",
-        "Measure first with what is already logged (`last_rederive_ms`/`last_view_ms` in `app/gesture.rs`) on 24 MP and 60 MP drags, with the keys bypassed. If derivation stays under about 0.2 ms, delete `Tracked`, `Stamps`, `Built` and its keys, `check_kept`, the session stamp and the section digest/version, and derive every region on every message; keep the widget-level versions that key canvas caches, and build the palette's entries only while it is open. If one region measures heavy instead, key only that region on one cheap value rather than keeping the framework."
+        "The machinery is four layers deep and was added with no measurement: `Tracked` stamps on 15 `Editor` inputs (`state/tracked.rs`) plus a session stamp (`Built::session_stamp`, which deep-compares the whole `ClientSession`, an open draft's fields included, on every message and clones it when it changes); `state/mod.rs`'s `Stamps` and `Built` with eight hand-listed region keys (title, panel, canvas, masks, tools, histogram, status, palette) over the 77-field `Inputs`; per-section digests in `state/tools.rs` (`digest`, which on every tools refresh formats `module.availability` with `{:?}`, serializes each bound layer's payload to JSON, and for the crop builds `draft_digest`'s string, re-reading the committed crop and its aspect presets); and the debug-only `Workspace::check_kept` re-derivation that catches a key missing an input.",
+        "The per-input cost recorded before this machinery existed put the desktop's update, derivation and view under 0.15 ms together (the performance spec's \"Instant previews: proxy phase, hop rule and the surface primitive\"); the commit that added the keys did not re-measure, and nothing outside tests reads `SectionModel.version`. `view()` still rebuilds every widget of every section on every message regardless of the keys, so the machinery optimizes the cheaper half of the budget. While a draft is open the canvas region already re-derives on every message (`drafting_key`), with the tools region under a crop draft and the masks region under a mask draft, preview polls and timer ticks included.",
+        "How to measure with today's tools. `Editor::update_inner` (`app/mod.rs`) records `LoopTiming::last_rederive_ms` around `rederive` (with `request_capability_loads`, its second `rederive` when a capability section first loads, and `request_visible_curve_samples` inside the timed span), and `Editor::view` records `last_view_ms`. Nothing summarizes them: they reach the log only in each `slider_draft_preview` event's `detail.loop` object (`Editor::set_previewed`, `app/gesture.rs`), one sample per drafted input, taken from the update before that event's own. Build a release binary whose `Built::refresh` treats every key as moved (a temporary local change; `check_kept` is debug-only and does not run in it) and keep it beside an unchanged release build. Run `editor-latency --mode drag` (30 inputs by default) on the generated 24 MP and 60 MP JPEGs with `--binary` naming each build, back to back and then in reverse order, plus a `--mask` run so the masks region holds a bound mask. Read `detail.loop.last_rederive_ms` and `last_view_ms` from every `slider_draft_preview` in each run's `NEW_DIR/app/events.jsonl` and take p50 and p95; decide on the bypassed builds' p95. Mask and crop draft events carry no `loop` object, so the masked slider drag is the masked case this measures; `--mode burst` (360 paced inputs) adds samples if the drag's are too few to separate the branches.",
+        "If derivation stays under about 0.2 ms, delete `Tracked`, `Stamps`, `Built` and its keys, `check_kept`, the session stamp and the section digest and version, and derive every region on every message; keep the widget-level versions that key canvas caches (the curve's `curve_version` in `view/tools_panel.rs`) and the Performance section's own version, and build the palette's entries only while it is open (`palette::derive` filters every applicable module whether or not it is). If one region measures heavy instead, key only that region on one cheap value rather than keeping the framework.",
+        "The tests that prove the keys go with them or become behaviour checks: `a_refresh_builds_only_the_sections_whose_inputs_moved`, `a_field_change_re_derives_only_its_own_section`, `a_kept_section_that_differs_from_a_fresh_one_fails_a_debug_build` and `selecting_a_tab_rederives_only_its_own_section_and_changes_no_recipe` (`state/mod.rs`), `a_drag_re_derives_only_the_drafting_modules_section` (`app/slider_tests.rs`) and `a_message_that_changes_nothing_builds_no_section` (`app/view_state_tests.rs`). `cached_canvas_versions_track_picker_fractions_selection_and_drag_state` stays."
       ],
       "context_links": [
         {
@@ -919,19 +921,34 @@
           "kind": "file",
           "label": "Workspace state",
           "target": "crates/luxforge-app/src/state/mod.rs",
-          "relevance": "`Stamps`, `Built` and `check_kept`, the region-key machinery and its debug safety net."
+          "relevance": "`Stamps`, `Inputs`, `Built` with its region keys and session stamp, and `Workspace::check_kept`, the region-key machinery and its debug safety net.",
+          "locator": "Built"
         },
         {
           "kind": "file",
           "label": "Tools panel view model",
           "target": "crates/luxforge-app/src/state/tools.rs",
-          "relevance": "The per-section digest, the most expensive of the four layers per refresh."
+          "relevance": "The per-section `digest` and `draft_digest`, the most expensive of the four layers per refresh."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop update loop",
+          "target": "crates/luxforge-app/src/app/mod.rs",
+          "relevance": "`LoopTiming`, `update_inner` and `rederive`: where `last_rederive_ms` and `last_view_ms` are recorded and where the keys are stamped.",
+          "locator": "LoopTiming"
         },
         {
           "kind": "file",
           "label": "Gesture driver",
           "target": "crates/luxforge-app/src/app/gesture.rs",
-          "relevance": "`last_rederive_ms`/`last_view_ms`, already logged and the basis for the measurement."
+          "relevance": "`set_previewed`, which logs `last_rederive_ms`/`last_view_ms` in the `slider_draft_preview` event's `detail.loop`, the basis for the measurement.",
+          "locator": "set_previewed"
+        },
+        {
+          "kind": "file",
+          "label": "Latency harness",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "`editor-latency`'s drag, burst and `--mask` runs and `--binary`, which drive the measured gesture and keep its `app/events.jsonl`."
         },
         {
           "kind": "file",
@@ -943,30 +960,33 @@
           "kind": "file",
           "label": "Performance spec",
           "target": "docs/specs/performance.md",
-          "relevance": "Where the measured derivation cost is recorded."
+          "relevance": "The 0.15 ms per-input figure and where the measured derivation cost is recorded."
         }
       ],
       "acceptance_criteria": [
-        "The measured derivation cost on 24 MP and 60 MP drags, with keys bypassed, at p50 and p95, is recorded with host, load, sample count and scope in the performance spec.",
-        "If the measurement is under about 0.2 ms per message: `Tracked`, `Stamps`, `Built` and its keys, `check_kept`, the session stamp and the section digest/version are deleted, and every region derives on every message with no behaviour change.",
+        "The derivation cost with the keys bypassed, on 24 MP and 60 MP drags and a masked drag, at p50 and p95 of `slider_draft_preview`'s `detail.loop.last_rederive_ms`, with `last_view_ms` and the keyed build's figures beside it, is recorded with host, load, sample count and scope in the performance spec.",
+        "If the measurement is under about 0.2 ms per message: `Tracked`, `Stamps`, `Built` and its keys, `check_kept`, the session stamp and the section digest and version are deleted, and every region derives on every message with no behaviour change.",
         "If one region measures heavy instead: that region alone is keyed on one cheap value, and the rest of the framework is still removed.",
+        "The tests that proved the keys are deleted or replaced by behaviour checks, and the app tests pass.",
         "The performance rules' anti-pattern row is replaced with the recorded figure either way; idle CPU with the Performance section open is unchanged."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Log `last_rederive_ms`/`last_view_ms` on 24 MP and 60 MP drags with the region keys temporarily bypassed, and record p50/p95.",
-          "Apply the deletion or the single-region key according to the measured figure.",
-          "Run the state view-model tests and an idle-CPU check with the Performance section open."
+          "Build a release binary with `Built::refresh` treating every key as moved, keep an unchanged release build beside it, and run the 24 MP, 60 MP and masked drags against each with `--binary`, back to back and reversed.",
+          "Read `detail.loop.last_rederive_ms` and `last_view_ms` from every `slider_draft_preview` in each run's `app/events.jsonl`, and record p50/p95.",
+          "Apply the deletion or the single-region key according to the bypassed p95, removing or replacing the key tests.",
+          "Run the app tests and the timing tier, whose idle measurement holds the Performance section open."
         ],
         "commands": [
-          "cargo test -p luxforge-app state",
-          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode drag",
-          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode drag",
-          "cargo xtask verify --tier timing"
+          "cargo test -p luxforge-app",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode drag --binary BYPASSED_BINARY",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode drag --binary BYPASSED_BINARY",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode drag --mask --binary BYPASSED_BINARY",
+          "cargo xtask verify --tier timing --output NEW_DIR"
         ],
         "expected_results": [
-          "The recorded derivation cost decides which branch is taken; the state tests pass either way; idle CPU with the Performance section open is unchanged."
+          "The recorded derivation cost decides which branch is taken; the app tests pass either way; idle CPU with the Performance section open is unchanged."
         ]
       }
     },
@@ -979,9 +999,13 @@
       ],
       "extra_context": [
         "Wave 4, structure.",
-        "About 28 `Editor` fields (generations, retained proxy and exact frames, incoming and analysis results, approximate white-balance flags, pending and presented bounds, refit-pending, held-by-proxy, render error, requested and rendered entry, draft generation, mask overlay pending) are written from `preview.rs`, `overlay.rs`, `masks.rs`, `crop.rs`, `gesture.rs` and `evidence.rs`. `preview_ready` flattens the phase-typed preview result back into a 7-tuple; `Upload` (`app/tasks.rs`, named for an upload that no longer exists) re-adds the proxy flags so `present` can log them; `present_retained` (`app/preview.rs`) unpacks a `ProxyFrame` into seven locals to call `hand_retained`, which takes seven parameters under `#[allow(clippy::too_many_arguments)]`.",
-        "\"Displayed size in this view\" is computed three times (twice in `overlay.rs`, once in `preview.rs`), and the requested and rendered entry fields clone a whole `HistoryEntry` per refresh and per presented frame, only so evidence can read it. The mask coverage grid waits in a field for a post-dispatch hook, while the clipping overlay is already presented where it arrives.",
-        "Add `preview::Presentation`, owning the existing `Presenter` plus these fields, with `request(job) -> generation`, `take(result) -> Presented`, `zoom(wants_proxy)`, `withdraw()` and `surfaces()`. Retained frames become `enum Retained { Proxy(ProxyFrame), Exact(ExactFrame) }` presented through one function; delete `Upload`. Write one `displayed_size` function for all three sites. Present the coverage grid directly in `preview_ready`, with no pending field or hook. Keep the evidence stack summary on ids or a shared reference, not per-frame clones.",
+        "About 34 `Editor` fields hold presentation: the `presenter`; generations (`preview_generation`, `presented_generation`); content serials (`content_key`, `content_serial`, `pending_content`, `pending_intent`, `presented_content`, `analysis_content`, `raster_content`, `viewport_disabled_content`); retained frames (`proxy_frame`, the exact `raster`, `region_raster`) and their flags (`raster_approximate_white_balance`, `exact_render_ms`, `presented_proxy`, `presented_approximate_white_balance`); `analysis` and `incoming`; bounds (`pending_bounds`, `presented_bounds`, `refit_pending`, `proxy_declined`, `held_by_proxy`); `render_error`; entries (`presented_entry`, `requested_render_entry`, `rendered_entry`, `displayed_draft_revision`, `displayed_draft_id`); and the mask overlay's `mask_overlay_pending`, `pending_overlay` and `overlay_awaited`. `app/preview.rs` writes most of them, `gesture.rs`, `sync.rs`, `crop.rs` and `masks.rs` write some, and `overlay.rs`, `evidence.rs` and `snapshot.rs` read them.",
+        "`preview_ready` flattens the phase-typed preview result back into a 7-tuple; `Upload` (`app/tasks.rs`, named for an upload that no longer exists) re-adds the proxy flags so `present` can log them; `present_retained` (`app/preview.rs`) unpacks a `ProxyFrame` into seven locals to call `hand_retained`, which takes seven parameters under `#[allow(clippy::too_many_arguments)]`.",
+        "The pure `state::histogram::displayed_size` exists, but its arguments for the current view (the zoom mapped to a `ZoomView`, `photo_surface` of the window and open panels, the scale factor and `view::canvas::FIT_INSET`) are assembled by hand at three sites: twice in `app/overlay.rs` and once in `Editor::proxy_bounds_for` (`app/preview.rs`). `requested_render_entry` and `rendered_entry` clone a whole `HistoryEntry` per refresh and per presented frame (`preview.rs`, `sync.rs`) only so `snapshot.rs` can report it.",
+        "The mask coverage grid arrives in its own message behind a proxy frame (`PhaseOutcome::Overlay`, taken up by `coverage_ready`) and beside the frame for an exact-only job or a region, but all three arrivals park it in `mask_overlay_pending` for `present_mask_overlay` (`app/masks.rs`), a post-dispatch step in `update_inner`, while the clipping overlay is already presented where it arrives.",
+        "Add `preview::Presentation`, owning the existing `Presenter` plus these fields, with `request(job) -> generation`, `take(result) -> Presented`, `zoom(wants_proxy)`, `withdraw()` and `surfaces()`. Retained frames become `enum Retained { Proxy(ProxyFrame), Exact(ExactFrame) }`, where `ExactFrame` gathers the exact raster and its flags, presented through one function; delete `Upload`. Write one method for the current view's displayed size and call it from the three sites. Present the coverage grid where each arrival takes it up, with no pending field or post-dispatch step. Keep the evidence stack summary on ids or a shared reference, not per-frame clones.",
+        "The crop draft's input stage stays with the crop gesture: its frames are `StageFrames` on the gesture (`app/crop.rs`, keeping no `PreviewJob`), shown by `present_crop_stage`, which returns a `Task`; `draft_generation` moves beside them in the seam split rather than onto `Presentation`. `Presentation::request` takes a `PreviewJob`, so keep `Presentation` in `app/preview.rs`, one of the files the `desktop-keeps-no-preview-job` repository row allows, or add its own file to that row's allowed list and test (`only_the_files_that_pass_a_preview_job_through_name_one_on_the_desktop`); it keeps no job once the queue has it.",
+        "The layering task's framework-free `layout.rs` takes `photo_surface` and the panel constants; whichever of the two lands second builds its displayed-size method on the other's.",
         "This is presentation-only: the Presenter's own behaviour (versioned frames, cheap-cloned zoom hand-overs, adopting an exact phase behind a presented proxy without a texture write) is proven and unchanged; renders and presented bytes stay identical."
       ],
       "context_links": [
@@ -995,54 +1019,79 @@
           "kind": "file",
           "label": "Preview driver",
           "target": "crates/luxforge-app/src/app/preview.rs",
-          "relevance": "`preview_ready`'s tuple flattening, `present_retained` and `hand_retained`, and two of the three displayed-size computations."
+          "relevance": "`preview_ready`'s tuple flattening, `coverage_ready`, `region_ready`, `present_retained`, `hand_retained`, `present` and `proxy_bounds_for`'s displayed size."
         },
         {
           "kind": "file",
           "label": "Desktop owner tasks",
           "target": "crates/luxforge-app/src/app/tasks.rs",
-          "relevance": "`Upload`, to be deleted."
+          "relevance": "`Upload`, to be deleted.",
+          "locator": "Upload"
         },
         {
           "kind": "file",
           "label": "Overlay driver",
           "target": "crates/luxforge-app/src/app/overlay.rs",
-          "relevance": "Two more displayed-size computations and the clipping overlay's presentation."
+          "relevance": "Two more hand-assembled displayed sizes and the clipping overlay's presentation where it arrives."
         },
         {
           "kind": "file",
           "label": "Mask driver",
           "target": "crates/luxforge-app/src/app/masks.rs",
-          "relevance": "The mask overlay's pending hand-off, to be replaced by presenting the coverage grid directly."
+          "relevance": "`present_mask_overlay`, the post-dispatch step the coverage grid waits for, to be replaced by presenting it where it arrives.",
+          "locator": "present_mask_overlay"
+        },
+        {
+          "kind": "file",
+          "label": "Crop driver",
+          "target": "crates/luxforge-app/src/app/crop.rs",
+          "relevance": "`StageFrames` and `present_crop_stage`, the crop input stage that stays with the crop gesture.",
+          "locator": "StageFrames"
+        },
+        {
+          "kind": "file",
+          "label": "Histogram view model",
+          "target": "crates/luxforge-app/src/state/histogram.rs",
+          "relevance": "`displayed_size` and `photo_surface`, the pure functions the one displayed-size method calls."
+        },
+        {
+          "kind": "file",
+          "label": "Repository check",
+          "target": "xtask/src/repository.rs",
+          "relevance": "The `desktop-keeps-no-preview-job` row and its test, which list the files that may name a `PreviewJob`.",
+          "locator": "desktop-keeps-no-preview-job"
         },
         {
           "kind": "file",
           "label": "Desktop update loop",
           "target": "crates/luxforge-app/src/app/mod.rs",
-          "relevance": "The roughly 28 `Editor` fields this task moves onto `Presentation`."
+          "relevance": "The `Editor` fields this task moves onto `Presentation`, and `update_inner`'s `present_mask_overlay` step."
         }
       ],
       "acceptance_criteria": [
         "`preview::Presentation` exists with `request`, `take`, `zoom`, `withdraw` and `surfaces`, and owns the fields listed above; `Editor` loses them.",
         "Retained frames are held as `enum Retained { Proxy, Exact }` and presented through one function; `Upload` no longer exists.",
-        "`displayed_size` is computed in one place and called from all three former sites.",
-        "The mask coverage grid is presented directly when it arrives, with no pending field or post-dispatch hook.",
-        "Renders stay byte-identical; the preview, preview-failure and overlay tests pass, and the rendered tier's zoom, histogram, mask and crop scenarios show unchanged surface and proxy captured state."
+        "The current view's displayed size is assembled in one place and called from the two `overlay.rs` sites and `proxy_bounds_for`.",
+        "The mask coverage grid is presented where it arrives; `mask_overlay_pending` and `update_inner`'s `present_mask_overlay` step no longer exist.",
+        "`cargo xtask check-repository` passes, with `desktop-keeps-no-preview-job` allowing no file beyond those that pass a job straight through.",
+        "Renders stay byte-identical; the preview, preview-failure, overlay and mask tests pass, and the rendered tier's zoom, histogram, mask and crop scenarios show unchanged surface and proxy captured state."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Move the listed fields and functions onto `Presentation` as a refactor with no behaviour change.",
-          "Run the preview, preview-failure and overlay test modules.",
+          "Run the preview, preview-failure, overlay and mask test modules and the repository check.",
           "Run the rendered tier and compare captured surface/proxy state to the prior run."
         ],
         "commands": [
           "cargo test -p luxforge-app preview",
           "cargo test -p luxforge-app overlay",
-          "cargo xtask verify --tier rendered"
+          "cargo test -p luxforge-app mask",
+          "cargo xtask check-repository",
+          "cargo xtask verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
-          "All preview and overlay tests pass unchanged; the rendered tier's captured surface and proxy state is identical to before the move."
+          "All preview, overlay and mask tests pass unchanged; the rendered tier's captured surface and proxy state is identical to before the move."
         ]
       }
     },
@@ -1056,10 +1105,11 @@
       ],
       "extra_context": [
         "Wave 4, structure.",
-        "Every seam is an `impl Editor` method with `&mut` access to all 117 fields of the one `Editor` struct (`app/mod.rs`, with a 135-line constructor literal); all 16 seam message enums live in one `app/message.rs`; 15 reconcile steps (performance transitions, pending resets, settling when quiet, curve samples, zoom changes, proxy refit, mask-selection following, mask overlay presentation, armed-brush rebasing, abandoned-crop closing, sync, overlay refresh, `rederive`, capability loads) run after every message in `update_inner`; and `rederive` hand-builds a roughly 68-field `Inputs`. A new panel touches `app/mod.rs` at about 8 points and 10 to 12 files overall; the Performance section, the best-encapsulated seam today with its own `Sampler`, is still one of them.",
-        "Five hand-rolled \"one in flight, newest pending\" slots exist across `pointer.rs` (samples), `view_state.rs` (pan), `controls.rs` plus `mod.rs` (curve samples, 5 fields), `sync.rs` (syncing/sync-wanted) and `performance.rs` (in-flight), each with its own staleness checks for the same coalescing rule.",
-        "Give each seam its own state struct with `Default`, following the existing `performance::Sampler` pattern: the main groups are a presentation owner (already introduced), a per-photo document (state, history, versions, lineage, recipe rows, masks listing, Original), a masks panel, a crop section, curve samples, sync, the palette and the version form. Declare each seam's message enum in its own file, so `app/message.rs` keeps only `Message` and the shared payload enums. Give each seam an `after_message(&mut Editor) -> Task` and an optional `subscription()`, listed once each in `update_inner`/`subscription` instead of scattered through 15 hand-written steps. Let `Inputs` borrow the sub-structs instead of 68 loose fields. Add one `Coalesce<T> { in_flight, pending }` with `offer`/`answered`, used by all five slots. Do this incrementally, starting with presentation, then the masks panel and the crop section, not as one large change.",
-        "Per-gesture state that belongs on the gesture rather than on `Editor` (the armed-brush rebase flag, the crop draft generation) moves onto the one gesture field as part of this split."
+        "Every seam is an `impl Editor` method with `&mut` access to all 147 fields of the one `Editor` struct (`app/mod.rs`, whose constructor literal in `Editor::new` runs to about 165 lines); the 17 seam message enums (`SyncMessage`, `PreviewMessage`, `OverlayMessage`, `HistoryMessage`, `ViewMessage`, `PaletteMessage`, `ControlMessage`, `ActionMessage`, `PointerMessage`, `CropMessage`, `MaskMessage`, `DraftMessage`, `PresetMessage`, `CapabilityMessage`, `PerformanceMessage`, `ExportMessage`, `EvidenceMessage`) live in one `app/message.rs` beside the shared payload enums; about 20 steps run after every message in `update_inner` (view motion, the performance transition, pending resets, settling when quiet, curve-sample resets on an entry change, zoom changes, the proxy refit, the view reconcile, mask-selection following, mask overlay presentation, armed-brush following, abandoned-crop closing, sync, sync mode, overlay and thumbnail refreshes, `rederive`, capability loads, visible curve samples and the queue wake); and `rederive` hand-builds the 77-field `Inputs`. Adding the Export seam (`app/export.rs`) touched 12 desktop files; the best-encapsulated seams own a struct (`performance::Sampler`, `export::Exporting`) and still take `&mut Editor`.",
+        "Five hand-rolled \"one in flight, newest pending\" slots exist, each with its own staleness checks for the same coalescing rule: the pointer sample (`sample_in_flight`/`pending_sample`, `pointer.rs`), the pan (`pan_in_flight`/`pending_pan`, `view_state.rs`), curve samples (`curve_sample_in_flight`, `curve_sample_pending` and three request maps, `controls.rs` plus `mod.rs`), sync (`syncing`/`sync_wanted`, `sync.rs`) and the Performance sampler's `in_flight` (`performance.rs`). The view plan's `view_plan_in_flight`/`desired_view_dirty` has the same shape; check it against the shared type too.",
+        "Give each seam its own state struct with `Default`, following `performance::Sampler` and `export::Exporting`: the main groups are presentation (`preview::Presentation`, introduced first), a per-photo document (state, history, versions, lineage, recipe rows, masks listing, Original), the masks panel (selection, hover, hidden masks, mode, brush, typing, drag, thumbnails, and the armed brush, `Editor::armed`, which is view state), the crop section, curve samples, sync, the palette and the version form. Declare each seam's message enum in its own file, so `app/message.rs` keeps only `Message` and the shared payload enums. Give each seam an `after_message(&mut Editor) -> Task` and an optional `subscription()`, listed once each in `update_inner`/`subscription` instead of about 20 hand-written steps. Let `Inputs` borrow the sub-structs instead of loose fields. Add one `Coalesce<T> { in_flight, pending }` with `offer`/`answered`, used by all five slots. Do this incrementally, starting with presentation, then the masks panel and the crop section, not as one large change.",
+        "Per-gesture state that belongs on the gesture rather than on `Editor` moves onto the one gesture field (`Editor::gesture`): the crop draft's `draft_generation`, beside the crop gesture's `StageFrames`.",
+        "Two repository rows name the files this split moves: the `widget-sent-controls` sender rule reads `ControlMessage` from `app/message.rs`, and `desktop-keeps-no-preview-job` allows `app/message.rs` because `CropMessage::PreviewReady` and two `PreviewMessage` variants carry a `PreviewJob`. A moved enum updates the row's path and its test, and a message file that carries a job is allowed as a message file; the crop seam's own state file still names no job."
       ],
       "context_links": [
         {
@@ -1072,19 +1122,20 @@
           "kind": "file",
           "label": "Editor struct and update loop",
           "target": "crates/luxforge-app/src/app/mod.rs",
-          "relevance": "The 117-field struct, its constructor, the 15 post-dispatch reconcile steps and `rederive`, all to be split by seam."
+          "relevance": "The 147-field struct, its constructor, the post-dispatch steps in `update_inner` and `rederive`, all to be split by seam.",
+          "locator": "update_inner"
         },
         {
           "kind": "file",
           "label": "Desktop messages",
           "target": "crates/luxforge-app/src/app/message.rs",
-          "relevance": "All 16 seam message enums in one file, to move beside their seams."
+          "relevance": "All 17 seam message enums in one file, to move beside their seams."
         },
         {
           "kind": "file",
           "label": "Workspace state",
           "target": "crates/luxforge-app/src/state/mod.rs",
-          "relevance": "The roughly 68-field `Inputs` that should instead borrow seam sub-structs."
+          "relevance": "The 77-field `Inputs` that should instead borrow seam sub-structs."
         },
         {
           "kind": "file",
@@ -1094,9 +1145,22 @@
         },
         {
           "kind": "file",
+          "label": "Export seam",
+          "target": "crates/luxforge-app/src/app/export.rs",
+          "relevance": "`export::Exporting`, a second seam-owned struct."
+        },
+        {
+          "kind": "file",
           "label": "Pointer driver",
           "target": "crates/luxforge-app/src/app/pointer.rs",
           "relevance": "One of the five hand-rolled coalescing slots, to move onto the shared `Coalesce<T>`."
+        },
+        {
+          "kind": "file",
+          "label": "Repository check",
+          "target": "xtask/src/repository.rs",
+          "relevance": "`SENDER_RULES`' `widget-sent-controls` and `SOURCE_RULES`' `desktop-keeps-no-preview-job`, whose paths follow the moved message enums.",
+          "locator": "widget-sent-controls"
         }
       ],
       "acceptance_criteria": [
@@ -1104,21 +1168,24 @@
         "Each seam's message enum lives in its own file; `app/message.rs` holds only `Message` and the shared payload enums.",
         "Each seam has one `after_message` hook and, where needed, one `subscription`, listed once each rather than scattered through hand-written reconcile steps.",
         "One `Coalesce<T>` type serves all five former one-in-flight slots.",
+        "`cargo xtask check-repository` passes with `widget-sent-controls` and `desktop-keeps-no-preview-job` naming the files the enums moved to.",
         "Adding a new panel touches one new file, one `Message` variant, one dispatch arm and one hook entry; no behaviour, render or API change results from this task, and the app tests and the quick and rendered tiers pass."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Move the presentation seam's fields and message handling first, keeping every existing app test passing unchanged.",
-          "Repeat for the masks panel and the crop section, then the remaining seams.",
-          "Run the full app test suite after each seam's move, then the quick and rendered tiers once at the end."
+          "Repeat for the masks panel and the crop section, then the remaining seams, updating the repository rows' paths as each enum moves.",
+          "Run the full app test suite after each seam's move, then the repository check and the quick and rendered tiers once at the end."
         ],
         "commands": [
           "cargo test -p luxforge-app",
-          "cargo xtask verify --tier rendered"
+          "cargo xtask check-repository",
+          "cargo xtask verify --tier quick --output NEW_DIR",
+          "cargo xtask verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
-          "Every existing app test passes unchanged in name and assertion after the split; the rendered tier is unaffected."
+          "Every existing app test passes unchanged in name and assertion after the split; the repository check passes; the quick and rendered tiers are unaffected."
         ]
       }
     },
@@ -1131,10 +1198,10 @@
       ],
       "extra_context": [
         "Wave 4, structure.",
-        "Evidence stays compiled into the shipped binary, because smoke runs the packaged binary; that is unchanged by this task. The cost is coupling: production seams call `settle_step` with evidence's own settle categories at around 40 sites across a dozen files (`capabilities.rs`, `evidence.rs`, `crop.rs`, `overlay.rs`, `masks.rs`, `preview.rs`, `gesture.rs`, `performance.rs`, `presets.rs`, `pointer.rs`, `view_state.rs`), so every seam has to know evidence's own vocabulary.",
-        "`event()` builds its JSON value even when there is no log sink to write it to; a normal drafted frame builds around five of these (a recorded burst run produced 360 `slider_draft_set`, 360 `slider_draft_preview`, 313 `preview_displayed` and 277 `preview_exact_cancelled` events for 360 inputs), all discarded when no log exists.",
-        "Replace paired `event`/`settle_step` calls with one typed outcome (for example a frame-presented event carrying its generation, proxy state and drain state, or a refusal carrying its reason) that the diagnostics log serializes and the evidence driver matches to whatever settle condition it is waiting on. Make `event` lazy: check for a sink, or take a closure, before building the value. Move evidence-only retention (clones kept only for the log) into the evidence driver's own type, filled only when it is present.",
-        "The `SMOKE_RECORDED` mutation replay (a recorded run with its last step removed, or its first expected label changed) must still fail on the removed or changed step after this change, proving the settle conditions still discriminate correctly once they are typed."
+        "Evidence stays compiled into the shipped binary, because smoke runs the packaged binary; that is unchanged by this task. The cost is coupling: production seams call `settle_step` with evidence's own `Settle` categories at 49 sites across 12 files (`pointer.rs` 13, `crop.rs` 7, `preview.rs` 7, `gesture.rs` 6, `presets.rs` 4, `evidence.rs` 3, `view_state.rs` 3, `masks.rs` 2, and one each in `capabilities.rs`, `export.rs`, `overlay.rs` and `performance.rs`), so every seam has to know evidence's own vocabulary.",
+        "`Editor::event` (`app/mod.rs`) builds its JSON value, with the run id, build version and elapsed time, before it checks for a log sink; a normal drafted frame builds around five of these (a recorded burst run produced 360 `slider_draft_set`, 360 `slider_draft_preview`, 313 `preview_displayed` and 277 `preview_exact_cancelled` events for 360 inputs), all discarded when no log exists.",
+        "Replace paired `event`/`settle_step` calls with one typed outcome (for example a frame-presented event carrying its generation, proxy state and drain state, or a refusal carrying its reason) that the diagnostics log serializes and the evidence driver matches to whatever settle condition it is waiting on. Make `event` lazy: check for a sink, or take a closure, before building the value. Move evidence-only retention (clones kept only for the log or the captured state) into the evidence driver's own type, filled only when it is present; the presentation owner's entry clones are the largest, if that task has not already moved them.",
+        "The recorded-run mutation replay (`SMOKE_RECORDED=DIR cargo test -p xtask mutations -- --ignored`, over the `DIR/smoke-<scenario>/run` directories `verify` writes) must still fail each migrated scenario on its removed last step and on its changed first label, proving the settle conditions still discriminate once they are typed."
       ],
       "context_links": [
         {
@@ -1147,42 +1214,59 @@
           "kind": "file",
           "label": "Evidence driver",
           "target": "crates/luxforge-app/src/app/evidence.rs",
-          "relevance": "`settle_step`, `Settle` and `event()`, the mechanism this task keeps but decouples from production seams."
+          "relevance": "`settle_step` and `Settle`, the mechanism this task keeps but decouples from production seams.",
+          "locator": "settle_step"
         },
         {
           "kind": "file",
           "label": "Desktop update loop",
           "target": "crates/luxforge-app/src/app/mod.rs",
-          "relevance": "`event()`'s call sites and the activity/loop-timing types evidence reads."
+          "relevance": "`Editor::event`, its call sites and the activity/loop-timing types evidence reads.",
+          "locator": "fn event"
+        },
+        {
+          "kind": "file",
+          "label": "Pointer driver",
+          "target": "crates/luxforge-app/src/app/pointer.rs",
+          "relevance": "The seam with the most `settle_step` call sites."
         },
         {
           "kind": "file",
           "label": "Preview driver",
           "target": "crates/luxforge-app/src/app/preview.rs",
-          "relevance": "One of the seams with the most `settle_step` call sites."
+          "relevance": "Another seam with many `settle_step` call sites."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke runner",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "The ignored `mutations` test, the recorded-run replay this task must keep failing on a removed or changed step.",
+          "locator": "fn mutations"
         },
         {
           "kind": "file",
           "label": "Development guide",
           "target": "docs/engineering/development.md",
-          "relevance": "States that smoke runs the packaged binary, which is why evidence stays compiled in rather than becoming a feature or a separate crate."
+          "relevance": "States that smoke runs the packaged binary, which is why evidence stays compiled in, and documents the mutation replay."
         }
       ],
       "acceptance_criteria": [
         "Production seams report a typed outcome instead of calling `settle_step` with evidence's own settle categories.",
-        "`event()` builds nothing when no log sink exists.",
+        "`Editor::event` builds nothing when no log sink exists.",
         "Evidence-only clones and retention live inside the evidence driver, not on `Editor`.",
-        "The rendered tier passes, and the `SMOKE_RECORDED` mutation replay still fails on a removed or changed step for every migrated scenario."
+        "The rendered tier passes, and the mutation replay over its recorded runs still fails on a removed or changed step for every migrated scenario."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
           "Introduce the typed outcome and migrate the settle sites one seam at a time, keeping each scenario's captured verdicts unchanged.",
-          "Run the rendered tier after each seam's migration.",
-          "Replay a recorded run with a step removed and with a label changed, and confirm both still fail."
+          "Run the evidence tests after each seam's migration and the rendered tier once at the end.",
+          "Replay the rendered tier's recorded runs with a step removed and with a label changed, and confirm both still fail."
         ],
         "commands": [
-          "cargo xtask verify --tier rendered"
+          "cargo test -p luxforge-app evidence",
+          "cargo xtask verify --tier rendered --output VERIFY_DIR",
+          "SMOKE_RECORDED=VERIFY_DIR cargo test -p xtask mutations -- --ignored"
         ],
         "expected_results": [
           "The rendered tier passes with identical verdicts to before the change; the mutation replay still fails on the step it is meant to catch."
@@ -1196,11 +1280,12 @@
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",
-        "`xtask/src/repository.rs`'s `BOUNDARIES` table already enforces the documented layers textually: `crates/luxforge-app/src/state` forbids `iced`/`app::` tokens, `crates/luxforge-app/src/view` forbids `luxforge_core`/`OwnerHandle`/`.call(`, and `crates/luxforge-ui` forbids `luxforge_core`. Several leaks sit outside what that table can see.",
-        "Value rules live in the widget crate: `quantize`, `value_from_fraction` and `MAX_DECIMALS` (`luxforge-ui/src/geometry.rs`) are step-snapping and fraction-mapping rules used only by the view model (`state/number.rs`) and the crop driver (`app/crop.rs`); no widget calls them.",
-        "The view model imports the view: `state/histogram.rs` imports `crate::view::{STATE_PANEL_WIDTH, STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT, TOOLS_PANEL_WIDTH}` and `luxforge_ui::theme::BORDER_WIDTH` for its `photo_surface` and overlay-grid arithmetic, which `app/preview.rs` and `app/overlay.rs` depend on.",
-        "The view reaches the core through desktop wrappers where the boundary check cannot see it: `view/canvas.rs` calls a core `CropStage` method through `CropDraft`'s public field, and `view/tools_panel.rs` calls `state::tools::published_method`, which reads the core's mask command table on every view. `crop_canvas.rs` and `mask_canvas.rs` sit at the crate root, outside `view/`, and import `luxforge_core` directly, so the textual check does not cover them at all.",
-        "Move `quantize`, `value_from_fraction` and `MAX_DECIMALS` into `state/number.rs`; create one framework-free `layout.rs` for the shared window and panel arithmetic; move `crop_canvas.rs` and `mask_canvas.rs` under `view/` with plain numbers on their inputs; store the published method on the menu target when it is built instead of re-reading it per view; and add `luxforge_ui` and `crate::view` to `state/`'s forbidden tokens in `BOUNDARIES`, extending its directory list to cover the relocated canvases. Keep the four 1:1 core-enum mirrors in `state/tools.rs`; they are cheap."
+        "`xtask/src/repository.rs`'s `SOURCE_RULES` table enforces the documented layers textually: `state-layer` refuses `use iced`, `iced::`, `iced_runtime` and `app::` under `crates/luxforge-app/src/state`; `view-layer` refuses `luxforge_core`, `OwnerHandle` and `.call(` under `crates/luxforge-app/src/view`; and `widget-crate` refuses `luxforge_core` in `crates/luxforge-ui`. Several leaks sit outside what those rows can see.",
+        "Value rules live in the widget crate: `quantize` and `MAX_DECIMALS` (`luxforge-ui/src/geometry.rs`) are step-snapping rules only the view model uses (`state/number.rs`), and `value_from_fraction` has no caller outside its own tests. `fraction_from_value` stays: the slider, stepper and range slider widgets use it.",
+        "The view model imports the view and the widget crate: `state/histogram.rs` imports `crate::view::{STATE_PANEL_WIDTH, STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT, TOOLS_PANEL_WIDTH}` and reads `luxforge_ui::theme::BORDER_WIDTH` for `photo_surface`, which `app/preview.rs` and `app/overlay.rs` depend on; `state/title.rs` imports `crate::view` for `view::canvas::FIT_INSET` in its Fit percentage; and `state/masks.rs`, rebuilt with the Masks panel, names `luxforge_ui::Icon` in its row models and `kind_icon`.",
+        "The view reaches the core through desktop wrappers the rows cannot see: `view/canvas.rs`'s `crop_surface` calls the core's `CropStage::bounding_box` through `CropDraft`'s public `stage` field, and `view/tools_panel.rs` calls `state::tools::published_method`, which reads the core's mask command table (`mask::commands::find`) on every view. `crop_canvas.rs`, `mask_canvas.rs` and `canvas_view.rs` sit at the crate root, outside `view/`, so no layer row covers them; `crop_canvas.rs` imports `luxforge_core::{BoxRect, Edge}` in production code, while `mask_canvas.rs` names the core only in its tests.",
+        "Move `quantize` and `MAX_DECIMALS` into `state/number.rs` and delete `value_from_fraction`; create one framework-free `layout.rs` for the shared window and panel arithmetic (the panel and bar sizes, the divider width, the Fit inset and `photo_surface`); give the Masks panel's models the kind's icon name and map it to `luxforge_ui::Icon` in the view; move `crop_canvas.rs`, `mask_canvas.rs` and `canvas_view.rs` under `view/` with plain numbers on their inputs; store the published method on the menu target when it is built instead of re-reading it per view; and add `luxforge_ui` and `view::` to `state-layer`'s tokens (`view::` catches a grouped `use crate::{ view::… }` line as `app::` does), so the relocated canvases fall under `view-layer`. Keep the four 1:1 core-enum mirrors in `state/tools.rs`; they are cheap.",
+        "The presentation owner's one displayed-size method reads the same arithmetic; whichever of the two tasks lands second builds on the other's."
       ],
       "context_links": [
         {
@@ -1213,26 +1298,46 @@
           "kind": "file",
           "label": "Repository check",
           "target": "xtask/src/repository.rs",
-          "relevance": "`BOUNDARIES`, the textual layering check to extend with the new forbidden tokens and the relocated canvas files.",
-          "locator": "BOUNDARIES"
+          "relevance": "`SOURCE_RULES`' `state-layer`, `view-layer` and `widget-crate` rows, the textual layering check to extend, and `layer_boundaries_reject_a_forbidden_import`, its test.",
+          "locator": "state-layer"
         },
         {
           "kind": "file",
           "label": "Widget geometry",
           "target": "crates/luxforge-ui/src/geometry.rs",
-          "relevance": "`quantize`, `value_from_fraction`, `MAX_DECIMALS`, to move into the view model."
+          "relevance": "`quantize` and `MAX_DECIMALS`, to move into the view model, and `value_from_fraction`, to delete."
+        },
+        {
+          "kind": "file",
+          "label": "Number view model",
+          "target": "crates/luxforge-app/src/state/number.rs",
+          "relevance": "The one user of `quantize` and `MAX_DECIMALS`."
         },
         {
           "kind": "file",
           "label": "Histogram view model",
           "target": "crates/luxforge-app/src/state/histogram.rs",
-          "relevance": "Imports `crate::view` constants and a `luxforge_ui` theme constant for layout arithmetic."
+          "relevance": "Imports `crate::view` constants and a `luxforge_ui` theme constant for `photo_surface`."
+        },
+        {
+          "kind": "file",
+          "label": "Title bar view model",
+          "target": "crates/luxforge-app/src/state/title.rs",
+          "relevance": "Imports `crate::view` for `FIT_INSET`."
+        },
+        {
+          "kind": "file",
+          "label": "Masks view model",
+          "target": "crates/luxforge-app/src/state/masks.rs",
+          "relevance": "Names `luxforge_ui::Icon` in its row models and `kind_icon`.",
+          "locator": "kind_icon"
         },
         {
           "kind": "file",
           "label": "Canvas view",
           "target": "crates/luxforge-app/src/view/canvas.rs",
-          "relevance": "Reaches a core `CropStage` method through `CropDraft`'s public field."
+          "relevance": "`crop_surface` reaches a core `CropStage` method through `CropDraft`'s public field.",
+          "locator": "crop_surface"
         },
         {
           "kind": "file",
@@ -1244,35 +1349,43 @@
           "kind": "file",
           "label": "Crop canvas",
           "target": "crates/luxforge-app/src/crop_canvas.rs",
-          "relevance": "View code outside `view/`, importing `luxforge_core` directly."
+          "relevance": "View code outside `view/`, importing `luxforge_core` in production code."
         },
         {
           "kind": "file",
           "label": "Mask canvas",
           "target": "crates/luxforge-app/src/mask_canvas.rs",
-          "relevance": "The same issue as `crop_canvas.rs`."
+          "relevance": "View code outside `view/`."
+        },
+        {
+          "kind": "file",
+          "label": "Canvas view transform",
+          "target": "crates/luxforge-app/src/canvas_view.rs",
+          "relevance": "The canvases' shared view transform, also outside `view/`."
         }
       ],
       "acceptance_criteria": [
-        "`quantize`, `value_from_fraction` and `MAX_DECIMALS` live in `state/number.rs`; no widget-crate file holds a value rule.",
-        "The shared window and panel layout arithmetic lives in one framework-free module used by `state/`, `view/` and `app/`, with no `state/` file importing `crate::view` or `luxforge_ui`.",
-        "`crop_canvas.rs` and `mask_canvas.rs` live under `view/`.",
-        "`cargo xtask check-repository`'s boundary rule refuses `luxforge_ui` and `crate::view` under `state/` and covers the relocated canvas files, so a later change that reintroduces either leak fails the check.",
-        "No behaviour change results from this task; the app tests pass."
+        "`quantize` and `MAX_DECIMALS` live in `state/number.rs`, and `value_from_fraction` no longer exists; no widget-crate file holds a value rule only the view model uses.",
+        "The shared window and panel layout arithmetic lives in one framework-free module used by `state/`, `view/` and `app/`, and no `state/` file names `crate::view`, `view::` or `luxforge_ui`.",
+        "`crop_canvas.rs`, `mask_canvas.rs` and `canvas_view.rs` live under `view/`, and their production code names no `luxforge_core` item.",
+        "`cargo xtask check-repository`'s `state-layer` row refuses `luxforge_ui` and `view::` under `state/`, and `view-layer` covers the relocated canvases, so a change that reintroduces either leak fails the check; the rule's test covers the new tokens.",
+        "No behaviour change results from this task; the widget and app tests pass."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Move the listed value rules, layout arithmetic and canvas files.",
-          "Extend `BOUNDARIES` in `xtask/src/repository.rs` with the new forbidden tokens and directories.",
-          "Run the repository check and the app test suite."
+          "Move the listed value rules, layout arithmetic, icon mapping and canvas files.",
+          "Extend `state-layer` in `xtask/src/repository.rs` with the new tokens and its test with a refused example of each.",
+          "Run the repository check, its test and the widget and app test suites."
         ],
         "commands": [
           "cargo xtask check-repository",
+          "cargo test -p xtask layer_boundaries",
+          "cargo test -p luxforge-ui",
           "cargo test -p luxforge-app"
         ],
         "expected_results": [
-          "The repository check passes with the extended rule, and fails again if a leak is reintroduced; the app tests pass unchanged."
+          "The repository check passes with the extended rule, and fails again if a leak is reintroduced; the widget and app tests pass unchanged."
         ]
       }
     },
@@ -1285,10 +1398,10 @@
       ],
       "extra_context": [
         "Wave 4, structure.",
-        "`state/tools.rs`'s `Rendered<'a>` copies core `Control` field for field, plus an `Unsupported` variant `classify` can never actually produce: `Control` is not `#[non_exhaustive]`, and it deserializes with a `kind` tag and `deny_unknown_fields`, so an unknown kind cannot arrive at runtime. The fallback arm carries `#[allow(unreachable_patterns)]`, and `control_kind()` serializes a whole control to JSON solely to name that impossible case. About 20 call sites across `state/tools.rs`, `state/fields.rs`, `state/presets.rs` and `state/masks.rs` go through the mirror.",
-        "`ControlsUi` holds eight parallel maps keyed by (action, parameter[, index]) — for curve channels, curve points, curve edits, curve samples, colour-picker open state, colour channels, colour hex text and the HSV picker cache — plus two more keyed by module id, and the section digest scans every one of them for every action of every module on each refresh.",
-        "20 of the workspace's 31 non-test `#[allow(dead_code)]` markers sit in `state/tools.rs`, `state/panel.rs` and `state/masks.rs`, mostly blanket struct-level allows on view-model types that derive `Debug`/`PartialEq` (which would already satisfy rustc's own dead-field lint); at least one covered type is confirmed live from other call sites, so the allows read as a habit from when these structs were built out field by field rather than a still-needed suppression. `EnumControl.segmented` is written but never read, since the view matches on `style` instead.",
-        "Match on `Control` directly and delete `Rendered`, `classify`, `control_kind` and `unsupported_label`, along with the `Unsupported` arm's dedicated test; replace `ControlsUi`'s parallel maps with one map from a control key to an enum of local state. Remove the struct-level `#[allow(dead_code)]` markers in the three named files and let a clean build name whatever, if anything, is genuinely unread; keep only field-level allows with a stated reason, following the pattern `presets/document.rs` already uses."
+        "`state/tools.rs`'s `Rendered<'a>` copies core `Control` field for field, plus an `Unsupported` variant `classify` can never produce: `Control` (`luxforge-core/src/modules/descriptor.rs`) is not `#[non_exhaustive]` and deserializes with a `kind` tag and `deny_unknown_fields`, so an unknown kind cannot arrive at runtime. The fallback arm carries `#[allow(unreachable_patterns)]`, and `control_kind()` serializes a whole control to JSON to name that impossible case (and, once, a control whose providing module is not registered). `classify` is called at 17 sites across `state/tools.rs`, `state/fields.rs`, `state/masks.rs` and `state/presets.rs`, with about 70 `Rendered::` matches.",
+        "`ControlsUi` holds eight parallel maps keyed by (action, parameter[, index]) — curve channels, curve points, curve edits, curve samples, colour-picker open state, colour channels, colour hex text and the HSV picker cache — plus `group_expanded` and `selected_tab`, and the section digest scans every one of them for every action of every module on each refresh.",
+        "18 struct-level `#[allow(dead_code)]` markers sit in `state/tools.rs` (8), `state/masks.rs` (6) and `state/panel.rs` (4), mostly on view-model types that derive `Debug`/`PartialEq` (which would already satisfy rustc's own dead-field lint); at least one covered type is confirmed live from other call sites, so the allows read as a habit from when these structs were built out field by field rather than a still-needed suppression. `EnumControl.segmented` is written but never read, since the view matches on `style` instead.",
+        "Match on `Control` directly and delete `Rendered`, `classify`, `control_kind` and `unsupported_label`, along with the `Unsupported` arm's dedicated tests in `state/fields.rs`, naming the unregistered-provider case through the direct match; replace `ControlsUi`'s parallel maps with one map from a control key to an enum of local state. Remove the struct-level `#[allow(dead_code)]` markers in the three named files and let a clean build name whatever, if anything, is genuinely unread; keep only field-level allows with a stated reason, written as `crates/luxforge-core/src/presets/document.rs` writes them (`#[allow(dead_code, reason = …)]`). If the region-key task has already removed the section digest, there is no digest scan to update."
       ],
       "context_links": [
         {
@@ -1301,50 +1414,58 @@
           "kind": "file",
           "label": "Tools panel view model",
           "target": "crates/luxforge-app/src/state/tools.rs",
-          "relevance": "`Rendered`, `classify`, `control_kind`, `ControlsUi` and most of the struct-level dead-code allows.",
+          "relevance": "`Rendered`, `classify`, `control_kind`, `ControlsUi`, `EnumControl` and most of the struct-level dead-code allows.",
           "locator": "Rendered"
         },
         {
           "kind": "file",
           "label": "Fields view model",
           "target": "crates/luxforge-app/src/state/fields.rs",
-          "relevance": "`unsupported_label` and one of the `Rendered`-mirror call sites."
+          "relevance": "`unsupported_label`, the `Unsupported` tests and the most `classify` call sites."
         },
         {
           "kind": "file",
           "label": "Module descriptor",
           "target": "crates/luxforge-core/src/modules/descriptor.rs",
-          "relevance": "`Control`'s actual shape: tagged, `deny_unknown_fields`, not `#[non_exhaustive]`, which is why the mirror's `Unsupported` arm is unreachable."
+          "relevance": "`Control`'s actual shape: tagged, `deny_unknown_fields`, not `#[non_exhaustive]`, which is why the mirror's `Unsupported` arm is unreachable.",
+          "locator": "pub enum Control"
         },
         {
           "kind": "file",
           "label": "Panel view model",
           "target": "crates/luxforge-app/src/state/panel.rs",
-          "relevance": "Six more of the dead-code allows."
+          "relevance": "Four more of the dead-code allows."
         },
         {
           "kind": "file",
           "label": "Masks view model",
           "target": "crates/luxforge-app/src/state/masks.rs",
-          "relevance": "Six more of the dead-code allows."
+          "relevance": "Six more of the dead-code allows and one `classify` call site."
+        },
+        {
+          "kind": "file",
+          "label": "Preset document",
+          "target": "crates/luxforge-core/src/presets/document.rs",
+          "relevance": "The field-level `#[allow(dead_code, reason = …)]` pattern to follow."
         }
       ],
       "acceptance_criteria": [
         "The view model matches on core `Control` directly; `Rendered`, `classify`, `control_kind` and `unsupported_label` no longer exist, and a new core control kind is a compile error at every site that must handle it.",
         "`ControlsUi` is one map from a control key to an enum of local state instead of eight parallel maps.",
         "The struct-level `#[allow(dead_code)]` markers in `state/tools.rs`, `state/panel.rs` and `state/masks.rs` are gone; any remaining allow is field-level with a stated reason.",
-        "The app test suite passes with no behaviour change."
+        "The app test suite and the lint pass with no behaviour change."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Replace `Rendered`-mirror call sites with direct matches on `Control`, updating each of the four affected files.",
-          "Collapse `ControlsUi`'s maps into one, updating the section digest's scan.",
+          "Collapse `ControlsUi`'s maps into one, updating the section digest's scan if it still exists.",
           "Remove the dead-code allows and fix or accept what a clean build reports."
         ],
         "commands": [
           "cargo test -p luxforge-app",
-          "cargo xtask verify --tier quick"
+          "cargo xtask lint",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The app tests pass unchanged; a clean build reports no unexpected dead-code warnings beyond any that get a stated field-level reason."
@@ -1359,9 +1480,9 @@
       "extra_context": [
         "Wave 4, structure.",
         "Owner decision (2026-09-26): the components board shows widget states only.",
-        "`luxforge-ui/src/gallery_panels.rs` (650 lines: a crop section with its own drafting and idle states, a hard-coded chip list and a plus-or-minus 45 degree rail, plus Basic, module bands, the Transforms row and Pixel fields) and `gallery_performance.rs` (323 lines, redeclaring the state-panel width and a window constant and copying the Performance section's scale rules from `state/performance.rs`) hand-build replicas of what the app's own view functions already compose from real state. They compile into every shipped binary and can only drift from the real panels; `view/gallery.rs`'s own doc comment claims \"no second set of mock widgets that could drift\", which these two files contradict.",
-        "The real panels are already proven by the `workspace`, `basic-panel`, `crop-draft`, `mixer`, `controls` and `performance` smokes, so nothing is lost by deleting the mock ones. `luxforge-ui/src/lib.rs` lists 78 hard-coded state names for the gallery, and `view/gallery.rs` groups them by page index ranges rather than by name.",
-        "Delete `gallery_panels.rs` and `gallery_performance.rs`; keep the widget-level states. Name the page groups instead of using index ranges."
+        "`luxforge-ui/src/gallery_panels.rs` (674 lines: `gallery_panels` and `gallery_panel_rows` compose a Basic module section, module bands, the mixer's tab row, truncation over bands and history, the neutral picker's buttons, the Transforms row, Crop and straighten drafting and idle with a hard-coded chip list and rail, and Pixel's field rows) and `gallery_performance.rs` (323 lines, redeclaring the state panel's width and the sampler's window and copying the Performance section's scale rules from `state/performance.rs`) hand-build replicas of what the app's own view functions compose from real state. They compile into every shipped binary and can only drift from the real panels; `view/gallery.rs`'s own doc comment claims \"no second set of mock widgets that could drift\", which these two files contradict.",
+        "The real panels are already proven by the `workspace`, `basic-panel`, `crop-draft`, `mixer`, `controls` and `performance` smokes, so nothing is lost by deleting the mock ones. `luxforge-ui/src/lib.rs`'s `gallery_named_states` lists 105 hard-coded state names, `view/gallery.rs` splits them into 13 pages by index range (`PAGES`), and `xtask/src/gallery_smoke.rs` pins both counts (`PAGES`, `STATES`). `gallery_masks.rs`, added with the Masks panel, already holds widget states only and stays, as does `gallery_components.rs`.",
+        "Delete `gallery_panels.rs` and the composed Performance section in `gallery_performance.rs`; keep the widget-level states (the Performance heading, metric rows and job rows among them, built without the copied app constants). Name the page groups instead of using index ranges."
       ],
       "context_links": [
         {
@@ -1380,36 +1501,52 @@
           "kind": "file",
           "label": "Gallery performance mock",
           "target": "crates/luxforge-ui/src/gallery_performance.rs",
-          "relevance": "The Performance section's mock state and its copied constants, to delete."
+          "relevance": "The Performance section's mock state and its copied constants, to delete; its widget-level rows stay."
         },
         {
           "kind": "file",
           "label": "Widget crate root",
           "target": "crates/luxforge-ui/src/lib.rs",
-          "relevance": "The 78 hard-coded state names the board lists; the ones this task removes come out of the list."
+          "relevance": "`gallery_named_states`' 105 hard-coded state names; the ones this task removes come out of the list.",
+          "locator": "gallery_named_states"
         },
         {
           "kind": "file",
           "label": "Gallery view",
           "target": "crates/luxforge-app/src/view/gallery.rs",
-          "relevance": "The page index ranges to replace with named groups, and the stale \"no second set of mock widgets\" claim to make true."
+          "relevance": "`PAGES`' index ranges to replace with named groups, and the \"no second set of mock widgets\" claim to make true.",
+          "locator": "PAGES"
+        },
+        {
+          "kind": "file",
+          "label": "Gallery smoke",
+          "target": "xtask/src/gallery_smoke.rs",
+          "relevance": "`PAGES` and `STATES`, the pinned page and state counts the smaller board changes."
+        },
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "relevance": "The components board's description, to say it holds widget states only."
         }
       ],
       "acceptance_criteria": [
-        "`gallery_panels.rs` and `gallery_performance.rs` no longer exist; only widget-level states remain on the components board.",
+        "`gallery_panels.rs` no longer exists, and no composed section or panel remains on the components board; only widget-level states remain, and none copies an app constant.",
         "The board's page groups are named rather than addressed by index range.",
-        "The `gallery` smoke's state count matches the new, smaller board and passes.",
+        "The `gallery` smoke's pinned page and state counts match the new, smaller board, and it passes.",
         "The UI components design describes the board as holding widget states only."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Delete the two files and their entries from `lib.rs`'s state list.",
-          "Update `view/gallery.rs`'s page grouping to named groups.",
-          "Run the widget crate's tests and the gallery smoke with its new state count."
+          "Delete the composed states and their entries from `gallery_named_states`.",
+          "Update `view/gallery.rs`'s page grouping to named groups and the gallery smoke's counts.",
+          "Build the release app, then run the widget crate's tests and the gallery smoke."
         ],
         "commands": [
           "cargo test -p luxforge-ui",
+          "cargo test -p luxforge-app gallery",
+          "cargo xtask build --release",
           "cargo xtask smoke --scenario gallery --output NEW_DIR"
         ],
         "expected_results": [
@@ -1424,8 +1561,8 @@
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",
-        "`luxforge-ui/src/widgets/double_click.rs` (354 lines), `slider_guard.rs` (228 lines) and `focus_control.rs` (273 lines) each wrap one content element to intercept a single gesture (a double-click, a slider's press guard, keyboard focus) and each hand-writes the same forwarding of every other `iced::advanced::Widget` method (`size`, `size_hint`, `layout`, `operate`, `update`, `mouse_interaction`, `draw`, `overlay`) straight to the wrapped content. Several 18-to-23-line stretches are exact duplicates between pairs of the three files; `luxforge-ui/src/histogram.rs`'s content wrapper has the same shape and should be checked against it too.",
-        "Give the three, or four, wrappers a shared base — a forwarding macro or a small decorator helper that emits the pure-forwarding methods given the wrapped element — so each writes only the one or two methods it actually customizes (`update` for the double-click and slider guard, `update` plus `draw` for the focus outline).",
+        "`luxforge-ui/src/widgets/double_click.rs` (368 lines), `slider_guard.rs` (228 lines) and `focus_control.rs` (273 lines) each wrap one content element to intercept a single gesture (a double-click, a slider's press guard, keyboard focus) and each hand-writes the same forwarding of the other `iced::advanced::Widget` methods (`tag`, `state`, `children`, `diff`, `size`, `size_hint`, `layout`, `operate`, `mouse_interaction`, `draw`, `overlay`) straight to the wrapped content; several 18-to-23-line stretches are exact duplicates between pairs of the three files. `widgets/popover.rs`, added with the title bar's Export menu, forwards the same methods to its anchor, the first of its two children, and customizes only `children`, `diff` and `overlay`; check it against the same shape. `widgets/histogram.rs` is a canvas program, not a content wrapper.",
+        "Give the three wrappers, and the popover if it fits, a shared base — a forwarding macro or a small decorator helper that emits the pure-forwarding methods given the wrapped element — so each writes only the one or two methods it actually customizes (`update` for the double-click and slider guard, `update` plus `draw` for the focus outline).",
         "Separately, about 25 `luxforge-ui` exports are used only inside the crate or its own tests — for example `hit_test` and `point_fraction` (`widgets/curve_editor.rs`), `plane_fraction`/`hue_fraction` (`widgets/color_picker.rs`), `sparkline_points` (`widgets/sparkline.rs`), `bin_x`/`polygon_points` (`widgets/histogram.rs`), `knob_center` (`widgets/toggle.rs`), and `TruncatedText`/`fit_one_line` (`widgets/truncated_text.rs`). Make them `pub(crate)`. `theme.rs`'s `warning_surface` has no caller anywhere in the workspace; delete it rather than keep a placeholder style for a warning card that does not exist yet."
       ],
       "context_links": [
@@ -1455,35 +1592,38 @@
         },
         {
           "kind": "file",
-          "label": "Histogram widget",
-          "target": "crates/luxforge-ui/src/widgets/histogram.rs",
-          "relevance": "A fourth content-element wrapper to check against the same shared shape."
+          "label": "Popover widget",
+          "target": "crates/luxforge-ui/src/widgets/popover.rs",
+          "relevance": "A fourth wrapper, forwarding to its anchor, to check against the same shared shape."
         },
         {
           "kind": "file",
           "label": "Theme",
           "target": "crates/luxforge-ui/src/theme.rs",
-          "relevance": "`warning_surface`, uncalled anywhere and to be deleted."
+          "relevance": "`warning_surface`, uncalled anywhere and to be deleted.",
+          "locator": "warning_surface"
         }
       ],
       "acceptance_criteria": [
-        "The double-click, slider-guard and focus-control widgets share one forwarding implementation and each defines only the method or methods it customizes.",
-        "The three widgets' behaviour is unchanged, proved by the controls smoke.",
+        "The double-click, slider-guard and focus-control widgets share one forwarding implementation and each defines only the method or methods it customizes; the popover shares it too or the reason it does not is stated where it is defined.",
+        "The wrappers' behaviour is unchanged, proved by the controls smoke and, for the popover, the export smoke.",
         "The about-25 crate-internal-only exports are `pub(crate)`, and `warning_surface` no longer exists."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Introduce the shared forwarding macro or helper and migrate the three wrappers to it one at a time.",
+          "Introduce the shared forwarding macro or helper and migrate the wrappers to it one at a time.",
           "Narrow the internal-only exports to `pub(crate)` and delete `warning_surface`.",
-          "Run the widget crate's tests and the controls smoke."
+          "Build the release app, then run the widget crate's tests and the controls and export smokes."
         ],
         "commands": [
           "cargo test -p luxforge-ui",
-          "cargo xtask smoke --scenario controls --output NEW_DIR"
+          "cargo xtask build --release",
+          "cargo xtask smoke --scenario controls --output NEW_DIR",
+          "cargo xtask smoke --scenario export --output NEW_DIR"
         ],
         "expected_results": [
-          "The controls smoke's captured frames for a double-click reset, a slider drag guard and keyboard focus are unchanged; the crate builds with the narrowed visibility."
+          "The controls smoke's captured frames for a double-click reset, a slider drag guard and keyboard focus are unchanged, as is the export smoke's menu; the crate builds with the narrowed visibility."
         ]
       }
     },
@@ -1495,8 +1635,10 @@
       "extra_context": [
         "Wave 4, structure.",
         "`crates/luxforge-app/src/json.rs` includes `paths.rs` through `#[path = \"paths.rs\"] mod paths` under `#[allow(dead_code)]`, so building the headless JSON-lines binary compiles Iced, wgpu and rfd along with it, because they share one package. The MCP adapter on the roadmap is also headless and would have the same problem.",
-        "`Paths.cache` exists only to be asserted equal to its own construction in `paths.rs`'s own test and compared unequal to `paths.config` in one `debug_assert!` in `main.rs`; nothing reads it to do actual file I/O. `Paths` is resolved three times at desktop startup (once in `main.rs`, twice in `lifecycle.rs`).",
-        "Move `json.rs`, `paths.rs` and the CLI's own tests into a new `luxforge-cli` crate with no GUI dependency; delete the unused `cache` field; resolve `Paths` once at startup instead of three times."
+        "`Paths.cache` exists only to be asserted equal to its own construction in `paths.rs`'s own test and compared unequal to `paths.config` in one `debug_assert!` in `main.rs`; nothing reads it to do actual file I/O. `Paths` is resolved in `main.rs` and again in `app/lifecycle.rs`, up to three times at desktop startup.",
+        "The CLI's process tests (`tests/json_cli.rs`, `tests/presets_json_cli.rs`, `tests/raw_json_cli.rs`) find the binary through `env!(\"CARGO_BIN_EXE_luxforge-json\")`, so they must live in the crate that builds it. `xtask/src/verify.rs`'s `AUTHENTIC` table runs `raw_json_cli` from package `luxforge-app` (checked by `raw_authentic_runs_both_ignored_test_binaries_with_the_owner_directory`), and the root `Cargo.toml`'s `members` lists each crate. A row in `repository.rs`'s `DEPENDENCY_RULES` can keep `iced`, `rfd` and `luxforge-ui` out of the new crate's normal dependencies.",
+        "Move `json.rs`, `paths.rs` and the three CLI test files into a new `luxforge-cli` crate with no GUI dependency, which the desktop depends on for `Paths`; point `verify`'s authentic RAW run at the new package; delete the unused `cache` field; resolve `Paths` once at startup.",
+        "Three other groups' wave-4 tasks change `json.rs`'s imports or dependencies: the core's explicit public surface, developer-only test modules (the registry `json.rs` assembles with `CapabilitiesProofModule`), and the TLS transport and secret store in their own crate. Whichever lands later rebases onto the moved file. This plan's desktop test trim cuts `presets_json_cli.rs` wherever it then lives."
       ],
       "context_links": [
         {
@@ -1519,9 +1661,28 @@
         },
         {
           "kind": "file",
+          "label": "Desktop startup",
+          "target": "crates/luxforge-app/src/app/lifecycle.rs",
+          "relevance": "Resolves `Paths` again after `main.rs` does."
+        },
+        {
+          "kind": "file",
           "label": "Desktop app manifest",
           "target": "crates/luxforge-app/Cargo.toml",
-          "relevance": "Where the GUI dependencies (Iced, wgpu, rfd) live that a `luxforge-cli` crate must not pull in."
+          "relevance": "Where the GUI dependencies (Iced, which brings wgpu, and rfd) live that a `luxforge-cli` crate must not pull in, and the `luxforge-json` binary target."
+        },
+        {
+          "kind": "file",
+          "label": "JSON CLI test",
+          "target": "crates/luxforge-app/tests/json_cli.rs",
+          "relevance": "One of the three process tests that move with the binary."
+        },
+        {
+          "kind": "file",
+          "label": "Verify",
+          "target": "xtask/src/verify.rs",
+          "relevance": "`AUTHENTIC`, which names `luxforge-app`'s `raw_json_cli`.",
+          "locator": "AUTHENTIC"
         },
         {
           "kind": "file",
@@ -1532,21 +1693,23 @@
       ],
       "acceptance_criteria": [
         "`cargo tree -p luxforge-cli -e normal` shows no `iced`, `wgpu` or `rfd` dependency.",
-        "The CLI's own tests move with it and pass from the new crate.",
-        "`Paths.cache` no longer exists, and `Paths` is resolved once at desktop startup instead of three times.",
-        "The README and the architecture design's crate list describe the new crate."
+        "The CLI's process tests move with it and pass from the new crate, and `verify`'s authentic RAW run names the new package.",
+        "`Paths.cache` no longer exists, and `Paths` is resolved once at desktop startup.",
+        "The README, the development guide and the architecture design's crate list describe the new crate."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Move `json.rs`, `paths.rs` and the CLI tests into the new `luxforge-cli` crate, with no GUI dependency in its manifest.",
-          "Delete `Paths.cache` and collapse the desktop's three `Paths` resolutions into one.",
-          "Run the CLI's tests from the new crate and confirm its dependency tree."
+          "Move `json.rs`, `paths.rs` and the CLI tests into the new `luxforge-cli` crate, with no GUI dependency in its manifest, and update `verify`'s authentic table.",
+          "Delete `Paths.cache` and collapse the desktop's `Paths` resolutions into one.",
+          "Run the CLI's tests from the new crate, the verify table's test and the repository check, and confirm its dependency tree."
         ],
         "commands": [
           "cargo test -p luxforge-cli",
           "cargo tree -p luxforge-cli -e normal",
-          "cargo xtask verify --tier quick"
+          "cargo test -p xtask raw_authentic",
+          "cargo xtask check-repository",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The CLI tests pass unchanged from the new crate; its dependency tree has no GUI stack."
@@ -1562,10 +1725,10 @@
       ],
       "extra_context": [
         "Wave 5, tests.",
-        "Live agents editing alongside a person are a headline capability, and their changes reach the screen through one path: the owner wakes the desktop, a sync message fires, `events.since` answers, a refresh for another client's change runs, and the draft is marked conflicted. Evidence runs switch that path off (`app/mod.rs` gates the events subscription on no evidence being active, and `app/sync.rs`'s sync-when-wanted check returns early during an evidence run), so no rendered run shows another client's change arriving; it is covered only by unit tests in `app/tasks.rs` and the sync tests.",
-        "Today the `basic` and `workspace` smokes' \"Changed elsewhere\" frames come from the desktop's own client committing through the evidence driver's `api_step`, and the captured notice text says \"Another client committed revision N\", which is not what happened.",
+        "Live agents editing alongside a person are a headline capability, and their changes reach the screen through one path: the owner wakes the desktop, a sync message fires, `events.since` answers, a refresh for another client's change runs, and the draft is marked conflicted. Evidence runs switch that path off (`Editor::subscription` in `app/mod.rs` adds `waker::events_subscription` only when no evidence is active, and `sync_when_wanted` in `app/sync.rs` returns early during an evidence run), so no rendered run shows another client's change arriving; it is covered only by unit tests (`app/sync_tests.rs`, `app/preview_failure_tests.rs`, `app/tasks.rs`).",
+        "Today the `basic` and `workspace` smokes' conflict frames (their `conflict` steps in `xtask/src/basic_smoke.rs` and `xtask/src/workspace_smoke.rs`) come from the desktop's own client committing through the evidence driver's `api_step`, and the captured notice (`state/canvas.rs`) says \"Another client committed revision N while your … was open\", which is not what happened. Other scenarios (`crop`, `export`, the mask acceptance) drive conflicts the same way and can follow once the step exists.",
         "Add an `agent` evidence step (in `luxforge-evidence`) that sends through a second client registered on the same owner; enable the event subscription in evidence runs; settle the step on the sync's refresh reaching the screen. Move the conflict frames of the `basic` and `workspace` smokes onto this step.",
-        "Events that name their subject, a shape landing in the core service work, is what the sync's refresh reads; this task's `agent` step depends on that shape being in place first."
+        "Events already name their subject: each names the asset and revision it changed, and the desktop's sync refreshes only for the photo it has open, so the step can settle on the refresh for its own commit's revision."
       ],
       "context_links": [
         {
@@ -1578,7 +1741,8 @@
           "kind": "file",
           "label": "Desktop update loop",
           "target": "crates/luxforge-app/src/app/mod.rs",
-          "relevance": "Gates the events subscription on no evidence being active, to enable during evidence runs instead."
+          "relevance": "`Editor::subscription`, which gates the events subscription on no evidence being active, to enable during evidence runs instead.",
+          "locator": "fn subscription"
         },
         {
           "kind": "file",
@@ -1596,31 +1760,45 @@
         },
         {
           "kind": "file",
+          "label": "Evidence script",
+          "target": "crates/luxforge-evidence/src/lib.rs",
+          "relevance": "The script's step types, where the `agent` step joins `api`."
+        },
+        {
+          "kind": "file",
           "label": "Canvas view model",
           "target": "crates/luxforge-app/src/state/canvas.rs",
           "relevance": "The \"Changed elsewhere\" notice text the new step exercises for real."
+        },
+        {
+          "kind": "file",
+          "label": "Workspace smoke",
+          "target": "xtask/src/workspace_smoke.rs",
+          "relevance": "The `conflict` frame to move onto the new step; `basic_smoke.rs` has the other.",
+          "locator": "conflict"
         }
       ],
       "acceptance_criteria": [
         "An `agent` evidence step sends a mutation through a second client registered on the same owner, and settles once the sync's refresh reaches the screen.",
         "The event subscription is enabled during evidence runs.",
         "The `basic` and `workspace` smokes' conflict frames are produced by the second client's commit, not the desktop's own.",
-        "The recorded-mutation replay still fails a run with the new step removed."
+        "The recorded-run mutation replay still fails a `basic` or `workspace` run with the new step removed."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
           "Add the `agent` step to `luxforge-evidence` and wire its settle condition to the sync refresh.",
           "Enable the events subscription during evidence runs.",
-          "Move the `basic` and `workspace` conflict frames onto the new step and re-record them."
+          "Move the `basic` and `workspace` conflict frames onto the new step, run both, and replay their recorded runs with the step removed."
         ],
         "commands": [
           "cargo test -p luxforge-evidence",
           "cargo test -p luxforge-app evidence",
-          "cargo xtask smoke --scenario workspace --output NEW_DIR"
+          "cargo xtask verify --tier rendered --output VERIFY_DIR",
+          "SMOKE_RECORDED=VERIFY_DIR SMOKE_ONLY=\"basic workspace\" cargo test -p xtask mutations -- --ignored"
         ],
         "expected_results": [
-          "The workspace smoke's conflict frame is produced by a second client's commit; the notice text matches what actually happened."
+          "The basic and workspace smokes' conflict frames are produced by a second client's commit and the notice text matches what actually happened; the replay fails with the step removed."
         ]
       }
     },
@@ -1633,11 +1811,11 @@
       ],
       "extra_context": [
         "Wave 5, tests.",
-        "Four near-identical fixtures (`app/testing.rs`, `app/presets_tests.rs`, `app/proof_controls_tests.rs`, `app/capabilities_tests.rs`) import `orientation-1.jpg` through the API and sleep 1-2 ms between `job.status` reads, although production already has `wait_source_job` (`app/tasks.rs`), which blocks without polling, and `luxforge-testkit` already has `client::import` and `fixtures::temp_catalog`. Three separate event-filter helpers exist across the same files.",
-        "The per-field draft/commit/cancel/reapply test in `app/slider_tests.rs` runs a full commit, cancel and reapply cycle once per field, although the driver underneath is field-agnostic; only the per-field values and format assertions actually differ between iterations.",
-        "`tests/presets_json_cli.rs` (398 lines, two spawned processes) re-proves preset semantics — import, list, read, apply equal to the individual actions, and refusals — that the core's own tests already prove in-process, while `tests/json_cli.rs` already proves the process-transport layer on its own. Desktop tests also re-prove the core's own neutrality rule (`state/mod.rs`'s field-patch-neutrality test, which the core's registry compile tests already cover).",
-        "One shared import-and-wait helper built on `wait_source_job`, plus `fixtures::temp_catalog` and one shared events helper, replace the four fixtures and three filters; the per-field loop trims to its field-specific assertions over one shared driver; `presets_json_cli.rs` cuts to one transport-level check. Keep the parity tests (the controls proof tests and the test asserting every generated action control matches its declared schema) and the core-level neutrality and preset tests exactly as they are — this task removes the desktop's copies, not the originals.",
-        "`crop.rs` keeps its roughly 1,034 test lines inline where every other seam already has a separate tests file; move them out as part of this cleanup so the file follows the same convention."
+        "Four near-identical fixtures (`real_photo_at` in `app/testing.rs`, `Library::opened` in `app/presets_tests.rs`, and the fixtures in `app/proof_controls_tests.rs` and `app/capabilities_tests.rs`) import through `catalog.import`, poll `job.read` under `luxforge_testbase::wait_until` until the source job is ready, and `job.adopt` it, although production already has `wait_source_job` (`app/tasks.rs`), which blocks on the owner's `wait_source` without polling, and `luxforge-testkit` already has `client::import` and `fixtures::temp_catalog`. Event filters repeat one another: `pick_events` and `draft_events` in `app/testing.rs`, `events` in `app/preview_failure_tests.rs` and `event_names` in `app/masks_tests.rs`.",
+        "`every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path` (`app/slider_tests.rs`) runs a full commit, cancel and reapply cycle once per field, although the driver underneath is field-agnostic; only the per-field values and format assertions actually differ between iterations.",
+        "`tests/presets_json_cli.rs` (397 lines, two spawned processes) re-proves preset semantics — import, list, read, apply equal to the individual actions, and refusals — that the core's own tests already prove in-process, while `tests/json_cli.rs` already proves the process-transport layer on its own. Desktop tests also re-prove the core's own neutrality rule (`a_field_patch_section_has_no_dot_once_its_layer_is_neutral` in `state/mod.rs`, which the core's registry compile tests already cover). The headless binary's own-crate task moves both CLI tests to `luxforge-cli`; cut the preset test wherever it then lives.",
+        "One shared import-and-wait helper built on `wait_source_job` (or testkit's `client::import`), plus `fixtures::temp_catalog` and one shared events helper, replace the four fixtures and the repeated filters; the per-field loop trims to its field-specific assertions over one shared driver; `presets_json_cli.rs` cuts to one transport-level check. Keep the parity tests (the controls proof tests and the test asserting every generated action control matches its declared schema) and the core-level neutrality and preset tests exactly as they are — this task removes the desktop's copies, not the originals. The `test-waits` repository row still applies: the helper waits through `luxforge_testbase` or the owner, never a sleep of its own.",
+        "`app/crop.rs` keeps about 1,600 test lines inline, the most of any seam; move them into `app/crop_tests.rs`, the `*_tests.rs` convention most seams follow. The crop repository rows (`desktop-crop-rows`, `declared-crop-angle`) skip tests, so the move changes no rule."
       ],
       "context_links": [
         {
@@ -1650,7 +1828,8 @@
           "kind": "file",
           "label": "Test fixtures",
           "target": "crates/luxforge-app/src/app/testing.rs",
-          "relevance": "One of the four near-identical import-and-wait fixtures."
+          "relevance": "`real_photo_at`, one of the four near-identical import-and-wait fixtures, and two of the event filters.",
+          "locator": "real_photo_at"
         },
         {
           "kind": "file",
@@ -1669,7 +1848,8 @@
           "kind": "file",
           "label": "Slider tests",
           "target": "crates/luxforge-app/src/app/slider_tests.rs",
-          "relevance": "The per-field loop to trim to its field-specific assertions."
+          "relevance": "The per-field loop to trim to its field-specific assertions.",
+          "locator": "every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path"
         },
         {
           "kind": "file",
@@ -1687,14 +1867,21 @@
           "kind": "file",
           "label": "Workspace state",
           "target": "crates/luxforge-app/src/state/mod.rs",
-          "relevance": "The desktop's own copy of the core's neutrality rule test."
+          "relevance": "The desktop's own copy of the core's neutrality rule test.",
+          "locator": "a_field_patch_section_has_no_dot_once_its_layer_is_neutral"
+        },
+        {
+          "kind": "file",
+          "label": "Crop driver",
+          "target": "crates/luxforge-app/src/app/crop.rs",
+          "relevance": "The inline `tests` module to move into `app/crop_tests.rs`."
         }
       ],
       "acceptance_criteria": [
-        "No app test fixture polls `job.status` with a sleep; the four fixtures and three event filters are replaced by one shared helper built on `wait_source_job`, `client::import` and `temp_catalog`.",
+        "No app test fixture polls `job.read`; the four import fixtures share one helper built on `wait_source_job` (or `client::import`) and `temp_catalog`, and the repeated event filters are one shared helper.",
         "The per-field draft/commit/cancel/reapply test asserts its field-specific values over one shared driver call, not a full cycle repeated per field.",
         "`presets_json_cli.rs` checks only the process-transport path; the preset semantics it used to re-prove stay covered by the core's own tests.",
-        "`crop.rs`'s tests live in a separate tests file, matching every other seam.",
+        "`crop.rs`'s tests live in `app/crop_tests.rs`, matching the other seams' separate tests files.",
         "About 350 to 500 test lines are removed overall; each deleted assertion is named, in the commit, with the kept test that proves it."
       ],
       "test_strategy": {
@@ -1702,14 +1889,15 @@
         "steps": [
           "Add the shared import-and-wait and events helpers and migrate the four fixtures onto them.",
           "Trim the per-field loop and cut `presets_json_cli.rs` to its transport check, naming each removed assertion's keeper in the commit.",
-          "Move `crop.rs`'s inline tests into a separate tests file."
+          "Move `crop.rs`'s inline tests into `app/crop_tests.rs`."
         ],
         "commands": [
           "cargo test -p luxforge-app",
-          "cargo xtask verify --tier quick"
+          "cargo xtask check-repository",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
-          "The full app test suite passes with no sleep-polling fixture left and no coverage gap, since each deletion names the test that keeps proving its behaviour."
+          "The full app test suite passes with no polling import fixture left and no coverage gap, since each deletion names the test that keeps proving its behaviour."
         ]
       }
     },
@@ -1721,8 +1909,9 @@
       "extra_context": [
         "Wave 6, roadmap groundwork.",
         "Blocked: starts with the library milestone on the roadmap, whose virtualized browsing across many photos (a grid, filmstrip or side-by-side compare) is the first place a second photo surface would appear on screen at once.",
-        "Iced keeps one rendering pipeline per primitive type, and `luxforge-ui/src/photo_surface.rs` holds one set of GPU tiles per layer for the whole application. Two photo surfaces drawn in the same frame today would overwrite each other's textures and uniforms, both would show whichever was prepared last, and both would re-upload every frame instead of only on a version change.",
-        "Key the pipeline's slots by a surface id carried in the primitive, and release a surface's slots by that id when it goes away. Library thumbnails do not need this: they can use Iced's own image widget with handles built outside `view()`, since the extra hop matters little for a grid of small images."
+        "Iced keeps one rendering pipeline per primitive type, and `luxforge-ui/src/photo_surface.rs`'s `PhotoPipeline` holds one set of slots for the whole application: four photo slots (`slots`), two viewport-region sets (`regions`) and the retirement accounting behind the overlap ceiling. Two photo surfaces drawn in the same frame today would overwrite each other's textures and uniforms, both would show whichever was prepared last, and both would re-upload every frame instead of only on a version change.",
+        "Key the pipeline's slots by a surface id carried in the primitive, and release a surface's slots by that id when it goes away. Library thumbnails do not need this: they can use Iced's own image widget with handles built outside `view()`, since the extra hop matters little for a grid of small images.",
+        "The owner's provisional overlap ceiling (one current and one retiring full-photo allocation of at most 512 MiB each plus two region sets of at most 32 MiB each, 1088 MiB in all) is stated for one surface; how it applies to a second surface is an owner decision to take when this starts."
       ],
       "context_links": [
         {
@@ -1735,7 +1924,15 @@
           "kind": "file",
           "label": "Photo surface",
           "target": "crates/luxforge-ui/src/photo_surface.rs",
-          "relevance": "The single set of GPU tiles per layer that a second surface would collide with."
+          "relevance": "`PhotoPipeline`'s one set of slots that a second surface would collide with.",
+          "locator": "PhotoPipeline"
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The provisional photo-texture overlap ceiling, stated for one surface.",
+          "locator": "1088 MiB"
         },
         {
           "kind": "file",
