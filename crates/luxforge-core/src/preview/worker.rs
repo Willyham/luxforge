@@ -147,7 +147,7 @@ pub(super) fn run(
     // The coverage grid reads no pixel of the exact frame — the geometry tail of this compilation,
     // and for a mask that reads pixels, point queries into the input of its first bound layer — so
     // it never waits for the exact render. When the job has a proxy frame, the grid is filled after
-    // that frame is handed over, under the proxy's own token, and follows it in an overlay phase of
+    // that frame is handed over, under the superseded token, and follows it in an overlay phase of
     // its own; otherwise it rides the exact frame, as the job's one phase. Either way it is this
     // one function over this one compilation, so the grid is the same bytes whichever phase
     // carries it.
@@ -250,7 +250,11 @@ pub(super) fn run(
                             // waits for the grid. The grid is not a number the exact phase owns:
                             // it is a function of position over the exact output stage, which
                             // this job's exact compilation already knows, so it needs no exact
-                            // render and is filled under the proxy's own token.
+                            // render. It reads the superseded token, as the exact phase does: a
+                            // newer request will replace the frame it describes, and brings a grid
+                            // of its own, so it must not wait behind this one. A stopped grid is
+                            // still delivered, carrying nothing, so a client waiting for this
+                            // frame's grid stops waiting.
                             if let (Ok(exact), Some(request)) = (&exact, &job.mask_overlay) {
                                 overlay_delivered = true;
                                 let started = Instant::now();
@@ -260,7 +264,7 @@ pub(super) fn run(
                                     recipe,
                                     request,
                                     None,
-                                    proxy_cancel,
+                                    exact_cancel,
                                     evaluation.context(),
                                 );
                                 let overlay = PreviewResult {

@@ -510,11 +510,27 @@ fn a_coverage_grid_arriving_after_its_frame_is_drawn_over_that_frame_and_no_othe
     assert_eq!(pending(&editor), Some((8, vec![8])));
     assert_eq!(editor.overlay_awaited, None);
 
+    // A grid a newer request stopped arrives with neither a grid nor a reason: the wait for it
+    // ends, and nothing is taken up or cleared.
+    editor.preview_generation = 11;
+    ticket(&mut editor, 11, 1);
+    editor.pending_overlay.insert(11);
+    let (_, shown) = editor.preview_ready(proxy(11));
+    assert!(shown);
+    assert_eq!(editor.overlay_awaited, Some(11));
+    let (_, shown) = editor.preview_ready(result(
+        11,
+        PhaseOutcome::Overlay(MaskOverlayOutcome::default()),
+    ));
+    assert!(!shown);
+    assert_eq!(editor.overlay_awaited, None, "a stopped grid ends the wait");
+    assert_eq!(pending(&editor), Some((8, vec![8])), "and takes nothing up");
+
     // A frame whose job asked for no grid waits for none.
     editor.mask_overlay_pending = None;
-    editor.preview_generation = 10;
-    ticket(&mut editor, 10, 1);
-    let (_, shown) = editor.preview_ready(proxy(10));
+    editor.preview_generation = 12;
+    ticket(&mut editor, 12, 1);
+    let (_, shown) = editor.preview_ready(proxy(12));
     assert!(shown);
     assert_eq!(editor.overlay_awaited, None);
     assert_eq!(pending(&editor), None);
