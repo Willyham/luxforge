@@ -568,7 +568,7 @@
     {
       "id": "TASK-008",
       "description": "Move the TLS transport and the Keychain secret store out of `luxforge-core` into a crate the desktop and `luxforge-json` inject through `HostConfig`, behind a core-owned transport trait, so the core and its test binaries link no TLS or Security framework.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
