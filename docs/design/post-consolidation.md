@@ -1,6 +1,6 @@
 # After the consolidation
 
-Status: **authorized by the owner on 2026-09-26**, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. The work is planned as one task plan per group, listed below. When every task in those plans is complete, or has moved into the plan of the milestone it prepares, delete this document; the outcome lives in the specs the tasks change.
+Status: **authorized by the owner on 2026-09-26**, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. The work is planned as one task plan per group, listed below. Waves 1 to 3 are complete; wave 4 is next. When every task in those plans is complete, or has moved into the plan of the milestone it prepares, delete this document; the outcome lives in the specs the tasks change.
 
 ## Why
 
@@ -55,17 +55,14 @@ The waves are program phases, each an outcome across the groups. Inside a plan, 
 
 ## Order across groups
 
-Plans never reference each other's tasks. These outcomes land in this order:
+Plans never reference each other's tasks. These outcomes still have to land in this order:
 
-- **The one-path repository check** (harness) before the wave-2 tasks in other groups add their rules to it; a task that lands first adds its rule beside the existing layering rules, and the check's table absorbs it.
-- **Events that name their subject** (core service) before **live-agent evidence** (desktop), which renders another client's change arriving.
-- **A render context per test** (rendering) before **the test rules and one gate** (harness), which state the rule it follows.
-- **Declared source kinds** (module contract) remove the desktop's name checks in the same change, before **view-model rules computed once** (desktop) finishes the rest.
-- **The drafted exact phase** (rendering) is measured before **paint latency** (masking) is attributed, so each figure is attributed to its own change.
 - **Evidence outcomes** (desktop) before **scenarios as plans plus pixel claims** (harness), since both sides of the evidence format change.
-- **One job table** (core service) before the capability desktop trim reads jobs through it (capabilities).
-- **The other groups' wave-2 changes in the core** before **an explicit core surface** (core service), which touches every module.
-- **The transport on `ureq`'s agent** before **the transport in its own crate** (both capabilities).
+- **An explicit core surface** (core service) after every other group's remaining change to the core, since it touches every module: opaque frames and the `render.rs` split (rendering); the `ToolModule` and descriptor trims and developer-only test modules (module contract); typed mask commands and per-kind parameter validation (masking); the trimmed `luxforge-raw` API (RAW); controls matched without the `Rendered` mirror (desktop); and activation deferred, the transport's own crate and the capability leftovers (capabilities).
+- **The headless binary's own crate** (desktop) before **fewer test binaries** (harness), which merges the CLI test binaries that move with it.
+- **`architecture.md`'s structure** (harness) after the other wave-4 changes that rewrite parts of it: the `render.rs` split, the transport's own crate, the headless binary's crate and the explicit core surface.
+
+Wave-4 tasks in different groups that edit the same files, and that should therefore land one after the other rather than in parallel, are named in each task's context.
 
 ## Acceptance
 
