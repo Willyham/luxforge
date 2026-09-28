@@ -792,7 +792,7 @@ impl HostStage<'_> {
         if let Some(source) = self.source.get() {
             return Ok(source);
         }
-        let source = self.service.verified_prepared(self.asset)?;
+        let source = self.service.verified_prepared(self.asset, self.recipe)?;
         Ok(self.source.get_or_init(|| source))
     }
 
@@ -2613,7 +2613,7 @@ mod tests {
             "a pixel layer and the orientation tail"
         );
         let index = 1;
-        let image = match service.verified_prepared(&state.asset).unwrap() {
+        let image = match service.verified_prepared(&state.asset, &recipe).unwrap() {
             PreparedSource::Jpeg(image) => image,
             PreparedSource::Raw(_) => panic!("the JPEG fixture prepares a JPEG source"),
         };

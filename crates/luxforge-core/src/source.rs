@@ -437,9 +437,10 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
 
 /// The source worker's memory gate: before it allocates another RAW development, the worker waits
 /// until every development it produced earlier has been released by the caches and previews that
-/// held it. Each adopted development carries a [`PlaneLease`], shared by every view and clone of
-/// its planes; the last one dropping wakes the worker. A cancelled job wakes it through
-/// [`Self::wake`]. Nothing polls.
+/// held it, except the one finished development the owner retains beside its current one
+/// ([`SecondDevelopment`]), whose [`Retention`] takes it out of the count. Each adopted development
+/// carries a [`PlaneLease`], shared by every view and clone of its planes; the last one dropping
+/// wakes the worker. A cancelled job wakes it through [`Self::wake`]. Nothing polls.
 #[derive(Default)]
 pub(crate) struct PlaneGate {
     live: Mutex<usize>,
@@ -454,11 +455,14 @@ impl PlaneGate {
     /// A hold on the gate for one development's planes, released when it drops.
     pub(crate) fn lease(self: &Arc<Self>) -> PlaneLease {
         *self.live() += 1;
-        PlaneLease(Arc::clone(self))
+        PlaneLease {
+            gate: Arc::clone(self),
+            retained: AtomicBool::new(false),
+        }
     }
 
-    /// Block until no leased planes remain, or until `stop` is set and [`Self::wake`] called.
-    /// Returns whether it stopped.
+    /// Block until no leased planes remain but a retained development's, or until `stop` is set
+    /// and [`Self::wake`] called. Returns whether it stopped.
     pub(crate) fn wait_released(&self, stop: &AtomicBool) -> bool {
         let mut live = self.live();
         while *live > 0 && !stop.load(Ordering::Relaxed) {
@@ -476,18 +480,77 @@ impl PlaneGate {
         let _live = self.live();
         self.released.notify_all();
     }
+
+    /// How many developments the gate is waiting for.
+    #[cfg(test)]
+    fn counted(&self) -> usize {
+        *self.live()
+    }
 }
 
-/// One development's hold on the [`PlaneGate`].
-pub(crate) struct PlaneLease(Arc<PlaneGate>);
+/// One development's hold on the [`PlaneGate`]. It counts against the gate unless a [`Retention`]
+/// holds it.
+pub(crate) struct PlaneLease {
+    gate: Arc<PlaneGate>,
+    /// Whether a [`Retention`] has taken these planes out of the gate's count. Changed and read
+    /// only under the gate's lock.
+    retained: AtomicBool,
+}
+
+impl PlaneLease {
+    /// Take these planes out of the gate's count, or put them back, waking the worker when that
+    /// leaves nothing counted.
+    fn set_retained(&self, retained: bool) {
+        let mut live = self.gate.live();
+        if self.retained.swap(retained, Ordering::Relaxed) == retained {
+            return;
+        }
+        if retained {
+            *live -= 1;
+            if *live == 0 {
+                self.gate.released.notify_all();
+            }
+        } else {
+            *live += 1;
+        }
+    }
+}
 
 impl Drop for PlaneLease {
     fn drop(&mut self) {
-        let mut live = self.0.live();
+        let mut live = self.gate.live();
+        if self.retained.load(Ordering::Relaxed) {
+            return;
+        }
         *live -= 1;
         if *live == 0 {
-            self.0.released.notify_all();
+            self.gate.released.notify_all();
         }
+    }
+}
+
+/// The gate's exemption for the one finished development the owner retains
+/// ([`SecondDevelopment`]): a retained development is not a build in flight, so while this lives
+/// the gate does not wait for its planes. Dropping it counts them again until their last view
+/// drops.
+pub(crate) struct Retention(Arc<PlaneLease>);
+
+impl Retention {
+    fn new(lease: Arc<PlaneLease>) -> Self {
+        lease.set_retained(true);
+        Self(lease)
+    }
+}
+
+impl Drop for Retention {
+    fn drop(&mut self) {
+        self.0.set_retained(false);
+    }
+}
+
+impl std::fmt::Debug for Retention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Retention")
     }
 }
 
@@ -500,6 +563,11 @@ impl PlanesHeld {
     pub(crate) fn new(lease: PlaneLease) -> Self {
         Self(Some(Arc::new(lease)))
     }
+
+    /// The gate's exemption for these planes, or `None` when no gate leased them.
+    pub(crate) fn retention(&self) -> Option<Retention> {
+        self.0.clone().map(Retention::new)
+    }
 }
 
 impl PartialEq for PlanesHeld {
@@ -511,6 +579,108 @@ impl PartialEq for PlanesHeld {
 impl std::fmt::Debug for PlanesHeld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(if self.0.is_some() { "held" } else { "unheld" })
+    }
+}
+
+/// The owner's second development slot: at most one more development of the cached RAW's mosaic
+/// beside the one its [`RawPrepared`] holds, so going back and forth between two entries at
+/// different white balances — holding `\` to compare with the Original, or returning to current —
+/// redevelops neither. The cached source's own development is always the most recently used; this
+/// slot holds the other. Only a development whose planes fit
+/// [`luxforge_raw::RETAINED_DEVELOPMENT_BYTES`] is ever held here, and at most one retained
+/// development is exempt from the memory gate at a time.
+#[derive(Debug, Default)]
+pub(crate) struct SecondDevelopment {
+    held: Option<([f32; 3], LinearImage)>,
+    /// The gate's exemption, and the development it is for: the one this slot kept when a
+    /// redevelopment was last admitted, for as long as the cache holds it in either place.
+    retention: Option<(u64, Retention)>,
+}
+
+/// Whether a development's planes are small enough to be retained beside another.
+fn retainable(linear: &LinearImage) -> bool {
+    linear.plane_bytes() <= luxforge_raw::RETAINED_DEVELOPMENT_BYTES as u64
+}
+
+impl SecondDevelopment {
+    /// Whether this slot holds planes developed at `gains`.
+    pub(crate) fn holds(&self, gains: [f32; 3]) -> bool {
+        self.held.as_ref().is_some_and(|(held, _)| *held == gains)
+    }
+
+    /// Make the development at `wanted` the current one, `gains` and `linear`, when only this
+    /// slot holds it: the two change places, so the one just read is the most recently used and
+    /// the one it replaces waits here. `O(1)`; no pixel moves.
+    pub(crate) fn take_up(
+        &mut self,
+        gains: &mut [f32; 3],
+        linear: &mut Option<LinearImage>,
+        wanted: [f32; 3],
+    ) {
+        if (*gains == wanted && linear.is_some()) || !self.holds(wanted) {
+            return;
+        }
+        let Some((held_gains, held_linear)) = self.held.take() else {
+            return;
+        };
+        let previous_gains = std::mem::replace(gains, held_gains);
+        self.held = linear
+            .replace(held_linear)
+            .map(|previous| (previous_gains, previous));
+    }
+
+    /// Release the current development, `gains` and `linear`, before the source worker allocates
+    /// another: the most recently used of the two — the current one, else the one held here — is
+    /// kept here when `retain` and its planes fit the budget, exempt from the memory gate, and
+    /// every other development is dropped, so the gate waits for their last views alone.
+    pub(crate) fn evict(
+        &mut self,
+        gains: [f32; 3],
+        linear: &mut Option<LinearImage>,
+        retain: bool,
+    ) {
+        let keeper = match linear.take() {
+            Some(current) => {
+                self.held = None;
+                Some((gains, current))
+            }
+            None => self.held.take(),
+        };
+        match keeper.filter(|(_, planes)| retain && retainable(planes)) {
+            Some((kept_gains, planes)) => {
+                let development = planes.development();
+                if self.retention.as_ref().map(|(id, _)| *id) != Some(development) {
+                    self.retention = planes.retention().map(|retention| (development, retention));
+                }
+                self.held = Some((kept_gains, planes));
+            }
+            None => self.retention = None,
+        }
+    }
+
+    /// Keep `previous`, the development a finished redevelopment replaces as current, as the one
+    /// this slot holds when its planes fit the budget; the development held before it, the less
+    /// recently used, is then dropped. Settles the exemption against `current`, the development
+    /// that replaced it.
+    pub(crate) fn keep(
+        &mut self,
+        gains: [f32; 3],
+        previous: Option<LinearImage>,
+        current: Option<&LinearImage>,
+    ) {
+        if let Some(planes) = previous.filter(retainable) {
+            self.held = Some((gains, planes));
+        }
+        let kept = |id: u64| {
+            current.is_some_and(|planes| planes.development() == id)
+                || self
+                    .held
+                    .as_ref()
+                    .is_some_and(|(_, planes)| planes.development() == id)
+        };
+        if self.retention.as_ref().is_some_and(|(id, _)| !kept(*id)) {
+            self.retention = None;
+        }
     }
 }
 
@@ -591,6 +761,162 @@ mod tests {
         waiter.join().unwrap();
         drop(held);
         assert!(!gate.wait_released(&never));
+    }
+
+    /// A retention takes its development out of the gate's count, wakes a worker waiting on it
+    /// alone, and puts it back when it drops, for as long as a view of the planes lives; planes
+    /// released while retained are never counted twice.
+    #[test]
+    fn a_retained_development_is_out_of_the_gate_count_until_its_retention_drops() {
+        let gate = Arc::new(PlaneGate::default());
+        let never = AtomicBool::new(false);
+        let mut image = LinearImage::new(1, 1, vec![0.0; 3]).unwrap();
+        image.hold(gate.lease());
+        let view = image.clone();
+        assert_eq!(gate.counted(), 1);
+
+        let (done, finished) = std::sync::mpsc::channel();
+        let waiter = {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                done.send(gate.wait_released(&AtomicBool::new(false)))
+                    .unwrap();
+            })
+        };
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "the gate waits for a development nothing retains"
+        );
+        let retention = image.retention().expect("a leased development");
+        assert!(
+            !finished
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("retaining the last counted development wakes the worker")
+        );
+        waiter.join().unwrap();
+        assert_eq!(gate.counted(), 0, "a retained development is not a build");
+        assert!(!gate.wait_released(&never));
+
+        drop(retention);
+        assert_eq!(gate.counted(), 1, "released from the slot, it counts again");
+        let retention = image.retention().unwrap();
+        drop(image);
+        drop(view);
+        assert_eq!(gate.counted(), 0);
+        drop(retention);
+        assert_eq!(
+            gate.counted(),
+            0,
+            "planes freed while retained are not counted again"
+        );
+        assert!(
+            LinearImage::new(1, 1, vec![0.0; 3])
+                .unwrap()
+                .retention()
+                .is_none(),
+            "planes no gate leased have nothing to retain"
+        );
+    }
+
+    /// The second slot keeps the most recently used of two developments, hands it back without a
+    /// development when its white balance is read again, and agrees with the gate: the one it
+    /// retains while another is built is never counted, a development read back from it during
+    /// that build is still not a build, and every development it drops counts until its last view
+    /// drops.
+    #[test]
+    fn the_second_slot_keeps_the_most_recently_used_development_and_the_gate_agrees() {
+        let gate = Arc::new(PlaneGate::default());
+        let leased = |value: f32| {
+            let mut image = LinearImage::new(1, 1, vec![value; 3]).unwrap();
+            image.hold(gate.lease());
+            image
+        };
+        let development = |image: &Option<LinearImage>| image.as_ref().unwrap().development();
+        let (a, b, c) = ([1.5, 1.0, 1.25], [2.0, 1.0, 1.0], [1.0, 1.0, 2.0]);
+        let mut slot = SecondDevelopment::default();
+        let (mut gains, mut current) = (a, Some(leased(0.1)));
+        let first = development(&current);
+
+        // A redevelopment at b is admitted: a waits in the slot, and its build does not wait for a.
+        slot.evict(gains, &mut current, true);
+        assert!(current.is_none() && slot.holds(a));
+        assert_eq!(gate.counted(), 0);
+        // b is built and becomes current; a stays, and the next build would wait for b.
+        let built = leased(0.2);
+        slot.keep(gains, current.take(), Some(&built));
+        (gains, current) = (b, Some(built));
+        assert!(slot.holds(a));
+        assert_eq!(gate.counted(), 1);
+
+        // Reading a again takes it up with no development, and b waits in the slot. Reading what
+        // the current development holds, or what neither holds, changes nothing.
+        slot.take_up(&mut gains, &mut current, a);
+        assert_eq!((gains, development(&current)), (a, first));
+        assert!(slot.holds(b));
+        slot.take_up(&mut gains, &mut current, a);
+        slot.take_up(&mut gains, &mut current, c);
+        assert_eq!((gains, development(&current)), (a, first));
+        assert!(slot.holds(b));
+
+        // A third white balance: a, the most recently used, is kept; b is dropped, and a preview
+        // still rendering it keeps it counted until the preview ends.
+        let preview = slot.held.as_ref().unwrap().1.clone();
+        slot.evict(gains, &mut current, true);
+        assert!(slot.holds(a) && !slot.holds(b) && current.is_none());
+        assert_eq!(gate.counted(), 1, "the dropped b's preview still holds it");
+        drop(preview);
+        assert_eq!(gate.counted(), 0);
+        // a is read back while c is built: it is current again, and still not a build.
+        slot.take_up(&mut gains, &mut current, a);
+        assert_eq!(development(&current), first);
+        assert_eq!(gate.counted(), 0);
+        let built = leased(0.3);
+        slot.keep(gains, current.take(), Some(&built));
+        (gains, current) = (c, Some(built));
+        assert!(slot.holds(a));
+        assert_eq!(gate.counted(), 1);
+
+        // Work that is not a redevelopment of this mosaic retains nothing.
+        slot.evict(gains, &mut current, false);
+        assert!(current.is_none() && !slot.holds(a) && !slot.holds(c));
+        assert!(slot.retention.is_none());
+        assert_eq!(gate.counted(), 0);
+    }
+
+    /// Only a development whose planes fit the budget is retained: the X100VI's 40.9 MP planes
+    /// do, and planes just past the budget do not, whichever path offers them. The planes are
+    /// zero-allocated and never touched.
+    #[test]
+    fn the_second_slot_retains_only_a_development_within_its_byte_budget() {
+        let planes = |width: u32, height: u32| {
+            LinearImage::from_validated_planes(
+                width,
+                height,
+                vec![0.0; width as usize * height as usize * 3],
+                String::new(),
+            )
+            .unwrap()
+        };
+        let x100vi = planes(7728, 5152);
+        assert!(retainable(&x100vi), "{} bytes", x100vi.plane_bytes());
+        let past = planes(8192, 6401);
+        assert!(
+            past.plane_bytes() > luxforge_raw::RETAINED_DEVELOPMENT_BYTES as u64
+                && !retainable(&past)
+        );
+        let gains = [1.0; 3];
+        let mut slot = SecondDevelopment::default();
+        slot.evict(gains, &mut Some(past.clone()), true);
+        assert!(
+            !slot.holds(gains),
+            "not kept when a redevelopment is admitted"
+        );
+        slot.keep(gains, Some(past), None);
+        assert!(!slot.holds(gains), "nor when one replaces it");
+        slot.evict(gains, &mut Some(x100vi), true);
+        assert!(slot.holds(gains));
     }
 
     fn scalar_camera_reference(mut planes: Vec<f32>, n: usize, matrix: &[[f32; 4]; 3]) -> Vec<f32> {
@@ -798,6 +1124,24 @@ mod tests {
                     .iter()
                     .map(|v| v.to_bits()),
             );
+            // Through the second slot, as the owner goes back and forth between the two: the
+            // as-shot development retained while the custom one is built and current, then each
+            // read back, holds the bits of a fresh one.
+            let mut slot = SecondDevelopment::default();
+            let (mut current_gains, mut current) = (prepared.gains, prepared.linear.clone());
+            slot.evict(current_gains, &mut current, true);
+            slot.keep(current_gains, current.take(), custom.linear.as_ref());
+            (current_gains, current) = (custom.gains, custom.linear.clone());
+            for (wanted, fresh) in [
+                (prepared.gains, &as_shot_planes),
+                (custom.gains, &custom_planes),
+                (prepared.gains, &as_shot_planes),
+            ] {
+                slot.take_up(&mut current_gains, &mut current, wanted);
+                assert_eq!(current_gains, wanted);
+                let planes = current.as_ref().unwrap().planes();
+                assert_eq!(&digest(&mut planes.iter().map(|v| v.to_bits())), fresh);
+            }
             let (width, height) = PreparedSource::Raw(prepared.clone()).dimensions();
             let mut picks = Vec::new();
             for row in 0..12 {

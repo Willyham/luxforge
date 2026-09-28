@@ -692,16 +692,24 @@ impl Jobs {
             .any(|entry| entry.family() == family && entry.is_live())
     }
 
-    /// Whether a joinable source flight will allocate new planes: a live preparation of an
-    /// original or a redevelopment nobody has left. A flight that only reads artifacts allocates
-    /// none.
-    pub(crate) fn development_in_flight(&self) -> bool {
-        self.keys.iter().any(|(key, job_id)| {
-            matches!(key, JoinKey::Source(_))
-                && self.entries.get(job_id).is_some_and(|entry| {
-                    matches!(entry.record.kind, JobKind::Prepare | JobKind::Develop)
-                })
-        })
+    /// Which joinable source flight will allocate new planes: [`JobKind::Prepare`] when a live
+    /// preparation of an original nobody has left is among them, else [`JobKind::Develop`] for a
+    /// redevelopment, and `None` when there is neither. A flight that only reads artifacts
+    /// allocates none.
+    pub(crate) fn development_in_flight(&self) -> Option<JobKind> {
+        let mut found = None;
+        for (key, job_id) in &self.keys {
+            let kind = match (key, self.entries.get(job_id)) {
+                (JoinKey::Source(_), Some(entry)) => entry.record.kind,
+                _ => continue,
+            };
+            match kind {
+                JobKind::Prepare => return Some(kind),
+                JobKind::Develop => found = Some(kind),
+                _ => {}
+            }
+        }
+        found
     }
 
     /// The request that started the job, when one did.

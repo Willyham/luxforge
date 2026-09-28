@@ -368,7 +368,8 @@ impl EditorService {
     /// names what `stack` needs.
     fn read(&self, stack: Stack) -> Result<(Evaluation, Arc<CaptureMetadata>), Error> {
         let needs = stack.needs();
-        let prepared = self.needing(needs, self.verified_prepared(&stack.asset))?;
+        let prepared =
+            self.needing(needs, self.verified_prepared(&stack.asset, needs.developed))?;
         let capture = capture_of(&prepared);
         let source = self.needing(
             needs,

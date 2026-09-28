@@ -533,7 +533,8 @@ fn queue_preparation(
 }
 
 /// Queue one source job's work, and release the cache's float planes once work that allocates
-/// planes of its own is queued.
+/// planes of its own is queued, retaining the most recently used development for a redevelopment
+/// of the same mosaic.
 fn queue_work(
     service: &EditorService,
     sources: &mut SourceQueue,
@@ -542,10 +543,10 @@ fn queue_work(
     work: SourceWork,
     reads: Vec<ArtifactRead>,
 ) -> Result<JobId, Error> {
-    let decodes = work.decodes();
+    let (decodes, redevelops) = (work.decodes(), work.redevelops());
     let id = sources.enqueue(jobs, client, work, reads)?;
     if decodes {
-        service.evict_development();
+        service.evict_development(redevelops);
     }
     Ok(id)
 }
@@ -1597,9 +1598,10 @@ impl Owner {
         );
         self.sources.complete(id);
         // A queued preparation or redevelopment waits on the memory gate for these planes; an
-        // artifact read allocates none and leaves them cached.
-        if self.jobs.development_in_flight() {
-            self.service.evict_development();
+        // artifact read allocates none and leaves them cached. Only a redevelopment of this same
+        // mosaic keeps one development retained beside the one it builds.
+        if let Some(kind) = self.jobs.development_in_flight() {
+            self.service.evict_development(kind == JobKind::Develop);
         }
         // A wait for this job is over, and so is every wait for room on the source worker.
         self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
@@ -2068,10 +2070,11 @@ mod tests {
     }
 
     /// On a real RAW file: `render.sample` names no entry, so it samples the session's selection.
-    /// A historical entry whose white balance the developed planes do not hold is refused naming
-    /// that entry's development rather than the current one's, and the sample converges after the
-    /// one job that prepares it. Run with LUXFORGE_RAW_FIXTURE pointing to a private qualified
-    /// NEF, RAF or DNG.
+    /// A historical entry whose white balance neither development the owner holds has is refused
+    /// naming that entry's development rather than the current one's, and the sample converges
+    /// after the one job that prepares it. The development that job replaces waits in the second
+    /// slot, so going back to its entry, and then to the Original again, samples at once with no
+    /// job. Run with LUXFORGE_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
     #[test]
     #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
     fn a_sample_of_a_historical_raw_entry_prepares_that_entry_and_converges_after_one_job() {
@@ -2093,41 +2096,50 @@ mod tests {
                 json!({"asset_id": asset, "x": 100, "y": 100}),
             )
         };
+        let select = |id: &str, entry: &Value| {
+            ok(
+                &owner,
+                client,
+                id,
+                "preview.select",
+                json!({"asset_id": asset, "entry_id": entry}),
+            );
+        };
 
-        // A custom white balance becomes current, and its development is prepared.
-        ok(
-            &owner,
-            client,
-            "temperature",
-            "edit.set-raw",
-            json!({
-                "asset_id": asset,
-                "mutation": {"expected_revision": 0, "request_id": "temperature", "actor": "test"},
-                "temperature": 3500.0,
-            }),
-        );
-        let prepared = ok(
-            &owner,
-            client,
-            "prepare",
-            "source.prepare",
-            json!({"asset_id": asset}),
-        );
-        let job = prepared["job_id"].as_str().unwrap();
-        assert_eq!(wait_development(&owner, client, job)["status"], "ready");
-        assert!(
-            sample("current").error.is_none(),
-            "the current entry samples"
-        );
+        // Two custom white balances in turn become current, and each development is prepared:
+        // the current one holds the second, the second slot the first, and neither the Original's.
+        let mut current = Value::Null;
+        for (revision, temperature) in [(0, 3500.0), (1, 6500.0)] {
+            let request = format!("temperature-{revision}");
+            current = ok(
+                &owner,
+                client,
+                &request,
+                "edit.set-raw",
+                json!({
+                    "asset_id": asset,
+                    "mutation": {"expected_revision": revision, "request_id": request, "actor": "test"},
+                    "temperature": temperature,
+                }),
+            )["current_entry_id"]
+                .clone();
+            let prepared = ok(
+                &owner,
+                client,
+                "prepare",
+                "source.prepare",
+                json!({"asset_id": asset}),
+            );
+            let job = prepared["job_id"].as_str().unwrap();
+            assert_eq!(wait_development(&owner, client, job)["status"], "ready");
+            assert!(
+                sample("current").error.is_none(),
+                "the current entry samples"
+            );
+        }
 
-        // The Original, selected, holds the as-shot white balance the planes no longer hold.
-        ok(
-            &owner,
-            client,
-            "select",
-            "preview.select",
-            json!({"asset_id": asset, "entry_id": original}),
-        );
+        // The Original, selected, holds the as-shot white balance neither development holds.
+        select("select", &original);
         let refused = sample("historical").error.expect("a refusal");
         assert_eq!(refused.code, "preparation-required", "{refused:?}");
         let job = refused.job_id.expect("the job preparing the Original");
@@ -2135,6 +2147,15 @@ mod tests {
         let sampled = sample("again");
         assert!(sampled.error.is_none(), "{:?}", sampled.error);
         assert_eq!(sampled.result.unwrap()["entry_id"], original);
+
+        // Back and forth between the two: each is answered from the development the owner holds,
+        // with no refusal and so no job.
+        for (id, entry) in [("current", &current), ("original", &original)] {
+            select(id, entry);
+            let sampled = sample(id);
+            assert!(sampled.error.is_none(), "{id}: {:?}", sampled.error);
+            assert_eq!(&sampled.result.unwrap()["entry_id"], entry);
+        }
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -2412,7 +2433,7 @@ mod tests {
     fn only_a_queued_preparation_or_redevelopment_evicts_the_cached_development() {
         let (mut sources, mut jobs, _receiver) = source_queue();
         let client = ClientId(1);
-        assert!(!jobs.development_in_flight(), "nothing is queued");
+        assert_eq!(jobs.development_in_flight(), None, "nothing is queued");
         let reads = sources
             .enqueue(
                 &mut jobs,
@@ -2421,8 +2442,9 @@ mod tests {
                 Vec::new(),
             )
             .unwrap();
-        assert!(
-            !jobs.development_in_flight(),
+        assert_eq!(
+            jobs.development_in_flight(),
+            None,
             "an artifact read allocates no planes"
         );
         let file = sources
@@ -2433,17 +2455,19 @@ mod tests {
                 Vec::new(),
             )
             .unwrap();
-        assert!(
+        assert_eq!(
             jobs.development_in_flight(),
+            Some(JobKind::Prepare),
             "a preparation of an original allocates planes"
         );
         jobs.finish(&file, Err(Error::conflict("finished")));
-        assert!(
-            !jobs.development_in_flight(),
+        assert_eq!(
+            jobs.development_in_flight(),
+            None,
             "a finished preparation is no longer in flight, and the artifact read never was"
         );
         jobs.finish(&reads, Err(Error::conflict("finished")));
-        assert!(!jobs.development_in_flight());
+        assert_eq!(jobs.development_in_flight(), None);
     }
 
     #[test]
