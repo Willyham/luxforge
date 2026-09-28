@@ -11,7 +11,7 @@
 //! beside the recipe, rather than twice inside the features that use it.
 //!
 //! **Why a store at all.** Every history entry stores a complete recipe rather than a delta
-//! ([history](../../docs/specs/edit-history.md), [rule 10](../../docs/engineering/performance-rules.md#rules)),
+//! ([history](../../../docs/specs/edit-history.md), [rule 10](../../../docs/engineering/performance-rules.md#rules)),
 //! and one stroke is one entry, so a payload that embedded its stroke list would copy every earlier
 //! stroke of that list into every later entry. Storing each stroke once under its hash and
 //! referencing it by that hash leaves the *shape* of the growth alone — an entry still holds one
@@ -54,7 +54,7 @@ pub const STROKES_FIELD: &str = "strokes";
 ///
 /// This is the whole of the stored precision rule: a coordinate is stored as an integer number of
 /// steps and no finer, because 16384 px is the largest side the editor admits
-/// ([limits](../../docs/design/architecture.md#rendering-and-limits)) and a step is therefore one
+/// ([limits](../../../docs/design/architecture.md#rendering-and-limits)) and a step is therefore one
 /// pixel of the largest stage a path can be drawn on. Storing more digits than that would store
 /// noise and, since every history entry carries the reference list, would store it repeatedly.
 pub const COORDINATE_STEPS_PER_UNIT: f64 = 16384.0;

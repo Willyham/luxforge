@@ -304,7 +304,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// and never allocates a frame; a stack holds at most one crop layer.
     ///
     /// A spatial entry is the one exception to "a point query never rasterizes", declared in the
-    /// [performance rules](../../docs/engineering/performance-rules.md): see
+    /// [performance rules](../../../../docs/engineering/performance-rules.md): see
     /// [`Self::spatial_pixel`].
     ///
     /// The colour phases are the rasterizing pass's, applied to this one pixel: the replacement that

@@ -141,7 +141,7 @@ pub struct EventsResult {
 }
 
 /// What the canvas draws of the selected mask, per the [masking
-/// design](../../../docs/design/masking.md)'s overlay.
+/// design](../../../../docs/design/masking.md)'s overlay.
 ///
 /// Per-client view state exactly as the clipping flags are: it changes no recipe, no histogram
 /// population and no export, and it commits nothing. What it selects is how the coverage grid the
@@ -245,7 +245,7 @@ pub const POINTER_MODE: &str = "pointer";
 /// panel in place of the module sections.
 ///
 /// It is a host mode and not a module's, because a mask is a host object in the recipe rather than a
-/// tool module ([masking design](../../../docs/design/masking.md)). It is therefore always offered,
+/// tool module ([masking design](../../../../docs/design/masking.md)). It is therefore always offered,
 /// exactly as the pointer is, and needs no module to declare a canvas interaction for it.
 pub const MASK_MODE: &str = "mask";
 

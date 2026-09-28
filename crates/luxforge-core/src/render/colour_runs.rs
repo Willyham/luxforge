@@ -132,7 +132,7 @@ pub(super) fn color_runs(segment: &Segment) -> ColorRuns<'_> {
 /// may carry one — while a colour run is applied to the frame its segment produces, after the
 /// segment's exact geometry has been composed into one pass. The two differ by exactly the exact
 /// steps that follow the operation, which is the same suffix a point replacement is mapped through
-/// ([performance rule 3](../../docs/engineering/performance-rules.md)). Composing that suffix costs
+/// ([performance rule 3](../../../../docs/engineering/performance-rules.md)). Composing that suffix costs
 /// `O(operations)` integer multiplies, allocates nothing, and is exact: `a`, `b`, `c`, `d` are a
 /// signed permutation, so `unmap` is the mapping's exact inverse and a mask lands on the same content
 /// pixels through a quarter turn, a reflection and an axis-aligned crop.

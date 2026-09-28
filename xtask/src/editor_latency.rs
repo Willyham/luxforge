@@ -633,7 +633,7 @@ pub enum Mode {
     /// A **paint** gesture rather than a slider: one brush stroke whose positions are paced one per
     /// [`PAINT_INTERVAL_MS`] in real time, on a recipe holding one brush mask and one masked colour
     /// layer. `--samples` is the number of positions. This is the mode the [performance
-    /// plan](../../../docs/specs/performance.md) named as the missing paint-gesture measurement: the
+    /// plan](../../docs/specs/performance.md) named as the missing paint-gesture measurement: the
     /// `mask-range` scenario's figure is taken on four masked colour layers, three of whose masks
     /// bind the whole stage, and is therefore not a baseline for the gesture itself.
     Paint,
@@ -1690,7 +1690,7 @@ pub fn paced_stroke_latencies(events: &[Value]) -> Result<(usize, Vec<f64>)> {
 
 /// The paint mode: one paced brush stroke on a bare masked recipe, measured end to end.
 ///
-/// This is the measurement the [performance plan](../../../docs/specs/performance.md) named as
+/// This is the measurement the [performance plan](../../docs/specs/performance.md) named as
 /// untaken. It shares nothing with [`run`]'s slider path beyond the launch and the reporting,
 /// because the two gestures are different: a stroke's positions are a path rather than a field's
 /// values, its draft is the mask gesture's own, and its frames are paired through

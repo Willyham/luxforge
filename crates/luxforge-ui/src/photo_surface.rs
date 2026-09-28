@@ -12,7 +12,7 @@
 //! and only then can the view draw it. That answer costs one runtime hop — about one display frame
 //! on the owner's Mac — on every frame and every overlay, which is exactly the hop the
 //! instant-preview design removes
-//! ([docs/design/instant-preview.md](../../../../docs/design/instant-preview.md), "One frame per
+//! ([docs/design/instant-preview.md](../../../docs/design/instant-preview.md), "One frame per
 //! hop"). Here a frame is plain data the view borrows: `prepare` writes it into the pipeline's own
 //! texture just before `draw` samples that texture, so a frame reaches the screen in the redraw that
 //! follows the update that handed it over and nothing waits on the runtime.

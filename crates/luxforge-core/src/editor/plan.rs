@@ -775,7 +775,7 @@ struct HostStage<'s> {
     /// index: a query that samples several points from the same prefix — Basic's neutral picker
     /// averages a 5 × 5 patch — compiles it once here and every later point for that index clones
     /// it instead of paying `compile_layers` again ([performance rule
-    /// 4](../../../docs/engineering/performance-rules.md#rules)). Bounded by the distinct prefix
+    /// 4](../../../../docs/engineering/performance-rules.md#rules)). Bounded by the distinct prefix
     /// indices one planning call asks about, at most the stack's layer count, and dropped with this
     /// context when the plan or query returns.
     sample_prefixes: RefCell<HashMap<usize, Compiled>>,

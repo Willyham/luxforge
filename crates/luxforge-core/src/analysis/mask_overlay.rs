@@ -1,6 +1,6 @@
 //! The mask coverage overlay: one mask's composed coverage as a bounded display-cell grid.
 //!
-//! The [masking design](../../../docs/design/masking.md)'s overlay is "one byte per display cell on
+//! The [masking design](../../../../docs/design/masking.md)'s overlay is "one byte per display cell on
 //! the grid the clipping overlay already defines and bounds", and this is that grid. It reuses
 //! [`cell_pixel`](super::overlay::cell_pixel) — the delivered clipping overlay's own cell
 //! arithmetic — and the delivered [`MAX_OVERLAY_CELLS`] bound rather than inventing a second grid,
@@ -13,7 +13,7 @@
 //! `O(pixels)`, it holds one byte per cell and nothing else, and the buffer is bounded by
 //! [`MAX_OVERLAY_CELLS`] a side whatever the frame behind it is. That is the same rule
 //! [`CompiledMask`] itself is written to — no mask plane is ever materialized ([performance rules 4
-//! and 6](../../../docs/engineering/performance-rules.md#rules)) — restated for the display.
+//! and 6](../../../../docs/engineering/performance-rules.md#rules)) — restated for the display.
 //!
 //! **The grid describes the frame it arrived with.** A mask is compiled against the *content* stage
 //! its layer receives, and the frame is the *output* stage after the geometry tail, so a cell is
@@ -51,7 +51,7 @@ pub const MASK_COVERAGE_FULL: u8 = 255;
 ///
 /// It is a point query and it must stay one: the grid asks it once per display cell, so an
 /// implementation that rasterized would make the overlay a second rendering path ([performance
-/// rules 4 and 11](../../../docs/engineering/performance-rules.md#rules)). `Sync` because the cells
+/// rules 4 and 11](../../../../docs/engineering/performance-rules.md#rules)). `Sync` because the cells
 /// are filled on the shared Rayon pool above the parallel threshold; the cells are independent and
 /// the query is read-only, so the split decides nothing about the result.
 pub trait MaskInputPixel: Sync {
@@ -76,7 +76,7 @@ pub enum MaskPixels<'a> {
 
 /// The cell count above which the grid is filled on the shared Rayon pool. It is the same
 /// one-megapixel threshold the analysis reducer uses, counted in cells here because cells
-/// are what this pass walks ([performance rule 9](../../../docs/engineering/performance-rules.md#rules)).
+/// are what this pass walks ([performance rule 9](../../../../docs/engineering/performance-rules.md#rules)).
 const PARALLEL_GRID_CELLS: u64 = luxforge_raw::PARALLEL_PIXELS;
 
 /// One mask's coverage over one rendered frame: one byte per display cell, and the identity of what

@@ -135,7 +135,7 @@ pub struct MaskOverlayOutcome {
     /// A client that asked for an overlay and waits for its texture has to be able to stop waiting:
     /// the grid is refused for reasons that belong to the mask rather than to the frame — a mask
     /// whose coverage depends on the pixel it reads has no grid at all
-    /// ([proposal P16](../../docs/design/range-study.md#proposals)) — and an absence with no reason
+    /// ([proposal P16](../../../../docs/design/range-study.md#proposals)) — and an absence with no reason
     /// beside it is indistinguishable from a grid still on its way. `None` means the job asked for
     /// no overlay, this phase does not carry it, the render itself failed, or a newer request is
     /// coming with its own grid; in the last case the wait is correct and this must stay empty.
