@@ -71,7 +71,7 @@
     {
       "id": "TASK-002",
       "description": "Replace the native tile executor's joined batches with one refill scope, also used by the Rust development passes, so no job waits for a batch's slowest one and at most eight tiles of work are ever open to stealing.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -151,7 +151,7 @@
     {
       "id": "TASK-003",
       "description": "Move RAW mosaic normalization and the post-demosaic /65535 scale into Rust on the development pool, so the native `lf_raw_develop` call only demosaics.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
