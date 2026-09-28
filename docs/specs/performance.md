@@ -778,6 +778,48 @@ handed back into the update loop through the runtime arrived about 7.9 ms later,
 and the frame through an image allocation, a 24 MP drag measured 38.6 / 63.0 ms; with the round
 trip synchronous, 30.2 / 58.7; with the surface primitive, the rows above.
 
+#### A gesture's press to its first frame
+
+A press opens the gesture's draft with `draft.begin`, and its first `draft.set` cannot go before
+that answers. `draft.begin`, `draft.reapply` and `draft.cancel` now run synchronously on the desktop
+thread, as `draft.set` does, so the press's first `draft.set` goes in the press's own update; before,
+`draft.begin` was an owner task and its answer came back a hop later. Measured with
+`editor-latency --mode drag --samples 5` on the 24 MP JPEG at Fit, exposure only, and the same with
+`--mask` (the slider bound to a linear gradient mask), on the host and window above (Apple M4 Pro,
+macOS 26.5.2, Metal, 2880 × 1800 at 2×), release builds, background launches, warm cache. Both
+binaries were driven by the same `xtask`, which reports two rows from the gesture's
+`slider_draft_begin` (logged in the update that opens the draft): `press_to_first_draft_set` and
+`press_to_first_presented_frame`, the frame of that first set's preview job. A drag has one measured
+press per launch (a second, the release step's, adds a `press_to_first_draft_set` sample), so each
+row below is 30 or 16 launches. Before is the base build (`8721dac2…`), after this change's
+(`3eadae3e…`); the launches ran A, B, B, A in blocks of 15 (8 masked) on a heavily shared host,
+one-minute load 14–34, and each block is given separately so the reversal can be read.
+
+| 24 MP drag, p50 / p95 ms | Before (A1 / A2) | After (B1 / B2) |
+| --- | --- | --- |
+| Press to first `draft.set`, exposure (30 per block, two presses a launch) | 4.34 / 8.79 · 7.19 / 8.95 | 0.05 / 0.06 · 0.05 / 0.08 |
+| Press to first presented frame, exposure (15 per block) | 16.45 / 47.31 · 15.93 / 22.19 | 8.07 / 9.41 · 7.77 / 16.68 |
+| Press to first presented frame, masked (8 per block) | 16.57 / 18.05 · 16.57 / 17.91 | 9.71 / 25.53 · 9.34 / 9.78 |
+| Later inputs, input to presented frame, exposure (75 per block) | 8.74 / 37.58 · 8.67 / 15.89 | 8.73 / 10.51 · 8.60 / 35.09 |
+
+Pooled over both blocks, a press reached its first frame in 16.08 / 42.05 ms before and
+7.83 / 9.41 ms after (30 launches each; loads 14.3–27.6 before, 21.5–34.1 after), and 16.57 / 18.05
+before and 9.42 / 25.53 after with the mask (16 each). The press now costs what every later input
+costs: the drop, about 8 ms at p50, is the one 120 Hz frame the begin's answer waited for, and it
+holds in both orders. The first `draft.set` itself left 1.2–9.1 ms after the press before, depending
+on whether a redraw was in flight, and 0.04–0.17 ms after. The p95 tails either side are the shared
+host: single launches in each block, not one binary, carry them.
+
+The mask shape and crop gestures take the same path and have no `editor-latency` mode of their own.
+Their press to first `draft.set`, read from the `mask_draft_begin`/`crop_draft_started` events of
+one functional run each of the `mask-panel`, `mask-brush` and `crop-draft` smokes on the small
+fixture, with both binaries, was 2.2–9.8 ms before and 0.04–0.07 ms after for five mask shape
+presses, and 2.2 and 5.8 ms before and 0.004 ms after for the crop's two starts. Those are single
+functional runs, not distributions. A 30-sample `--mode commit` run, which would give one press per
+sample, did not complete on either binary: its script's 19th value, 0.57 EV, is produced as
+0.5700000000000001 and refused as having no rail fraction, which is an `editor-latency` defect
+outside this change.
+
 | Core diagnostic, 24 MP crop stack (p50 / p95 ms, 10 samples) | Full resolution | Proxy for 2880 × 1800 |
 | --- | --- | --- |
 | Same stack without colour | 29.1 / 32.9 | 16.9 / 19.0 |
