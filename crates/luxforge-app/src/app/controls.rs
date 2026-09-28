@@ -98,12 +98,8 @@ impl Editor {
                 return self.control_field_nudge(action, parameter, direction, shift, option);
             }
             ControlMessage::TogglePicker { action, parameter } => {
-                let open = self
-                    .controls_ui
-                    .color_open
-                    .entry((action, parameter))
-                    .or_default();
-                *open = !*open;
+                let color = self.controls_ui.color_mut((action, parameter));
+                color.open = !color.open;
             }
             ControlMessage::ToggleGroup { module_id, path } => {
                 // A module's only group is drawn without a header and is always shown, so there is
@@ -254,8 +250,8 @@ impl Editor {
                 let key = (curve.action.clone(), parameter.clone());
                 let sampled = self
                     .controls_ui
-                    .curve_samples
-                    .get(&key)
+                    .curve(&curve.id)
+                    .and_then(|local| local.samples.get(parameter))
                     .is_some_and(|samples| {
                         samples.source == value && samples.entry == entry && &samples.asset == asset
                     });
@@ -460,24 +456,21 @@ impl Editor {
             }
             ColorPickerEvent::Text { field, text } => {
                 if field == 3 {
-                    self.controls_ui.color_hex.insert(key, text);
+                    self.controls_ui.color_mut(key).hex = Some(text);
                 } else if field < 3 {
-                    self.controls_ui
-                        .color_channels
-                        .insert((action, parameter, field), text);
+                    self.controls_ui.color_mut(key).channels[field] = Some(text);
                 }
                 Task::none()
             }
             ColorPickerEvent::Submit(field) => {
+                let local = self.controls_ui.color(&key);
                 let next = if field == 3 {
-                    self.controls_ui
-                        .color_hex
-                        .get(&key)
-                        .and_then(|text| hex_to_rgb(text))
+                    local
+                        .and_then(|local| local.hex.as_deref())
+                        .and_then(hex_to_rgb)
                 } else if field < 3 {
-                    self.controls_ui
-                        .color_channels
-                        .get(&(action.clone(), parameter.clone(), field))
+                    local
+                        .and_then(|local| local.channels[field].as_ref())
                         .and_then(|text| text.parse::<u8>().ok())
                         .map(|channel| {
                             let mut next = rgb;
@@ -489,14 +482,11 @@ impl Editor {
                 };
                 match next {
                     Some(next) => {
+                        let local = self.controls_ui.color_mut(key);
                         if field == 3 {
-                            self.controls_ui.color_hex.remove(&key);
+                            local.hex = None;
                         } else {
-                            self.controls_ui.color_channels.remove(&(
-                                action.clone(),
-                                parameter.clone(),
-                                field,
-                            ));
+                            local.channels[field] = None;
                         }
                         self.control_value(action, parameter, json!(next), false)
                     }
@@ -518,8 +508,8 @@ impl Editor {
 
     fn picker_hsv(&self, key: &(String, String), rgb: [u8; 3]) -> [f64; 3] {
         self.controls_ui
-            .picker_hsv
-            .get(key)
+            .color(key)
+            .and_then(|local| local.hsv)
             .filter(|picker| picker.rgb == rgb)
             .map(|picker| picker.hsv)
             .unwrap_or_else(|| rgb_to_hsv(rgb))
@@ -537,10 +527,9 @@ impl Editor {
             return Task::none();
         }
         let next = hsv_to_rgb(hsv);
-        self.controls_ui.picker_hsv.insert(
-            (action.clone(), parameter.clone()),
-            tools::PickerHsv { rgb: next, hsv },
-        );
+        self.controls_ui
+            .color_mut((action.clone(), parameter.clone()))
+            .hsv = Some(tools::PickerHsv { rgb: next, hsv });
         if next == rgb {
             // Gray and black have no representable hue in RGB. Remember the selected fraction
             // without opening a draft or committing an edit that changes nothing.
@@ -573,15 +562,11 @@ impl Editor {
             }) => (points_min, points_max, fixed_x, monotone),
             _ => return Task::none(),
         };
-        let curve_key = curve_query(&self.modules, &action, &parameter)
-            .map(|(_, _, first)| (action.clone(), first))
-            .unwrap_or((action.clone(), parameter.clone()));
+        let curve_key = curve_key(&self.modules, &action, &parameter);
         let channel = self
             .controls_ui
-            .curve_channels
-            .get(&curve_key)
-            .copied()
-            .unwrap_or(0);
+            .curve(&curve_key)
+            .map_or(0, |local| local.channel);
         match event {
             CurveEditorEvent::Move { index, position } => {
                 if index >= points.len() {
@@ -643,7 +628,7 @@ impl Editor {
                 if index >= points.len() {
                     return Task::none();
                 }
-                self.controls_ui.curve_points.insert(curve_key, index);
+                self.controls_ui.curve_mut(curve_key).point = Some(index);
                 Task::none()
             }
             CurveEditorEvent::Channel(index) => {
@@ -655,10 +640,9 @@ impl Editor {
                     return Task::none();
                 };
                 let next_parameter = next_parameter.clone();
-                self.controls_ui.curve_channels.insert(curve_key, index);
-                self.controls_ui
-                    .curve_points
-                    .remove(&(action.clone(), parameters[0].clone()));
+                let local = self.controls_ui.curve_mut(curve_key);
+                local.channel = index;
+                local.point = None;
                 let Some(value) = self.control_field_value(&action, &next_parameter) else {
                     return Task::none();
                 };
@@ -700,17 +684,17 @@ impl Editor {
             }
             CurveEditorEvent::Text { index, axis, text } => {
                 self.controls_ui
-                    .curve_edits
-                    .insert((action, parameter, index, axis), text);
+                    .curve_mut(curve_key)
+                    .edits
+                    .insert((parameter, index, axis), text);
                 Task::none()
             }
             CurveEditorEvent::Submit { index, axis } => {
-                let Some(text) = self.controls_ui.curve_edits.get(&(
-                    action.clone(),
-                    parameter.clone(),
-                    index,
-                    axis,
-                )) else {
+                let Some(text) = self
+                    .controls_ui
+                    .curve(&curve_key)
+                    .and_then(|local| local.edits.get(&(parameter.clone(), index, axis)))
+                else {
                     return Task::none();
                 };
                 let Ok(value) = text.parse::<f64>() else {
@@ -728,8 +712,7 @@ impl Editor {
                     self.status = error.to_string();
                     return Task::none();
                 }
-                self.controls_ui.curve_edits.remove(&(
-                    action.clone(),
+                self.controls_ui.curve_mut(curve_key).edits.remove(&(
                     parameter.clone(),
                     index,
                     axis,
@@ -762,8 +745,7 @@ impl Editor {
             return Task::none();
         }
         self.controls_ui
-            .curve_samples
-            .remove(&(action.clone(), parameter.clone()));
+            .forget_curve_samples(&curve_key(&self.modules, &action, &parameter), &parameter);
         let query = self.request_curve_samples(&action, &parameter, channel, value.clone());
         Task::batch([
             self.control_value(action, parameter, value, continuous),
@@ -851,6 +833,7 @@ impl Editor {
         result: Result<Value, String>,
     ) -> Task<Message> {
         self.curve_sample_in_flight = false;
+        let key = curve_key(&self.modules, &identity.action, &identity.parameter);
         let valid = self
             .curve_sample_requested
             .get(&(identity.action.clone(), identity.parameter.clone()))
@@ -862,21 +845,17 @@ impl Editor {
             && self.displayed_entry() == Some(identity.entry.clone())
             && self.control_field_value(&identity.action, &identity.parameter)
                 == Some(identity.points.clone())
-            && curve_query(&self.modules, &identity.action, &identity.parameter)
-                .and_then(|(_, _, first)| {
-                    self.controls_ui
-                        .curve_channels
-                        .get(&(identity.action.clone(), first))
-                        .copied()
-                })
-                .unwrap_or(0)
+            && self
+                .controls_ui
+                .curve(&key)
+                .map_or(0, |local| local.channel)
                 == identity.channel;
         if valid {
             match result {
                 Ok(value) => {
                     if let Some(points) = value.get("points").and_then(sampled_from_value) {
-                        self.controls_ui.curve_samples.insert(
-                            (identity.action, identity.parameter),
+                        self.controls_ui.curve_mut(key).samples.insert(
+                            identity.parameter,
                             tools::CurveSamples {
                                 asset: identity.asset,
                                 entry: identity.entry,
@@ -977,6 +956,19 @@ fn curve_query(
             _ => None,
         })
     })
+}
+/// The key the curve drawing `parameter` of `action` holds its local state under: the action and
+/// its first channel ([`tools::ControlKey`]).
+fn curve_key(
+    modules: &[luxforge_core::ModuleDescriptor],
+    action: &str,
+    parameter: &str,
+) -> tools::ControlKey {
+    let first = curve_query(modules, action, parameter).map(|(_, _, first)| first);
+    (
+        action.to_owned(),
+        first.unwrap_or_else(|| parameter.to_owned()),
+    )
 }
 fn curve_channel_parameters(
     modules: &[luxforge_core::ModuleDescriptor],

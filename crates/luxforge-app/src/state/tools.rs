@@ -33,16 +33,117 @@ pub(crate) struct ControlsUi {
     /// The tab selected in a module whose descriptor declares `layout: tabs`, keyed by module id.
     /// Per-client view state exactly like `group_expanded`: it changes no recipe and is never sent.
     pub(crate) selected_tab: BTreeMap<String, usize>,
-    pub(crate) curve_channels: BTreeMap<(String, String), usize>,
-    pub(crate) curve_points: BTreeMap<(String, String), usize>,
-    pub(crate) curve_edits: BTreeMap<(String, String, usize, usize), String>,
-    pub(crate) curve_samples: BTreeMap<(String, String), CurveSamples>,
-    pub(crate) color_open: BTreeMap<(String, String), bool>,
-    pub(crate) color_channels: BTreeMap<(String, String, usize), String>,
-    pub(crate) color_hex: BTreeMap<(String, String), String>,
+    /// Each generated control's own local state, by the control's key. Only a control that holds
+    /// some has an entry.
+    controls: BTreeMap<ControlKey, ControlUi>,
+}
+
+/// A generated control's identity in [`ControlsUi`]: its action and the parameter it edits. A curve
+/// is keyed by its first channel's parameter, as [`CurveControl::id`] is, so every channel of one
+/// curve shares one entry. A parameter has one kind, so a key names one kind of control.
+pub(crate) type ControlKey = (String, String);
+
+/// One control's local state, by the kind of control that holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ControlUi {
+    Curve(CurveUi),
+    Color(ColorUi),
+}
+
+/// A curve control's local state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CurveUi {
+    /// The channel shown, an index into the declared channels.
+    pub(crate) channel: usize,
+    /// The point selected on the shown channel.
+    pub(crate) point: Option<usize>,
+    /// A point row's text as typed, by channel parameter, point index and axis.
+    pub(crate) edits: BTreeMap<(String, usize, usize), String>,
+    /// The accepted sampled curve of each channel, by channel parameter.
+    pub(crate) samples: BTreeMap<String, CurveSamples>,
+}
+
+/// A colour control's local state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ColorUi {
+    /// The picker is open.
+    pub(crate) open: bool,
+    /// The R, G and B boxes' text as typed.
+    pub(crate) channels: [Option<String>; 3],
+    /// The hex box's text as typed.
+    pub(crate) hex: Option<String>,
     /// Hue and saturation cannot be recovered from gray/black RGB. Keep the picker's fractions
     /// only while its associated RGB still matches the authoritative field.
-    pub(crate) picker_hsv: BTreeMap<(String, String), PickerHsv>,
+    pub(crate) hsv: Option<PickerHsv>,
+}
+
+impl ControlsUi {
+    /// The curve keyed `key`, when it holds local state.
+    pub(crate) fn curve(&self, key: &ControlKey) -> Option<&CurveUi> {
+        match self.controls.get(key)? {
+            ControlUi::Curve(curve) => Some(curve),
+            ControlUi::Color(_) => None,
+        }
+    }
+
+    /// The curve keyed `key`'s local state, created empty on first use.
+    pub(crate) fn curve_mut(&mut self, key: ControlKey) -> &mut CurveUi {
+        let state = self
+            .controls
+            .entry(key)
+            .or_insert_with(|| ControlUi::Curve(CurveUi::default()));
+        if !matches!(state, ControlUi::Curve(_)) {
+            *state = ControlUi::Curve(CurveUi::default());
+        }
+        match state {
+            ControlUi::Curve(curve) => curve,
+            ControlUi::Color(_) => unreachable!("the entry was made a curve above"),
+        }
+    }
+
+    /// The colour field keyed `key`, when it holds local state.
+    pub(crate) fn color(&self, key: &ControlKey) -> Option<&ColorUi> {
+        match self.controls.get(key)? {
+            ControlUi::Color(color) => Some(color),
+            ControlUi::Curve(_) => None,
+        }
+    }
+
+    /// The colour field keyed `key`'s local state, created empty on first use.
+    pub(crate) fn color_mut(&mut self, key: ControlKey) -> &mut ColorUi {
+        let state = self
+            .controls
+            .entry(key)
+            .or_insert_with(|| ControlUi::Color(ColorUi::default()));
+        if !matches!(state, ControlUi::Color(_)) {
+            *state = ControlUi::Color(ColorUi::default());
+        }
+        match state {
+            ControlUi::Color(color) => color,
+            ControlUi::Curve(_) => unreachable!("the entry was made a colour field above"),
+        }
+    }
+
+    /// Every control's local state, in key order.
+    pub(crate) fn controls(&self) -> impl Iterator<Item = (&ControlKey, &ControlUi)> {
+        self.controls.iter()
+    }
+
+    /// Drop the accepted samples of one channel of the curve keyed `key`, whose points changed.
+    pub(crate) fn forget_curve_samples(&mut self, key: &ControlKey, parameter: &str) {
+        if let Some(ControlUi::Curve(curve)) = self.controls.get_mut(key) {
+            curve.samples.remove(parameter);
+        }
+    }
+
+    /// Drop every curve's accepted samples, which describe a displayed entry that is gone.
+    pub(crate) fn clear_curve_samples(&mut self) {
+        for state in self.controls.values_mut() {
+            if let ControlUi::Curve(curve) = state {
+                curve.samples.clear();
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -301,6 +402,11 @@ pub(crate) enum ValueEdit {
 }
 
 impl ValueEdit {
+    /// A box's text as typed, when some is held for it.
+    fn typed(text: Option<&String>) -> Self {
+        text.map_or(Self::None, |text| Self::Typing(text.clone()))
+    }
+
     /// The text a field shows: what is being typed, else the formatted value.
     pub(crate) fn text<'a>(&'a self, display: &'a str) -> &'a str {
         match self {
@@ -1258,10 +1364,11 @@ fn value_model(
                     ])
                 })
                 .unwrap_or([0, 0, 0]);
-            let picker_hsv = inputs
+            let local = inputs
                 .control_ui
-                .picker_hsv
-                .get(&(action.to_owned(), parameter.to_owned()))
+                .color(&(action.to_owned(), parameter.to_owned()));
+            let picker_hsv = local
+                .and_then(|local| local.hsv)
                 .filter(|picker| picker.rgb == rgb)
                 .map(|picker| picker.hsv);
             let dragging = inputs
@@ -1284,26 +1391,11 @@ fn value_model(
                 style: ColorControlStyle::Fields,
                 rgb,
                 picker_hsv,
-                picker_open: inputs
-                    .control_ui
-                    .color_open
-                    .get(&(action.to_owned(), parameter.to_owned()))
-                    .copied()
-                    .unwrap_or(false),
+                picker_open: local.is_some_and(|local| local.open),
                 dragging,
-                hex_edit: inputs
-                    .control_ui
-                    .color_hex
-                    .get(&(action.to_owned(), parameter.to_owned()))
-                    .map(|text| ValueEdit::Typing(text.clone()))
-                    .unwrap_or_default(),
+                hex_edit: ValueEdit::typed(local.and_then(|local| local.hex.as_ref())),
                 channel_edits: [0, 1, 2].map(|index| {
-                    inputs
-                        .control_ui
-                        .color_channels
-                        .get(&(action.to_owned(), parameter.to_owned(), index))
-                        .map(|text| ValueEdit::Typing(text.clone()))
-                        .unwrap_or_default()
+                    ValueEdit::typed(local.and_then(|local| local.channels[index].as_ref()))
                 }),
                 version: {
                     let mut hasher = DefaultHasher::new();
@@ -1433,12 +1525,9 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
             .map(|channel| channel.parameter.clone())
             .unwrap_or_default(),
     );
-    let selected_channel = inputs
-        .control_ui
-        .curve_channels
-        .get(&id)
-        .copied()
-        .unwrap_or(0)
+    let local = inputs.control_ui.curve(&id);
+    let selected_channel = local
+        .map_or(0, |local| local.channel)
         .min(channels.len().saturating_sub(1));
     let Some(channel) = channels.get(selected_channel) else {
         return ControlModel::Unsupported(format!(
@@ -1472,11 +1561,8 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let selected_point = inputs
-        .control_ui
-        .curve_points
-        .get(&id)
-        .copied()
+    let selected_point = local
+        .and_then(|local| local.point)
         .filter(|index| *index < points.len());
     let point_rows = points
         .iter()
@@ -1501,19 +1587,14 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
                 }
             }),
             edit: [0, 1].map(|axis| {
-                inputs
-                    .control_ui
-                    .curve_edits
-                    .get(&(action.to_owned(), parameter.to_owned(), index, axis))
-                    .map(|text| ValueEdit::Typing(text.clone()))
-                    .unwrap_or_default()
+                ValueEdit::typed(
+                    local.and_then(|local| local.edits.get(&(parameter.to_owned(), index, axis))),
+                )
             }),
         })
         .collect();
-    let samples = inputs
-        .control_ui
-        .curve_samples
-        .get(&(action.to_owned(), parameter.to_owned()))
+    let samples = local
+        .and_then(|local| local.samples.get(parameter))
         .filter(|samples| {
             parsed.as_ref() == Some(&samples.source)
                 && inputs.display_entry == Some(&samples.entry)

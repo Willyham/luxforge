@@ -373,7 +373,7 @@ impl Editor {
         if self.superseded(&refresh) {
             return;
         }
-        self.controls_ui.curve_samples.clear();
+        self.controls_ui.clear_curve_samples();
         self.curve_sample_requested_source.clear();
         // What happened is read against the state and the history rows held before this one: a
         // current entry the rows already held is a redo rather than a new entry.

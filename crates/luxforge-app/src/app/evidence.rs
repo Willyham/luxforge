@@ -1988,12 +1988,7 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         let key = (step.action.clone(), step.parameter.clone());
-        let current_open = self
-            .controls_ui
-            .color_open
-            .get(&key)
-            .copied()
-            .unwrap_or(false);
+        let current_open = self.controls_ui.color(&key).is_some_and(|local| local.open);
         let mut tasks = Vec::new();
         if current_open != step.open.unwrap_or(true) {
             tasks.push(self.update(Message::Control(ControlMessage::TogglePicker {
