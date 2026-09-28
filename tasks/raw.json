@@ -376,7 +376,7 @@
     {
       "id": "TASK-006",
       "description": "Narrow the RAW develop FFI boundary: one crate-private `develop_with(options)` in place of the forwarding chain, a small shape struct instead of the whole decode metadata, generated status codes and no test fault injector in the production ABI.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -527,7 +527,7 @@
     {
       "id": "TASK-008",
       "description": "Trim `luxforge-raw`'s public API to what `luxforge-core`, `xtask` and the crate's own example use, beside the limits module's shared items, and replace the generated 103-variant `RawMode` enum with a validated static reference into the camera catalog.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-006"
       ],

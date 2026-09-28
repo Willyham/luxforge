@@ -12,15 +12,20 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+mod develop;
 mod dng;
 mod format;
 mod limits;
 mod mat3;
+mod native_status;
 mod native_tiles;
 mod neutral;
 mod normalize;
 mod opcodes;
 mod profiles;
+#[cfg(feature = "performance-diagnostics")]
+#[doc(hidden)]
+pub use develop::{DevelopOptions, develop_with};
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
@@ -30,6 +35,7 @@ pub use limits::{
     PARALLEL_SPATIAL_PIXELS, PARALLEL_TRANSFORM_PIXELS, RETAINED_DEVELOPMENT_BYTES, RenderPass,
     SPATIAL_TILE, SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, parallel_pixels, spatial_tile,
 };
+use native_status::NativeStatus;
 pub use native_tiles::refill_each;
 use profiles::{Catalog, Crop};
 
@@ -150,7 +156,7 @@ pub struct RawSource {
     metadata: RawMetadata,
     mosaic: Arc<Vec<u16>>,
     mosaic_corrections: Arc<Vec<MosaicCorrection>>,
-    native: Box<NativeMetadata>,
+    shape: develop::DemosaicShape,
     dng_correction: Option<dng::DngCorrection>,
 }
 
@@ -232,14 +238,6 @@ struct NativeMetadata {
     cam_xyz: [f32; 12],
 }
 
-/// The wall time of a development's normalization and of its native demosaic call, for the
-/// ignored release profile.
-#[derive(Debug, Default)]
-struct DevelopDiagnostics {
-    normalization_ns: u64,
-    demosaic_ns: u64,
-}
-
 type CancelCallback = extern "C" fn(*mut c_void) -> c_int;
 unsafe extern "C" {
     fn lf_raw_open(
@@ -260,21 +258,6 @@ unsafe extern "C" {
         err_len: usize,
     ) -> c_int;
     fn lf_raw_close(handle: *mut c_void);
-    fn lf_raw_develop(
-        mosaic: *const f32,
-        count: usize,
-        meta: *const NativeMetadata,
-        red: *mut f32,
-        green: *mut f32,
-        blue: *mut f32,
-        test_fault: u32,
-        executor: Option<native_tiles::TileExecutor>,
-        executor_context: *mut c_void,
-        cancel: CancelCallback,
-        cancel_context: *mut c_void,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
 }
 
 extern "C" fn cancelled(context: *mut c_void) -> c_int {
@@ -282,73 +265,6 @@ extern "C" fn cancelled(context: *mut c_void) -> c_int {
     // AtomicBool, invokes this synchronously, and never stores the pointer.
     let token = unsafe { &*(context.cast::<AtomicBool>()) };
     c_int::from(token.load(Ordering::Relaxed))
-}
-
-/// The native demosaic of a normalized mosaic, in which sensor white is 65535, into `planes`, three
-/// contiguous planes of the mosaic's length at the same scale. `executor` runs its tile jobs; without
-/// one they run in order on the caller. `cancel` is called before the demosaic, before every tile
-/// and after it.
-fn native_demosaic(
-    mosaic: &[f32],
-    native: &NativeMetadata,
-    planes: &mut [f32],
-    test_fault: u32,
-    executor: Option<(native_tiles::TileExecutor, *mut c_void)>,
-    cancel: CancelCallback,
-    cancel_context: *mut c_void,
-) -> Result<(), RawError> {
-    let n = mosaic.len();
-    if Some(planes.len()) != n.checked_mul(3) {
-        return Err(RawError::InvalidInput("RGB planes differ from the mosaic"));
-    }
-    let (red, rest) = planes.split_at_mut(n);
-    let (green, blue) = rest.split_at_mut(n);
-    let (executor, executor_context) = executor
-        .map_or((None, std::ptr::null_mut()), |(run, context)| {
-            (Some(run), context)
-        });
-    let mut error = [0 as c_char; 256];
-    // SAFETY: the immutable mosaic and metadata and the three disjoint planes, of `n` values each,
-    // stay alive for the synchronous call. The executor and cancel contexts are the caller's live
-    // state for that call. C++ validates the count, catches exceptions, joins every tile job before
-    // it returns and stores none of these pointers.
-    let code = unsafe {
-        lf_raw_develop(
-            mosaic.as_ptr(),
-            n,
-            native,
-            red.as_mut_ptr(),
-            green.as_mut_ptr(),
-            blue.as_mut_ptr(),
-            test_fault,
-            executor,
-            executor_context,
-            cancel,
-            cancel_context,
-            error.as_mut_ptr(),
-            error.len(),
-        )
-    };
-    if code != 0 {
-        return Err(native_error(code, &error));
-    }
-    Ok(())
-}
-
-/// How many jobs a development's Rust passes run at once: the shared pool's width, or a nonzero
-/// exactness-test override no wider than the pool, for a photo-sized frame on the executor; one
-/// lane, in order on the caller, otherwise. The native jobs' eight-lane cap bounds their scratch,
-/// which these passes do not hold.
-fn development_lanes(pixels: usize, worker_limit: usize, use_executor: bool) -> usize {
-    if !use_executor || (pixels as u64) < PARALLEL_PIXELS {
-        return 1;
-    }
-    let width = rayon::current_num_threads();
-    match worker_limit {
-        0 => width,
-        limit => limit.min(width),
-    }
-    .max(1)
 }
 
 struct NativeHandle(*mut c_void);
@@ -369,13 +285,23 @@ fn c_text(chars: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn native_error(code: c_int, buffer: &[c_char]) -> RawError {
-    match code {
-        2 => RawError::Cancelled,
-        4 | 6 => RawError::ResourceLimit("native decoder allocation or geometry"),
-        5 => RawError::UnsupportedCfa,
-        7 => RawError::UnsupportedMode(c_text(buffer)),
-        _ => RawError::Native(c_text(buffer)),
+/// The outcome of a native call that returned `code`, with its error text in `buffer`. An unknown
+/// code is a native failure.
+fn native_result(code: c_int, buffer: &[c_char]) -> Result<(), RawError> {
+    let status = NativeStatus::ALL
+        .into_iter()
+        .find(|status| *status as c_int == code);
+    match status {
+        Some(NativeStatus::Ok) => Ok(()),
+        Some(NativeStatus::Cancelled) => Err(RawError::Cancelled),
+        Some(NativeStatus::Geometry | NativeStatus::Allocation) => Err(RawError::ResourceLimit(
+            "native decoder allocation or geometry",
+        )),
+        Some(NativeStatus::UnsupportedCfa) => Err(RawError::UnsupportedCfa),
+        Some(NativeStatus::UnsupportedMode) => Err(RawError::UnsupportedMode(c_text(buffer))),
+        Some(NativeStatus::InvalidInput | NativeStatus::Failed) | None => {
+            Err(RawError::Native(c_text(buffer)))
+        }
     }
 }
 
@@ -474,9 +400,7 @@ impl RawSource {
                 error.len(),
             )
         };
-        if code != 0 {
-            return Err(native_error(code, &error));
-        }
+        native_result(code, &error)?;
         let guard = NativeHandle(handle);
         let n = Self::checked_len(&native)?;
         // Only a DNG carries opcode lists; LibRaw reports its version. Every required operation
@@ -512,9 +436,7 @@ impl RawSource {
                 error.len(),
             )
         };
-        if code != 0 {
-            return Err(native_error(code, &error));
-        }
+        native_result(code, &error)?;
         drop(guard);
         drop(encoded);
         if cancel.load(Ordering::Relaxed) {
@@ -536,7 +458,7 @@ impl RawSource {
             metadata,
             mosaic_corrections: Arc::new(mosaic_corrections),
             mosaic: Arc::new(samples),
-            native,
+            shape: develop::DemosaicShape::of(&native),
             dng_correction,
         })
     }
@@ -553,43 +475,11 @@ impl RawSource {
     /// corrections: a caller that needs finite values checks them once after
     /// its last arithmetic, as the core's camera conversion does.
     pub fn develop(&self, gains: [f32; 3], cancel: &AtomicBool) -> Result<PlanarRgb, RawError> {
-        let mut image = self.develop_uncorrected(gains, cancel)?;
+        let mut image = develop::develop_with(self, gains, cancel, Default::default())?;
         if let Some(correction) = &self.dng_correction {
             correction.apply(&mut image, cancel)?;
         }
         Ok(image)
-    }
-
-    /// Expose the retained-mosaic development to a cross-crate, ignored contention diagnostic:
-    /// `parallel_normalization` false runs every pass in order on the caller, true on the
-    /// development executor. This method is only compiled with the `performance-diagnostics`
-    /// feature.
-    #[cfg(feature = "performance-diagnostics")]
-    #[doc(hidden)]
-    pub fn develop_for_performance_diagnostic(
-        &self,
-        gains: [f32; 3],
-        cancel: &AtomicBool,
-        parallel_normalization: bool,
-    ) -> Result<PlanarRgb, RawError> {
-        self.develop_uncorrected_diagnostic(gains, cancel, 0, parallel_normalization, None)
-    }
-
-    fn develop_uncorrected(
-        &self,
-        gains: [f32; 3],
-        cancel: &AtomicBool,
-    ) -> Result<PlanarRgb, RawError> {
-        self.develop_uncorrected_with_workers(gains, cancel, 0)
-    }
-
-    fn develop_uncorrected_with_workers(
-        &self,
-        gains: [f32; 3],
-        cancel: &AtomicBool,
-        worker_limit: usize,
-    ) -> Result<PlanarRgb, RawError> {
-        self.develop_uncorrected_diagnostic(gains, cancel, worker_limit, true, None)
     }
 
     /// The normalization of this source's retained mosaic with `gains`.
@@ -603,82 +493,6 @@ impl RawSource {
             white: self.metadata.sensor_white,
             gains,
         }
-    }
-
-    /// Normalize the retained mosaic, demosaic it natively and divide the planes by the sensor
-    /// scale. `use_executor` false runs every pass in order on the caller; otherwise the native
-    /// tile jobs and the Rust passes run on the development executor, `worker_limit` as in
-    /// [`native_tiles::ExecutorContext`].
-    fn develop_uncorrected_diagnostic(
-        &self,
-        gains: [f32; 3],
-        cancel: &AtomicBool,
-        worker_limit: usize,
-        use_executor: bool,
-        mut diagnostics: Option<&mut DevelopDiagnostics>,
-    ) -> Result<PlanarRgb, RawError> {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(RawError::Cancelled);
-        }
-        if !gains
-            .iter()
-            .all(|v| v.is_finite() && *v > 0.0 && *v <= MAX_GAIN)
-            || (gains[1] - 1.0).abs() > 1e-6
-        {
-            return Err(RawError::InvalidInput(
-                "WB gains must be finite, positive, green-normalized, <=32",
-            ));
-        }
-        let n = self.mosaic.len();
-        let rgb_bytes = n
-            .checked_mul(3)
-            .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
-            .ok_or(RawError::ResourceLimit("RGB allocation overflow"))?;
-        if rgb_bytes > MAX_RGB_BYTES {
-            return Err(RawError::ResourceLimit("RGB planes exceed 1.5 GiB"));
-        }
-        let lanes = development_lanes(n, worker_limit, use_executor);
-        let clock = diagnostics.is_some().then(std::time::Instant::now);
-        let mosaic = self.normalization(gains).run(lanes, cancel)?;
-        if let (Some(diagnostics), Some(clock)) = (diagnostics.as_deref_mut(), clock) {
-            diagnostics.normalization_ns = clock.elapsed().as_nanos() as u64;
-        }
-        let mut data = Vec::new();
-        data.try_reserve_exact(n * 3)
-            .map_err(|_| RawError::ResourceLimit("RGB plane allocation"))?;
-        data.resize(n * 3, 0.0);
-        let mut executor_context = native_tiles::ExecutorContext {
-            cancel,
-            worker_limit,
-        };
-        let clock = diagnostics.is_some().then(std::time::Instant::now);
-        native_demosaic(
-            &mosaic,
-            &self.native,
-            &mut data,
-            0,
-            use_executor.then_some((
-                native_tiles::execute as native_tiles::TileExecutor,
-                (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
-            )),
-            cancelled,
-            (cancel as *const AtomicBool).cast_mut().cast(),
-        )?;
-        if let (Some(diagnostics), Some(clock)) = (diagnostics, clock) {
-            diagnostics.demosaic_ns = clock.elapsed().as_nanos() as u64;
-        }
-        drop(mosaic);
-        normalize::scale_planes(
-            &mut data,
-            self.metadata.sensor_width as usize,
-            lanes,
-            cancel,
-        )?;
-        Ok(PlanarRgb {
-            width: self.metadata.sensor_width,
-            height: self.metadata.sensor_height,
-            data,
-        })
     }
 
     /// Map an absolute corrected-plane pixel to the uncorrected sensor
@@ -973,6 +787,26 @@ impl RawSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use develop::{
+        DemosaicShape, DevelopDiagnostics, DevelopOptions, develop_with, development_lanes,
+        native_demosaic,
+    };
+
+    /// The development executor with `worker_limit` ([`DevelopOptions::worker_limit`]).
+    fn on_executor(worker_limit: usize) -> DevelopOptions<'static> {
+        DevelopOptions {
+            worker_limit,
+            ..Default::default()
+        }
+    }
+
+    /// Every pass in order on the caller, without the development executor.
+    fn in_order() -> DevelopOptions<'static> {
+        DevelopOptions {
+            executor: false,
+            ..Default::default()
+        }
+    }
 
     /// The Rust normalization of a synthetic mosaic described by native metadata, at `lanes`.
     fn rust_normalize(
@@ -1123,7 +957,11 @@ mod tests {
     }
 
     /// Wraps the production executor to record, for its latest call, how
-    /// often each job ran, where, and how many ran at once.
+    /// often each job ran, where, and how many ran at once. With a `fault_job`,
+    /// that job's callback fails instead of running its native job, and the
+    /// executor reports the failure once every job has joined, as it reports a
+    /// job whose Rust callback panicked: the native fault cases' route, with no
+    /// fault parameter in the production ABI.
     struct TracedExecutor<'a> {
         inner: native_tiles::ExecutorContext<'a>,
         caller: std::thread::ThreadId,
@@ -1131,6 +969,7 @@ mod tests {
         active: std::sync::atomic::AtomicUsize,
         peak: std::sync::atomic::AtomicUsize,
         off_pool: AtomicBool,
+        fault_job: Option<usize>,
     }
 
     struct TracedCall<'a> {
@@ -1138,6 +977,7 @@ mod tests {
         worker: native_tiles::TileWorker,
         worker_context: *mut c_void,
         seen: Vec<std::sync::atomic::AtomicUsize>,
+        faulted: AtomicBool,
     }
 
     extern "C" fn traced_worker(context: *mut c_void, job: usize) {
@@ -1145,6 +985,10 @@ mod tests {
         // synchronous executor that invokes this.
         let call = unsafe { &*context.cast::<TracedCall<'_>>() };
         call.seen[job].fetch_add(1, Ordering::Relaxed);
+        if call.trace.fault_job == Some(job) {
+            call.faulted.store(true, Ordering::Relaxed);
+            return;
+        }
         if std::thread::current().id() != call.trace.caller
             && rayon::current_thread_index().is_none()
         {
@@ -1172,6 +1016,7 @@ mod tests {
             seen: (0..job_count)
                 .map(|_| std::sync::atomic::AtomicUsize::new(0))
                 .collect(),
+            faulted: AtomicBool::new(false),
         };
         let status = native_tiles::execute(
             (&trace.inner as *const native_tiles::ExecutorContext<'_>)
@@ -1186,7 +1031,11 @@ mod tests {
             .iter()
             .map(|seen| seen.load(Ordering::Relaxed))
             .collect();
-        status
+        match status {
+            // The production executor's status for a job whose callback panicked.
+            0 if call.faulted.load(Ordering::Relaxed) => 3,
+            status => status,
+        }
     }
 
     fn traced(cancel: &AtomicBool, worker_limit: usize) -> TracedExecutor<'_> {
@@ -1200,6 +1049,7 @@ mod tests {
             active: std::sync::atomic::AtomicUsize::new(0),
             peak: std::sync::atomic::AtomicUsize::new(0),
             off_pool: AtomicBool::new(false),
+            fault_job: None,
         }
     }
 
@@ -1216,7 +1066,6 @@ mod tests {
         trace: Option<&TracedExecutor<'_>>,
         cancel: CancelCallback,
         cancel_context: *mut c_void,
-        fault: u32,
     ) -> (Result<(), RawError>, Vec<f32>) {
         let n = samples.len();
         let mut output = vec![f32::NAN; n * 3];
@@ -1226,9 +1075,8 @@ mod tests {
         let mosaic = rust_normalize(samples, meta, patches, gains, lanes);
         let result = native_demosaic(
             &mosaic,
-            meta,
+            &DemosaicShape::of(meta),
             &mut output,
-            fault,
             trace.map(|trace| {
                 (
                     traced_execute as native_tiles::TileExecutor,
@@ -1257,18 +1105,8 @@ mod tests {
         trace: Option<&TracedExecutor<'_>>,
         cancel: CancelCallback,
         cancel_context: *mut c_void,
-        fault: u32,
     ) -> (Result<(), RawError>, Vec<f32>) {
-        develop_synthetic(
-            samples,
-            meta,
-            &[],
-            gains,
-            trace,
-            cancel,
-            cancel_context,
-            fault,
-        )
+        develop_synthetic(samples, meta, &[], gains, trace, cancel, cancel_context)
     }
 
     /// An X-Trans mosaic with the same edges, ramps and noise as
@@ -1338,7 +1176,6 @@ mod tests {
                 None,
                 cancelled,
                 never_context,
-                0,
             );
             assert_eq!(code, Ok(()));
             let trace = traced(&never, 0);
@@ -1349,7 +1186,6 @@ mod tests {
                 Some(&trace),
                 cancelled,
                 never_context,
-                0,
             );
             assert_eq!(code, Ok(()));
             assert_eq!(first_difference(&serial, &pooled), None);
@@ -1401,7 +1237,7 @@ mod tests {
         // every channel develops to white, as the ungained green does, give or
         // take the interpolation's rounding.
         let white = vec![bayer.white as u16; n];
-        let (code, planes) = run_bayer(&white, &bayer, gains, None, cancelled, never_context, 0);
+        let (code, planes) = run_bayer(&white, &bayer, gains, None, cancelled, never_context);
         assert_eq!(code, Ok(()));
         for index in interior(width, height, 9) {
             for channel in 0..3 {
@@ -1418,7 +1254,7 @@ mod tests {
         // Every site 64 codes under black clips to zero inside, stays negative
         // in the border band.
         let under = vec![0_u16; n];
-        let (code, planes) = run_bayer(&under, &bayer, gains, None, cancelled, never_context, 0);
+        let (code, planes) = run_bayer(&under, &bayer, gains, None, cancelled, never_context);
         assert_eq!(code, Ok(()));
         for index in interior(width, height, 9) {
             for channel in 0..3 {
@@ -1434,7 +1270,7 @@ mod tests {
         // X-Trans keeps the latitude through the demosaic.
         let n = 126 * 126;
         let white = vec![xtrans.white as u16; n];
-        let (code, planes) = run_bayer(&white, &xtrans, gains, None, cancelled, never_context, 0);
+        let (code, planes) = run_bayer(&white, &xtrans, gains, None, cancelled, never_context);
         assert_eq!(code, Ok(()));
         for index in interior(126, 126, 12) {
             for (channel, gain) in gains.iter().enumerate() {
@@ -1446,7 +1282,7 @@ mod tests {
             }
         }
         let under = vec![0_u16; n];
-        let (code, planes) = run_bayer(&under, &xtrans, gains, None, cancelled, never_context, 0);
+        let (code, planes) = run_bayer(&under, &xtrans, gains, None, cancelled, never_context);
         assert_eq!(code, Ok(()));
         for index in interior(126, 126, 12) {
             for (channel, gain) in gains.iter().enumerate() {
@@ -1498,7 +1334,7 @@ mod tests {
             let (samples, meta) = synthetic_bayer(width, height, cfas[index % 4]);
             for gains in [[1.7, 1.0, 1.3], [0.6, 1.0, 2.9]] {
                 let (code, serial) =
-                    run_bayer(&samples, &meta, gains, None, cancelled, never_context, 0);
+                    run_bayer(&samples, &meta, gains, None, cancelled, never_context);
                 assert_eq!(code, Ok(()), "serial {width}x{height}");
                 for worker_limit in [1, 2, 4, 0] {
                     let trace = traced(&never, worker_limit);
@@ -1509,7 +1345,6 @@ mod tests {
                         Some(&trace),
                         cancelled,
                         never_context,
-                        0,
                     );
                     assert_eq!(code, Ok(()), "pooled {width}x{height}");
                     if let Some(at) = first_difference(&serial, &pooled) {
@@ -1570,7 +1405,6 @@ mod tests {
                 trace,
                 cancel_at,
                 (&full as *const CancelAt).cast_mut().cast(),
-                0,
             );
             assert_eq!(code, Ok(()));
             assert_eq!(
@@ -1589,7 +1423,6 @@ mod tests {
                 trace,
                 cancel_at,
                 (&state as *const CancelAt).cast_mut().cast(),
-                0,
             );
             assert_eq!(code, Err(RawError::Cancelled), "pooled {pooled}");
             // Only demosaic tiles write the planes before the border pass,
@@ -1612,15 +1445,8 @@ mod tests {
             let (samples, meta) = synthetic_bayer(width, height, [0, 1, 1, 2]);
             let executor = traced(&never, 0);
             for trace in [None, Some(&executor)] {
-                let (code, output) = run_bayer(
-                    &samples,
-                    &meta,
-                    [1.0; 3],
-                    trace,
-                    cancelled,
-                    never_context,
-                    0,
-                );
+                let (code, output) =
+                    run_bayer(&samples, &meta, [1.0; 3], trace, cancelled, never_context);
                 assert!(
                     matches!(code.unwrap_err(), RawError::ResourceLimit(_)),
                     "{width}x{height}"
@@ -1636,19 +1462,38 @@ mod tests {
         let never_context = (&never as *const AtomicBool).cast_mut().cast();
         let (samples, meta) = synthetic_bayer(1057, 883, [1, 2, 0, 1]);
         let gains = [1.1, 1.0, 1.9];
-        let (code, serial) = run_bayer(&samples, &meta, gains, None, cancelled, never_context, 0);
+        let (code, serial) = run_bayer(&samples, &meta, gains, None, cancelled, never_context);
         assert_eq!(code, Ok(()));
-        let executor = traced(&never, 4);
-        for pooled in [false, true] {
-            let trace = pooled.then_some(&executor);
-            let (code, _) = run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 1);
-            assert!(matches!(code.unwrap_err(), RawError::ResourceLimit(_)));
-            let (code, _) = run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 2);
-            assert!(matches!(code.unwrap_err(), RawError::Native(_)));
-            // A complete run after both faults proves every job joined and
+        for worker_limit in [1, 4] {
+            // This frame is four RCD jobs: fault the first, and the final one, which the caller
+            // runs before any other on the executor.
+            for fault_job in [0, 3] {
+                let faulting = TracedExecutor {
+                    fault_job: Some(fault_job),
+                    ..traced(&never, worker_limit)
+                };
+                let (code, _) = run_bayer(
+                    &samples,
+                    &meta,
+                    gains,
+                    Some(&faulting),
+                    cancelled,
+                    never_context,
+                );
+                assert!(matches!(code.unwrap_err(), RawError::Native(_)));
+                assert_eq!(faulting.active.load(Ordering::Relaxed), 0);
+            }
+            // A complete run after the faults proves every job joined and
             // the next development starts clean.
-            let (code, recovered) =
-                run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 0);
+            let executor = traced(&never, worker_limit);
+            let (code, recovered) = run_bayer(
+                &samples,
+                &meta,
+                gains,
+                Some(&executor),
+                cancelled,
+                never_context,
+            );
             assert_eq!(code, Ok(()));
             assert_eq!(first_difference(&serial, &recovered), None);
         }
@@ -1701,10 +1546,7 @@ mod tests {
         );
         drop((serial_mosaic, pooled_mosaic));
         // Every pass in order on the caller, without the executor.
-        let serial_output = raw
-            .develop_uncorrected_diagnostic(gains, &cancel, 0, false, None)
-            .unwrap()
-            .data;
+        let serial_output = develop_with(&raw, gains, &cancel, in_order()).unwrap().data;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut hash = Sha256::new();
@@ -1722,22 +1564,17 @@ mod tests {
             assert_eq!(format!("{:x}", hash.finalize()), expected);
         }
         for workers in [1, 2, 4, 0] {
-            let pooled = raw
-                .develop_uncorrected_with_workers(gains, &cancel, workers)
-                .unwrap();
+            let pooled = develop_with(&raw, gains, &cancel, on_executor(workers)).unwrap();
             if let Some(at) = first_difference(&serial_output, &pooled.data) {
                 panic!("{name} RGB differs at {workers} workers, index {at}");
             }
         }
         drop(serial_output);
         let adjusted = [gains[0] * 1.15, 1.0, gains[2] * 0.85];
-        let adjusted_serial = raw
-            .develop_uncorrected_diagnostic(adjusted, &cancel, 0, false, None)
+        let adjusted_serial = develop_with(&raw, adjusted, &cancel, in_order())
             .unwrap()
             .data;
-        let pooled = raw
-            .develop_uncorrected_with_workers(adjusted, &cancel, 0)
-            .unwrap();
+        let pooled = develop_with(&raw, adjusted, &cancel, on_executor(0)).unwrap();
         assert_eq!(
             first_difference(&adjusted_serial, &pooled.data),
             None,
@@ -1811,15 +1648,17 @@ mod tests {
             let mut diagnostics = DevelopDiagnostics::default();
             let before_cpu = usage();
             let start = Instant::now();
-            let image = raw
-                .develop_uncorrected_diagnostic(
-                    gains,
-                    cancel,
-                    0,
-                    use_executor,
-                    Some(&mut diagnostics),
-                )
-                .unwrap();
+            let image = develop_with(
+                raw,
+                gains,
+                cancel,
+                DevelopOptions {
+                    executor: use_executor,
+                    diagnostics: Some(&mut diagnostics),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             let wall_ns = start.elapsed().as_nanos();
             let after_cpu = usage();
             let observed_cpu = cpu_ns(&after_cpu).saturating_sub(cpu_ns(&before_cpu));
@@ -1891,8 +1730,7 @@ mod tests {
             );
             let rows = raw.mosaic.len() / raw.metadata.sensor_width as usize;
             let callback_cap = max_admitted_callbacks.min(rows.div_ceil(16));
-            let oracle = raw
-                .develop_uncorrected_diagnostic(gains, &cancel, 1, false, None)
+            let oracle = develop_with(&raw, gains, &cancel, in_order())
                 .expect("serial RGB oracle")
                 .data;
             // Warm both paths before starting the ABBA observations.
@@ -1973,7 +1811,7 @@ mod tests {
         let (mut develop, mut correct, mut digest) = (Vec::new(), Vec::new(), None);
         for trial in 0..=samples {
             let start = Instant::now();
-            let mut image = raw.develop_uncorrected(gains, &cancel).unwrap();
+            let mut image = develop_with(&raw, gains, &cancel, Default::default()).unwrap();
             let develop_ms = start.elapsed().as_secs_f64() * 1000.0;
             let start = Instant::now();
             if let Some(correction) = &raw.dng_correction {
@@ -2110,7 +1948,7 @@ mod tests {
         let context = (&cancel as *const AtomicBool).cast_mut().cast();
         let develop = |samples: &[u16], native: &NativeMetadata, patches: &[MosaicCorrection]| {
             let (result, planes) =
-                develop_synthetic(samples, native, patches, gains, None, cancelled, context, 0);
+                develop_synthetic(samples, native, patches, gains, None, cancelled, context);
             assert_eq!(result, Ok(()));
             planes
         };
@@ -2157,9 +1995,13 @@ mod tests {
         let bytes = Arc::from(std::fs::read(source).expect("read original"));
         let cancel = AtomicBool::new(false);
         let raw = RawSource::decode(bytes, &cancel).expect("decode DNG");
-        let before = raw
-            .develop_uncorrected(raw.metadata.as_shot_gains, &cancel)
-            .expect("develop uncorrected camera planes");
+        let before = develop_with(
+            &raw,
+            raw.metadata.as_shot_gains,
+            &cancel,
+            Default::default(),
+        )
+        .expect("develop uncorrected camera planes");
         let after = raw
             .develop(raw.metadata.as_shot_gains, &cancel)
             .expect("develop corrected camera planes");
@@ -2202,9 +2044,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         /// Every pass in order on the caller, without the executor.
         fn without_executor(raw: &RawSource, gains: [f32; 3], cancel: &AtomicBool) -> Vec<f32> {
-            raw.develop_uncorrected_diagnostic(gains, cancel, 0, false, None)
-                .unwrap()
-                .data
+            develop_with(raw, gains, cancel, in_order()).unwrap().data
         }
         let owner = std::env::var("LUXFORGE_RAW_OWNER_DIR").expect("RAW fixture directory");
         let path = format!("{owner}/fujifilm_x100vi.RAF");
@@ -2216,9 +2056,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let raw = RawSource::decode(Arc::from(bytes), &cancel).unwrap();
         let gains = raw.metadata.as_shot_gains;
-        let serial = raw
-            .develop_uncorrected_with_workers(gains, &cancel, 1)
-            .unwrap();
+        let serial = develop_with(&raw, gains, &cancel, on_executor(1)).unwrap();
         let default_serial = without_executor(&raw, gains, &cancel);
         assert!(
             default_serial
@@ -2242,9 +2080,7 @@ mod tests {
             );
         }
         for workers in [2, 4, 0, 4] {
-            let other = raw
-                .develop_uncorrected_with_workers(gains, &cancel, workers)
-                .unwrap();
+            let other = develop_with(&raw, gains, &cancel, on_executor(workers)).unwrap();
             assert_eq!(other.data.len(), serial.data.len());
             if let Some(index) = other
                 .data
@@ -2260,13 +2096,9 @@ mod tests {
             }
         }
         let adjusted = [gains[0] * 1.15, 1.0, gains[2] * 0.85];
-        let custom_serial = raw
-            .develop_uncorrected_with_workers(adjusted, &cancel, 1)
-            .unwrap();
+        let custom_serial = develop_with(&raw, adjusted, &cancel, on_executor(1)).unwrap();
         for workers in [2, 4, 0] {
-            let other = raw
-                .develop_uncorrected_with_workers(adjusted, &cancel, workers)
-                .unwrap();
+            let other = develop_with(&raw, adjusted, &cancel, on_executor(workers)).unwrap();
             assert!(
                 other
                     .data
@@ -2282,10 +2114,10 @@ mod tests {
         // Odd final tiles exercise the retained interior and border join.
         let width = 239_usize;
         let height = 347_usize;
-        let source_width = raw.native.width as usize;
+        let source_width = raw.shape.width as usize;
         let mut odd = raw.clone();
-        odd.native.width = width as u32;
-        odd.native.height = height as u32;
+        odd.shape.width = width as u32;
+        odd.shape.height = height as u32;
         odd.metadata.sensor_width = width as u32;
         odd.metadata.sensor_height = height as u32;
         odd.mosaic = Arc::new(
@@ -2297,9 +2129,7 @@ mod tests {
         );
         odd.mosaic_corrections = Arc::new(Vec::new());
         odd.dng_correction = None;
-        let reference = odd
-            .develop_uncorrected_with_workers(adjusted, &cancel, 1)
-            .unwrap();
+        let reference = develop_with(&odd, adjusted, &cancel, on_executor(1)).unwrap();
         let odd_default_serial = without_executor(&odd, adjusted, &cancel);
         assert!(
             odd_default_serial
@@ -2308,9 +2138,7 @@ mod tests {
                 .all(|(a, b)| a.to_bits() == b.to_bits())
         );
         for workers in [2, 4, 0] {
-            let other = odd
-                .develop_uncorrected_with_workers(adjusted, &cancel, workers)
-                .unwrap();
+            let other = develop_with(&odd, adjusted, &cancel, on_executor(workers)).unwrap();
             assert!(
                 other
                     .data
@@ -2320,8 +2148,8 @@ mod tests {
             );
         }
         std::thread::scope(|scope| {
-            let first = scope.spawn(|| odd.develop_uncorrected_with_workers(adjusted, &cancel, 0));
-            let second = scope.spawn(|| odd.develop_uncorrected_with_workers(adjusted, &cancel, 0));
+            let first = scope.spawn(|| develop_with(&odd, adjusted, &cancel, on_executor(0)));
+            let second = scope.spawn(|| develop_with(&odd, adjusted, &cancel, on_executor(0)));
             for result in [first.join().unwrap(), second.join().unwrap()] {
                 let other = result.unwrap();
                 assert!(
@@ -2347,8 +2175,8 @@ mod tests {
             (1005, 413),
         ] {
             let mut edge = raw.clone();
-            edge.native.width = width as u32;
-            edge.native.height = height as u32;
+            edge.shape.width = width as u32;
+            edge.shape.height = height as u32;
             edge.metadata.sensor_width = width as u32;
             edge.metadata.sensor_height = height as u32;
             edge.mosaic = Arc::new(
@@ -2362,18 +2190,16 @@ mod tests {
             edge.dng_correction = None;
             if width < 120 || height < 120 {
                 assert!(matches!(
-                    edge.develop_uncorrected_with_workers(adjusted, &cancel, 1),
+                    develop_with(&edge, adjusted, &cancel, on_executor(1)),
                     Err(RawError::ResourceLimit(_))
                 ));
                 assert!(matches!(
-                    edge.develop_uncorrected_with_workers(adjusted, &cancel, 0),
+                    develop_with(&edge, adjusted, &cancel, on_executor(0)),
                     Err(RawError::ResourceLimit(_))
                 ));
                 continue;
             }
-            let serial = edge
-                .develop_uncorrected_with_workers(adjusted, &cancel, 1)
-                .unwrap();
+            let serial = develop_with(&edge, adjusted, &cancel, on_executor(1)).unwrap();
             let default_serial = without_executor(&edge, adjusted, &cancel);
             assert!(
                 default_serial
@@ -2382,9 +2208,7 @@ mod tests {
                     .all(|(a, b)| a.to_bits() == b.to_bits()),
                 "default serial differs at edge geometry {width}x{height}"
             );
-            let pooled = edge
-                .develop_uncorrected_with_workers(adjusted, &cancel, 0)
-                .unwrap();
+            let pooled = develop_with(&edge, adjusted, &cancel, on_executor(0)).unwrap();
             assert!(
                 serial
                     .data
@@ -2396,7 +2220,7 @@ mod tests {
         }
         let token = AtomicBool::new(true);
         assert!(matches!(
-            odd.develop_uncorrected_with_workers(adjusted, &token, 4),
+            develop_with(&odd, adjusted, &token, on_executor(4)),
             Err(RawError::Cancelled)
         ));
 
@@ -2411,44 +2235,43 @@ mod tests {
             c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) >= state.first_cancel_call)
         }
         let mosaic = odd.normalization(adjusted).run(1, &cancel).unwrap();
-        let run_private_fault = |fault: u32, first_cancel_call: usize, worker_limit: usize| {
-            let mut data = vec![f32::NAN; mosaic.len() * 3];
-            let state = CancelAfter {
-                calls: std::sync::atomic::AtomicUsize::new(0),
-                first_cancel_call,
+        let run_private_fault =
+            |fault_job: Option<usize>, first_cancel_call: usize, worker_limit: usize| {
+                let mut data = vec![f32::NAN; mosaic.len() * 3];
+                let state = CancelAfter {
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                    first_cancel_call,
+                };
+                let executor = TracedExecutor {
+                    fault_job,
+                    ..traced(&cancel, worker_limit)
+                };
+                let result = native_demosaic(
+                    &mosaic,
+                    &odd.shape,
+                    &mut data,
+                    Some((
+                        traced_execute as native_tiles::TileExecutor,
+                        (&executor as *const TracedExecutor<'_>).cast_mut().cast(),
+                    )),
+                    cancel_after,
+                    (&state as *const CancelAfter).cast_mut().cast(),
+                );
+                assert_eq!(executor.active.load(Ordering::Relaxed), 0);
+                (result, state.calls.load(Ordering::Relaxed))
             };
-            let mut executor_context = native_tiles::ExecutorContext {
-                cancel: &cancel,
-                worker_limit,
-            };
-            let result = native_demosaic(
-                &mosaic,
-                &odd.native,
-                &mut data,
-                fault,
-                Some((
-                    native_tiles::execute as native_tiles::TileExecutor,
-                    (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
-                )),
-                cancel_after,
-                (&state as *const CancelAfter).cast_mut().cast(),
-            );
-            (result, state.calls.load(Ordering::Relaxed))
-        };
         // The adapter checks once before the demosaic. Native tile checks
         // then allow work before cancellation.
-        let (result, calls) = run_private_fault(0, 3, 1);
+        let (result, calls) = run_private_fault(None, 3, 1);
         assert_eq!(result, Err(RawError::Cancelled));
         assert!(calls >= 4);
-        let (result, _) = run_private_fault(1, usize::MAX, 4);
-        assert!(matches!(result, Err(RawError::ResourceLimit(_))));
-        let (result, _) = run_private_fault(2, usize::MAX, 4);
-        assert!(matches!(result, Err(RawError::Native(_))));
-        // A successful call after both failures proves all workers joined
+        for worker_limit in [1, 4] {
+            let (result, _) = run_private_fault(Some(0), usize::MAX, worker_limit);
+            assert!(matches!(result, Err(RawError::Native(_))));
+        }
+        // A successful call after the failures proves all workers joined
         // and the next development starts clean.
-        let recovered = odd
-            .develop_uncorrected_with_workers(adjusted, &cancel, 4)
-            .unwrap();
+        let recovered = develop_with(&odd, adjusted, &cancel, on_executor(4)).unwrap();
         assert!(
             recovered
                 .data
@@ -2460,6 +2283,43 @@ mod tests {
             format!("{:x}", Sha256::digest(std::fs::read(path).unwrap())),
             "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246"
         );
+    }
+
+    /// Each status the build script writes into the adapter's header maps to one error, and a
+    /// code outside the table is a native failure.
+    #[test]
+    fn native_statuses_map_to_their_errors() {
+        assert_eq!(
+            NativeStatus::ALL.map(|status| status as c_int),
+            [0, 1, 2, 3, 4, 5, 6, 7]
+        );
+        let text = [b'x' as c_char, 0];
+        let native = || Err(RawError::Native("x".into()));
+        let limit = || {
+            Err(RawError::ResourceLimit(
+                "native decoder allocation or geometry",
+            ))
+        };
+        let expected = [
+            Ok(()),
+            native(),
+            Err(RawError::Cancelled),
+            native(),
+            limit(),
+            Err(RawError::UnsupportedCfa),
+            limit(),
+            Err(RawError::UnsupportedMode("x".into())),
+        ];
+        for (status, expected) in NativeStatus::ALL.into_iter().zip(expected) {
+            assert_eq!(
+                native_result(status as c_int, &text),
+                expected,
+                "{status:?}"
+            );
+        }
+        for unknown in [-1, 8, c_int::MAX] {
+            assert_eq!(native_result(unknown, &text), native());
+        }
     }
 
     #[test]
