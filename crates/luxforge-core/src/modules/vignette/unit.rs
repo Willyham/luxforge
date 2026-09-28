@@ -22,14 +22,18 @@ use crate::{
     colour::srgb::{decode_f32, encode_f32},
     modules::{PointwiseColor, Stage},
 };
+use std::sync::OnceLock;
 
 /// The shape family the roundness selects, with everything that does not vary per pixel already
-/// folded into the column and row tables. Only the `s < 0` branch needs a coefficient at all: its
-/// outer `1/p` exponent cannot be precomputed per axis.
+/// folded into the per-axis coefficients the column and row tables are built from. Both variants
+/// carry what one column or row entry needs, computed once in the constructor — an `O(1)` cost —
+/// so building the `O(width + height)` tables themselves can wait for the first pixel that needs
+/// them.
 #[derive(Clone, Copy, Debug)]
 enum Shape {
-    /// `s >= 0`: `r = sqrt(a·u² + b·v²)`, the ellipse-toward-circle family.
-    Ellipse,
+    /// `s >= 0`: `r = sqrt(a·u² + b·v²)`, the ellipse-toward-circle family. `a` scales a column
+    /// entry, `b` a row entry.
+    Ellipse { a: f64, b: f64 },
     /// `s < 0`: `r = ((|u|^p + |v|^p) / 2)^(1/p)`, the ellipse-toward-rounded-rectangle family.
     Superellipse { p: f64 },
 }
@@ -49,9 +53,13 @@ pub(super) struct Vignette {
     height: u32,
     shape: Shape,
     /// `a·u²` (or `|u|^p`) per column and `b·v²` (or `|v|^p`) per row: `width + height` `f64`
-    /// values, bounded by the stage's side and reserved once in the constructor.
-    columns: Vec<f64>,
-    rows: Vec<f64>,
+    /// values, bounded by the stage's side. Built once, on the first pixel this unit is asked for
+    /// rather than in the constructor: a compile that only needs `describe` or `is_finite` — most
+    /// of them, per `modules/registry/compile.rs`'s stage-only callers — never pays for either
+    /// table. `OnceLock` rather than a plain cell because [`PointwiseColor`] is `Send + Sync` and a
+    /// spatial render's rows can reach `apply_row` from more than one worker.
+    columns: OnceLock<Vec<f64>>,
+    rows: OnceLock<Vec<f64>>,
     /// The falloff's start and end radius, and the span between them. `hard_step` is the study's
     /// explicit `r1 == r0` case, so no division by a vanishing span is ever taken.
     r0: f64,
@@ -76,31 +84,16 @@ impl Vignette {
         let half_w = f64::from(width) / 2.0;
         let half_h = f64::from(height) / 2.0;
         let s = roundness / 100.0;
-        let mut columns = Vec::with_capacity(width as usize);
-        let mut rows = Vec::with_capacity(height as usize);
+        // Only the shape's per-axis coefficients are computed here: `O(1)`, and everything a
+        // column or row entry needs. The `O(width + height)` tables themselves are built lazily,
+        // the first time a pixel is actually asked for — see `columns`/`rows` below.
         let shape = if s >= 0.0 {
             let hd2 = half_w * half_w + half_h * half_h;
             let a = (1.0 - s) / 2.0 + s * half_w * half_w / hd2;
             let b = (1.0 - s) / 2.0 + s * half_h * half_h / hd2;
-            for x in 0..width {
-                let u = (f64::from(x) + 0.5 - half_w) / half_w;
-                columns.push(a * u * u);
-            }
-            for y in 0..height {
-                let v = (f64::from(y) + 0.5 - half_h) / half_h;
-                rows.push(b * v * v);
-            }
-            Shape::Ellipse
+            Shape::Ellipse { a, b }
         } else {
             let p = 2.0 + 6.0 * (-s);
-            for x in 0..width {
-                let u = (f64::from(x) + 0.5 - half_w) / half_w;
-                columns.push(u.abs().powf(p));
-            }
-            for y in 0..height {
-                let v = (f64::from(y) + 0.5 - half_h) / half_h;
-                rows.push(v.abs().powf(p));
-            }
             Shape::Superellipse { p }
         };
         let m = midpoint / 100.0;
@@ -116,8 +109,8 @@ impl Vignette {
             width,
             height,
             shape,
-            columns,
-            rows,
+            columns: OnceLock::new(),
+            rows: OnceLock::new(),
             r0,
             r1,
             span: r1 - r0,
@@ -125,6 +118,40 @@ impl Vignette {
             a,
             a_abs: a.abs(),
         }
+    }
+
+    /// `a·u²` (or `|u|^p`) for every column of the stage this unit was compiled against, built
+    /// once on the first call and shared by every call after.
+    fn columns(&self) -> &[f64] {
+        self.columns.get_or_init(|| {
+            let half_w = f64::from(self.width) / 2.0;
+            (0..self.width)
+                .map(|x| {
+                    let u = (f64::from(x) + 0.5 - half_w) / half_w;
+                    match self.shape {
+                        Shape::Ellipse { a, .. } => a * u * u,
+                        Shape::Superellipse { p } => u.abs().powf(p),
+                    }
+                })
+                .collect()
+        })
+    }
+
+    /// `b·v²` (or `|v|^p`) for every row of the stage this unit was compiled against, built once
+    /// on the first call and shared by every call after.
+    fn rows(&self) -> &[f64] {
+        self.rows.get_or_init(|| {
+            let half_h = f64::from(self.height) / 2.0;
+            (0..self.height)
+                .map(|y| {
+                    let v = (f64::from(y) + 0.5 - half_h) / half_h;
+                    match self.shape {
+                        Shape::Ellipse { b, .. } => b * v * v,
+                        Shape::Superellipse { p } => v.abs().powf(p),
+                    }
+                })
+                .collect()
+        })
     }
 
     /// The falloff applied to the shape radius: `0` at or inside `r0`, `1` at or beyond `r1`, the
@@ -141,7 +168,7 @@ impl Vignette {
     /// The mask at one pixel, from that pixel's already-computed column and row terms.
     fn mask_of(&self, column: f64, row: f64) -> f64 {
         let r = match self.shape {
-            Shape::Ellipse => (column + row).sqrt(),
+            Shape::Ellipse { .. } => (column + row).sqrt(),
             Shape::Superellipse { p } => ((column + row) / 2.0).powf(1.0 / p),
         };
         self.falloff(r)
@@ -150,10 +177,11 @@ impl Vignette {
     /// The mask at one pixel of the stage this unit was compiled against, in `f64`. The rendering
     /// path never calls this (it hoists the row term out of the loop); it exists so this file's own
     /// tests can check the unit's geometry against the reference directly, pixel by pixel — no
-    /// production caller needs it, so it is compiled only for tests.
+    /// production caller needs it, so it is compiled only for tests. Building the tables, lazily,
+    /// on the first pixel a test asks for is exactly the contract production rendering relies on.
     #[cfg(test)]
     pub(super) fn mask(&self, x: u32, y: u32) -> f64 {
-        self.mask_of(self.columns[x as usize], self.rows[y as usize])
+        self.mask_of(self.columns()[x as usize], self.rows()[y as usize])
     }
 
     /// The amount equation at one pixel, given that pixel's mask.
@@ -185,9 +213,10 @@ impl PointwiseColor for Vignette {
     /// bit-identical rather than sent through an encode/decode round trip that would move its last
     /// bits, which is what makes centre invariance and mirror/flip symmetry exact here.
     fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]) {
-        let row = self.rows[y as usize];
+        let columns = self.columns();
+        let row = self.rows()[y as usize];
         for (offset, pixel) in rgb.iter_mut().enumerate() {
-            let column = self.columns[(x0 + offset as u32) as usize];
+            let column = columns[(x0 + offset as u32) as usize];
             let mask = self.mask_of(column, row);
             if mask == 0.0 {
                 continue;
@@ -197,10 +226,18 @@ impl PointwiseColor for Vignette {
     }
 
     /// Every coefficient the per-pixel path reads. A non-finite stored value is refused by the
-    /// module's own payload check long before this, and refused again here at compilation.
+    /// module's own payload check long before this, and refused again here at compilation — which
+    /// is called far more often than a pixel is ever asked for
+    /// (`modules/registry/compile.rs`'s stage-only callers), so this must not force the lazy
+    /// column and row tables.
+    ///
+    /// It does not need to: every column and row entry is a pure function of `self.shape`'s own
+    /// coefficients (`a`, `b` or `p`, checked below) and a finite pixel index within `width` or
+    /// `height`, so checking the coefficients once here is exactly as strong as walking every
+    /// entry a table would hold, without building either.
     fn is_finite(&self) -> bool {
         let shape = match self.shape {
-            Shape::Ellipse => true,
+            Shape::Ellipse { a, b } => a.is_finite() && b.is_finite(),
             Shape::Superellipse { p } => p.is_finite(),
         };
         shape
@@ -213,8 +250,6 @@ impl PointwiseColor for Vignette {
             && self.span.is_finite()
             && self.a.is_finite()
             && self.a_abs.is_finite()
-            && self.columns.iter().all(|term| term.is_finite())
-            && self.rows.iter().all(|term| term.is_finite())
     }
 
     /// The four stored values, exactly, and the stage they were compiled against. The host compares
@@ -424,6 +459,111 @@ mod tests {
             .describe()
         );
         assert!(base.is_finite());
+    }
+
+    /// The row and column tables are not built in the constructor, and neither `describe` nor
+    /// `is_finite` forces them: only a call that actually reads a pixel does, and it builds each
+    /// table once.
+    #[test]
+    fn describe_and_is_finite_never_build_the_tables_and_a_pixel_read_builds_each_once() {
+        for roundness in [50.0, -50.0] {
+            // A stage large enough that an accidental eager build would not go unnoticed, on both
+            // shape branches the roundness selects.
+            let stage = Stage {
+                width: 6000,
+                height: 4000,
+            };
+            let unit = Vignette::new(-35.0, 50.0, roundness, 50.0, stage);
+            assert!(
+                unit.columns.get().is_none() && unit.rows.get().is_none(),
+                "roundness {roundness}: unbuilt right out of the constructor"
+            );
+            unit.describe();
+            assert!(
+                unit.columns.get().is_none() && unit.rows.get().is_none(),
+                "roundness {roundness}: describe must not build either table"
+            );
+            assert!(unit.is_finite());
+            assert!(
+                unit.columns.get().is_none() && unit.rows.get().is_none(),
+                "roundness {roundness}: is_finite must not build either table"
+            );
+            // The first pixel read builds both — a row's own term and every column it touches.
+            let mut row = [[0.25f32, 0.5, 0.75]];
+            unit.apply_row(0, 0, &mut row);
+            assert!(unit.columns.get().is_some() && unit.rows.get().is_some());
+            let built_columns = unit.columns.get().unwrap() as *const Vec<f64>;
+            let built_rows = unit.rows.get().unwrap() as *const Vec<f64>;
+            // A second read shares the same table rather than rebuilding it.
+            unit.apply_row(1, 0, &mut row);
+            assert_eq!(
+                unit.columns.get().unwrap() as *const Vec<f64>,
+                built_columns
+            );
+            assert_eq!(unit.rows.get().unwrap() as *const Vec<f64>, built_rows);
+        }
+    }
+
+    /// The owner-thread cost of one `Vignette::new` plus one `describe` and one `is_finite` call —
+    /// what `modules/registry/compile.rs`'s stage-only callers pay on every plan, `draft.set`, a
+    /// composite step and a query, per `docs/engineering/performance-rules.md`'s vignette row —
+    /// at 60 MP (9504x6336) with roundness negative, so the superellipse branch's `powf` tables are
+    /// the ones this measures. Before this task the constructor filled both tables eagerly, so this
+    /// cost was `O(width + height)` on every one of those calls; after, construction is `O(1)` and
+    /// the tables are never built at all unless a call actually reads a pixel through `apply_row`,
+    /// which none of `describe`, `is_finite` or a stage-only compile does.
+    ///
+    /// A build from before this task carries no comparable instrumentation — the tables were
+    /// simply always built — so "before" is reconstructed in this same binary: the per-entry
+    /// arithmetic a lazy build runs is exactly what the old eager constructor ran, proved unchanged
+    /// by the oracle tests above, so forcing both tables to build immediately after construction
+    /// (one call that reads a pixel) costs exactly what building them inside the constructor did.
+    /// Both figures therefore come from the same binary, run and host.
+    ///
+    /// Ignored by default because it is a measurement, not a pass/fail property: run it with
+    /// `cargo test --release --package luxforge-core --lib modules::vignette::unit::tests::
+    /// compile_cost_per_call_at_60_megapixels -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a recorded measurement, not an assertion"]
+    fn compile_cost_per_call_at_60_megapixels() {
+        let stage = Stage {
+            width: 9504,
+            height: 6336,
+        };
+        const CALLS: u32 = 20_000;
+        let lazy = |force_build: bool| {
+            let started = std::time::Instant::now();
+            for _ in 0..CALLS {
+                let unit = Vignette::new(-50.0, 50.0, -100.0, 50.0, stage);
+                if force_build {
+                    std::hint::black_box(unit.mask(0, 0));
+                }
+                std::hint::black_box(unit.describe());
+                assert!(std::hint::black_box(unit.is_finite()));
+            }
+            started.elapsed()
+        };
+        // Reversed (before, after, after, before) so a difference has to survive the reversal.
+        let before_1 = lazy(true);
+        let after_1 = lazy(false);
+        let after_2 = lazy(false);
+        let before_2 = lazy(true);
+        let ns_per_call =
+            |elapsed: std::time::Duration| elapsed.as_secs_f64() * 1e9 / f64::from(CALLS);
+        println!(
+            "{CALLS} calls of Vignette::new + describe + is_finite at {}x{}, roundness -100:",
+            stage.width, stage.height
+        );
+        println!(
+            "  after (lazy, never built):   {:.1}, {:.1} ns/call",
+            ns_per_call(after_1),
+            ns_per_call(after_2)
+        );
+        println!(
+            "  before (forced eager build): {:.1}, {:.1} ns/call",
+            ns_per_call(before_1),
+            ns_per_call(before_2)
+        );
     }
 
     /// The cost of one `apply_row` pass over a photograph-sized frame, single threaded, for the
