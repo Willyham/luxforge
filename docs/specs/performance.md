@@ -1237,6 +1237,8 @@ included in those open figures.
 | 100% view → captured frame | 24.9 / 25.5 | 25.2 / 25.8 |
 | Edited catalog reopen → CPU raster | 1170.2 / 1222.2 | 3267.8 / 3383.2 |
 
+These history rows predate the development executor, the Rust normalization and the second
+development; the current switch times and memory are in [second development](#second-development).
 Sampled first-process peak RSS (roughly 50 ms sampling) is 1323 / 1339 MiB p50 / p95
 for Z6 and 1975 / 1992 MiB for Fuji. Fuji trial 25 has an unexplained 2436 MiB peak
 and a 1038 ms crop update (1007 ms source-to-raster); both tails are retained. Its
@@ -2254,6 +2256,75 @@ development are not measured; the same-pool Fit proxy diagnostic last measured t
 batching before RCD's tile jobs ([further performance](../research/further-performance.md#bayer-normalization-batching)).
 The per-site table is at most one CFA and black-repeat period, each row widened to at least 64
 sites: 396 sites for a 6 × 6 X-Trans period and 128 for a 2 × 2 Bayer one without a repeat pattern.
+
+### Second development
+
+The source cache keeps at most one more RAW development beside its current one, within
+`luxforge_raw::RETAINED_DEVELOPMENT_BYTES` (600 MiB), so a switch between two entries at different
+white balances is read back from memory instead of redeveloped
+([second development](../design/raw-integration.md#second-development)). A completed source job
+evicts the cached development only while a preparation of an original or a redevelopment is
+queued; a queued artifact read leaves it.
+
+Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026.
+Each row is the `raw-editor` smoke scenario's edit launch, one background launch per observation,
+from `raw-editor-checks.json`: request to the display event (`preview_displayed`, else
+`render_ready`) and request to the correlated `frame_captured`. The journey previews the Original
+from history and returns to current after six white-balance edits, then does the same pair again;
+the first pair must develop the Original's white balance either way, and the second pair is the
+hold-`\` compare once both developments exist. The capture includes the harness's window
+readback, which is what the 100% view row costs with no render (its display is about 1 ms). Before
+is the base `6c49e556` with the Masks-panel thumbnail fix (the base itself hangs on the first RAW
+white-balance change, so no figure can be taken from it); after adds the eviction fix and the second
+development. Arms alternate ABBA, 30 launches per arm on the X100VI and 10 on the Z6 and the Air 2S,
+on a shared host whose one-minute load was 8.8 to 30.3 (X100VI, median 19.2 before and 19.8 after),
+12.6 to 19.2 (Z6) and 16.1 to 20.3 (Air 2S). Values are nearest-rank p50 / p95 in milliseconds.
+
+| Source, step | Before display | After display | Before capture | After capture |
+| --- | ---: | ---: | ---: | ---: |
+| X100VI, Historical Original | 251.5 / 492.9 | 242.7 / 378.1 | 314.8 / 572.3 | 303.2 / 508.9 |
+| X100VI, Return to current | 249.8 / 464.8 | 20.6 / 71.7 | 359.4 / 678.6 | 131.5 / 255.7 |
+| X100VI, Original again | 244.7 / 451.0 | 22.3 / 83.0 | 308.0 / 566.9 | 87.8 / 206.9 |
+| X100VI, current again | 254.7 / 463.7 | 21.6 / 102.4 | 365.1 / 677.6 | 130.8 / 292.9 |
+| X100VI, 100% view | 1.2 / 7.3 | 1.3 / 2.8 | 60.9 / 79.7 | 63.5 / 78.7 |
+| Z6, Historical Original | 76.7 / 104.3 | 76.5 / 139.8 | 149.1 / 205.2 | 146.1 / 239.3 |
+| Z6, Return to current | 80.0 / 142.0 | 34.4 / 70.0 | 161.0 / 317.5 | 100.8 / 165.6 |
+| Z6, Original again | 85.3 / 117.8 | 31.1 / 54.1 | 145.2 / 233.4 | 99.1 / 143.8 |
+| Z6, current again | 88.4 / 135.2 | 32.2 / 44.6 | 155.9 / 264.0 | 102.6 / 133.2 |
+| Air 2S, Historical Original | 154.1 / 222.8 | 149.0 / 168.6 | 197.8 / 273.3 | 191.8 / 212.7 |
+| Air 2S, Return to current | 150.6 / 269.8 | 20.2 / 42.0 | 214.8 / 422.3 | 81.0 / 135.3 |
+| Air 2S, Original again | 148.4 / 263.1 | 20.1 / 63.9 | 196.2 / 353.1 | 63.8 / 122.8 |
+| Air 2S, current again | 150.4 / 251.4 | 23.3 / 31.2 | 216.2 / 354.1 | 78.2 / 95.1 |
+
+Without the second development every switch redevelops, and the X100VI's p50 is about 250 ms to
+display and 310 to 365 ms to capture, above the owner's 150 ms threshold. With it, a switch whose
+development the cache holds displays in about 20 ms p50 on every camera (X100VI p95 72 to 102 ms
+under this load) and reaches the capture in 88 to 131 ms p50 on the X100VI, of which about 60 ms is
+the readback; an undo, which also renders without redeveloping, measures the same in both arms
+(X100VI capture 134.3 / 278.6 before, 129.5 / 320.1 after). The first Historical Original after a
+white-balance change still redevelops, since the slot then holds the development before that
+change, and is unchanged. The eviction fix alone changes none of these rows, as the journey queues
+no artifact read: three ABBA launches per arm on the X100VI (load 14.1 to 19.1) displayed the
+Historical Original in 324 to 352 ms before and 327 to 478 ms with the fix, and returned to current
+in 317 to 372 and 315 to 435 ms.
+
+Memory is the edit launch's process RSS, sampled about every 50 ms by `ps` from the second pair's
+captured frame to the process's end (the 100% and Fit steps), with the current entry's development
+and the Original's both held after; the figure is each launch's maximum over that window, p50 / p95
+over the same launches. GPU resources, captures and allocator retention are included, not
+separated.
+
+| Source (development planes) | Before | After | Difference |
+| --- | ---: | ---: | ---: |
+| X100VI, full sensor (468 MiB) | 1832 / 1882 MiB | 2290 / 2352 MiB | +458 MiB |
+| Z6, 6064 × 4040 sensor (280 MiB) | 1263 / 1300 MiB | 1527 / 1559 MiB | +264 MiB |
+| Air 2S, 5568 × 3648 sensor (232 MiB) | 1220 / 1269 MiB | 1450 / 1484 MiB | +230 MiB |
+
+The difference is the retained development's planes. A development past the 600 MiB budget, such as
+one at the 128 MP admission limit (about 1.43 GiB of planes), is never retained, so such a
+photograph keeps one development and redevelops on every switch as before. At a redevelopment's
+peak the process now holds the retained development beside the one being built, so the X100VI's
+white-balance-release peak rises by at most the same 468 MiB.
 
 ### RAW colour row batching
 
