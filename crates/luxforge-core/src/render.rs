@@ -24,6 +24,7 @@ use std::{
 mod context;
 mod entry;
 pub mod linear;
+pub(crate) mod parallel;
 mod pipeline;
 pub mod spatial;
 mod window;
@@ -816,7 +817,10 @@ fn resample_frame(
         }
         Ok(())
     };
-    if u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS {
+    if parallel::pooled(
+        parallel::RenderPass::Resample,
+        u64::from(width) * u64::from(height),
+    ) {
         output
             .par_chunks_exact_mut(row_bytes)
             .enumerate()
@@ -3036,7 +3040,8 @@ mod tests {
                 }
             }
             assert!(
-                u64::from(raster.width) * u64::from(raster.height) > luxforge_raw::PARALLEL_PIXELS
+                u64::from(raster.width) * u64::from(raster.height)
+                    >= luxforge_raw::PARALLEL_RESAMPLE_PIXELS
                     || width == 64,
                 "{case}: {}x{} does not reach the parallel row path",
                 raster.width,
@@ -4845,7 +4850,8 @@ mod tests {
         let registry = colour_registry();
         let source = gradient(1200, 900);
         assert!(
-            u64::from(source.width) * u64::from(source.height) >= luxforge_raw::PARALLEL_PIXELS,
+            u64::from(source.width) * u64::from(source.height)
+                >= luxforge_raw::PARALLEL_COLOUR_PIXELS,
             "the case must reach the parallel row-chunk path"
         );
         let raster = render(

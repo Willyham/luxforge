@@ -791,8 +791,8 @@ pub(super) trait SegmentRows: Sync {
 /// at the same coordinate exactly as a later layer does — and stored. Colour runs reach only the
 /// rows in `band`; a resample that follows reads no other.
 ///
-/// The chunks run on the shared Rayon pool above the one-megapixel threshold, or for a substantial
-/// sub-megapixel colour pass with several units or a mask. Small/simple passes stay serial.
+/// The chunks run on the shared Rayon pool when the segment's geometry, its colour runs or its
+/// heavy colour runs reach their own threshold (`super::parallel`); smaller passes stay serial.
 /// No full-frame float buffer exists at any point: each chunk reserves its float scratch from
 /// `budget` before it uses it, in a buffer its worker allocates once and reuses. `cancel` is read
 /// once per chunk, before the reservation.
@@ -818,19 +818,27 @@ pub(super) fn segment_pass<R: SegmentRows>(
     // Whether this pass needs snapshot scratch at all, decided once for the pass: an unmasked
     // segment reserves and allocates exactly what it would without masks.
     let masked = runs.iter().any(|run| run.has_mask());
-    // A sub-megapixel pass with several colour units has enough independent row chunks to pay for
-    // using the existing Rayon pool below `PARALLEL_PIXELS`. Below `PARALLEL_HEAVY_COLOUR_PIXELS`
-    // too, dispatch costs can outweigh even that colour work.
-    let parallel = segment.width as u64 * segment.height as u64 >= luxforge_raw::PARALLEL_PIXELS
-        || (segment.width as u64 * (band.end - band.start) as u64
-            >= luxforge_raw::PARALLEL_HEAVY_COLOUR_PIXELS
-            && (masked
-                || runs
-                    .iter()
-                    .flat_map(|run| run.colour_operations())
-                    .map(|(_, operation)| operation.len())
-                    .sum::<usize>()
-                    >= 3));
+    // The segment's geometry runs on the pool from the transform threshold, counted over the whole
+    // segment; its colour runs from the colour threshold, or the lower heavy-colour one with
+    // several colour units or a mask, counted over the rows they reach.
+    let parallel = {
+        use super::parallel::{RenderPass, pooled};
+        let units: usize = runs
+            .iter()
+            .flat_map(|run| run.colour_operations())
+            .map(|(_, operation)| operation.len())
+            .sum();
+        let colour = match units {
+            _ if masked || units >= 3 => Some(RenderPass::HeavyColour),
+            0 => None,
+            _ => Some(RenderPass::Colour),
+        };
+        let coloured = segment.width as u64 * (band.end - band.start) as u64;
+        pooled(
+            RenderPass::Transform,
+            segment.width as u64 * segment.height as u64,
+        ) || colour.is_some_and(|pass| pooled(pass, coloured))
+    };
     let chunk_rows = color_chunk_rows(segment.width);
     let chunk_bytes = chunk_rows * width * 4;
     let process = |scratch: &mut (R::Scratch, Vec<[f32; 3]>),

@@ -75,7 +75,7 @@ pub enum MaskPixels<'a> {
 }
 
 /// The cell count above which the grid is filled on the shared Rayon pool. It is the same
-/// one-megapixel threshold the reducer and the rasterizer use, counted in cells here because cells
+/// one-megapixel threshold the analysis reducer uses, counted in cells here because cells
 /// are what this pass walks ([performance rule 9](../../../docs/engineering/performance-rules.md#rules)).
 const PARALLEL_GRID_CELLS: u64 = luxforge_raw::PARALLEL_PIXELS;
 
