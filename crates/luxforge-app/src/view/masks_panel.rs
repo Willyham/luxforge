@@ -126,7 +126,7 @@ fn busy(model: &MasksModel) -> Option<String> {
         model
             .disabled_reason
             .clone()
-            .unwrap_or_else(|| "Waiting for the last request".to_owned())
+            .unwrap_or_else(|| crate::state::IN_FLIGHT.to_owned())
     })
 }
 
@@ -1126,7 +1126,7 @@ fn strokes<'a>(
                             stroke
                                 .delete_reason
                                 .clone()
-                                .unwrap_or_else(|| "Waiting for the last request".to_owned())
+                                .unwrap_or_else(|| crate::state::IN_FLIGHT.to_owned())
                         }),
                     ),
                     item("Copy delete request", Some(copy(edit))),
@@ -1210,7 +1210,7 @@ fn swatches<'a>(
                     sample
                         .delete_reason
                         .clone()
-                        .or_else(|| (!enabled).then(|| "Waiting for the last request".to_owned())),
+                        .or_else(|| (!enabled).then(|| crate::state::IN_FLIGHT.to_owned())),
                 ),
                 item("Copy remove request", Some(copy(edit))),
             ]

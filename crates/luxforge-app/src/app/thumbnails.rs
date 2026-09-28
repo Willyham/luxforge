@@ -613,10 +613,10 @@ mod tests {
             editor.thumbnail_source.requested.as_ref(),
             Some(&job.identity)
         );
-        while editor.thumbnails.masks.is_empty() {
+        luxforge_testbase::wait_until("every listed mask's thumbnail", || {
             let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-            std::thread::yield_now();
-        }
+            !editor.thumbnails.masks.is_empty()
+        });
         let rows = &editor.workspace.masks.masks;
         for (row, mask) in rows.iter().zip([&sky, &face]) {
             let thumbnail = row.thumbnail.as_ref().expect("every listed mask has one");
@@ -644,22 +644,18 @@ mod tests {
         let new = evaluation(vec![bound(&newer, 0.5)], vec![newer.clone()]);
         queue.request(old);
         queue.request(new);
-        let delivered = loop {
-            if let Some(result) = queue.poll() {
-                break result;
-            }
-            std::thread::yield_now();
-        };
+        let delivered =
+            luxforge_testbase::wait_for("the newer request's thumbnails", || queue.poll());
         assert_eq!(
             &thumbnail(&delivered, &newer).unwrap().cells[..],
             &overlay_cells(&newer)[..],
             "the delivered result is the newer stack's"
         );
         // Nothing older arrives after it.
-        while queue.is_busy() {
+        luxforge_testbase::wait_until("the queue to go idle", || {
             assert!(queue.poll().is_none());
-            std::thread::yield_now();
-        }
+            !queue.is_busy()
+        });
         assert!(queue.poll().is_none());
     }
 }
