@@ -932,9 +932,9 @@ one functional run each of the `mask-panel`, `mask-brush` and `crop-draft` smoke
 fixture, with both binaries, was 2.2–9.8 ms before and 0.04–0.07 ms after for five mask shape
 presses, and 2.2 and 5.8 ms before and 0.004 ms after for the crop's two starts. Those are single
 functional runs, not distributions. A 30-sample `--mode commit` run, which would give one press per
-sample, did not complete on either binary: its script's 19th value, 0.57 EV, is produced as
-0.5700000000000001 and refused as having no rail fraction, which is an `editor-latency` defect
-outside this change.
+sample, could not be taken when these were measured, because `editor-latency` then generated its
+19th value as 0.5700000000000001, which no rail fraction sends; it now generates the decimal the
+slider sends.
 
 #### A brush stroke's press
 
@@ -1819,7 +1819,7 @@ The drag frame is about 2 ms faster at p50 on the Z6 and about 1 ms on the X100V
 
 **The editor diagnostic.** `editor-performance --source` on the generated 24 MP JPEG (10 samples per recipe), whose stacks hold no spatial layer, ran before, after, after, before at a one-minute load of 9.6 to 15: every row stayed within its runs' spread, for example the full Basic layer at 55.35 · 58.13 → 55.99 · 56.89 ms p50 and its 2880 × 1800 proxy at 32.75 · 34.49 → 34.10 · 33.90 ms.
 
-Two defects in the measuring tool, found here and not fixed: `editor-latency`'s default drag sends `0.5700000000000001`, which the desktop's rail refuses (`set-basic.exposure has no rail fraction for 0.5700000000000001`), so any drag of more than 18 inputs fails on both builds; and `--basic` commits Temperature and Tint in its Basic layer, which a RAW photo refuses (`on a RAW photo, Temperature is the source development's`), so `--basic` cannot run over a RAW `--source`.
+These drags are 17 inputs because, when they were measured, `editor-latency` generated its 19th exposure value as `0.5700000000000001`, which the desktop's rail refuses; it now generates the decimal the slider sends. One defect in the measuring tool remains: `--basic` commits Temperature and Tint in its Basic layer, which a RAW photo refuses (`on a RAW photo, Temperature is the source development's`), so `--basic` cannot run over a RAW `--source`.
 
 ## Preset import parse
 
