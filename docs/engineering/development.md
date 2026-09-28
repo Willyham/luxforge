@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram, field-patch conformance, Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|viewport] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR` |
 | Authentic RAW editor journey and reopen over one file the RAW manifest lists | `cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR [--binary PATH]` |
@@ -998,6 +998,17 @@ gesture; the pairing itself is one function shared with that scenario so the two
 This mode's own paced stroke leaves the step's `settle_between` field unset: it is a controlled,
 dedicated run of one host rather than a smoke scenario sharing it with whatever else is running, so
 `PAINT_INTERVAL_MS` alone stays the measurement's own definition.
+
+`--mode crop-start` measures opening a crop draft at Fit. It commits the recipe the flags ask for
+(`--basic`, and `--presence` for a Presence layer with all three fields at 100), opens the
+Performance section, settles for 1.5 s, then per sample Starts a crop draft, holds it open for 1.5 s,
+cancels it and settles 1.5 s more; `--samples` is 1 to 14. From events every binary logs it reads
+the Start step's `script_step` to `crop_draft_started` and to the `frame_captured` of that step, which
+the editor captures once the crop layer's input stage is on screen, so that figure includes the
+window readback. The Performance section's `resources.read` memory and GPU allocation are read from
+the frame captured at the end of each hold, beside the settled baseline before the first Start;
+`latency.json` also lists each Start's stage frame and the surface's `stage_resident_bytes` where
+the binary reports them.
 
 The `mask-range` scenario's own paced stroke, by contrast, sets `settle_between: true` on its
 `mask` stroke step: the desktop then holds every position after the first until the position before
