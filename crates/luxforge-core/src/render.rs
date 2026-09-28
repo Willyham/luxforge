@@ -1269,6 +1269,36 @@ impl PixelDomain for Byte<'_> {
         Ok(pixel)
     }
 
+    /// The row form of [`Self::colour`]: each run decodes the row, runs its units over it and
+    /// quantizes it back, with the rows of a rendered segment's own arithmetic
+    /// ([`colour_byte_rows`]).
+    fn colour_row<'r>(
+        pixels: &mut [[u8; 4]],
+        runs: impl Iterator<Item = ColorRun<'r>>,
+        y: u32,
+        x0: u32,
+        scratch: &mut RowScratch,
+    ) -> Result<(), Error> {
+        let width = pixels.len();
+        if width == 0 {
+            return Ok(());
+        }
+        let RowScratch { linear, snapshot } = scratch;
+        snapshot.resize(width, [0.0; 3]);
+        for run in runs {
+            colour_byte_rows(
+                &run,
+                pixels.as_flattened_mut(),
+                width,
+                y,
+                x0,
+                linear,
+                snapshot,
+            )?;
+        }
+        Ok(())
+    }
+
     fn blend(
         u: f64,
         v: f64,
@@ -1444,29 +1474,53 @@ impl SegmentRows for ByteRows<'_> {
         snapshot: &mut [[f32; 3]],
     ) -> Result<(), Error> {
         let row_bytes = self.width * 4;
-        let bytes = &mut chunk[rows.start * row_bytes..rows.end * row_bytes];
-        // The tables are taken once for the rows, not once per pixel.
-        let (table, quantizer) = (decode_table(), quantizer());
-        linear.clear();
-        linear.extend(
-            bytes
-                .chunks_exact(4)
-                .map(|pixel| decode_pixel_in(table, [pixel[0], pixel[1], pixel[2]])),
-        );
-        // A chunk is a whole number of rows, so every unit is handed one row at a time, at the
-        // coordinates of the stage this segment produces.
-        for (offset, row) in linear.chunks_mut(self.width).enumerate() {
-            apply_units(run, y0 + (rows.start + offset) as u32, 0, row, snapshot)?;
-        }
-        for (pixel, value) in bytes.chunks_exact_mut(4).zip(linear.iter()) {
-            pixel[..3].copy_from_slice(&quantizer.pixel(*value));
-        }
-        Ok(())
+        colour_byte_rows(
+            run,
+            &mut chunk[rows.start * row_bytes..rows.end * row_bytes],
+            self.width,
+            y0 + rows.start as u32,
+            0,
+            linear,
+            snapshot,
+        )
     }
 
     fn store(&self, _: &mut Self::Scratch, _: &mut [u8]) -> Result<(), Error> {
         Ok(())
     }
+}
+
+/// One colour run over `bytes`, RGBA rows of `width` pixels whose first pixel is at column `x0` of
+/// row `y0` of the stage the run's segment produces: decoded through the sRGB table into `linear`,
+/// every row handed to the run's units at its own coordinates, and quantized back in place, alpha
+/// untouched. It is the byte domain's one row arithmetic, which a rendered chunk
+/// ([`ByteRows::run`]) and a pulled row ([`Byte::colour_row`]) share; `snapshot` is a masked
+/// operation's scratch for its own input.
+fn colour_byte_rows(
+    run: &ColorRun<'_>,
+    bytes: &mut [u8],
+    width: usize,
+    y0: u32,
+    x0: u32,
+    linear: &mut Vec<[f32; 3]>,
+    snapshot: &mut [[f32; 3]],
+) -> Result<(), Error> {
+    // The tables are taken once for the rows, not once per pixel.
+    let (table, quantizer) = (decode_table(), quantizer());
+    linear.clear();
+    linear.extend(
+        bytes
+            .chunks_exact(4)
+            .map(|pixel| decode_pixel_in(table, [pixel[0], pixel[1], pixel[2]])),
+    );
+    // Whole rows, so every unit is handed one row at a time.
+    for (offset, row) in linear.chunks_mut(width).enumerate() {
+        apply_units(run, y0 + offset as u32, x0, row, snapshot)?;
+    }
+    for (pixel, value) in bytes.chunks_exact_mut(4).zip(linear.iter()) {
+        pixel[..3].copy_from_slice(&quantizer.pixel(*value));
+    }
+    Ok(())
 }
 
 /// The input of one layer of a recipe, as a point query over the stage that layer receives: one
@@ -1717,7 +1771,6 @@ pub(super) fn rasterize(
                         tiling,
                         cancel,
                         context,
-                        read,
                         |region, planes, parallelism| {
                             fill_planes(region, planes, parallelism, read)
                         },

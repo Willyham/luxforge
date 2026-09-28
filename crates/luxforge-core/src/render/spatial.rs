@@ -851,8 +851,8 @@ impl<'a> PointTiles<'a> {
 
     /// One pixel of the output of spatial segment `segment`, whose operation reads and writes
     /// `stage`: from the held tile that contains it, or else from that tile evaluated now. `globals`
-    /// resolves the operation's estimates once for the segment's first tile, and `read` pulls one
-    /// pixel of the stage the operation reads.
+    /// resolves the operation's estimates once for the segment's first tile, and `fill` reads one
+    /// rectangle of the stage the operation reads into three planes, on this thread.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn pixel(
         &self,
@@ -862,7 +862,7 @@ impl<'a> PointTiles<'a> {
         x: u32,
         y: u32,
         globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
-        read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+        fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
     ) -> Result<[f32; 3], Error> {
         let prepared = {
             let mut state = self.lock();
@@ -900,7 +900,7 @@ impl<'a> PointTiles<'a> {
                 tile,
                 Parallelism::Serial,
                 &mut TileScratch::default(),
-                |region, planes| fill_planes(region, planes, Parallelism::Serial, &read),
+                &fill,
             )?
         };
         let values = if region == tile {
@@ -936,21 +936,21 @@ impl<'a> PointTiles<'a> {
         Ok(value)
     }
 
-    /// The reduction of `stage` a global estimate of this query is prepared from, on a store miss.
-    /// When the stage comes through an earlier spatial segment, whose tile side is `through`, it is
-    /// read on this thread through this cache one of that segment's tiles at a time, so each of
-    /// them is evaluated once; otherwise it is read as a render reads it, on the pool above the
-    /// parallel threshold.
+    /// The reduction of `stage` a global estimate of this query is prepared from, on a store miss,
+    /// read through `fill` ([`build_reduction_cancellable`]). When the stage comes through an
+    /// earlier spatial segment, whose tile side is `through`, it is read on this thread through
+    /// this cache one of that segment's tiles at a time, so each of them is evaluated once;
+    /// otherwise it is read as a render reads it, on the pool above the parallel threshold.
     pub(crate) fn reduce(
         &self,
         stage: Stage,
         through: Option<u32>,
         cancel: &Cancel,
-        fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+        fill: impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync,
     ) -> Result<Reduction, Error> {
         match through {
-            Some(tile) => build_reduction_by_tiles(stage, tile, cancel, fetch),
-            None => build_reduction_cancellable(stage, cancel, fetch),
+            Some(tile) => build_reduction_by_tiles(stage, tile, cancel, fill),
+            None => build_reduction_cancellable(stage, cancel, fill),
         }
     }
 
@@ -1033,31 +1033,40 @@ pub(crate) fn resolve_globals(
     Ok(globals)
 }
 
+/// How many reduced blocks one fill of a block row reads at most when a reduction walks the stage
+/// row by row: 64 blocks, 1024 px, so one fill is at most 16 × 1024 pixels (192 KiB of planes on
+/// each worker) whatever the stage's width, and the colour before the stage runs over rows that
+/// long.
+const REDUCTION_SPAN: u32 = 64;
+
 /// Build the bounded reduction a global estimate is prepared from: a box average over
 /// [`ESTIMATE_REDUCTION`]-pixel blocks anchored at the stage origin, with a partial block averaged
-/// over its actual pixels. `fetch` reads one stage pixel in linear sRGB.
+/// over its actual pixels. `fill` reads one rectangle of the stage in linear sRGB into three planes,
+/// in the layout [`Planes`] reads: one block row of at most [`REDUCTION_SPAN`] blocks at a time, so
+/// the stage is read by rows ([`block_means`]), on the pool above the parallel threshold with each
+/// worker's fill serial.
 ///
 /// The reduced frame is at most [`MAX_REDUCTION_PIXELS`] pixels, so this allocates about 3 MiB at
-/// the largest stage the host accepts whatever the source is. The read itself is the whole stage,
-/// which is why the render context keeps a store of the estimates prepared from it.
-#[cfg(test)]
-pub(crate) fn build_reduction(
-    stage: Stage,
-    fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
-) -> Result<Reduction, Error> {
-    build_reduction_cancellable(stage, &Cancel::never(), fetch)
-}
-
+/// the largest stage the host accepts whatever the source is, plus one fill's planes per worker.
+/// The read itself is the whole stage, which is why the render context keeps a store of the
+/// estimates prepared from it.
 pub(crate) fn build_reduction_cancellable(
     stage: Stage,
     cancel: &Cancel,
-    fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync,
 ) -> Result<Reduction, Error> {
     let (width, mut blocks) = reduction_blocks(stage)?;
-    let row = |j: usize, row: &mut [[f32; 3]]| -> Result<(), Error> {
+    let row = |planes: &mut Vec<f32>, j: usize, row: &mut [[f32; 3]]| -> Result<(), Error> {
         cancel.check()?;
-        for (i, block) in row.iter_mut().enumerate() {
-            *block = block_mean(stage, i as u32, j as u32, &fetch)?;
+        for (span, blocks) in row.chunks_mut(REDUCTION_SPAN as usize).enumerate() {
+            block_means(
+                stage,
+                j as u32,
+                span as u32 * REDUCTION_SPAN,
+                blocks,
+                planes,
+                &fill,
+            )?;
         }
         Ok(())
     };
@@ -1065,38 +1074,59 @@ pub(crate) fn build_reduction_cancellable(
         blocks
             .par_chunks_mut(width as usize)
             .enumerate()
-            .try_for_each(|(j, values)| row(j, values))?;
+            .try_for_each_init(Vec::new, |planes, (j, values)| row(planes, j, values))?;
     } else {
+        let mut planes = Vec::new();
         blocks
             .chunks_mut(width as usize)
             .enumerate()
-            .try_for_each(|(j, values)| row(j, values))?;
+            .try_for_each(|(j, values)| row(&mut planes, j, values))?;
     }
     reduction_from(stage, &blocks)
 }
 
-/// [`build_reduction`] read one stage-aligned `tile` × `tile` square at a time, row-major, on the
-/// calling thread: what a point query does when the stage comes through an earlier spatial
-/// segment's tiles in its [`PointTiles`]. Each of those tiles is then read once, as a whole, so the
-/// walk holds the tile it reads and what that tile's own halo reads, rather than a whole row of
-/// tiles that a block-row walk reads again for every block row. Every block is summed in the same
-/// order either way, so the reduction is the same.
+/// [`build_reduction_cancellable`] over a stage `fetch` answers one pixel at a time, for a test
+/// whose stage is a function of the coordinate.
+#[cfg(test)]
+pub(crate) fn build_reduction(
+    stage: Stage,
+    fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+) -> Result<Reduction, Error> {
+    build_reduction_cancellable(stage, &Cancel::never(), |region, planes| {
+        fill_planes(region, planes, Parallelism::Serial, &fetch)
+    })
+}
+
+/// [`build_reduction_cancellable`] read one stage-aligned `tile` × `tile` square at a time,
+/// row-major, on the calling thread: what a point query does when the stage comes through an
+/// earlier spatial segment's tiles in its [`PointTiles`]. Each of those tiles is then read once, as
+/// a whole, one block row of it per fill, so the walk holds the tile it reads and what that tile's
+/// own halo reads, rather than a whole row of tiles that a block-row walk reads again for every
+/// block row. Every block is summed in the same order either way, so the reduction is the same.
 fn build_reduction_by_tiles(
     stage: Stage,
     tile: u32,
     cancel: &Cancel,
-    fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error>,
+    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<Reduction, Error> {
     let (width, mut blocks) = reduction_blocks(stage)?;
     let height = blocks.len() as u32 / width;
-    let side = (tile / ESTIMATE_REDUCTION).max(1) as usize;
-    for j0 in (0..height).step_by(side) {
-        for i0 in (0..width).step_by(side) {
-            for j in j0..(j0 + side as u32).min(height) {
+    let side = (tile / ESTIMATE_REDUCTION).max(1);
+    let mut planes = Vec::new();
+    for j0 in (0..height).step_by(side as usize) {
+        for i0 in (0..width).step_by(side as usize) {
+            let i1 = (i0 + side).min(width);
+            for j in j0..(j0 + side).min(height) {
                 cancel.check()?;
-                for i in i0..(i0 + side as u32).min(width) {
-                    blocks[(j * width + i) as usize] = block_mean(stage, i, j, &fetch)?;
-                }
+                let row = (j * width) as usize;
+                block_means(
+                    stage,
+                    j,
+                    i0,
+                    &mut blocks[row + i0 as usize..row + i1 as usize],
+                    &mut planes,
+                    &fill,
+                )?;
             }
         }
     }
@@ -1115,29 +1145,49 @@ fn reduction_blocks(stage: Stage) -> Result<(u32, Vec<[f32; 3]>), Error> {
     Ok((width, vec![[0.0_f32; 3]; pixels as usize]))
 }
 
-/// The mean of reduced block `(i, j)`: its pixels summed in `f64`, row by row, over the part of the
-/// block inside the stage.
-fn block_mean(
+/// The means of reduced blocks `i0..i0 + blocks.len()` of block row `j`, from one `fill` of the
+/// part of the stage they cover into `planes`, which grows to the largest fill and is reused. Each
+/// block is its pixels summed in `f64`, row by row and left to right, over the part of the block
+/// inside the stage: the one order every reduction sums in, however many blocks a fill reads, so a
+/// global estimate never depends on how its stage was read.
+fn block_means(
     stage: Stage,
-    i: u32,
     j: u32,
-    fetch: &impl Fn(u32, u32) -> Result<[f32; 3], Error>,
-) -> Result<[f32; 3], Error> {
+    i0: u32,
+    blocks: &mut [[f32; 3]],
+    planes: &mut Vec<f32>,
+    fill: &impl Fn(Region, &mut [f32]) -> Result<(), Error>,
+) -> Result<(), Error> {
     let factor = ESTIMATE_REDUCTION;
-    let (top, left) = (j * factor, i * factor);
-    let bottom = (top + factor).min(stage.height);
-    let right = (left + factor).min(stage.width);
-    let mut sum = [0.0_f64; 3];
-    for y in top..bottom {
-        for x in left..right {
-            let pixel = fetch(x, y)?;
-            for channel in 0..3 {
-                sum[channel] += f64::from(pixel[channel]);
-            }
-        }
+    let (top, left) = (j * factor, i0 * factor);
+    let region = Region {
+        x0: left,
+        y0: top,
+        width: ((i0 + blocks.len() as u32) * factor).min(stage.width) - left,
+        height: (top + factor).min(stage.height) - top,
+    };
+    let len = region.pixels() as usize;
+    if planes.len() < 3 * len {
+        planes.resize(3 * len, 0.0);
     }
-    let count = f64::from(bottom - top) * f64::from(right - left);
-    Ok(std::array::from_fn(|channel| (sum[channel] / count) as f32))
+    let planes = &mut planes[..3 * len];
+    fill(region, planes)?;
+    let stride = region.width as usize;
+    for (offset, block) in blocks.iter_mut().enumerate() {
+        let from = offset * factor as usize;
+        let to = (from + factor as usize).min(stride);
+        let count = f64::from(region.height) * (to - from) as f64;
+        *block = std::array::from_fn(|channel| {
+            let mut sum = 0.0_f64;
+            for row in planes[channel * len..(channel + 1) * len].chunks_exact(stride) {
+                for value in &row[from..to] {
+                    sum += f64::from(*value);
+                }
+            }
+            (sum / count) as f32
+        });
+    }
+    Ok(())
 }
 
 fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error> {
@@ -1281,11 +1331,13 @@ mod tests {
         };
         let exact_cancel = Cancel::new();
         let exact_reads = AtomicUsize::new(0);
-        let error = build_reduction_cancellable(stage, &exact_cancel, |_, _| {
-            if exact_reads.fetch_add(1, AtomicOrdering::Relaxed) == 300 {
-                exact_cancel.cancel();
-            }
-            Ok([0.5; 3])
+        let error = build_reduction_cancellable(stage, &exact_cancel, |region, planes| {
+            fill_planes(region, planes, Parallelism::Serial, |_, _| {
+                if exact_reads.fetch_add(1, AtomicOrdering::Relaxed) == 300 {
+                    exact_cancel.cancel();
+                }
+                Ok([0.5; 3])
+            })
         })
         .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Cancelled);
@@ -2430,6 +2482,65 @@ mod tests {
             prefix_hash(&own_mask.layers[..1], &unrelated, MaskSampling::Point).unwrap(),
             original
         );
+    }
+
+    /// A spatial entry reads its stage by rows on both paths — a tile's input and its estimate's
+    /// reduction alike — here behind a quarter turn and a masked and an unmasked colour layer, whose
+    /// rows the byte path runs through the byte domain's own row arithmetic. The estimate a point
+    /// query reduces from a cold store is, value for value, the one the frame's reduction stored,
+    /// and every sample read beside it, along every fifth row and in several tiles, is the
+    /// rendered byte.
+    #[test]
+    fn a_point_query_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
+        let registry = ModuleRegistry::builtin();
+        let byte = gradient(96, 72);
+        let linear = linear_source(96, 72);
+        let mut stack = masked_colour_before_dehaze();
+        stack.layers.insert(0, turn(Transform::RotateRight));
+        stack.layers.insert(
+            2,
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::MIXER_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"red-hue": 20.0, "aqua-saturation": -35.0, "blue-luminance": 15.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        );
+        let options = || RenderOptions::default().with_tile(16);
+        for linear_path in [false, true] {
+            let source = || {
+                if linear_path {
+                    crate::render::testing::linear(&linear, LinearSettings::default())
+                } else {
+                    crate::RenderSource::Byte(&byte)
+                }
+            };
+            let enter = |context| {
+                crate::render::render(&registry, source(), &stack, options(), context).unwrap()
+            };
+            let context = RenderContext::new();
+            let frame = enter(&context).frame(SnapshotId::new()).unwrap();
+            let stored = enter(&context).spatial_globals(1).unwrap();
+            assert!(stored.iter().any(Option::is_some), "dehaze has an estimate");
+            let cold = RenderContext::new();
+            assert_eq!(
+                enter(&cold).spatial_globals(1).unwrap(),
+                stored,
+                "linear path {linear_path}: a point reduction is the frame's"
+            );
+            for y in (0..frame.height).step_by(5) {
+                for x in 0..frame.width {
+                    let sampled = enter(&cold).sample(x, y).unwrap();
+                    assert_eq!(
+                        sampled.rgba,
+                        frame.pixel(x, y),
+                        "linear path {linear_path}: sample at ({x}, {y})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -3792,12 +3903,14 @@ mod tests {
         );
     }
 
-    /// A point query's tile-by-tile reduction is the render's block-row reduction, value for value,
-    /// whatever the tile size — a multiple of the block, smaller than it or neither — and with
-    /// partial blocks and partial tiles at both edges.
+    /// A reduction read by rows is, bit for bit, the mean of every block's pixels read one at a
+    /// time and summed in `f64` row by row, and a point query's tile-by-tile reduction is the
+    /// render's block-row reduction, whatever the tile size — a multiple of the block, smaller than
+    /// it or neither — with partial blocks and partial tiles at both edges, and on a stage wider
+    /// than one fill's span.
     #[test]
     fn a_reduction_read_tile_by_tile_is_the_block_row_reduction() {
-        for (width, height) in [(1, 1), (37, 23), (200, 131), (384, 320)] {
+        for (width, height) in [(1, 1), (37, 23), (200, 131), (384, 320), (2100, 40)] {
             let stage = Stage { width, height };
             let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
                 Ok([
@@ -3806,10 +3919,39 @@ mod tests {
                     ((x * y) % 29) as f32 - 3.5,
                 ])
             };
+            let fill = |region: Region, planes: &mut [f32]| {
+                fill_planes(region, planes, Parallelism::Serial, fetch)
+            };
             let rows = build_reduction(stage, fetch).unwrap();
+            // The reference: each block's pixels fetched one at a time, in the one summing order.
+            let factor = ESTIMATE_REDUCTION;
+            let (blocks_x, blocks_y) = Reduction::dimensions(stage, factor);
+            let mut means = Vec::new();
+            for j in 0..blocks_y {
+                for i in 0..blocks_x {
+                    let (top, left) = (j * factor, i * factor);
+                    let (bottom, right) = ((top + factor).min(height), (left + factor).min(width));
+                    let mut sum = [0.0_f64; 3];
+                    for y in top..bottom {
+                        for x in left..right {
+                            let pixel = fetch(x, y).unwrap();
+                            for channel in 0..3 {
+                                sum[channel] += f64::from(pixel[channel]);
+                            }
+                        }
+                    }
+                    let count = f64::from(bottom - top) * f64::from(right - left);
+                    means.push(sum.map(|sum| (sum / count) as f32));
+                }
+            }
+            assert_eq!(
+                rows,
+                reduction_from(stage, &means).unwrap(),
+                "{width}x{height}, by rows"
+            );
             for tile in [1, 16, 40, 64, 512] {
                 assert_eq!(
-                    build_reduction_by_tiles(stage, tile, &Cancel::new(), fetch).unwrap(),
+                    build_reduction_by_tiles(stage, tile, &Cancel::new(), fill).unwrap(),
                     rows,
                     "{width}x{height}, tile {tile}"
                 );
