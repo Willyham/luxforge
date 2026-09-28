@@ -36,7 +36,7 @@ use super::{
     Cancel, ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows,
     color_runs, mapped_replacements,
     spatial::{
-        PointTiles, SpatialPlan, build_reduction_cancellable, fill_planes, resolve_globals,
+        PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
         run_batches, run_tile,
     },
 };
@@ -201,11 +201,11 @@ pub(crate) struct Evaluation<'a, D: PixelDomain> {
     /// finished and before the one it replaces was released, which is the peak.
     #[cfg(test)]
     pub(super) built: Vec<(Weak<D::SpatialFrame>, usize)>,
-    /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated, in
-    /// tiles of [`super::spatial::SPATIAL_TILE`] everywhere but in the tests that prove the
-    /// result does not depend on it.
+    /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated.
     pub(super) tiles: Option<PointTiles<'a>>,
-    tile: u32,
+    /// How each spatial segment is cut into tiles: [`Tiling::Halo`] everywhere but in the tests
+    /// that prove the result does not depend on it.
+    tiling: Tiling,
     cancel: Cancel,
     context: &'a RenderContext,
 }
@@ -218,7 +218,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     pub(crate) fn new(
         domain: D,
         compiled: Cow<'a, Compiled>,
-        tile: u32,
+        tiling: Tiling,
         mode: SpatialMode,
         cancel: &Cancel,
         context: &'a RenderContext,
@@ -230,8 +230,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             frame: None,
             #[cfg(test)]
             built: Vec::new(),
-            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile, context.spatial())),
-            tile,
+            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tiling, context.spatial())),
+            tiling,
             cancel: cancel.clone(),
             context,
         };
@@ -248,7 +248,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 &evaluation.domain,
                 entry,
                 evaluation.spatial_stage(index),
-                evaluation.tile,
+                evaluation.tiling,
                 cancel,
                 evaluation.context,
                 |x, y| evaluation.spatial_read(index, x, y),
@@ -277,8 +277,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// The same point evaluation with another spatial tile size. A spatial unit's value at a
     /// pixel depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
     pub(crate) fn with_tile(mut self, tile: u32) -> Self {
-        self.tile = tile;
-        self.tiles = Some(PointTiles::new(tile, self.context.spatial()));
+        self.tiling = Tiling::Fixed(tile);
+        self.tiles = Some(PointTiles::new(self.tiling, self.context.spatial()));
         self
     }
 
@@ -504,12 +504,17 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         let stage = self.spatial_stage(index);
         let read = |x: u32, y: u32| self.spatial_read(index, x, y);
         entry.globals(&self.domain, self.context, stage, || match &self.tiles {
-            Some(tiles) => tiles.reduce(
-                stage,
-                self.compiled.spatial_before(index),
-                &self.cancel,
-                read,
-            ),
+            Some(tiles) => {
+                // The tile side of the nearest spatial segment before this one, whose tiles the
+                // stage is read through.
+                let through = (0..index).rev().find_map(|earlier| {
+                    SpatialEntry::of(&self.compiled.segments[earlier]).map(|entry| {
+                        self.tiling
+                            .tile(entry.operation, self.spatial_stage(earlier))
+                    })
+                });
+                tiles.reduce(stage, through, &self.cancel, read)
+            }
             None => build_reduction_cancellable(stage, &self.cancel, read),
         })
     }
@@ -706,7 +711,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     domain: &D,
     entry: SpatialEntry<'_>,
     stage: Stage,
-    tile: u32,
+    tiling: Tiling,
     cancel: &Cancel,
     context: &RenderContext,
     read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
@@ -714,7 +719,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     alpha: impl Fn(u32, u32) -> u8 + Sync,
 ) -> Result<D::SpatialFrame, Error> {
     let operation = entry.operation;
-    let plan = SpatialPlan::new(operation, stage, tile)?;
+    let plan = SpatialPlan::new(operation, stage, tiling)?;
     let globals = entry.globals(domain, context, stage, || {
         build_reduction_cancellable(stage, cancel, read)
     })?;

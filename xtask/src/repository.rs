@@ -2178,7 +2178,8 @@ mod tests {
             (
                 core.join("render/window.rs"),
                 "                    let grown = read.grown(operation.summed_halo(input), input);\n\
-                 let x0 = grown.x0 / SPATIAL_TILE * SPATIAL_TILE;\n\
+                 let tile = Tiling::Halo.tile(operation, input);\n\
+                 let x0 = grown.x0 / tile * tile;\n\
                  needed = resample.reads((0, 0), read, stage);\n"
                     .to_owned(),
             ),

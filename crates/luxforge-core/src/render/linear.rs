@@ -1145,7 +1145,7 @@ mod tests {
     use super::*;
     use crate::render::{
         SpatialMode,
-        spatial::SPATIAL_TILE,
+        spatial::Tiling,
         testing::{
             frame_in, linear, linear_evaluation, render_linear, render_linear_cancellable,
             render_linear_proxy_cancellable, sample_in, sample_linear,
@@ -1153,7 +1153,7 @@ mod tests {
     };
     use crate::{
         Layer, Recipe, RenderContext, RenderOptions, SnapshotId,
-        modules::{CropPayload, ModuleRegistry},
+        modules::{CropPayload, ModuleRegistry, SPATIAL_TILE},
     };
     use luxforge_reference::srgb as srgb_ref;
     use luxforge_testbase::Distribution;
@@ -1189,7 +1189,7 @@ mod tests {
             source,
             recipe,
             settings,
-            SPATIAL_TILE,
+            Tiling::Halo,
             SpatialMode::Frames,
         )
         .unwrap();
@@ -2487,7 +2487,7 @@ mod tests {
             &overflowing_source,
             &Recipe::default(),
             overflow,
-            SPATIAL_TILE,
+            Tiling::Halo,
             SpatialMode::Frames,
         )
         .unwrap();
@@ -2742,7 +2742,7 @@ mod tests {
             &view,
             &recipe,
             LinearSettings::default(),
-            SPATIAL_TILE,
+            Tiling::Halo,
             SpatialMode::Point,
         )
         .unwrap();
@@ -3283,7 +3283,7 @@ mod tests {
                 &source,
                 &stack,
                 LinearSettings::default(),
-                SPATIAL_TILE,
+                Tiling::Halo,
                 mode,
             )
             .unwrap()
@@ -3382,7 +3382,7 @@ mod tests {
                 &source,
                 &stack,
                 LinearSettings::default(),
-                SPATIAL_TILE,
+                Tiling::Halo,
                 mode,
             )
             .unwrap()
@@ -3546,8 +3546,9 @@ mod tests {
     }
 
     /// On a real RAW file, through Presence: a point sample equals the byte `render_linear` writes
-    /// there, at points spread over the stage and the far corner, and the timings of the tile and
-    /// of the frame a whole-stage evaluation builds are printed. Run in release with
+    /// there, at points spread over the stage and the far corner, in the production tiling and in
+    /// 512 px tiles whatever the halo, and the timings of the tile and of the frame a whole-stage
+    /// evaluation builds in each are printed. Run in release with
     /// LUXFORGE_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG:
     ///
     /// ```text
@@ -3598,47 +3599,61 @@ mod tests {
                 })
                 .collect();
             points.push((raster.width - 1, raster.height - 1));
-            let mut samples = Vec::new();
-            for &(x, y) in &points {
-                let start = Instant::now();
-                let sampled = sample_in(
-                    &context,
-                    &registry,
-                    linear(&image, settings),
-                    &stack,
-                    RenderOptions::default(),
-                    x,
-                    y,
-                )
-                .unwrap();
-                samples.push(ms(start));
-                assert_eq!(sampled.rgba, raster.pixel(x, y), "{payload} at ({x}, {y})");
+            // The production tiling, and 512 px tiles whatever the halo, whose samples must equal
+            // the same rendered bytes.
+            for (tiling, options) in [
+                (Tiling::Halo, RenderOptions::default()),
+                (
+                    Tiling::Fixed(SPATIAL_TILE),
+                    RenderOptions::default().with_tile(SPATIAL_TILE),
+                ),
+            ] {
+                let mut samples = Vec::new();
+                for &(x, y) in &points {
+                    let start = Instant::now();
+                    let sampled = sample_in(
+                        &context,
+                        &registry,
+                        linear(&image, settings),
+                        &stack,
+                        options.clone(),
+                        x,
+                        y,
+                    )
+                    .unwrap();
+                    samples.push(ms(start));
+                    assert_eq!(
+                        sampled.rgba,
+                        raster.pixel(x, y),
+                        "{payload}, {tiling:?}, at ({x}, {y})"
+                    );
+                }
+                let mut frames = Vec::new();
+                for _ in 0..3 {
+                    let start = Instant::now();
+                    linear_evaluation(
+                        &context,
+                        &registry,
+                        &image,
+                        &stack,
+                        settings,
+                        tiling,
+                        SpatialMode::Frames,
+                    )
+                    .unwrap();
+                    frames.push(ms(start));
+                }
+                let samples = Distribution::of(samples).expect("points were sampled");
+                let frames = Distribution::of(frames).expect("frames were evaluated");
+                println!(
+                    "{payload}, {tiling:?}: {} point samples equal the render; sample p50 {:.1} \
+                     ms, max {:.1} ms; the spatial frame alone p50 {:.0} ms",
+                    points.len(),
+                    samples.p50,
+                    samples.max,
+                    frames.p50
+                );
             }
-            let mut frames = Vec::new();
-            for _ in 0..3 {
-                let start = Instant::now();
-                linear_evaluation(
-                    &context,
-                    &registry,
-                    &image,
-                    &stack,
-                    settings,
-                    SPATIAL_TILE,
-                    SpatialMode::Frames,
-                )
-                .unwrap();
-                frames.push(ms(start));
-            }
-            let samples = Distribution::of(samples).expect("points were sampled");
-            let frames = Distribution::of(frames).expect("frames were evaluated");
-            println!(
-                "{payload}: {} point samples equal the render; sample p50 {:.1} ms, \
-                 max {:.1} ms; the spatial frame alone p50 {:.0} ms",
-                points.len(),
-                samples.p50,
-                samples.max,
-                frames.p50
-            );
         }
     }
 }

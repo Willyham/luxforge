@@ -7,12 +7,11 @@ use crate::{
     artifacts::ArtifactTable,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, SPATIAL_TILE, Stage,
-        ToolModule,
+        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, Stage, ToolModule,
     },
     render::{
         Compiled, Entry, Segment,
-        spatial::{SpatialPlan, prefix_hash},
+        spatial::{SpatialPlan, Tiling, prefix_hash},
     },
 };
 use std::collections::HashSet;
@@ -437,7 +436,7 @@ impl ModuleRegistry {
                     // finiteness and the summed halo — is checked here, before a pixel is read.
                     // Nothing is rewritten or reduced to fit, and what a tile costs in memory,
                     // which a mask adds two tile planes to, never refuses it.
-                    SpatialPlan::new(&operation, stage, SPATIAL_TILE)?;
+                    SpatialPlan::new(&operation, stage, Tiling::Halo)?;
                     let prefix_hash = prefix_hash(&layers[..index], masks, sampling)?;
                     segments.push(Segment::new(
                         Some(Entry::Spatial {

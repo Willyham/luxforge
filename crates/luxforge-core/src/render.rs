@@ -1655,7 +1655,7 @@ pub(super) fn rasterize(
     compiled: &Compiled,
     snapshot_id: SnapshotId,
     cancel: &Cancel,
-    tile: u32,
+    tiling: spatial::Tiling,
     context: &RenderContext,
 ) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
@@ -1695,7 +1695,7 @@ pub(super) fn rasterize(
                         &domain,
                         SpatialEntry::of(segment).expect("a spatial entry"),
                         stage,
-                        tile,
+                        tiling,
                         cancel,
                         context,
                         read,
@@ -1986,26 +1986,6 @@ pub(crate) mod testing {
         )
     }
 
-    pub(crate) fn sample_linear_tiled(
-        registry: &ModuleRegistry,
-        source: &LinearImage,
-        recipe: &Recipe,
-        settings: LinearSettings,
-        x: u32,
-        y: u32,
-        tile: u32,
-    ) -> Result<Sample, Error> {
-        sample_in(
-            &RenderContext::new(),
-            registry,
-            linear(source, settings),
-            recipe,
-            RenderOptions::default().with_tile(tile),
-            x,
-            y,
-        )
-    }
-
     pub(crate) fn sample_linear(
         registry: &ModuleRegistry,
         source: &LinearImage,
@@ -2014,14 +1994,14 @@ pub(crate) mod testing {
         x: u32,
         y: u32,
     ) -> Result<Sample, Error> {
-        sample_linear_tiled(
+        sample_in(
+            &RenderContext::new(),
             registry,
-            source,
+            linear(source, settings),
             recipe,
-            settings,
+            RenderOptions::default(),
             x,
             y,
-            super::spatial::SPATIAL_TILE,
         )
     }
 
@@ -2053,7 +2033,7 @@ pub(crate) mod testing {
         Evaluation::new(
             Byte(source),
             Cow::Owned(compiled),
-            super::spatial::SPATIAL_TILE,
+            super::spatial::Tiling::Halo,
             SpatialMode::Point,
             &Cancel::never(),
             context,
@@ -2068,7 +2048,7 @@ pub(crate) mod testing {
         source: &'a LinearImage,
         recipe: &Recipe,
         settings: LinearSettings,
-        tile: u32,
+        tiling: super::spatial::Tiling,
         mode: SpatialMode,
     ) -> Result<Evaluation<'a, Linear<'a>>, Error> {
         let domain = Linear::new(source, settings)?;
@@ -2076,7 +2056,7 @@ pub(crate) mod testing {
         Evaluation::new(
             domain,
             Cow::Owned(compiled),
-            tile,
+            tiling,
             mode,
             &Cancel::never(),
             context,

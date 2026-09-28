@@ -29,8 +29,9 @@
 //!   a tap is clamped to it.
 //! - **A spatial operation** runs over the previous segment's window as its own stage: the rectangle
 //!   the next segment reads, grown by the operation's summed halo and clamped to the stage, with its
-//!   origin moved down to the [`SPATIAL_TILE`] grid. Every unit is tile invariant over tiles anchored
-//!   at the stage origin (the [`crate::modules::SpatialUnit`] contract), and a window whose origin is
+//!   origin moved down to the grid of the tiles the operation runs in
+//!   ([`Tiling::Halo`], 512 or 1024 px by its summed halo). Every unit is tile invariant over tiles
+//!   anchored at the stage origin (the [`crate::modules::SpatialUnit`] contract), and a window whose origin is
 //!   on that grid holds exactly the stage's own tiles, so every pixel the next segment reads is the
 //!   value the whole stage gives it. Its radii are the ones it was compiled with, against the whole
 //!   proxy stage. Its mask is compiled against the whole stage and read at the window's offset. What
@@ -46,10 +47,10 @@
 //! a spatial operation. With a spatial operation, its exact whole-stage estimate is retained. The tests below
 //! and in `preview::tests` prove these contracts.
 
-use super::{Compiled, Entry, ExactGeometry, Segment};
+use super::{Compiled, Entry, ExactGeometry, Segment, spatial::Tiling};
 use crate::{
     Error,
-    modules::{Global, Region, SPATIAL_TILE, SpatialOperation, Stage},
+    modules::{Global, Region, SpatialOperation, Stage},
 };
 use std::sync::Arc;
 
@@ -199,8 +200,9 @@ impl WindowPlan {
                         return Err(RegionFallback::EstimateAfterSpatial);
                     }
                     let grown = read.grown(operation.summed_halo(input), input);
-                    let x0 = grown.x0 / SPATIAL_TILE * SPATIAL_TILE;
-                    let y0 = grown.y0 / SPATIAL_TILE * SPATIAL_TILE;
+                    let tile = Tiling::Halo.tile(operation, input);
+                    let x0 = grown.x0 / tile * tile;
+                    let y0 = grown.y0 / tile * tile;
                     needed = Region {
                         x0,
                         y0,
@@ -1065,40 +1067,73 @@ mod tests {
             ],
             vec![mask],
         );
+        // At 1800 px the summed halo is small and the operation runs in 512 px tiles; at 4400 px
+        // the same payload's halo passes the bound and it runs in 1024 px tiles. Either way the
+        // window's origin is on its own tile grid and the output crosses one of its seams.
+        for (width, x0, expected) in [
+            (1800, 880, luxforge_raw::SPATIAL_TILE),
+            (4400, 1880, luxforge_raw::SPATIAL_WIDE_TILE),
+        ] {
+            spatial_viewport_case(&registry, &stack, width, x0, expected);
+        }
+    }
+
+    fn spatial_viewport_case(
+        registry: &ModuleRegistry,
+        stack: &Recipe,
+        width: u32,
+        x0: u32,
+        expected: u32,
+    ) {
         let requested = Region {
-            x0: 880,
+            x0,
             y0: 19,
             width: 420,
             height: 85,
         };
         let compiled = registry
-            .compile_sampled(1800, 128, &stack, crate::mask_field::MaskSampling::Point)
+            .compile_sampled(width, 128, stack, crate::mask_field::MaskSampling::Point)
             .unwrap();
-        let plan = WindowPlan::of_rect(&compiled, (1800, 128), requested).unwrap();
+        let plan = WindowPlan::of_rect(&compiled, (width, 128), requested).unwrap();
+        let tile = compiled
+            .segments
+            .iter()
+            .find_map(|segment| match &segment.entry {
+                Some(Entry::Spatial { operation, .. }) => {
+                    Some(Tiling::Halo.tile(operation, Stage { width, height: 128 }))
+                }
+                _ => None,
+            })
+            .expect("a spatial segment");
+        assert_eq!(tile, expected, "{width} px: the operation's tile");
         assert!(
-            plan.source.x0 >= SPATIAL_TILE,
+            plan.source.x0 >= tile,
             "the source window must have a nonzero tile origin"
         );
-        assert_eq!(plan.source.x0 % SPATIAL_TILE, 0);
+        assert_eq!(
+            plan.source.x0 % tile,
+            0,
+            "on the grid of the {tile} px tiles"
+        );
         assert!(
-            requested.x0 < 1024 && requested.x1() > 1024,
+            requested.x0 < 2 * tile && requested.x1() > 2 * tile,
             "the output crosses a tile seam"
         );
-        for (domain, source) in [("byte", jpeg(1800, 128)), ("raw", raw(1800, 128))] {
+        for (domain, source) in [("byte", jpeg(width, 128)), ("raw", raw(width, 128))] {
             let region_context = crate::RenderContext::new();
             let region_render = render(
-                &registry,
+                registry,
                 source.input(),
-                &stack,
+                stack,
                 RenderOptions::default(),
                 &region_context,
             )
             .unwrap();
             let whole_context = crate::RenderContext::new();
             let whole = render(
-                &registry,
+                registry,
                 source.input(),
-                &stack,
+                stack,
                 RenderOptions::default(),
                 &whole_context,
             )
@@ -1108,12 +1143,12 @@ mod tests {
             let crate::RegionRenderOutcome::Rendered(region) =
                 region_render.region(SnapshotId::new(), requested).unwrap()
             else {
-                panic!("{domain}: region declined")
+                panic!("{domain}, {width} px: region declined")
             };
             assert_eq!(
                 region.raster.rgba.as_ref(),
                 cropped_bytes(&whole, requested),
-                "{domain}"
+                "{domain}, {width} px"
             );
         }
     }
