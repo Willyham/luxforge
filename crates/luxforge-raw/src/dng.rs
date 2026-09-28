@@ -1199,7 +1199,7 @@ mod tests {
     use serde_json::Value;
 
     fn reference() -> Value {
-        serde_json::from_str(include_str!("../../../probes/raw/dng_reference.json")).unwrap()
+        serde_json::from_str(include_str!("../../../fixtures/raw-dng-reference.json")).unwrap()
     }
 
     fn row_fixture(width: u32, height: u32) -> (DngCorrection, PlanarRgb) {
