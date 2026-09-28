@@ -1308,6 +1308,7 @@ impl PixelDomain for Byte<'_> {
         let mut bytes = vec![0; (tile.pixels() * 4) as usize];
         let plane = region.pixels() as usize;
         let width = tile.width as usize;
+        let quantizer = quantizer();
         let row = |(row, bytes): (usize, &mut [u8])| {
             let y = tile.y0 + row as u32;
             // The tile's row inside each of the last unit's planes.
@@ -1320,9 +1321,9 @@ impl PixelDomain for Byte<'_> {
             for (column, pixel) in bytes.chunks_exact_mut(4).enumerate() {
                 // `quantize_pixel` channel by channel, written out so this hot loop does not
                 // depend on the array map being inlined into it.
-                pixel[0] = quantize_channel(f64::from(red[column]));
-                pixel[1] = quantize_channel(f64::from(green[column]));
-                pixel[2] = quantize_channel(f64::from(blue[column]));
+                pixel[0] = quantizer.channel(f64::from(red[column]));
+                pixel[1] = quantizer.channel(f64::from(green[column]));
+                pixel[2] = quantizer.channel(f64::from(blue[column]));
                 pixel[3] = alpha(tile.x0 + column as u32, y);
             }
         };
