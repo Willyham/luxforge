@@ -18,6 +18,8 @@ mod format;
 mod limits;
 mod native_tiles;
 mod neutral;
+#[cfg(test)]
+mod normalize;
 mod opcodes;
 mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
@@ -1025,6 +1027,117 @@ mod tests {
                     .all(|(a, b)| a.to_bits() == b.to_bits())
             );
         }
+    }
+
+    /// The Rust normalization of a synthetic mosaic described by native metadata, at `lanes`.
+    fn rust_normalize(
+        samples: &[u16],
+        meta: &NativeMetadata,
+        patches: &[MosaicCorrection],
+        gains: [f32; 3],
+        lanes: usize,
+    ) -> Vec<f32> {
+        let (cfa_width, cfa_height) = (meta.cfa_width as usize, meta.cfa_height as usize);
+        let (repeat_width, repeat_height) = (
+            meta.black_repeat_width as usize,
+            meta.black_repeat_height as usize,
+        );
+        normalize::Normalization {
+            samples,
+            corrections: patches,
+            width: meta.width as usize,
+            cfa: &meta.cfa[..cfa_width * cfa_height],
+            black: normalize::BlackLevels {
+                cfa_width,
+                cfa_height,
+                black_cfa: &meta.black_cfa[..cfa_width * cfa_height],
+                base: meta.black_base,
+                channels: meta.black_channels,
+                repeat_width,
+                repeat_height,
+                repeat: &meta.black_repeat[..repeat_width * repeat_height],
+            },
+            white: meta.white,
+            gains,
+        }
+        .run(lanes, &AtomicBool::new(false))
+        .unwrap()
+    }
+
+    /// A synthetic mosaic, its native metadata, its sparse repairs and its gains.
+    type NormalizationCase = (Vec<u16>, NativeMetadata, Vec<MosaicCorrection>, [f32; 3]);
+
+    /// Bayer and X-Trans normalization cases: black repeat patterns that do and do not divide the
+    /// CFA, sparse repairs, and an X-Trans frame above one megapixel.
+    fn normalization_cases() -> Vec<NormalizationCase> {
+        let repairs = |samples: &[u16], step: usize, white: u16| {
+            (1000..samples.len())
+                .step_by(step)
+                .map(|index| MosaicCorrection {
+                    index: index as u32,
+                    value: white - samples[index] % white,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut cases = Vec::new();
+        for (width, height) in [(1040_usize, 1030_usize), (317, 221)] {
+            let mut meta = RawSource::blank_native();
+            meta.width = width as u32;
+            meta.height = height as u32;
+            meta.cfa_width = 2;
+            meta.cfa_height = 2;
+            meta.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
+            meta.black_cfa[..4].copy_from_slice(&[0, 1, 3, 2]);
+            meta.black_base = 17.0;
+            meta.black_channels = [2.0, 4.0, 6.0, 8.0];
+            meta.black_repeat_width = 3;
+            meta.black_repeat_height = 2;
+            meta.black_repeat[..6].copy_from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+            meta.white = 4095.0;
+            let samples: Vec<u16> = (0..width * height)
+                .map(|i| ((i * 7919 + i / width * 113) % 4096) as u16)
+                .collect();
+            let patches = repairs(&samples, 7777, 4095);
+            cases.push((samples, meta, patches, [1.2, 1.0, 1.4]));
+        }
+        let (samples, meta) = synthetic_bayer(1057, 883, [1, 2, 0, 1]);
+        let patches = repairs(&samples, 4099, 4095);
+        cases.push((samples, meta, patches, [1.7, 1.0, 1.3]));
+        let (samples, meta) = synthetic_xtrans(245, 251);
+        let patches = repairs(&samples, 997, 16383);
+        cases.push((samples, meta, patches, [1.7, 1.0, 1.3]));
+        let (samples, mut meta) = synthetic_xtrans(1203, 877);
+        meta.black_repeat_width = 4;
+        meta.black_repeat_height = 5;
+        for (index, value) in meta.black_repeat[..20].iter_mut().enumerate() {
+            *value = (index * 3 % 7) as f32;
+        }
+        let patches = repairs(&samples, 5003, 16383);
+        cases.push((samples, meta, patches, [2.1, 1.0, 0.8]));
+        cases
+    }
+
+    /// The Rust normalization matches the native normalization's complete mosaic bit for bit, at
+    /// every lane count, on Bayer and X-Trans frames.
+    #[test]
+    fn rust_normalization_matches_the_native_mosaic_bits() {
+        let mut digests = Vec::new();
+        for (samples, meta, patches, gains) in normalization_cases() {
+            let mut native = vec![f32::NAN; samples.len()];
+            native_develop_for_test(&samples, &meta, &patches, gains, true, &mut native);
+            for lanes in [1, 2, 4, rayon::current_num_threads()] {
+                let rust = rust_normalize(&samples, &meta, &patches, gains, lanes);
+                assert_eq!(
+                    first_difference(&native, &rust),
+                    None,
+                    "{}x{} at {lanes} lanes",
+                    meta.width,
+                    meta.height
+                );
+            }
+            digests.push(bits_digest(&native));
+        }
+        println!("{digests:?}");
     }
 
     #[test]
