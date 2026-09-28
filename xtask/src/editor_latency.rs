@@ -166,10 +166,22 @@ impl FieldTarget {
             (headroom / self.step).floor().max(1.0)
         };
         let spacing = spacing_steps * self.step;
+        // A decimal step (0.01) is taken as a whole number of steps per unit and each value as that
+        // many steps divided by it, the nearest f64 to the decimal the slider itself sends:
+        // `57.0 * 0.01` is 0.5700000000000001, which no rail fraction sends, while `57.0 / 100.0`
+        // is 0.57. A step of one or more is exact as a product.
+        let per_unit = (1.0 / self.step).round();
+        let decimal = self.step < 1.0 && (per_unit * self.step - 1.0).abs() < 1e-9;
         (0..count)
             .map(|index| {
                 let raw = self.origin + (index + 1) as f64 * spacing;
-                ((raw / self.step).round() * self.step).clamp(self.min, self.max)
+                let steps = (raw / self.step).round();
+                let value = if decimal {
+                    steps / per_unit
+                } else {
+                    steps * self.step
+                };
+                value.clamp(self.min, self.max)
             })
             .collect()
     }
@@ -3662,6 +3674,21 @@ mod tests {
         let mut mismatched = events;
         mismatched[1]["detail"]["value"] = json!(4.0);
         assert!(inputs(&mismatched, Control::Slider, &field).is_err());
+    }
+
+    /// Every default exposure value is the decimal the slider sends, so a 30- or 100-sample drag
+    /// never asks for a value no rail fraction reaches (the 19th was once 0.5700000000000001).
+    #[test]
+    fn gesture_values_on_a_decimal_step_are_the_decimals_the_slider_sends() {
+        let field = FieldTarget::basic_exposure();
+        for count in [31, 101] {
+            for (index, value) in field.gesture_values(count).iter().enumerate() {
+                let hundredths = (value * 100.0).round();
+                assert_eq!(*value, hundredths / 100.0, "value {index} of {count}");
+                assert_eq!(value.to_string().parse::<f64>().unwrap(), *value);
+            }
+        }
+        assert_eq!(field.gesture_values(31)[18], 0.57);
     }
 
     #[test]
