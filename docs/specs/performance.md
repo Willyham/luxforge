@@ -1615,7 +1615,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | not measured | 137 px | 17.1 MiB | 14 | 240.0 MiB |
 | 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | not measured | 224 px | 24.1 MiB | 10 | 240.9 MiB |
 
-The three units together cost more than the sum of the singles, and that is the halo, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, so over the stage dehaze computes 5.2 times its pixels and texture 4.9 times, and the 101 MiB working set holds a batch to two tiles. Each of those tiles now runs its own passes on the pool (`Parallelism::Pool`, see the [architecture](../design/architecture.md#rendering-and-limits)), so the render uses about twelve cores instead of two; on the previous build the same test took 12447 / 12561 ms at 60 MP and 1670 / 1708 ms at 24 MP. Larger tiles would repeat less of the halo, measured below; tiling each unit separately would need an intermediate float frame between units, 687 MiB at 60 MP, over the JPEG frame limit. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+The three units together cost more than the sum of the singles, and that is the halo, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, so over the stage dehaze computes 5.2 times its pixels and texture 4.9 times, and the 101 MiB working set holds a batch to two tiles. Each of those tiles now runs its own passes on the pool (`Parallelism::Pool`, see the [architecture](../design/architecture.md#stage-boundaries)), so the render uses about twelve cores instead of two; on the previous build the same test took 12447 / 12561 ms at 60 MP and 1670 / 1708 ms at 24 MP. Larger tiles would repeat less of the halo, measured below; tiling each unit separately would need an intermediate float frame between units, 687 MiB at 60 MP, over the JPEG frame limit. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
 
 #### Lazy vignette falloff tables
 
@@ -2093,8 +2093,51 @@ Presence sample/render test also passes explicitly on all three originals, for 4
 the far corner through each of Clarity and Clarity plus Dehaze. Those test times are not a new
 latency distribution.
 
-The local evidence is under `artifacts/performance-first-wave/`; the implementation and
-performance review checklist are in [isolated rendering performance](../design/isolated-performance.md).
+The local evidence is under `artifacts/performance-first-wave/`; the kernels' contract and
+performance review checklist are [below](#the-isolated-kernels-contract-and-review).
+
+### The isolated kernels' contract and review
+
+These CPU kernels preserve photo output, editing semantics, recipes, API shapes, scheduling and
+memory targets.
+
+**Presence.** The filters' plane accessor (`Plane::get`) carries an ordinary inline hint. The
+release compiler can fold its coordinate clamps and address arithmetic into the callers; the M4
+comparison found no remaining out-of-line calls to this accessor. Edge clamping, pixel arithmetic,
+f64 filter accumulation, the tiling, parallelism and scratch bounds are unchanged by it, and it
+adds no specialized assembly or architecture-specific path.
+
+**RAW terminal conversion.** Finite values are clamped at the terminal boundary and quantized
+through the static sRGB code thresholds. Within `1e-12` linear of either adjacent code boundary,
+the original forward power/round evaluation is kept: forward and inverse floating-point transfer
+functions can disagree on the final byte at a boundary. Non-finite rejection and the extended
+linear domain before terminal conversion are unchanged; JPEG quantization keeps its own contract.
+The guard is conservatively tested on the M4, not a formal cross-platform error bound for `powf`.
+
+**Basic hue weighting.** The private skin-hue response accepts the bounded angle from atan2.
+Subtracting its 55° centre gives `[-235°, 125°]`. The only part that would wrap lands in
+`[125°, 180°]`, outside the ±35° active band either way, so the response uses the delta directly,
+with no general normalizer or remainder, and the band test and cosine arithmetic unchanged.
+
+**Exactness.** Independent filter references, serial/pool comparisons, tiles, masks and
+sample/render parity cover Presence. RAW tests compare the original forward terminal conversion
+at all 255 code boundaries and 128 f64 neighbours on either side, at the guard edges, through a
+dense sweep and deterministic float bit patterns, and on signed, headroom and non-finite inputs.
+An independent periodic oracle checks the hue response's boundaries and a million bounded angles.
+Complete 24/60 MP before/after output buffers provide a separate photo-sized check. Measured
+kernel savings are not presented as desktop latency or demosaic speedups, and native
+Windows/Linux numerical and desktop qualification remain separate from the M4 evidence.
+
+| Review question | Answer for these kernels |
+| --- | --- |
+| Original reads, hashes and decodes | No new request paths. Preparation continues through the signature-verified source cache. |
+| Frame allocations and sharing | No new buffers. Existing output allocations, identity sharing and spatial/colour targets remain in force. The RAW quantizer reuses the existing static threshold table. |
+| Point queries, validation and no-op checks | No new rasterization. Spatial sampling keeps its declared one-tile exception and exact render parity. |
+| Catalog owner work | No work moves to the owner. |
+| Desktop messages and uploads | No changes to state/history refresh, preview jobs or uploads. |
+| Timers, polls and subscriptions | None added or changed. |
+| Photo-sized cost | Release before/after evidence is recorded above, with kernel diagnostics distinguished from `editor-performance` and native desktop journeys. |
+| Exactness and sharing tests | Presence keeps the independent filter references, serial/pool, tile, mask and sample/render checks. RAW tests compare the original forward conversion at every code boundary and across finite/non-finite inputs. Hue tests compare the periodic formula at boundaries and through a million bounded angles. Full photo-buffer comparisons supplement these references; existing identity-sharing tests still apply. |
 
 ### Straightened-crop resample
 
@@ -2146,8 +2189,8 @@ Its cache distinguishes upstream masks and sampling, source development/view, ex
 white balance. Terminal encoding indexes the exact code boundaries, retaining the RAW boundary guard;
 source-only RAW rendering resolves the planar view once per row. Clipping reduces display grids into
 one output allocation, with at most 4 MiB of fixed partial scratch for tiny grids that would otherwise
-underfill the pool. The [implementation contract](../design/performance-second-wave.md) contains the
-resource and correctness checklist.
+underfill the pool. The [contract and review checklist](#source-preparation-and-rendering-contract-and-review)
+follow the method below.
 
 Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
 25 September 2026. Baseline production source `3890a5b`; integrated source `75cca64`.
@@ -2155,7 +2198,63 @@ All agent builds/tests were paused during timing. Each reported distribution com
 per leg in before/after/after/before order: 30 per variant, with no tails removed. Kernel leg-start
 one-minute load was 10.2–16.9, including the benchmarks themselves, above the harness's 8.0 threshold.
 These are relative live-host comparisons, not passed absolute latency budgets. Raw observations,
-commands, hashes and load are retained locally in `artifacts/performance-second-wave/`.
+commands, hashes and load are retained locally in `artifacts/performance-second-wave/`, and the
+research evidence, against `3890a5b`, in `artifacts/performance-next/`.
+
+### Source preparation and rendering: contract and review
+
+These changes keep the existing image and editing contracts and introduce no approximation or GPU
+behaviour. Originals stay immutable, nothing moves pixel work onto the owner or UI thread, and no
+user-facing API, recipe or catalog shape changes: existing commands gain the performance through the
+same implementation. One active preparation/preview lane and the existing resource limits remain,
+and new parallel work shares the process pool, measured under contention as well as in isolation.
+The source design contracts are [initial RAW](../design/initial-raw.md),
+[Air 2S](../design/air2s-dng.md), [Presence](../design/presence-mixer-vignette.md) and
+[instant previews](../design/instant-preview.md).
+
+1. A cold known RAW develops once, at the validated requested white balance, instead of as-shot
+   followed by the saved gains; a new import keeps as-shot. Fingerprints, source interpretation,
+   historical entry identity, concurrent changes and generation adoption stay authoritative.
+2. Texture and Clarity declare that they need no global estimate. Dehaze's estimate identity
+   excludes only its own strength: source development and view, upstream recipe and masks,
+   sampling mode, stage, exposure and white-balance identities invalidate it. Provider defaults stay
+   safe and caches bounded.
+3. DNG stage-3 optical corrections run disjoint rows on the development executor above a measured
+   threshold, keeping stage and channel order, f64 operations and tap summation, finite failures,
+   cancellation and the single active-area scratch plane, with no private pool or additional
+   full-frame allocation.
+4. Terminal quantization indexes the exact code thresholds through a small static coarse table,
+   keeping tie and clamp behaviour and the RAW canonical boundary guard.
+5. Clipping reduction partitions disjoint output rows into one final grid for display-sized grids.
+   Tiny grids with too few output rows use at most 64 fixed partial grids of at most 64 KiB each (at
+   most 4 MiB of scratch in all), so the shared pool stays useful. Exact cells, dimensions and
+   resource limits are preserved.
+6. A narrow source-only RAW render path resolves invariant layout once per row. Normal validation
+   and compilation, every supported source orientation and crop, f64 source adjustments, terminal
+   encoding, cancellation, metadata and the generic fallback stay in place.
+
+**Exactness.** Exact numerical changes are checked against independent canonical references,
+representable neighbours of every relevant threshold, error and cancellation cases and complete
+photo-sized output comparisons. Source preparation is exercised through new import, current and
+historical saved white balance, reload, interpretation and fingerprint mismatch and a concurrent
+white-balance change. Spatial estimates prove that preparation and reduction are actually avoided
+and correctly invalidated. DNG compares serial and pool output and supplied-file samples. The
+overlay compares every cell against a serial oracle. RAW rows compare generic evaluation, samples
+and buffers across views and exposure.
+
+**Review checklist.**
+
+- Reads, hashes and decode stay on the signature-verified source worker; direct-at-target white
+  balance removes a redundant development.
+- The quantizer adds a bounded static table; DNG keeps one bounded scratch plane; clipping removes
+  transient display-grid copies and bounds tiny-grid scratch to 4 MiB; the RAW row path adds no
+  frame-sized scratch.
+- Samples stay exact and use the existing bounded spatial tile; skipping irrelevant estimates
+  removes work without rasterizing a frame.
+- The owner performs only catalog, identity and validation work and job coordination; no new owner
+  frame work.
+- Desktop state, history, preview and upload paths and timers are unchanged.
+- Existing output sharing and resource limits are kept and checked by targeted tests.
 
 ### Prepared rendering and native DNG development
 
@@ -2279,7 +2378,7 @@ Windows/Linux numerical and native GPU qualification are not established by this
 Initial-source preparation now overlaps platform startup. RAW camera conversion mutates the existing
 planes in exact bounded chunks, mosaic normalization and the output scale use bounded 16-row jobs
 above one megapixel, and native Markesteijn and Bayer RCD use bounded tile jobs on the shared pool.
-See the [implementation contract](../design/performance-third-wave.md) and
+See the [contract and review checklist](#startup-and-raw-throughput-contract-and-review) and
 [native execution bounds](../design/native-demosaic-parallelism.md). No image equation or output
 quantization tolerance changes.
 
@@ -2292,6 +2391,46 @@ combines 15 observations per leg in before/after/after/before order:
 30 per variant, with tails retained. Builds and tests stop during timing. Commands, hashes, load,
 raw samples and captures are retained locally in `artifacts/performance-third-wave/`.
 Scopes below overlap and their savings must not be added.
+
+### Startup and RAW throughput: contract and review
+
+These changes relax no numerical contract, change no module and add no runtime dependency or
+scheduler. Source timings, render kernels and first-frame timings are distinct, and their savings
+overlap.
+
+1. The requested command-line image's bounded preparation job starts before platform and
+   event-loop initialization. It reuses the desktop client and carries the job or its error into the
+   ordinary open and adopt path. Catalog identity, generations, cancellation, original
+   verification, history and error presentation stay authoritative. An empty launch starts no image
+   job, and no source pixels are read or processed on the UI thread or the catalog owner.
+2. Independent Markesteijn tile groups run on the shared Rayon pool through a synchronous private
+   native callback, as specified in [bounded native demosaic parallelism](../design/native-demosaic-parallelism.md).
+   CFA phase, global tile origins, equations, per-pixel order, border handling and one output frame
+   are kept. Concurrent scratch is bounded, a job holds at most eight ordinary tiles and at most
+   eight jobs run at once on the refill executor; the dependent final job runs on the source caller
+   first, native failures and cancellation are handled, and there is no unsafe lazy shared
+   initialization. Bayer RCD uses the same executor.
+3. The core RAW camera matrix runs in exact disjoint 65,536-pixel chunks through the same refill
+   executor above one megapixel and in serial chunks below it, and adopts already-validated planes
+   through a private boundary that keeps the dimension and capacity checks. Public constructors
+   still reject non-finite input. Cancellation and arithmetic order are preserved, with no extra
+   full-frame allocation.
+
+**Exactness and liveness.** Native complete float buffers agree byte for byte with the serial
+reference at one, two, four and the admitted maximum workers, including custom white balance, odd
+edge tiles and concurrent callers; original hashes, RAW history and reopen, and sample/render
+parity stay intact. Worker count and aggregate explicit scratch are bounded. Cancellation, failures
+and teardown publish no partial frame, leak no work and never unwind across FFI, and no callback
+outlives the native call. Startup keeps the ordinary open behaviour: missing or invalid files report
+normally, a replacement cancels stale work, one source job is adopted once, an existing saved white
+balance is respected, and headless and background behaviour is unchanged. Unsupported platforms and
+absolute targets under load remain unqualified.
+
+**Review checklist.** Source work stays on the bounded worker. The native executor borrows the
+immutable mosaic and context, has disjoint output interiors and reuses admitted per-callback scratch
+across its tiles, then joins before borders. The core conversion mutates its existing three planes
+in place. Startup overlaps an existing job rather than creating a second service or cache. Pixel
+arithmetic, default previews, exact analysis and API/UI history keep their contracts.
 
 ### Exact camera conversion
 
