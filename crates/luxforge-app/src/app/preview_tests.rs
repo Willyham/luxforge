@@ -416,6 +416,122 @@ fn a_report_from_an_older_generation_is_ignored() {
     finish(editor, catalog);
 }
 
+/// A proxy frame is handed over before its job's coverage grid is filled, so the grid arrives
+/// second, as an overlay phase under the frame's generation. The frame is presented without a grid
+/// and a captured frame waits for that frame's own; a grid is taken up only over the frame of its
+/// own generation, so one from an older job, or from a job whose frame is not on screen, is
+/// dropped; and a frame whose job asked for no grid waits for none.
+#[test]
+fn a_coverage_grid_arriving_after_its_frame_is_drawn_over_that_frame_and_no_other() {
+    use luxforge_core::{MaskOverlayOutcome, PhaseOutcome, ProxyOutcome, analysis::MaskOverlay};
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    let log = attach_log(&mut editor);
+    let (analysis, raster) = analysed(&editor, 8, &[[40, 50, 60, 255]], 1, 1);
+    let identity = analysis.identity;
+    let result = |generation, outcome| luxforge_core::PreviewResult {
+        generation,
+        entry_id: identity.entry_id.clone(),
+        identity: identity.clone(),
+        draft_revision: None,
+        intent: luxforge_core::PreviewIntent::Immediate,
+        viewport_declined: None,
+        outcome,
+        approximate_white_balance: false,
+        render_ms: 1.0,
+        queue_wait_ms: None,
+    };
+    let proxy = |generation| {
+        result(
+            generation,
+            PhaseOutcome::Proxy(ProxyOutcome {
+                raster: raster.as_ref().clone(),
+                dimensions: (1, 1),
+                built: false,
+                approximation: luxforge_core::ProxyApproximation::default(),
+            }),
+        )
+    };
+    // Each grid's one cell names the generation it was filled for.
+    let overlay = |generation: u64| {
+        result(
+            generation,
+            PhaseOutcome::Overlay(MaskOverlayOutcome {
+                grid: Some(MaskOverlay {
+                    mask: luxforge_core::MaskId::new(),
+                    component: None,
+                    cells_w: 1,
+                    cells_h: 1,
+                    coverage: vec![generation as u8],
+                }),
+                absent: None,
+            }),
+        )
+    };
+    let pending = |editor: &Editor| {
+        editor
+            .mask_overlay_pending
+            .as_ref()
+            .map(|(generation, grid)| (*generation, grid.coverage.clone()))
+    };
+
+    editor.preview_generation = 8;
+    ticket(&mut editor, 8, 1);
+    editor.pending_overlay.insert(8);
+    let (_, shown) = editor.preview_ready(proxy(8));
+    assert!(
+        shown,
+        "the frame reaches the screen without waiting for its grid"
+    );
+    assert_eq!(editor.presented_generation, 8);
+    assert_eq!(pending(&editor), None, "a proxy frame carries no grid");
+    assert_eq!(
+        editor.overlay_awaited,
+        Some(8),
+        "its own grid is still to come"
+    );
+
+    // An older job's grid describes other pixels.
+    let (_, shown) = editor.preview_ready(overlay(7));
+    assert!(!shown);
+    assert_eq!(pending(&editor), None);
+    // So does a grid whose frame is not the one on screen.
+    let (_, shown) = editor.preview_ready(overlay(9));
+    assert!(!shown);
+    assert_eq!(pending(&editor), None);
+    assert_eq!(
+        editor.overlay_awaited,
+        Some(8),
+        "still waiting for the frame's own"
+    );
+
+    // The frame's own grid is taken up over it, and nothing is awaited any more.
+    let (_, shown) = editor.preview_ready(overlay(8));
+    assert!(!shown, "a grid is not a frame");
+    assert_eq!(pending(&editor), Some((8, vec![8])));
+    assert_eq!(editor.overlay_awaited, None);
+
+    // A frame whose job asked for no grid waits for none.
+    editor.mask_overlay_pending = None;
+    editor.preview_generation = 10;
+    ticket(&mut editor, 10, 1);
+    let (_, shown) = editor.preview_ready(proxy(10));
+    assert!(shown);
+    assert_eq!(editor.overlay_awaited, None);
+    assert_eq!(pending(&editor), None);
+    let records = logged(&mut editor, &log);
+    let dropped: Vec<_> = records
+        .iter()
+        .filter(|record| record["event"] == "mask_overlay_dropped")
+        .map(|record| record["detail"]["generation"].clone())
+        .collect();
+    assert_eq!(
+        dropped,
+        vec![json!(9)],
+        "the older grid never reached the handler"
+    );
+    finish(editor, catalog);
+}
+
 /// While a newer frame is rendering the previous counts stay on screen and are marked stale,
 /// rather than the plot going blank for the length of a render.
 #[test]

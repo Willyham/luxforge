@@ -193,6 +193,8 @@ impl Editor {
         self.pending_bounds.clear();
         self.pending_content.clear();
         self.pending_intent.clear();
+        self.pending_overlay.clear();
+        self.overlay_awaited = None;
         self.view_request_generation = None;
         self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
         self.desired_view_dirty = true;
@@ -621,6 +623,7 @@ impl Editor {
             let phase = match result.phase() {
                 PreviewPhase::Proxy => "proxy",
                 PreviewPhase::Region => "region",
+                PreviewPhase::Overlay => "overlay",
                 PreviewPhase::Exact => "exact",
             };
             self.event(
@@ -645,6 +648,10 @@ impl Editor {
         if result.region().is_some() {
             return self.region_ready(result);
         }
+        if let PhaseOutcome::Overlay(overlay) = result.outcome {
+            self.coverage_ready(result.generation, overlay);
+            return (Task::none(), false);
+        }
         if let Some(reason) = &result.viewport_declined {
             self.event(
                 "preview_view_fallback",
@@ -666,16 +673,18 @@ impl Editor {
         let interactive = result.intent == PreviewIntent::Interactive;
         let (proxy, frame, proxy_dimensions, proxy_built, proxy_approximation, mask_overlay, exact) =
             match result.outcome {
+                // A proxy frame carries no grid: its job's grid follows it as an overlay phase.
                 PhaseOutcome::Proxy(outcome) => (
                     true,
                     Ok(outcome.raster),
                     Some(outcome.dimensions),
                     outcome.built,
                     outcome.approximation,
-                    outcome.mask_overlay,
+                    luxforge_core::MaskOverlayOutcome::default(),
                     None,
                 ),
                 PhaseOutcome::Region(_) => unreachable!("region handled above"),
+                PhaseOutcome::Overlay(_) => unreachable!("overlay handled above"),
                 PhaseOutcome::Exact(outcome) => (
                     false,
                     outcome.result,
@@ -687,11 +696,12 @@ impl Editor {
                 ),
             };
         let (report, proxy_declined) = exact.unwrap_or_default();
-        // The mask overlay's coverage grid rides the first frame of its job — the proxy,
-        // when the job has one — so the overlay costs no second render and follows a drag
-        // at the proxy's pace. The exact phase behind a proxy carries none and leaves the
-        // proxy's grid on screen: both phases share one generation. `update_inner` hands
-        // the pending grid to the presenter once this message is done.
+        // A job without a proxy frame carries its coverage grid beside its one frame. A job
+        // with one sends the grid after the proxy, in its own overlay phase
+        // ([`Self::coverage_ready`]), so the overlay costs no second render and follows a drag
+        // at the proxy's pace without holding the frame back; the exact phase behind a proxy
+        // carries none and leaves that grid on screen, since both share one generation.
+        // `update_inner` hands the pending grid to the presenter once this message is done.
         let luxforge_core::MaskOverlayOutcome {
             grid: mask_overlay,
             absent: mask_overlay_absent,
@@ -869,6 +879,33 @@ impl Editor {
         }
     }
 
+    /// A job's coverage grid, arriving after the proxy frame it describes.
+    ///
+    /// It is drawn only over the frame of its own generation. A grid whose frame is not the one on
+    /// screen — a newer frame was presented meanwhile, or its frame was never presented at all —
+    /// describes other pixels, so it is dropped and the presenter keeps what it has: the grid of
+    /// the frame on screen, or that frame's reason for having none, is still to come or has
+    /// already been taken up. Until the grid arrives the frame is drawn without one, since the
+    /// grid of an older frame is never drawn over a newer one.
+    fn coverage_ready(&mut self, generation: u64, overlay: luxforge_core::MaskOverlayOutcome) {
+        if self.overlay_awaited == Some(generation) {
+            self.overlay_awaited = None;
+        }
+        if generation != self.presented_generation || self.region_raster.is_some() {
+            self.event(
+                "mask_overlay_dropped",
+                json!({"generation":generation,"presented_generation":self.presented_generation}),
+            );
+            return;
+        }
+        let luxforge_core::MaskOverlayOutcome { grid, absent } = overlay;
+        if let Some(grid) = grid {
+            self.mask_overlay_pending = Some((generation, grid));
+        } else if let Some(reason) = absent {
+            self.mask_overlay_unavailable(generation, &reason);
+        }
+    }
+
     /// Publish visible pixels without treating them as a whole-image report or retained full
     /// raster. The worker's region carries its own stage coordinates; the surface maps those
     /// coordinates through the full output stage, including odd dimensions at half detail.
@@ -973,6 +1010,8 @@ impl Editor {
             approximate: approximate_white_balance,
         });
         let luxforge_core::MaskOverlayOutcome { grid, absent } = region.mask_overlay;
+        // A region carries its own grid, so no proxy's grid is awaited over it.
+        self.overlay_awaited = None;
         if let Some(grid) = grid {
             self.mask_overlay_pending = Some((generation, grid));
         } else if let Some(reason) = absent {
@@ -1486,9 +1525,13 @@ impl Editor {
         // and no second render for the overlay. The core validates the request against the stack
         // this job will render, so a mask the stack does not hold leaves the frame without a grid
         // instead of failing the render.
+        let mut overlay_asked = false;
         if let Some(overlay) = self.mask_overlay_request() {
             match job.clone().with_mask_overlay(overlay) {
-                Ok(with_overlay) => job = with_overlay,
+                Ok(with_overlay) => {
+                    job = with_overlay;
+                    overlay_asked = true;
+                }
                 Err(error) => self.event(
                     "mask_overlay_refused",
                     json!({"detail": error.detail.clone()}),
@@ -1518,6 +1561,9 @@ impl Editor {
         self.pending_bounds.insert(generation, bounds);
         self.pending_content.insert(generation, content);
         self.pending_intent.insert(generation, intent);
+        if overlay_asked {
+            self.pending_overlay.insert(generation);
+        }
         if replaced.is_some() && replaced == self.view_request_generation {
             self.view_request_generation = None;
             self.desired_view_dirty = true;
@@ -1526,6 +1572,7 @@ impl Editor {
             self.pending_bounds.remove(&replaced);
             self.pending_content.remove(&replaced);
             self.pending_intent.remove(&replaced);
+            self.pending_overlay.remove(&replaced);
         }
         if replaced.is_some() && replaced == self.draft_generation {
             self.draft_preview_superseded(replaced);
@@ -1711,6 +1758,12 @@ impl Editor {
         }
         self.pending_bounds
             .retain(|generation, _| *generation > upload.generation);
+        // A proxy frame whose job asked for a grid has it still to come, in the overlay phase that
+        // follows it; any other frame carried its own, or none was asked for.
+        self.overlay_awaited = (upload.proxy && self.pending_overlay.contains(&upload.generation))
+            .then_some(upload.generation);
+        self.pending_overlay
+            .retain(|generation| *generation > upload.generation);
         self.refit_pending = false;
         // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
         // is waiting for stays the one picks, readouts and the next request are addressed to.

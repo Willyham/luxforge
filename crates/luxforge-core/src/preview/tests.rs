@@ -730,7 +730,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
             48,
             masked_basic(&mask),
             Some(bounds(40, 40)),
-            2,
+            3,
             2,
         ),
         (
@@ -739,7 +739,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
             300,
             cropped,
             Some(bounds(40, 30)),
-            2,
+            3,
             2,
         ),
         ("no proxy", 64, 48, masked_basic(&mask), None, 1, 1),
@@ -762,7 +762,9 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         let exact = results.last().expect("an exact phase");
         assert!(exact.raster().is_ok(), "{name}");
         let first = results.first().expect("a first phase");
-        assert!(first.mask_overlay().grid.is_some(), "{name}");
+        // The grid follows a proxy frame in its own phase, and rides a job's one frame otherwise.
+        let carrier = if proxy.is_some() { &results[1] } else { first };
+        assert!(carrier.mask_overlay().grid.is_some(), "{name}");
         if let Some(display) = proxy {
             let plan = source
                 .proxy_plan(&registry, &recipe, display)
@@ -776,14 +778,15 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     }
 }
 
-/// A job's coverage grid rides its first frame: the proxy phase when it has one, which then leaves
-/// the exact phase without one, and the one exact phase otherwise — including a job that offered
-/// bounds and had its proxy declined. Whichever phase carries it, it is byte for byte the grid a
-/// job without a proxy carries, because it reads no pixel of the exact frame: over a geometric mask
-/// and over a value-based one, through a straightening crop, and as the same refusal where a
-/// value-based mask sits behind a spatial layer.
+/// A job's coverage grid follows its proxy frame when it has one: the proxy is handed over first,
+/// carrying no grid, the grid comes next in an overlay phase of its own under the same generation,
+/// and the exact phase behind them carries none. A job without a proxy carries it on its one exact
+/// phase — including a job that offered bounds and had its proxy declined. Whichever phase carries
+/// it, it is byte for byte the grid a job without a proxy carries, because it reads no pixel of the
+/// exact frame: over a geometric mask and over a value-based one, through a straightening crop, and
+/// as the same refusal where a value-based mask sits behind a spatial layer.
 #[test]
-fn the_coverage_grid_arrives_with_the_first_frame_and_is_the_same_grid_on_either_phase() {
+fn the_coverage_grid_follows_the_proxy_frame_and_is_the_same_grid_on_either_phase() {
     let presence = |mask: Option<&Mask>| Layer {
         id: LayerId::new(),
         effect_id: crate::PRESENCE_EFFECT.into(),
@@ -838,16 +841,39 @@ fn the_coverage_grid_arrives_with_the_first_frame_and_is_the_same_grid_on_either
         );
 
         let phases = run(Some(bounds(40, 40)));
-        assert_eq!(phases.len(), 2, "{name}: a proxy phase, then the exact one");
-        assert_eq!(phases[0].phase(), PreviewPhase::Proxy, "{name}");
+        assert_eq!(
+            phases.iter().map(PreviewResult::phase).collect::<Vec<_>>(),
+            [
+                PreviewPhase::Proxy,
+                PreviewPhase::Overlay,
+                PreviewPhase::Exact
+            ],
+            "{name}: the proxy frame, then its grid, then the exact frame"
+        );
+        assert!(
+            phases
+                .iter()
+                .all(|phase| phase.generation == phases[0].generation),
+            "{name}: one generation keys the frame and its grid"
+        );
+        assert!(phases[0].raster().is_ok(), "{name}");
         assert_eq!(
             phases[0].mask_overlay(),
-            &expected,
-            "{name}: the proxy carries the very grid the exact-only job does"
+            &MaskOverlayOutcome::default(),
+            "{name}: the proxy frame is handed over before its grid is filled"
         );
-        assert!(phases[1].raster().is_ok(), "{name}");
         assert_eq!(
             phases[1].mask_overlay(),
+            &expected,
+            "{name}: the grid that follows is the very grid the exact-only job carries"
+        );
+        assert!(
+            phases[1].raster().is_err(),
+            "{name}: an overlay phase carries no frame"
+        );
+        assert!(phases[2].raster().is_ok(), "{name}");
+        assert_eq!(
+            phases[2].mask_overlay(),
             &MaskOverlayOutcome::default(),
             "{name}: the exact phase behind a proxy carries no second grid"
         );
