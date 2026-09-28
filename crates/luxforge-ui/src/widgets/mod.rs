@@ -103,8 +103,8 @@ pub use popover::{POPOVER_GAP, popover};
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
 pub use readout_card::{readout_card, readout_card_height};
 pub use section_header::{
-    SectionHeaderModel, band_header, collapsed_section_height, expanded_section_height, module_section,
-    section_body, section_header,
+    SectionHeaderModel, band_header, collapsed_section_height, expanded_section_height,
+    module_section, section_body, section_header,
 };
 pub use segmented::{SegmentedModel, segment, segment_track, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};

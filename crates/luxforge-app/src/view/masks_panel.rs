@@ -312,7 +312,11 @@ fn mask_row_view<'a>(
 }
 
 /// A mask's menu: Rename, Duplicate, Invert, Move up, Move down, Delete, and its requests.
-fn mask_menu(model: &MasksModel, row: &MaskRow, from_rule: bool) -> Vec<MenuEntry<Message>> {
+pub(crate) fn mask_menu(
+    model: &MasksModel,
+    row: &MaskRow,
+    from_rule: bool,
+) -> Vec<MenuEntry<Message>> {
     let id = row.id.as_str().to_owned();
     let enabled = model.enabled;
     let live = |edit: RowEdit, allowed: bool| (enabled && allowed).then(|| run(edit));
@@ -374,7 +378,7 @@ fn mask_moves(row: &MaskRow) -> (RowEdit, RowEdit) {
 }
 
 /// Every request a mask's row and menu send, each copyable as the JSON request it is.
-fn mask_copy_menu(row: &MaskRow) -> Vec<MenuEntry<Message>> {
+pub(crate) fn mask_copy_menu(row: &MaskRow) -> Vec<MenuEntry<Message>> {
     let id = row.id.as_str().to_owned();
     let (up, down) = mask_moves(row);
     let mut entries = vec![
@@ -412,7 +416,7 @@ fn mask_copy_menu(row: &MaskRow) -> Vec<MenuEntry<Message>> {
 
 /// A kind menu: every kind the build can create, each with its icon and letter, the drawn kinds
 /// first and the typed ones after a rule, in the host's table order.
-fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Message>> {
+pub(crate) fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Message>> {
     let mut entries = Vec::new();
     let mut drawn = true;
     for kind in &model.kinds {
@@ -739,7 +743,7 @@ fn component_view<'a>(
 
 /// A component's menu: Rename, Edit shape or Paint more, Move up, Move down, Delete (Delete mask
 /// for a mask's only component), and its requests.
-fn component_menu(
+pub(crate) fn component_menu(
     model: &MasksModel,
     open: &MaskRow,
     component: &ComponentRow,
@@ -805,7 +809,10 @@ fn component_moves(component: &ComponentRow) -> (RowEdit, RowEdit) {
 
 /// Every request a component's row and menu send, each copyable as the JSON request it is: its
 /// modes, its inversion, its moves, its delete and its rename.
-fn component_copy_menu(open: &MaskRow, component: &ComponentRow) -> Vec<MenuEntry<Message>> {
+pub(crate) fn component_copy_menu(
+    open: &MaskRow,
+    component: &ComponentRow,
+) -> Vec<MenuEntry<Message>> {
     let id = component.id.as_str().to_owned();
     let (up, down) = component_moves(component);
     let mut entries = Vec::new();

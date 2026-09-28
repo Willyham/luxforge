@@ -7,9 +7,10 @@ use crate::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
     DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
-    POPOVER_GAP, RenameMessages, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit, caption, compact_toggle,
-    component_note, component_row, coverage_thumbnail, dropdown_button, field_grid, group_rule,
-    mask_row, menu_list, mode_control, overlay_control, stroke_row, swatch_slots, theme,
+    POPOVER_GAP, RenameMessages, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit, caption,
+    compact_toggle, component_note, component_row, coverage_thumbnail, dropdown_button, field_grid,
+    group_rule, mask_row, menu_list, mode_control, overlay_control, stroke_row, swatch_slots,
+    theme,
 };
 use iced::widget::{Column, Row, Space, container, row};
 use iced::{Alignment, Element, Length, Padding};

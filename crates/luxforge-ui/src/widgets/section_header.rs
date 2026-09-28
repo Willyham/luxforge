@@ -342,7 +342,11 @@ mod tests {
     #[test]
     fn the_masks_band_builds_expanded_and_collapsed() {
         for (active, expanded, hint) in [
-            (true, true, Some("3 masks · Esc leaves Mask mode".to_owned())),
+            (
+                true,
+                true,
+                Some("3 masks · Esc leaves Mask mode".to_owned()),
+            ),
             (false, false, None),
         ] {
             let _: Element<'_, ()> = band_header("Masks", active, hint, expanded, ());
