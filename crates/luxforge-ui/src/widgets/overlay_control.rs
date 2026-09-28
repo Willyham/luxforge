@@ -29,7 +29,7 @@ impl OverlayMode {
     /// The four modes, in the control's order.
     pub const ALL: [Self; 4] = [Self::Off, Self::Tint, Self::Mask, Self::Image];
 
-    pub const fn icon(self) -> Icon {
+    pub(crate) const fn icon(self) -> Icon {
         match self {
             Self::Off => Icon::OverlayOff,
             Self::Tint => Icon::OverlayTint,
@@ -91,7 +91,7 @@ pub struct OverlayControlModel {
 }
 
 /// Whether the tint swatches can be chosen: only while the overlay is a tint.
-pub fn tints_enabled(model: &OverlayControlModel) -> bool {
+pub(crate) fn tints_enabled(model: &OverlayControlModel) -> bool {
     model.enabled && model.mode == OverlayMode::Tint
 }
 

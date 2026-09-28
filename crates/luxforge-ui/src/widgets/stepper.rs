@@ -47,7 +47,8 @@ pub struct StepperRailMessages<'a, M> {
 /// The rail's width in a stepper row `row_width` points wide with no label: the row less the two
 /// buttons, the value box and the four gaps between them. crop-and-straighten.png's 274 pt row
 /// leaves a 160 pt rail.
-pub fn stepper_rail_width(row_width: f32) -> f32 {
+#[cfg(test)]
+pub(crate) fn stepper_rail_width(row_width: f32) -> f32 {
     (row_width
         - 2.0 * theme::HEADER_BUTTON_SIZE
         - theme::FIELD_WIDTH

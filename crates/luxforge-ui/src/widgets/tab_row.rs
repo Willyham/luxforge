@@ -33,7 +33,8 @@ pub struct TabRowModel {
 }
 
 /// The height a tab row takes in a section body, its margins included.
-pub const fn tab_row_height() -> f32 {
+#[cfg(test)]
+pub(crate) const fn tab_row_height() -> f32 {
     theme::TAB_ROW_MARGIN + theme::TAB_ROW_HEIGHT + theme::TAB_ROW_MARGIN
 }
 

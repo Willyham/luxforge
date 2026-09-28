@@ -866,15 +866,6 @@ pub fn control_surface(_theme: &Theme) -> container::Style {
     bordered_surface(CONTROL)
 }
 
-/// A control surface with its border tinted [`ACCENT`], for a warning notice's card.
-pub fn warning_surface(_theme: &Theme) -> container::Style {
-    surface(BAR).border(Border {
-        color: ACCENT,
-        width: BORDER_WIDTH,
-        radius: RADIUS.into(),
-    })
-}
-
 /// A piece of floating canvas chrome — the mode strip, the draft bar or a notice — on the Bar
 /// surface with `border`, `radius` and the soft [`CHROME_SHADOW`].
 pub fn chrome_surface(border: Color, radius: f32) -> container::Style {

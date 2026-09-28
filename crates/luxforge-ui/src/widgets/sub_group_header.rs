@@ -32,7 +32,8 @@ pub struct SubGroupHeaderModel {
 }
 
 /// The height a group header takes in a section body, its margin included.
-pub const fn sub_group_header_height() -> f32 {
+#[cfg(test)]
+pub(crate) const fn sub_group_header_height() -> f32 {
     theme::GROUP_MARGIN + theme::GROUP_HEADER_HEIGHT
 }
 

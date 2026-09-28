@@ -61,7 +61,7 @@ pub fn section_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'
 /// Iced's text renderer has no OpenType feature switch, so it cannot request the `tnum` font
 /// feature the visual language calls for. Right-aligning in a fixed box gives the property that
 /// matters here — a value's units place stays put as its tens or sign change — without it.
-pub fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
+pub(crate) fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     container(
         text(content.into())
             .size(theme::SIZE_CONTROL)
@@ -78,7 +78,10 @@ pub fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, 
 
 /// A control's label on its label line: 12 pt in the label colour, one line
 /// [`theme::SLIDER_LABEL_HEIGHT`] tall, so a slider row keeps its pitch.
-pub fn control_label<'a>(content: impl Into<String>, enabled: bool) -> iced::widget::Text<'a> {
+pub(crate) fn control_label<'a>(
+    content: impl Into<String>,
+    enabled: bool,
+) -> iced::widget::Text<'a> {
     text(content.into())
         .size(theme::SIZE_CONTROL)
         .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
@@ -90,7 +93,7 @@ pub fn control_label<'a>(content: impl Into<String>, enabled: bool) -> iced::wid
 }
 
 /// 11 pt semibold secondary text in sentence case: a sub-group's label (White balance, Tone).
-pub fn group_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
+pub(crate) fn group_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_CAPTION)
         .font(theme::FONT_SEMIBOLD)

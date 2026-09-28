@@ -22,15 +22,16 @@
 //! Everything that is not a left press is forwarded unchanged, so the content keeps every other
 //! event — including the release that ends a drag the first click started.
 
-use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer};
-use iced::{Element, Event, Length, Point, Rectangle, Size, Vector};
+use super::decorator::{Decoration, decorate};
+use iced::advanced::widget::Tree;
+use iced::advanced::{Clipboard, Layout, Shell, mouse, renderer};
+use iced::{Element, Event, Point, Rectangle};
 
 /// Wraps `content` so that a double-click anywhere over it publishes `on_double_click`.
 ///
 /// The wrapper has no size, layout, styling or interaction of its own: everything is delegated to
 /// the content, so wrapping a widget never changes how it looks or how it is measured.
-pub fn double_click<'a, M: Clone + 'a>(
+pub(crate) fn double_click<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,
     on_double_click: M,
 ) -> Element<'a, M> {
@@ -50,11 +51,13 @@ pub fn double_click_when<'a, M: Clone + 'a>(
     on_double_click: M,
     enabled: bool,
 ) -> Element<'a, M> {
-    Element::new(DoubleClick {
-        content: content.into(),
-        on_double_click,
-        enabled,
-    })
+    decorate(
+        content,
+        DoubleClick {
+            on_double_click,
+            enabled,
+        },
+    )
 }
 
 /// Whether one left press over the content is the one that publishes the message.
@@ -66,8 +69,7 @@ fn resets(kind: mouse::click::Kind) -> bool {
     matches!(kind, mouse::click::Kind::Double)
 }
 
-struct DoubleClick<'a, M, Theme = iced::Theme, Renderer = iced::Renderer> {
-    content: Element<'a, M, Theme, Renderer>,
+struct DoubleClick<M> {
     on_double_click: M,
     /// Presses are classified only while this is set; the wrapper stays in the tree either way.
     enabled: bool,
@@ -80,60 +82,16 @@ struct State {
     previous_click: Option<mouse::Click>,
 }
 
-impl<M, Theme, Renderer> Widget<M, Theme, Renderer> for DoubleClick<'_, M, Theme, Renderer>
+impl<'a, M, Theme, Renderer> Decoration<'a, M, Theme, Renderer> for DoubleClick<M>
 where
     Renderer: renderer::Renderer,
     M: Clone,
 {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(State::default())
-    }
-
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn size_hint(&self) -> Size<Length> {
-        self.content.as_widget().size_hint()
-    }
-
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.content
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
-    }
-
-    fn operate(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn Operation,
-    ) {
-        self.content
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
-    }
+    type State = State;
 
     fn update(
         &mut self,
+        content: &mut Element<'a, M, Theme, Renderer>,
         tree: &mut Tree,
         event: &Event,
         layout: Layout<'_>,
@@ -148,14 +106,14 @@ where
         if self.enabled
             && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
             && let Some(position) = cursor.position_over(layout.bounds())
-            && self.record(tree, position)
+            && record(tree, position)
         {
             shell.publish(self.on_double_click.clone());
             shell.capture_event();
             return;
         }
 
-        self.content.as_widget_mut().update(
+        content.as_widget_mut().update(
             &mut tree.children[0],
             event,
             layout,
@@ -166,76 +124,22 @@ where
             viewport,
         );
     }
-
-    fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
-    }
-
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
-    }
-
-    fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
-        self.content.as_widget_mut().overlay(
-            &mut tree.children[0],
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
-    }
 }
 
-impl<M, Theme, Renderer> DoubleClick<'_, M, Theme, Renderer> {
-    /// Records one left press and answers whether it completes a double click.
-    fn record(&self, tree: &mut Tree, position: Point) -> bool {
-        let state: &mut State = tree.state.downcast_mut();
-        let click = mouse::Click::new(position, mouse::Button::Left, state.previous_click);
-        state.previous_click = Some(click);
-        resets(click.kind())
-    }
+/// Records one left press in the wrapper's state and answers whether it completes a double click.
+fn record(tree: &mut Tree, position: Point) -> bool {
+    let state: &mut State = tree.state.downcast_mut();
+    let click = mouse::Click::new(position, mouse::Button::Left, state.previous_click);
+    state.previous_click = Some(click);
+    resets(click.kind())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::decorator::Decorated;
     use super::*;
+    use iced::Size;
+    use iced::advanced::{Widget, layout, widget::tree};
     use mouse::{Button, Click, click::Kind};
 
     /// The rule the wrapper applies to each press it classifies. Iced decides which kind a press
@@ -254,13 +158,15 @@ mod tests {
 
     /// The wrapper over an empty 40 × 12 content, with the unit renderer: enough to drive `update`
     /// and the tree reconciliation exactly as the runtime does, without a window or a GPU.
-    type Wrapper = DoubleClick<'static, u8, iced::Theme, ()>;
+    type Wrapper = Decorated<'static, u8, DoubleClick<u8>, iced::Theme, ()>;
 
     fn wrapper(enabled: bool) -> Wrapper {
-        DoubleClick {
+        Decorated {
             content: Element::new(iced::widget::Space::new().width(40).height(12)),
-            on_double_click: 7,
-            enabled,
+            decoration: DoubleClick {
+                on_double_click: 7,
+                enabled,
+            },
         }
     }
 

@@ -78,7 +78,7 @@ const STALE_ALPHA: f32 = 0.35;
 
 /// Where one bin's column centre falls across a plot `width` wide. Bin 0 sits on the left edge and
 /// bin 255 on the right edge, so the plot spans the whole output range with no margin of its own.
-pub fn bin_x(index: usize, width: f32) -> f32 {
+pub(crate) fn bin_x(index: usize, width: f32) -> f32 {
     if BINS <= 1 {
         return 0.0;
     }
@@ -89,7 +89,7 @@ pub fn bin_x(index: usize, width: f32) -> f32 {
 /// then the baseline's right end, so the path closes along the bottom edge. Heights are clamped
 /// into `0.0..=1.0` and a non-finite height is treated as zero, so no caller arithmetic can push a
 /// point outside the plot.
-pub fn polygon_points(bins: &[f32; BINS], size: Size) -> Vec<Point> {
+pub(crate) fn polygon_points(bins: &[f32; BINS], size: Size) -> Vec<Point> {
     let baseline = size.height;
     let mut points = Vec::with_capacity(BINS + 2);
     points.push(Point::new(0.0, baseline));
@@ -110,7 +110,7 @@ pub fn polygon_points(bins: &[f32; BINS], size: Size) -> Vec<Point> {
 
 /// The plot: three filled, overlapping channel polygons on the Canvas surface, inside a faint
 /// rounded outline, at the design's fixed height.
-pub fn histogram<'a, M: 'a>(model: &HistogramModel) -> Element<'a, M> {
+pub(crate) fn histogram<'a, M: 'a>(model: &HistogramModel) -> Element<'a, M> {
     container(
         canvas(Plot { model: *model })
             .width(Length::Fill)
@@ -278,7 +278,7 @@ const TRIANGLE_HIT_PAD: f32 = 3.0;
 
 /// The ink of one clipping triangle: [`theme::CLIP_TRIANGLE_REST`] while its endpoint has no pixels
 /// or it is disabled, and its overlay's own colour once the endpoint has some.
-pub fn triangle_ink(model: &ClipTriangleModel) -> Color {
+pub(crate) fn triangle_ink(model: &ClipTriangleModel) -> Color {
     if model.enabled && model.tinted {
         model.tint
     } else {
@@ -290,7 +290,7 @@ pub fn triangle_ink(model: &ClipTriangleModel) -> Color {
 /// [`theme::CLIP_TRIANGLE_HEIGHT`] triangle pointing up, in a button reaching [`TRIANGLE_HIT_PAD`]
 /// beyond it. It publishes `on_press` and nothing else: which flag that toggles, and what the rule
 /// says, are the caller's.
-pub fn clip_triangle<'a, M: Clone + 'a>(
+pub(crate) fn clip_triangle<'a, M: Clone + 'a>(
     model: &ClipTriangleModel,
     on_press: Option<M>,
 ) -> Element<'a, M> {
@@ -335,7 +335,7 @@ pub fn clip_triangle<'a, M: Clone + 'a>(
 
 /// The three corners of a clipping triangle filling `size`: apex at the top centre, base along the
 /// bottom edge.
-pub fn triangle_points(size: Size) -> [Point; 3] {
+pub(crate) fn triangle_points(size: Size) -> [Point; 3] {
     [
         Point::new(0.0, size.height),
         Point::new(size.width / 2.0, 0.0),

@@ -77,14 +77,14 @@ pub fn hex_to_rgb(input: &str) -> Option<[u8; 3]> {
     ])
 }
 
-pub fn plane_fraction(point: Point, bounds: Rectangle) -> [f32; 2] {
+pub(crate) fn plane_fraction(point: Point, bounds: Rectangle) -> [f32; 2] {
     [
         ((point.x - bounds.x) / bounds.width).clamp(0.0, 1.0),
         (1.0 - (point.y - bounds.y) / bounds.height).clamp(0.0, 1.0),
     ]
 }
 
-pub fn hue_fraction(point: Point, bounds: Rectangle) -> f32 {
+pub(crate) fn hue_fraction(point: Point, bounds: Rectangle) -> f32 {
     ((point.x - bounds.x) / bounds.width).clamp(0.0, 1.0)
 }
 

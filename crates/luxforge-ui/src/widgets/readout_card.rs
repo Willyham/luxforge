@@ -10,7 +10,8 @@ use iced::widget::{Column, container, row, text};
 use iced::{Element, Length, Padding};
 
 /// The card's height for `rows` rows, its padding included.
-pub fn readout_card_height(rows: usize) -> f32 {
+#[cfg(test)]
+pub(crate) fn readout_card_height(rows: usize) -> f32 {
     2.0 * theme::READOUT_PADDING_Y + rows as f32 * theme::READOUT_LINE_HEIGHT
 }
 

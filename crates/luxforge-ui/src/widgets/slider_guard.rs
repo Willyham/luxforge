@@ -1,16 +1,13 @@
 //! Filter Iced slider events: panel scrolling must never edit, and disabled rails are inert.
 
-use iced::advanced::{
-    Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
-    widget::{Operation, Tree, tree},
-};
+use super::decorator::Decoration;
+use iced::advanced::{Clipboard, Layout, Shell, mouse, widget::Tree};
 use iced::{
-    Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
+    Element, Event, Rectangle, Renderer, Theme,
     keyboard::{self, Key, key::Named},
 };
 
 pub(super) struct SliderGuard<'a, M> {
-    pub content: Element<'a, M>,
     pub enabled: bool,
     pub value: f64,
     pub min: f64,
@@ -21,7 +18,7 @@ pub(super) struct SliderGuard<'a, M> {
 }
 
 #[derive(Default)]
-struct KeyState {
+pub(super) struct KeyState {
     modifiers: keyboard::Modifiers,
     active: bool,
 }
@@ -30,65 +27,12 @@ fn forwards_to_slider(event: &Event, enabled: bool) -> bool {
     enabled && !matches!(event, Event::Mouse(mouse::Event::WheelScrolled { .. }))
 }
 
-impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for SliderGuard<'a, M> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<KeyState>()
-    }
-    fn state(&self) -> tree::State {
-        tree::State::new(KeyState::default())
-    }
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
-    }
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.content
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
-    }
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
-    }
-    fn operate(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn Operation,
-    ) {
-        self.content
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
-    }
+impl<'a, M: Clone + 'a> Decoration<'a, M, Theme, Renderer> for SliderGuard<'a, M> {
+    type State = KeyState;
+
     fn update(
         &mut self,
+        content: &mut Element<'a, M>,
         tree: &mut Tree,
         event: &Event,
         layout: Layout<'_>,
@@ -156,7 +100,7 @@ impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for SliderGuard<'a, M> {
                 _ => {}
             }
         }
-        self.content.as_widget_mut().update(
+        content.as_widget_mut().update(
             &mut tree.children[0],
             event,
             layout,
@@ -167,8 +111,10 @@ impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for SliderGuard<'a, M> {
             viewport,
         );
     }
+
     fn mouse_interaction(
         &self,
+        content: &Element<'a, M>,
         tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -176,7 +122,7 @@ impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for SliderGuard<'a, M> {
         renderer: &Renderer,
     ) -> mouse::Interaction {
         if self.enabled {
-            self.content.as_widget().mouse_interaction(
+            content.as_widget().mouse_interaction(
                 &tree.children[0],
                 layout,
                 cursor,
@@ -186,28 +132,6 @@ impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for SliderGuard<'a, M> {
         } else {
             mouse::Interaction::None
         }
-    }
-    fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
-        self.content.as_widget_mut().overlay(
-            &mut tree.children[0],
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
-    }
-}
-
-impl<'a, M: Clone + 'a> From<SliderGuard<'a, M>> for Element<'a, M> {
-    fn from(guard: SliderGuard<'a, M>) -> Self {
-        Element::new(guard)
     }
 }
 

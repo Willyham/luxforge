@@ -40,7 +40,7 @@ pub struct SparklineModel {
 /// bottom inset (zero) to the top inset (one); it is clamped into `0.0..=1.0`, and a non-finite
 /// value is treated as zero. A size smaller than the insets shrinks them rather than placing a
 /// point outside the box.
-pub fn sparkline_points(values: &[f32], capacity: usize, size: Size) -> Vec<Point> {
+pub(crate) fn sparkline_points(values: &[f32], capacity: usize, size: Size) -> Vec<Point> {
     let shown = values.len().min(capacity);
     let values = &values[values.len() - shown..];
     let (width, height) = (size.width.max(0.0), size.height.max(0.0));
@@ -72,7 +72,7 @@ pub fn sparkline_points(values: &[f32], capacity: usize, size: Size) -> Vec<Poin
 /// baseline in the rule colour along the bottom, the area under the line filled opaque, the line
 /// in the rail's fill colour and the newest point a dot in the thumb's colour. An empty series
 /// draws only the baseline and a single value only the dot.
-pub fn sparkline<'a, M: 'a>(model: &SparklineModel) -> Element<'a, M> {
+pub(crate) fn sparkline<'a, M: 'a>(model: &SparklineModel) -> Element<'a, M> {
     canvas(Trace {
         values: model.values.clone(),
         capacity: model.capacity,

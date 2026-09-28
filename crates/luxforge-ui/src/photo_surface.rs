@@ -130,11 +130,6 @@ pub fn surface_retirement_pending() -> bool {
     process_figures().retirement_pending.load(Ordering::Acquire) != 0
 }
 
-/// Actual RGBA bytes handed to `wgpu::Queue::write_texture` by photograph uploads.
-pub fn texture_upload_bytes() -> u64 {
-    process_figures().upload_bytes.load(Ordering::Relaxed)
-}
-
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
 /// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
 /// backend-owned upload staging are outside these photograph-slot byte counts.

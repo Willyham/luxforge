@@ -26,7 +26,7 @@ impl CombineMode {
     pub const ALL: [Self; 3] = [Self::Add, Self::Subtract, Self::Intersect];
 
     /// The glyph the control draws for the mode.
-    pub const fn icon(self) -> Icon {
+    pub(crate) const fn icon(self) -> Icon {
         match self {
             Self::Add => Icon::Plus,
             Self::Subtract => Icon::Minus,
@@ -50,7 +50,7 @@ pub struct ModeControlModel {
 /// A glyph's ink: the chosen Subtract in the highlight clipping red, the chosen Intersect in the
 /// shadow clipping blue, the chosen Add in bright text; the others tertiary. A fixed mode's glyph
 /// is dimmed, and a disabled control's glyphs are all faint.
-pub fn mode_ink(mode: CombineMode, selected: bool, fixed: bool, enabled: bool) -> Color {
+pub(crate) fn mode_ink(mode: CombineMode, selected: bool, fixed: bool, enabled: bool) -> Color {
     match (enabled, fixed, selected, mode) {
         (false, ..) => theme::TEXT_FAINT,
         (true, true, _, _) => theme::MODE_FIXED_INK,
@@ -62,7 +62,8 @@ pub fn mode_ink(mode: CombineMode, selected: bool, fixed: bool, enabled: bool) -
 }
 
 /// The control's width for `segments` glyphs: the segments and the insets around and between them.
-pub const fn mode_control_width(segments: usize) -> f32 {
+#[cfg(test)]
+pub(crate) const fn mode_control_width(segments: usize) -> f32 {
     segments as f32 * theme::MODE_SEGMENT_SIZE + (segments as f32 + 1.0) * theme::MODE_INSET
 }
 
