@@ -3148,6 +3148,7 @@ mod tests {
             basic: true,
             presence: true,
             mask: false,
+            mask_overlay: false,
             zoom: None,
             moving_pan: false,
         };
