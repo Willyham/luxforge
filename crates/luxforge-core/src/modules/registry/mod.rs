@@ -27,9 +27,9 @@ pub use placement::insertion_index_among;
 pub use variants::Superseded;
 
 use super::{
-    BasicModule, CanvasInteraction, CapabilityModule, CropModule, MixerModule, ModuleDescriptor,
-    PixelModule, PresenceModule, PresetsModule, Processing, RawModule, Stage, ToolModule,
-    TransformModule, VignetteModule,
+    BasicModule, CanvasInteraction, CapabilitiesProofModule, CapabilityModule, ControlsModule,
+    CropModule, MixerModule, ModuleDescriptor, PixelModule, PresenceModule, PresetsModule,
+    Processing, RawModule, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::Error;
 #[cfg(test)]
@@ -39,14 +39,14 @@ use std::{
     sync::Arc,
 };
 
-/// The linked built-in providers, in the order a registry lists them: presets first, because the
-/// module owns no layer and its section leads the tools panel, then pixel, RAW, Basic, presence,
-/// the colour mixer, transforms, crop and the vignette. [`ModuleRegistry::builtin`] registers
-/// exactly these, and a client that serves a different set — the desktop's `--disable-module`,
-/// its developer proofs — starts from this list rather than keeping its own. External loading is a
-/// later, separately measured step.
-pub fn builtin_modules() -> Vec<Arc<dyn ToolModule>> {
-    vec![
+/// The linked providers a run serves, in the order a registry lists them: presets first, because
+/// the module owns no layer and its section leads the tools panel, then the pixel proof, RAW, Basic,
+/// presence, the colour mixer, transforms, crop, the vignette and the controls proof. The two
+/// proofs are test modules — their descriptors declare `developer` — so only a `developer` run gets
+/// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
+/// own starts from them too. External loading is a later, separately measured step.
+pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
+    let linked: [Arc<dyn ToolModule>; 10] = [
         Arc::new(PresetsModule::new()),
         Arc::new(PixelModule::new()),
         Arc::new(RawModule::new()),
@@ -56,7 +56,45 @@ pub fn builtin_modules() -> Vec<Arc<dyn ToolModule>> {
         Arc::new(TransformModule::new()),
         Arc::new(CropModule::new()),
         Arc::new(VignetteModule::new()),
-    ]
+        Arc::new(ControlsModule::new()),
+    ];
+    linked
+        .into_iter()
+        .filter(|module| developer || !module.descriptor().developer)
+        .collect()
+}
+
+/// The reason a module named by `--disable-module` reports.
+const DISABLED_REASON: &str = "disabled by --disable-module";
+
+/// What a run serves, as the desktop's and `luxforge-json`'s command lines name it: their
+/// `--disable-module`, `--developer` and `--proof-endpoint` mean the same, because both assemble
+/// their registry through [`ModuleRegistry::assemble`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegistryOptions<'a> {
+    /// Linked module identities to register unavailable, so a stack that uses one reports the
+    /// unavailable effect instead of rendering without it. Naming a module the run does not serve
+    /// is refused.
+    pub disabled: &'a [String],
+    /// A developer run also serves the test modules: every linked module whose descriptor declares
+    /// `developer`, and the capability proof when a proof endpoint is named.
+    pub developer: bool,
+    /// The base URL of a capability proof endpoint a harness started, whose palette the capability
+    /// proof installs. Only a developer run takes one.
+    pub proof_endpoint: Option<&'a str>,
+}
+
+impl RegistryOptions<'_> {
+    /// Refuse what no run serves: a proof endpoint outside developer mode, since the capability
+    /// proof is a test fixture that never joins a photo-editing workspace. A binary checks this
+    /// while reading its arguments, before it starts anything, and [`ModuleRegistry::assemble`]
+    /// checks it again.
+    pub fn check(&self) -> Result<(), String> {
+        if self.proof_endpoint.is_some() && !self.developer {
+            return Err("--proof-endpoint requires developer mode (--developer)".into());
+        }
+        Ok(())
+    }
 }
 
 /// A provider registered unavailable: the module's own descriptor with its availability replaced,
@@ -193,13 +231,32 @@ impl ModuleRegistry {
         Self::default()
     }
 
-    /// A registry of [`builtin_modules`], every one available.
-    pub fn builtin() -> Self {
+    /// The registry a run serves: the linked product modules; in a developer run the test modules
+    /// too, and the capability proof when it names a proof endpoint; and each module `options`
+    /// disables registered unavailable. The desktop and `luxforge-json` both assemble theirs here,
+    /// so they serve and refuse the same things in the same words.
+    pub fn assemble(options: &RegistryOptions<'_>) -> Result<Self, String> {
+        options.check()?;
+        let mut modules = linked_modules(options.developer);
+        if options.developer
+            && let Some(base) = options.proof_endpoint
+        {
+            modules.push(Arc::new(CapabilitiesProofModule::new(base)));
+        }
         let mut registry = Self::new();
-        for module in builtin_modules() {
-            registry
-                .register(module)
-                .expect("built-in module descriptors are valid");
+        let mut unknown: Vec<&str> = options.disabled.iter().map(String::as_str).collect();
+        for module in modules {
+            let id = module.descriptor().id.clone();
+            let registered = if options.disabled.contains(&id) {
+                unknown.retain(|named| *named != id);
+                registry.register_unavailable(module, DISABLED_REASON)
+            } else {
+                registry.register(module)
+            };
+            registered.map_err(|error| error.to_string())?;
+        }
+        if let Some(id) = unknown.first() {
+            return Err(format!("--disable-module names no registered module: {id}"));
         }
         registry
             .check_complete()
@@ -210,14 +267,29 @@ impl ModuleRegistry {
             host.validate_host()
                 .expect("the host's descriptors are valid");
         }
-        registry
+        Ok(registry)
+    }
+
+    /// The registry of an ordinary run: every product module, available, and no test module.
+    pub fn builtin() -> Self {
+        Self::assemble(&RegistryOptions::default()).expect("the product modules register")
+    }
+
+    /// The registry of a developer run without a proof endpoint: [`Self::builtin`] with the pixel
+    /// and controls proofs, for tests that reach one.
+    pub fn developer() -> Self {
+        Self::assemble(&RegistryOptions {
+            developer: true,
+            ..RegistryOptions::default()
+        })
+        .expect("the product and test modules register")
     }
 
     /// Register `module` as unavailable, for `reason`: its descriptor, effects, actions, queries and
     /// tasks are registered and listed exactly as [`Self::register`] would, with its availability
     /// `unavailable {reason}`. A stack holding one of its effects stays readable and is reported
     /// rather than rendered without it, and its actions, queries and tasks are refused by name, as
-    /// for any unavailable provider. The desktop's `--disable-module` is one.
+    /// for any unavailable provider. [`RegistryOptions::disabled`] registers through it.
     pub fn register_unavailable(
         &mut self,
         module: Arc<dyn ToolModule>,

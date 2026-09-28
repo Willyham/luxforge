@@ -60,6 +60,8 @@ pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_
 pub(crate) use raw::white_balance_variants;
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 #[cfg(test)]
+pub(crate) use registry::linked_modules;
+#[cfg(test)]
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
@@ -67,7 +69,7 @@ pub(crate) use registry::tests::{
     STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{
-    ActionRef, ModuleRegistry, QueryRef, Superseded, builtin_modules, insertion_index_among,
+    ActionRef, ModuleRegistry, QueryRef, RegistryOptions, Superseded, insertion_index_among,
 };
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,

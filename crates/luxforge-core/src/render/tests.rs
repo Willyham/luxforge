@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 pub(crate) fn registry() -> ModuleRegistry {
-    ModuleRegistry::builtin()
+    ModuleRegistry::developer()
 }
 
 pub(crate) fn source(width: u32, height: u32) -> SourceImage {
@@ -290,7 +290,7 @@ pub(crate) fn crop_layer(crop: CropPayload) -> Layer {
 }
 
 pub(crate) fn geometry_registry() -> ModuleRegistry {
-    let mut registry = ModuleRegistry::builtin();
+    let mut registry = ModuleRegistry::developer();
     registry.register(GeometryTestModule::shared()).unwrap();
     registry
 }

@@ -1111,7 +1111,8 @@ mod tests {
     fn a_refusal_names_the_entry_it_evaluated_and_a_plan_that_samples_nothing_needs_nothing() {
         let catalog = temp("preparation-needs.sqlite");
         let asset = {
-            let mut service = EditorService::open(&catalog).unwrap();
+            let mut service =
+                EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             let asset = service.import(&fixture()).unwrap().asset.id;
             service
                 .apply_action(
@@ -1123,7 +1124,8 @@ mod tests {
                 .unwrap();
             asset
         };
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.state(&asset).unwrap();
         let original = service.history(&asset, None, 10).unwrap().entries[1].clone();
         assert_eq!(original.action_id, "original");

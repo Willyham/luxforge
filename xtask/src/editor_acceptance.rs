@@ -1,9 +1,9 @@
 use crate::*;
 use luxforge_core::{
     CROP_EFFECT, CropPayload, CropStage, EditorService, ModuleRegistry, Mutation, MutationOutcome,
-    ORIENTATION_EFFECT, Transform, builtin_modules,
+    ORIENTATION_EFFECT, Transform,
 };
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 fn mutation(revision: u64, request: impl Into<String>) -> Mutation {
     Mutation {
@@ -45,27 +45,37 @@ pub fn run(root: &Path, out: &Path) -> Result {
             .flat_map(|descriptor| descriptor.actions.iter())
             .map(|action| action.id.clone())
             .collect();
-        // The registry lists exactly the linked built-in modules, in their order, with every
-        // action each declares; which modules and actions those are is the committed descriptor
-        // snapshot's (`crates/luxforge-core/tests/modules/descriptors.rs`).
-        let linked = builtin_modules();
+        // The registry lists exactly a developer registry's modules less its test modules, in
+        // their order, with every action each declares; which modules and actions those are is
+        // the committed descriptor snapshot's (`crates/luxforge-core/tests/modules/descriptors.rs`).
+        // The journey below commits `set-pixel`, so it is served by the developer registry.
+        let developer = Arc::new(ModuleRegistry::developer());
+        let product: Vec<_> = developer
+            .descriptors()
+            .into_iter()
+            .filter(|descriptor| !descriptor.developer)
+            .collect();
         ensure(
             modules
-                == linked
+                == product
                     .iter()
-                    .map(|module| module.descriptor().id.clone())
+                    .map(|descriptor| descriptor.id.clone())
                     .collect::<Vec<_>>()
                 && actions
-                    == linked
+                    == product
                         .iter()
-                        .flat_map(|module| module.descriptor().actions.iter())
+                        .flat_map(|descriptor| descriptor.actions.iter())
                         .map(|action| action.id.clone())
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<_>>()
+                && developer
+                    .descriptors()
+                    .iter()
+                    .any(|descriptor| descriptor.id == "luxforge.pixel"),
             "Built-in module discovery changed",
         )?;
         drop(registry);
         let started = Instant::now();
-        let mut service = EditorService::open(&catalog)?;
+        let mut service = EditorService::open_with(&catalog, developer.clone())?;
         let state = service.import(&fixture)?;
         let import_ms = started.elapsed().as_secs_f64() * 1000.0;
         let asset = state.asset.id.clone();
@@ -337,7 +347,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
         drop(service);
 
         let reopen_started = Instant::now();
-        let mut service = EditorService::open(&catalog)?;
+        let mut service = EditorService::open_with(&catalog, developer)?;
         let reopened = service.state(&asset)?;
         let reopen_ms = reopen_started.elapsed().as_secs_f64() * 1000.0;
         ensure(reopened.revision == 214, "Revision did not survive reopen")?;

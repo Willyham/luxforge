@@ -29,42 +29,6 @@ pub(crate) struct Boot {
     pub(crate) window: (f32, f32),
 }
 
-/// The reason a module named by `--disable-module` reports.
-pub(super) const DISABLED_REASON: &str = "disabled by --disable-module";
-
-/// The providers this run serves: the core's built-in modules, with any `--disable-module` one
-/// registered unavailable. In developer mode the controls proof joins them, and the capability
-/// proof too when a proof endpoint is named.
-pub(super) fn registry(
-    disabled: &[String],
-    developer: bool,
-    proof_endpoint: Option<&str>,
-) -> Result<ModuleRegistry, String> {
-    let mut registry = ModuleRegistry::new();
-    let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
-    let mut modules = luxforge_core::builtin_modules();
-    if developer {
-        modules.push(Arc::new(luxforge_core::ControlsModule::new()));
-        if let Some(base) = proof_endpoint {
-            modules.push(Arc::new(luxforge_core::CapabilitiesProofModule::new(base)));
-        }
-    }
-    for module in modules {
-        let id = module.descriptor().id.clone();
-        let registered = if disabled.contains(&id) {
-            unknown.retain(|named| *named != id);
-            registry.register_unavailable(module, DISABLED_REASON)
-        } else {
-            registry.register(module)
-        };
-        registered.map_err(|error| error.to_string())?;
-    }
-    match unknown.first() {
-        Some(id) => Err(format!("--disable-module names no registered module: {id}")),
-        None => Ok(registry),
-    }
-}
-
 /// Where the capability host keeps module settings, grants and resources, under the run's
 /// resolved paths, and which secret store it uses. An evidence run keeps all of it inside its
 /// evidence directory with an in-memory store, so it never touches the person's configuration or
@@ -95,11 +59,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(
-        &config.disabled,
-        config.developer,
-        config.proof_endpoint.as_deref(),
-    )?);
+    let registry = Arc::new(ModuleRegistry::assemble(&config.registry_options())?);
     let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
         .map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(

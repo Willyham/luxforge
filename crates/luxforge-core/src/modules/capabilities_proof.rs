@@ -3,8 +3,8 @@
 //! secret key, the two implemented capabilities, one pinned resource its activation loads, and one
 //! worker task that sends the photo's sample grid to the profile's endpoint and publishes a tint
 //! artifact, which its colour-stage effect applies by multiplying linear channels. It is a test
-//! fixture: the desktop registers it only in developer mode with `--proof-endpoint`,
-//! `luxforge-json` with `--proof-endpoint`, and tests directly, always against the fake provider a
+//! fixture: the desktop and `luxforge-json` register it only in developer mode with
+//! `--proof-endpoint`, and tests directly, always against the fake provider a
 //! harness started (`luxforge-testkit`'s `ProofEndpoint`, which ships in no binary). See
 //! `docs/design/module-capabilities.md#proof-module`.
 use super::{

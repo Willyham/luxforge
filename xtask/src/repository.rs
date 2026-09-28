@@ -852,6 +852,29 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "the harness assembles editor arguments only in the scenario library's Launch and \
                  launches the editor only through its Run (xtask/src/scenario/launch.rs)",
     },
+    // One registry assembly: `ModuleRegistry::assemble` decides which linked modules a run serves
+    // — the test modules only in developer mode, the capability proof only with a proof endpoint —
+    // and registers what `--disable-module` names unavailable, for the desktop, `luxforge-json`
+    // and the harness alike. A second assembly would construct a test module or register one
+    // unavailable itself.
+    SourceRule {
+        name: "registry-assembly",
+        tokens: &[
+            "register_unavailable(",
+            "PixelModule::new(",
+            "ControlsModule::new(",
+            "CapabilitiesProofModule::new(",
+        ],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/modules/registry/mod.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "a run's registry is assembled only by ModuleRegistry::assemble \
+                 (crates/luxforge-core/src/modules/registry/mod.rs), so test modules join only a \
+                 developer run and every binary refuses the same flags in the same words",
+    },
     // One RAW manifest reader: `raw::manifest` reads and checks every RAW manifest, for
     // `raw-corpus`, `verify` and the `raw-editor` scenario alike. A reader elsewhere names the
     // manifest's list untyped (`["sources"]`) or declares its fields again (`neutral_point:`,
@@ -2710,6 +2733,52 @@ mod tests {
                 ("xtask/src/tool.rs", "let args = editor_args(&args);\n"),
             ],
             "scenario library's Launch",
+        );
+    }
+
+    #[test]
+    fn only_the_one_assembly_builds_a_runs_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The assembly, test code and a longer name may.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-core/src/modules/registry/mod.rs",
+                    "Arc::new(PixelModule::new()),\nregistry.register_unavailable(module, r)\n",
+                ),
+                (
+                    "crates/luxforge-cli/src/json.rs",
+                    "let r = ModuleRegistry::assemble(&options)?;\nlet p = MyPixelModule::new();\n\
+                     #[cfg(test)]\nmod tests {\n    fn t() { ControlsModule::new(); }\n}\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["registry-assembly"]).unwrap(), (1, 0));
+        // Anywhere else, in a binary, the core or the harness, each is refused.
+        refuses_each(
+            root,
+            "registry-assembly",
+            &[
+                (
+                    "crates/luxforge-app/src/app/lifecycle.rs",
+                    "registry.register_unavailable(module, DISABLED_REASON)?;\n",
+                ),
+                (
+                    "crates/luxforge-cli/src/json.rs",
+                    "registry.register(Arc::new(CapabilitiesProofModule::new(base)))?;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/editor.rs",
+                    "let pixel = Arc::new(PixelModule::new());\n",
+                ),
+                (
+                    "xtask/src/controls_smoke.rs",
+                    "registry.register(Arc::new(ControlsModule::new()))?;\n",
+                ),
+            ],
+            "ModuleRegistry::assemble",
         );
     }
 

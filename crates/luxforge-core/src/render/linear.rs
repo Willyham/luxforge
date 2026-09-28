@@ -1069,7 +1069,7 @@ mod tests {
             varied(41, 29).with_view([1, 2, 38, 26], 6).unwrap(),
             varied(157, 101).with_view([2, 1, 150, 97], 3).unwrap(),
         ];
-        let registry = ModuleRegistry::builtin();
+        let registry = ModuleRegistry::developer();
         let basic = colour_layer(
             crate::BASIC_EFFECT,
             serde_json::json!({"exposure": 0.4, "contrast": 20.0, "vibrance": 15.0}),
@@ -2034,7 +2034,7 @@ mod tests {
     #[test]
     fn source_rows_keep_validation_fallback_cancellation_and_finite_errors() {
         let source = varied(9, 7);
-        let registry = ModuleRegistry::builtin();
+        let registry = ModuleRegistry::developer();
         let settings = LinearSettings::default();
         for recipe in [
             Recipe {
@@ -2489,7 +2489,7 @@ mod tests {
             ..Recipe::default()
         };
         let sample = sample_linear(
-            &ModuleRegistry::builtin(),
+            &ModuleRegistry::developer(),
             &source,
             &recipe,
             LinearSettings::default(),

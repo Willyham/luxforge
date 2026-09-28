@@ -386,7 +386,7 @@ fn one_layer_per_target_is_what_single_layer_means() {
 /// be removed by accident.
 #[test]
 fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let mask = gradient_mask("Mask 1");
     let recipe = |layer: Layer| Recipe {
         format: RECIPE_FORMAT,
@@ -679,7 +679,7 @@ fn a_component_kind_this_build_does_not_know_is_refused_by_every_compile() {
 
 #[test]
 fn payload_format_and_shape_are_validated_by_the_providing_module() {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let wrong_format = Layer {
         effect_format: 99,
         ..Layer::pixel(0, 0, [1, 2, 3])
@@ -861,9 +861,9 @@ fn bound_descriptor() -> ModuleDescriptor {
     .unwrap()
 }
 
-/// The built-in providers and [`BoundModule`].
+/// The developer registry, whose pixel layer binds no artifact, and [`BoundModule`].
 fn bound_registry() -> ModuleRegistry {
-    let mut registry = ModuleRegistry::builtin();
+    let mut registry = ModuleRegistry::developer();
     registry
         .register(Arc::new(BoundModule(bound_descriptor(), true)))
         .unwrap();

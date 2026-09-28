@@ -1185,6 +1185,7 @@ fn file_identity(_: &Metadata, canonical: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModuleRegistry;
     use crate::editor::{
         AnalysisSelection, MutationOutcome,
         test_support::{fixture, mutation, synthetic_raw_metadata, temp},
@@ -1549,7 +1550,8 @@ mod tests {
     fn a_raw_draft_preview_approximates_and_every_strict_path_refuses() {
         let path = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("fixture path"));
         let catalog = temp("raw-approximate.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&path).unwrap();
         let asset = state.asset.id.clone();
         let is_required = |error: Error| error.kind == ErrorKind::PreparationRequired;

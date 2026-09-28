@@ -13,8 +13,9 @@ const BINARY: &str = env!("CARGO_BIN_EXE_luxforge-json");
 fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
     let catalog = fixtures::temp_catalog("json-cli");
     let fixture = fixtures::jpeg().canonicalize().unwrap();
+    // The pixel proof is a test module, served only with --developer.
     let mut child = Command::new(BINARY)
-        .args(["--catalog", catalog.to_str().unwrap()])
+        .args(["--catalog", catalog.to_str().unwrap(), "--developer"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -140,6 +141,82 @@ fn only_a_client_started_with_permission_authority_may_grant() {
     );
 }
 
+/// `luxforge-json` serves the test modules only with `--developer`, whatever its build profile:
+/// without it `schema.list` names no method a developer-only module generates and `module.list` no
+/// such module; with it the list gains exactly those. A proof endpoint without it is refused
+/// before anything starts, in the desktop's words.
+#[test]
+fn test_modules_are_served_only_with_developer() {
+    let data_root = fixtures::temp_path("json-cli-developer");
+    let requests = [
+        json!({"id": "schema", "method": "schema.list", "params": {}}),
+        json!({"id": "modules", "method": "module.list", "params": {}}),
+    ];
+    // Every method `schema.list` lists, and every method the developer-only modules generate:
+    // `edit.<action>`, `query.<query>` and `task.<task>`.
+    let listed = |extra: &[&str]| {
+        let responses = session(&data_root, extra, &requests);
+        let mut methods: Vec<String> = responses[0]["result"]["methods"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        methods.sort();
+        let mut developer_ids = Vec::new();
+        let mut generated = Vec::new();
+        for module in responses[1]["result"]["modules"].as_array().unwrap() {
+            if module["developer"] != json!(true) {
+                continue;
+            }
+            developer_ids.push(module["id"].as_str().unwrap().to_owned());
+            for (key, prefix) in [("actions", "edit"), ("queries", "query"), ("tasks", "task")] {
+                for declared in module[key].as_array().into_iter().flatten() {
+                    generated.push(format!("{prefix}.{}", declared["id"].as_str().unwrap()));
+                }
+            }
+        }
+        generated.sort();
+        (methods, developer_ids, generated)
+    };
+    let (ordinary, ordinary_developer, _) = listed(&[]);
+    assert!(ordinary_developer.is_empty(), "{ordinary_developer:?}");
+    let (developer, developer_ids, generated) = listed(&["--developer"]);
+    assert_eq!(developer_ids, ["luxforge.pixel", "luxforge.controls"]);
+    assert!(
+        generated.contains(&"edit.set-pixel".to_owned()),
+        "{generated:?}"
+    );
+    let mut added: Vec<String> = developer
+        .iter()
+        .filter(|method| !ordinary.contains(method))
+        .cloned()
+        .collect();
+    added.sort();
+    assert_eq!(
+        added, generated,
+        "developer mode adds exactly the test modules' methods"
+    );
+    assert!(ordinary.iter().all(|method| developer.contains(method)));
+
+    let refused = Command::new(BINARY)
+        .args([
+            "--catalog",
+            "unused.sqlite",
+            "--proof-endpoint",
+            "http://127.0.0.1:9",
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(
+        error,
+        json!({"error": {"code": "startup", "message": "--proof-endpoint requires developer mode (--developer)"}})
+    );
+    assert!(!data_root.exists());
+}
+
 /// Grant the scope a `consent-required` answer names; the client has permission authority.
 fn grant(client: &mut JsonProcess, refused: &Value, request_id: &str) {
     assert_eq!(refused["error"]["code"], "consent-required", "{refused}");
@@ -191,6 +268,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
             "--secret-store",
             "memory",
             "--permission-authority",
+            "--developer",
             "--proof-endpoint",
             &base,
         ],

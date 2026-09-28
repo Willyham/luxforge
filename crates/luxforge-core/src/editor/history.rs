@@ -680,6 +680,7 @@ fn valid_version_name(name: &str) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModuleRegistry;
     use crate::Transform;
     use crate::editor::test_support::{
         SHRINK_ACTION, SHRINK_EFFECT, ShrinkModule, brushed, commit, fixture, mutation, next_entry,
@@ -687,6 +688,7 @@ mod tests {
     };
     use rusqlite::Connection;
     use serde_json::Map;
+    use std::sync::Arc;
 
     #[test]
     fn persistent_history_journey_retains_snapshots_navigation_and_source() {
@@ -695,7 +697,8 @@ mod tests {
         let source_bytes = std::fs::read(&source_path).unwrap();
         let (asset, original, a, b);
         {
-            let mut service = EditorService::open(&catalog).unwrap();
+            let mut service =
+                EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             let state = service.import(&source_path).unwrap();
             asset = state.asset.id.clone();
             original = state.current_entry.id.clone();
@@ -723,7 +726,8 @@ mod tests {
                 .unwrap();
             assert_eq!(service.history(&asset, None, 20).unwrap().entries.len(), 5);
         }
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.state(&asset).unwrap();
         assert_eq!(state.revision, 6);
         assert!(
@@ -750,7 +754,8 @@ mod tests {
     #[test]
     fn retries_noops_conflicts_pagination_and_wrong_assets_are_safe() {
         let catalog = temp("requests.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id;
         let original_pixel = service.render_current(&asset).unwrap().pixel(0, 0).unwrap();
@@ -803,7 +808,8 @@ mod tests {
         let catalog = temp("rows.sqlite");
         let (asset, a, restored);
         {
-            let mut service = EditorService::open(&catalog).unwrap();
+            let mut service =
+                EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             asset = service.import(&fixture()).unwrap().asset.id;
             a = service
                 .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
@@ -821,7 +827,8 @@ mod tests {
                 .unwrap()
                 .current_entry_id;
         }
-        let service = EditorService::open(&catalog).unwrap();
+        let service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         crate::editor::read_counts::take();
         let page = service.history(&asset, None, 50).unwrap();
         assert_eq!(
@@ -866,7 +873,8 @@ mod tests {
         let catalog = temp("versions.sqlite");
         let (asset, a, original);
         {
-            let mut service = EditorService::open(&catalog).unwrap();
+            let mut service =
+                EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             let state = service.import(&fixture()).unwrap();
             asset = state.asset.id.clone();
             original = state.current_entry.id.clone();
@@ -909,7 +917,8 @@ mod tests {
                 .collect();
             assert_eq!(names, [("Keeper".to_string(), 1), ("Start".to_string(), 0)]);
         }
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let versions = service.versions(&asset).unwrap();
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[1].entry_id, original);
@@ -943,7 +952,8 @@ mod tests {
     #[test]
     fn lineage_follows_undo_parents_and_skips_abandoned_branches() {
         let catalog = temp("lineage.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id;
         let original = state.current_entry.id;
@@ -994,7 +1004,8 @@ mod tests {
     #[test]
     fn every_entry_carries_the_label_its_history_row_shows() {
         let catalog = temp("labels.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id;
         assert_eq!(state.current_entry.label, "Original");
@@ -1052,7 +1063,8 @@ mod tests {
         );
         // Labels are stored with the entries, so reopening reads the same rows.
         drop(service);
-        let service = EditorService::open(&catalog).unwrap();
+        let service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let labels: Vec<String> = service
             .history(&asset, None, 50)
             .unwrap()
@@ -1079,7 +1091,8 @@ mod tests {
     #[test]
     fn failed_entry_write_rolls_back_snapshot_state_and_request() {
         let catalog = temp("rollback.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let before = service.state(&asset).unwrap();
         service
@@ -1113,7 +1126,8 @@ mod tests {
     #[test]
     fn undoing_restore_returns_to_the_preceding_current_entry() {
         let catalog = temp("restore-undo.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id;
         let a = service
@@ -1271,7 +1285,8 @@ mod tests {
     fn a_commit_validates_its_stack_once() {
         use crate::{APPLY_PRESET, editor::validations, mask::commands};
         let catalog = temp("validated-once.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         validations::take();
         let asset = service.import(&fixture()).unwrap().asset.id;
         assert_eq!(validations::take(), 1, "an import");
@@ -1327,7 +1342,8 @@ mod tests {
     fn a_request_committed_concurrently_is_a_conflict_for_every_mutation() {
         type Attempt = fn(&mut EditorService, &AssetId, &EntryId) -> Result<MutationResult, Error>;
         let catalog = temp("concurrent-request.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let a = service
             .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])

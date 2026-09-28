@@ -5,7 +5,8 @@
 //! centre line and arrow (every channel at 255), and a band of black dashes across the middle
 //! (every channel at 0). Nothing in it has one channel at 0 and another at 255, so the scenario
 //! commits one `edit.set-pixel` of `(0, 128, 255)` to make exactly one both-endpoint pixel — which
-//! is also the isolated-clipped-pixel case the contract asks the Fit overlay to survive.
+//! is also the isolated-clipped-pixel case the contract asks the Fit overlay to survive. The pixel
+//! proof is a test module, so the scenario's one launch is a developer launch.
 //!
 //! Every count a frame reports is checked against `analysis::reduce` of an **independent**
 //! core render of the same fixture through the same recipe, so the plot is verified against the
@@ -177,7 +178,7 @@ fn reference(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
 /// the output stage.
 fn reduction(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
     let source = luxforge_core::open_source(&root.join(FIXTURE))?;
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let context = luxforge_core::RenderContext::new();
     let options = luxforge_core::RenderOptions::default();
     let raster =
@@ -246,7 +247,7 @@ fn drafted_recipe(frame: &Value) -> Result<Recipe> {
             .any(|layer| layer.effect_id == BASIC_EFFECT),
         "The displayed stack already holds a Basic layer, so the drafted payload is a merge",
     )?;
-    let index = ModuleRegistry::builtin().insertion_index_for(&recipe.layers, BASIC_EFFECT);
+    let index = ModuleRegistry::developer().insertion_index_for(&recipe.layers, BASIC_EFFECT);
     recipe.layers.insert(
         index,
         Layer {

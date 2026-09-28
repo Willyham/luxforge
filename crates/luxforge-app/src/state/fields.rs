@@ -619,9 +619,9 @@ mod tests {
         );
     }
 
-    /// The descriptors the desktop would fetch through `module.list`.
+    /// The descriptors a developer run of the desktop would fetch through `module.list`.
     fn descriptors() -> Vec<ModuleDescriptor> {
-        luxforge_core::ModuleRegistry::builtin()
+        luxforge_core::ModuleRegistry::developer()
             .descriptors()
             .into_iter()
             .cloned()
@@ -734,6 +734,17 @@ mod tests {
                 "set-basic.tint",
                 "set-basic.vibrance",
                 "set-basic.whites",
+                "set-controls.amount",
+                "set-controls.coordinate",
+                "set-controls.count",
+                "set-controls.enabled",
+                "set-controls.master",
+                "set-controls.mode",
+                "set-controls.mode-chips",
+                "set-controls.mode-menu",
+                "set-controls.red",
+                "set-controls.rgb",
+                "set-controls.rgb-fields",
                 "set-mixer.aqua-hue",
                 "set-mixer.aqua-luminance",
                 "set-mixer.aqua-saturation",

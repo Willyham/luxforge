@@ -215,7 +215,7 @@ fn sorting_masked_layers_moves_only_them() {
 
 #[test]
 fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let pixel = || Layer::pixel(0, 0, [1, 2, 3]);
     let turn = || {
         Layer::orientation(Orientation {

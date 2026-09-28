@@ -1010,7 +1010,8 @@ mod tests {
     #[test]
     fn transform_composition_is_persistent_and_exact() {
         let catalog = temp("transform.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         service
             .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
@@ -1036,7 +1037,8 @@ mod tests {
             (480, 320)
         );
         drop(service);
-        let service = EditorService::open(&catalog).unwrap();
+        let service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         assert_eq!(service.state(&asset).unwrap().revision, 3);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
@@ -1136,7 +1138,8 @@ mod tests {
     #[test]
     fn a_transform_composes_ahead_of_the_crop_and_carries_it() {
         let catalog = temp("orientation-placement.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let revision = |service: &EditorService| service.state(&asset).unwrap().revision;
         let layers = |service: &EditorService| -> Vec<Layer> {
@@ -1527,7 +1530,8 @@ mod tests {
     #[test]
     fn rejected_actions_leave_state_history_and_the_request_table_untouched() {
         let catalog = temp("actions.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let before = service.state(&asset).unwrap();
         for (case, action, parameters, fragment) in [
@@ -1594,7 +1598,8 @@ mod tests {
     #[test]
     fn actions_wrappers_and_no_op_detection_agree() {
         let catalog = temp("action-equivalence.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let original = service.render_current(&asset).unwrap().pixel(0, 0).unwrap();
         let repeated = service
@@ -1779,7 +1784,7 @@ mod tests {
     fn a_stored_finish_layer_before_geometry_is_refused_without_being_rewritten() {
         use crate::modules::{STAGE_ACTION, STAGE_EFFECT, StageModule};
         let registry = |stage: EffectStage| {
-            let mut registry = ModuleRegistry::builtin();
+            let mut registry = ModuleRegistry::developer();
             registry
                 .register(StageModule::shared(
                     "test.stage",
@@ -1954,7 +1959,8 @@ mod tests {
         let source_bytes = std::fs::read(&source_path).unwrap();
         let (asset, layer_id, first_entry, angled_entry, before_reopen);
         {
-            let mut service = EditorService::open(&catalog).unwrap();
+            let mut service =
+                EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             let state = service.import(&source_path).unwrap();
             asset = state.asset.id.clone();
             let original = service.render_current(&asset).unwrap();
@@ -2228,7 +2234,8 @@ mod tests {
             );
         }
 
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         service
             .prepare(&service.entry_needs(&asset, None).unwrap())
             .unwrap();
@@ -2266,7 +2273,8 @@ mod tests {
     #[test]
     fn a_pixel_edit_holds_its_content_pixel_through_every_crop_change() {
         let catalog = temp("content-stage.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let revision = |service: &EditorService| service.state(&asset).unwrap().revision;
         let layers = |service: &EditorService| -> Vec<Layer> {
@@ -2436,7 +2444,8 @@ mod tests {
     fn a_content_edit_under_a_straightened_crop_matches_the_reference_sampler() {
         let catalog = temp("content-angled.sqlite");
         let source_path = fixture();
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&source_path).unwrap().asset.id;
         service
             .apply_pixel(&asset, mutation(0, "pixel"), 150, 100, [1, 2, 3])
@@ -2467,7 +2476,7 @@ mod tests {
             "the edit stays before the crop that resamples it"
         );
         let raster = service.render_current(&asset).unwrap();
-        let registry = ModuleRegistry::builtin();
+        let registry = ModuleRegistry::developer();
         let source = open_source(&source_path).unwrap();
 
         // The rendered frame and the point sampler evaluate the same stack by different paths.
@@ -2593,7 +2602,8 @@ mod tests {
     #[test]
     fn sample_before_compiles_a_prefix_once_for_a_multi_point_patch() {
         let catalog = temp("sample-before-compile-count.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id.clone();
         // Two layers, so index 1 names a real prefix (the pixel layer) rather than the whole,

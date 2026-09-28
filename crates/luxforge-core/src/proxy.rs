@@ -1396,7 +1396,7 @@ mod tests {
 
     #[test]
     fn a_pixel_stage_layer_makes_a_stack_ineligible_and_is_named() {
-        let registry = ModuleRegistry::builtin();
+        let registry = ModuleRegistry::developer();
         let eligible = recipe(vec![
             Layer::orientation(Orientation {
                 mirror: true,

@@ -199,7 +199,7 @@ fn a_patch_action_is_checked_field_by_field_and_fills_no_defaults() {
 
 #[test]
 fn built_in_modules_describe_their_stored_layers() {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let described = |layer: &Layer| -> String {
         let (module, _) = registry.effect(&layer.effect_id).expect("a provider");
         module
@@ -236,7 +236,7 @@ fn built_in_modules_describe_their_stored_layers() {
 #[test]
 fn the_maskable_flag_follows_the_declaring_effect_and_its_module() {
     let registry = ModuleRegistry::builtin();
-    for module in crate::builtin_modules() {
+    for module in crate::modules::linked_modules(false) {
         let descriptor = module.descriptor();
         for effect in &descriptor.effects {
             assert_eq!(
@@ -267,7 +267,7 @@ fn the_maskable_flag_follows_the_declaring_effect_and_its_module() {
 #[test]
 fn patch_action_resolves_an_available_field_patch_and_refuses_the_rest() {
     let mut registry = ModuleRegistry::new();
-    for module in crate::builtin_modules() {
+    for module in crate::modules::linked_modules(false) {
         if module.descriptor().id == "luxforge.presence" {
             registry.register_unavailable(module, "switched off")
         } else {

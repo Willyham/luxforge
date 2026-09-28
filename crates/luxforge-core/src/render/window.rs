@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn pixel_replacements_and_global_estimates_after_spatial_are_named_fallbacks() {
-        let registry = ModuleRegistry::builtin();
+        let registry = ModuleRegistry::developer();
         let context = RenderContext::new();
         let source = jpeg(96, 64);
         let requested = Region {

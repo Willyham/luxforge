@@ -3,7 +3,7 @@
 use super::tests::TestModule;
 use crate::{
     BasicModule, Control, ControlVariant, ErrorKind, MaskId, ModuleDescriptor, ModuleRegistry,
-    RawModule, ResetAction, SourceTag, ToolModule, builtin_modules, resolve_control,
+    RawModule, ResetAction, SourceTag, ToolModule, modules::linked_modules, resolve_control,
     resolve_group_reset,
 };
 use serde_json::{Value, json};
@@ -19,7 +19,7 @@ type Edit = Box<dyn Fn(&mut ModuleDescriptor)>;
 fn registry_with(module: &str, edit: impl FnOnce(&mut ModuleDescriptor)) -> ModuleRegistry {
     let mut registry = ModuleRegistry::new();
     let mut edit = Some(edit);
-    for provider in builtin_modules() {
+    for provider in linked_modules(false) {
         let provider: Arc<dyn ToolModule> = if provider.descriptor().id == module {
             let mut descriptor = provider.descriptor().clone();
             (edit.take().expect("one module is edited"))(&mut descriptor);
@@ -60,7 +60,7 @@ fn the_built_in_variants_validate_against_the_complete_registry() {
         .expect("Basic's variants are valid");
     // Registered unavailable, a module keeps its descriptor, so the variants still validate.
     let mut disabled = ModuleRegistry::new();
-    for provider in builtin_modules() {
+    for provider in linked_modules(false) {
         if provider.descriptor().id == RawModule::new().descriptor().id {
             disabled
                 .register_unavailable(provider, "switched off")
@@ -391,7 +391,7 @@ fn superseded_fields_are_derived_from_the_variants() {
 /// deliberate change to one of these descriptors updates its digest here.
 #[test]
 fn every_descriptor_without_variants_serializes_exactly_as_before() {
-    let registry = ModuleRegistry::builtin();
+    let registry = ModuleRegistry::developer();
     let before = [
         (
             "luxforge.presets",

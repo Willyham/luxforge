@@ -496,6 +496,7 @@ mod tests {
         mask::commands::{self, MaskTarget},
     };
     use serde_json::{Value, json};
+    use std::sync::Arc;
     use std::time::Instant;
 
     #[test]
@@ -573,7 +574,8 @@ mod tests {
     #[test]
     fn a_format_7_catalog_without_row_columns_is_refused_by_name_without_rewriting_it() {
         let catalog = temp("format-7.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         service
             .apply_pixel(&asset, mutation(0, "pixel"), 1, 1, [9, 8, 7])
@@ -591,7 +593,8 @@ mod tests {
             .unwrap();
         drop(connection);
         let before = std::fs::read(&catalog).unwrap();
-        let error = EditorService::open(&catalog).unwrap_err();
+        let error =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
@@ -1892,7 +1895,8 @@ mod tests {
     #[test]
     fn a_format_5_catalog_is_refused_by_name_and_left_untouched() {
         let catalog = temp("format-5.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         service
             .apply_pixel(&asset, mutation(0, "pixel"), 1, 1, [9, 8, 7])
@@ -1911,7 +1915,8 @@ mod tests {
             .unwrap();
         drop(connection);
         let before = std::fs::read(&catalog).unwrap();
-        let error = EditorService::open(&catalog).unwrap_err();
+        let error =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,

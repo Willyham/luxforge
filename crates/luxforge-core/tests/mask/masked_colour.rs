@@ -348,7 +348,7 @@ fn a_mask_travels_through_a_quarter_turn_on_both_paths() {
 /// other action, and `modules` marks the maskable effects.
 #[test]
 fn the_schema_lists_the_mask_field_on_exactly_the_maskable_actions() {
-    let schema = luxforge_core::schemas(&ModuleRegistry::builtin());
+    let schema = luxforge_core::schemas(&ModuleRegistry::developer());
     let methods = schema["methods"].as_object().unwrap();
     for method in [
         "edit.set-basic",

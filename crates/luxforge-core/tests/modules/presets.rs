@@ -413,19 +413,14 @@ fn an_empty_or_blank_name_is_refused() {
     fs::remove_file(path).expect("the catalog is removed");
 }
 
-/// The built-in providers with one registered unavailable, exactly as the desktop's
-/// `--disable-module` does.
+/// The built-in providers with one registered unavailable, through the one assembly the
+/// desktop's `--disable-module` uses.
 fn disabled(id: &str) -> ModuleRegistry {
-    let mut registry = ModuleRegistry::new();
-    for module in luxforge_core::builtin_modules() {
-        if module.descriptor().id == id {
-            registry.register_unavailable(module, "disabled by --disable-module")
-        } else {
-            registry.register(module)
-        }
-        .expect("a registered module");
-    }
-    registry
+    ModuleRegistry::assemble(&luxforge_core::RegistryOptions {
+        disabled: &[id.to_owned()],
+        ..luxforge_core::RegistryOptions::default()
+    })
+    .expect("a registered module")
 }
 
 /// A step whose module is registered but unavailable is refused by name, and nothing is written,

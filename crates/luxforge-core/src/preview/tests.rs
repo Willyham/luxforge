@@ -51,7 +51,7 @@ fn job(color: u8, analyse: bool) -> PreviewJob {
         capture: Default::default(),
     });
     let evaluation = Evaluation::new(
-        Arc::new(ModuleRegistry::builtin()),
+        Arc::new(ModuleRegistry::developer()),
         RenderContext::new(),
         source,
         entry,
@@ -99,7 +99,7 @@ fn rebuilt(mut job: PreviewJob, change: impl FnOnce(&mut Parts)) -> PreviewJob {
 /// [`entry`] with one held colour layer after its pixel layer, so its render waits at `gate`
 /// while the gate is shut and otherwise renders the same picture.
 fn held_entry(gate: &Arc<luxforge_testbase::Gate>, color: u8) -> PreviewJob {
-    let mut registry = ModuleRegistry::builtin();
+    let mut registry = ModuleRegistry::developer();
     registry
         .register(crate::modules::HeldModule::shared(gate.clone()))
         .expect("a valid holding module");
@@ -385,7 +385,7 @@ fn stacked_with_masks(
         restore_target: None,
     };
     let evaluation = Evaluation::new(
-        Arc::new(ModuleRegistry::builtin()),
+        Arc::new(ModuleRegistry::developer()),
         RenderContext::new(),
         source,
         entry,

@@ -1,6 +1,7 @@
 //! The pixel proof module: one exact 8-bit sRGB replacement at integer content-stage coordinates,
 //! the source after EXIF orientation. The host inserts the layer before the geometry tail, so the
-//! quarter-turns, reflections and crop after it carry the edit instead of moving it.
+//! quarter-turns, reflections and crop after it carry the edit instead of moving it. It is a test
+//! module, as its descriptor's `developer` says, so only a developer run registers it.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
     EffectDescriptor, EffectStage, MAX_COORDINATE, ModuleDescriptor, NewLayer, ParameterDescriptor,

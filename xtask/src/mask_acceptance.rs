@@ -87,7 +87,12 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     };
     let total = Instant::now();
 
-    let (owner, join) = OwnerHandle::start(&catalog)?;
+    // A developer registry, so the chapter can read that `edit.set-pixel`, the pixel proof's, takes
+    // no mask.
+    let (owner, join) = OwnerHandle::start_with(
+        &catalog,
+        Arc::new(luxforge_core::ModuleRegistry::developer()),
+    )?;
     let mut join = Some(join);
     let outcome = (|| -> Result<Value> {
         let editor = owner.register();

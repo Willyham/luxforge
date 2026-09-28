@@ -2883,7 +2883,8 @@ mod tests {
     #[test]
     fn historical_preview_stays_selected_during_another_clients_commit() {
         let catalog = temp("preview-live.sqlite");
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let viewer = owner.register();
         let agent = owner.register();
         assert_ne!(viewer, agent);
@@ -3130,7 +3131,8 @@ mod tests {
     fn two_clients_share_one_job_and_keep_independent_current_and_historical_results() {
         let catalog = temp("analysis-share.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let viewer = owner.register();
         let agent = owner.register();
         let imported = import_asset(&owner, viewer, &fixture());
@@ -3294,7 +3296,8 @@ mod tests {
     fn a_draft_target_analyses_the_drafted_recipe_and_belongs_to_one_session() {
         let catalog = temp("analysis-draft.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let client = owner.register();
         let other = owner.register();
         let imported = import_asset(&owner, client, &fixture());
@@ -3414,7 +3417,7 @@ mod tests {
         let catalog = temp("analysis-race.sqlite");
         let _ = std::fs::remove_file(&catalog);
         let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
-        let mut registry = ModuleRegistry::builtin();
+        let mut registry = ModuleRegistry::developer();
         registry
             .register(crate::modules::HeldModule::shared(gate.clone()))
             .expect("a valid holding module");
@@ -3602,7 +3605,8 @@ mod tests {
         let _ = std::fs::remove_file(&catalog);
         let asset;
         {
-            let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+            let (owner, join) =
+                OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             let client = owner.register();
             let imported = import_asset(&owner, client, &fixture());
             asset = imported["asset"]["id"].clone();
@@ -4612,7 +4616,8 @@ mod tests {
     fn a_retried_mutation_answered_from_the_request_table_records_no_event() {
         let catalog = temp("retry-event.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let client = owner.register();
         let asset = import_asset(&owner, client, &fixture())["asset"]["id"].clone();
         let (_, before) = events_after(&owner, client, 0);
@@ -4683,7 +4688,8 @@ mod tests {
     fn events_name_the_asset_and_revision_they_changed() {
         let catalog = temp("event-subjects.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let desktop = owner.register();
         let agent = owner.register();
         let first = import_asset(&owner, desktop, &fixture())["asset"]["id"].clone();
@@ -4837,7 +4843,8 @@ mod tests {
     fn a_retry_of_every_mutation_family_returns_the_first_answer_and_records_no_event() {
         let catalog = temp("retry-families.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let client = owner.register();
         let photo = temp("retry-families.jpg");
         std::fs::copy(fixture(), &photo).unwrap();

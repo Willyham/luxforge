@@ -177,6 +177,7 @@ impl EditorService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModuleRegistry;
     use crate::editor::{
         EditorState, MutationOutcome,
         history::CommittedAction,
@@ -273,7 +274,8 @@ mod tests {
         let catalog = dir.join("catalog.sqlite");
         let second_source = dir.join("second.jpg");
         std::fs::copy(fixture(), &second_source).unwrap();
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
 
         let asset = service.import(&fixture()).unwrap().asset.id;
         assert_coherent(&service, &asset, "import");
@@ -398,7 +400,8 @@ mod tests {
         // Reopen: a new service reads exactly what the cached one answered.
         let other_before = service.state(&other).unwrap();
         drop(service);
-        let service = EditorService::open(&catalog).unwrap();
+        let service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         assert_eq!(service.cached(), (0, 0), "a reopened service starts empty");
         assert_eq!(service.state(&asset).unwrap(), before);
         assert_eq!(
@@ -559,7 +562,11 @@ mod tests {
     fn the_cache_keeps_at_most_its_bounds() {
         let dir = temp("entry-cache-bounds");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
+        let mut service = EditorService::open_with(
+            &dir.join("catalog.sqlite"),
+            Arc::new(ModuleRegistry::developer()),
+        )
+        .unwrap();
         let mut assets = Vec::new();
         for index in 0..CACHED_HEADS + 2 {
             let source = dir.join(format!("source-{index}.jpg"));

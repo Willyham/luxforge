@@ -1,12 +1,12 @@
 use luxforge_cli::Paths;
 use luxforge_core::{
-    CapabilitiesProofModule, ClientAuthority, HostConfig, ModuleRegistry, OwnerHandle,
+    ClientAuthority, HostConfig, ModuleRegistry, OwnerHandle, RegistryOptions,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
     serve_json_lines_with,
 };
 use std::{path::PathBuf, sync::Arc};
 
-const HELP: &str = "luxforge-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] [--proof-endpoint URL] < requests.jsonl
+const HELP: &str = "luxforge-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] [--developer] [--proof-endpoint URL] < requests.jsonl
 
 Serves one JSON-lines client on standard input and output.
 --data-root DIRECTORY    keep module settings, grants and resources under DIRECTORY, as the desktop
@@ -16,9 +16,13 @@ Serves one JSON-lines client on standard input and output.
 --permission-authority   let this client grant module permissions. It is an explicit local setup
                          step: a client without it, like every loopback live-session client, can
                          deny or revoke a permission but never grant one.
+--developer              serve the test modules, the pixel and controls proofs, as the desktop's
+                         --developer does. Unlike the desktop, a debug build is never in developer
+                         mode without it.
 --proof-endpoint URL     register the developer capability proof module, luxforge.capabilities,
-                         whose palette resource is served at URL/proof-palette.bin. It is a test
-                         fixture for a proof endpoint a harness started, not a feature.";
+                         whose palette resource is served at URL/proof-palette.bin; developer mode
+                         only. It is a test fixture for a proof endpoint a harness started, not a
+                         feature.";
 
 fn main() {
     if let Err(error) = run() {
@@ -40,6 +44,7 @@ fn run() -> Result<(), (String, String)> {
     let mut data_root: Option<PathBuf> = None;
     let mut authority = ClientAuthority::Edit;
     let mut memory_secrets = false;
+    let mut developer = false;
     let mut proof_endpoint: Option<String> = None;
     while let Some(argument) = args.next() {
         match argument.to_str() {
@@ -65,6 +70,7 @@ fn run() -> Result<(), (String, String)> {
                 };
             }
             Some("--permission-authority") => authority = ClientAuthority::Permissions,
+            Some("--developer") => developer = true,
             Some("--proof-endpoint") => {
                 proof_endpoint = Some(
                     args.next()
@@ -80,6 +86,12 @@ fn run() -> Result<(), (String, String)> {
         }
     }
     let catalog = catalog.ok_or_else(|| startup("--catalog is required"))?;
+    let registry = ModuleRegistry::assemble(&RegistryOptions {
+        disabled: &[],
+        developer,
+        proof_endpoint: proof_endpoint.as_deref(),
+    })
+    .map_err(|error| startup(&error))?;
     let paths = Paths::resolve(data_root.as_ref());
     let secrets: Arc<dyn SecretStore> = if memory_secrets {
         Arc::new(MemorySecretStore::new())
@@ -92,12 +104,6 @@ fn run() -> Result<(), (String, String)> {
         secrets,
         ..HostConfig::unconfigured()
     };
-    let mut registry = ModuleRegistry::builtin();
-    if let Some(base) = &proof_endpoint {
-        registry
-            .register(Arc::new(CapabilitiesProofModule::new(base)))
-            .map_err(|error| startup(&format!("--proof-endpoint: {}", error.detail)))?;
-    }
     let (owner, join) = OwnerHandle::start_with_host(&catalog, Arc::new(registry), host)
         .map_err(|error| (error.kind.code().into(), error.detail))?;
     let served = serve_json_lines_with(

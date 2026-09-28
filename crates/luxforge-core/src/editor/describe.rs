@@ -201,11 +201,13 @@ mod tests {
         SHRINK_ACTION, SHRINK_EFFECT, ShrinkModule, fixture, mutation, shrink, temp,
     };
     use serde_json::json;
+    use std::sync::Arc;
 
     #[test]
     fn an_entrys_layers_are_described_in_order_with_their_provider() {
         let catalog = temp("describe.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let original = service.state(&asset).unwrap().current_entry.id;
         let fixture_size = {

@@ -13,7 +13,7 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use luxforge_core::{AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry};
+use luxforge_core::{AssetId, EditorService, EntryId, ModuleRegistry, RegistryOptions};
 use luxforge_evidence::{self as script, CapabilityAction, CapabilitySection, CapabilityStep};
 use luxforge_testkit::ProofEndpoint;
 use std::{sync::Arc, time::Duration};
@@ -637,8 +637,12 @@ fn render_checks(launch: &Checked, base: &str) -> Result<Value> {
             .as_str()
             .ok_or("The tinted frame names no entry")?,
     )?;
-    let mut registry = ModuleRegistry::builtin();
-    registry.register(Arc::new(CapabilitiesProofModule::new(base)))?;
+    // The registry the developer launch served, through the same assembly.
+    let registry = ModuleRegistry::assemble(&RegistryOptions {
+        developer: true,
+        proof_endpoint: Some(base),
+        ..RegistryOptions::default()
+    })?;
     let mut service =
         EditorService::open_with(&launch.evidence.join("catalog.sqlite"), Arc::new(registry))?;
     service.prepare(&service.entry_needs(&asset, Some(&entry))?)?;
