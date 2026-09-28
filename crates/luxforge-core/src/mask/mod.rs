@@ -218,7 +218,7 @@ struct ComponentKind {
 /// place it can be read exactly.
 ///
 /// The overlay reads that same input — the mask's first bound layer's, once per display cell
-/// ([proposal P16](../../../docs/design/range-study.md#proposals), decided and built) — so the
+/// ([proposal P16](../../../../docs/design/range-study.md#proposals), decided and built) — so the
 /// sentence no longer says there is none. It still says where the truth is, because at Fit the cell's
 /// own pixel is a downscaled one and coverage of the average is not the average of coverages.
 const VALUE_BASED_LIMIT: &str = "Read on this layer's own input, so a layer above it changes what this selects · the overlay reads that input too, and at Fit it reads a downscaled pixel: the 100% view is the truth";
@@ -791,24 +791,6 @@ pub fn validate_component_kinds(mask: &Mask) -> Result<(), Error> {
 }
 
 /// The empty rectangle: the support of `m = 0`, which is what the composition starts from.
-fn empty_region() -> Region {
-    Region {
-        x0: 0,
-        y0: 0,
-        width: 0,
-        height: 0,
-    }
-}
-
-fn whole_stage(stage: Stage) -> Region {
-    Region {
-        x0: 0,
-        y0: 0,
-        width: stage.width,
-        height: stage.height,
-    }
-}
-
 /// The conservative pixel rectangle of the real pixel-index box `[min_x, max_x] x [min_y, max_y]`,
 /// clipped to the stage: the one tail every closed-form support shares, whatever its own box was
 /// computed from — a half-plane's clipped corners, a radial's ellipse, a brush's grown strokes.
@@ -819,7 +801,7 @@ fn whole_stage(stage: Stage) -> Region {
 /// a correct rectangle, and a box that misses the stage answers the empty one.
 fn region_from_bounds(stage: Stage, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> Region {
     if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-        return whole_stage(stage);
+        return Region::whole(stage);
     }
     let grow_low = |value: f64, limit: u32| -> u32 {
         let index = value.floor() as i64 - 1;
@@ -834,7 +816,7 @@ fn region_from_bounds(stage: Stage, min_x: f64, max_x: f64, min_y: f64, max_y: f
     let x1 = grow_high(max_x, stage.width);
     let y1 = grow_high(max_y, stage.height);
     if x1 <= x0 || y1 <= y0 {
-        return empty_region();
+        return Region::EMPTY;
     }
     Region {
         x0,
@@ -851,7 +833,7 @@ fn compose_bounds(
     invert: bool,
     scale: f64,
 ) -> Region {
-    let mut bounds = empty_region();
+    let mut bounds = Region::EMPTY;
     for component in components {
         let support = component.geometry.support(stage, component.invert);
         bounds = match component.mode {
@@ -866,11 +848,11 @@ fn compose_bounds(
     }
     if invert {
         // (1 - m) is non-zero wherever m < 1, which no rectangle usefully bounds.
-        bounds = whole_stage(stage);
+        bounds = Region::whole(stage);
     }
     if scale == 0.0 {
         // The final multiply is exactly `0.0 * m` at every pixel, m being finite everywhere.
-        bounds = empty_region();
+        bounds = Region::EMPTY;
     }
     bounds
 }
@@ -900,7 +882,7 @@ fn intersection(a: Region, b: Region) -> Region {
     let x1 = a.x1().min(b.x1());
     let y1 = a.y1().min(b.y1());
     if x1 <= x0 || y1 <= y0 {
-        return empty_region();
+        return Region::EMPTY;
     }
     Region {
         x0,
@@ -930,7 +912,7 @@ fn half_plane_bounds(stage: Stage, inside: impl Fn(f64, f64) -> f64) -> Region {
     let corners = [(0.0, 0.0), (x_max, 0.0), (x_max, y_max), (0.0, y_max)];
     let values = corners.map(|(x, y)| inside(x, y));
     if values.iter().any(|value| !value.is_finite()) {
-        return whole_stage(stage);
+        return Region::whole(stage);
     }
     // The level the clip is taken at: a few ulps of the largest magnitude the corners produced, so
     // it is a slack in the arithmetic rather than a fixed coverage threshold.
@@ -939,10 +921,10 @@ fn half_plane_bounds(stage: Stage, inside: impl Fn(f64, f64) -> f64) -> Region {
         .fold(0.0f64, |worst, value| worst.max(value.abs()));
     let level = -16.0 * f64::EPSILON * magnitude;
     if values.iter().all(|value| *value <= level) {
-        return empty_region();
+        return Region::EMPTY;
     }
     if values.iter().all(|value| *value > level) {
-        return whole_stage(stage);
+        return Region::whole(stage);
     }
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -1383,7 +1365,7 @@ mod tests {
         inverted.invert = true;
         let compiled =
             CompiledMask::new(&inverted, stage, &crate::path::StrokeTable::default()).unwrap();
-        assert_eq!(compiled.bounds(), whole_stage(stage));
+        assert_eq!(compiled.bounds(), Region::whole(stage));
     }
 
     /// An inverted component's support is the other half-plane: coverage is `1` where the component
