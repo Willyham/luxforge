@@ -663,6 +663,12 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
         .payload(BASIC_EFFECT, json!({}))
         .same_layer(BASIC_EFFECT, "temperature")
         .label(format!("Reset {WHITE_BALANCE_GROUP}")),
+        // A committed pick leaves the mode, as Escape does, so the second pick enters it again.
+        Step::new(
+            "picker-mode-again",
+            WorkspaceStep::default().mode(BASIC_MODULE),
+        )
+        .commits(0),
         // A pick on a clipped patch: refused with its reason in the status bar, nothing committed.
         Step::new(
             "clipped-pick",
@@ -880,8 +886,15 @@ pub fn verify_panel(_: &mut Run, launches: &[Checked]) -> Result {
     );
 
     // The pick on a neutral grey patch took the warm cast the drag left away: the photograph is the
-    // opened one again, and the mode is kept.
+    // opened one again, and the committed pick left the mode, as Escape does.
     let pick = launch.at("neutral-pick")?;
+    ensure(
+        picker(pick)["selected"] == json!(false),
+        format!(
+            "A committed pick left the picker selected: {}",
+            picker(pick)
+        ),
+    )?;
     compare(
         "the picked correction against the opened photograph, red minus blue",
         balance(rgb("neutral-pick")?),
@@ -889,12 +902,12 @@ pub fn verify_panel(_: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Within(NEUTRAL),
     )?;
     ensure(
-        pick["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
-        "The pick left the picker mode",
+        pick["state"]["workspace"]["mode"] != json!(BASIC_MODULE),
+        "The committed pick kept the picker mode",
     )?;
     record(
         pick,
-        "a pick on a neutral grey patch: temperature and tint 0, committed once, the mode kept",
+        "a pick on a neutral grey patch: temperature and tint 0, committed once, the mode left",
         json!({"label": pick.label()?, "payload": basic_payload(pick), "red_minus_blue": balance(rgb("neutral-pick")?), "mean_luminance": lum("neutral-pick")?}),
     );
 
