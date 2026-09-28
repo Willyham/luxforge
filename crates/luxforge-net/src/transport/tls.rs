@@ -23,7 +23,7 @@ fn setup_failed(error: rustls::Error) -> Error {
 }
 
 /// The client configuration every `https` request of one transport shares.
-pub(crate) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error> {
+pub(super) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error> {
     let builder =
         ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
@@ -46,7 +46,7 @@ pub(crate) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error
 }
 
 /// The name the server's certificate must match, and the SNI for a domain: `endpoint`'s host.
-pub(crate) fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, Error> {
+pub(super) fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, Error> {
     Ok(match endpoint.url.host() {
         Some(Host::Domain(name)) => ServerName::try_from(name.to_owned())
             .map_err(|_| Error::validation(format!("{name} is not a valid TLS server name")))?,

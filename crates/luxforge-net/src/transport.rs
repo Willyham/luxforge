@@ -1,17 +1,23 @@
 //! [`HttpTransport`], the host's only network path: resolution checks, redirects, limits and TLS
 //! behind the core's [`Transport`] trait. See `docs/design/module-capabilities.md#transport`.
 //!
-//! A request runs on its own `ureq` agent ([`agent`](crate::agent)) that connects directly to an
-//! address it checked, over this crate's own socket and TLS session; `ureq` writes the request and
-//! frames the response on that connection, and this module keeps the redirects, bounds and the
-//! framing it refuses. Proxy settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`
-//! environment variables, are deliberately ignored: a proxy would choose the address after the
-//! check and could read or rewrite the request.
-use crate::{
-    agent::{self, Pace},
-    connect::{Connect, Resolve, SystemConnector, SystemResolver},
-    tls::{self, TlsTrust},
-};
+//! A request runs on its own `ureq` agent ([`agent`]) that connects directly to an address it
+//! checked, over this module's own socket and TLS session; `ureq` writes the request and frames the
+//! response on that connection, and this module keeps the redirects, bounds and the framing it
+//! refuses. Proxy settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment
+//! variables, are deliberately ignored: a proxy would choose the address after the check and could
+//! read or rewrite the request.
+mod address;
+mod agent;
+mod connect;
+#[cfg(test)]
+mod tests;
+mod tls;
+
+pub use connect::{Connect, Resolve, SystemConnector, SystemResolver};
+pub use tls::TlsTrust;
+
+use agent::Pace;
 use luxforge_core::{
     Error,
     capabilities::{
@@ -336,7 +342,7 @@ fn prepare(
         .map_err(|_| Error::validation("the request cannot be sent: a header is not valid"))
 }
 
-pub(crate) fn too_many_fields(name: &str) -> Error {
+fn too_many_fields(name: &str) -> Error {
     Error::resource_limit(format!(
         "the response from {name} has more than {MAX_FIELDS} header fields"
     ))

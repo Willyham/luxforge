@@ -257,14 +257,14 @@
         {
           "kind": "file",
           "label": "Transport resolution and connection",
-          "target": "crates/luxforge-net/src/connect.rs",
+          "target": "crates/luxforge-net/src/transport/connect.rs",
           "locator": "Resolve, Connect, connect",
           "relevance": "The existing policy resolution and connection logic a ureq adapter must preserve."
         },
         {
           "kind": "file",
           "label": "Transport address policy",
-          "target": "crates/luxforge-net/src/address.rs",
+          "target": "crates/luxforge-net/src/transport/address.rs",
           "locator": "EndpointClass, address_allowed",
           "relevance": "The address-class check every resolved address must still pass."
         },
@@ -338,13 +338,13 @@
         {
           "kind": "file",
           "label": "Transport exchange loop",
-          "target": "crates/luxforge-net/src/agent.rs",
+          "target": "crates/luxforge-net/src/transport/agent.rs",
           "relevance": "The hand-written exchange loop this task deletes."
         },
         {
           "kind": "file",
           "label": "Transport address policy",
-          "target": "crates/luxforge-net/src/address.rs",
+          "target": "crates/luxforge-net/src/transport/address.rs",
           "relevance": "The address-class policy that stays unchanged underneath the new agent."
         },
         {
