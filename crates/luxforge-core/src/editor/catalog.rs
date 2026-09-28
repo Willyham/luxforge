@@ -289,15 +289,12 @@ pub(super) fn insert_entry(
 /// no check of what else points at it. The entry's own JSON carries only the addresses, so nothing
 /// written here is ever written into an entry.
 ///
-/// Before this only bought correctness — `INSERT OR IGNORE` made a repeat write a no-op — every
-/// commit still re-serialized and issued one for every reference the whole mask table carries, most
-/// of which an ordinary painting session already wrote in an earlier commit: `O(references)` SQL
-/// that is a no-op for everything but the strokes this command captured, and `O(references)` again
-/// each commit after, `O(n²)` CPU over a session. `recipe.strokes` answers "is this one already
-/// durable" for nothing — hydrating a recipe out of the catalog marks every stroke it resolves, and
-/// nothing else populates the table except a fresh insert this command made — so writing only the
-/// references it does not already know that of is exact and not a heuristic: see
-/// [`crate::path::StrokeTable`].
+/// Writing every reference instead would still be correct, since `INSERT OR IGNORE` makes a repeat
+/// a no-op, but it would cost `O(references)` SQL per commit and `O(n²)` over a painting session.
+/// `recipe.strokes` answers "is this one already durable" for nothing: hydrating a recipe out of
+/// the catalog marks every stroke it resolves, and nothing else populates the table except a fresh
+/// insert this command made, so writing only the references it does not know are stored is exact,
+/// not a heuristic: see [`crate::path::StrokeTable`].
 ///
 /// A reference the recipe could not resolve writes nothing and is not an error at this boundary: an
 /// unresolvable reference is retained data, and the paths that would *draw* it refuse it by name. A
