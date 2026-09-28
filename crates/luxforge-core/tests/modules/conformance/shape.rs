@@ -426,11 +426,11 @@ impl FieldPatch {
             .controls
             .iter()
             .filter_map(|control| match control {
-                Control::Group {
+                Control::Group(luxforge_core::GroupControl {
                     label,
                     reset: Some(reset),
                     ..
-                } if reset.action == set.id => Some(Group {
+                }) if reset.action == set.id => Some(Group {
                     label: label.clone(),
                     preset: reset.preset.clone(),
                 }),

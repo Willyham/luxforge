@@ -103,7 +103,7 @@ fn queries_and_the_sample_apply_canvas_survive_a_json_round_trip() {
         })
     );
     assert_eq!(
-        &ModuleDescriptor::parse(&encoded).expect("a valid descriptor"),
+        &serde_json::from_value::<ModuleDescriptor>(encoded.clone()).expect("a descriptor"),
         basic
     );
     // A descriptor written before queries existed still reads, with none declared.

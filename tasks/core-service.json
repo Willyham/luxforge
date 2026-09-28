@@ -339,7 +339,7 @@
         {
           "kind": "file",
           "label": "Parameter checking",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/values.rs",
           "relevance": "`check_parameters`, the shared validation `draft_begin` should call instead of restating it."
         },
         {
@@ -847,7 +847,7 @@
         {
           "kind": "file",
           "label": "Parameter vocabulary",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
           "relevance": "`ParameterKind` and `IdentityKind`, the vocabulary host methods adopt."
         },
         {

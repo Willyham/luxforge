@@ -2,9 +2,9 @@
 //! fields both derive.
 use super::tests::TestModule;
 use crate::{
-    BasicModule, Control, ControlVariant, ErrorKind, MaskId, ModuleDescriptor, ModuleRegistry,
-    RawModule, ResetAction, SourceTag, ToolModule, modules::linked_modules, resolve_control,
-    resolve_group_reset,
+    ActionControl, BasicModule, Control, ControlVariant, ErrorKind, GroupControl, MaskId,
+    ModuleDescriptor, ModuleRegistry, NumberControl, PickerControl, RawModule, ResetAction,
+    SourceTag, ToolModule, modules::linked_modules, resolve_control, resolve_group_reset,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -37,17 +37,17 @@ fn registry_with(module: &str, edit: impl FnOnce(&mut ModuleDescriptor)) -> Modu
 /// Basic's White balance group, which carries every built-in variant.
 fn white_balance(descriptor: &mut ModuleDescriptor) -> &mut Vec<Control> {
     match &mut descriptor.controls[0] {
-        Control::Group { controls, .. } => controls,
+        Control::Group(GroupControl { controls, .. }) => controls,
         _ => panic!("Basic's first control is the White balance group"),
     }
 }
 
 fn variant_of(control: &mut Control) -> &mut ControlVariant {
     match control {
-        Control::Number { variants, .. }
-        | Control::Action { variants, .. }
-        | Control::Picker { variants, .. }
-        | Control::Group { variants, .. } => &mut variants[0],
+        Control::Number(NumberControl { variants, .. })
+        | Control::Action(ActionControl { variants, .. })
+        | Control::Picker(PickerControl { variants, .. })
+        | Control::Group(GroupControl { variants, .. }) => &mut variants[0],
         _ => panic!("a control that carries variants"),
     }
 }
@@ -81,7 +81,7 @@ fn a_variant_the_named_module_cannot_provide_is_refused_once_the_registry_is_com
         (
             "an unknown action",
             Box::new(|descriptor| {
-                if let Some(Control::Number { action, .. }) =
+                if let Some(Control::Number(NumberControl { action, .. })) =
                     variant_of(&mut white_balance(descriptor)[0])
                         .control
                         .as_deref_mut()
@@ -94,7 +94,7 @@ fn a_variant_the_named_module_cannot_provide_is_refused_once_the_registry_is_com
         (
             "an unknown parameter",
             Box::new(|descriptor| {
-                if let Some(Control::Number { parameter, .. }) =
+                if let Some(Control::Number(NumberControl { parameter, .. })) =
                     variant_of(&mut white_balance(descriptor)[1])
                         .control
                         .as_deref_mut()
@@ -150,14 +150,16 @@ fn a_malformed_variant_is_refused_by_the_descriptor_alone() {
             "a control of another shape",
             Box::new(|descriptor| {
                 variant_of(&mut white_balance(descriptor)[0]).control =
-                    Some(Box::new(Control::picker("Neutral picker")));
+                    Some(Box::new(Control::picker("Neutral picker").into()));
             }),
             "is a picker control",
         ),
         (
             "a second variant for one kind",
             Box::new(|descriptor| {
-                if let Control::Number { variants, .. } = &mut white_balance(descriptor)[0] {
+                if let Control::Number(NumberControl { variants, .. }) =
+                    &mut white_balance(descriptor)[0]
+                {
                     variants.push(variants[0].clone());
                 }
             }),
@@ -183,14 +185,14 @@ fn a_malformed_variant_is_refused_by_the_descriptor_alone() {
             "a control on a group",
             Box::new(|descriptor| {
                 let variant = variant_of(&mut descriptor.controls[0]);
-                variant.control = Some(Box::new(Control::picker("Pick")));
+                variant.control = Some(Box::new(Control::picker("Pick").into()));
             }),
             "needs a reset and no control",
         ),
         (
             "a reset variant without a reset",
             Box::new(|descriptor| {
-                if let Control::Group { reset, .. } = &mut descriptor.controls[0] {
+                if let Control::Group(GroupControl { reset, .. }) = &mut descriptor.controls[0] {
                     *reset = None;
                 }
             }),
@@ -201,7 +203,9 @@ fn a_malformed_variant_is_refused_by_the_descriptor_alone() {
             Box::new(|descriptor| {
                 let variant = variant_of(&mut white_balance(descriptor)[2]);
                 let nested = variant.clone();
-                if let Some(Control::Picker { variants, .. }) = variant.control.as_deref_mut() {
+                if let Some(Control::Picker(PickerControl { variants, .. })) =
+                    variant.control.as_deref_mut()
+                {
                     variants.push(nested);
                 }
             }),
@@ -234,7 +238,7 @@ fn a_pick_canvas_without_its_own_picker_needs_a_variant_that_reaches_it() {
     );
     let basic = BasicModule::new().descriptor().id.clone();
     let unreached = registry_with(&basic, |descriptor| {
-        if let Control::Picker { variants, .. } = &mut white_balance(descriptor)[2] {
+        if let Control::Picker(PickerControl { variants, .. }) = &mut white_balance(descriptor)[2] {
             variants.clear();
         }
     });
@@ -259,7 +263,7 @@ fn a_control_resolves_to_its_variant_only_on_the_global_target_of_its_kind() {
     let registry = ModuleRegistry::builtin();
     let basic = registry.module("luxforge.basic").unwrap().descriptor();
     let group = &basic.controls[0];
-    let Control::Group { controls, .. } = group else {
+    let Control::Group(GroupControl { controls, .. }) = group else {
         panic!("the White balance group");
     };
     let mask = MaskId::new();
@@ -461,7 +465,7 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
             let before = descriptor.controls.len();
             descriptor
                 .controls
-                .retain(|control| !matches!(control, crate::Control::Range { .. }));
+                .retain(|control| !matches!(control, crate::Control::Range(_)));
             assert_eq!(descriptor.controls.len(), before - 1);
         }
         let json = serde_json::to_string(&descriptor).unwrap();
@@ -481,6 +485,9 @@ fn every_descriptor_without_variants_serializes_exactly_as_before() {
             "{}",
             descriptor.id
         );
-        assert_eq!(&ModuleDescriptor::parse(&value).unwrap(), descriptor);
+        assert_eq!(
+            &serde_json::from_value::<ModuleDescriptor>(value).unwrap(),
+            descriptor
+        );
     }
 }

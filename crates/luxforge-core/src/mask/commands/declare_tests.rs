@@ -8,8 +8,9 @@ use crate::mask::{
     declared_geometry_kinds, knows_component_kind, stroke_kind,
 };
 use crate::{
-    ActionDescriptor, ComponentId, Control, MaskId, ModuleDescriptor, NumberStyle,
-    ParameterDescriptor, ParameterKind,
+    ActionDescriptor, ChoiceControl, ComponentId, Control, ControlVariant, MaskId,
+    ModuleDescriptor, NumberControl, NumberStyle, ParameterDescriptor, ParameterKind, RangeControl,
+    ToggleControl,
 };
 use serde_json::{Value, json};
 
@@ -312,7 +313,7 @@ fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
         assert!(
             !controls().iter().any(|control| matches!(
                 control,
-                Control::Number { action, .. } if action.contains(kind)
+                Control::Number(NumberControl { action, .. }) if action.contains(kind)
             )),
             "a drawn kind declares no control"
         );
@@ -323,23 +324,23 @@ fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
 fn every_control_binds_to_a_parameter_its_own_command_declares() {
     for control in controls() {
         let (action, parameters) = match control {
-            Control::Number {
+            Control::Number(NumberControl {
                 action, parameter, ..
-            }
-            | Control::Toggle {
+            })
+            | Control::Toggle(ToggleControl {
                 action, parameter, ..
-            }
-            | Control::Choice {
+            })
+            | Control::Choice(ChoiceControl {
                 action, parameter, ..
-            } => (action, vec![parameter]),
-            Control::Range {
+            }) => (action, vec![parameter]),
+            Control::Range(RangeControl {
                 action,
                 low,
                 high,
                 low_feather,
                 high_feather,
                 ..
-            } => (
+            }) => (
                 action,
                 [
                     Some(low),
@@ -372,7 +373,7 @@ fn the_luminance_band_declares_one_range_control_above_its_number_fields() {
     let bands: Vec<(usize, &Control)> = controls()
         .iter()
         .enumerate()
-        .filter(|(_, control)| matches!(control, Control::Range { .. }))
+        .filter(|(_, control)| matches!(control, Control::Range(_)))
         .collect();
     assert_eq!(bands.len(), 1, "{bands:?}");
     let (at, band) = bands[0];
@@ -386,12 +387,12 @@ fn the_luminance_band_declares_one_range_control_above_its_number_fields() {
         .iter()
         .take(4)
         .map(|control| match control {
-            Control::Number {
+            Control::Number(NumberControl {
                 action,
                 parameter,
                 style: NumberStyle::Field,
                 ..
-            } if action == "mask.set-luminance-range" => parameter.as_str(),
+            }) if action == "mask.set-luminance-range" => parameter.as_str(),
             other => panic!("a band's number field follows it, not {other:?}"),
         })
         .collect();
@@ -555,10 +556,10 @@ fn a_generated_number_field_binds_only_a_number_parameter() {
     .collect();
     assert_eq!(
         generated,
-        vec![
+        vec![Control::from(
             Control::number("mask.set-polygon", "feather", "Feather")
                 .number_style(NumberStyle::Field)
-        ]
+        )]
     );
     // And every kind registered today is all numbers, so each of its declared parameters has
     // exactly one field, in declaration order, and nothing else is generated for it.
@@ -569,11 +570,11 @@ fn a_generated_number_field_binds_only_a_number_parameter() {
         let fields: Vec<&str> = controls()
             .iter()
             .filter_map(|control| match control {
-                Control::Number {
+                Control::Number(NumberControl {
                     action: bound,
                     parameter,
                     ..
-                } if bound == action => Some(parameter.as_str()),
+                }) if bound == action => Some(parameter.as_str()),
                 _ => None,
             })
             .collect();
@@ -665,7 +666,7 @@ fn the_host_descriptor_meets_the_rules_a_module_descriptor_does() {
     let mut unbound = host.clone();
     unbound
         .controls
-        .push(Control::number("mask.set-radial", "radius", "Radius"));
+        .push(Control::number("mask.set-radial", "radius", "Radius").into());
     assert_eq!(
         unbound
             .validate_host()
@@ -677,12 +678,15 @@ fn the_host_descriptor_meets_the_rules_a_module_descriptor_does() {
     // A variant applies only on the global target, and a host control always addresses a mask,
     // so a host control that declares one is refused, at any depth.
     let variant = |control: Control| {
-        let replacement = control.clone();
-        control.variant(crate::ControlVariant::control(
+        let Control::Number(number) = control else {
+            panic!("the host's first control is a number field");
+        };
+        let replacement = number.clone();
+        Control::from(number.variant(ControlVariant::control(
             crate::SourceTag::Raw,
             "luxforge.raw",
             replacement,
-        ))
+        )))
     };
     let mut top = host.clone();
     top.controls[0] = variant(top.controls[0].clone());
@@ -690,7 +694,7 @@ fn the_host_descriptor_meets_the_rules_a_module_descriptor_does() {
     let first = nested.controls.remove(0);
     nested
         .controls
-        .insert(0, Control::group("Mask", vec![variant(first)]));
+        .insert(0, Control::group("Mask", vec![variant(first)]).into());
     for broken in [top, nested] {
         assert_eq!(
             broken.validate_host().expect_err("a variant").detail,

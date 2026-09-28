@@ -771,7 +771,7 @@ pub(crate) fn headerless_group(module: &ModuleDescriptor) -> Option<&[Control]> 
         return None;
     }
     match module.controls.as_slice() {
-        [Control::Group { controls, .. }] => Some(controls),
+        [Control::Group(luxforge_core::GroupControl { controls, .. })] => Some(controls),
         _ => None,
     }
 }
@@ -1897,17 +1897,17 @@ pub(crate) enum Rendered<'a> {
 
 pub(crate) fn classify(control: &Control) -> Rendered<'_> {
     match control {
-        Control::Group {
+        Control::Group(luxforge_core::GroupControl {
             label,
             controls,
             collapsed,
             ..
-        } => Rendered::Group {
+        }) => Rendered::Group {
             label,
             controls,
             collapsed: *collapsed,
         },
-        Control::Number {
+        Control::Number(luxforge_core::NumberControl {
             action,
             parameter,
             label,
@@ -1915,7 +1915,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             rail,
             reset,
             ..
-        } => Rendered::Number {
+        }) => Rendered::Number {
             action,
             parameter,
             label,
@@ -1923,65 +1923,65 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             rail: rail.as_ref(),
             reset: reset.as_ref(),
         },
-        Control::Toggle {
+        Control::Toggle(luxforge_core::ToggleControl {
             action,
             parameter,
             label,
-        } => Rendered::Toggle {
+        }) => Rendered::Toggle {
             action,
             parameter,
             label,
         },
-        Control::Choice {
+        Control::Choice(luxforge_core::ChoiceControl {
             action,
             parameter,
             label,
             style,
-        } => Rendered::Choice {
+        }) => Rendered::Choice {
             action,
             parameter,
             label,
             style: *style,
         },
-        Control::Curve {
+        Control::Curve(luxforge_core::CurveControl {
             action,
             channels,
             label,
             sample_query,
             background,
-        } => Rendered::Curve {
+        }) => Rendered::Curve {
             action,
             channels,
             label,
             sample_query,
             background: *background,
         },
-        Control::Color {
+        Control::Color(luxforge_core::ColorControl {
             action,
             parameter,
             label,
             style,
-        } => Rendered::Color {
+        }) => Rendered::Color {
             action,
             parameter,
             label,
             style: *style,
         },
-        Control::Action {
+        Control::Action(luxforge_core::ActionControl {
             action,
             label,
             preset,
             style,
             icon,
             ..
-        } => Rendered::Action {
+        }) => Rendered::Action {
             action,
             label,
             preset,
             style: *style,
             icon: icon.as_deref(),
         },
-        Control::Range {
+        Control::Range(luxforge_core::RangeControl {
             action,
             low,
             high,
@@ -1989,7 +1989,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             high_feather,
             label,
             rail,
-        } => Rendered::Range {
+        }) => Rendered::Range {
             action,
             low,
             high,
@@ -1998,9 +1998,9 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             label,
             rail: rail.as_ref(),
         },
-        Control::Picker { label, .. } => Rendered::Picker { label },
-        Control::Task { task, label } => Rendered::Task { task, label },
-        Control::Presets { action } => Rendered::Presets { action },
+        Control::Picker(luxforge_core::PickerControl { label, .. }) => Rendered::Picker { label },
+        Control::Task(luxforge_core::TaskControl { task, label }) => Rendered::Task { task, label },
+        Control::Presets(luxforge_core::PresetsControl { action }) => Rendered::Presets { action },
         // A kind added to the descriptor later is reported, never dropped.
         #[allow(unreachable_patterns)]
         other => Rendered::Unsupported(control_kind(other)),
@@ -2325,8 +2325,7 @@ fn picker_mode<'a>(
     kind: Option<SourceTag>,
     target: Option<&MaskId>,
 ) -> Option<&'a str> {
-    let picker =
-        walk(&module.controls).find(|control| matches!(control, Control::Picker { .. }))?;
+    let picker = walk(&module.controls).find(|control| matches!(control, Control::Picker(_)))?;
     resolved(modules, module, picker, kind, target).map(|(provider, _)| provider.id.as_str())
 }
 

@@ -224,7 +224,7 @@
         {
           "kind": "file",
           "label": "Parameter validation",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/values.rs",
           "locator": "ParameterKind::Points",
           "relevance": "Where the posted-path length is checked before decimation."
         }
@@ -312,7 +312,7 @@
         {
           "kind": "file",
           "label": "Descriptor validation",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/validate.rs",
           "locator": "validate, check_declared",
           "relevance": "The valid_name rule the host's method-name identities fail today."
         },

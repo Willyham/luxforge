@@ -181,6 +181,7 @@ pub(super) fn luminance_band(action: &'static str) -> Control {
         .rail(RailDecoration::Gradient {
             stops: vec![[0, 0, 0], [255, 255, 255]],
         })
+        .into()
 }
 
 fn level(name: &str, required: bool, default: f64, notes: &str) -> ParameterDescriptor {

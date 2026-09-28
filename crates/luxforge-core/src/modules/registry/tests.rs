@@ -22,23 +22,8 @@ impl TestModule {
             id: id.into(),
             title: "Test".into(),
             hint: None,
-            effects: vec![EffectDescriptor {
-                id: effect.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Pixel,
-                order: 0,
-                maskable: false,
-                artifacts: false,
-                single: false,
-                sources: Vec::new(),
-            }],
-            actions: vec![ActionDescriptor {
-                id: action.into(),
-                title: "Test action".into(),
-                notes: "test".into(),
-                patch: false,
-                parameters: Vec::new(),
-            }],
+            effects: vec![EffectDescriptor::new(effect, EffectStage::Pixel)],
+            actions: vec![ActionDescriptor::new(action, "Test action", "test")],
             queries: Vec::new(),
             controls: Vec::new(),
             reset: None,
@@ -123,22 +108,15 @@ impl PatchModule {
             id: PATCH_MODULE.into(),
             title: "Patch".into(),
             hint: Some("A patched pixel".into()),
-            effects: vec![EffectDescriptor {
-                id: PATCH_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Pixel,
-                order: 0,
-                maskable: false,
-                artifacts: false,
-                single: false,
-                sources: Vec::new(),
-            }],
+            effects: vec![EffectDescriptor::new(PATCH_EFFECT, EffectStage::Pixel)],
             actions: vec![ActionDescriptor {
-                id: PATCH_ACTION.into(),
-                title: "Set patch".into(),
-                notes: "merges the named channels into the one patch layer".into(),
                 patch: true,
                 parameters: vec![channel("red"), channel("green")],
+                ..ActionDescriptor::new(
+                    PATCH_ACTION,
+                    "Set patch",
+                    "merges the named channels into the one patch layer",
+                )
             }],
             queries: Vec::new(),
             controls: Vec::new(),
@@ -275,22 +253,14 @@ impl StageModule {
             title: "Stage".into(),
             hint: None,
             effects: vec![EffectDescriptor {
-                id: effect.into(),
-                format: EFFECT_FORMAT,
-                stage,
                 order,
-                maskable: false,
-                artifacts: false,
-                single: false,
-                sources: Vec::new(),
+                ..EffectDescriptor::new(effect, stage)
             }],
-            actions: vec![ActionDescriptor {
-                id: action.into(),
-                title: "Set stage".into(),
-                notes: "commits one layer of this module's effect".into(),
-                patch: false,
-                parameters: Vec::new(),
-            }],
+            actions: vec![ActionDescriptor::new(
+                action,
+                "Set stage",
+                "commits one layer of this module's effect",
+            )],
             queries: Vec::new(),
             controls: Vec::new(),
             reset: None,
@@ -373,23 +343,12 @@ impl HeldModule {
                 id: "test.held".into(),
                 title: "Held".into(),
                 hint: None,
-                effects: vec![EffectDescriptor {
-                    id: HELD_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Color,
-                    order: 0,
-                    artifacts: false,
-                    single: false,
-                    sources: Vec::new(),
-                    maskable: false,
-                }],
-                actions: vec![ActionDescriptor {
-                    id: HELD_ACTION.into(),
-                    title: "Hold render".into(),
-                    notes: "commits one colour layer whose render waits for the test's gate".into(),
-                    patch: false,
-                    parameters: Vec::new(),
-                }],
+                effects: vec![EffectDescriptor::new(HELD_EFFECT, EffectStage::Color)],
+                actions: vec![ActionDescriptor::new(
+                    HELD_ACTION,
+                    "Hold render",
+                    "commits one colour layer whose render waits for the test's gate",
+                )],
                 queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
@@ -573,51 +532,45 @@ fn registry_resolves_applicability_from_the_declared_sources() {
         serde_json::to_value(SourceKind::Jpeg.tag()).unwrap()
     );
     assert_eq!(serde_json::to_value(SourceTag::Raw).unwrap(), json!("raw"));
-    let module = |effects: Value| {
-        ModuleDescriptor::parse(&json!({
-            "id": "test.kinds", "title": "Kinds", "effects": effects, "actions": [],
-            "controls": [], "availability": {"kind": "available"},
-        }))
+    let module = |effects: Vec<EffectDescriptor>| {
+        let descriptor = ModuleDescriptor {
+            id: "test.kinds".into(),
+            title: "Kinds".into(),
+            effects,
+            ..ModuleDescriptor::default()
+        };
+        descriptor.validate().map(|()| descriptor)
     };
-    let effect = |id: &str, sources: Value| {
-        let mut effect = json!({"id": id, "format": 1, "stage": "color"});
-        if !sources.is_null() {
-            effect["sources"] = sources;
-        }
-        effect
+    let effect = |id: &str, sources: &[SourceTag]| EffectDescriptor {
+        sources: sources.to_vec(),
+        ..EffectDescriptor::new(id, EffectStage::Color)
     };
     for (case, effects, jpeg, raw) in [
-        ("no effect", json!([]), true, true),
+        ("no effect", vec![], true, true),
         (
-            "an undeclared effect",
-            json!([effect("test.a", Value::Null)]),
-            true,
-            true,
-        ),
-        (
-            "an empty list",
-            json!([effect("test.a", json!([]))]),
+            "an effect that lists no kind",
+            vec![effect("test.a", &[])],
             true,
             true,
         ),
         (
             "a RAW effect",
-            json!([effect("test.a", json!(["raw"]))]),
+            vec![effect("test.a", &[SourceTag::Raw])],
             false,
             true,
         ),
         (
             "a JPEG effect beside a RAW one",
-            json!([
-                effect("test.a", json!(["raw"])),
-                effect("test.b", json!(["jpeg"]))
-            ]),
+            vec![
+                effect("test.a", &[SourceTag::Raw]),
+                effect("test.b", &[SourceTag::Jpeg]),
+            ],
             true,
             true,
         ),
         (
             "both kinds listed",
-            json!([effect("test.a", json!(["jpeg", "raw"]))]),
+            vec![effect("test.a", &[SourceTag::Jpeg, SourceTag::Raw])],
             true,
             true,
         ),
@@ -639,17 +592,12 @@ fn registry_resolves_applicability_from_the_declared_sources() {
             );
         }
     }
-    for (case, sources, fragment) in [
-        (
-            "a repeated kind",
-            json!(["raw", "raw"]),
-            "lists source kind RAW twice",
-        ),
-        ("an unknown kind", json!(["png"]), "unknown variant"),
-    ] {
-        let error = module(json!([effect("test.a", sources)])).unwrap_err();
-        assert!(error.detail.contains(fragment), "{case}: {}", error.detail);
-    }
+    let error = module(vec![effect("test.a", &[SourceTag::Raw, SourceTag::Raw])]).unwrap_err();
+    assert!(
+        error.detail.contains("lists source kind RAW twice"),
+        "a repeated kind: {}",
+        error.detail
+    );
 
     let registry = ModuleRegistry::builtin();
     for module in registry.descriptors() {
@@ -683,10 +631,10 @@ fn shortcut_module(id: &str, effect: &str, action: &str, letter: &str) -> Arc<dy
         commit: false,
     });
     // A pick canvas is reached from the panel, so it declares its picker control.
-    descriptor.controls = vec![crate::Control::Picker {
+    descriptor.controls = vec![crate::Control::Picker(crate::PickerControl {
         label: "Test mode".into(),
         variants: Vec::new(),
-    }];
+    })];
     TestModule::from_descriptor(descriptor)
 }
 

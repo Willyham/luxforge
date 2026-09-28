@@ -3,9 +3,10 @@
 //! descriptors are built here rather than taken from the registry where a test proves the desktop
 //! knows no tool by name.
 use luxforge_core::{
-    ActionDescriptor, AssetId, Availability, CanvasInteraction, Control, CropPayload, EffectStage,
-    EntryId, HistoryEntry, LayerId, MAX_ANGLE, MIN_ANGLE, ModuleDescriptor, ParameterDescriptor,
-    ParameterKind, RecipeDescription, Snapshot,
+    ActionDescriptor, ActionStyle, AssetId, Availability, CanvasInteraction, ChoiceStyle,
+    ColorStyle, Control, CropPayload, CurveBackground, CurveChannel, EffectStage, EntryId,
+    HistoryEntry, LayerId, MAX_ANGLE, MIN_ANGLE, ModuleDescriptor, ModuleLayout, NumberStyle,
+    ParameterDescriptor, ParameterKind, RailDecoration, RecipeDescription, Snapshot,
 };
 use serde_json::{Map, Value, json};
 
@@ -17,77 +18,135 @@ pub(crate) const CROP_ASPECTS: [&str; 7] =
 /// A descriptor-only fixture: the desktop must generate these controls without knowing a
 /// provider's identity. The production developer proof is tested separately through the API.
 pub(crate) fn controls_descriptor() -> ModuleDescriptor {
-    let mut parameters = vec![
-        json!({"name":"amount","kind":"number","min":-10.0,"max":10.0,
-            "soft_min":-5.0,"soft_max":5.0,"step":0.1,"fine_step":0.01,"zero":0.0,"default":0.0}),
-        json!({"name":"count","kind":"integer","min":0,"max":20,"step":1.0,"default":2}),
-        json!({"name":"enabled","kind":"boolean","default":false}),
-        json!({"name":"mode","kind":"enum","options":["one","two","three"],"default":"one"}),
-        json!({"name":"rgb","kind":"color","default":[32,64,128]}),
-        json!({"name":"master","kind":"curve","points_min":2,"points_max":8,"monotone":true,
-            "step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
-        json!({"name":"red","kind":"curve","points_min":2,"points_max":8,"monotone":false,
-            "step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
-        json!({"name":"coordinate","kind":"number","min":0.0,"max":100.0,"step":1.0,"fine_step":0.1,"default":5.0}),
-    ];
-    for parameter in &mut parameters {
-        parameter["required"] = json!(false);
-        parameter["notes"] =
-            json!("Descriptor fixture; curve samples come from its declared query");
-    }
-    let queries: Vec<Value> = parameters
-        .iter()
-        .filter(|parameter| parameter["kind"] == "curve")
-        .cloned()
-        .map(|mut parameter| {
-            parameter.as_object_mut().unwrap().remove("default");
-            parameter
-        })
-        .collect();
-    ModuleDescriptor::parse(&json!({
-        "id":"fixture.controls", "title":"Fixture controls", "effects":[],
-        "actions":[{"id":"fixture-set","title":"Set fixture","notes":"One field patch",
-            "patch":true,"parameters":parameters}],
-        "queries":[{"id":"fixture-samples","title":"Sample curve","notes":"Module samples",
-            "parameters":queries}],
-        "controls":[{"kind":"group","label":"Fixture group","collapsed":false,"controls":[
-            {"kind":"number","action":"fixture-set","parameter":"amount","label":"Amount","rail":"temperature"},
-            {"kind":"number","action":"fixture-set","parameter":"count","label":"Count","style":"stepper"},
-            {"kind":"number","action":"fixture-set","parameter":"coordinate","label":"Coordinate","style":"field"},
-            {"kind":"toggle","action":"fixture-set","parameter":"enabled","label":"Enabled"},
-            {"kind":"choice","action":"fixture-set","parameter":"mode","label":"Mode","style":"menu"},
-            {"kind":"color","action":"fixture-set","parameter":"rgb","label":"Colour","style":"picker"},
-            {"kind":"curve","action":"fixture-set","label":"Curve","sample_query":"fixture-samples",
-                "channels":[{"parameter":"master","label":"Master"},{"parameter":"red","label":"Red"}],
-                "background":"histogram"},
-            {"kind":"action","action":"fixture-set","label":"Reset amount","style":"icon","icon":"reset","preset":{"amount":0.0}}
-        ]}], "availability":{"kind":"available"}
-    })).expect("the whole-vocabulary fixture is a valid descriptor")
+    const SET: &str = "fixture-set";
+    const NOTES: &str = "Descriptor fixture; curve samples come from its declared query";
+    let identity = json!([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]);
+    let curve = |name: &str, monotone: bool| {
+        let curve = ParameterDescriptor::curve(name, 2, 8)
+            .step(0.01)
+            .notes(NOTES);
+        if monotone { curve.monotone() } else { curve }
+    };
+    let descriptor = ModuleDescriptor {
+        id: "fixture.controls".into(),
+        title: "Fixture controls".into(),
+        actions: vec![ActionDescriptor {
+            patch: true,
+            parameters: vec![
+                ParameterDescriptor::number("amount", -10.0, 10.0)
+                    .soft_min(-5.0)
+                    .soft_max(5.0)
+                    .step(0.1)
+                    .fine_step(0.01)
+                    .zero(0.0)
+                    .default(0.0)
+                    .notes(NOTES),
+                ParameterDescriptor::integer("count", 0, 20)
+                    .step(1.0)
+                    .default(2)
+                    .notes(NOTES),
+                ParameterDescriptor::boolean("enabled")
+                    .default(false)
+                    .notes(NOTES),
+                ParameterDescriptor::enumeration("mode", ["one", "two", "three"])
+                    .default("one")
+                    .notes(NOTES),
+                ParameterDescriptor::color("rgb")
+                    .default(json!([32, 64, 128]))
+                    .notes(NOTES),
+                curve("master", true).default(identity.clone()),
+                curve("red", false).default(identity),
+                ParameterDescriptor::number("coordinate", 0.0, 100.0)
+                    .step(1.0)
+                    .fine_step(0.1)
+                    .default(5.0)
+                    .notes(NOTES),
+            ],
+            ..ActionDescriptor::new(SET, "Set fixture", "One field patch")
+        }],
+        queries: vec![ActionDescriptor {
+            parameters: vec![curve("master", true), curve("red", false)],
+            ..ActionDescriptor::new("fixture-samples", "Sample curve", "Module samples")
+        }],
+        controls: vec![
+            Control::group(
+                "Fixture group",
+                vec![
+                    Control::number(SET, "amount", "Amount")
+                        .rail(RailDecoration::Temperature)
+                        .into(),
+                    Control::number(SET, "count", "Count")
+                        .number_style(NumberStyle::Stepper)
+                        .into(),
+                    Control::number(SET, "coordinate", "Coordinate")
+                        .number_style(NumberStyle::Field)
+                        .into(),
+                    Control::toggle(SET, "enabled", "Enabled").into(),
+                    Control::choice(SET, "mode", "Mode")
+                        .choice_style(ChoiceStyle::Menu)
+                        .into(),
+                    Control::color_field(SET, "rgb", "Colour")
+                        .color_style(ColorStyle::Picker)
+                        .into(),
+                    Control::curve(
+                        SET,
+                        [("master", "Master"), ("red", "Red")]
+                            .map(|(parameter, label)| CurveChannel {
+                                parameter: parameter.into(),
+                                label: label.into(),
+                            })
+                            .into(),
+                        "Curve",
+                        "fixture-samples",
+                    )
+                    .background(CurveBackground::Histogram)
+                    .into(),
+                    Control::action(SET, "Reset amount")
+                        .action_style(ActionStyle::Icon)
+                        .icon("reset")
+                        .preset(Map::from_iter([("amount".to_owned(), json!(0.0))]))
+                        .into(),
+                ],
+            )
+            .into(),
+        ],
+        ..ModuleDescriptor::default()
+    };
+    descriptor
+        .validate()
+        .expect("the whole-vocabulary fixture is a valid descriptor");
+    descriptor
 }
 
 /// A `layout: tabs` fixture with two top-level groups, each one slider over its own field of the
 /// same patch action: the minimal shape the colour mixer declares, used to test tab selection
 /// without depending on the mixer module being linked.
 pub(crate) fn tabs_descriptor() -> ModuleDescriptor {
-    ModuleDescriptor::parse(&json!({
-        "id":"fixture.tabs", "title":"Fixture tabs", "effects":[], "layout":"tabs",
-        "actions":[{"id":"fixture-set","title":"Set fixture","notes":"One field patch",
-            "patch":true,"parameters":[
-                {"name":"first","kind":"number","min":-10.0,"max":10.0,"default":0.0,
-                    "required":false,"notes":"test"},
-                {"name":"second","kind":"number","min":-10.0,"max":10.0,"default":0.0,
-                    "required":false,"notes":"test"}
-            ]}],
-        "controls":[
-            {"kind":"group","label":"First","collapsed":false,"controls":[
-                {"kind":"number","action":"fixture-set","parameter":"first","label":"First"}
-            ]},
-            {"kind":"group","label":"Second","collapsed":false,"controls":[
-                {"kind":"number","action":"fixture-set","parameter":"second","label":"Second"}
-            ]}
-        ], "availability":{"kind":"available"}
-    }))
-    .expect("a two-group layout: tabs fixture is a valid descriptor")
+    const SET: &str = "fixture-set";
+    let field = |name: &str| {
+        ParameterDescriptor::number(name, -10.0, 10.0)
+            .default(0.0)
+            .notes("test")
+    };
+    let group = |label: &str, name: &str| -> Control {
+        Control::group(label, vec![Control::number(SET, name, label).into()]).into()
+    };
+    let descriptor = ModuleDescriptor {
+        id: "fixture.tabs".into(),
+        title: "Fixture tabs".into(),
+        layout: ModuleLayout::Tabs,
+        actions: vec![ActionDescriptor {
+            patch: true,
+            parameters: vec![field("first"), field("second")],
+            ..ActionDescriptor::new(SET, "Set fixture", "One field patch")
+        }],
+        controls: vec![group("First", "first"), group("Second", "second")],
+        ..ModuleDescriptor::default()
+    };
+    descriptor
+        .validate()
+        .expect("a two-group layout: tabs fixture is a valid descriptor");
+    descriptor
 }
 
 pub(crate) fn entry(asset: &AssetId, sequence: u64, parent: Option<&EntryId>) -> HistoryEntry {
@@ -202,20 +261,20 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             },
         ],
         queries: Vec::new(),
-        controls: vec![Control::Group {
+        controls: vec![Control::Group(luxforge_core::GroupControl {
             label: "Crop".into(),
             reset: None,
             collapsed: false,
-            controls: vec![Control::Action {
+            controls: vec![Control::Action(luxforge_core::ActionControl {
                 action: "crop-reset".into(),
                 label: "Reset crop".into(),
                 preset: Map::new(),
                 style: Default::default(),
                 icon: None,
                 variants: Vec::new(),
-            }],
+            })],
             variants: Vec::new(),
-        }],
+        })],
         reset: Some(luxforge_core::ResetAction {
             action: "crop-reset".into(),
             preset: Map::new(),

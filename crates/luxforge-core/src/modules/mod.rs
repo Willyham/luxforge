@@ -34,12 +34,14 @@ pub use crop::geometry::{
 };
 pub use crop::{CROP_EFFECT, CropAspect, CropModule};
 pub use descriptor::{
-    ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
-    Control, ControlVariant, CurveBackground, CurveChannel, EffectDescriptor, EffectStage,
-    IdentityKind, MAX_COORDINATE, MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS,
-    MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor,
-    ParameterKind, RailDecoration, ResetAction, ResolvedControl, ResolvedReset, check_parameters,
-    check_value, resolve_control, resolve_group_reset, valid_identity, valid_name,
+    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceControl,
+    ChoiceStyle, ColorControl, ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel,
+    CurveControl, EffectDescriptor, EffectStage, GroupControl, IdentityKind, MAX_COORDINATE,
+    MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS,
+    ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle, ParameterDescriptor, ParameterKind,
+    PickerControl, PresetsControl, RailDecoration, RangeControl, ResetAction, ResolvedControl,
+    ResolvedReset, TaskControl, ToggleControl, check_parameters, check_value, resolve_control,
+    resolve_group_reset, valid_identity, valid_name,
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,

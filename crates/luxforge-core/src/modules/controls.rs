@@ -168,13 +168,14 @@ impl FieldPatch for Controls {
                 ),
         )
         .query(ActionDescriptor {
-            id: SAMPLE_CONTROLS_CURVE.into(),
-            title: "Sample controls curve".into(),
-            notes: "257 linearly interpolated fractions from the one submitted channel".into(),
-            patch: false,
             parameters: CURVES
                 .map(|(name, _, monotone)| curve(name, monotone))
                 .into(),
+            ..ActionDescriptor::new(
+                SAMPLE_CONTROLS_CURVE,
+                "Sample controls curve",
+                "257 linearly interpolated fractions from the one submitted channel",
+            )
         })
         .developer()
     }

@@ -8,7 +8,10 @@
 use super::ModuleRegistry;
 use crate::{
     Error, ErrorKind, MaskId, SourceTag,
-    modules::{Control, ModuleDescriptor, ResolvedControl, ResolvedReset, resolve_control},
+    modules::{
+        Control, GroupControl, ModuleDescriptor, NumberControl, ResolvedControl, ResolvedReset,
+        resolve_control,
+    },
 };
 
 /// A field one control variant supersedes: parameter `parameter` of action `action`, whose number
@@ -39,7 +42,7 @@ impl Superseded<'_> {
 fn walk<'d>(controls: &'d [Control], visit: &mut impl FnMut(&'d Control)) {
     for control in controls {
         visit(control);
-        if let Control::Group { controls, .. } = control {
+        if let Control::Group(GroupControl { controls, .. }) = control {
             walk(controls, visit);
         }
     }
@@ -70,7 +73,7 @@ impl ModuleRegistry {
                     if outcome.is_err() {
                         return;
                     }
-                    if matches!(control, Control::Picker { .. }) {
+                    if matches!(control, Control::Picker(_)) {
                         reached.push(variant.module.as_str());
                     }
                 }
@@ -156,22 +159,22 @@ impl ModuleRegistry {
         let mut found = Vec::new();
         for owner in self.descriptors() {
             walk(&owner.controls, &mut |control| {
-                let Control::Number {
+                let Control::Number(NumberControl {
                     action,
                     parameter,
                     label,
                     variants,
                     ..
-                } = control
+                }) = control
                 else {
                     return;
                 };
                 for variant in variants {
-                    if let Some(Control::Number {
+                    if let Some(Control::Number(NumberControl {
                         action: by_action,
                         parameter: by_parameter,
                         ..
-                    }) = variant.control.as_deref()
+                    })) = variant.control.as_deref()
                     {
                         found.push(Superseded {
                             source: variant.source,

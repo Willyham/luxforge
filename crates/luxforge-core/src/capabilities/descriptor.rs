@@ -17,7 +17,6 @@ use crate::{
     valid_name,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashSet;
 use url::Url;
 
@@ -205,8 +204,8 @@ pub struct CapabilityDescriptor {
     pub purpose: String,
 }
 
-/// The implemented capabilities. `managed-storage` and `local-runtime` are refused by name until
-/// their first consumer defines them.
+/// The implemented capabilities. `managed-storage` and `local-runtime` are not kinds until their
+/// first consumer defines them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CapabilityKind {
@@ -215,9 +214,6 @@ pub enum CapabilityKind {
     /// Install a declared resource from its pinned URL.
     DownloadArtifact { resource: String },
 }
-
-const CAPABILITY_KINDS: &[&str] = &["remote-image-request", "download-artifact"];
-const UNIMPLEMENTED_CAPABILITY_KINDS: &[&str] = &["managed-storage", "local-runtime"];
 
 /// A pinned file a module may install: exact bytes, hash and origin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,64 +275,6 @@ impl TaskDescriptor {
 pub struct TaskApply {
     pub action: String,
     pub parameter: String,
-}
-
-/// Name an unknown or unimplemented kind before deserialization, which would otherwise report only
-/// serde's generic unknown variant without the setting or capability it belongs to.
-pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
-    let id = |item: &Value| {
-        item.get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned()
-    };
-    for capability in descriptor
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let Some(kind) = capability.get("kind").and_then(Value::as_str) else {
-            return Err(Error::validation(format!(
-                "capability {} declares no kind",
-                id(capability)
-            )));
-        };
-        if UNIMPLEMENTED_CAPABILITY_KINDS.contains(&kind) {
-            return Err(Error::validation(format!(
-                "capability kind {kind} is not implemented (capability {})",
-                id(capability)
-            )));
-        }
-        if !CAPABILITY_KINDS.contains(&kind) {
-            return Err(Error::validation(format!(
-                "capability {} declares unknown kind {kind}",
-                id(capability)
-            )));
-        }
-    }
-    // A setting is read on its own first, so a malformed one — an unknown kind above all — is
-    // named by the setting it belongs to rather than only by serde's position in the descriptor.
-    let settings = descriptor.get("settings");
-    let module_fields = settings.and_then(|settings| settings.get("fields"));
-    let profile_fields = settings
-        .and_then(|settings| settings.get("profiles"))
-        .and_then(|profiles| profiles.get("fields"));
-    for field in [module_fields, profile_fields]
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_array)
-        .flatten()
-    {
-        if let Err(error) = serde_json::from_value::<SettingDescriptor>(field.clone()) {
-            let name = field
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            return Err(Error::validation(format!("setting {name}: {error}")));
-        }
-    }
-    Ok(())
 }
 
 /// Every capability declaration of one module, checked against the rest of its descriptor. What is
@@ -751,19 +689,12 @@ mod tests {
         error.detail
     }
 
-    fn parse_rejection(value: Value) -> String {
-        let error =
-            ModuleDescriptor::parse(&value).expect_err("the JSON was expected to be refused");
-        assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
-        error.detail
-    }
-
     #[test]
-    fn a_full_capability_descriptor_round_trips_through_parse_and_serde() {
+    fn a_full_capability_descriptor_round_trips_through_json() {
         let descriptor = capability_descriptor();
         descriptor.validate().unwrap();
         let value = serde_json::to_value(&descriptor).unwrap();
-        assert_eq!(ModuleDescriptor::parse(&value).unwrap(), descriptor);
+        assert_eq!(ModuleDescriptor::deserialize(&value).unwrap(), descriptor);
         // A setting is a parameter, serialized exactly as an action's parameter is, with its label
         // beside it; a capability is flat the same way.
         let strength = &descriptor.settings.as_ref().unwrap().fields[0];
@@ -831,7 +762,7 @@ mod tests {
                     descriptor.id
                 );
             }
-            assert_eq!(&ModuleDescriptor::parse(&value).unwrap(), descriptor);
+            assert_eq!(&ModuleDescriptor::deserialize(&value).unwrap(), descriptor);
         }
     }
 
@@ -1228,21 +1159,11 @@ mod tests {
             ),
             // A task control names a task this module declares.
             (
-                |d| {
-                    d.controls = vec![Control::Task {
-                        task: "missing".into(),
-                        label: "Run".into(),
-                    }]
-                },
+                |d| d.controls = vec![Control::task("missing", "Run").into()],
                 "task control of module test.capabilities names undeclared task missing",
             ),
             (
-                |d| {
-                    d.controls = vec![Control::Task {
-                        task: TASK.into(),
-                        label: String::new(),
-                    }]
-                },
+                |d| d.controls = vec![Control::task(TASK, "").into()],
                 "task control for generate-test-tint of module test.capabilities has no label",
             ),
         ];
@@ -1254,58 +1175,7 @@ mod tests {
                 detail.contains(expected),
                 "expected {expected:?}, got {detail:?}"
             );
-            // A descriptor read from JSON is refused with the same message, whenever JSON can
-            // express it: an infinite bound has no JSON form.
-            let value = serde_json::to_value(&descriptor).unwrap();
-            if serde_json::from_value::<ModuleDescriptor>(value.clone()).ok() == Some(descriptor) {
-                assert_eq!(parse_rejection(value), detail);
-            }
         }
-    }
-
-    #[test]
-    fn managed_storage_and_local_runtime_are_refused_by_name() {
-        for kind in ["managed-storage", "local-runtime"] {
-            let mut value = serde_json::to_value(capability_descriptor()).unwrap();
-            value["capabilities"][0] =
-                json!({"id": "store", "kind": kind, "purpose": "Keep things."});
-            let detail = parse_rejection(value);
-            assert!(
-                detail.contains(&format!("capability kind {kind} is not implemented")),
-                "{detail}"
-            );
-            assert!(detail.contains("capability store"), "{detail}");
-        }
-    }
-
-    #[test]
-    fn unknown_setting_and_capability_kinds_are_named_when_parsed() {
-        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
-        value["capabilities"][0]["kind"] = json!("open-socket");
-        assert_eq!(
-            parse_rejection(value),
-            "capability echo declares unknown kind open-socket"
-        );
-        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
-        value["settings"]["fields"][1]["kind"] = json!("colour");
-        let detail = parse_rejection(value);
-        assert!(
-            detail.starts_with("setting mode: unknown variant `colour`"),
-            "{detail}"
-        );
-        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
-        value["settings"]["profiles"]["fields"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("kind");
-        let detail = parse_rejection(value);
-        assert!(
-            detail.starts_with("setting endpoint: missing field `kind`"),
-            "{detail}"
-        );
-        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
-        value["tasks"][0]["unexpected"] = json!(true);
-        assert!(parse_rejection(value).contains("unknown field `unexpected`"));
     }
 
     #[test]

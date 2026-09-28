@@ -324,7 +324,10 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
     assert!(
         matches!(
             proof.descriptor().controls.as_slice(),
-            [luxforge_core::Control::Group { reset: Some(_), .. }]
+            [luxforge_core::Control::Group(luxforge_core::GroupControl {
+                reset: Some(_),
+                ..
+            })]
         ),
         "the proof declares one resettable group"
     );
@@ -604,10 +607,10 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
             .any(|control| matches!(control, ControlModel::Group(_))),
         "the module's only group is drawn without a header"
     );
-    let Some(luxforge_core::Control::Group {
+    let Some(luxforge_core::Control::Group(luxforge_core::GroupControl {
         reset: Some(declared),
         ..
-    }) = proof.descriptor().controls.first()
+    })) = proof.descriptor().controls.first()
     else {
         panic!("the proof declares one resettable group");
     };

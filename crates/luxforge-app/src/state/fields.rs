@@ -1160,13 +1160,15 @@ mod tests {
             declared: &Option<luxforge_core::ResetAction>,
         ) -> Option<(String, String)> {
             controls.iter_mut().find_map(|control| match control {
-                Control::Group { controls, .. } => walk(controls, declared),
-                Control::Number {
+                Control::Group(luxforge_core::GroupControl { controls, .. }) => {
+                    walk(controls, declared)
+                }
+                Control::Number(luxforge_core::NumberControl {
                     action,
                     parameter,
                     reset,
                     ..
-                } if parameter == "amount" => {
+                }) if parameter == "amount" => {
                     *reset = declared.clone();
                     Some((action.clone(), parameter.clone()))
                 }
@@ -1184,7 +1186,7 @@ mod tests {
     fn group_resets(controls: &[Control]) -> Vec<luxforge_core::ResetAction> {
         walk(controls)
             .filter_map(|control| match control {
-                Control::Group { reset, .. } => reset.clone(),
+                Control::Group(luxforge_core::GroupControl { reset, .. }) => reset.clone(),
                 _ => None,
             })
             .collect()
@@ -1197,14 +1199,14 @@ mod tests {
             "Unsupported control: gradient"
         );
         let controls = [
-            Control::Group {
+            Control::Group(luxforge_core::GroupControl {
                 label: "Group".into(),
                 controls: Vec::new(),
                 reset: None,
                 collapsed: false,
                 variants: Vec::new(),
-            },
-            Control::Number {
+            }),
+            Control::Number(luxforge_core::NumberControl {
                 action: "act".into(),
                 parameter: "x".into(),
                 label: "X".into(),
@@ -1212,21 +1214,21 @@ mod tests {
                 rail: None,
                 reset: None,
                 variants: Vec::new(),
-            },
-            Control::Color {
+            }),
+            Control::Color(luxforge_core::ColorControl {
                 action: "act".into(),
                 parameter: "rgb".into(),
                 label: "RGB".into(),
                 style: luxforge_core::ColorStyle::Fields,
-            },
-            Control::Action {
+            }),
+            Control::Action(luxforge_core::ActionControl {
                 action: "act".into(),
                 label: "Apply".into(),
                 preset: Map::new(),
                 style: luxforge_core::ActionStyle::Default,
                 icon: None,
                 variants: Vec::new(),
-            },
+            }),
         ];
         for (control, kind) in controls.iter().zip(["group", "number", "color", "action"]) {
             assert_eq!(control_kind(control), kind);
@@ -1236,9 +1238,9 @@ mod tests {
             );
         }
         // The host renders the preset library where a module declares its presets control.
-        let presets = Control::Presets {
+        let presets = Control::Presets(luxforge_core::PresetsControl {
             action: "apply-preset".into(),
-        };
+        });
         assert_eq!(control_kind(&presets), "presets");
         assert!(matches!(
             classify(&presets),

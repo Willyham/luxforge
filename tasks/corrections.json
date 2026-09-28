@@ -196,7 +196,7 @@
         {
           "kind": "file",
           "label": "Module descriptor",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
           "relevance": "`CanvasInteraction` and the `points` parameter kind a brush-mask interaction extends."
         },
         {

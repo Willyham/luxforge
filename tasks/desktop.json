@@ -1420,7 +1420,7 @@
         {
           "kind": "file",
           "label": "Module descriptor",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
           "relevance": "`Control`'s actual shape: tagged, `deny_unknown_fields`, not `#[non_exhaustive]`, which is why the mirror's `Unsupported` arm is unreachable.",
           "locator": "pub enum Control"
         },

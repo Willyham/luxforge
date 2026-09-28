@@ -44,46 +44,50 @@ impl PixelModule {
                 id: "luxforge.pixel".into(),
                 title: "Pixel".into(),
                 hint: Some("One exact pixel".into()),
-                effects: vec![EffectDescriptor {
-                    id: PIXEL_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Pixel,
-                    order: 0,
-                    maskable: false,
-                    artifacts: false,
-                    single: false,
-                    sources: Vec::new(),
-                }],
+                effects: vec![EffectDescriptor::new(PIXEL_EFFECT, EffectStage::Pixel)],
                 actions: vec![ActionDescriptor {
-                    id: SET_PIXEL.into(),
-                    title: "Set pixel".into(),
-                    notes: "replaces one pixel of the content stage, the source after EXIF orientation; later rotations, reflections and the crop carry the edit, and replacing a pixel with its current value is a reported no-op".into(),
-                    patch: false,
-parameters: vec![
+                    parameters: vec![
                         ParameterDescriptor::pixel_coordinate("x").notes(
-                            "x in the content stage, the source after EXIF orientation, origin top left",
+                            "x in the content stage, the source after EXIF orientation, origin \
+                             top left",
                         ),
                         ParameterDescriptor::pixel_coordinate("y").notes(
-                            "y in the content stage, the source after EXIF orientation, origin top left",
+                            "y in the content stage, the source after EXIF orientation, origin \
+                             top left",
                         ),
                         ParameterDescriptor::color("rgb")
                             .required(true)
                             .notes("three 8-bit sRGB channels"),
                     ],
+                    ..ActionDescriptor::new(
+                        SET_PIXEL,
+                        "Set pixel",
+                        "replaces one pixel of the content stage, the source after EXIF \
+                         orientation; later rotations, reflections and the crop carry the edit, \
+                         and replacing a pixel with its current value is a reported no-op",
+                    )
                 }],
                 queries: Vec::new(),
-                controls: vec![Control::group(
-                    "Pixel proof",
-                    vec![
-                        Control::number(SET_PIXEL, "x", "X").number_style(crate::NumberStyle::Field),
-                        Control::number(SET_PIXEL, "y", "Y").number_style(crate::NumberStyle::Field),
-                        Control::color_field(SET_PIXEL, "rgb", "RGB")
-                            .color_style(crate::ColorStyle::Fields),
-                        // The proof's own pick mode, reached from its panel like every other.
-                        Control::picker("Pick pixel"),
-                        Control::action(SET_PIXEL, "Apply pixel"),
-                    ],
-                )],
+                controls: vec![
+                    Control::group(
+                        "Pixel proof",
+                        vec![
+                            Control::number(SET_PIXEL, "x", "X")
+                                .number_style(crate::NumberStyle::Field)
+                                .into(),
+                            Control::number(SET_PIXEL, "y", "Y")
+                                .number_style(crate::NumberStyle::Field)
+                                .into(),
+                            Control::color_field(SET_PIXEL, "rgb", "RGB")
+                                .color_style(crate::ColorStyle::Fields)
+                                .into(),
+                            // The proof's own pick mode, reached from its panel like every other.
+                            Control::picker("Pick pixel").into(),
+                            Control::action(SET_PIXEL, "Apply pixel").into(),
+                        ],
+                    )
+                    .into(),
+                ],
                 reset: None,
                 canvas: Some(CanvasInteraction::PointPick {
                     action: SET_PIXEL.into(),
@@ -215,7 +219,7 @@ impl ToolModule for PixelModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NumberStyle, modules::ParameterKind};
+    use crate::{GroupControl, NumberControl, NumberStyle, modules::ParameterKind};
 
     /// The Module panels design draws X and Y as labelled px fields: a coordinate has no useful
     /// rail. Both are integer pixels with the `px` unit, and the descriptor still validates.
@@ -224,17 +228,17 @@ mod tests {
         let module = PixelModule::new();
         let descriptor = module.descriptor();
         descriptor.validate().expect("a valid descriptor");
-        let Control::Group { controls, .. } = &descriptor.controls[0] else {
+        let Control::Group(GroupControl { controls, .. }) = &descriptor.controls[0] else {
             panic!("the pixel proof is one group");
         };
         for (index, name, label) in [(0, "x", "X"), (1, "y", "Y")] {
-            let Control::Number {
+            let Control::Number(NumberControl {
                 parameter,
                 label: shown,
                 style,
                 rail,
                 ..
-            } = &controls[index]
+            }) = &controls[index]
             else {
                 panic!("{name} is a number control");
             };
