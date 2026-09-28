@@ -627,8 +627,10 @@ pub(crate) fn reset_masked_tile_counts() {
 /// frame: a batch's results are bounded by its concurrency times one tile. `work` runs in the
 /// parallel phase, so everything done per pixel belongs there — the quantization, the alpha and the
 /// layout of the frame's rows — and `write` is left the serial copy of whole rows. A slot keeps its
-/// scratch from batch to batch and releases it when a narrower reservation drops the slot, so the
-/// scratch held never covers more tiles than the reservation does.
+/// scratch from batch to batch and releases it when a narrower reservation drops the slot, so while
+/// a batch runs the scratch held covers no more tiles than its reservation; between one batch's
+/// release and the next reservation the slots are held uncharged, and the render drops them all
+/// when it ends.
 pub(crate) fn run_batches<T: Send>(
     plan: &SpatialPlan,
     budget: &SpatialBudget,

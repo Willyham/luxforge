@@ -1372,6 +1372,29 @@ On the previous build the process used at most one core per tile in flight whate
 
 Two alternatives were measured and not taken. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes on these fixtures and the previous build's CPU time, and are the owner's decision, tracked in the [rendering plan](../../tasks/rendering.json), because a point sample through the layer evaluates the whole tile: 217 ms against 105 ms with all three at 60 MP, on the catalog owner.
 
+#### Tiles written back by row
+
+A spatial tile's output is produced in the frame's own row layout on the worker that ran the tile, the byte frame's RGBA rows quantized and with the input's alpha, and written back with one `copy_from_slice` per row (three per row on the linear planes) instead of a per-pixel copy on the calling thread, and each batch slot reuses its unit scratch instead of allocating and zeroing it per tile. Measured by an uncommitted release probe that renders through `luxforge_core`'s public `render` as `presence_timing` does: one Presence layer at +100 in the fields each row names, warm source and estimates, the 256 MiB target, and the process's CPU time around each render, on the generated JPEGs. It was built against the base `ec132e71` (before) and against this change. Native Apple M4 Pro, release, 28 September 2026, holding the host-wide timing lock; runs back to back and reversed (this, before, before, this) at a one-minute load of 12 to 20, 5 renders per stack and run. Each cell is the p50 of each run, paired in the order the runs went.
+
+| Stack | Summed halo | Before | Rows written by the tile's worker |
+| --- | --- | --- | --- |
+| 24 MP Texture | 8 px | 156 · 160 ms, 756% · 739% | 141 · 144 ms, 860% · 874% |
+| 24 MP Clarity | 199 px | 140 · 141 ms, 980% · 967% | 131 · 129 ms, 1069% · 1101% |
+| 24 MP Dehaze | 67 px | 93 · 93 ms, 649% · 654% | 71 · 73 ms, 822% · 829% |
+| 24 MP Texture, Clarity | 207 px | 548 · 562 ms, 1070% · 1054% | 536 · 636 ms, 1133% · 963% |
+| 24 MP Texture, Dehaze | 75 px | 258 · 273 ms, 965% · 955% | 241 · 325 ms, 1141% · 856% |
+| 24 MP Clarity, Dehaze | 266 px | 284 · 308 ms, 1006% · 929% | 252 · 288 ms, 1141% · 1033% |
+| 24 MP All three | 274 px | 758 · 776 ms, 982% · 990% | 685 · 788 ms, 1137% · 990% |
+| 60 MP Texture | 14 px | 410 · 411 ms, 680% · 679% | 337 · 338 ms, 820% · 827% |
+| 60 MP Clarity | 327 px | 501 · 552 ms, 954% · 878% | 447 · 531 ms, 1083% · 926% |
+| 60 MP Dehaze | 107 px | 251 · 251 ms, 606% · 616% | 213 · 192 ms, 729% · 808% |
+| 60 MP Texture, Clarity | 341 px | 2177 · 2541 ms, 1070% · 919% | 2122 · 2475 ms, 1116% · 964% |
+| 60 MP Texture, Dehaze | 121 px | 703 · 824 ms, 937% · 818% | 601 · 701 ms, 1078% · 974% |
+| 60 MP Clarity, Dehaze | 434 px | 1196 · 1380 ms, 983% · 856% | 1060 · 1233 ms, 1125% · 975% |
+| 60 MP All three | 448 px | 3090 · 3739 ms, 1038% · 847% | 2955 · 3484 ms, 1107% · 972% |
+
+Every frame had the same SHA-256 before and after, for all fourteen stacks, in this pass and in an earlier pass (before, after, after, before) whose load moved between 17 and 73 and whose times are not quoted. A single field, whose batches run many tiles with serial passes, renders 4 to 24% faster with 10 to 20% more of the pool busy: the write the pool used to wait for is gone. Two or three fields, whose batches the target holds to a few tiles with pooled passes, render 3 to 15% faster at 60 MP; at 24 MP, where the write is a smaller share of the render, the pairs lie within the runs' own spread (11% faster to 19% slower). A point sample through the layer is unchanged: it evaluates its tile with an empty scratch slot as before.
+
 ### Desktop slider-to-presented-frame
 
 `editor-latency --mode drag` on the generated 24 MP fixture, 30 drained inputs each, through the new `--action` and `--parameter` selector. The Basic exposure figure in the same harness is 74.8 / 83.4 ms.
