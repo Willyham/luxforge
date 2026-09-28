@@ -1634,7 +1634,7 @@ performance review checklist are in [isolated rendering performance](../design/i
 
 The source worker develops a cold known RAW directly at the validated requested white balance.
 Bayer mosaic normalization batches 16 rows through the shared pool above one megapixel; X-Trans
-normalization remains serial. DNG optical corrections share the process pool across disjoint rows.
+normalization remains serial. DNG optical corrections run disjoint 16-row jobs on the development executor.
 Markesteijn and RCD use the bounded tile jobs described in [startup and RAW throughput](#startup-and-raw-throughput).
 Texture and Clarity skip unused global reductions; Dehaze reuses its atmosphere across strength edits.
 Its cache distinguishes upstream masks and sampling, source development/view, exposure and approximate
@@ -1802,7 +1802,8 @@ measurement invokes the actual private producer and adoption boundary. Complete 
 | Fujifilm X100VI | 84.88 / 86.26 ms | 6.04 / 7.62 ms | 92.9% |
 | DJI Air 2S | 42.02 / 42.87 ms | 2.98 / 3.91 ms | 92.9% |
 
-The conversion writes disjoint 65,536-pixel chunks in place, using the shared pool above one
+The conversion writes disjoint 65,536-pixel chunks in place, as jobs of the development executor
+([native demosaic parallelism](../design/native-demosaic-parallelism.md#why-callbacks-are-bounded)) above one
 megapixel and serial chunks below. Each output is checked finite at production; private adoption
 retains shape/capacity checks without another full scan. Public constructors still scan and reject
 invalid input. There is no additional full-frame scratch. Leg-start load was 3.0–5.5.
@@ -1972,6 +1973,53 @@ LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=mavic_air_
   cargo test --release -p luxforge-raw --locked --lib -- --ignored --exact \
   tests::owner_development_timing --nocapture
 ```
+
+### Development executor refill
+
+Native demosaic jobs, native normalization batches, DNG correction rows and camera-conversion chunks
+all run on one development executor ([native demosaic parallelism](../design/native-demosaic-parallelism.md)):
+the caller runs the final job first and then pulls ordinary jobs, while each pool lane runs one job
+and re-spawns itself for the next, so no job waits for a joined batch's slowest job. Native jobs
+keep the eight-lane cap; the Rust passes run at the pool's width. Every job still starts at a full
+tile with fresh scratch, so the planes are unchanged: each source's complete development digest is
+the same before and after in every observation.
+
+Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026,
+the crate's `owner_development_timing` as in [DNG GainMap taps](#dng-gainmap-taps): 30 observations
+per run after one warm-up, each run a fresh process. Development covers normalization, demosaic,
+output allocation and final divide, and excludes file read, decode, DNG corrections, the camera
+conversion, hashing and drop. Before is `ec132e71` with only the timing test added for the Z6 and
+X100VI, and the GainMap change for the Air 2S. Each pair of builds ran before, after, after, before
+and then after, before, before, after, on a shared host.
+
+| Source | Before p50 / p95 (load) | After p50 / p95 (load) |
+| --- | ---: | ---: |
+| Nikon Z6, first pass | 56.2 / 56.8 ms (7.1), 64.4 / 207.0 ms (6.4) | 43.1 / 43.6 ms (5.9), 43.7 / 76.6 ms (5.0) |
+| Nikon Z6, reversed | 56.4 / 60.9 ms (11.8), 56.5 / 59.5 ms (10.6) | 44.6 / 95.1 ms (7.6), 43.2 / 44.2 ms (8.1) |
+| Fujifilm X100VI, first pass | 523.4 / 995.3 ms (10.2), 452.4 / 1391.3 ms (16.5) | 302.2 / 467.6 ms (18.9), 291.6 / 590.7 ms (14.9) |
+| Fujifilm X100VI, reversed | 330.7 / 335.2 ms (6.9), 335.4 / 929.7 ms (5.3) | 268.7 / 390.6 ms (6.9), 285.6 / 720.7 ms (9.8) |
+| DJI Air 2S, first pass | 45.2 / 45.8 ms (7.5), 45.8 / 48.0 ms (8.3) | 37.6 / 38.9 ms (6.4), 40.7 / 93.0 ms (7.2) |
+| DJI Air 2S, reversed | 45.4 / 49.1 ms (8.5), 45.2 / 46.0 ms (7.3) | 38.0 / 74.7 ms (7.4), 37.7 / 40.6 ms (6.1) |
+
+Every after p50 is below every before p50 for each camera. In the least-loaded runs development p50
+falls by about 23% on the Z6 (56.2 to 43.1 ms), 17% on the Air 2S (45.2 to 37.7 ms) and 17 to 19%
+on the X100VI (330.7 and 335.4 against 268.7 and 285.6 ms); the X100VI's first pass ran at load
+10 to 19 and is not used for the estimate. The p95 figures carry the host's load and no tail claim
+is made. Concurrent Fit proxies against a refilled development are not measured.
+
+The Rust passes were moved onto the executor on measurement, not only for the bound. Air 2S
+correction p50 in the same runs is 83.0, 106.6, 84.7 and 84.2 ms on the executor against 86.5,
+92.3, 86.8 and 87.3 ms on the parallel iterator it replaces; the one slower executor run has a p95
+of 204 ms and ran during a load spike, so the two are equal or the executor slightly faster. The
+Rust passes run at the pool's width, as the parallel iterator did: the eight-lane cap bounds native
+scratch, which they do not hold. Four exploratory Air 2S runs at eight lanes, at load 15 to 20, were
+too disturbed to compare (p50 112 to 174 ms at eight lanes against 83 to 207 ms at the pool's
+width). The
+X100VI camera conversion in core's `camera_conversion_photo_timing`, one build switching between
+the two paths, 30 samples per run in parallel, executor, executor, parallel order at load 10 to 19,
+gives a p50 of 6.66 and 6.19 ms on the parallel iterator and 6.71 and 6.26 ms on the executor,
+with the same output digest: equal. Neither Rust pass holds per-job scratch; a camera-conversion job
+is one 65,536-pixel chunk and a correction job 16 rows.
 
 ### RAW colour row batching
 

@@ -27,6 +27,7 @@ pub use limits::{
     MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES,
     PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, SPATIAL_TILE,
 };
+pub use native_tiles::refill_each;
 use profiles::{Catalog, Crop};
 
 /// The camera catalog as static data, which the build script generated from `data/cameras.json`
@@ -1746,7 +1747,7 @@ mod tests {
             };
             assert_eq!(format!("{:x}", hash.finalize()), expected);
         }
-        for workers in [1, 2, 0] {
+        for workers in [1, 2, 4, 0] {
             let pooled = raw
                 .develop_uncorrected_with_workers(gains, &cancel, workers)
                 .unwrap();

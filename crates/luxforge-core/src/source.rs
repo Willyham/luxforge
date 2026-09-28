@@ -224,8 +224,6 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     })
 }
 
-use rayon::prelude::*;
-
 const CAMERA_CHUNK_PIXELS: usize = 65_536;
 
 /// Convert the existing planar allocation in disjoint slices. A camera pixel is read into three
@@ -263,22 +261,22 @@ fn convert_camera_planes(
         }
         Ok(())
     };
-    if n >= (luxforge_raw::PARALLEL_PIXELS as usize) {
-        red.par_chunks_mut(CAMERA_CHUNK_PIXELS)
-            .zip(green.par_chunks_mut(CAMERA_CHUNK_PIXELS))
-            .zip(blue.par_chunks_mut(CAMERA_CHUNK_PIXELS))
-            .try_for_each(|((red, green), blue)| convert(red, green, blue))?;
+    // Above the shared threshold the chunks run on the development executor at the pool's width;
+    // one lane runs them in order on the caller.
+    let lanes = if n >= (luxforge_raw::PARALLEL_PIXELS as usize) {
+        rayon::current_num_threads()
     } else {
-        for ((red, green), blue) in red
-            .chunks_mut(CAMERA_CHUNK_PIXELS)
-            .zip(green.chunks_mut(CAMERA_CHUNK_PIXELS))
-            .zip(blue.chunks_mut(CAMERA_CHUNK_PIXELS))
-        {
-            convert(red, green, blue)?;
-        }
-    }
+        1
+    };
+    let chunks = red
+        .chunks_mut(CAMERA_CHUNK_PIXELS)
+        .zip(green.chunks_mut(CAMERA_CHUNK_PIXELS))
+        .zip(blue.chunks_mut(CAMERA_CHUNK_PIXELS));
+    luxforge_raw::refill_each(lanes, chunks, |((red, green), blue)| {
+        convert(red, green, blue)
+    })?;
     // A cancellation in the final short chunk must never publish these partially converted
-    // planes. Rayon has joined every chunk before this check or before returning an error.
+    // planes. The executor has joined every chunk before this check or before returning an error.
     if cancel.load(Ordering::Relaxed) {
         return Err(Error::conflict("RAW development cancelled"));
     }

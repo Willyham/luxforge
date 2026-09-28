@@ -6,8 +6,7 @@
 //! dng_lens_correction.cpp. The SDK clips after both opcodes; Luxforge keeps
 //! signed/highlight camera values until its terminal display conversion.
 
-use crate::{PlanarRgb, RawError, RawRect, format::DngOpcode, opcodes::Opcode};
-use rayon::prelude::*;
+use crate::{PlanarRgb, RawError, RawRect, format::DngOpcode, native_tiles, opcodes::Opcode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -15,30 +14,32 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// Rows in one correction job: about 88 thousand pixels on the Air 2S's active area, a few
+/// hundred microseconds of warp for one channel, so a pool thread that steals one returns to its
+/// own work within about the time of a native tile job.
+const CORRECTION_JOB_ROWS: usize = 16;
+
+/// Apply `apply(y, row)` to every `width`-pixel row of `pixels`, in jobs of
+/// [`CORRECTION_JOB_ROWS`] rows on the development executor with `lanes` at once. Cancellation is
+/// checked before every row; the first error or cancellation stops the queue and is returned
+/// once every started job has joined.
 fn correction_rows(
     pixels: &mut [f32],
     width: usize,
-    parallel: bool,
+    lanes: usize,
     cancel: &AtomicBool,
-    apply: impl Fn(usize, &mut [f32]) -> Result<(), RawError> + Sync + Send,
+    apply: impl Fn(usize, &mut [f32]) -> Result<(), RawError> + Sync,
 ) -> Result<(), RawError> {
-    let row = |(y, pixels): (usize, &mut [f32])| {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(RawError::Cancelled);
+    let jobs = pixels.chunks_mut(width * CORRECTION_JOB_ROWS).enumerate();
+    native_tiles::refill_each(lanes, jobs, |(job, rows)| {
+        for (index, row) in rows.chunks_exact_mut(width).enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(RawError::Cancelled);
+            }
+            apply(job * CORRECTION_JOB_ROWS + index, row)?;
         }
-        apply(y, pixels)
-    };
-    if parallel {
-        pixels
-            .par_chunks_exact_mut(width)
-            .enumerate()
-            .try_for_each(row)?;
-    } else {
-        pixels
-            .chunks_exact_mut(width)
-            .enumerate()
-            .try_for_each(row)?;
-    }
+        Ok(())
+    })?;
     if cancel.load(Ordering::Relaxed) {
         Err(RawError::Cancelled)
     } else {
@@ -663,18 +664,24 @@ impl DngCorrection {
     /// here: like the development before it, this checks no finiteness, and
     /// the one check is the caller's, where it adopts the converted planes.
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
-        // Use the process's shared pool only for photo-sized active areas. A row owns its output;
-        // stages and channels still join in order and reuse one warp plane.
-        let parallel = u64::from(self.active.width) * u64::from(self.active.height)
-            >= crate::limits::PARALLEL_PIXELS;
-        self.apply_rows(rgb, cancel, parallel)
+        // Photo-sized active areas run their row jobs on the development executor at the pool's
+        // width; smaller ones run in order on the caller. A row owns its output; stages and
+        // channels still join in order and reuse one warp plane.
+        let lanes = if u64::from(self.active.width) * u64::from(self.active.height)
+            >= crate::limits::PARALLEL_PIXELS
+        {
+            rayon::current_num_threads()
+        } else {
+            1
+        };
+        self.apply_rows(rgb, cancel, lanes)
     }
 
     fn apply_rows(
         &self,
         rgb: &mut PlanarRgb,
         cancel: &AtomicBool,
-        parallel: bool,
+        lanes: usize,
     ) -> Result<(), RawError> {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
@@ -703,7 +710,7 @@ impl DngCorrection {
                         let (row_taps, column_taps) = taps.as_ref().unwrap();
                         let covered = map.covers(channel);
                         let rows = &mut plane[first..first + area_h * width];
-                        correction_rows(rows, width, parallel, cancel, |yy, row| {
+                        correction_rows(rows, width, lanes, cancel, |yy, row| {
                             let row_taps = row_taps[yy];
                             for (pixel, column) in
                                 row[left..left + area_w].iter_mut().zip(column_taps)
@@ -721,7 +728,7 @@ impl DngCorrection {
                     }
                     Stage3::Vignette(radial) => {
                         let rows = &mut plane[first..first + area_h * width];
-                        correction_rows(rows, width, parallel, cancel, |yy, row| {
+                        correction_rows(rows, width, lanes, cancel, |yy, row| {
                             for (xx, pixel) in row[left..left + area_w].iter_mut().enumerate() {
                                 let gain = radial
                                     .gain(xx as f64, yy as f64, area_w, area_h)
@@ -744,7 +751,7 @@ impl DngCorrection {
                             })?;
                             scratch.resize(len, 0.0_f32);
                         }
-                        correction_rows(&mut scratch, area_w, parallel, cancel, |yy, row| {
+                        correction_rows(&mut scratch, area_w, lanes, cancel, |yy, row| {
                             for (xx, pixel) in row.iter_mut().enumerate() {
                                 let x = self.active.x + xx as u32;
                                 let y = self.active.y + yy as u32;
@@ -922,19 +929,25 @@ mod tests {
                     height: original.height,
                     data: original.data.clone(),
                 };
-                let mut parallel = PlanarRgb {
-                    width: original.width,
-                    height: original.height,
-                    data: original.data.clone(),
-                };
-                correction.apply_rows(&mut serial, &cancel, false).unwrap();
-                correction.apply_rows(&mut parallel, &cancel, true).unwrap();
-                for (i, (&a, &b)) in serial.data.iter().zip(&parallel.data).enumerate() {
-                    assert_eq!(
-                        a.to_bits(),
-                        b.to_bits(),
-                        "{width}x{height}, reverse={reverse}, value {i}"
-                    );
+                correction.apply_rows(&mut serial, &cancel, 1).unwrap();
+                for lanes in [2, 4, rayon::current_num_threads()] {
+                    let mut parallel = PlanarRgb {
+                        width: original.width,
+                        height: original.height,
+                        data: original.data.clone(),
+                    };
+                    correction
+                        .apply_rows(&mut parallel, &cancel, lanes)
+                        .unwrap();
+                    for (i, (&a, &b)) in serial.data.iter().zip(&parallel.data).enumerate() {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "{width}x{height}, reverse={reverse}, {lanes} lanes, value {i}"
+                        );
+                    }
+                }
+                for (i, &a) in serial.data.iter().enumerate() {
                     let pixel = i % original.plane_len();
                     let x = pixel % original.width as usize;
                     let y = pixel / original.width as usize;
@@ -947,8 +960,8 @@ mod tests {
                         assert_eq!(a.to_bits(), original.data[i].to_bits());
                     }
                 }
-                assert!(parallel.data.iter().any(|v| *v < 0.0));
-                assert!(parallel.data.iter().any(|v| *v > 1.0));
+                assert!(serial.data.iter().any(|v| *v < 0.0));
+                assert!(serial.data.iter().any(|v| *v > 1.0));
             }
         }
     }
@@ -967,15 +980,13 @@ mod tests {
                 if reverse {
                     correction.stages.reverse();
                 }
-                for parallel in [false, true] {
+                for lanes in [1, rayon::current_num_threads()] {
                     let mut image = PlanarRgb {
                         width: original.width,
                         height: original.height,
                         data: original.data.clone(),
                     };
-                    correction
-                        .apply_rows(&mut image, &cancel, parallel)
-                        .unwrap();
+                    correction.apply_rows(&mut image, &cancel, lanes).unwrap();
                     let mut hash = Sha256::new();
                     for value in &image.data {
                         hash.update(value.to_bits().to_le_bytes());
@@ -1003,12 +1014,12 @@ mod tests {
 
     #[test]
     fn correction_rows_report_cancellation_and_leave_overflow_to_adoption() {
-        for parallel in [false, true] {
+        for lanes in [1, 4] {
             let cancel = AtomicBool::new(true);
             let (correction, mut pixels) = row_fixture(33, 19);
             let before = pixels.data.clone();
             assert_eq!(
-                correction.apply_rows(&mut pixels, &cancel, parallel),
+                correction.apply_rows(&mut pixels, &cancel, lanes),
                 Err(RawError::Cancelled)
             );
             assert_eq!(pixels.data, before);
@@ -1018,7 +1029,7 @@ mod tests {
             // returned as a development.
             cancel.store(false, Ordering::Relaxed);
             let mut rows = vec![0.0; 1024];
-            let result = correction_rows(&mut rows, 16, parallel, &cancel, |_, _| {
+            let result = correction_rows(&mut rows, 16, lanes, &cancel, |_, _| {
                 cancel.store(true, Ordering::Relaxed);
                 Ok(())
             });
@@ -1028,9 +1039,7 @@ mod tests {
             // conversion rejects it; nothing here hides it as a finite value.
             cancel.store(false, Ordering::Relaxed);
             pixels.data.fill(f32::MAX);
-            correction
-                .apply_rows(&mut pixels, &cancel, parallel)
-                .unwrap();
+            correction.apply_rows(&mut pixels, &cancel, lanes).unwrap();
             assert!(pixels.data.iter().any(|value| !value.is_finite()));
         }
     }
@@ -1043,20 +1052,19 @@ mod tests {
             let (correction, mut pixels) = row_fixture(width, height);
             let original = pixels.data.clone();
             let cancel = AtomicBool::new(false);
-            for parallel in [false, true, true, false] {
+            let pool = rayon::current_num_threads();
+            for lanes in [1, pool, pool, 1] {
                 let mut timings = Vec::new();
                 for _ in 0..5 {
                     pixels.data.copy_from_slice(&original);
                     let start = Instant::now();
-                    correction
-                        .apply_rows(&mut pixels, &cancel, parallel)
-                        .unwrap();
+                    correction.apply_rows(&mut pixels, &cancel, lanes).unwrap();
                     timings.push(start.elapsed().as_secs_f64() * 1000.0);
                     black_box(&pixels);
                 }
                 eprintln!(
                     "{}",
-                    serde_json::json!({"width":width,"height":height,"parallel":parallel,"ms":timings})
+                    serde_json::json!({"width":width,"height":height,"lanes":lanes,"ms":timings})
                 );
             }
         }
