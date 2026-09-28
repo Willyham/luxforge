@@ -1386,7 +1386,7 @@
     {
       "id": "TASK-017",
       "description": "Match core controls directly instead of through the `Rendered` mirror, hold per-control local state in one map, and delete the dead-code allowances that hid unread fields.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-016"
       ],

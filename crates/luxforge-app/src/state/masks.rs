@@ -374,9 +374,7 @@ pub(crate) struct MaskDraftModel {
     pub(crate) title: String,
     /// The method the commit calls, which is what Copy as JSON request copies.
     pub(crate) method: String,
-    pub(crate) kind: String,
     pub(crate) conflicted: bool,
-    pub(crate) can_apply: bool,
     pub(crate) apply_reason: Option<String>,
     /// This gesture is painted, so its numbers are the brush's own and the Brush section already
     /// offers them. The panel shows one set of fields rather than two identical ones.
@@ -1450,9 +1448,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         fields,
         title: draft.op.label().to_owned(),
         method: draft.method().unwrap_or_default().to_owned(),
-        kind: draft.kind().to_owned(),
         conflicted: inputs.gesture_conflicted,
-        can_apply: apply_reason.is_none(),
         apply_reason,
         painted: draft.brush().is_some(),
     })
