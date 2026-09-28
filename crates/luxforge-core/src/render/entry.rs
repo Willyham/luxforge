@@ -840,7 +840,7 @@ fn same_segments(left: &Compiled, right: &Compiled) -> bool {
 ///
 /// **A prefix holding a spatial layer is refused by name, before an evaluation exists.** One point
 /// query through such a layer is the declared exception to [performance rule
-/// 4](../../docs/engineering/performance-rules.md#rules) — it evaluates the stage-aligned tiles
+/// 4](../../../../docs/engineering/performance-rules.md#rules) — it evaluates the stage-aligned tiles
 /// its pixel needs, plus the operation's halo, each once per query. The caller here asks per
 /// display cell over the whole stage, which would evaluate every tile of it on every overlay, so
 /// it is refused rather than paid: the check is the prefix's own compilation, which is

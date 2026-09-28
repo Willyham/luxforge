@@ -39,14 +39,14 @@ pub struct StageSize {
 ///
 /// [`ContentPoint`] answers one pixel at a time, which is what a pick needs. A gesture that must
 /// follow the pointer cannot pay that call per move ([performance rule
-/// 12](../../docs/engineering/performance-rules.md#rules)), and it does not have to: the tail is
+/// 12](../../../../docs/engineering/performance-rules.md#rules)), and it does not have to: the tail is
 /// exact integer transforms plus at most one crop resample, so the map is affine and one matrix
 /// answers every position a gesture will ask about.
 ///
 /// **Coordinates are continuous and pixel-center based, the convention [`Resample`](crate::modules::Resample) already fixes:**
 /// pixel index `n` has its center at `n + 0.5`, so a coordinate `c` lies in pixel `c.floor()` and
 /// the content stage spans `0.0..width` by `0.0..height`. The
-/// [crop spec](../../docs/specs/single-image.md#sampling) states the same thing about the crop's own
+/// [crop spec](../../../../docs/specs/single-image.md#sampling) states the same thing about the crop's own
 /// sampling, and [`Resample::inverse`](crate::modules::Resample::inverse) maps output pixel centers to exactly these input
 /// coordinates, so nothing here introduces a second convention.
 ///
@@ -199,7 +199,7 @@ pub(crate) fn locate(
 /// The dimensions are the whole input, not a source: no pixel is read on any path here, so there is
 /// none to pass. Cost is one matrix multiply per layer on top of compiling the stack, and like
 /// [`super::Render::stage`] it allocates no frame, which is what lets the catalog owner answer it
-/// ([rules 4 and 5](../../docs/engineering/performance-rules.md#rules)).
+/// ([rules 4 and 5](../../../../docs/engineering/performance-rules.md#rules)).
 ///
 /// A stack the compiler refuses has no output stage to map, and its reason is returned unchanged —
 /// an unavailable effect is `Incompatible`, a stack the host cannot evaluate is `Validation`. There

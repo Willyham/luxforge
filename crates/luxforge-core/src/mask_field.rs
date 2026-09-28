@@ -2,17 +2,17 @@
 //!
 //! A mask's geometry is stored normalized to the content stage, so the mask compiled against a
 //! proxy stage is the *same* coverage field at a smaller scale. That is what keeps a masked recipe
-//! [proxy eligible](../../docs/design/instant-preview.md) by construction: nothing about the
+//! [proxy eligible](../../../docs/design/instant-preview.md) by construction: nothing about the
 //! equation changes with the stage, and a proxy render of a masked stack is the exact recipe at
 //! proxy size.
 //!
 //! The one thing that does change with the stage is **sampling**. Coverage is read once per pixel,
 //! at that pixel's centre, so a feature narrower than a pixel falls between the samples and aliases
 //! — a hard-edged radial, whose ramp is zero pixels wide at every stage, is the extreme case. At
-//! full resolution that is the frozen behaviour the [mask study](../../docs/design/mask-study.md)
+//! full resolution that is the frozen behaviour the [mask study](../../../docs/design/mask-study.md)
 //! settled and `render.sample` agrees with byte for byte. At proxy size the same field is sampled
 //! on a grid two to four times coarser, and the recorded default (proposal P5 of
-//! [masking](../../docs/design/masking.md#point-queries-and-proxies)) is to supersample **the mask
+//! [masking](../../../docs/design/masking.md#point-queries-and-proxies)) is to supersample **the mask
 //! field only** — never the effect — 2 × 2 per pixel and say the frame is approximate.
 //!
 //! [`MaskField`] is that decision, made once when a layer's mask is compiled and read per pixel by
@@ -37,7 +37,7 @@ use crate::{
 
 /// The narrowest feature, in stage pixels, a mask may draw before the pixel grid it is sampled on
 /// can no longer resolve it. Two pixels is the Nyquist reading of "a feature a pixel grid can
-/// carry", and it is the number [masking](../../docs/design/masking.md#point-queries-and-proxies)
+/// carry", and it is the number [masking](../../../docs/design/masking.md#point-queries-and-proxies)
 /// records.
 pub(crate) const MIN_FEATURE_PX: f32 = 2.0;
 

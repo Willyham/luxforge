@@ -85,7 +85,7 @@ pub struct ProxyApproximation {
     pub spatial: bool,
     /// A mask in the stack draws a feature narrower than two pixels of the proxy stage, so its
     /// field — never the effect — is evaluated with a 2 x 2 supersample per pixel
-    /// ([masking](../../docs/design/masking.md#point-queries-and-proxies), proposal P5). Without
+    /// ([masking](../../../docs/design/masking.md#point-queries-and-proxies), proposal P5). Without
     /// that rule a hard edge would alias differently on every frame of a drag.
     pub mask: bool,
     /// A moving viewport uses a stage with about half the full output's pixels on each side.

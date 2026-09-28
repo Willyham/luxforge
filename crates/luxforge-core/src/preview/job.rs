@@ -204,7 +204,7 @@ impl PreviewJob {
     /// the stack is in hand: a mask or a component this recipe does not hold is a named
     /// `validation` refusal now rather than a silently absent overlay later. It costs
     /// `O(masks + components)` and reads no pixel, so the thread that plans a job may call it
-    /// ([performance rule 5](../../docs/engineering/performance-rules.md#rules)).
+    /// ([performance rule 5](../../../../docs/engineering/performance-rules.md#rules)).
     pub fn with_mask_overlay(mut self, request: MaskOverlayRequest) -> Result<Self, Error> {
         let mask = self
             .evaluation

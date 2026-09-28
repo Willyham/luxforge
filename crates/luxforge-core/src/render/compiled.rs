@@ -162,7 +162,7 @@ impl Compiled {
     /// Whether answering one pixel of this compilation evaluates a spatial segment.
     ///
     /// A spatial point query is the declared exception to [performance rule
-    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles
+    /// 4](../../../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles
     /// its pixels need, each once per query, so a caller that asks per display cell over the whole
     /// stage evaluates every tile of it. The coverage overlay reads this to refuse rather than to
     /// pay it. `O(segments)` and reads no pixels.
