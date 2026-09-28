@@ -307,6 +307,163 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
     states
 }
 
+/// The labelled widgets: a tab row per selected tab, labelled buttons in each tone, and one-line
+/// truncation in section headers and history rows, framed narrow enough that the long ones end in
+/// their ellipsis.
+pub(crate) fn gallery_labels() -> Vec<Element<'static, ()>> {
+    // The tab row, one per selected tab, the dot on each Custom tab.
+    let tabs = |selected| {
+        tab_row(
+            &TabRowModel {
+                tabs: vec![
+                    Tab {
+                        label: "Hue".into(),
+                        custom: true,
+                    },
+                    Tab {
+                        label: "Saturation".into(),
+                        custom: true,
+                    },
+                    Tab {
+                        label: "Luminance".into(),
+                        custom: false,
+                    },
+                ],
+                selected,
+                reset: true,
+                enabled: true,
+            },
+            |_| (),
+            (),
+        )
+    };
+    // Labelled buttons: resting with its icon and key hint, selected (its mode is active),
+    // disabled, and a primary action.
+    let button = |label: &str, icon, key_hint: Option<&str>, tone, enabled| {
+        labelled_button(
+            &LabelledButtonModel {
+                label: label.into(),
+                icon,
+                key_hint: key_hint.map(Into::into),
+                tone,
+                size: ButtonSize::Compact,
+                fill: false,
+                enabled,
+            },
+            Some(()),
+        )
+    };
+    let picker = |tone, enabled| {
+        button(
+            "Neutral picker",
+            Some(Icon::Picker),
+            Some("W"),
+            tone,
+            enabled,
+        )
+    };
+    // Section headers whose hint or unavailable reason does not fit end in an ellipsis; on a
+    // scoped band the hint gives way to the scope chip, and an expanded one keeps the chip before
+    // its reset.
+    let band = |title: &str, expanded, hint: Option<&str>, unavailable: Option<&str>, scope| {
+        section_header(
+            &SectionHeaderModel {
+                title: title.into(),
+                expanded,
+                active: expanded || hint.is_some(),
+                hint: hint.map(Into::into),
+                unavailable: unavailable.map(Into::into),
+                reset: true,
+                status: None,
+                scope,
+                enabled: true,
+            },
+            (),
+            (),
+        )
+    };
+    let mixer_hint = Some("Hue, saturation and luminance by range");
+    // History rows: a long label ends in an ellipsis before the actor, which keeps its full
+    // width; the tag still follows a truncated label.
+    let history = |leading: &str, label: &str, actor: Option<&str>, tag: Option<&str>| {
+        list_row(
+            &ListRowModel {
+                marker: if tag.is_some() {
+                    Marker::Plain
+                } else {
+                    Marker::Current
+                },
+                leading: leading.into(),
+                label: label.into(),
+                trailing: actor.map(Into::into),
+                dimmed: tag.is_some(),
+                tag: tag.map(Into::into),
+                enabled: true,
+            },
+            Some(()),
+            Some(()),
+        )
+    };
+    vec![
+        iced::widget::Column::with_children((0..3).map(tabs))
+            .spacing(theme::ROW_SPACING)
+            .into(),
+        iced::widget::column![
+            button_row(
+                vec![
+                    picker(ButtonTone::Control, true),
+                    picker(ButtonTone::Selected, true),
+                ],
+                RowPlacement::default(),
+            ),
+            button_row(
+                vec![
+                    picker(ButtonTone::Control, false),
+                    button("Apply", None, None, ButtonTone::Primary, true),
+                ],
+                RowPlacement::default(),
+            ),
+        ]
+        .into(),
+        gallery::narrow(
+            iced::widget::column![
+                band("Colour mixer", false, mixer_hint, None, None),
+                band(
+                    "Vignette",
+                    false,
+                    Some("Darken or lighten the corners after the crop"),
+                    None,
+                    None
+                ),
+                band(
+                    "Lens profile",
+                    false,
+                    None,
+                    Some("Unavailable \u{b7} disabled by --disable-module lens-profile"),
+                    None
+                ),
+                band("Colour mixer", false, mixer_hint, None, Some("Face".into())),
+                band("Presence", true, None, None, Some("Face".into())),
+            ]
+            .into(),
+        ),
+        gallery::narrow(
+            iced::widget::column![
+                history(
+                    "12",
+                    "Blue saturation \u{2212}40",
+                    Some("agent \u{b7} lf-assist"),
+                    None
+                ),
+                history("11", "Reset White balance", Some("you"), None),
+                history("10", "Hue, saturation and luminance", None, Some("branch")),
+            ]
+            .spacing(theme::LIST_ROW_SPACING)
+            .into(),
+        ),
+    ]
+}
+
 /// The range: a luminance band on its black-to-white rail with both shoulders open, the same band
 /// with its high edge dragged, and a disabled band on the plain rail with no shoulders declared.
 pub(crate) fn gallery_ranges() -> Vec<Element<'static, ()>> {
