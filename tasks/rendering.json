@@ -312,7 +312,7 @@
     {
       "id": "TASK-005",
       "description": "Allocate frames as Arc<Vec<u8>> from vec![0; n] instead of a serial byte-by-byte fill, and copy an identity segment's source rows inside the parallel pass instead of up front on one thread.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -893,7 +893,7 @@
     {
       "id": "TASK-013",
       "description": "Declare every frame opaque RGBA and delete alpha blending, fetching and threading from the render paths.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],

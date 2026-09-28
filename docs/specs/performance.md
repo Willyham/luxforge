@@ -572,6 +572,21 @@ round trips also have a several-millisecond tail on 24 MP. This does not justify
 GPU rewrite or changing the mask renderer yet. Keep the bounded queue and cancellation rules while
 tracing whether the remaining gap comes from the active-job handoff or the desktop event loop.
 
+#### Zeroed frames and an identity pass's source rows
+
+A byte frame is an `Arc<Vec<u8>>` allocated with `vec![0; len]`, which the system allocator serves with `calloc`, so no thread fills it before the pass that writes it; an identity pass over the shared source loads the source's rows inside its parallel pass (one `copy_from_slice` per row) instead of copying the whole source on one thread first. `editor-performance --samples 30` on the generated JPEGs, release `--locked`, the base `2360cf82` with the Exposure-only row added (before) against this change (after), in-process on the native Apple M4 Pro, 28 September 2026, holding the host-wide timing lock. Two rounds per size, before, after, after, before and then after, before, before, after, at a one-minute load of 13.5 to 19.6 (24 MP) and 19.1 to 28.5 (60 MP) from other sessions' builds. Each cell is the p50 of each run in the order the runs went, first round then second; the p95s followed the load and are in the evidence, not here. Exposure-only is one +1 EV Basic layer on the upright source and nothing else; one exact transform is a quarter turn.
+
+| Render (p50 ms) | Before | After |
+| --- | --- | --- |
+| 24 MP Exposure-only | 8.00 · 17.38 · 16.92 · 11.48 | 7.59 · 9.24 · 6.66 · 12.81 |
+| 24 MP one exact transform | 6.33 · 15.44 · 13.65 · 8.58 | 6.27 · 15.00 · 6.31 · 6.70 |
+| 60 MP Exposure-only | 36.27 · 20.23 · 23.47 · 25.72 | 19.89 · 19.65 · 25.25 · 24.45 |
+| 60 MP one exact transform | 14.19 · 12.96 · 15.47 · 15.31 | 14.32 · 16.32 · 13.32 · 25.64 |
+
+Every run's frames had the same SHA-256 before and after: `cf45865f…` (24 MP Exposure-only), `4895b6de…` (24 MP one transform), `0c36dca4…` (60 MP Exposure-only) and `21cb00ac…` (60 MP one transform). Only 24 MP Exposure-only moves: it is faster in three of the four adjacent before/after pairs (by 0.4 to 10 ms at the median, the larger gaps while the load climbed) and 1.3 ms slower in the fourth, and its fastest run falls from 8.0 to 6.7 ms. The one-transform renders and 60 MP Exposure-only lie within the runs' own spread at this load: the fastest runs are 6.33 against 6.27 ms, 12.96 against 13.32 ms and 20.23 against 19.65 ms.
+
+The allocation itself explains why the difference is small in a warm loop. A release probe of a 240 MB frame (60 MP RGBA), 14 writer threads: in a fresh process, collecting `repeat_n(0, len)` into an `Arc<[u8]>` is a `malloc` and a serial `bzero` of 10.8 to 12.5 ms, and 12.2 to 13.7 ms with the parallel write after it; `Arc::new(vec![0; len])` returns in 2 to 3 µs, and the parallel write that faults its pages in takes the whole to 8.4 to 9.8 ms (10 processes each). At 96 MB (24 MP) the fresh-process totals are 4.7 to 5.5 ms for the fill and 6.3 to 6.9 ms for the zeroed allocation, so faulting pages in from every writer at once does not pay at that size. Repeating the same allocation in one process, as `editor-performance` does, the allocator hands back the region the last frame freed and both forms cost 1.0 ms to allocate and 2.0 ms with the write (p50 of 30). The render therefore gains most on a first render at a new size and on the identity pass's source copy it no longer makes.
+
 ### Desktop slider-to-presented-frame and settled histogram
 
 `editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples
