@@ -91,8 +91,11 @@ fn cell<'a, M: Clone + 'a>(field: GridField<'a, M>) -> Element<'a, M> {
         on_reset,
         on_menu,
     } = field;
+    // The grid is the compact form of a field list, and the design sets its labels in lower case
+    // (`radius x`) so a pair of columns reads as coordinates rather than as a stack of titles. It is
+    // display only: the label a menu, a tooltip or the evidence names is the caller's.
     let label = double_click_when(
-        text(model.label.clone())
+        text(model.label.to_lowercase())
             .size(theme::SIZE_GRID_FIELD)
             .wrapping(Wrapping::None)
             .color(if model.enabled {
