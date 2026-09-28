@@ -4,7 +4,7 @@ use crate::{
     Config,
     app::{
         Boot, Editor,
-        draft::{CoreDraft, GestureId, Round},
+        draft::{CoreDraft, Round},
         evidence::{Evidence, parse_script},
         gesture::{CoreGesture, Kind},
         message::{ControlMessage, DraftMessage, Message, SyncMessage},
@@ -534,11 +534,6 @@ pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
 /// The core draft of the open gesture.
 pub(crate) fn core_draft(editor: &Editor) -> Option<&CoreDraft> {
     editor.core_gesture().map(|gesture| &gesture.draft)
-}
-
-/// The local identity of the open core gesture, which its owner answers name.
-pub(crate) fn gesture_of(editor: &Editor) -> GestureId {
-    core_draft(editor).expect("a core gesture").gesture
 }
 
 /// Answer the open gesture's `draft.commit`, as its task would.

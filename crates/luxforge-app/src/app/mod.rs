@@ -355,10 +355,9 @@ pub(crate) struct Editor {
     pub(crate) gesture: Option<Box<CoreGesture>>,
     /// The last local gesture identity minted, so every owner answer names the gesture it is for.
     pub(crate) gesture_serial: u64,
-    /// An armed brush a new revision conflicted. It has sent nothing, so its draft is rebased with
-    /// `draft.reapply` and no notice: set when the conflict is found, sent once the update is over
-    /// ([`Editor::rebase_armed_brush`]) and taken by that reapply's answer.
-    pub(crate) armed_rebase: Option<draft::GestureId>,
+    /// The brush in hand between strokes: this desktop's view state, holding no core draft. Its
+    /// press opens the stroke's draft ([`Editor::paint_press`]).
+    pub(crate) armed: Option<masks::ArmedBrush>,
     /// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
     #[cfg(test)]
     pub(crate) stand_in: Option<testing::StandIn>,
@@ -630,7 +629,7 @@ impl Editor {
             dragging: None,
             gesture: None,
             gesture_serial: 0,
-            armed_rebase: None,
+            armed: None,
             #[cfg(test)]
             stand_in: None,
             pending_reset: None,
@@ -806,11 +805,11 @@ impl Editor {
             self.seed_values();
         }
         self.present_mask_overlay();
-        let rebase = self.rebase_armed_brush();
+        let brush = self.follow_armed_brush();
         let abandoned = self.close_abandoned_crop();
         // A wake that arrived while a request was in flight is read once it has been answered.
         let synced = self.sync_when_wanted();
-        let task = self.sync_mode(Task::batch([task, rebase, abandoned, synced]));
+        let task = self.sync_mode(Task::batch([task, brush, abandoned, synced]));
         self.refresh_overlay();
         self.refresh_thumbnails();
         let rederive_started = Instant::now();
@@ -1036,7 +1035,7 @@ impl Editor {
                     clipping: self.overlay_surface(),
                     coverage: self.mask_overlay_surface(),
                     mask_draft: self.mask_shape(),
-                    mask_map: self.mask_gesture().and_then(|mask| mask.map),
+                    mask_map: self.held_mask().and_then(|mask| mask.map),
                     draft: self.crop(),
                 },
             ),
@@ -1065,7 +1064,7 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             gallery_open: self.gallery_page().is_some(),
-            drafting: self.crop().is_some() || self.mask_gesture().is_some(),
+            drafting: self.crop().is_some() || self.held_mask().is_some(),
             crop: self.crop().is_some(),
             slider_drafting: self.slider_gesture().is_some(),
             mask_brush: self.mask_mode_active(),

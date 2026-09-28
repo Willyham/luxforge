@@ -77,9 +77,6 @@ impl Editor {
             // and the request it produces.
             return self.drive(Event::Offer(fields));
         }
-        // An armed brush holds the one core draft this gesture needs and has nothing painted to
-        // lose by giving it up: it is cancelled before the `draft.begin` below.
-        self.disarm();
         let Some(state) = &self.state else {
             return Task::none();
         };
@@ -106,7 +103,8 @@ impl Editor {
             target,
             unpreviewed: false,
         });
-        self.open_core(kind, Some(fields))
+        let gesture = self.next_gesture();
+        self.open_core(gesture, kind, Some(fields))
     }
 
     /// A release of a drafting control with no draft open. Such a control opens its draft on its

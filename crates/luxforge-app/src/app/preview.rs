@@ -1733,9 +1733,8 @@ impl Editor {
         // A mask shape gesture drains the same way: while another `draft.set` or the commit is still
         // queued the frame on screen is not the one the step is evidence of, so the step waits for
         // the geometry that settles, and for the newest frame asked for rather than an older one
-        // still arriving. A brush re-arming after its stroke committed asks for no frame of its
-        // own, so the committed frame settles its step whether or not its `draft.begin` has
-        // answered yet.
+        // still arriving. A brush back in hand after its stroke committed holds no draft and asks
+        // for no frame of its own, so the committed frame settles its step.
         let settle = match self.core_gesture() {
             Some(gesture)
                 if gesture.draft.frame_pending() || upload.generation < self.preview_generation =>
