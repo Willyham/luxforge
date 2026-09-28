@@ -428,10 +428,11 @@ pub const JOB_PROGRESS_GAP: f32 = 2.0;
 
 // -- Canvas chrome ----------------------------------------------------------------------------
 //
-// The floating chrome over the canvas — the mode strip, the draft bar and the notices — and the
-// photograph's inset at Fit, from the Canvas section of the Develop workspace design as its boards
-// draw them. The tinted colours are sampled from the boards, precomputed opaque over [`BAR`] for the
-// same reason as [`RULE`].
+// The floating chrome over the canvas — the mode strip, the draft bar and the notices — from the
+// Canvas section of the Develop workspace design as its boards draw them. The photograph's inset at
+// Fit is the desktop's layout (`luxforge-app/src/layout.rs`), whose bottom inset holds the strip.
+// The tinted colours are sampled from the boards, precomputed opaque over [`BAR`] for the same
+// reason as [`RULE`].
 
 /// How far the floating chrome sits from the canvas edge: the mode strip above the bottom, the draft
 /// bar and the notices below the top.
@@ -473,11 +474,6 @@ pub const STRIP_RULE_HEIGHT: f32 = 16.0;
 pub const STRIP_RULE_MARGIN: f32 = 4.0;
 /// The strip's whole height: a tool, the padding and the border on both sides.
 pub const STRIP_HEIGHT: f32 = STRIP_TOOL_HEIGHT + 2.0 * (STRIP_PADDING + BORDER_WIDTH);
-/// The photograph's inset from the canvas at Fit, at the top and on both sides.
-pub const FIT_INSET: f32 = 20.0;
-/// The photograph's inset from the canvas bottom at Fit: the strip, its inset and a gap, so at Fit
-/// no pixel of the photograph lies under the strip in either orientation.
-pub const FIT_INSET_BOTTOM: f32 = 56.0;
 /// The draft bar's height, padding and the gap between its parts.
 pub const DRAFT_BAR_HEIGHT: f32 = 34.0;
 pub const DRAFT_BAR_PADDING: Padding = Padding {
@@ -1832,8 +1828,7 @@ mod tests {
         [colour.r, colour.g, colour.b].map(|channel| (channel * 255.0).round() as u8)
     }
 
-    /// The canvas chrome's sizes are the boards', and Fit keeps the photograph clear of the strip:
-    /// the bottom inset holds the strip, its own inset and a gap.
+    /// The canvas chrome's sizes are the boards'.
     #[test]
     fn canvas_chrome_sizes_match_the_boards() {
         assert_eq!(CHROME_INSET, 12.0);
@@ -1850,13 +1845,6 @@ mod tests {
             STRIP_HEIGHT, 38.0,
             "a tool, 3 pt padding and a 1 pt border each side"
         );
-        assert_eq!((FIT_INSET, FIT_INSET_BOTTOM), (20.0, 56.0));
-        const {
-            assert!(
-                FIT_INSET_BOTTOM >= CHROME_INSET + STRIP_HEIGHT + 2.0 * STRIP_SPACING,
-                "at Fit no photograph pixel lies under the strip"
-            )
-        };
         assert_eq!(DRAFT_BAR_HEIGHT, 34.0);
         assert_eq!(
             (

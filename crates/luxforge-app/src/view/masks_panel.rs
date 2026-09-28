@@ -23,7 +23,7 @@ use crate::{
         tools::{ControlModel, drawn_by_range},
     },
     view::tools_panel::{
-        control_copy_menu, control_target, control_view, sized_toggle_view, ui_edit,
+        control_copy_menu, control_menu, control_view, sized_toggle_view, ui_edit,
     },
 };
 use iced::{
@@ -32,7 +32,7 @@ use iced::{
 };
 use luxforge_ui::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
-    DropdownButtonModel, GridField, GroupRuleModel, MaskRowMessages, MaskRowModel, MenuEntry,
+    DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
     RenameMessages, SliderModel, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
     band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
@@ -476,7 +476,7 @@ pub(crate) fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Mes
         }
         drawn = kind.letter.is_some();
         entries.push(MenuEntry::Item(MenuItem {
-            icon: kind.icon,
+            icon: kind.icon.and_then(Icon::from_name),
             label: kind.label.clone(),
             trailing: kind.letter.map(|letter| letter.to_string()),
             on_press: (refusal.is_none() && kind.enabled).then(|| {
@@ -688,7 +688,7 @@ fn component_view<'a>(
     let view = component_row(
         &ComponentRowModel {
             name: component.name.clone(),
-            icon: component.icon,
+            icon: component.icon.and_then(Icon::from_name),
             mode: ModeControlModel {
                 selected: CombineMode::ALL
                     .get(component.mode_selected)
@@ -987,9 +987,7 @@ fn component_fields<'a>(
                         action: action.clone(),
                         parameter: parameter.clone(),
                     }),
-                    on_menu: Some(Message::View(ViewMessage::OpenMenu(control_target(
-                        &action, &parameter,
-                    )))),
+                    on_menu: Some(control_menu(&action, &parameter)),
                 });
             }
             other => {

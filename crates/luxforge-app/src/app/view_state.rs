@@ -144,6 +144,11 @@ impl Editor {
                 return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
             }
             ViewMessage::OpenMenu(target) => *self.menu = Some(target),
+            ViewMessage::OpenControlMenu {
+                action,
+                parameter,
+                preset,
+            } => *self.menu = Some(crate::state::MenuTarget::control(action, parameter, preset)),
             ViewMessage::CloseMenu => *self.menu = None,
             ViewMessage::FocusNext => return operation::focus_next(),
             ViewMessage::FocusPrevious => return operation::focus_previous(),

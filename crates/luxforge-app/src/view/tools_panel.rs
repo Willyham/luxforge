@@ -437,8 +437,9 @@ fn buttons_row<'a>(
             .collect();
         let mut rows = vec![icon_button_row(cells, placement)];
         rows.extend(icons.iter().find_map(|(action, _)| {
-            menu_open_for_preset(menu, &action.action, None, Some(&action.preset))
-                .then(|| control_menu_preset(&action.action, None, Some(&action.preset)))
+            open_method(menu, &action.action, None, Some(&action.preset)).map(|method| {
+                control_menu_preset(method, &action.action, None, Some(&action.preset))
+            })
         }));
         return rows;
     }
@@ -509,11 +510,11 @@ fn icon_action_cell<'a>(action: &'a ActionControl, icon: Icon) -> Element<'a, Me
         })
     });
     mouse_area(control)
-        .on_right_press(Message::View(ViewMessage::OpenMenu(control_target_preset(
+        .on_right_press(open_control_menu(
             &action.action,
             None,
             Some(&action.preset),
-        ))))
+        ))
         .into()
 }
 
@@ -721,48 +722,54 @@ fn preset_row_view<'a>(
     block.into()
 }
 
-/// Whether this control is the one whose context menu is open. A patch action's controls are one
-/// per field, so the field is part of the identity.
-fn menu_open_for_preset(
-    menu: Option<&MenuTarget>,
+/// The method this control's copied request carries when its context menu is the one open, and
+/// `None` otherwise. A patch action's controls are one per field, so the field is part of the
+/// identity.
+fn open_method<'m>(
+    menu: Option<&'m MenuTarget>,
     action: &str,
     parameter: Option<&str>,
     preset: Option<&Map<String, Value>>,
-) -> bool {
-    matches!(
-        menu,
-        Some(MenuTarget::Control { action: open, parameter: named, preset: saved })
-            if open == action && named.as_deref() == parameter && saved.as_ref() == preset
-    )
-}
-
-/// The control's own context-menu target.
-fn control_target_preset(
-    action: &str,
-    parameter: Option<&str>,
-    preset: Option<&Map<String, Value>>,
-) -> MenuTarget {
-    MenuTarget::Control {
-        action: action.to_owned(),
-        parameter: parameter.map(str::to_owned),
-        preset: preset.cloned(),
+) -> Option<&'m str> {
+    match menu {
+        Some(MenuTarget::Control {
+            action: open,
+            parameter: named,
+            preset: saved,
+            method,
+        }) if open == action && named.as_deref() == parameter && saved.as_ref() == preset => {
+            Some(method)
+        }
+        _ => None,
     }
 }
 
+/// The message a right-click on a generated control sends to open its own context menu.
+fn open_control_menu(
+    action: &str,
+    parameter: Option<&str>,
+    preset: Option<&Map<String, Value>>,
+) -> Message {
+    Message::View(ViewMessage::OpenControlMenu {
+        action: action.to_owned(),
+        parameter: parameter.map(str::to_owned),
+        preset: preset.cloned(),
+    })
+}
+
 /// The "Copy as JSON request" / "Cancel" menu a generated control's context menu opens, for the
-/// exact `edit.<action>` request its current values would send.
+/// exact request its current values would send.
 fn control_menu_preset(
+    method: &str,
     action: &str,
     parameter: Option<&str>,
     preset: Option<&Map<String, Value>>,
 ) -> Element<'static, Message> {
     // A `mask.*` command is its own method and is not an `edit.<action>`, so the caption names the
-    // method the copied request actually carries. The mapping is the state layer's, because it is a
-    // fact about the host's command table and this layer holds no core dependency.
-    let method = crate::state::tools::published_method(action);
+    // method the copied request actually carries, which the open menu's target holds.
     let name = match parameter {
         Some(parameter) => format!("{method} · {parameter}"),
-        None => method,
+        None => method.to_owned(),
     };
     column![
         caption(name),
@@ -789,13 +796,13 @@ pub(crate) fn control_copy_menu(
     parameter: &str,
     menu: Option<&MenuTarget>,
 ) -> Option<Element<'static, Message>> {
-    menu_open_for_preset(menu, action, Some(parameter), None)
-        .then(|| control_menu_preset(action, Some(parameter), None))
+    open_method(menu, action, Some(parameter), None)
+        .map(|method| control_menu_preset(method, action, Some(parameter), None))
 }
 
-/// The context-menu target of one generated control's field.
-pub(crate) fn control_target(action: &str, parameter: &str) -> MenuTarget {
-    control_target_preset(action, Some(parameter), None)
+/// The message that opens one generated control's field's context menu.
+pub(crate) fn control_menu(action: &str, parameter: &str) -> Message {
+    open_control_menu(action, Some(parameter), None)
 }
 
 /// Wrap a generated control so a right-click on it opens its own context menu, and append the
@@ -817,12 +824,10 @@ fn with_control_menu_preset<'a>(
     menu: Option<&MenuTarget>,
 ) -> Element<'a, Message> {
     let area: Element<'a, Message> = mouse_area(control)
-        .on_right_press(Message::View(ViewMessage::OpenMenu(control_target_preset(
-            action, parameter, preset,
-        ))))
+        .on_right_press(open_control_menu(action, parameter, preset))
         .into();
-    if menu_open_for_preset(menu, action, parameter, preset) {
-        column![area, control_menu_preset(action, parameter, preset)]
+    if let Some(method) = open_method(menu, action, parameter, preset) {
+        column![area, control_menu_preset(method, action, parameter, preset)]
             .spacing(4.0)
             .into()
     } else {

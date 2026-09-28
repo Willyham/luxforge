@@ -21,7 +21,7 @@ At the module-panel density the default board's panel holds the histogram, the M
 
 ### The canvas
 
-Built as follows (the shared `draft_bar` widget, `state/canvas.rs`, `mask_canvas.rs`, `app/masks.rs`):
+Built as follows (the shared `draft_bar` widget, `state/canvas.rs`, `view/mask_canvas.rs`, `app/masks.rs`):
 
 - The **draft bar** names the mask in the accent, the component and its mode with the kind's icon, then the gesture's readout, then Cancel and Apply — `Face · Radial 1 · Add · 0.180 × 0.240 · −12° · feather 60`. It is a readout, not an entry field, so it is compact — positions and distances to three decimals, degrees and percentages whole, with a true minus sign — while the panel's fields keep each parameter's declared precision; the kind's editor chooses what the line says: a radial its radii, angle and feather, a linear `x0, y0 → x1, y1`. A gesture that creates a mask leads with `New mask`, and a component the gesture adds is named by its kind (`Radial`), because the host spends a mask's name and a component's ordinal only when the commit makes them. For a brush it reads `Face · Brush 1 · Subtract · painting` while the stroke is down and the next stroke's size and feather between strokes, with Done in place of Apply: Done puts the brush down, as Escape does, because each stroke already committed on release.
 - **Handles** are the delivered ones and hit-test as before. The selected component's grips and outlines are white; the centre or midpoint grip is accent and smaller, so the one handle that moves the whole shape reads as the anchor; the rotation grip is square. A painted path keeps the overlay's green, because it previews coverage rather than outlining a shape.

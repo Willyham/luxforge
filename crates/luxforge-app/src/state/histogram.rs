@@ -20,10 +20,7 @@
 //! contract](../../../../docs/design/basic-and-histogram.md#histogram-and-clipping-contract): the
 //! rendered SDR sRGB **output** of the whole composition, after crop and edits, before any UI
 //! overlay or display scaling. It is never the camera or RAW histogram.
-use crate::{
-    state::{Inputs, canvas::ZoomView},
-    view::{STATE_PANEL_WIDTH, STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT, TOOLS_PANEL_WIDTH},
-};
+use crate::state::{Inputs, canvas::ZoomView};
 use luxforge_core::{
     ErrorKind,
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, Report},
@@ -395,28 +392,6 @@ fn reason(kind: ErrorKind, detail: &str) -> String {
 
 // -- The clipping overlay's geometry -------------------------------------------------------------
 
-/// The photo surface's logical size for one window and panel configuration: the window minus the
-/// title bar, the status bar, whichever panels are open and the 1 px dividers beside them. It is
-/// arithmetic over the layout constants, not a measurement, which is why it belongs here and not in
-/// the view: the overlay's cell grid has to be decided before a frame is laid out.
-pub(crate) fn photo_surface(
-    window: (f32, f32),
-    state_panel: bool,
-    tools_panel: bool,
-) -> (f32, f32) {
-    let divider = luxforge_ui::theme::BORDER_WIDTH;
-    let mut width = window.0;
-    if state_panel {
-        width -= STATE_PANEL_WIDTH + divider;
-    }
-    if tools_panel {
-        width -= TOOLS_PANEL_WIDTH + divider;
-    }
-    // Two horizontal rules, one under the title bar and one over the status bar.
-    let height = window.1 - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT - 2.0 * divider;
-    (width.max(0.0), height.max(0.0))
-}
-
 /// The photograph's own size on screen in **physical** pixels, which is what decides how much
 /// detail an overlay cell can show.
 ///
@@ -735,31 +710,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_surface_shrinks_by_exactly_the_open_panels() {
-        let window = (1440.0, 900.0);
-        let divider = luxforge_ui::theme::BORDER_WIDTH;
-        let both = photo_surface(window, true, true);
-        assert_eq!(
-            both,
-            (
-                1440.0 - STATE_PANEL_WIDTH - TOOLS_PANEL_WIDTH - 2.0 * divider,
-                900.0 - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT - 2.0 * divider
-            )
-        );
-        let none = photo_surface(window, false, false);
-        assert_eq!(none.0, 1440.0);
-        assert_eq!(none.1, both.1, "the panels never change the height");
-        assert!(photo_surface((10.0, 10.0), true, true).0 >= 0.0);
-    }
-
     /// Fit: the contained size scaled by the display factor. 100% and other percentages: the source
     /// scaled by the percentage alone, because the zoom is already defined in physical pixels.
     #[test]
     fn the_displayed_size_follows_the_zoom() {
         let source = (480, 320);
         let surface = (900.0, 800.0);
-        let inset = crate::view::canvas::FIT_INSET;
+        let inset = crate::layout::FIT_INSET;
         assert_eq!(
             inset,
             (40.0, 76.0),

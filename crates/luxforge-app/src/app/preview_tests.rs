@@ -767,8 +767,8 @@ fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
     editor.scale_factor = 2.0;
     editor.session.workspace.state_panel = true;
     editor.session.workspace.tools_panel = true;
-    let surface = state::histogram::photo_surface(editor.window, true, true);
-    let inset = view::canvas::FIT_INSET;
+    let surface = crate::layout::photo_surface(editor.window, true, true);
+    let inset = crate::layout::FIT_INSET;
     let bounds = editor
         .proxy_bounds()
         .expect("Fit is bounded by the display");

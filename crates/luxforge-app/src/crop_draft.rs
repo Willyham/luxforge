@@ -161,6 +161,14 @@ pub(crate) enum Handle {
     Guide,
 }
 
+impl Handle {
+    /// Whether a drag on this handle moves an edge left and right: the left and right sides. The
+    /// top and bottom sides move an edge up and down, and the other handles move no single edge.
+    pub(crate) fn across(self) -> bool {
+        matches!(self, Self::Side(Edge::Left | Edge::Right))
+    }
+}
+
 /// The modifier keys a drag is evaluated with. Option (Alt) turns any handle into a uniform scale
 /// about the fixed center.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -290,6 +298,33 @@ impl CropDraft {
     /// that leaves the source. A drafted rectangle is always covered, so this is `Ok`.
     pub(crate) fn output(&self) -> Result<OutputRect, luxforge_core::Error> {
         self.payload().output_rect(&self.stage)
+    }
+
+    /// Box space's size: the input stage's rotated bounding box at the draft angle, in whole
+    /// pixels. The canvas lays the frame out in it.
+    pub(crate) fn box_size(&self) -> (f64, f64) {
+        self.stage.bounding_box()
+    }
+
+    /// The input stage's unrotated size in pixels.
+    pub(crate) fn stage_size(&self) -> (f64, f64) {
+        (f64::from(self.stage.width), f64::from(self.stage.height))
+    }
+
+    /// The draft angle in degrees; a positive angle turns the stage clockwise on screen.
+    pub(crate) fn angle(&self) -> f64 {
+        self.stage.angle
+    }
+
+    /// The crop rectangle in box pixels, as `(x, y, width, height)`.
+    pub(crate) fn frame(&self) -> (f64, f64, f64, f64) {
+        (self.rect.x, self.rect.y, self.rect.width, self.rect.height)
+    }
+
+    /// The eight handle positions in box pixels: the four corners in [`Corner::ALL`]'s order, then
+    /// the left, right, top and bottom edge midpoints.
+    pub(crate) fn handle_points(&self) -> [(f64, f64); 8] {
+        handle_points(&self.rect)
     }
 
     /// End the frame gesture in progress without finishing it: the draft conflicted under it.
@@ -669,7 +704,25 @@ fn edge_line(edge: Edge, rect: &BoxRect) -> f64 {
     }
 }
 
-pub(crate) fn edge_midpoint(edge: Edge, rect: &BoxRect) -> (f64, f64) {
+/// [`CropDraft::handle_points`] for any rectangle.
+fn handle_points(rect: &BoxRect) -> [(f64, f64); 8] {
+    let [top_left, top_right, bottom_left, bottom_right] =
+        Corner::ALL.map(|corner| corner.point(rect));
+    let [left, right, top, bottom] =
+        [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom].map(|edge| edge_midpoint(edge, rect));
+    [
+        top_left,
+        top_right,
+        bottom_left,
+        bottom_right,
+        left,
+        right,
+        top,
+        bottom,
+    ]
+}
+
+fn edge_midpoint(edge: Edge, rect: &BoxRect) -> (f64, f64) {
     match edge {
         Edge::Left | Edge::Right => (edge_line(edge, rect), rect.y + rect.height / 2.0),
         Edge::Top | Edge::Bottom => (rect.x + rect.width / 2.0, edge_line(edge, rect)),
@@ -802,6 +855,28 @@ fn clamped_extents(rect: BoxRect) -> BoxRect {
         rect.width.max(MIN_EXTENT),
         rect.height.max(MIN_EXTENT),
     )
+}
+
+/// What the view's canvas tests build and check a draft with, in plain numbers, since the view
+/// names no core type, test code included.
+#[cfg(test)]
+impl CropDraft {
+    /// A neutral draft on an unturned `width` × `height` stage.
+    pub(crate) fn upright(width: u32, height: u32) -> Self {
+        Self::neutral(
+            CropStage {
+                width,
+                height,
+                angle: 0.0,
+            },
+            0,
+        )
+    }
+
+    /// Where the geometry contract puts stage pixel `(u, v)` in box space at the draft angle.
+    pub(crate) fn to_box(&self, u: f64, v: f64) -> (f64, f64) {
+        self.stage.to_box(u, v)
+    }
 }
 
 #[cfg(test)]
@@ -1607,5 +1682,27 @@ mod tests {
         draft.drag((f64::NAN, 0.0), Modifiers::default());
         draft.end();
         assert_eq!(draft.rect, before);
+    }
+
+    /// The eight handles sit on the four corners and the four edge midpoints, in the order the
+    /// canvas sizes them: corners, then the left, right, top and bottom edges.
+    #[test]
+    fn every_handle_has_a_drawn_position() {
+        let rect = BoxRect {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        let points = handle_points(&rect);
+        assert_eq!(points.len(), 8);
+        assert!(points.contains(&(10.0, 20.0)));
+        assert!(points.contains(&(110.0, 70.0)));
+        assert!(points.contains(&(10.0, 45.0)), "the left edge midpoint");
+        assert!(points.contains(&(60.0, 70.0)), "the bottom edge midpoint");
+        assert_eq!(
+            points[4..],
+            [(10.0, 45.0), (110.0, 45.0), (60.0, 20.0), (60.0, 70.0)]
+        );
     }
 }

@@ -12,14 +12,17 @@ use crate::{
         crop::SURFACE_ID,
         message::{CapabilityMessage, DraftMessage, Message},
     },
-    canvas_view::CanvasView,
-    crop_canvas::{CropCanvas, Mode},
-    mask_canvas::{MaskCanvas, Placement},
+    layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
     state::canvas::{
         CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
         SurfaceMode, ZoomView,
     },
-    view::Surfaces,
+    view::{
+        Surfaces,
+        canvas_view::CanvasView,
+        crop_canvas::{CropCanvas, Mode},
+        mask_canvas::{MaskCanvas, Placement},
+    },
 };
 use iced::{
     Alignment, ContentFit, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
@@ -36,23 +39,16 @@ use luxforge_ui::{
 /// the top and sides, and at the bottom room for the mode strip, so at Fit no pixel of the
 /// photograph lies under it in either orientation. Every Fit rectangle — the photograph, its
 /// overlays, the crop frame, the mask handles, the proxy bounds and the evidence's `fit_rect` — is
-/// laid out inside this one padding.
+/// laid out inside this one padding, whose total is [`crate::layout::FIT_INSET`].
 pub(crate) const FIT_PADDING: Padding = Padding {
-    top: theme::FIT_INSET,
-    right: theme::FIT_INSET,
-    bottom: theme::FIT_INSET_BOTTOM,
-    left: theme::FIT_INSET,
+    top: FIT_INSET_EDGE,
+    right: FIT_INSET_EDGE,
+    bottom: FIT_INSET_BOTTOM,
+    left: FIT_INSET_EDGE,
 };
 
-/// [`FIT_PADDING`]'s total horizontal and vertical inset, which is what the Fit arithmetic takes
-/// off the photo surface.
-pub(crate) const FIT_INSET: (f32, f32) = (
-    FIT_PADDING.left + FIT_PADDING.right,
-    FIT_PADDING.top + FIT_PADDING.bottom,
-);
-
 /// The area a photograph is fitted into at Fit inside a canvas region, as `[left, top, right,
-/// bottom]` physical pixels: `canvas` (the region [`crate::view::canvas_rect`] reports) less
+/// bottom]` physical pixels: `canvas` (the region [`crate::layout::canvas_rect`] reports) less
 /// [`FIT_PADDING`] at `scale`. Evidence records it so a scenario that checks Fit placement follows
 /// the same constants the layout does.
 pub(crate) fn fit_rect_in(canvas: [u32; 4], scale: f32) -> [u32; 4] {
@@ -182,7 +178,7 @@ fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
             title: model.title.clone(),
             subject: model.subject.as_ref().map(|label| DraftSubject {
                 // A kind the widget library draws no icon for shows its name alone.
-                icon: model.kind.and_then(crate::state::masks::kind_icon),
+                icon: model.icon.and_then(Icon::from_name),
                 label: label.clone(),
             }),
             readout: model.readout.clone(),
@@ -498,13 +494,13 @@ fn plain<'a>(
 /// handles and guide are a canvas stacked over it in the same box and view, so they are drawn above
 /// it. The canvas draws nothing authoritative: it borrows the draft and publishes messages.
 ///
-/// [`stage_turn`]: crate::crop_canvas::stage_turn
+/// [`stage_turn`]: crate::view::crop_canvas::stage_turn
 fn crop_surface<'a>(
     model: &'a CanvasModel,
     draft: &'a crate::crop_draft::CropDraft,
     stage: &'a luxforge_ui::Frame,
 ) -> Element<'a, Message> {
-    let box_size = draft.stage.bounding_box();
+    let box_size = draft.box_size();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
         SurfaceMode::Guide => Mode::Guide,
@@ -515,7 +511,7 @@ fn crop_surface<'a>(
         stack([
             luxforge_ui::stage_surface(
                 stage,
-                crate::crop_canvas::stage_turn(draft, view),
+                super::crop_canvas::stage_turn(draft, view),
                 width,
                 height,
             )
@@ -794,9 +790,17 @@ mod tests {
             ),
             (20.0, 20.0, 56.0, 20.0)
         );
+        const {
+            assert!(
+                FIT_INSET_BOTTOM
+                    >= theme::CHROME_INSET + theme::STRIP_HEIGHT + 2.0 * theme::STRIP_SPACING,
+                "at Fit no photograph pixel lies under the strip"
+            )
+        };
         for panels in [true, false] {
-            let surface = crate::state::histogram::photo_surface((1440.0, 900.0), panels, panels);
-            let available = Size::new(surface.0 - FIT_INSET.0, surface.1 - FIT_INSET.1);
+            let surface = crate::layout::photo_surface((1440.0, 900.0), panels, panels);
+            let inset = crate::layout::FIT_INSET;
+            let available = Size::new(surface.0 - inset.0, surface.1 - inset.1);
             let strip_top = surface.1 - theme::CHROME_INSET - theme::STRIP_HEIGHT;
             for image in [
                 (480, 320),

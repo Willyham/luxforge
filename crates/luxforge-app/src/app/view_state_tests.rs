@@ -87,15 +87,19 @@ fn workspace_state_reaches_the_models_only_through_the_adopted_session() {
     // A session that hides the state panel hides it and narrows the captured photo surface.
     let scale = 2.0;
     let width = 1440.0;
-    let open = view::surface_columns(width, scale, &editor.workspace);
-    assert_eq!(open[0], (view::STATE_PANEL_WIDTH * scale) as u32);
+    let columns = |editor: &Editor| {
+        let title = &editor.workspace.title;
+        crate::layout::surface_columns(width, scale, title.state_panel_open, title.tools_panel_open)
+    };
+    let open = columns(&editor);
+    assert_eq!(open[0], (crate::layout::STATE_PANEL_WIDTH * scale) as u32);
     session.revision = 3;
     session.workspace.state_panel = false;
     let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
         session.clone()
     ))));
     assert!(!editor.workspace.title.state_panel_open);
-    let collapsed = view::surface_columns(width, scale, &editor.workspace);
+    let collapsed = columns(&editor);
     assert_eq!(collapsed[0], 0, "the canvas now starts at the window edge");
     assert_eq!(collapsed[1], open[1], "the tools panel is still open");
 
@@ -104,10 +108,7 @@ fn workspace_state_reaches_the_models_only_through_the_adopted_session() {
     session.workspace.tools_panel = false;
     let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     assert!(!editor.workspace.title.tools_panel_open);
-    assert_eq!(
-        view::surface_columns(width, scale, &editor.workspace),
-        [0, (width * scale) as u32]
-    );
+    assert_eq!(columns(&editor), [0, (width * scale) as u32]);
     finish(editor, catalog);
 }
 

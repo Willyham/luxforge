@@ -70,8 +70,11 @@ pub(crate) struct DraftBar {
     /// What a mask gesture edits, after the lead: its component and that component's mode,
     /// `Radial 1 · Add`. `None` for the crop, whose title already says what it edits.
     pub(crate) subject: Option<String>,
-    /// The component kind the subject names, whose icon the view draws beside it.
+    /// The component kind the subject names.
     pub(crate) kind: Option<&'static str>,
+    /// The name of that kind's glyph, from the host's kind table, which the view draws beside the
+    /// subject.
+    pub(crate) icon: Option<&'static str>,
     /// One line of the draft's own numbers, e.g. `300 × 200 px · 0°`.
     pub(crate) readout: String,
     pub(crate) can_apply: bool,
@@ -347,6 +350,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         title,
         subject: None,
         kind: None,
+        icon: None,
         readout,
         can_apply: inputs.apply_refusal.is_none(),
         conflicted: inputs.gesture_conflicted,
@@ -365,6 +369,7 @@ fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
         title: names.mask,
         subject: Some(format!("{} \u{b7} {}", names.component, names.mode)),
         kind: Some(draft.kind()),
+        icon: luxforge_core::mask::kind_icon(draft.kind()),
         readout: draft.readout(),
         can_apply: done || inputs.apply_refusal.is_none(),
         conflicted: inputs.gesture_conflicted,

@@ -1,7 +1,7 @@
 //! The title bar model: what is open, the view controls and the things that act on the whole photo.
 use crate::{
+    layout,
     state::{Inputs, MenuTarget, canvas::ZoomView, histogram},
-    view,
 };
 use luxforge_core::{SourceKind, Zoom};
 
@@ -90,17 +90,14 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
         Zoom::Fit => {
             let source = inputs.dimensions?;
             let workspace = &inputs.session.workspace;
-            let surface = histogram::photo_surface(
-                inputs.window,
-                workspace.state_panel,
-                workspace.tools_panel,
-            );
+            let surface =
+                layout::photo_surface(inputs.window, workspace.state_panel, workspace.tools_panel);
             let (width, _) = histogram::displayed_size(
                 ZoomView::Fit,
                 source,
                 surface,
                 inputs.scale_factor,
-                view::canvas::FIT_INSET,
+                layout::FIT_INSET,
             )?;
             Some(width / source.0 as f32 * 100.0)
         }

@@ -252,8 +252,9 @@ pub(crate) struct ComponentRow {
     /// How many colours this component's kind holds, for the swatch slots; zero for a kind that
     /// samples none.
     pub(crate) sample_limit: usize,
-    /// The kind's glyph, from the host's kind table.
-    pub(crate) icon: Option<luxforge_ui::Icon>,
+    /// The name of the kind's glyph, from the host's kind table; the view draws the icon of that
+    /// name, or none when the widget library has no such icon.
+    pub(crate) icon: Option<&'static str>,
     /// The name as it is being typed while this row is renamed in place.
     pub(crate) renaming: Option<String>,
     /// This row's menu is open.
@@ -340,8 +341,9 @@ pub(crate) struct KindOption {
     pub(crate) typed: bool,
     /// This kind is painted, so choosing it arms the brush rather than opening a handle gesture.
     pub(crate) paints: bool,
-    /// The kind's glyph and the letter that starts it while a kind menu is open.
-    pub(crate) icon: Option<luxforge_ui::Icon>,
+    /// The name of the kind's glyph, from the host's kind table, and the letter that starts it
+    /// while a kind menu is open.
+    pub(crate) icon: Option<&'static str>,
     pub(crate) letter: Option<char>,
     pub(crate) enabled: bool,
 }
@@ -650,13 +652,6 @@ pub(crate) fn panel_menu(menu: &crate::state::MenuTarget) -> bool {
     !menu_summary(menu).is_null()
 }
 
-/// The icon one component kind is drawn with wherever it is named: its row, the New mask and Add
-/// menus, and the draft bar. The host's kind table names the glyph, so a kind the library draws no
-/// icon for shows none rather than another kind's.
-pub(crate) fn kind_icon(kind: &str) -> Option<luxforge_ui::Icon> {
-    luxforge_core::mask::kind_icon(kind).and_then(luxforge_ui::Icon::from_name)
-}
-
 /// One mode's position in the host's own list of modes, which is the list the Add row offers and the
 /// controller resolves a chosen index against.
 pub(crate) fn mode_index(mode: ComponentMode) -> usize {
@@ -885,7 +880,7 @@ fn kinds(enabled: bool) -> Vec<KindOption> {
                 drawable,
                 typed,
                 paints: crate::mask_draft::paintable(kind),
-                icon: kind_icon(kind),
+                icon: luxforge_core::mask::kind_icon(kind),
                 letter: crate::mask_draft::kind_letter(kind),
                 enabled,
             })
@@ -1023,7 +1018,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 },
                 sample_limit: luxforge_core::mask::component_sample_limit(&component.kind)
                     .unwrap_or(0),
-                icon: kind_icon(&component.kind),
+                icon: luxforge_core::mask::kind_icon(&component.kind),
                 renaming: renaming(
                     inputs,
                     &TypingTarget::RenameComponent(component.id.as_str().to_owned()),

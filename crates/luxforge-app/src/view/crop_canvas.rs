@@ -10,15 +10,14 @@
 //! the committed render is the reference. The canvas never rasterizes a pixel itself.
 use crate::{
     app::message::{CropMessage, CropPointer, Message},
-    canvas_view::CanvasView,
-    crop_draft::{Corner, CropDraft, Handle, edge_midpoint},
+    crop_draft::{Corner, CropDraft, Handle},
+    view::canvas_view::CanvasView,
 };
 use iced::{
     Color, Point, Rectangle, Renderer, Size, Theme,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke},
 };
-use luxforge_core::{BoxRect, Edge};
 
 /// The hit radius of a handle in logical pixels: a corner answers inside a 16 pt square, larger than
 /// its drawn 9 pt square, and an edge along its whole length.
@@ -51,20 +50,21 @@ pub(crate) struct Interaction {
 /// geometry contract's own matrix, so a positive angle turns the stage clockwise on screen with no
 /// sign flip, and the turned stage's bounding box is the box this canvas draws the frame in.
 pub(crate) fn stage_turn(draft: &CropDraft, view: CanvasView) -> luxforge_ui::Turn {
-    let (box_width, box_height) = draft.stage.bounding_box();
+    let (box_width, box_height) = draft.box_size();
     let centre = view.canvas_point(box_width / 2.0, box_height / 2.0);
+    let (stage_width, stage_height) = draft.stage_size();
     let size = Size::new(
-        f64::from(draft.stage.width) as f32 * view.scale,
-        f64::from(draft.stage.height) as f32 * view.scale,
+        stage_width as f32 * view.scale,
+        stage_height as f32 * view.scale,
     );
-    let rect = &draft.rect;
+    let (x, y, width, height) = draft.frame();
     luxforge_ui::Turn {
         rect: Rectangle::new(
             Point::new(centre.x - size.width / 2.0, centre.y - size.height / 2.0),
             size,
         ),
-        angle: draft.stage.angle.to_radians() as f32,
-        bright: view.canvas_rect(rect.x, rect.y, rect.width, rect.height),
+        angle: draft.angle().to_radians() as f32,
+        bright: view.canvas_rect(x, y, width, height),
         dim: DIM_OPACITY,
     }
 }
@@ -179,10 +179,8 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         _cursor: Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let box_rect = &self.draft.rect;
-        let rect = self
-            .view
-            .canvas_rect(box_rect.x, box_rect.y, box_rect.width, box_rect.height);
+        let (x, y, width, height) = self.draft.frame();
+        let rect = self.view.canvas_rect(x, y, width, height);
         let border = Color::from_rgba(1.0, 1.0, 1.0, 0.9);
         let guides = Color::from_rgba(1.0, 1.0, 1.0, 0.35);
         frame.stroke_rectangle(
@@ -205,7 +203,7 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         }
         // Eight handles, drawn at the same size whatever the zoom: a square on each corner and a bar
         // along each edge at its midpoint, as the crop board draws them.
-        for (point, size) in handle_shapes(&self.draft.rect) {
+        for (point, size) in handle_shapes(self.draft.handle_points()) {
             let centre = self.view.canvas_point(point.0, point.1);
             frame.fill(
                 &Path::rounded_rectangle(
@@ -261,74 +259,48 @@ fn cursor_for(handle: Handle) -> mouse::Interaction {
         Handle::Corner(Corner::TopRight | Corner::BottomLeft) => {
             mouse::Interaction::ResizingDiagonallyUp
         }
-        Handle::Side(Edge::Left | Edge::Right) => mouse::Interaction::ResizingHorizontally,
-        Handle::Side(Edge::Top | Edge::Bottom) => mouse::Interaction::ResizingVertically,
+        Handle::Side(_) if handle.across() => mouse::Interaction::ResizingHorizontally,
+        Handle::Side(_) => mouse::Interaction::ResizingVertically,
         Handle::Move => mouse::Interaction::Move,
         Handle::Guide => mouse::Interaction::Crosshair,
     }
 }
 
-/// Each handle's centre in box pixels and its drawn size in logical pixels: a
-/// [`luxforge_ui::theme::CROP_CORNER`] square on each corner, then a
+/// Each handle's centre in box pixels, from [`CropDraft::handle_points`], with its drawn size in
+/// logical pixels: a [`luxforge_ui::theme::CROP_CORNER`] square on each corner, then a
 /// [`luxforge_ui::theme::CROP_EDGE_LENGTH`] × [`luxforge_ui::theme::CROP_EDGE_THICKNESS`] bar lying
 /// along each edge (left, right, top, bottom) at its midpoint.
-fn handle_shapes(rect: &BoxRect) -> Vec<((f64, f64), Size)> {
+fn handle_shapes(points: [(f64, f64); 8]) -> [((f64, f64), Size); 8] {
     use luxforge_ui::theme::{CROP_CORNER, CROP_EDGE_LENGTH, CROP_EDGE_THICKNESS};
     let corner = Size::new(CROP_CORNER, CROP_CORNER);
     let upright = Size::new(CROP_EDGE_THICKNESS, CROP_EDGE_LENGTH);
     let lying = Size::new(CROP_EDGE_LENGTH, CROP_EDGE_THICKNESS);
-    let sizes = [corner; 4]
-        .into_iter()
-        .chain([upright, upright, lying, lying]);
-    handle_points(rect).into_iter().zip(sizes).collect()
-}
-
-/// The eight handle positions in box pixels: four corners and four edge midpoints.
-fn handle_points(rect: &BoxRect) -> Vec<(f64, f64)> {
-    let mut points: Vec<(f64, f64)> = Corner::ALL
-        .into_iter()
-        .map(|corner| corner.point(rect))
-        .collect();
-    points.extend(
-        [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom]
-            .into_iter()
-            .map(|edge| edge_midpoint(edge, rect)),
-    );
-    points
+    let sizes = [
+        corner, corner, corner, corner, upright, upright, lying, lying,
+    ];
+    std::array::from_fn(|index| (points[index], sizes[index]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_core::CropStage;
-
-    fn stage(width: u32, height: u32, angle: f64) -> CropStage {
-        CropStage {
-            width,
-            height,
-            angle,
-        }
-    }
 
     #[test]
     fn the_image_is_placed_so_its_rotated_bounds_are_the_box() {
         // Iced rotates about the bounds centre and reports the rotated bounding box, which is
         // exactly the geometry contract's box: place the unrotated stage on the box centre.
         for angle in [0.0, 7.0, -22.5, 45.0] {
-            let mut draft = CropDraft::neutral(stage(480, 320, 0.0), 0);
+            let mut draft = CropDraft::upright(480, 320);
             draft.set_angle(angle);
-            assert_eq!(draft.stage.angle, angle);
-            let (box_width, box_height) = draft.stage.bounding_box();
+            assert_eq!(draft.angle(), angle);
+            let (box_width, box_height) = draft.box_size();
             let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
             let turn = stage_turn(&draft, view);
             assert_eq!(turn.angle, angle.to_radians() as f32, "{angle}");
             assert_eq!(turn.dim, DIM_OPACITY);
             // Full opacity is exactly the crop rectangle, drawn where the frame is drawn.
-            let rect = &draft.rect;
-            assert_eq!(
-                turn.bright,
-                view.canvas_rect(rect.x, rect.y, rect.width, rect.height)
-            );
+            let (x, y, width, height) = draft.frame();
+            assert_eq!(turn.bright, view.canvas_rect(x, y, width, height));
             let bounds = turn.rect;
             assert_eq!(bounds.width, 480.0, "{angle}");
             assert_eq!(bounds.height, 320.0, "{angle}");
@@ -341,7 +313,7 @@ mod tests {
             );
             // The corners of the rotated image land where the box mapping puts them.
             for (u, v) in [(0.0, 0.0), (480.0, 0.0), (0.0, 320.0), (480.0, 320.0)] {
-                let (x, y) = draft.stage.to_box(u, v);
+                let (x, y) = draft.to_box(u, v);
                 let rotated = rotate_about(
                     Point::new(bounds.x + u as f32, bounds.y + v as f32),
                     centre,
@@ -371,7 +343,7 @@ mod tests {
     #[test]
     fn the_frame_answers_pointers() {
         use canvas::Program;
-        let draft = CropDraft::neutral(stage(480, 320, 0.0), 0);
+        let draft = CropDraft::upright(480, 320);
         let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
@@ -387,25 +359,27 @@ mod tests {
 
     #[test]
     fn every_handle_has_a_drawn_position_and_a_cursor() {
-        let rect = BoxRect {
-            x: 10.0,
-            y: 20.0,
-            width: 100.0,
-            height: 50.0,
-        };
-        let points = handle_points(&rect);
+        // The neutral draft's frame is the whole 480 × 320 stage.
+        let draft = CropDraft::upright(480, 320);
+        let points = draft.handle_points();
         assert_eq!(points.len(), 8);
-        assert!(points.contains(&(10.0, 20.0)));
-        assert!(points.contains(&(110.0, 70.0)));
-        assert!(points.contains(&(10.0, 45.0)), "the left edge midpoint");
-        assert!(points.contains(&(60.0, 70.0)), "the bottom edge midpoint");
+        assert!(points.contains(&(0.0, 0.0)));
+        assert!(points.contains(&(480.0, 320.0)));
+        assert!(points.contains(&(0.0, 160.0)), "the left edge midpoint");
+        assert!(points.contains(&(240.0, 320.0)), "the bottom edge midpoint");
         assert_eq!(
             cursor_for(Handle::Corner(Corner::TopLeft)),
             mouse::Interaction::ResizingDiagonallyDown
         );
+        // Each side's handle is the one a press on its midpoint grabs.
+        let side = |point: (f64, f64)| draft.hit(point, 1.0);
         assert_eq!(
-            cursor_for(Handle::Side(Edge::Top)),
+            cursor_for(side((240.0, 0.0))),
             mouse::Interaction::ResizingVertically
+        );
+        assert_eq!(
+            cursor_for(side((0.0, 160.0))),
+            mouse::Interaction::ResizingHorizontally
         );
         assert_eq!(cursor_for(Handle::Move), mouse::Interaction::Move);
         assert_eq!(cursor_for(Handle::Guide), mouse::Interaction::Crosshair);
@@ -415,13 +389,17 @@ mod tests {
     /// press anywhere on a drawn handle still grabs it.
     #[test]
     fn handles_are_corner_squares_and_edge_bars_inside_their_hit_areas() {
-        let rect = BoxRect {
-            x: 10.0,
-            y: 20.0,
-            width: 100.0,
-            height: 50.0,
-        };
-        let shapes = handle_shapes(&rect);
+        // The handle points of a 100 × 50 rectangle at (10, 20).
+        let shapes = handle_shapes([
+            (10.0, 20.0),
+            (110.0, 20.0),
+            (10.0, 70.0),
+            (110.0, 70.0),
+            (10.0, 45.0),
+            (110.0, 45.0),
+            (60.0, 20.0),
+            (60.0, 70.0),
+        ]);
         assert_eq!(shapes.len(), 8);
         for (_, size) in &shapes[..4] {
             assert_eq!(*size, Size::new(9.0, 9.0));
@@ -432,9 +410,9 @@ mod tests {
         assert_eq!(shapes[6], ((60.0, 20.0), Size::new(22.0, 5.0)));
         assert_eq!(shapes[7], ((60.0, 70.0), Size::new(22.0, 5.0)));
         // At 100% a logical pixel is a box pixel, so the drawn extents compare directly.
-        let draft = CropDraft::neutral(stage(480, 320, 0.0), 0);
+        let draft = CropDraft::upright(480, 320);
         let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
-        for ((x, y), size) in handle_shapes(&draft.rect) {
+        for ((x, y), size) in handle_shapes(draft.handle_points()) {
             for (dx, dy) in [(-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
                 let point = (
                     x + dx * f64::from(size.width) / 2.0,
