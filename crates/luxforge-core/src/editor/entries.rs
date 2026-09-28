@@ -431,7 +431,7 @@ mod tests {
         drop(service);
         commit(&catalog, &painted);
 
-        let service = EditorService::open(&catalog).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
         read_counts::take();
         assert_eq!(service.revision(&asset).unwrap(), painted.result_revision);
         assert_eq!(
@@ -446,6 +446,9 @@ mod tests {
         assert_eq!(read_counts::take(), (5, 4), "the first read");
         assert_eq!(strokes(&first.current_entry).len(), 2);
         // Warm the source cache, which is not the catalog's, so what follows counts only reads.
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         service.preview_job(&asset, None, None, None, None).unwrap();
         read_counts::take();
 
@@ -566,6 +569,9 @@ mod tests {
         }
         assert_eq!(service.cached().1, CACHED_HEADS);
         let asset = assets[0].clone();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
+            .unwrap();
         let mut entries = vec![service.state(&asset).unwrap().current_entry];
         for index in 0..CACHED_ENTRIES + 2 {
             let revision = service.revision(&asset).unwrap();

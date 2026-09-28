@@ -328,9 +328,7 @@ impl CapabilitiesProofModule {
     /// A stored payload: `{}` for neutral, or `{"artifact": <id>}`.
     fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Option<ArtifactId>, Error> {
         if effect_id != PROOF_EFFECT {
-            return Err(Error::incompatible(format!(
-                "unavailable effect {effect_id}"
-            )));
+            return Err(Error::unavailable_effect(effect_id, &[]));
         }
         if format != EFFECT_FORMAT {
             return Err(Error::incompatible(format!(

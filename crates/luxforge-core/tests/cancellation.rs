@@ -122,8 +122,12 @@ fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
     let cancel = Cancel::new();
     let worker = start_render(&cancel, &context);
     // Five milliseconds into a 24 MP render the exact transform pass is still copying the frame,
-    // so this is the rasterizing pass's own latency.
-    thread::sleep(Duration::from_millis(5));
+    // so this is the rasterizing pass's own latency. Where the cancel lands is only what the
+    // printed figure describes: the outcome asserted below holds wherever it lands.
+    let started = Instant::now();
+    luxforge_testbase::wait_until("five milliseconds of the render", || {
+        started.elapsed() >= Duration::from_millis(5)
+    });
     let asked = Instant::now();
     cancel.cancel();
     let outcome = worker.join().expect("the render thread does not panic");
@@ -148,14 +152,9 @@ fn a_colour_pass_cancelled_mid_chunk_releases_every_reservation() {
     // A non-zero counter means a colour chunk is holding its scratch right now, which is the only
     // thing that reserves. Waiting for it is what makes this the colour pass's test and not the
     // transform pass's: a fixed delay lands in the transform pass on this host.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while budget.in_use() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the colour pass never reserved scratch"
-        );
-        thread::sleep(Duration::from_micros(50));
-    }
+    luxforge_testbase::wait_until("the colour pass to reserve scratch", || {
+        budget.in_use() != 0
+    });
     let asked = Instant::now();
     cancel.cancel();
     let outcome = worker.join().expect("the render thread does not panic");

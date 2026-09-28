@@ -9,6 +9,7 @@
 use luxforge_core::{
     ApiRequest, ApiResponse, ClientId, ModuleRegistry, OwnerHandle, Recipe, builtin_modules,
 };
+use luxforge_testbase::try_wait_for;
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -17,7 +18,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
 };
 
 /// A check's result: its evidence, or what it found broken.
@@ -31,9 +31,6 @@ pub fn ensure(ok: bool, message: impl Into<String>) -> Checked {
 pub fn within<T>(what: &str, step: impl FnOnce() -> Checked<T>) -> Checked<T> {
     step().map_err(|error| format!("{what}: {error}"))
 }
-
-/// How long a source or analysis job may take to settle before a check gives up on it.
-const JOB_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Request identities are unique per process, so a retry is always deliberate.
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -109,17 +106,18 @@ pub fn refused(
 
 /// Wait for a source job to leave the queue and answer its last status.
 pub fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Checked<Value> {
-    let deadline = Instant::now() + JOB_DEADLINE;
-    loop {
-        let status = call(owner, client, "job.read", json!({"job_id": job}))?;
-        match status["status"].as_str() {
-            Some("queued" | "running") => {
-                ensure(Instant::now() < deadline, "a source job never settled")?;
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            _ => return Ok(status),
+    settled(owner, client, job, "a source job settling")
+}
+
+/// Read `job` until it leaves `queued` or `running`, answering its last status; what broke, a
+/// refused read or a job still unsettled at the hang bound, is the error.
+fn settled(owner: &OwnerHandle, client: ClientId, job: &Value, what: &str) -> Checked<Value> {
+    try_wait_for(what, || {
+        match call(owner, client, "job.read", json!({"job_id": job})) {
+            Ok(status) if matches!(status["status"].as_str(), Some("queued" | "running")) => None,
+            read => Some(read),
         }
-    }
+    })?
 }
 
 /// Import one file through the source job an independent client waits on, answering the imported
@@ -166,21 +164,10 @@ pub fn analyse(
         json!({"asset_id": asset, "target": target}),
     )?;
     let job_id = requested["job_id"].clone();
-    let deadline = Instant::now() + JOB_DEADLINE;
-    loop {
-        let mut read = call(owner, client, "job.read", json!({"job_id": job_id}))?;
-        match read["status"].as_str() {
-            Some("queued" | "running") => {
-                ensure(Instant::now() < deadline, "an analysis job never settled")?;
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            _ => {
-                read["job_id"] = job_id;
-                read["requested_identity"] = requested["identity"].clone();
-                return Ok(read);
-            }
-        }
-    }
+    let mut read = settled(owner, client, &job_id, "an analysis job settling")?;
+    read["job_id"] = job_id;
+    read["requested_identity"] = requested["identity"].clone();
+    Ok(read)
 }
 
 pub fn state(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Checked<Value> {

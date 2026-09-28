@@ -8,7 +8,6 @@ use crate::{
         Message, OverlayMessage, PresetMessage, ViewMessage,
     },
     state::{
-        capabilities::CapabilityView,
         fields,
         histogram::HistogramModel,
         presets::{PresetFormModel, PresetRow, PresetsModel},
@@ -222,9 +221,9 @@ fn section_view<'a>(
         let mut rows = Vec::new();
         if let Some(capability) = &section.capability {
             rows.push(PanelRow::Plain(super::capabilities::block(capability)));
-            if capability.view == CapabilityView::Settings && !capability.loading {
-                return finish_rows(rows, menu);
-            }
+        }
+        if !section.shows_controls() {
+            return finish_rows(rows, menu);
         }
         rows.extend(match section.layout {
             SectionLayout::Stacked => control_rows(
@@ -235,7 +234,7 @@ fn section_view<'a>(
                 plot,
                 false,
             ),
-            SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
+            SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot),
         });
         finish_rows(rows, menu)
     });
@@ -262,7 +261,6 @@ fn section_view<'a>(
 /// controls. Any top-level control that is not a group follows as usual.
 fn tabbed_rows<'a>(
     section: &'a SectionModel,
-    selected: usize,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
 ) -> Vec<PanelRow<'a>> {
@@ -276,7 +274,7 @@ fn tabbed_rows<'a>(
             _ => None,
         })
         .collect();
-    let Some(visible) = groups.get(selected).or_else(|| groups.first()).copied() else {
+    let Some(visible) = section.visible_tab() else {
         return control_rows(module_id, enabled, &section.controls, menu, plot, false);
     };
     let tabs = tab_row(
@@ -1014,7 +1012,22 @@ fn number_view_on<'a>(
     menu: Option<&'a MenuTarget>,
     row_height: f32,
 ) -> Element<'a, Message> {
+    with_control_menu(
+        number_control(enabled, field, row_height),
+        &field.action,
+        Some(&field.parameter),
+        menu,
+    )
+}
+
+/// One number or integer parameter's control in its declared style, with the keys a focused
+/// stepper or field takes, its `field` style on a row `row_height` tall.
+fn number_control(enabled: bool, field: &SliderControl, row_height: f32) -> Element<'_, Message> {
     let spec = &field.spec;
+    // Where a bipolar rail's fill grows from, when the declared zero is on the rail.
+    let zero = (spec.soft_min..=spec.soft_max)
+        .contains(&spec.zero)
+        .then_some(spec.zero);
     let edit = ui_edit(&field.edit, &field.display, &field.invalid);
     let (action, parameter) = (field.action.clone(), field.parameter.clone());
     let edit_start = Message::Control(ControlMessage::EditValue {
@@ -1046,7 +1059,7 @@ fn number_view_on<'a>(
         enabled,
         id: Some(field.id.clone()),
     };
-    let control: Element<'a, Message> = match field.style {
+    let control: Element<'_, Message> = match field.style {
         NumberControlStyle::Slider => {
             let move_action = action.clone();
             let move_parameter = parameter.clone();
@@ -1062,9 +1075,7 @@ fn number_view_on<'a>(
                     step: spec.step,
                     shift_step: spec.step * 10.0,
                     fine_step: spec.fine_step,
-                    zero: (spec.soft_min..=spec.soft_max)
-                        .contains(&spec.zero)
-                        .then_some(spec.zero),
+                    zero,
                     rail: rail_decoration(&field.rail),
                     over_range: luxforge_ui::geometry::over_range_side(
                         spec.soft_min,
@@ -1098,33 +1109,60 @@ fn number_view_on<'a>(
             compact_number_field(&field_model, edit_start, on_text, submit, reset)
         }
         NumberControlStyle::Field => number_field(&field_model, edit_start, on_text, submit, reset),
-        NumberControlStyle::Stepper => stepper(
-            &StepperModel {
-                field: field_model,
-                decrement_enabled: field.value > spec.min,
-                increment_enabled: field.value < spec.max,
-                decrement_tooltip: "Decrease".into(),
-                increment_tooltip: "Increase".into(),
-                rail: None,
-            },
-            Message::Control(ControlMessage::Step {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                direction: -1,
-            }),
-            Message::Control(ControlMessage::Step {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                direction: 1,
-            }),
-            edit_start,
-            on_text,
-            submit,
-            reset,
-            None,
-        ),
+        NumberControlStyle::Stepper { rail } => {
+            // A stepper's rail is dragged on the fine step, the grid a fraction snaps to, so the
+            // rail reaches exactly the values an Option nudge does.
+            let rail_model = rail.then_some(StepperRail {
+                soft_min: spec.soft_min,
+                soft_max: spec.soft_max,
+                value: field.value,
+                step: spec.fine_step,
+                zero,
+                dragging: field.dragging,
+            });
+            let move_action = action.clone();
+            let move_parameter = parameter.clone();
+            let rail_messages = rail.then(|| StepperRailMessages {
+                on_change: Box::new(move |fraction| {
+                    Message::Control(ControlMessage::Fraction {
+                        action: move_action.clone(),
+                        parameter: move_parameter.clone(),
+                        fraction,
+                    })
+                }),
+                on_release: Message::Control(ControlMessage::Released {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                }),
+            });
+            stepper(
+                &StepperModel {
+                    field: field_model,
+                    decrement_enabled: field.value > spec.min,
+                    increment_enabled: field.value < spec.max,
+                    decrement_tooltip: "Decrease".into(),
+                    increment_tooltip: "Increase".into(),
+                    rail: rail_model,
+                },
+                Message::Control(ControlMessage::Step {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    direction: -1,
+                }),
+                Message::Control(ControlMessage::Step {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    direction: 1,
+                }),
+                edit_start,
+                on_text,
+                submit,
+                reset,
+                rail_messages,
+            )
+        }
     };
-    let control = match field.style {
+    match field.style {
         NumberControlStyle::Slider => control,
         NumberControlStyle::Field => {
             let action = field.action.clone();
@@ -1159,7 +1197,7 @@ fn number_view_on<'a>(
                 _ => None,
             })
         }
-        NumberControlStyle::Stepper => {
+        NumberControlStyle::Stepper { .. } => {
             let action = field.action.clone();
             let parameter = field.parameter.clone();
             let enter = if matches!(field.edit, ValueEdit::Typing(_)) {
@@ -1198,8 +1236,7 @@ fn number_view_on<'a>(
                 _ => None,
             })
         }
-    };
-    with_control_menu(control, &field.action, Some(&field.parameter), menu)
+    }
 }
 
 fn key_direction(key: ControlKey) -> Option<i8> {
@@ -1832,7 +1869,15 @@ fn crop_section_view<'a>(
         None,
         Message::View(ViewMessage::CloseMenu),
     ));
-    rows.push(angle_stepper(model));
+    // The angle is the generic stepper of the crop action's declared angle. It has no control
+    // menu: what a crop draft copies is its whole frame, from Apply's.
+    if let Some(angle) = &model.angle {
+        rows.push(number_control(
+            model.enabled,
+            angle,
+            theme::FIELD_ROW_HEIGHT,
+        ));
+    }
     rows.push(straighten_toggle(model));
     if !model.drafting {
         return column(rows).spacing(theme::ROW_SPACING).into();
@@ -1934,78 +1979,6 @@ fn custom_field<'a>(
     ))
     .width(Length::Fill)
     .into()
-}
-
-/// What a double-click on the angle's rail sends.
-pub(crate) fn angle_reset() -> Message {
-    Message::Crop(CropMessage::ResetAngle)
-}
-
-/// The straightening angle: the ± nudges either side of its rail, its value box, which opens for
-/// typing when pressed, and the arrow keys while focused.
-fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
-    let edit = if model.angle_editing {
-        luxforge_ui::ValueEdit::Editing {
-            text: model.angle.clone(),
-            invalid: None,
-        }
-    } else {
-        luxforge_ui::ValueEdit::Display
-    };
-    let rail = model.angle_rail.as_ref().map(|rail| StepperRail {
-        soft_min: rail.min,
-        soft_max: rail.max,
-        value: rail.value,
-        step: rail.step,
-        zero: Some(0.0),
-        dragging: rail.live,
-    });
-    let control = stepper(
-        &StepperModel {
-            field: NumberFieldModel {
-                label: String::new(),
-                display: model.angle.clone(),
-                edit,
-                unit: Some("°".into()),
-                enabled: model.enabled,
-                id: Some(model.angle_id.clone()),
-            },
-            decrement_enabled: model.enabled,
-            increment_enabled: model.enabled,
-            decrement_tooltip: format!("−{}°", model.nudge),
-            increment_tooltip: format!("+{}°", model.nudge),
-            rail,
-        },
-        Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
-        Message::Crop(CropMessage::NudgeAngle(model.nudge)),
-        Message::Control(ControlMessage::EditValue {
-            action: model.angle_action.clone(),
-            parameter: model.angle_parameter.clone(),
-        }),
-        |text| Message::Crop(CropMessage::AngleText(text)),
-        Message::Crop(CropMessage::SubmitAngle),
-        angle_reset(),
-        Some(StepperRailMessages {
-            on_change: Box::new(|fraction| Message::Crop(CropMessage::AngleRail(fraction))),
-            on_release: Message::Crop(CropMessage::AngleRailReleased),
-        }),
-    );
-    let step = model.nudge;
-    focus_control(control, model.enabled, move |event| match event {
-        ControlKeyEvent::Pressed { key, shift, option } => key_direction(key).map(|direction| {
-            let factor = if shift {
-                10.0
-            } else if option {
-                0.1
-            } else {
-                1.0
-            };
-            Message::Crop(CropMessage::NudgeAngle(
-                f64::from(direction) * step * factor,
-            ))
-        }),
-        _ => None,
-    })
 }
 
 fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {

@@ -74,17 +74,39 @@ use iced::{
     widget::shader::{self, Viewport},
 };
 use std::sync::{
-    Arc, Mutex, OnceLock,
+    Arc, Mutex, MutexGuard, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 
-/// How many photograph frames every photo surface in the process has written into its texture.
-/// Diagnostics only: an evidence run records it beside each captured frame, which is how a run
-/// proves that redrawing an unchanged photograph — at any zoom, however often the view is rebuilt —
-/// writes nothing. The crop stage and the overlays have textures of their own and are not counted.
-static TEXTURE_WRITES: AtomicU64 = AtomicU64::new(0);
-static TEXTURE_UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
-static RETIREMENT_PENDING: AtomicU64 = AtomicU64::new(0);
+/// What one [`PhotoPipeline`] counts of its own texture work, shared with its retirement worker.
+#[derive(Default)]
+struct SurfaceFigures {
+    /// How many photograph frames the pipeline has written into its texture. Diagnostics only: an
+    /// evidence run records it beside each captured frame, which is how a run proves that
+    /// redrawing an unchanged photograph — at any zoom, however often the view is rebuilt — writes
+    /// nothing. The crop stage and the overlays have textures of their own and are not counted.
+    writes: AtomicU64,
+    upload_bytes: AtomicU64,
+    retirement_pending: AtomicU64,
+    diagnostics: Mutex<SurfaceDiagnostics>,
+}
+
+impl SurfaceFigures {
+    fn diagnostics(&self) -> MutexGuard<'_, SurfaceDiagnostics> {
+        self.diagnostics.lock().expect("surface diagnostics lock")
+    }
+}
+
+/// The figures of the pipeline Iced creates for the application, which the free functions below
+/// read. They are process-wide because the desktop has no handle on that pipeline: Iced keeps one
+/// per renderer in its own storage, shared by every photo surface on screen. A pipeline a test
+/// builds counts into figures of its own ([`PhotoPipeline::with_figures`]).
+static PROCESS_FIGURES: OnceLock<Arc<SurfaceFigures>> = OnceLock::new();
+
+fn process_figures() -> &'static Arc<SurfaceFigures> {
+    PROCESS_FIGURES.get_or_init(Arc::default)
+}
+
 type SurfaceWaker = Arc<dyn Fn() + Send + Sync>;
 
 static RETIREMENT_WAKER: OnceLock<Mutex<Option<SurfaceWaker>>> = OnceLock::new();
@@ -103,12 +125,12 @@ pub fn set_surface_waker(waker: Arc<dyn Fn() + Send + Sync>) {
 
 /// Whether a redraw must remain subscribed to the surface's GPU retirement wake.
 pub fn surface_retirement_pending() -> bool {
-    RETIREMENT_PENDING.load(Ordering::Acquire) != 0
+    process_figures().retirement_pending.load(Ordering::Acquire) != 0
 }
 
 /// Actual RGBA bytes handed to `wgpu::Queue::write_texture` by photograph uploads.
 pub fn texture_upload_bytes() -> u64 {
-    TEXTURE_UPLOAD_BYTES.load(Ordering::Relaxed)
+    process_figures().upload_bytes.load(Ordering::Relaxed)
 }
 
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
@@ -155,14 +177,8 @@ pub struct SurfaceDiagnostics {
     pub drawn_clipping_version: Option<u64>,
 }
 
-static DIAGNOSTICS: OnceLock<Mutex<SurfaceDiagnostics>> = OnceLock::new();
-
-fn diagnostics() -> &'static Mutex<SurfaceDiagnostics> {
-    DIAGNOSTICS.get_or_init(|| Mutex::new(SurfaceDiagnostics::default()))
-}
-
 pub fn surface_diagnostics() -> SurfaceDiagnostics {
-    *diagnostics().lock().expect("surface diagnostics lock")
+    *process_figures().diagnostics()
 }
 
 /// Check a region before requesting it from the renderer. This accounts for each tile's linear
@@ -176,9 +192,9 @@ pub fn region_texture_admissible(size: (u32, u32), texture_limit: u32) -> bool {
         && allocated_bytes(&tile_layout(size, texture_limit)) <= REGION_SET_BUDGET
 }
 
-/// The number of photograph texture writes so far; see [`TEXTURE_WRITES`].
+/// The number of photograph texture writes so far; see [`SurfaceFigures::writes`].
 pub fn texture_writes() -> u64 {
-    TEXTURE_WRITES.load(Ordering::Relaxed)
+    process_figures().writes.load(Ordering::Relaxed)
 }
 
 /// How the photograph is placed inside the widget's bounds.
@@ -1290,7 +1306,7 @@ impl shader::Primitive for PhotoPrimitive {
         // stale previous photo reports its actual content separately from the requested content.
         let expects_photo =
             self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
-        let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+        let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
         let status_changed = diagnostic.drawn_photo_blank != blank_photo
             || diagnostic.drawn_stale_photo != stale_photo;
@@ -1578,6 +1594,8 @@ pub struct PhotoPipeline {
     retirement_sender: std::sync::mpsc::Sender<RetiredPicture>,
     deferred_photo: bool,
     deferred_region: bool,
+    /// What this pipeline counts of its own texture work.
+    figures: Arc<SurfaceFigures>,
 }
 
 impl PhotoPipeline {
@@ -1591,9 +1609,11 @@ impl PhotoPipeline {
             self.retiring_region_bytes
                 .fetch_add(bytes, Ordering::AcqRel);
         }
-        RETIREMENT_PENDING.fetch_add(1, Ordering::AcqRel);
+        self.figures
+            .retirement_pending
+            .fetch_add(1, Ordering::AcqRel);
         {
-            let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+            let mut diagnostic = self.figures.diagnostics();
             diagnostic.retiring_bytes += bytes;
         }
         // The worker receives each retirement once. At most the one full slot and two region
@@ -1605,6 +1625,7 @@ impl PhotoPipeline {
             // Device loss or pipeline teardown can end the worker. Its GPU allocations are then
             // invalid; release their charge and wake the desktop instead of waiting forever.
             finish_retirement(
+                &self.figures,
                 error.0,
                 &self.retiring_bytes,
                 &self.retiring_full,
@@ -1624,20 +1645,17 @@ impl PhotoPipeline {
     }
 
     fn publish_diagnostics(&self) {
-        let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+        let mut diagnostic = self.figures.diagnostics();
         diagnostic.full_resident_bytes = self.slots[Layer::Photo.index()]
             .as_ref()
             .map_or(0, |picture| picture.allocated_bytes);
         diagnostic.region_resident_bytes = self.resident_region_bytes();
-        diagnostic.photo_writes = texture_writes();
-        diagnostic.upload_bytes = texture_upload_bytes();
+        diagnostic.photo_writes = self.figures.writes.load(Ordering::Relaxed);
+        diagnostic.upload_bytes = self.figures.upload_bytes.load(Ordering::Relaxed);
     }
 
     fn defer(&mut self, region: bool) {
-        diagnostics()
-            .lock()
-            .expect("surface diagnostics lock")
-            .deferred_uploads += 1;
+        self.figures.diagnostics().deferred_uploads += 1;
         if region {
             self.deferred_region = true;
         } else {
@@ -1674,10 +1692,7 @@ impl PhotoPipeline {
             let bytes = allocated_bytes(&layouts);
             if layer == Layer::Photo {
                 if bytes > FULL_BUDGET {
-                    diagnostics()
-                        .lock()
-                        .expect("surface diagnostics lock")
-                        .rejected_full_uploads += 1;
+                    self.figures.diagnostics().rejected_full_uploads += 1;
                     return false;
                 }
                 // At most the current and one retiring full allocation may exist. If an older
@@ -1724,12 +1739,17 @@ impl PhotoPipeline {
             }
             return true;
         }
-        upload_picture(queue, picture, frame, layer == Layer::Photo);
+        upload_picture(
+            queue,
+            picture,
+            frame,
+            (layer == Layer::Photo).then_some(&self.figures.upload_bytes),
+        );
         picture.version = frame.version;
         picture.content_id = content_id;
         picture.region_key = region_key;
         if layer == Layer::Photo {
-            TEXTURE_WRITES.fetch_add(1, Ordering::Relaxed);
+            self.figures.writes.fetch_add(1, Ordering::Relaxed);
         }
         self.publish_diagnostics();
         if layer == Layer::Photo && std::mem::take(&mut self.deferred_photo) {
@@ -1765,10 +1785,7 @@ impl PhotoPipeline {
             let layouts = tile_layout(capacity, limit);
             let bytes = allocated_bytes(&layouts);
             if bytes > REGION_SET_BUDGET {
-                diagnostics()
-                    .lock()
-                    .expect("surface diagnostics lock")
-                    .rejected_region_uploads += 1;
+                self.figures.diagnostics().rejected_region_uploads += 1;
                 return;
             }
             if let Some(old) = self.regions[index].take() {
@@ -1810,12 +1827,17 @@ impl PhotoPipeline {
         } else if let Some(layouts) = picture.layouts_for((width, height), limit) {
             picture.set_layouts((width, height), layouts);
         }
-        upload_picture(queue, picture, &region.frame, true);
+        upload_picture(
+            queue,
+            picture,
+            &region.frame,
+            Some(&self.figures.upload_bytes),
+        );
         picture.version = region.frame.version;
         picture.content_id = Some(key.content_id);
         picture.region_key = Some(key);
         self.region_front = index;
-        TEXTURE_WRITES.fetch_add(1, Ordering::Relaxed);
+        self.figures.writes.fetch_add(1, Ordering::Relaxed);
         self.publish_diagnostics();
         if std::mem::take(&mut self.deferred_region) {
             wake_surface();
@@ -1896,7 +1918,12 @@ impl Drop for PhotoPipeline {
 /// Queue directly from the borrowed frame, in bounded chunks. The surface owns no pixel staging;
 /// wgpu's backend staging is separate and measured in native GPU evidence. A tile's apron bytes
 /// are included in the write count and allocated-byte admission.
-fn upload_picture(queue: &wgpu::Queue, picture: &Picture, frame: &Frame, count_photo: bool) {
+fn upload_picture(
+    queue: &wgpu::Queue,
+    picture: &Picture,
+    frame: &Frame,
+    counted: Option<&AtomicU64>,
+) {
     const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
     for tile in &picture.tiles {
         let (tile_width, tile_height) = tile.layout.texture_size();
@@ -1919,8 +1946,8 @@ fn upload_picture(queue: &wgpu::Queue, picture: &Picture, frame: &Frame, count_p
                     depth_or_array_layers: 1,
                 },
             );
-            if count_photo {
-                TEXTURE_UPLOAD_BYTES.fetch_add(
+            if let Some(counted) = counted {
+                counted.fetch_add(
                     u64::from(tile_width) * u64::from(rows) * 4,
                     Ordering::Relaxed,
                 );
@@ -1957,8 +1984,8 @@ fn upload_picture(queue: &wgpu::Queue, picture: &Picture, frame: &Frame, count_p
                     depth_or_array_layers: 1,
                 },
             );
-            if count_photo {
-                TEXTURE_UPLOAD_BYTES.fetch_add(u64::from(tile_height) * 4, Ordering::Relaxed);
+            if let Some(counted) = counted {
+                counted.fetch_add(u64::from(tile_height) * 4, Ordering::Relaxed);
             }
         }
         if tile_height < capacity_height {
@@ -1987,8 +2014,8 @@ fn upload_picture(queue: &wgpu::Queue, picture: &Picture, frame: &Frame, count_p
                     depth_or_array_layers: 1,
                 },
             );
-            if count_photo {
-                TEXTURE_UPLOAD_BYTES.fetch_add(u64::from(tile_width) * 4, Ordering::Relaxed);
+            if let Some(counted) = counted {
+                counted.fetch_add(u64::from(tile_width) * 4, Ordering::Relaxed);
             }
         }
         if tile_width < capacity_width && tile_height < capacity_height {
@@ -2017,14 +2044,15 @@ fn upload_picture(queue: &wgpu::Queue, picture: &Picture, frame: &Frame, count_p
                     depth_or_array_layers: 1,
                 },
             );
-            if count_photo {
-                TEXTURE_UPLOAD_BYTES.fetch_add(4, Ordering::Relaxed);
+            if let Some(counted) = counted {
+                counted.fetch_add(4, Ordering::Relaxed);
             }
         }
     }
 }
 
 fn finish_retirement(
+    figures: &SurfaceFigures,
     retired: RetiredPicture,
     retiring_bytes: &AtomicU64,
     retiring_full: &AtomicU64,
@@ -2041,9 +2069,9 @@ fn finish_retirement(
         retiring_regions.fetch_sub(1, Ordering::AcqRel);
         retiring_region_bytes.fetch_sub(bytes, Ordering::AcqRel);
     }
-    RETIREMENT_PENDING.fetch_sub(1, Ordering::AcqRel);
+    figures.retirement_pending.fetch_sub(1, Ordering::AcqRel);
     {
-        let mut diagnostic = diagnostics().lock().expect("surface diagnostics lock");
+        let mut diagnostic = figures.diagnostics();
         diagnostic.retiring_bytes = diagnostic.retiring_bytes.saturating_sub(bytes);
         if failed {
             diagnostic.gpu_retirement_failures += 1;
@@ -2061,14 +2089,15 @@ fn wake_surface() {
     }
 }
 
+/// Ends one retirement, whether it `failed`: [`finish_retirement`] over the charges and figures of
+/// the pipeline that retired it.
+type FinishRetirement = Arc<dyn Fn(RetiredPicture, bool) + Send + Sync>;
+
 fn retirement_worker(
     device: wgpu::Device,
     queue: wgpu::Queue,
     receiver: std::sync::mpsc::Receiver<RetiredPicture>,
-    retiring_bytes: Arc<AtomicU64>,
-    retiring_full: Arc<AtomicU64>,
-    retiring_regions: Arc<AtomicU64>,
-    retiring_region_bytes: Arc<AtomicU64>,
+    finish: FinishRetirement,
 ) {
     let mut pending: Vec<Arc<Mutex<Option<RetiredPicture>>>> = Vec::new();
     loop {
@@ -2096,20 +2125,10 @@ fn retirement_worker(
             queue.submit(None);
             let slot = Arc::new(Mutex::new(Some(retired)));
             let callback_slot = Arc::clone(&slot);
-            let callback_bytes = Arc::clone(&retiring_bytes);
-            let callback_full = Arc::clone(&retiring_full);
-            let callback_regions = Arc::clone(&retiring_regions);
-            let callback_region_bytes = Arc::clone(&retiring_region_bytes);
+            let callback_finish = Arc::clone(&finish);
             queue.on_submitted_work_done(move || {
                 if let Some(retired) = callback_slot.lock().expect("retirement slot lock").take() {
-                    finish_retirement(
-                        retired,
-                        &callback_bytes,
-                        &callback_full,
-                        &callback_regions,
-                        &callback_region_bytes,
-                        false,
-                    );
+                    callback_finish(retired, false);
                 }
             });
             pending.push(slot);
@@ -2118,14 +2137,7 @@ fn retirement_worker(
             if device.poll(wgpu::PollType::Poll).is_err() {
                 for slot in &pending {
                     if let Some(retired) = slot.lock().expect("retirement slot lock").take() {
-                        finish_retirement(
-                            retired,
-                            &retiring_bytes,
-                            &retiring_full,
-                            &retiring_regions,
-                            &retiring_region_bytes,
-                            true,
-                        );
+                        finish(retired, true);
                     }
                 }
             }
@@ -2150,7 +2162,20 @@ fn sampler(device: &wgpu::Device, label: &str, filter: wgpu::FilterMode) -> wgpu
 }
 
 impl shader::Pipeline for PhotoPipeline {
+    /// The application's pipeline, which counts into the process-wide figures the desktop reads.
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        Self::with_figures(device, queue, format, Arc::clone(process_figures()))
+    }
+}
+
+impl PhotoPipeline {
+    /// A pipeline that counts its texture work into `figures`.
+    fn with_figures(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        figures: Arc<SurfaceFigures>,
+    ) -> Self {
         // The toolkit gamma corrects exactly when it chose an sRGB target, and stores image pixels
         // in an sRGB-typed texture when it does. Matching that is what makes a frame's byte land
         // on the surface as the image widget lands it.
@@ -2264,20 +2289,26 @@ impl shader::Pipeline for PhotoPipeline {
         let (retirement_sender, retirement_receiver) = std::sync::mpsc::channel();
         let waiter_device = device.clone();
         let waiter_queue = queue.clone();
-        let waiter_bytes = retiring_bytes.clone();
-        let waiter_full = retiring_full.clone();
-        let waiter_regions = retiring_regions.clone();
-        let waiter_region_bytes = retiring_region_bytes.clone();
+        let finish: FinishRetirement = {
+            let figures = Arc::clone(&figures);
+            let bytes = retiring_bytes.clone();
+            let full = retiring_full.clone();
+            let regions = retiring_regions.clone();
+            let region_bytes = retiring_region_bytes.clone();
+            Arc::new(move |retired, failed| {
+                finish_retirement(
+                    &figures,
+                    retired,
+                    &bytes,
+                    &full,
+                    &regions,
+                    &region_bytes,
+                    failed,
+                );
+            })
+        };
         std::thread::spawn(move || {
-            retirement_worker(
-                waiter_device,
-                waiter_queue,
-                retirement_receiver,
-                waiter_bytes,
-                waiter_full,
-                waiter_regions,
-                waiter_region_bytes,
-            );
+            retirement_worker(waiter_device, waiter_queue, retirement_receiver, finish);
         });
         Self {
             pipeline,
@@ -2295,6 +2326,7 @@ impl shader::Pipeline for PhotoPipeline {
             retirement_sender,
             deferred_photo: false,
             deferred_region: false,
+            figures,
         }
     }
 }
@@ -3182,57 +3214,40 @@ mod tests {
 
 /// Headless GPU regression coverage for viewport photo residency and retirement.
 /// A missing adapter is printed as a skip and must not be reported as native GPU evidence.
+///
+/// Each test builds its own pipeline with figures of its own ([`own_pipeline`]) and reads only those,
+/// so the tests run in parallel and none waits for another's retirements.
 #[cfg(test)]
 mod gpu_surface_tests {
     use super::*;
-    use iced::widget::shader::{Pipeline as _, Primitive as _};
+    use iced::widget::shader::Primitive as _;
+    use luxforge_testbase::{wait_for, wait_until};
     use std::time::{Duration, Instant};
 
-    static GPU_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    struct GpuTestGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
+    /// A pipeline counting into figures of its own, never the process-wide ones.
+    fn own_pipeline(device: &wgpu::Device, queue: &wgpu::Queue) -> PhotoPipeline {
+        PhotoPipeline::with_figures(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            Arc::default(),
+        )
     }
 
-    impl Drop for GpuTestGuard {
-        fn drop(&mut self) {
-            // Pipelines declared after this guard drop first. Their asynchronous retirements
-            // must finish before another test reads process-wide diagnostics.
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while RETIREMENT_PENDING.load(Ordering::Acquire) != 0 {
-                assert!(
-                    Instant::now() < deadline,
-                    "GPU test retirements never finished"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        }
-    }
-
-    fn gpu_test_guard() -> GpuTestGuard {
-        let guard = GPU_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while RETIREMENT_PENDING.load(Ordering::Acquire) != 0 {
-            assert!(
-                Instant::now() < deadline,
-                "previous GPU test retirements never finished"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        GpuTestGuard { _lock: guard }
+    /// What `pipeline` has counted.
+    fn diagnostics(pipeline: &PhotoPipeline) -> SurfaceDiagnostics {
+        *pipeline.figures.diagnostics()
     }
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         let mut future = std::pin::pin!(future);
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        loop {
-            if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-                return value;
+        wait_for("the GPU request", || {
+            match future.as_mut().poll(&mut context) {
+                std::task::Poll::Ready(value) => Some(value),
+                std::task::Poll::Pending => None,
             }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        })
     }
 
     fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -3415,25 +3430,22 @@ mod gpu_surface_tests {
         }
     }
 
+    /// Wait for `pipeline`'s retirements, which its worker finishes when the GPU is done with them.
     fn settle(pipeline: &PhotoPipeline) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while pipeline.retiring_regions.load(Ordering::Acquire) > 0
-            || pipeline.retiring_full.load(Ordering::Acquire) > 0
-        {
-            assert!(Instant::now() < deadline, "retirement never finished");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        wait_until("the pipeline's retirements", || {
+            pipeline.retiring_regions.load(Ordering::Acquire) == 0
+                && pipeline.retiring_full.load(Ordering::Acquire) == 0
+        });
     }
 
     #[test]
     fn bucketed_full_upload_prepare_and_draw_use_only_current_texels() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
-        let blanks_before = surface_diagnostics().blank_photo_draws;
+        let mut pipeline = own_pipeline(&device, &queue);
+        let blanks_before = diagnostics(&pipeline).blank_photo_draws;
         let first = full_primitive(solid_raster(20, 12, 1, [0, 255, 0, 255]));
         assert_solid_bgra(
             &paint(&device, &queue, &mut pipeline, &first),
@@ -3450,17 +3462,16 @@ mod gpu_surface_tests {
             [0, 255, 255, 255],
         );
         assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 0);
-        assert_eq!(surface_diagnostics().blank_photo_draws, blanks_before);
+        assert_eq!(diagnostics(&pipeline).blank_photo_draws, blanks_before);
     }
 
     #[test]
     fn bucketed_tiled_shrink_matches_a_fresh_tiled_draw_at_seams_and_edges() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless_with_texture_limit(64) else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut reused = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut reused = own_pipeline(&device, &queue);
         let old = full_primitive(striped_raster(
             96,
             48,
@@ -3472,7 +3483,7 @@ mod gpu_surface_tests {
         let new = full_primitive(new_frame.clone());
         let actual = paint(&device, &queue, &mut reused, &new);
         assert_eq!(reused.retiring_full.load(Ordering::Acquire), 0);
-        let mut fresh = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut fresh = own_pipeline(&device, &queue);
         let reference = paint(&device, &queue, &mut fresh, &full_primitive(new_frame));
         assert_eq!(
             actual, reference,
@@ -3483,13 +3494,12 @@ mod gpu_surface_tests {
 
     #[test]
     fn bucketed_region_upload_prepare_and_draw_use_only_current_texels() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
-        let blanks_before = surface_diagnostics().blank_photo_draws;
+        let mut pipeline = own_pipeline(&device, &queue);
+        let blanks_before = diagnostics(&pipeline).blank_photo_draws;
         for (width, height, version, colour, bgra) in [
             (16, 16, 1, [0, 255, 0, 255], [0, 255, 0, 255]),
             (12, 12, 2, [255, 0, 0, 255], [0, 0, 255, 255]),
@@ -3510,17 +3520,16 @@ mod gpu_surface_tests {
             assert_solid_bgra(&paint(&device, &queue, &mut pipeline, &primitive), bgra);
         }
         assert_eq!(pipeline.retiring_regions.load(Ordering::Acquire), 0);
-        assert_eq!(surface_diagnostics().blank_photo_draws, blanks_before);
+        assert_eq!(diagnostics(&pipeline).blank_photo_draws, blanks_before);
     }
 
     #[test]
     fn deferred_full_upload_draws_a_stale_photo_then_progresses_on_retirement() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
             &device,
             &queue,
@@ -3545,12 +3554,12 @@ mod gpu_surface_tests {
             3,
             (80, 40),
         );
-        let blanks_before = surface_diagnostics().blank_photo_draws;
+        let blanks_before = diagnostics(&pipeline).blank_photo_draws;
         assert_solid_bgra(
             &paint(&device, &queue, &mut pipeline, &desired),
             [0, 0, 255, 255],
         );
-        let diagnostic = surface_diagnostics();
+        let diagnostic = diagnostics(&pipeline);
         assert_eq!(diagnostic.blank_photo_draws, blanks_before);
         assert!(diagnostic.drawn_stale_photo);
         assert_eq!(diagnostic.drawn_content, None);
@@ -3564,19 +3573,18 @@ mod gpu_surface_tests {
             &paint(&device, &queue, &mut pipeline, &desired),
             [0, 255, 255, 255],
         );
-        let diagnostic = surface_diagnostics();
+        let diagnostic = diagnostics(&pipeline);
         assert!(!diagnostic.drawn_stale_photo);
         assert_eq!(diagnostic.drawn_content, Some(3));
     }
 
     #[test]
     fn stale_fit_photo_suppresses_new_overlay_until_replacement_arrives() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
             &device,
             &queue,
@@ -3603,7 +3611,7 @@ mod gpu_surface_tests {
             &paint(&device, &queue, &mut pipeline, &desired),
             [0, 0, 255, 255],
         );
-        let diagnostic = surface_diagnostics();
+        let diagnostic = diagnostics(&pipeline);
         assert!(diagnostic.drawn_stale_photo);
         assert_eq!(diagnostic.drawn_clipping_version, None);
         wait(&device, busy);
@@ -3612,19 +3620,18 @@ mod gpu_surface_tests {
             &paint(&device, &queue, &mut pipeline, &desired),
             [0, 255, 0, 255],
         );
-        let diagnostic = surface_diagnostics();
+        let diagnostic = diagnostics(&pipeline);
         assert!(!diagnostic.drawn_stale_photo);
         assert_eq!(diagnostic.drawn_clipping_version, Some(1));
     }
 
     #[test]
     fn blank_photo_draw_resets_all_previous_drawn_identities() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         let shown = viewport_primitive(
             Some((solid_raster(16, 16, 1, [255, 0, 0, 255]), 1)),
             None,
@@ -3638,12 +3645,12 @@ mod gpu_surface_tests {
         let blank = viewport_primitive(None, None, 2, (16, 16));
         // Deliberately remove the previous photo: this test checks the blank diagnostic itself.
         pipeline.slots[Layer::Photo.index()] = None;
-        let before = surface_diagnostics().blank_photo_draws;
+        let before = diagnostics(&pipeline).blank_photo_draws;
         assert_solid_bgra(
             &paint(&device, &queue, &mut pipeline, &blank),
             [255, 0, 0, 255],
         );
-        let diagnostic = surface_diagnostics();
+        let diagnostic = diagnostics(&pipeline);
         assert_eq!(diagnostic.blank_photo_draws, before + 1);
         assert_eq!(diagnostic.drawn_content, None);
         assert_eq!(diagnostic.drawn_full_version, None);
@@ -3698,12 +3705,11 @@ mod gpu_surface_tests {
     /// deferred behind retirement; the older revision is hidden; nothing is drawable.
     #[test]
     fn review_resumed_drag_after_exact_refinement_has_a_drawable_region() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         let full_stage = (2000, 1200);
         let interactive = |content: u64, generation: u64, version: u64| {
             RegionFrame::new(
@@ -3752,9 +3758,9 @@ mod gpu_surface_tests {
         );
         // A frame is still executing on the GPU, as during every drag.
         let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
-        let deferred_before = surface_diagnostics().deferred_uploads;
+        let deferred_before = diagnostics(&pipeline).deferred_uploads;
         pipeline.write_region(&device, &queue, &interactive(4, 5, 5));
-        let deferred_after = surface_diagnostics().deferred_uploads;
+        let deferred_after = diagnostics(&pipeline).deferred_uploads;
         let drawable = region_draw_order(&pipeline.regions, 4, full_stage);
         let slots: Vec<_> = pipeline
             .regions
@@ -3778,12 +3784,11 @@ mod gpu_surface_tests {
     /// whose settle job starts with an exact visible region (full detail, other dimensions).
     #[test]
     fn review_release_at_100_percent_has_a_drawable_region() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         let full_stage = (2000, 1200);
         let interactive = |content: u64, generation: u64, version: u64| {
             RegionFrame::new(
@@ -3834,12 +3839,11 @@ mod gpu_surface_tests {
     /// At Fit a proxy of new dimensions (rotation, crop, refit) replaces a small proxy.
     #[test]
     fn review_a_fit_proxy_of_new_dimensions_is_drawn_in_the_frame_it_arrives() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
             &device,
             &queue,
@@ -3871,16 +3875,26 @@ mod gpu_surface_tests {
         );
     }
 
+    /// Let `duration` of wall time pass. In the timing probes below it stands for the time a frame
+    /// spends encoding before its submit, and gives the retirement worker the moment it would have
+    /// in a real frame to take a retirement up: part of the scenario they time, which only they
+    /// assert on, outside the default suite.
+    fn let_pass(duration: Duration) {
+        let from = Instant::now();
+        wait_until("the probe's frame time passing", || {
+            from.elapsed() >= duration
+        });
+    }
+
     /// Characterise the stall with a frame-sized GPU workload (prints only).
     #[test]
     #[ignore = "diagnostic timing probe; run after functional work is complete"]
     fn review_retirement_submit_stall_with_small_gpu_frames() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let pipeline = own_pipeline(&device, &queue);
         let full_stage = (2000, 1200);
         let region = |width: u32, content: u64, version: u64| {
             RegionFrame::new(
@@ -3900,8 +3914,7 @@ mod gpu_surface_tests {
             let mut gpus = Vec::new();
             let mut stalls = Vec::new();
             for round in 0..5u64 {
-                let mut pipeline =
-                    PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+                let mut pipeline = own_pipeline(&device, &queue);
                 let base = 10 + round * 10 + u64::from(copies) * 1000;
                 pipeline.write_region(&device, &queue, &region(300, base, base));
                 pipeline.write_region(&device, &queue, &region(300, base + 1, base + 1));
@@ -3918,7 +3931,7 @@ mod gpu_surface_tests {
                     "diagnostic requires a real texture retirement"
                 );
                 // The rest of the frame's prepare and draw encoding before its submit.
-                std::thread::sleep(Duration::from_micros(300));
+                let_pass(Duration::from_micros(300));
                 let started = Instant::now();
                 queue.submit(None);
                 stalls.push((retiring, started.elapsed()));
@@ -3934,12 +3947,11 @@ mod gpu_surface_tests {
     #[test]
     #[ignore = "diagnostic timing probe; run after functional work is complete"]
     fn review_retirement_never_blocks_a_render_thread_submit() {
-        let _gpu_guard = gpu_test_guard();
         let Some((device, queue)) = headless() else {
             eprintln!("skipped: no GPU adapter");
             return;
         };
-        let mut pipeline = PhotoPipeline::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut pipeline = own_pipeline(&device, &queue);
         // How long the busy workload takes on this GPU.
         let index = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
         let started = Instant::now();
@@ -3947,7 +3959,7 @@ mod gpu_surface_tests {
         let gpu = started.elapsed();
         // Control: an empty submit while the GPU is busy and nothing retires.
         let index = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
-        std::thread::sleep(Duration::from_millis(2));
+        let_pass(Duration::from_millis(2));
         let started = Instant::now();
         queue.submit(None);
         let control = started.elapsed();
@@ -3978,7 +3990,7 @@ mod gpu_surface_tests {
             retiring > 0,
             "diagnostic requires a real texture retirement"
         );
-        std::thread::sleep(Duration::from_millis(2));
+        let_pass(Duration::from_millis(2));
         let started = Instant::now();
         queue.submit(None);
         let blocked = started.elapsed();

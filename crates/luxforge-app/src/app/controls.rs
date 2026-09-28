@@ -37,6 +37,14 @@ pub(crate) struct CurveSampleRequest {
 impl Editor {
     /// One generated-control or tools-panel section message.
     pub(super) fn control_update(&mut self, message: ControlMessage) -> Task<Message> {
+        // The crop frame's fields are the open frame's, not a request of their own: the crop
+        // driver turns what their control sends into a change of that frame.
+        if message
+            .field()
+            .is_some_and(|(action, _)| self.is_crop_action(action))
+        {
+            return self.crop_control(message);
+        }
         match message {
             ControlMessage::Field {
                 action,
@@ -46,26 +54,6 @@ impl Editor {
                 self.fields.set(&action, &parameter, text);
                 // Typing is editing: the field shows what was typed until it is committed.
                 self.editing = Some((action, parameter));
-            }
-            ControlMessage::SliderMoved {
-                action,
-                parameter,
-                value,
-            } => {
-                // A control whose one field is already a whole request drafts: a patch action's
-                // field, or the only parameter its action declares. The move updates the field and
-                // the draft's pending value, and the gated tick is the only thing that sends
-                // anything. Every other slider keeps its old behaviour, which is to change the text
-                // and nothing else until release.
-                if tools::drafts(&self.modules, &action, &parameter) {
-                    return self.slider_moved(action, parameter, value);
-                }
-                let text = fields::declared(&self.modules, &action, &parameter)
-                    .and_then(NumberSpec::of)
-                    .map_or_else(|| number_text(value), |spec| spec.format(value));
-                self.fields.set(&action, &parameter, text);
-                self.editing = None;
-                self.dragging = Some((action, parameter));
             }
             ControlMessage::Fraction {
                 action,
@@ -164,27 +152,13 @@ impl Editor {
             ControlMessage::EditValue { action, parameter } => {
                 let id = fields::field_id(&action, &parameter, None);
                 self.editing = Some((action, parameter));
-                self.seed_idle_angle();
                 return operation::focus(iced::widget::Id::from(id));
-            }
-            ControlMessage::CancelEdit => self.editing = None,
-            ControlMessage::SliderReleased { action, parameter } => {
-                // Release ends the gesture: an open draft commits once, and a slider that never
-                // drafted submits its own field exactly as Enter in that field does.
-                if self.slider_gesture().is_some() {
-                    return self.release();
-                }
-                if tools::drafts(&self.modules, &action, &parameter) {
-                    return self.release_without_draft(&action, &parameter);
-                }
-                return self.dispatch(Message::Control(ControlMessage::Submit {
-                    action,
-                    parameter: Some(parameter),
-                }));
             }
             ControlMessage::Submit { action, parameter } => {
                 self.dragging = None;
-                if !self.editable() {
+                // Refused before the field lets go, so the typed text stays with its reason.
+                if let Some(reason) = self.action_refusal(&action) {
+                    self.status = reason;
                     return Task::none();
                 }
                 let preset =
@@ -199,11 +173,6 @@ impl Editor {
                             return Task::none();
                         }
                     };
-                // Refused before the field lets go, so the typed text stays with its reason.
-                if let Some(reason) = self.action_refusal(&action) {
-                    self.status = reason;
-                    return Task::none();
-                }
                 self.editing = None;
                 return self.dispatch(Message::Action(ActionMessage::Run { action, preset }));
             }
@@ -233,14 +202,17 @@ impl Editor {
                 }));
             }
             ControlMessage::ResetGroup { module_id, path } => {
-                // The reset the group's header shows: resolved for the photo and the target, so
-                // on a RAW photo's global target White balance's reset is the development's As
-                // shot.
-                let kind = tools::source_kind(self.state.as_ref());
-                let target = self.section_target().cloned();
-                let Some(reset) = tools::module_of(&self.modules, &module_id).and_then(|module| {
-                    group_reset(&module.id, &module.controls, &path, kind, target.as_ref())
-                }) else {
+                // The reset the group's header shows, exactly as the view model resolved it for
+                // the photo and the target: on a RAW photo's global target White balance's reset
+                // is the development's As shot.
+                let Some(reset) = self
+                    .workspace
+                    .tools
+                    .all()
+                    .find(|section| section.module_id == module_id)
+                    .and_then(|section| section.group_reset(&path))
+                    .cloned()
+                else {
                     self.status = format!("{module_id} declares no reset for that group");
                     return Task::none();
                 };
@@ -255,89 +227,51 @@ impl Editor {
 
     /// Ask for one missing displayed curve at a time. The query channel carries no timer and one
     /// in-flight request plus one replaceable pending request at most.
+    ///
+    /// Which curves are displayed is the derived tools panel's answer
+    /// ([`tools::SectionModel::shown_curves`]), so this runs after the screen is derived: a
+    /// section's collapse, its tabs, developer filtering, the photo's source kind and each
+    /// control's resolved variant are the rules the panel drew it by.
     pub(crate) fn request_visible_curve_samples(&mut self) -> Task<Message> {
         if self.curve_sample_in_flight || self.curve_sample_pending.is_some() {
             return Task::none();
         }
-        let mut declared: Vec<(String, Vec<String>)> = Vec::new();
-        let Some(entry) = self.displayed_entry() else {
+        let (Some(entry), Some(asset)) = (
+            self.displayed_entry(),
+            self.state.as_ref().map(|state| &state.asset.id),
+        ) else {
             return Task::none();
         };
-        for module in self.modules.iter().filter(|module| module.is_available()) {
-            if self.expanded.get(&module.id).copied() == Some(false) {
-                continue;
+        let wanted = self
+            .workspace
+            .tools
+            .all()
+            .flat_map(tools::SectionModel::shown_curves)
+            .find_map(|curve| {
+                let channel = curve.selected_channel;
+                let parameter = &curve.channels.get(channel)?.parameter;
+                let value = self.control_field_value(&curve.action, parameter)?;
+                let key = (curve.action.clone(), parameter.clone());
+                let sampled = self
+                    .controls_ui
+                    .curve_samples
+                    .get(&key)
+                    .is_some_and(|samples| {
+                        samples.source == value && samples.entry == entry && &samples.asset == asset
+                    });
+                let requested = self.curve_sample_requested_source.get(&key).is_some_and(
+                    |(requested_asset, requested_entry, points)| {
+                        requested_asset == asset && requested_entry == &entry && points == &value
+                    },
+                );
+                (!sampled && !requested).then_some((key, channel, value))
+            });
+        match wanted {
+            Some(((action, parameter), channel, value)) => {
+                self.request_curve_samples(&action, &parameter, channel, value)
             }
-            // A module's only group has no header and is always shown, whatever its declared or
-            // recorded disclosure, so its curves are visible whenever the section is.
-            let (controls, prefix) = match tools::headerless_group(module) {
-                Some(children) => (children, Some(0)),
-                None => (&module.controls[..], None),
-            };
-            let mut controls = walk(controls);
-            while let Some(control) = controls.next() {
-                match control {
-                    Control::Group { collapsed, .. } => {
-                        let path: Vec<usize> = prefix.into_iter().chain(controls.path()).collect();
-                        let key = tools::group_key(&module.id, &path);
-                        let expanded = self.controls_ui.group_expanded.get(&key).copied();
-                        if !expanded.unwrap_or(!collapsed) {
-                            controls.skip_children();
-                        }
-                    }
-                    Control::Curve {
-                        action, channels, ..
-                    } => declared.push((
-                        action.clone(),
-                        channels.iter().map(|c| c.parameter.clone()).collect(),
-                    )),
-                    _ => {}
-                }
-            }
+            None => Task::none(),
         }
-        for (action, channels) in declared {
-            let Some(first) = channels.first() else {
-                continue;
-            };
-            let channel = self
-                .controls_ui
-                .curve_channels
-                .get(&(action.clone(), first.clone()))
-                .copied()
-                .unwrap_or(0);
-            let Some(parameter) = channels.get(channel) else {
-                continue;
-            };
-            let Some(value) = self.control_field_value(&action, parameter) else {
-                continue;
-            };
-            if self
-                .controls_ui
-                .curve_samples
-                .get(&(action.clone(), parameter.clone()))
-                .is_some_and(|samples| {
-                    samples.source == value
-                        && samples.entry == entry
-                        && self
-                            .state
-                            .as_ref()
-                            .is_some_and(|state| samples.asset == state.asset.id)
-                })
-                || self
-                    .curve_sample_requested_source
-                    .get(&(action.clone(), parameter.clone()))
-                    .is_some_and(|(asset, requested_entry, points)| {
-                        self.state
-                            .as_ref()
-                            .is_some_and(|state| asset == &state.asset.id)
-                            && requested_entry == &entry
-                            && points == &value
-                    })
-            {
-                continue;
-            }
-            return self.request_curve_samples(&action, parameter, channel, value);
-        }
-        Task::none()
     }
     pub(crate) fn control_release(&mut self, action: String, parameter: String) -> Task<Message> {
         if let Some((drafting, field)) = self.drafting_control() {
@@ -393,12 +327,9 @@ impl Editor {
         if continuous && tools::drafts(&self.modules, &action, &parameter) {
             return self.control_moved(action, parameter, value);
         }
-        if !self.editable() {
-            return Task::none();
-        }
-        // A discrete value commits at once: refused under an open draft before the control shows a
-        // value that was never sent.
-        if !continuous && let Some(reason) = self.action_refusal(&action) {
+        // A discrete value commits at once, and a continuous one that does not draft commits on
+        // release: either is refused before the control shows a value that was never sent.
+        if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
             self.status = reason;
             return Task::none();
         }
@@ -421,10 +352,10 @@ impl Editor {
         parameter: String,
         direction: i8,
     ) -> Task<Message> {
-        if self
-            .drafting_control()
-            .is_some_and(|(drafting, field)| drafting != action || field != parameter)
-        {
+        let drafts = tools::drafts(&self.modules, &action, &parameter);
+        // Refused as a whole, so a refused step never releases a gesture it did not open.
+        if let Some(reason) = self.control_refusal(&action, &parameter, drafts) {
+            self.status = reason;
             return Task::none();
         }
         let Some(spec) = self.number_spec(&action, &parameter) else {
@@ -435,7 +366,6 @@ impl Editor {
             .and_then(|v| v.as_f64())
             .unwrap_or(spec.min);
         let value = spec.value(spec.nudged(current, direction, false, false));
-        let drafts = tools::drafts(&self.modules, &action, &parameter);
         let task = self.control_value(action, parameter, value, drafts);
         if drafts {
             Task::batch([task, self.release()])
@@ -602,7 +532,8 @@ impl Editor {
         rgb: [u8; 3],
         hsv: [f64; 3],
     ) -> Task<Message> {
-        if !self.editable() {
+        if let Some(reason) = self.control_refusal(&action, &parameter, true) {
+            self.status = reason;
             return Task::none();
         }
         let next = hsv_to_rgb(hsv);
@@ -817,13 +748,8 @@ impl Editor {
         channel: usize,
     ) -> Task<Message> {
         let value = json!(points);
-        if !self.editable() {
-            return Task::none();
-        }
-        if self
-            .drafting_control()
-            .is_some_and(|(drafting, field)| drafting != action || field != parameter)
-        {
+        if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
+            self.status = reason;
             return Task::none();
         }
         let Some(declared) =
@@ -1081,19 +1007,6 @@ pub(crate) fn initial_group_expanded(
         Control::Group { collapsed, .. } => Some(!collapsed),
         _ => None,
     }
-}
-
-/// The reset the group at `path` of `owner`'s controls runs on a photo of `kind` edited through
-/// `target`, through the core's one rule ([`luxforge_core::resolve_group_reset`]).
-pub(super) fn group_reset(
-    owner: &str,
-    controls: &[luxforge_core::Control],
-    path: &[usize],
-    kind: Option<luxforge_core::SourceTag>,
-    target: Option<&luxforge_core::MaskId>,
-) -> Option<luxforge_core::ResetAction> {
-    luxforge_core::resolve_group_reset(owner, at_path(controls, path)?, kind, target)
-        .map(|resolved| resolved.reset.clone())
 }
 
 #[cfg(test)]

@@ -114,8 +114,9 @@ impl EditorService {
     /// The one path every change to an asset's history takes: an action, a composite, a `mask.*`
     /// command, undo, redo, restore, and the no-op of any of them.
     ///
-    /// In order: the envelope is validated; a retry of a request this asset already answered gets
-    /// that answer, marked deduplicated, and nothing is planned; the head is read and the expected
+    /// The envelope was checked by the dispatcher before any handler ran. In order: a retry of a
+    /// request this asset already answered gets that answer, marked deduplicated, and nothing is
+    /// planned; the head is read and the expected
     /// revision checked; `plan` decides the [`Change`] against that state; an appended stack is
     /// [admitted](Self::admit), which is the one validation it gets; then one transaction writes the
     /// entry, moves the head and records the request's whole answer, and the head the entry cache
@@ -135,7 +136,6 @@ impl EditorService {
         request: &Value,
         plan: impl FnOnce(&Self, &EditorState) -> Result<Change, Error>,
     ) -> Result<ActionResult, Error> {
-        mutation.validate()?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, request)? {
             return Ok(result);
         }
@@ -723,7 +723,7 @@ mod tests {
                 .unwrap();
             assert_eq!(service.history(&asset, None, 20).unwrap().entries.len(), 5);
         }
-        let service = EditorService::open(&catalog).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
         let state = service.state(&asset).unwrap();
         assert_eq!(state.revision, 6);
         assert!(
@@ -735,6 +735,9 @@ mod tests {
                 .layers
                 .is_empty()
         );
+        service
+            .prepare(&service.entry_needs(&asset, Some(&b)).unwrap())
+            .unwrap();
         assert_eq!(
             service.render_entry(&asset, &b).unwrap().pixel(0, 0),
             Some([4, 5, 6, 255])
@@ -912,6 +915,9 @@ mod tests {
         assert_eq!(versions[1].entry_id, original);
         service
             .restore(&asset, mutation(2, "restore-keeper"), &versions[0].entry_id)
+            .unwrap();
+        service
+            .prepare(&service.entry_needs(&asset, None).unwrap())
             .unwrap();
         assert_eq!(
             service.render_current(&asset).unwrap().pixel(0, 0),

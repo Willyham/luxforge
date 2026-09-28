@@ -4,9 +4,10 @@ use super::*;
 use crate::modules::raw::RAW_EFFECT;
 use crate::{
     ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, Component, ComponentMode, EFFECT_FORMAT,
-    EffectDescriptor, Layer, LayerId, Mask, ORIENTATION_EFFECT, PIXEL_EFFECT, Recipe, SourceImage,
+    EffectDescriptor, Layer, LayerId, Mask, PIXEL_EFFECT, Recipe, SourceImage,
     modules::{ActionInput, ActionPlan, Availability, EffectStage, ModuleDescriptor, StageContext},
 };
+use luxforge_testbase::Gate;
 use serde_json::{Map, Value, json};
 
 /// A minimal module used to prove registration rules and missing-provider behavior.
@@ -333,55 +334,15 @@ pub(crate) const HELD_EFFECT: &str = "test.held.effect";
 
 pub(crate) const HELD_ACTION: &str = "hold-render";
 
-/// A gate a test shuts to hold every render that reaches it. It is a pointwise colour unit that
-/// leaves its pixels exactly as it found them, so a stack carrying one renders the image it
-/// would render without it; all it changes is *when* that render finishes.
+/// The shared test gate as a pointwise colour unit that leaves its pixels exactly as it found
+/// them, so a stack carrying one renders the image it would render without it; all it changes is
+/// *when* that render finishes. A render reaches it once per row, so [`Gate::reached`] counts the
+/// rows a render has evaluated through the held layer. A test that holds other work, such as a
+/// source preparation, passes the same gate from a hook in that work.
 ///
 /// Shut it only while nothing samples a stack that holds the layer: a point sample evaluates
 /// the same unit on the calling thread, so the caller would wait with it.
-pub(crate) struct RenderGate {
-    shut: std::sync::Mutex<bool>,
-    opened: std::sync::Condvar,
-    /// How many times anything has reached the gate: one per row a render evaluates through it.
-    reached: std::sync::atomic::AtomicU64,
-}
-
-impl RenderGate {
-    /// A gate that is open, which is how a test builds the stack before it holds anything.
-    pub(crate) fn open_gate() -> Arc<Self> {
-        Arc::new(Self {
-            shut: std::sync::Mutex::new(false),
-            opened: std::sync::Condvar::new(),
-            reached: std::sync::atomic::AtomicU64::new(0),
-        })
-    }
-    /// How many times anything has reached the gate, held or not. A render reaches it once per
-    /// row, so this counts the rows a render has evaluated through the held layer.
-    pub(crate) fn reached(&self) -> u64 {
-        self.reached.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    /// Hold every render that reaches this gate from now on.
-    pub(crate) fn shut(&self) {
-        *self.shut.lock().expect("the render gate") = true;
-    }
-    /// Release whatever is waiting and let every later render through.
-    pub(crate) fn open(&self) {
-        *self.shut.lock().expect("the render gate") = false;
-        self.opened.notify_all();
-    }
-    /// Wait here while the gate is shut. A render reaches it through its colour unit; a test
-    /// that holds other work, such as a source preparation, calls it from a hook in that work.
-    pub(crate) fn pass(&self) {
-        self.reached
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut shut = self.shut.lock().expect("the render gate");
-        while *shut {
-            shut = self.opened.wait(shut).expect("the render gate");
-        }
-    }
-}
-
-impl crate::PointwiseColor for RenderGate {
+impl crate::PointwiseColor for Gate {
     fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
         self.pass();
     }
@@ -393,17 +354,17 @@ impl crate::PointwiseColor for RenderGate {
     }
 }
 
-/// A module whose one colour effect compiles to a [`RenderGate`]. A test that is about the
+/// A module whose one colour effect compiles to the shared test [`Gate`]. A test that is about the
 /// analysis worker's slots commits one of these layers and shuts the gate: the job on the
 /// worker then stays there until the test opens it, so what the single pending slot does is
 /// decided by the queue's rule and never by how fast this machine renders a frame.
 pub(crate) struct HeldModule {
     descriptor: ModuleDescriptor,
-    gate: Arc<RenderGate>,
+    gate: Arc<Gate>,
 }
 
 impl HeldModule {
-    pub(crate) fn shared(gate: Arc<RenderGate>) -> Arc<dyn ToolModule> {
+    pub(crate) fn shared(gate: Arc<Gate>) -> Arc<dyn ToolModule> {
         Arc::new(Self {
             descriptor: ModuleDescriptor {
                 id: "test.held".into(),
@@ -495,30 +456,20 @@ pub(super) fn source() -> SourceImage {
 
 #[test]
 fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
+    // Every built-in module registers with every action and effect it declares; which ones those
+    // are is the committed descriptor snapshot's (`tests/modules/descriptors.rs`).
     let mut registry = ModuleRegistry::builtin();
-    assert!(registry.action("set-pixel").is_some());
-    assert!(registry.action("transform").is_some());
-    assert!(registry.effect(PIXEL_EFFECT).is_some());
-    assert!(registry.effect(ORIENTATION_EFFECT).is_some());
-    assert!(registry.action("crop").is_some());
-    assert!(registry.effect(CROP_EFFECT).is_some());
-    assert!(registry.action("set-basic").is_some());
-    assert!(registry.action("reset-basic").is_some());
-    assert!(registry.effect(BASIC_EFFECT).is_some());
-    assert!(registry.action("set-mixer").is_some());
-    assert!(registry.action("reset-mixer").is_some());
-    assert!(registry.effect(crate::MIXER_EFFECT).is_some());
-    assert!(registry.action("set-raw").is_some());
-    assert!(registry.action("pick-raw-neutral").is_some());
-    assert!(registry.effect(RAW_EFFECT).is_some());
-    assert!(registry.action("set-vignette").is_some());
-    assert!(registry.action("reset-vignette").is_some());
-    assert!(registry.effect(crate::VIGNETTE_EFFECT).is_some());
-    assert!(registry.action("set-presence").is_some());
-    assert!(registry.action("reset-presence").is_some());
-    assert!(registry.effect(crate::PRESENCE_EFFECT).is_some());
-    assert!(registry.action("apply-preset").is_some());
-    assert_eq!(registry.descriptors().len(), 9);
+    let builtin = builtin_modules();
+    for module in &builtin {
+        let descriptor = module.descriptor();
+        for action in &descriptor.actions {
+            assert!(registry.action(&action.id).is_some(), "{}", action.id);
+        }
+        for effect in &descriptor.effects {
+            assert!(registry.effect(&effect.id).is_some(), "{}", effect.id);
+        }
+    }
+    assert_eq!(registry.descriptors().len(), builtin.len());
     assert!(registry.action("edit.set-pixel").is_none());
 
     for (case, module) in [
@@ -564,7 +515,7 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
     }
     assert_eq!(
         registry.descriptors().len(),
-        9,
+        builtin.len(),
         "nothing was half-registered"
     );
     assert!(
@@ -577,7 +528,7 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
             ))
             .is_ok()
     );
-    assert_eq!(registry.descriptors().len(), 10);
+    assert_eq!(registry.descriptors().len(), builtin.len() + 1);
 }
 
 /// A module that declares no effects owns no layer and claims no effect identity, so it
@@ -678,6 +629,11 @@ fn registry_resolves_applicability_from_the_declared_sources() {
             let error = refusal.unwrap_err();
             assert_eq!(error.kind, crate::ErrorKind::Validation);
             assert_eq!(error.detail, "Kinds does not apply to a JPEG photo");
+            assert_eq!(
+                error.data.as_deref(),
+                Some(&json!({"source": "jpeg", "module_id": descriptor.id})),
+                "{case}"
+            );
         }
     }
     for (case, sources, fragment) in [
@@ -840,6 +796,44 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
             .starts_with("unavailable effect luxforge.basic.adjust"),
         "{error}"
     );
+    assert_eq!(error.unavailable_effect_id(), Some(BASIC_EFFECT), "{error}");
+}
+
+/// Every module that checks a stored layer's effect against its own refuses a foreign one as the
+/// one unavailable-effect refusal, whose data names the effect: the field-patch modules, pixel,
+/// transform, crop and the capability proof. The RAW module refuses a foreign layer as an invalid
+/// RAW source layer and the presets module as one it has no effect for; neither is this refusal.
+#[test]
+fn every_payload_check_names_a_foreign_effect_in_its_data() {
+    let registry = ModuleRegistry::builtin();
+    let proof = crate::CapabilitiesProofModule::new("http://127.0.0.1:9/");
+    let mut modules: Vec<&dyn ToolModule> = registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| {
+            !descriptor.effects.is_empty() && descriptor.effects.iter().all(|e| e.id != RAW_EFFECT)
+        })
+        .map(|descriptor| registry.module(&descriptor.id).unwrap())
+        .collect();
+    assert_eq!(
+        modules.len(),
+        7,
+        "basic, presence, mixer, vignette, pixel, transform, crop"
+    );
+    modules.push(&proof);
+    for module in modules {
+        let error = module
+            .validate_payload("test.nobody", 1, &json!({}))
+            .unwrap_err();
+        let id = &module.descriptor().id;
+        assert_eq!(error.kind, ErrorKind::Incompatible, "{id}");
+        assert_eq!(error.detail, "unavailable effect test.nobody", "{id}");
+        assert_eq!(
+            error.data.as_deref(),
+            Some(&json!({"effect_id": "test.nobody"})),
+            "{id}"
+        );
+    }
 }
 
 /// One `add` linear gradient at full amount, over the whole frame: the mask every test below

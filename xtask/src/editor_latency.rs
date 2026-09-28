@@ -235,10 +235,32 @@ fn gesture_values(samples: usize, control: Control, field: &FieldTarget) -> Vec<
     }
 }
 
-/// Nearest-rank p50/p95 with every sample retained, so a tail can never be dropped silently. The
-/// one [`stats::Distribution`] shape every timing tool now writes.
-fn distribution(samples: Vec<f64>) -> Value {
-    stats::distribution_json(samples)
+/// A gesture launch's sampled resources as rows of the one shape: its peak RSS and process CPU
+/// seconds (from [`sampled`]) and the owner render context's scratch high-water mark at the last
+/// captured frame.
+fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
+    vec![
+        stats::scalar(
+            "sampled_peak_rss_mib",
+            "MiB",
+            usage["peak_rss_mib"].as_f64(),
+        ),
+        stats::scalar(
+            "sampled_process_cpu_seconds",
+            "s",
+            usage["process_cpu_seconds"].as_f64(),
+        ),
+        stats::scalar(
+            "scratch_peak_bytes",
+            "bytes",
+            last["state"]["scratch"]["peak_bytes"].as_f64(),
+        ),
+    ]
+}
+
+/// A GPU counter as a one-sample row.
+fn counter(metric: &str, unit: &str, value: Option<u64>) -> Value {
+    stats::scalar(metric, unit, value.map(|count| count as f64))
 }
 
 fn elapsed(event: &Value) -> Result<f64> {
@@ -1251,13 +1273,53 @@ fn viewport(
         .map(|e| elapsed(e))
         .transpose()?
         .ok_or("The first draft has no region event")?;
+    // The one scalar and the GPU counters, each a one-sample row. The counters are the photo
+    // surface's actual texture writes, counted during draw encoding.
+    let rows = vec![
+        stats::scalar(
+            "input_to_first_region_adoption_ms",
+            "ms",
+            Some(first_region_ms - first_input_ms),
+        ),
+        counter(
+            "blank_photo_draws",
+            "count",
+            Some(gpu_count(final_pan, "blank_photo_draws")?),
+        ),
+        counter("stale_photo_draws", "count", Some(stale_draws)),
+        counter(
+            "photo_writes_before_settled_pan",
+            "count",
+            Some(before_pan_writes),
+        ),
+        counter(
+            "photo_writes_after_settled_pan",
+            "count",
+            Some(after_pan_writes),
+        ),
+        counter(
+            "upload_bytes_before_settled_pan",
+            "bytes",
+            Some(gpu_count(settled, "upload_bytes")?),
+        ),
+        counter(
+            "upload_bytes_after_settled_pan",
+            "bytes",
+            Some(gpu_count(final_pan, "upload_bytes")?),
+        ),
+        stats::scalar(
+            "sampled_peak_rss_mib",
+            "MiB",
+            usage["peak_rss_mib"].as_f64(),
+        ),
+    ];
     let mut result = json!({
         "status":"passed", "mode":"viewport", "zoom_percent":options.zoom,
         "source":source, "source_sha256":source_hash,
         "backend":settled["state"]["backend"],
         "control_action":field.action, "control_parameter":field.parameter,
         "crop_angle_deg":options.crop, "full_basic_layer":options.basic, "mask":options.mask,
-        "input_to_first_region_adoption_ms":first_region_ms-first_input_ms,
+        "rows":rows,
         "regions":region_summary,
         "frames":{
             "draft":draft["state"], "first_pan":first_pan["state"],
@@ -1265,16 +1327,7 @@ fn viewport(
             "second_pause":second_pause["state"], "settled":settled["state"],
             "settled_pan":final_pan["state"],
         },
-        "gpu":{
-            "blank_photo_draws":gpu_count(final_pan,"blank_photo_draws")?,
-            "stale_photo_draws":stale_draws,
-            "photo_writes_before_settled_pan":before_pan_writes,
-            "photo_writes_after_settled_pan":after_pan_writes,
-            "upload_bytes_before_settled_pan":gpu_count(settled,"upload_bytes")?,
-            "upload_bytes_after_settled_pan":gpu_count(final_pan,"upload_bytes")?,
-            "peak_sampled_rss_mib":usage["peak_rss_mib"],
-            "note":"photo_writes and upload_bytes are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
-        },
+        "gpu_note":"The photo_writes and upload_bytes rows are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
         "scope":"A held drafted slider at percentage zoom, two pans, quiet refinement, resumed motion, release, exact full-image report and a settled pan. preview_displayed is frame adoption, not confirmed GPU upload or display scanout. Captured surface.gpu counters describe actual draw encoding and texture writes.",
     });
     stamp(&mut result, &header);
@@ -1488,7 +1541,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let path = paint_path(options.samples);
 
     let steps = paint_script(options, path.clone());
-    let load_start = crate::verify::load_average(root);
+    let load_start = launch::load_average(root);
     let gesture = gesture_launch(
         out,
         "gesture",
@@ -1565,10 +1618,33 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         !latencies.is_empty(),
         "The run painted no stroke whose drafted frame reached the screen",
     )?;
-    let mut ranked = latencies.clone();
-    ranked.sort_by(f64::total_cmp);
-    let p95 = stats::Distribution::percentile(&ranked, 95);
-    let load_end = crate::verify::load_average(root);
+    let input_p95 = stats::Distribution::of(latencies.clone()).map(|d| d.p95);
+    let load_end = launch::load_average(root);
+    let mut rows = vec![stats::row(
+        "input_to_presented_frame",
+        "ms",
+        latencies.clone(),
+    )];
+    type Phase = fn(&PaintPhaseSample) -> f64;
+    let phases: [(&str, Phase); 9] = [
+        ("owner_round_trip_to_preview_queue", |s| {
+            s.owner_round_trip_ms
+        }),
+        ("executor_wait", |s| s.executor_wait_ms),
+        ("draft_set", |s| s.draft_set_ms),
+        ("preview_job_planning", |s| s.preview_job_ms),
+        ("owner_return_to_preview_queue", |s| s.return_to_queue_ms),
+        ("preview_request_to_worker_start", |s| s.queue_wait_ms),
+        ("preview_worker_render", |s| s.worker_render_ms),
+        ("worker_result_to_surface_assignment", |s| {
+            s.result_to_surface_ms
+        }),
+        ("pre_result_residual", |s| s.before_worker_result_ms),
+    ];
+    for (metric, phase) in phases {
+        rows.push(stats::row(metric, "ms", phase_samples.iter().map(phase)));
+    }
+    rows.extend(resource_rows(&usage, last));
 
     let mut result = json!({
         "status":"passed",
@@ -1603,20 +1679,11 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "superseded_note":"A position whose own preview job was superseded by the next position before its pixels were drawn. It is what a hand does not see during a continuous stroke, and it is reported rather than averaged away.",
         },
         "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,
-            "measured_p95_ms":p95,
-            "met":p95.map(|ms| ms < 16.0),"acceptable":p95.map(|ms| ms < 32.0)},
-        "timings_ms":{
-            "input_to_presented_frame":distribution(latencies.clone()),
-            "owner_round_trip_to_preview_queue":distribution(phase_samples.iter().map(|sample| sample.owner_round_trip_ms).collect()),
-            "executor_wait":distribution(phase_samples.iter().map(|sample| sample.executor_wait_ms).collect()),
-            "draft_set":distribution(phase_samples.iter().map(|sample| sample.draft_set_ms).collect()),
-            "preview_job_planning":distribution(phase_samples.iter().map(|sample| sample.preview_job_ms).collect()),
-            "owner_return_to_preview_queue":distribution(phase_samples.iter().map(|sample| sample.return_to_queue_ms).collect()),
-            "preview_request_to_worker_start":distribution(phase_samples.iter().map(|sample| sample.queue_wait_ms).collect()),
-            "preview_worker_render":distribution(phase_samples.iter().map(|sample| sample.worker_render_ms).collect()),
-            "worker_result_to_surface_assignment":distribution(phase_samples.iter().map(|sample| sample.result_to_surface_ms).collect()),
-            "pre_result_residual":distribution(phase_samples.iter().map(|sample| sample.before_worker_result_ms).collect()),
-        },
+            "measured_p95_ms":input_p95,
+            "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
+        "rows":rows,
+        "load":launch::load(load_start),
+        "load_average_1m_end":load_end,
         "phase_samples":phase_samples.iter().map(|sample| json!({
             "generation":sample.generation,
             "phase":sample.phase,
@@ -1632,13 +1699,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "pre_result_residual_ms":sample.before_worker_result_ms,
             "worker_result_to_surface_assignment_ms":sample.result_to_surface_ms,
         })).collect::<Vec<_>>(),
-        "load_average_1m_start":load_start,
-        "load_average_1m_end":load_end,
-        "load_threshold":launch::LOAD_THRESHOLD,
-        "provisional":load_start.or(load_end).is_none_or(|load| load > launch::LOAD_THRESHOLD),
         "resources":{
-            "sampled_peak_rss_mib":usage["peak_rss_mib"],
-            "sampled_process_cpu_seconds":usage["process_cpu_seconds"],
             "scratch":last["state"]["scratch"],
             "rss_samples":usage["rss_samples"],
             "note":"RSS and process CPU time are sampled together by ps about every 50 ms. Peak RSS includes captures, GPU resources and allocator retention; CPU seconds are the first-to-last valid sampled process delta, may miss up to one polling interval at each edge, and are null when the delta is below ps's 0.01 s resolution.",
@@ -1845,9 +1906,13 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         .map(|input| input.upload_ms)
         .filter(|value| value.is_finite())
         .collect();
-    let mut ranked_input_to_frame = input_to_frame.clone();
-    ranked_input_to_frame.sort_by(f64::total_cmp);
-    let input_p95 = stats::Distribution::percentile(&ranked_input_to_frame, 95);
+    let input_p95 = stats::Distribution::of(input_to_frame.clone()).map(|d| d.p95);
+    let mut rows = vec![
+        stats::row("input_to_presented_frame", "ms", input_to_frame),
+        stats::row("draft_set_round_trip", "ms", set_round_trip),
+        stats::row("render_and_upload", "ms", render_and_upload),
+        stats::row("gpu_upload", "ms", upload),
+    ];
 
     // The settled exact histogram. A drafted preview is never analysed — the design keeps the plot
     // labelled stale during a gesture — so the exact report is reduced from the frame the commit's
@@ -1920,6 +1985,15 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         .filter_map(|input| input.generation)
         .collect();
     let approximate = approximate_frames(&events);
+    for (metric, samples) in [
+        ("final_input_to_settled_histogram", settled_from_input),
+        ("commit_to_settled_histogram", settled_from_commit),
+        ("final_input_to_committed_frame", presented_from_input),
+        ("commit_to_committed_frame", presented_from_commit),
+    ] {
+        rows.push(stats::row(metric, "ms", samples));
+    }
+    rows.extend(resource_rows(&usage, last));
 
     let mut result = json!({
         "status":"passed",
@@ -1954,17 +2028,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one frame. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.",
         "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,"measured_p95_ms":input_p95,
             "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
-        "timings_ms":{
-            "input_to_presented_frame":distribution(input_to_frame),
-            "draft_set_round_trip":distribution(set_round_trip),
-            "render_and_upload":distribution(render_and_upload),
-            "gpu_upload":if upload.is_empty() { Value::Null } else { distribution(upload) },
-            "gpu_upload_note":"null when the binary's preview_displayed carries no upload_ms, which is true of the photo surface: the raster is written into the surface's own texture during the frame that draws it, so there is no upload step to time. render_and_upload then covers the render and the hand-over together.",
-            "final_input_to_settled_histogram":distribution(settled_from_input),
-            "commit_to_settled_histogram":distribution(settled_from_commit),
-            "final_input_to_committed_frame":distribution(presented_from_input),
-            "commit_to_committed_frame":distribution(presented_from_commit),
-        },
+        "rows":rows,
+        "gpu_upload_note":"The gpu_upload row has no distribution when the binary's preview_displayed carries no upload_ms, which is true of the photo surface: the raster is written into the surface's own texture during the frame that draws it, so there is no upload step to time. render_and_upload then covers the render and the hand-over together.",
         "queue":{
             "scripted_slider_values":if options.control == Control::Slider {
                 json!(if drag { values.len() + options.samples + 1 } else { values.len() })
@@ -1985,11 +2050,9 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             "note":"Two bounds show here. Within one gesture the driver keeps at most one draft round trip in flight and only the newest value waiting, so a burst of moves between two ticks is coalesced: burst_step_values against burst_step_draft_sets is that reduction. At the queue, a requested preview job whose generation never reaches a preview_displayed was superseded; every commit supersedes the drafted preview of the value it commits, and a drag's open steps drain one at a time so none of theirs is. No analysis job is superseded because a drafted preview is never analysed: the exact report is reduced only from the committed frame.",
         },
         "resources":{
-            "sampled_peak_rss_mib":usage["peak_rss_mib"],
-            "sampled_process_cpu_seconds":usage["process_cpu_seconds"],
             "scratch":last["state"]["scratch"],
             "rss_samples":usage["rss_samples"],
-            "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
+            "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes (the scratch_peak_bytes row) its high-water mark over the whole run.",
         },
         "workspace":last["state"]["workspace"],
         "histogram":last["state"]["histogram"],
@@ -2325,17 +2388,11 @@ fn burst(run: &mut Run, options: &Options) -> Result {
             "draft_sets":analysis.draft_sets,
             "preview_jobs":analysis.preview_jobs,
             "presented_frames":analysis.presented_frames,
-            "presented_fps":analysis.presented_fps,
-            "staleness_ms":distribution(analysis.staleness_ms),
-            "frame_gap_ms":distribution(analysis.frame_gap_ms),
-            "max_gap_ms":analysis.max_gap_ms,
             "cancelled_exact":analysis.cancelled_exact,
             "cancelled_exact_note":(analysis.cancelled_exact == 0).then_some("No exact phase was cancelled in this run; cancellation depends on timing and workload"),
             "proxy":analysis.proxy,
         },
         "resources":{
-            "sampled_peak_rss_mib":usage["peak_rss_mib"],
-            "sampled_process_cpu_seconds":usage["process_cpu_seconds"],
             "scratch":last["state"]["scratch"],
             "rss_samples":usage["rss_samples"],
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
@@ -2351,13 +2408,25 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     result["zoom_percent"] = json!(options.zoom);
     result["moving_pan"] = json!(options.moving_pan);
     result["burst"]["pan_moves"] = json!(analysis.pan_moves);
-    result["burst"]["draw_encoded_frames"] = json!(gpu_delta("drawn_frames"));
+    let mut rows = vec![
+        stats::scalar("presented_fps", "fps", Some(analysis.presented_fps)),
+        stats::row("staleness_ms", "ms", analysis.staleness_ms),
+        stats::row("frame_gap_ms", "ms", analysis.frame_gap_ms),
+        stats::scalar("max_gap_ms", "ms", Some(analysis.max_gap_ms)),
+        counter("draw_encoded_frames", "count", gpu_delta("drawn_frames")),
+        counter("photo_texture_writes", "count", gpu_delta("photo_writes")),
+        counter("photo_upload_bytes", "bytes", gpu_delta("upload_bytes")),
+    ];
     if options.moving_pan {
-        result["burst"]["blank_photo_draws"] = json!(gpu_count(last, "blank_photo_draws")?);
-        result["burst"]["stale_photo_draws"] = json!(burst_stale_draws);
+        rows.push(counter(
+            "blank_photo_draws",
+            "count",
+            Some(gpu_count(last, "blank_photo_draws")?),
+        ));
+        rows.push(counter("stale_photo_draws", "count", burst_stale_draws));
     }
-    result["burst"]["photo_texture_writes"] = json!(gpu_delta("photo_writes"));
-    result["burst"]["photo_upload_bytes"] = json!(gpu_delta("upload_bytes"));
+    rows.extend(resource_rows(&usage, last));
+    result["rows"] = json!(rows);
     result["burst"]["regions"] = json!(region_events);
     result["burst"]["surface_gpu"] = last["state"]["surface"]["gpu"].clone();
     result["burst"]["adoption_note"] = json!(
@@ -2426,33 +2495,29 @@ fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
             // takes. Its events are counted while it still runs.
             let window = stats::idle_window(&idle_root, child.child.id())?;
             let events = scenario::events(&events)?.len();
-            Ok((None, json!({"window":window.to_json(),"events":events})))
+            Ok((None, json!({"rows":window.rows(),"events":events})))
         }));
     let idle = run.launch(idle)?.watched;
-    let window = &idle["window"];
+    // The gesture process's resources, then the idle window's figures, as rows of the one shape.
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
     // above does, and it runs the same colour stack.
+    let mut rows = resource_rows(&hold_usage, &frame);
+    rows.extend(stats::rows(&idle).iter().cloned());
     write_json(
         &out.join("resources.json"),
         &json!({
             "status":"passed",
             "workload":"One 24 MP image holding a Basic layer with all ten fields non-neutral, histogram on",
             "basic_payload":full_basic(),
+            "rows":rows,
             "gesture_process":{
-                "sampled_peak_rss_mib":hold_usage["peak_rss_mib"],
-                "sampled_process_cpu_seconds":hold_usage["process_cpu_seconds"],
                 "scratch":frame["state"]["scratch"],
                 "workspace":frame["state"]["workspace"],
                 "histogram":frame["state"]["histogram"],
                 "controls":frame["state"]["controls"],
             },
             "idle_process":{
-                "duration_s":window["duration_s"],
-                "cpu_percent_one_core":window["cpu_percent_one_core"],
-                "rss_mib_start":window["rss_mib_start"],
-                "rss_mib_end":window["rss_mib_end"],
-                "rss_mib_peak":window["rss_mib_peak"],
                 "events":idle["events"],
                 "scratch":"not observable: the budget travels in the state snapshot beside a captured frame, and an ordinary launch captures none",
             },

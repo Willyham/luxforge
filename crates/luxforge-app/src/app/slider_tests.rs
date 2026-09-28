@@ -4,9 +4,8 @@ use super::{
     message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::mutation,
     testing::{
-        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, begun, boot, descriptors, draft_events, drafting,
-        entry, finish, logged, opened_with_modules, patch_control, raw_entry, raw_refresh,
-        refresh_for,
+        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, begun, descriptors, draft_events, drafting, entry,
+        finish, logged, opened_with_modules, patch_control, raw_entry, raw_refresh, refresh_for,
     },
     *,
 };
@@ -18,11 +17,7 @@ use serde_json::Map;
 fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
     for cancel in [false, true] {
         let (mut editor, catalog, _, asset, action, parameter) = drafting();
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter,
-            value: 1.0,
-        }));
+        let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
         begun(&mut editor, &asset, &action, 4);
         let id = editor.session.draft.as_ref().unwrap().draft_id.clone();
         editor.displayed_draft_id = Some(id);
@@ -48,11 +43,7 @@ fn a_drag_sends_one_draft_set_for_the_newest_value() {
     // the last. The values are ones the widget would send: it quantizes each drag to the
     // parameter's declared step and precision before the message is published.
     for value in [25.0, 50.0, 75.0] {
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value,
-        }));
+        let _ = testing::slide(&mut editor, &action, &parameter, value);
     }
     assert_eq!(
         editor.fields.get(&action, &parameter),
@@ -68,11 +59,7 @@ fn a_drag_sends_one_draft_set_for_the_newest_value() {
 
     begun(&mut editor, &asset, &action, 4);
     // A move to the value already accepted sends nothing again.
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 75.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 75.0);
 
     let records = logged(&mut editor, &log);
     assert_eq!(
@@ -146,11 +133,7 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
     let (action, parameter) = single_parameter_control(&editor);
 
     for value in [0.25, 0.5] {
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value,
-        }));
+        let _ = testing::slide(&mut editor, &action, &parameter, value);
     }
     assert!(
         editor.slider_gesture().is_some(),
@@ -158,15 +141,8 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
         editor.status
     );
     begun(&mut editor, &asset, &action, 4);
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 0.75,
-    }));
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: parameter.clone(),
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 0.75);
+    let _ = testing::let_go(&mut editor, &action, &parameter);
 
     let records = logged(&mut editor, &log);
     assert_eq!(
@@ -217,11 +193,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
         .expect("a built-in declares a multi-parameter action led by a slider field");
 
     for value in [3.0, 7.0] {
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value,
-        }));
+        let _ = testing::slide(&mut editor, &action, &parameter, value);
     }
     assert!(editor.slider_gesture().is_none(), "no draft was opened");
     assert_eq!(
@@ -234,10 +206,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
         "nothing was sent while dragging"
     );
 
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: parameter.clone(),
-    }));
+    let _ = testing::let_go(&mut editor, &action, &parameter);
     assert_eq!(
         editor.status,
         format!("Running edit.{action}…"),
@@ -264,11 +233,7 @@ fn double_click_before_the_commit_answers(
         .expect("an open asset")
         .current_entry
         .clone();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.into(),
-        parameter: parameter.into(),
-        value,
-    }));
+    let _ = testing::slide(editor, action, parameter, value);
     begun(editor, asset, action, current.sequence);
     let _ = editor.update(Message::Control(ControlMessage::Released {
         action: action.into(),
@@ -548,11 +513,7 @@ fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
     // A RAW photo's global target, where Basic's Temperature is the development's `set-raw`.
     editor.state.as_mut().expect("an open asset").asset.source =
         crate::state::testing::raw_source();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: "set-raw".into(),
-        parameter: "temperature".into(),
-        value: 5000.0,
-    }));
+    let _ = testing::slide(&mut editor, "set-raw", "temperature", 5000.0);
     // The owner accepts the value, but its preview job answers preparation-required.
     editor.fake_sets = Some(["preparation-required: source-job-7".to_owned()].into());
     begun(&mut editor, &asset, "set-raw", 4);
@@ -590,16 +551,12 @@ fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
 fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
     for (action, parameter) in [("set-raw", "temperature"), ("set-basic", "exposure")] {
         let (mut editor, catalog, log, _, _, _) = drafting();
-        let _ = editor.update(Message::Control(ControlMessage::Released {
-            action: action.into(),
-            parameter: parameter.into(),
-        }));
-        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-            action: action.into(),
-            parameter: parameter.into(),
-        }));
+        let _ = testing::let_go(&mut editor, action, parameter);
         assert!(!editor.busy, "{action}: no request is in flight");
-        assert!(editor.editable());
+        assert_eq!(
+            editor.gesture_refusal(crate::app::gesture::Starting::Action),
+            None
+        );
         assert!(
             !editor.status.starts_with("Running"),
             "{action}: {}",
@@ -660,11 +617,7 @@ fn the_double_click_reset_of_a_single_parameter_action_sends_its_declared_defaul
 #[test]
 fn a_slider_released_while_another_request_is_in_flight_commits() {
     let (mut editor, catalog, log, asset, action, parameter) = drafting();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 1.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     begun(&mut editor, &asset, &action, 4);
     editor.busy = true;
     assert_eq!(
@@ -672,10 +625,7 @@ fn a_slider_released_while_another_request_is_in_flight_commits() {
         None,
         "nothing refuses the release"
     );
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: parameter.clone(),
-    }));
+    let _ = testing::let_go(&mut editor, &action, &parameter);
     assert_eq!(
         testing::core_draft(&editor).and_then(|draft| draft.in_flight()),
         Some(crate::app::draft::Round::Commit),
@@ -698,21 +648,11 @@ fn a_slider_released_while_another_request_is_in_flight_commits() {
 fn release_commits_once_and_a_return_to_start_commits_nothing() {
     let (mut editor, catalog, log, asset, action, parameter) = drafting();
     let history = editor.history.entries.len();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 1.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     begun(&mut editor, &asset, &action, 4);
 
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: parameter.clone(),
-    }));
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: parameter.clone(),
-    }));
+    let _ = testing::let_go(&mut editor, &action, &parameter);
+    let _ = testing::let_go(&mut editor, &action, &parameter);
     let records = logged(&mut editor, &log);
     let commits = draft_events(&records, "slider_draft_commit");
     assert_eq!(commits.len(), 1, "one gesture is one commit: {commits:?}");
@@ -746,11 +686,7 @@ fn escape_cancels_the_gesture_and_commits_nothing() {
         .get(&action, &parameter)
         .expect("a seeded field")
         .to_owned();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 2.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 2.0);
     begun(&mut editor, &asset, &action, 4);
 
     // Exactly the message the keyboard table raises for Escape while a gesture is open.
@@ -799,11 +735,7 @@ fn escape_cancels_the_gesture_and_commits_nothing() {
 #[test]
 fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     let (mut editor, catalog, log, asset, action, parameter) = drafting();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 15.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 15.0);
     begun(&mut editor, &asset, &action, 4);
 
     // Somebody else committed, which is also what this desktop's own undo looks like.
@@ -873,11 +805,7 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
 #[test]
 fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
     let (mut editor, catalog, log, asset, action, parameter) = drafting();
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 1.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     begun(&mut editor, &asset, &action, 4);
     let sets = {
         let records = logged(&mut editor, &log);
@@ -968,11 +896,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         let log = attach_log(&mut editor);
         // The drag: one draft, one set for this field alone.
         editor.busy = false;
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value: *value,
-        }));
+        let _ = testing::slide(&mut editor, &action, parameter, *value);
         assert!(
             editor.slider_gesture().is_some(),
             "{parameter} did not open a draft: {}",
@@ -999,10 +923,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
 
         // The release: one commit, then the no-op outcome that ends the gesture.
         let log = attach_log(&mut editor);
-        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-            action: action.clone(),
-            parameter: parameter.clone(),
-        }));
+        let _ = testing::let_go(&mut editor, &action, parameter);
         let records = logged(&mut editor, &log);
         assert_eq!(
             draft_events(&records, "slider_draft_commit").len(),
@@ -1018,11 +939,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         // Escape: the gesture ends and commits nothing.
         editor.busy = false;
         let log = attach_log(&mut editor);
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value: *value,
-        }));
+        let _ = testing::slide(&mut editor, &action, parameter, *value);
         begun(&mut editor, &asset, &action, 4);
         let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
         let records = logged(&mut editor, &log);
@@ -1047,11 +964,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
 
         // An external commit under the gesture, then Reapply.
         editor.busy = false;
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value: *value,
-        }));
+        let _ = testing::slide(&mut editor, &action, parameter, *value);
         begun(&mut editor, &asset, &action, 4);
         editor.gesture_revision(5);
         assert!(
@@ -1120,11 +1033,7 @@ fn a_drag_re_derives_only_the_drafting_modules_section() {
         .map(|(module, _)| module.id.clone())
         .expect("the presets control");
 
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 0.5,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 0.5);
     let opened = versions(&editor);
     for (module, version) in &before {
         if module == &owner || module == &library {
@@ -1141,11 +1050,7 @@ fn a_drag_re_derives_only_the_drafting_modules_section() {
         }
     }
 
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action,
-        parameter,
-        value: 0.75,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 0.7);
     let after = versions(&editor);
     for (module, version) in &opened {
         if module == &owner {
@@ -1178,11 +1083,7 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     // A gesture while the crop draft is open.
     let _ = editor.update(Message::Crop(CropMessage::Start));
     crate::app::testing::open_crop(&mut editor);
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 1.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     assert!(editor.slider_gesture().is_none(), "{}", editor.status);
     assert!(editor.status.contains("crop draft"), "{}", editor.status);
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
@@ -1190,11 +1091,7 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
 
     // The crop mode and Compare while a gesture is open.
     editor.busy = false;
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action,
-        parameter,
-        value: 1.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     begun(&mut editor, &asset, "unused", 4);
     assert!(editor.slider_gesture().is_some());
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop)));
@@ -1209,32 +1106,16 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
 
 #[test]
 fn a_slider_drag_changes_the_field_and_sends_no_request() {
-    let (mut editor, catalog) = boot();
-    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let (action, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
     let (action, x) = (action.to_owned(), x.to_owned());
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: x.clone(),
-        value: 12.0,
-    }));
+    let sequence = editor.api_sequence;
+    let _ = testing::slide(&mut editor, &action, &x, 12.0);
     assert_eq!(editor.fields.get(&action, &x), Some("12"));
     assert_eq!(editor.dragging, Some((action.clone(), x.clone())));
-    assert_eq!(editor.api_sequence, 0, "a drag calls nothing");
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: x.clone(),
-    }));
+    assert_eq!(editor.api_sequence, sequence, "a drag calls nothing");
+    let _ = testing::let_go(&mut editor, &action, &x);
     assert!(editor.dragging.is_none(), "release ends the drag");
-    // Editing a value and cancelling leaves the text exactly as it was.
-    let _ = editor.update(Message::Control(ControlMessage::EditValue {
-        action: action.clone(),
-        parameter: x.clone(),
-    }));
-    assert_eq!(editor.editing, Some((action.clone(), x.clone())));
-    let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
-    assert!(editor.editing.is_none());
-    assert_eq!(editor.fields.get(&action, &x), Some("12"));
     finish(editor, catalog);
 }
 
@@ -1245,11 +1126,7 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
     let (action, x) = (action.to_owned(), x.to_owned());
 
     for step in 0..25 {
-        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-            action: action.clone(),
-            parameter: x.clone(),
-            value: f64::from(step),
-        }));
+        let _ = testing::slide(&mut editor, &action, &x, f64::from(step));
         assert!(!editor.busy, "a drag never starts a request");
         assert!(
             !editor.status.starts_with("Running edit."),
@@ -1257,10 +1134,7 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
             editor.status
         );
     }
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action: action.clone(),
-        parameter: x.clone(),
-    }));
+    let _ = testing::let_go(&mut editor, &action, &x);
     assert!(editor.busy, "release submits exactly one request");
     assert!(
         editor.status.starts_with(&format!("Running edit.{action}")),
@@ -1268,15 +1142,14 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
         editor.status
     );
 
-    // A second release while the first request is still in flight sends nothing further.
-    let busy_status = editor.status.clone();
-    let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
-        action,
-        parameter: x,
-    }));
+    // A second release while the first request is still in flight sends nothing further, and the
+    // status bar says why.
+    let sequence = editor.api_sequence;
+    let _ = testing::let_go(&mut editor, &action, &x);
     assert_eq!(
-        editor.status, busy_status,
+        editor.api_sequence, sequence,
         "already busy: no second request"
     );
+    assert_eq!(editor.status, crate::state::IN_FLIGHT);
     finish(editor, catalog);
 }

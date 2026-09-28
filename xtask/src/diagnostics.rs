@@ -193,12 +193,30 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         Ok(())
     })
 }
-/// One measurement's distribution, in the one shape [`stats::Distribution`] gives every timing
-/// tool. Formerly its own interpolated median with `p95 = sorted[n*95/100]` (no ceiling), a
-/// different statistic from the nearest-rank percentile the other timing tools already used; see
-/// `xtask/src/stats.rs` for the golden vectors this changes.
-fn distribution(values: &[f64]) -> Value {
-    stats::distribution_json(values.to_vec())
+/// The launches' figures as rows of the one shape, `<workload>.<figure>`: every value each run of
+/// a workload recorded for a figure — one per launch, or one per frame for the per-frame figures —
+/// is one sample of that row's distribution.
+fn workload_rows(runs: &Value) -> Vec<Value> {
+    let runs = runs.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut rows = Vec::new();
+    for workload in ["empty", "24mp", "60mp"] {
+        for (figure, unit) in [
+            ("launch_to_observed_frame_ms", "ms"),
+            ("sampled_peak_rss_mib", "MiB"),
+            ("open_to_raster_ms", "ms"),
+            ("request_to_capture_ms", "ms"),
+        ] {
+            let samples = runs
+                .iter()
+                .filter(|run| run["workload"] == workload)
+                .flat_map(|run| match &run[figure] {
+                    Value::Array(values) => values.iter().filter_map(Value::as_f64).collect(),
+                    value => value.as_f64().into_iter().collect::<Vec<_>>(),
+                });
+            rows.push(stats::row(&format!("{workload}.{figure}"), unit, samples));
+        }
+    }
+    rows
 }
 /// Watch a measured launch until it exits, from just before its spawn, so its launch time includes
 /// the background bundle's copy: its RSS every 50 ms, and the first poll at which its events hold a
@@ -350,7 +368,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
         }
         let data = out.join("idle-data");
         let idle_root = root.to_path_buf();
-        report["idle"] = run
+        let idle = run
             .launch(
                 ordinary("idle", &data, &root.join("fixtures/generated/60mp.jpg"))
                     .deadline(Duration::from_secs(10))
@@ -358,44 +376,19 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                         data.join("logs/events.jsonl"),
                         "\"event\":\"render_ready\"",
                         move |child, _| {
-                            Ok(stats::idle_window(&idle_root, child.child.id())?.to_json())
+                            Ok(json!(
+                                stats::idle_window(&idle_root, child.child.id())?.rows()
+                            ))
                         },
                     )),
             )?
             .watched;
-        report["idle"]["method"] = json!(
+        report["idle_method"] = json!(
             "ps CPU delta, 30 seconds after readiness plus one-second settle; child then terminated, not clean-close evidence"
         );
-        let mut summary = json!({});
-        for name in ["empty", "24mp", "60mp"] {
-            let rows: Vec<_> = report["runs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|r| r["workload"] == name)
-                .collect();
-            let mut values = json!({});
-            for key in [
-                "launch_to_observed_frame_ms",
-                "sampled_peak_rss_mib",
-                "open_to_raster_ms",
-                "request_to_capture_ms",
-            ] {
-                let data = rows
-                    .iter()
-                    .flat_map(|r| {
-                        if let Some(a) = r[key].as_array() {
-                            a.iter().filter_map(Value::as_f64).collect::<Vec<_>>()
-                        } else {
-                            r[key].as_f64().into_iter().collect()
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                values[key] = distribution(&data);
-            }
-            summary[name] = values;
-        }
-        report["summary"] = summary;
+        let mut rows = workload_rows(&report["runs"]);
+        rows.extend(idle.as_array().into_iter().flatten().cloned());
+        report["rows"] = json!(rows);
         Ok(())
     })();
     match &checked {
@@ -412,6 +405,39 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every value each launch of a workload recorded is one sample of its row, whether the launch
+    /// recorded one value or one per frame, and the row reads nearest-rank: of the four 24 MP
+    /// `open_to_raster_ms` values the p50 is the 2nd smallest, not the interpolated 115.
+    #[test]
+    fn measure_rows_collect_every_launch_of_a_workload() {
+        let runs = json!([
+            {"workload":"empty","launch_to_observed_frame_ms":900.0,"sampled_peak_rss_mib":150.0},
+            {"workload":"24mp","launch_to_observed_frame_ms":1100.0,"sampled_peak_rss_mib":500.0,
+                "open_to_raster_ms":[100.0,130.0],"request_to_capture_ms":[20.0]},
+            {"workload":"24mp","launch_to_observed_frame_ms":1000.0,"sampled_peak_rss_mib":520.0,
+                "open_to_raster_ms":[110.0,120.0],"request_to_capture_ms":[]},
+        ]);
+        let report = json!({ "rows": workload_rows(&runs) });
+        assert_eq!(stats::rows(&report).len(), 12);
+        let open = stats::distribution(&report, "24mp.open_to_raster_ms").unwrap();
+        assert_eq!(open["count"], 4);
+        assert_eq!(open["p50"], 110.0);
+        assert_eq!(open["p95"], 130.0);
+        let rss = stats::distribution(&report, "24mp.sampled_peak_rss_mib").unwrap();
+        assert_eq!(
+            (rss["count"].clone(), rss["p50"].clone()),
+            (json!(2), json!(500.0))
+        );
+        assert_eq!(
+            stats::distribution(&report, "24mp.request_to_capture_ms").unwrap()["count"],
+            1
+        );
+        // A workload the run never reached is listed with no distribution, never a figure.
+        assert!(stats::distribution(&report, "60mp.open_to_raster_ms").is_none());
+        assert!(stats::distribution(&report, "empty.open_to_raster_ms").is_none());
+        assert_eq!(stats::rows(&report)[1]["unit"], "MiB");
+    }
 
     /// Every launch `measure` and `hardening` make, as its argument list, into
     /// `$SCRIPT_DUMP/measure/` and `$SCRIPT_DUMP/hardening/`, for runs written to `/out` from a

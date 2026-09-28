@@ -3,6 +3,7 @@
 //! is live. The owner's answers are handed in as the messages the runtime delivers.
 use super::{
     export::{ExportChoice, exported_text, refused_text},
+    gesture,
     message::{ExportMessage, MenuTarget, PaletteAction, ViewMessage},
     tasks::CallError,
     testing::{boot, descriptors, finish, opened_with_modules},
@@ -39,6 +40,41 @@ fn with_no_photograph_export_is_disabled_and_refused() {
     assert!(editor.export.run.is_none());
     assert_eq!(editor.status, "Open a photograph to export it");
     assert!(editor.export_poll_subscription().is_none());
+    finish(editor, catalog);
+}
+
+/// Export's busy half is the one refusal's, and the Export button's enabled state is the same
+/// answer as the press: refused and disabled while a request is in flight, but neither for an open
+/// draft, since an export writes the displayed entry the draft does not change.
+#[test]
+fn export_refusal_and_the_menu_agree() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    let agree = |editor: &mut Editor, case: &str| {
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.title.can_export,
+            editor.export_refusal().is_none(),
+            "{case}"
+        );
+        editor.workspace.title.can_export
+    };
+    editor.busy = true;
+    assert!(!agree(&mut editor, "busy"));
+    assert_eq!(
+        editor.export_refusal(),
+        editor.gesture_refusal(gesture::Starting::Export)
+    );
+    start(&mut editor, false);
+    assert_eq!(editor.status, crate::state::IN_FLIGHT);
+    assert!(editor.export.run.is_none(), "nothing starts");
+
+    editor.busy = false;
+    let (action, parameter) = crate::app::testing::patch_control(&editor);
+    let _ = crate::app::testing::slide(&mut editor, &action, &parameter, 25.0);
+    assert!(editor.slider_gesture().is_some());
+    assert!(agree(&mut editor, "a draft is open"));
+    start(&mut editor, false);
+    assert!(editor.export.run.is_some(), "{}", editor.status);
     finish(editor, catalog);
 }
 
@@ -229,24 +265,22 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             choice,
         ))))));
         let _ = editor.update(Message::Export(ExportMessage::Queued(queued)));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while let Some(job) = editor
-            .export
-            .run
-            .as_ref()
-            .and_then(|run| run.job_id.clone())
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the export never ended"
-            );
+        luxforge_testbase::wait_until("the export ends", || {
+            let Some(job) = editor
+                .export
+                .run
+                .as_ref()
+                .and_then(|run| run.job_id.clone())
+            else {
+                return true;
+            };
             let result = read_now(&editor.owner, editor.client, &job);
             let _ = editor.update(Message::Export(ExportMessage::Read {
                 job_id: job,
                 result,
             }));
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            false
+        });
     };
 
     export_once(&mut editor);

@@ -263,15 +263,10 @@ fn fit_withholds_an_old_whole_photo_after_new_content_region_arrives() {
 #[test]
 fn an_interactive_region_does_not_settle_a_history_preview_step() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"preview":"current"}]"#);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while editor.preview_queue.is_busy() {
+    luxforge_testbase::wait_until("the fixture's preview drains", || {
         while editor.preview_queue.poll().is_some() {}
-        assert!(
-            std::time::Instant::now() < deadline,
-            "test fixture preview drained"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        !editor.preview_queue.is_busy()
+    });
     editor.await_step(Settle::Preview);
     let (analysis, raster) = analysed(&editor, 8, &[[40, 50, 60, 255]], 1, 1);
     let rect = luxforge_core::Region {
@@ -1191,6 +1186,28 @@ fn a_bounds_change_refits_the_presented_proxy_once() {
         })
         .count();
     assert_eq!(refits, 1, "a refit is asked for once, not per event");
+    finish(editor, catalog);
+}
+
+/// A refit takes the one-draft rule alone: a previewed history entry and a request in flight hold
+/// back every edit, but the proxy on screen is still refitted to new bounds.
+#[test]
+fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() {
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    editor.window = (1440.0, 900.0);
+    editor.dimensions = Some((4000, 3000));
+    editor.session.preview.view.zoom = Zoom::Fit;
+    editor.scale_factor = 1.0;
+    editor.presented_generation = 7;
+    editor.presented_proxy = true;
+    editor.preview_generation = 7;
+    editor.presented_bounds = editor.proxy_bounds();
+    editor.session.preview.selection =
+        luxforge_core::HistorySelection::Entry(entry(&asset, 2, None).id);
+    editor.busy = true;
+    assert!(editor.gesture_refusal(gesture::Starting::Action).is_some());
+    let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
+    assert!(editor.refit_pending, "the new bounds asked for a frame");
     finish(editor, catalog);
 }
 

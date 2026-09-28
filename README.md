@@ -110,6 +110,7 @@ Luxforge is written in Rust with a deliberately small core. The core owns the ca
 | `luxforge-app` | The desktop app and the headless `luxforge-json` binary |
 | `luxforge-evidence` | The evidence script's step types, shared by the desktop and `xtask` so a scripted run and a hand-written one read the same shape |
 | `luxforge-reference` | Independent f64 references (colour, mask, mixer, Presence, range, tone, vignette, white balance) that production is tested against; depends on no workspace crate |
+| `luxforge-testbase` | The one gate and hang-bounded wait every test orders its steps by; depends on no workspace crate, never shipped |
 | `luxforge-testkit` | Fixtures shared by the tests and `xtask`, such as the loopback test server; never shipped |
 | `xtask` | Every build, check, evidence and packaging command |
 

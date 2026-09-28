@@ -8,11 +8,12 @@ use luxforge_core::{
     capabilities::data::{SAMPLE_GRID_BYTES, SAMPLE_GRID_SAMPLES},
     palette_bytes,
 };
+use luxforge_testbase::Gate;
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     io::{self, Write},
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -49,9 +50,10 @@ impl ProofRequest {
 }
 
 struct State {
-    stopped: bool,
-    delay: Duration,
-    palette_delay: Duration,
+    /// The longest a held answer to `POST /generate` or `GET /proof-palette.bin` waits at its
+    /// gate, when [`ProofEndpoint::set_delay`] or [`ProofEndpoint::set_palette_delay`] set one.
+    delay: Option<Duration>,
+    palette_delay: Option<Duration>,
     fail_next: Option<u16>,
     wrong_palette: bool,
     recorded: VecDeque<ProofRequest>,
@@ -60,7 +62,10 @@ struct State {
 struct Shared {
     api_key: String,
     state: Mutex<State>,
-    wake: Condvar,
+    /// The gates every answer to `POST /generate` and to `GET /proof-palette.bin` passes once its
+    /// request is recorded.
+    generation: Gate,
+    palette: Gate,
 }
 
 impl Shared {
@@ -72,8 +77,8 @@ impl Shared {
 /// The fake provider the capability proof sends to: `GET /proof-palette.bin` serves the pinned
 /// palette, and `POST /generate` checks `Authorization: Bearer <key>` (401 otherwise), validates a
 /// `sample-grid-8` body (400 otherwise) and answers `{"rgb": [r, g, b]}` with each channel
-/// `192 + mean / 4` of that channel's samples. Knobs let a test delay answers, fail the next
-/// generation and serve a palette that does not match its pin.
+/// `192 + mean / 4` of that channel's samples. Knobs let a test hold answers at a gate, fail the
+/// next generation and serve a palette that does not match its pin.
 pub struct ProofEndpoint {
     shared: Arc<Shared>,
     server: TestServer,
@@ -85,14 +90,14 @@ impl ProofEndpoint {
         let shared = Arc::new(Shared {
             api_key: api_key.to_owned(),
             state: Mutex::new(State {
-                stopped: false,
-                delay: Duration::ZERO,
-                palette_delay: Duration::ZERO,
+                delay: None,
+                palette_delay: None,
                 fail_next: None,
                 wrong_palette: false,
                 recorded: VecDeque::new(),
             }),
-            wake: Condvar::new(),
+            generation: Gate::new(),
+            palette: Gate::new(),
         });
         let answering = shared.clone();
         let server = TestServer::start(
@@ -115,19 +120,33 @@ impl ProofEndpoint {
         self.server.url(PROOF_GENERATE_PATH)
     }
 
-    /// Hold every answer to `POST /generate` this long after the request arrives. Shortening it,
-    /// or setting zero, releases an answer already waiting.
-    pub fn set_delay(&self, delay: Duration) {
-        self.shared.lock().delay = delay;
-        self.shared.wake.notify_all();
+    /// The gate every answer to `POST /generate` passes once its request is recorded. A test shuts
+    /// it to hold those answers until it opens it, and waits for [`Gate::reached`] to know a
+    /// request has arrived and is held, so what it checks next happens while the job waits.
+    pub fn generation(&self) -> &Gate {
+        &self.shared.generation
     }
 
-    /// Hold every answer to `GET /proof-palette.bin` this long after the request arrives, so a
-    /// harness can observe an install while its download is still running. Shortening it, or
-    /// setting zero, releases an answer already waiting.
+    /// The gate every answer to `GET /proof-palette.bin` passes; see [`Self::generation`].
+    pub fn palette(&self) -> &Gate {
+        &self.shared.palette
+    }
+
+    /// Hold every answer to `POST /generate` for at most `delay` after its request arrives, so the
+    /// rendered smoke can watch a generation run; zero releases every held answer. A test holds an
+    /// answer for as long as it needs at [`Self::generation`] instead.
+    pub fn set_delay(&self, delay: Duration) {
+        hold(&self.shared, &self.shared.generation, delay, |state| {
+            &mut state.delay
+        });
+    }
+
+    /// [`Self::set_delay`] for `GET /proof-palette.bin`, so a harness can watch an install while
+    /// its download is still running.
     pub fn set_palette_delay(&self, delay: Duration) {
-        self.shared.lock().palette_delay = delay;
-        self.shared.wake.notify_all();
+        hold(&self.shared, &self.shared.palette, delay, |state| {
+            &mut state.palette_delay
+        });
     }
 
     /// Answer the next authorized `POST /generate` with this status instead of a tint.
@@ -149,8 +168,8 @@ impl ProofEndpoint {
 impl Drop for ProofEndpoint {
     /// Release every held answer; dropping the server then stops it.
     fn drop(&mut self) {
-        self.shared.lock().stopped = true;
-        self.shared.wake.notify_all();
+        self.shared.generation.open();
+        self.shared.palette.open();
     }
 }
 
@@ -292,21 +311,23 @@ fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
         ),
     };
     record.status = status;
-    // Which configured delay holds this answer: the generation's, the palette's, or none.
-    let delay: Option<fn(&State) -> Duration> = match record.path.as_str() {
-        PROOF_GENERATE_PATH => Some(|state| state.delay),
-        PROOF_PALETTE_PATH => Some(|state| state.palette_delay),
-        _ => None,
-    };
-    {
+    // Which gate this answer passes, and the longest a configured delay holds it there.
+    let arrived = Instant::now();
+    let held = {
         let mut state = shared.lock();
+        let held = match record.path.as_str() {
+            PROOF_GENERATE_PATH => Some((&shared.generation, state.delay)),
+            PROOF_PALETTE_PATH => Some((&shared.palette, state.palette_delay)),
+            _ => None,
+        };
         if state.recorded.len() == MAX_RECORDED {
             state.recorded.pop_front();
         }
         state.recorded.push_back(record);
-    }
-    if let Some(delay) = delay {
-        pause(shared, delay);
+        held
+    };
+    if let Some((gate, delay)) = held {
+        gate.pass_unless(|| delay.is_some_and(|delay| arrived.elapsed() >= delay));
     }
     respond(
         out,
@@ -316,23 +337,19 @@ fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
     );
 }
 
-/// Wait out the delay `configured` reads, returning early when it is shortened or the endpoint
-/// stops.
-fn pause(shared: &Shared, configured: fn(&State) -> Duration) {
-    let arrived = Instant::now();
-    let mut state = shared.lock();
-    loop {
-        let waited = arrived.elapsed();
-        let delay = configured(&state);
-        if state.stopped || waited >= delay {
-            return;
-        }
-        let remaining = delay - waited;
-        state = shared
-            .wake
-            .wait_timeout(state, remaining)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+/// Hold every answer at `gate` for at most `delay`, or release every held one when it is zero.
+fn hold(
+    shared: &Shared,
+    gate: &Gate,
+    delay: Duration,
+    configured: impl FnOnce(&mut State) -> &mut Option<Duration>,
+) {
+    let held = !delay.is_zero();
+    *configured(&mut shared.lock()) = held.then_some(delay);
+    if held {
+        gate.shut();
+    } else {
+        gate.open();
     }
 }
 
@@ -432,63 +449,83 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_delayed_answer_is_released_early_and_dropping_the_endpoint_stops_it() {
-        let endpoint = ProofEndpoint::start("key").unwrap();
-        endpoint.set_delay(Duration::from_secs(30));
+    /// Send `request` from a thread of its own, answering the whole response.
+    fn sent(endpoint: &ProofEndpoint, request: Vec<u8>) -> thread::JoinHandle<Vec<u8>> {
         let address = endpoint.server.address();
-        let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
-        let waiting = thread::spawn(move || {
+        thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
-            stream.write_all(&post("key", &body)).unwrap();
-            let mut response = String::new();
-            stream.read_to_string(&mut response).unwrap();
-            response
-        });
-        let started = Instant::now();
-        while endpoint.requests().is_empty() {
-            assert!(started.elapsed() < Duration::from_secs(10));
-            thread::sleep(Duration::from_millis(1));
-        }
-        endpoint.set_delay(Duration::ZERO);
-        assert!(waiting.join().unwrap().starts_with("HTTP/1.1 200"));
-        assert!(started.elapsed() < Duration::from_secs(10));
-        endpoint.set_delay(Duration::from_secs(30));
-        let stopped = Instant::now();
-        drop(endpoint);
-        assert!(stopped.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn a_palette_delay_holds_only_the_download_until_it_is_released() {
-        let endpoint = ProofEndpoint::start("key").unwrap();
-        endpoint.set_palette_delay(Duration::from_secs(30));
-        // A generation is not held by the palette's delay.
-        let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
-        let started = Instant::now();
-        assert_eq!(exchange(&endpoint, &post("key", &body)).0, 200);
-        assert!(started.elapsed() < Duration::from_secs(10));
-        let address = endpoint.server.address();
-        let waiting = thread::spawn(move || {
-            let mut stream = TcpStream::connect(address).unwrap();
-            stream
-                .write_all(b"GET /proof-palette.bin HTTP/1.1\r\nHost: x\r\n\r\n")
-                .unwrap();
+            stream.write_all(&request).unwrap();
             let mut response = Vec::new();
             stream.read_to_end(&mut response).unwrap();
             response
-        });
-        while endpoint.requests().len() < 2 {
-            assert!(started.elapsed() < Duration::from_secs(10));
-            thread::sleep(Duration::from_millis(1));
-        }
-        // The download has arrived and is held: nothing has been answered yet.
-        thread::sleep(Duration::from_millis(50));
-        assert!(!waiting.is_finished(), "the palette answer is held");
-        endpoint.set_palette_delay(Duration::ZERO);
+        })
+    }
+
+    #[test]
+    fn a_held_answer_waits_at_its_gate_and_dropping_the_endpoint_releases_it() {
+        let endpoint = ProofEndpoint::start("key").unwrap();
+        let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
+        endpoint.generation().shut();
+        let waiting = sent(&endpoint, post("key", &body));
+        endpoint
+            .generation()
+            .wait_reached(1, "the first generation");
+        assert!(endpoint.generation().holding(), "its answer is held");
+        assert_eq!(
+            endpoint.requests().len(),
+            1,
+            "a held request is already recorded"
+        );
+        endpoint.generation().open();
+        assert!(waiting.join().unwrap().starts_with(b"HTTP/1.1 200"));
+        endpoint.generation().shut();
+        let waiting = sent(&endpoint, post("key", &body));
+        endpoint
+            .generation()
+            .wait_reached(2, "the second generation");
+        drop(endpoint);
+        assert!(
+            waiting.join().unwrap().starts_with(b"HTTP/1.1 200"),
+            "dropping the endpoint released the held answer"
+        );
+    }
+
+    #[test]
+    fn the_palette_gate_holds_only_the_download() {
+        let endpoint = ProofEndpoint::start("key").unwrap();
+        endpoint.palette().shut();
+        // A generation is not held by the palette's gate.
+        let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
+        assert_eq!(exchange(&endpoint, &post("key", &body)).0, 200);
+        let waiting = sent(
+            &endpoint,
+            b"GET /proof-palette.bin HTTP/1.1\r\nHost: x\r\n\r\n".to_vec(),
+        );
+        endpoint.palette().wait_reached(1, "the download");
+        assert!(endpoint.palette().holding(), "the palette answer is held");
+        endpoint.palette().open();
         let response = waiting.join().unwrap();
         assert!(response.starts_with(b"HTTP/1.1 200"));
         assert!(response.ends_with(&PROOF_PALETTE));
-        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// The rendered smoke's delay holds an answer at its gate for at most the delay: it is
+    /// answered without the gate being opened. Zero opens the gate.
+    #[test]
+    fn a_delay_releases_a_held_answer_by_itself() {
+        let endpoint = ProofEndpoint::start("key").unwrap();
+        let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
+        endpoint.set_delay(Duration::from_millis(1));
+        endpoint.set_palette_delay(Duration::from_millis(1));
+        assert!(endpoint.generation().is_shut() && endpoint.palette().is_shut());
+        assert_eq!(exchange(&endpoint, &post("key", &body)).0, 200);
+        let (status, palette) = exchange(
+            &endpoint,
+            b"GET /proof-palette.bin HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!((status, palette.as_slice()), (200, &PROOF_PALETTE[..]));
+        endpoint.set_delay(Duration::ZERO);
+        endpoint.set_palette_delay(Duration::ZERO);
+        assert!(!endpoint.generation().is_shut() && !endpoint.palette().is_shut());
     }
 }

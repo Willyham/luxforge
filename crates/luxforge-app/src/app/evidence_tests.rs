@@ -49,7 +49,7 @@ fn clipping_readiness_applies_only_to_the_ordinary_photo() {
         "the gallery has its own surface"
     );
     editor.gallery = None;
-    editor.render_error = Some((ErrorKind::Render, "failed".into()));
+    editor.render_error = Some(luxforge_core::Error::render("failed"));
     assert!(
         editor.capture_clipping_ready(),
         "an error is captured explicitly"
@@ -94,7 +94,7 @@ fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
 
     editor.presented_bounds = editor.proxy_bounds();
     assert!(!editor.capture_proxy_ready(), "the refit is still pending");
-    editor.render_error = Some((ErrorKind::ResourceLimit, "refit failed".into()));
+    editor.render_error = Some(luxforge_core::Error::resource_limit("refit failed"));
     assert!(
         editor.capture_proxy_ready(),
         "a failed refit is captured as an error"

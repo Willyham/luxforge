@@ -183,11 +183,9 @@ mod tests {
         ));
         let log = Diagnostics::start(&path).unwrap();
         log.event(json!({"event":"startup"}));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::fs::read_to_string(&path).unwrap().is_empty() {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the startup record reaches the file", || {
+            !std::fs::read_to_string(&path).unwrap().is_empty()
+        });
         assert!(Diagnostics::start(&path).is_err());
         log.finish();
         assert!(std::fs::read_to_string(&path).unwrap().contains("startup"));

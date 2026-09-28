@@ -46,7 +46,7 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 
 ### Sample counts for a p50/p95 claim
 
-Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), 30 trials per source for `raw-editor`, and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. The `measure` medians and p95 figures recorded below were taken with that tool's own interpolated median and its own uncapped `p95 = sorted[n·95/100]` index, before every timing tool shared one nearest-rank `Distribution` (`xtask/src/stats.rs`), so a `measure` figure taken after that change — most visibly its median at an even sample count, such as a 30-launch p95 claim — can read slightly differently from the same measurement recorded here.
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. Every p50 and p95, in `xtask`'s timing tools and in the crates' own ignored timing tests alike, is now read from one nearest-rank `Distribution` (`luxforge-testbase`): `sorted[ceil(percent·n/100) − 1]`, always one of the samples, never interpolated. Figures recorded below before that change were taken with the tool's or test's own definition and can read one rank apart from the same measurement taken now. The `measure` medians and p95 figures used an interpolated median and an uncapped `p95 = sorted[n·95/100]` index, so an even-count median differs most. The crates' timing tests mostly used the upper median `sorted[n/2]` (or `sorted[round((n−1)/2)]`), which at an even count is one rank above nearest-rank's p50: `presence_timing` and `spatial_timing` at 10 runs, `masked_spatial_zero_coverage_timing` at 6, `capability_timing` at 30 and 200, the Fit-proxy contention diagnostics in `render/linear.rs` at 30 (theirs was `sorted[ceil((n−1)·q)]`), `resources_cost` and the process sampler's `cost` at their even counts, and the preset inspection timing at 20. Their p95s, and every figure at an odd count, are unchanged.
 
 | Measurement | Result |
 | --- | --- |
@@ -99,6 +99,11 @@ work on identical frames.
 | `crop-fit` commit: validation, fitting, compile and persistence, no render | 0.79 (single) | 0.85 (single) |
 | Import | 54.4 (single) | 127.3 (single) |
 | Reopen: source and preview job after a fresh `EditorService` | 30.5 (single) | 89.9 (single) |
+
+The reopen row times the catalog owner's own preparation, run blocking by `EditorService::prepare` —
+the source job's read, hash and decode and the owner's completion — followed by the preview job. The
+figures above were taken while the harness read the original through a synchronous shortcut the
+product never took; they are re-measured at the next timing run.
 
 The crop output stage measures 3695 × 2077 from the rotated 4000 × 6000 input at 24 MP and
 5542 × 3116 from 6000 × 10000 at 60 MP. Against the colour baseline on the same run, each unit's own
@@ -244,7 +249,8 @@ stage). Each is rendered under the rule before tiles were proved uncovered one b
 outside `bounds()` — and under the proof, alternating run by run and swapping which goes first, with
 every pair of frames asserted byte-identical. `cargo test --release --locked --package luxforge-core
 --lib -- --ignored masked_spatial_zero_coverage_timing --nocapture`, M4 MacBook Pro, p50 and the
-slowest of 6 runs each.
+slowest of 6 runs each. The p50 recorded here is the 4th of 6, the test's upper median before it read
+the shared nearest-rank `Distribution`, whose p50 is the 3rd.
 
 | Mask | Outside bounds only: p50 / slowest ms | Proved per tile: p50 / slowest ms | Tiles copied / evaluated, before → after |
 | --- | --- | --- | --- |
@@ -1077,8 +1083,10 @@ statistical claim of zero regression.
 | 200 actions in one orientation layer | 10.33 / 10.81 | 10.52 / 11.80 | 23.45 / 25.16 | 22.14 / 23.35 |
 | Same stack plus 10° crop | 32.22 / 36.37 | 32.18 / 34.35 | 73.72 / 98.62 | 71.09 / 77.79 |
 
-Reproduce with `raw-editor --samples 30` and `editor-performance --samples 30`
-through xtask, using the manifest formats in [development](../engineering/development.md).
+Reproduce the JPEG rows with `editor-performance --samples 30` through xtask. The RAW rows were
+taken with a 30-trial RAW editor timing tool whose journey is now the `raw-editor` smoke scenario
+([development](../engineering/development.md#authentic-raw-evidence)), which records one functional
+run's request-to-display times per source; a new RAW distribution is 30 runs of it, not one.
 Local reports retain every trial, percentile input, source/binary hash and failure;
 private photographs and captures are not repository assets. These observations
 qualify the recorded files and host, not other camera modes or platforms.
@@ -1133,8 +1141,7 @@ on this shared host. No JPEG raster loop, allocation or desktop message changed.
 | 200 actions in one orientation layer | 12.09 / 13.71 | 13.88 / 19.21 | 10.51 / 11.49 | 26.48 / 32.65 | 22.01 / 23.56 |
 | Same stack plus 10° crop | 37.59 / 43.42 | 44.80 / 51.38 | 32.25 / 52.32 | 84.71 / 91.98 | 74.96 / 88.99 |
 
-The 60 MP current crop has a retained 129.46 ms maximum. Reproduce with
-`raw-editor --samples 30` and `editor-performance --samples 30` as above. Local
+The 60 MP current crop has a retained 129.46 ms maximum. Reproduce as above. Local
 reports under `artifacts/air2s-editor-30-01/` and `artifacts/air2s-jpeg-*/`
 retain every sample, source hash and correlated state; private originals and
 captures are excluded from source control. Single-trial Nikon/Fujifilm editor
@@ -1204,7 +1211,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### Core cost of the units
 
-`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
+`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs (the p50 recorded here is the 6th of 10, the tests' upper median before they read the shared nearest-rank `Distribution`, whose p50 is the 5th; the p95 is the 10th either way), one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
 
 | Stage | Operation | p50 / p95 ms | CPU | Summed halo | Working set | Concurrency | Budget peak |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1365,7 +1372,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### The framework's own costs
 
-`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start.
+`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start. The p50s recorded here are the upper median (the 16th of 30, the 101st of 200) the test took before it read the shared nearest-rank `Distribution`, whose p50 is the 15th and the 100th; the p95s are unchanged.
 
 | Measurement | p50 / p95 | Samples |
 | --- | --- | --- |
@@ -1377,7 +1384,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | Cancel a running activation to `cancelled` (the proof's slow loader checks every ~10 ms) | 10.2 / 15.1 ms | 10 |
 | A whole `task.generate-proof-tint`: request to `ready`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
 | … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
-| Cancel a task stalled inside its request to `cancelled` (100 ms read slice) | 84.8 / 89.6 ms | 10 |
+| Cancel a task stalled inside its request to `cancelled` (the cancel shuts the request's socket down; measured 2026-09-27 on the [`ureq` transport](#transport-on-ureqs-agent), load 35 to 39) | 0.28 / 0.89 ms | 10 |
 | Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |
 
 Discovery, registration and catalog reopen start no worker thread and create no directory: `schema.list` and `module.list` against a fresh data root leave it empty, and the owner tests assert that no lane has started and the secret store saw no call. The two lanes block on their channels while idle.
@@ -1398,20 +1405,20 @@ Discovery, registration and catalog reopen start no worker thread and create no 
 
 The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
 
-### Transport on `ureq-proto`
+### Transport on `ureq`'s agent
 
-Release builds (`cargo xtask build --release`) of `2f972b0` and of the change moving the transport's HTTP/1.1 onto `ureq-proto`, back to back in one worktree on the M4, 2026-09-24. Size only; nothing was timed.
+Release builds (`cargo xtask build --release`) of `cdd5667`, whose transport framed HTTP/1.1 with `ureq-proto` in its own read loop, and of the change moving it onto `ureq`'s agent and pinning `idna_adapter` to 1.0.0, in one worktree on the M4, 2026-09-27. Size only; the cancel row above is the one timing this change moved.
 
 | Measurement | Before | After |
 | --- | --- | --- |
-| Executable size | 28,499,744 bytes (28.5 MB) | 28,665,072 bytes (28.7 MB), 161 KiB larger |
-| `Cargo.lock` packages | 495 | 499: `ureq-proto`, `http`, `httparse` and `base64` |
+| Executable size | 30,106,048 bytes (30.1 MB) | 30,102,240 bytes (30.1 MB), 3.7 KiB smaller |
+| `Cargo.lock` packages | 509 | 488: `ureq` and `utf8-zero` become normal dependencies, and the 21 packages of the ICU4X normalizer behind `idna_adapter` 1.2.2 go |
 
-The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference to 28.5 MB.
+The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference.
 
 ## Performance section, activity board and resource counters
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree. The `resources_cost` and GPU-walk p50s below are the upper median (the 501st of 1000 reads, the 101st of 200 walks) those tests took before they read the shared nearest-rank `Distribution`, whose p50 is the 500th and the 100th; their p95s are unchanged.
 
 | Measurement | Result | Scope |
 | --- | --- | --- |

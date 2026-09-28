@@ -73,9 +73,6 @@ impl Editor {
                 None => self.status = "No crop draft to copy".into(),
             },
             ActionMessage::Run { action, preset } => {
-                if self.state.is_none() {
-                    return Task::none();
-                }
                 if let Some(reason) = self.action_refusal(&action) {
                     self.status = reason;
                     return Task::none();
@@ -189,9 +186,10 @@ impl Editor {
     /// Why a discrete control's action cannot commit now, in the words the status bar uses.
     ///
     /// A button, a toggle, a choice or a field's Enter commits at once, so it answers to the
-    /// one-draft rule every other commit does: an open draft is finished deliberately, never
-    /// conflicted by a click. A generated `mask.*` control is refused as the Masks panel's own
-    /// commands are, since it would move the stack out from under the open gesture's draft.
+    /// one refusal every other commit does: an open draft is finished deliberately, never
+    /// conflicted by a click, and the edit waits for the current state and for the last request. A
+    /// generated `mask.*` control is refused as the Masks panel's own commands are, since it would
+    /// move the stack out from under the open gesture's draft.
     pub(crate) fn action_refusal(&self, action: &str) -> Option<String> {
         self.gesture_refusal(if luxforge_core::mask::commands::find(action).is_some() {
             Starting::MaskCommand

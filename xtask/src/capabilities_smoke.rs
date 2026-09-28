@@ -639,8 +639,9 @@ fn render_checks(launch: &Checked, base: &str) -> Result<Value> {
     )?;
     let mut registry = ModuleRegistry::builtin();
     registry.register(Arc::new(CapabilitiesProofModule::new(base)))?;
-    let service =
+    let mut service =
         EditorService::open_with(&launch.evidence.join("catalog.sqlite"), Arc::new(registry))?;
+    service.prepare(&service.entry_needs(&asset, Some(&entry))?)?;
     let raster = service.render_entry(&asset, &entry)?;
     drop(service);
     let rendered = window_mean(

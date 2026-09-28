@@ -1560,12 +1560,12 @@ fn measure_preset_parse_at_the_size_limit() {
                 std::hint::black_box(inspect_preset(std::hint::black_box(&text), None, &registry));
             samples.push(start.elapsed().as_secs_f64() * 1000.0);
         }
-        samples.sort_by(f64::total_cmp);
+        let ms = luxforge_testbase::Distribution::of(samples).expect("runs ran");
         println!(
             "{label}: {} bytes, {count} entries; p50 {:.2} ms, max {:.2} ms over 20 runs; {outcome}",
             text.len(),
-            samples[samples.len() / 2],
-            samples[samples.len() - 1],
+            ms.p50,
+            ms.max,
         );
     }
 }

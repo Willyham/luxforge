@@ -19,7 +19,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -54,18 +53,14 @@ impl Proof {
         )
         .0;
         let job_id = queued["job_id"].as_str().expect("source job");
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_until("source preparation", || {
             let status = call(&owner, json_client, "job.read", json!({"job_id":job_id})).0;
             match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {
-                    assert!(Instant::now() < deadline, "source preparation: {status}");
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 other => panic!("source preparation failed {other:?}: {status}"),
             }
-        }
+        });
         let imported = call(&owner, json_client, "job.adopt", json!({"job_id":job_id})).0;
         let asset = AssetId::parse(imported["asset"]["asset"]["id"].as_str().unwrap()).unwrap();
         let (mut editor, _) = Editor::new(Boot {
@@ -99,7 +94,10 @@ impl Proof {
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
             refreshed,
         )))));
-        assert!(editor.editable());
+        assert_eq!(
+            editor.gesture_refusal(crate::app::gesture::Starting::Action),
+            None
+        );
         assert_eq!(editor.workspace.tools.developer.len(), 1);
         Self {
             editor,
@@ -355,7 +353,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
     let expected = BTreeSet::from([
         "number:Slider".into(),
         "number:Field".into(),
-        "number:Stepper".into(),
+        "number:Stepper { rail: false }".into(),
         "toggle".into(),
         "choice:Segmented".into(),
         "choice:Chips".into(),

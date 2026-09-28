@@ -4,7 +4,7 @@
 //! fields and every formatted value use the same reading, so a rail, the value it shows and the
 //! value it sends cannot disagree.
 use luxforge_core::{ParameterDescriptor, ParameterKind};
-use luxforge_ui::geometry::{MAX_DECIMALS, quantize};
+use luxforge_ui::geometry::{MAX_DECIMALS, fraction_from_value, quantize};
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,6 +106,20 @@ impl NumberSpec {
         ))
     }
 
+    /// The rail fraction that sends exactly `value`: where the widget's pointer publishes it, the
+    /// inverse of [`Self::at_fraction`]. A value outside the soft range or off the fine grid has no
+    /// such fraction, since every fraction lands inside the one and on the other; the error is the
+    /// value its nearest fraction sends instead.
+    pub(crate) fn fraction_of(&self, value: f64) -> Result<f64, Value> {
+        let fraction = fraction_from_value(self.soft_min, self.soft_max, value);
+        let sent = self.at_fraction(fraction);
+        if sent.as_f64() == Some(value) {
+            Ok(fraction)
+        } else {
+            Err(sent)
+        }
+    }
+
     /// One nudge from `current` in `direction`: the step, ten steps with Shift, the fine step
     /// with Option, clamped into the hard range.
     pub(crate) fn nudged(&self, current: f64, direction: i8, shift: bool, option: bool) -> f64 {
@@ -201,6 +215,12 @@ mod tests {
         assert_eq!(spec.at_fraction(0.5), json!(0.0));
         assert_eq!(spec.at_fraction(0.1234), json!(-3.77));
         assert_eq!(spec.at_fraction(2.0), json!(5.0));
+        // Its inverse finds the fraction for a value on the fine grid inside the soft range, and
+        // names what any other value would be sent as.
+        let fraction = spec.fraction_of(-3.77).expect("on the grid");
+        assert_eq!(spec.at_fraction(fraction), json!(-3.77));
+        assert_eq!(spec.fraction_of(-3.774), Err(json!(-3.77)));
+        assert_eq!(spec.fraction_of(7.0), Err(json!(5.0)));
         // Nudges: the step, ten with Shift, the fine step with Option, clamped to the hard range.
         assert!((spec.nudged(1.0, 1, false, false) - 1.1).abs() < 1e-12);
         assert_eq!(spec.nudged(1.0, -1, true, false), 0.0);

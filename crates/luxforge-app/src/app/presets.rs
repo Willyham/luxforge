@@ -18,7 +18,10 @@ use crate::{
             preset_import_task, preset_report_task, request,
         },
     },
-    state::presets::{PresetForm, capture_fields, import_status, presettable_groups},
+    state::{
+        IN_FLIGHT,
+        presets::{PresetForm, capture_fields, import_status, presettable_groups},
+    },
 };
 use iced::Task;
 use luxforge_core::{PresetSummary, ReportCounts};
@@ -197,7 +200,7 @@ impl Editor {
             .displayed_entry()
             .ok_or("No history entry is displayed")?;
         if self.busy {
-            return Err("Waiting for the last request".into());
+            return Err(IN_FLIGHT.into());
         }
         let form = &self.preset_form;
         if form.name.trim().is_empty() {

@@ -453,15 +453,11 @@ fn work<J, R>(shared: &Shared<J, R>, run: &mut Run<J, R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        sync::{
-            atomic::{AtomicU64, Ordering},
-            mpsc::{Receiver, Sender, channel},
-        },
-        time::{Duration, Instant},
+    use luxforge_testbase::{Gate, HANG};
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, Sender, channel},
     };
-
-    const DEADLINE: Duration = Duration::from_secs(60);
 
     /// A job that waits for the test to release it and reports what happened to its tokens.
     struct Held {
@@ -502,26 +498,15 @@ mod tests {
     }
 
     fn poll_one<J, R>(latest: &mut Latest<J, R>) -> (u64, R) {
-        let deadline = Instant::now() + DEADLINE;
-        loop {
-            if let Some(result) = latest.poll() {
-                return result;
-            }
-            assert!(Instant::now() < deadline, "no result arrived");
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_for("a result", || latest.poll())
     }
 
     fn drain<J, R>(latest: &mut Latest<J, R>) -> Vec<(u64, R)> {
-        let deadline = Instant::now() + DEADLINE;
         let mut results = Vec::new();
-        while latest.is_busy() {
-            if let Some(result) = latest.poll() {
-                results.push(result);
-            }
-            assert!(Instant::now() < deadline, "the worker never went idle");
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the worker to go idle", || {
+            results.extend(latest.poll());
+            !latest.is_busy()
+        });
         results
     }
 
@@ -535,14 +520,14 @@ mod tests {
         let (first, release_first) = held(1);
         let (second, release_second) = held(2);
         let one = latest.request(first).generation;
-        assert_eq!(starts.recv_timeout(DEADLINE), Ok(1));
+        assert_eq!(starts.recv_timeout(HANG), Ok(1));
         let two = latest.request(second);
         assert!(two.replaced.is_none(), "nothing waited before it");
         assert_eq!(latest.pending_generation(), Some(two.generation));
 
         release_first.send(()).unwrap();
         assert_eq!(
-            starts.recv_timeout(DEADLINE),
+            starts.recv_timeout(HANG),
             Ok(2),
             "the waiting job started with no poll"
         );
@@ -568,7 +553,7 @@ mod tests {
         let mut latest = held_worker(started);
         let (first, release_first) = held(1);
         let one = latest.request(first).generation;
-        assert_eq!(starts.recv_timeout(DEADLINE), Ok(1));
+        assert_eq!(starts.recv_timeout(HANG), Ok(1));
         let (second, _never) = held(2);
         let two = latest.request(second).generation;
         let (third, release_third) = held(3);
@@ -615,7 +600,7 @@ mod tests {
         let mut latest = held_worker(started);
         let (first, release_first) = held(1);
         let _ = latest.request(first);
-        assert_eq!(starts.recv_timeout(DEADLINE), Ok(1));
+        assert_eq!(starts.recv_timeout(HANG), Ok(1));
         let (second, _never) = held(2);
         let _ = latest.request(second);
         let floor = latest.cancel();
@@ -645,7 +630,7 @@ mod tests {
         let mut latest = held_worker(started);
         let (first, release_first) = held(1);
         let one = latest.request(first).generation;
-        assert_eq!(starts.recv_timeout(DEADLINE), Ok(1));
+        assert_eq!(starts.recv_timeout(HANG), Ok(1));
         let (second, _never) = held(2);
         let two = latest.request(second).generation;
         assert!(latest.withdraw(two), "the waiting job");
@@ -692,25 +677,28 @@ mod tests {
 
     /// A consumer that does not poll holds the worker back: no more than [`WAITING_RESULTS`] wait,
     /// and the job with another to hand over continues only once one is taken.
+    ///
+    /// The job passes an open gate before each hand-over, so the test looks only once the job has
+    /// asked to hand over one more result than may wait.
     #[test]
     fn a_consumer_that_does_not_poll_holds_the_worker_back() {
         let sent = Arc::new(AtomicU64::new(0));
-        let counter = sent.clone();
+        let gate = Arc::new(Gate::new());
+        let (counter, handing_over) = (sent.clone(), gate.clone());
         let mut latest: Latest<u64, u64> =
             Latest::new("luxforge-latest-test", move |count, running| {
                 for value in 0..count {
+                    handing_over.pass();
                     running.send(value);
                     counter.fetch_add(1, Ordering::Relaxed);
                 }
                 None
             });
         let generation = latest.request(5).generation;
-        let deadline = Instant::now() + DEADLINE;
-        while sent.load(Ordering::Relaxed) < WAITING_RESULTS as u64 {
-            assert!(Instant::now() < deadline, "the first results never arrived");
-            std::thread::yield_now();
-        }
-        std::thread::sleep(Duration::from_millis(50));
+        gate.wait_reached(
+            WAITING_RESULTS as u64 + 1,
+            "the job's hand-over beyond the waiting results",
+        );
         assert_eq!(
             sent.load(Ordering::Relaxed),
             WAITING_RESULTS as u64,

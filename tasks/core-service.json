@@ -298,7 +298,7 @@
     {
       "id": "TASK-005",
       "description": "Validate every mutation envelope once in the dispatcher, let service handlers say whether they changed anything, and replace the forwarding handlers and duplicated checks with table rows.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003"
@@ -326,9 +326,9 @@
         },
         {
           "kind": "file",
-          "label": "Capability forwarders",
-          "target": "crates/luxforge-core/src/api/owner/capability.rs",
-          "relevance": "The forwarding functions this task folds into table rows."
+          "label": "Capability methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The capability methods, now table rows with inline handlers."
         },
         {
           "kind": "file",
@@ -376,15 +376,14 @@
     {
       "id": "TASK-006",
       "description": "Build one bound evaluation value, compiled once, that carries the entry, recipe, source, registry, render context, draft and stage, and have preview, analysis and sample jobs carry it instead of re-deriving it.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. The plan called for the service to split around one bound evaluation context; the split happened by file, but the context type was never introduced.",
         "`AnalysisPlan`, `SamplePlan`, `ExportPlan` and `ExportTarget` in `editor.rs`, `PreviewJob` in `preview/job.rs`, `AnalysisJob` in `analysis/jobs.rs` and `PointPlan` in `editor/evaluate.rs` each carry their own copy of the same bound source, recipe, registry and context. `editor/evaluate.rs` repeats the same prologue, state, entry, plan the draft, bind artifacts, verify the source, work out what preparation is missing, at each `needing` site (lines 85, 231, 294, 347, 396, 476 and 548), and `editor/source.rs` repeats the shape three more times. Export's `target()` and `Target` (`editor/evaluate.rs:313-366`) already share the state, entry, draft, bind and identity steps between `analysis_plan` and export: a partial form of this value to grow rather than copy. `validate_source_recipe` (`editor/source.rs`), which now also runs the source-kind applicability and superseded-field checks, has nine non-test callers.",
         "`EditorService::state` returns an owned `EditorState` whose `current_entry` is a plain `HistoryEntry`, so every call deep-clones the cached `Arc<HistoryEntry>`; several callers only need the entry's id. On a drafted preview job the owner compiles the current stack for the plan context and the drafted stack again for the analysis identity, and the worker then compiles a third time. Every pan or zoom now re-plans a preview through the owner (`view_preview_task` into `ready_preview_job`, `app/tasks.rs`), so the repeated compiles run per view change; a viewport region that fails falls back to the whole-frame run and compiles again (`preview/worker.rs`).",
         "The desktop edits `PreviewJob`'s presentation fields, `viewport`, `intent`, `proxy` and `viewport_declined`, after the owner plans it (`app/preview.rs`); they stay outside the bound value, and the value stays cheap to clone.",
-        "Keep exactly the Strict and DraftPreview evaluation rule and each refusal's own named preparation needs; they do not change, only where they are computed.",
-        "Outstanding: the one value is built and compiled once and every worker renders its compilation, but the owner still compiles a drafted preview's stack twice, once for the evaluation and once to plan the draft's action as its commit does, because `StageContext::stage` is computed eagerly by the module API; `a_drafted_preview_job_compiles_its_stack_once_and_its_worker_compiles_nothing` names both. Making the stage lazy is the remaining step to one owner compile."
+        "Keep exactly the Strict and DraftPreview evaluation rule and each refusal's own named preparation needs; they do not change, only where they are computed."
       ],
       "context_links": [
         {
@@ -456,7 +455,7 @@
     {
       "id": "TASK-007",
       "description": "Delete the service's synchronous source mode and give tests and xtask one blocking prepare helper that runs the worker's own preparation and then the owner's own completion.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
@@ -529,7 +528,7 @@
     {
       "id": "TASK-008",
       "description": "Put the facts clients act on into error data and make the desktop read codes and data instead of matching the core's message text.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],

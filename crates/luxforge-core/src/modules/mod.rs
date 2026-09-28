@@ -27,9 +27,7 @@ pub use capabilities_proof::{
     palette_bytes,
 };
 pub use capability::CapabilityModule;
-pub use controls::{
-    CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
-};
+pub use controls::{CONTROLS_EFFECT, ControlsModule, SAMPLE_CONTROLS_CURVE, SET_CONTROLS};
 pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,
@@ -46,7 +44,7 @@ pub use descriptor::{
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
-    check_settings,
+    check_settings, check_target,
 };
 pub(crate) use descriptor::{not_applicable, summary_value, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
@@ -65,8 +63,8 @@ pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
-    STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION,
+    STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{
     ActionRef, ModuleRegistry, QueryRef, Superseded, builtin_modules, insertion_index_among,
@@ -206,14 +204,12 @@ pub trait StageQuestions {
 }
 
 /// What a module may ask about the current stack while planning an action or answering a query:
-/// the output stage, the ordered layers, the stage any position receives, where a commit of an
+/// the ordered layers, the output stage, the stage any position receives, where a commit of an
 /// effect would land, its own layer, one pixel of any prefix and, for a RAW original, a sensor
 /// patch. Every sample evaluates one pixel without rasterizing, so planning never allocates a
-/// frame, and the host answers the questions that read pixels only when they are asked.
+/// frame, and the host answers each question that compiles or reads pixels only when it is asked:
+/// a plan that asks for no stage compiles nothing.
 pub struct StageContext<'a> {
-    /// The output stage of the whole stack, which the host compiles from the source's dimensions
-    /// before the module is asked anything.
-    pub stage: Stage,
     /// The current recipe's layers in evaluation order, so a module can find its own layer to
     /// update. Planning never mutates them.
     pub layers: &'a [Layer],
@@ -253,6 +249,13 @@ impl<'a> StageContext<'a> {
     pub fn insertion_index_for(&self, effect_id: &str) -> usize {
         self.registry
             .insertion_index_for_target(self.layers, effect_id, self.target, self.masks)
+    }
+
+    /// The output stage of the whole stack: [`StageContext::stage_before`] of `layers.len()`. The
+    /// host compiles the stack to answer it, `O(layers)`, only when a module asks, so a plan that
+    /// never needs the stage, such as a Basic patch, costs no compile.
+    pub fn stage(&self) -> Result<Stage, Error> {
+        self.stage_before(self.layers.len())
     }
 
     /// The stage the layer at index `index` receives ([`StageQuestions::stage_before`]);
@@ -318,7 +321,6 @@ impl FixedStage {
         registry: &'a ModuleRegistry,
     ) -> StageContext<'a> {
         StageContext {
-            stage: self.stage,
             layers,
             registry,
             target: None,

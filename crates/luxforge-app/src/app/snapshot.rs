@@ -353,10 +353,12 @@ impl Editor {
         }
     }
 
-    /// The failure the notices were derived from, as its code and detail.
+    /// The failure the notices were derived from, as its code, detail and data.
     pub(super) fn render_error_summary(&self) -> Value {
         match &self.render_error {
-            Some((kind, detail)) => json!({"code":kind.code(),"detail":detail}),
+            Some(error) => {
+                json!({"code":error.kind.code(),"detail":error.detail,"data":error.data})
+            }
             None => Value::Null,
         }
     }
@@ -441,8 +443,8 @@ impl Editor {
                     "chosen": model.presets.iter().find(|chip| chip.chosen).map(|chip| chip.label.clone()),
                     "locked": model.locked,
                     "can_swap": model.can_swap,
-                    "angle": model.angle,
-                    "rail": model.angle_rail.as_ref().map(|rail| rail.value),
+                    "angle": model.angle.as_ref().map(|angle| angle.edit.text(&angle.display).to_owned()),
+                    "rail": model.angle.as_ref().map(|angle| angle.value),
                     "guide": model.guide,
                 })
             })

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testkit", "xtask"]
+members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
 exclude = ["probes/raw"]
 resolver = "3"
 
@@ -39,13 +39,17 @@ roxmltree = "=0.20.0"
 # and the operating system's own certificate verifier for platform trust.
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.0"
-# The module transport's HTTP/1.1: ureq's sans-IO protocol crate (httparse for the response head,
-# its own request writer and body framing). Only `client`; the transport keeps its own sockets, TLS
-# and address policy, and no second TLS stack, pool, proxy or redirect handling comes with it.
-ureq-proto = { version = "=0.6.4", default-features = false, features = ["client"] }
-# `ureq`'s own agent, for the transport spike's tests only (`transport/ureq_spike.rs`). No features:
-# the spike supplies its own socket and rustls session, so no TLS stack, gzip, cookies or SOCKS.
+# The module transport's HTTP/1.1: `ureq`'s agent, one per request, on the transport's own
+# resolver, socket and rustls session. No features, so no TLS stack, gzip, cookies or SOCKS of its
+# own; the agent is built with no proxy, no pool and no redirect following.
 ureq = { version = "=3.4.2", default-features = false }
+# `ureq`'s protocol crate, the one `ureq` already builds, named by the transport only to tell a
+# response with too many header fields from other malformed ones.
+ureq-proto = { version = "=0.6.4", default-features = false, features = ["client"] }
+# The IDNA back end of `url`, pinned to the release without Unicode data: a non-ASCII host is
+# refused while its punycode form (`xn--…`) is accepted, and no ICU4X normalizer comes with URL
+# parsing. Named here only for the pin; no code uses it.
+idna_adapter = "=1.0.0"
 # The macOS Keychain for module secrets. Only the keychain item APIs are used, so no TLS feature is
 # asked for.
 security-framework = { version = "=3.7.0", default-features = false }

@@ -19,7 +19,6 @@ use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -60,18 +59,14 @@ impl Library {
         )
         .unwrap();
         let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        luxforge_testbase::wait_until("source preparation", || {
             let (status, _) = call(&owner, agent, "job.read", json!({"job_id": job_id})).unwrap();
             match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {
-                    assert!(Instant::now() < deadline, "source preparation: {status}");
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                Some("ready") => true,
+                Some("queued" | "running") => false,
                 other => panic!("source preparation failed {other:?}: {status}"),
             }
-        }
+        });
         let (adopted, _) = call(&owner, agent, "job.adopt", json!({"job_id": job_id})).unwrap();
         let asset =
             AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();
@@ -96,7 +91,14 @@ impl Library {
         let _ = library
             .editor
             .update(Message::Preset(PresetMessage::Listed(listed)));
-        assert!(library.editor.editable(), "{}", library.editor.status);
+        assert_eq!(
+            library
+                .editor
+                .gesture_refusal(crate::app::gesture::Starting::Action),
+            None,
+            "{}",
+            library.editor.status
+        );
         library
     }
 

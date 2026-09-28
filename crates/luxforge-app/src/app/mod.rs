@@ -30,6 +30,8 @@ pub(crate) mod export;
 #[cfg(test)]
 mod export_tests;
 pub(crate) mod gesture;
+#[cfg(test)]
+mod gesture_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -99,9 +101,9 @@ use evidence::Evidence;
 use gesture::{Gesture, Starting};
 use iced::{Element, Subscription, Task};
 use luxforge_core::{
-    ClientAuthority, ClientId, ClientSession, EditorState, ErrorKind, HistoryPage,
-    HistorySelection, LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue,
-    ProxyBounds, RecipeDescription, Version,
+    ClientAuthority, ClientId, ClientSession, EditorState, HistoryPage, HistorySelection,
+    LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue, ProxyBounds,
+    RecipeDescription, Version,
 };
 use message::{
     EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, ViewMessage,
@@ -285,7 +287,7 @@ pub(crate) struct Editor {
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     /// Why the last preview failed, cleared by the next presented frame. The canvas turns this
     /// into the notice that names the cause; nothing here decides what it means.
-    pub(crate) render_error: Option<(ErrorKind, String)>,
+    pub(crate) render_error: Option<luxforge_core::Error>,
     pub(crate) busy: bool,
     /// The event sync's one poll is in flight.
     pub(crate) syncing: bool,
@@ -390,7 +392,6 @@ pub(crate) struct Editor {
     pub(crate) version_form_open: bool,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
-    pub(crate) crop_angle: String,
     /// The two extents the `custom` ratio preset reads.
     pub(crate) crop_custom: (String, String),
     pub(crate) crop_guide: bool,
@@ -650,7 +651,6 @@ impl Editor {
             version_name: String::new(),
             version_form_open: false,
             draft_generation: None,
-            crop_angle: "0".into(),
             crop_custom: ("5".into(), "4".into()),
             crop_guide: false,
             crop_option: false,
@@ -792,7 +792,6 @@ impl Editor {
             self.controls_ui.curve_samples.clear();
             self.curve_sample_requested_source.clear();
         }
-        let sample = self.request_visible_curve_samples();
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
         // `view.set` reaching us through an adopted session — is answered in one place.
         let zoomed = self.zoom_changed(&zoom);
@@ -812,7 +811,7 @@ impl Editor {
         let abandoned = self.close_abandoned_crop();
         // A wake that arrived while a request was in flight is read once it has been answered.
         let synced = self.sync_when_wanted();
-        let task = self.sync_mode(Task::batch([task, sample, rebase, abandoned, synced]));
+        let task = self.sync_mode(Task::batch([task, rebase, abandoned, synced]));
         self.refresh_overlay();
         self.refresh_thumbnails();
         let rederive_started = Instant::now();
@@ -823,6 +822,8 @@ impl Editor {
         if loads.is_some() {
             self.rederive();
         }
+        // A curve is sampled once it is on screen, which the derived tools panel says.
+        let sample = self.request_visible_curve_samples();
         let mut timing = self.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.loop_timing.set(timing);
@@ -845,6 +846,7 @@ impl Editor {
             view_request,
             woken,
             loads.unwrap_or_else(Task::none),
+            sample,
         ])
     }
 
@@ -901,6 +903,9 @@ impl Editor {
             preset_refusal: self.gesture_refusal(Starting::Preset),
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
             history_refusal: self.gesture_refusal(Starting::History),
+            // The one editability rule, computed once for every model that reads it; a start's
+            // editable half in `gesture_refusal` asks the same rule.
+            edit_refusal: state::edit_refusal(self.state.as_ref(), &self.session, self.busy),
             draft: self.crop(),
             masks: self.masks.as_ref(),
             selected_mask: self.selected_mask.as_ref(),
@@ -920,7 +925,6 @@ impl Editor {
             // control in front of it would edit.
             target: self.section_target(),
             drafting: self.drafting(),
-            crop_angle: &self.crop_angle,
             crop_custom: (&self.crop_custom.0, &self.crop_custom.1),
             crop_guide: self.crop_guide,
             crop_option: self.crop_option,
@@ -994,12 +998,6 @@ impl Editor {
             Message::Evidence(message) => self.evidence_update(message),
             Message::Close => self.close(),
         }
-    }
-
-    /// An edit is possible when an asset is open, the session shows the current state and no
-    /// request is in flight.
-    pub(crate) fn editable(&self) -> bool {
-        self.state.is_some() && self.session.preview.can_edit() && !self.busy
     }
 
     /// The entry whose stack the canvas is showing: the uploaded preview's entry, or the current

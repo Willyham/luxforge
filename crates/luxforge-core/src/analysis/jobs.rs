@@ -318,7 +318,7 @@ mod tests {
     use serde_json::json;
     use std::{
         sync::atomic::{AtomicU64, Ordering},
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     fn entry(asset: &AssetId) -> HistoryEntry {
@@ -380,7 +380,7 @@ mod tests {
     }
 
     /// A 64 x 48 analysis of one held colour layer, whose render reaches `gate` once per row.
-    fn held_job(gate: &Arc<crate::modules::RenderGate>) -> AnalysisJob {
+    fn held_job(gate: &Arc<luxforge_testbase::Gate>) -> AnalysisJob {
         let asset = AssetId::new();
         let entry = entry(&asset);
         let recipe = Recipe {
@@ -423,11 +423,9 @@ mod tests {
 
     /// The outcome of the one job a fresh queue ran, once the worker has woken the owner for it.
     fn outcome_after_wake(queue: &mut AnalysisQueue, wakes: &AtomicU64) -> AnalysisOutcome {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while wakes.load(Ordering::SeqCst) == 0 {
-            assert!(Instant::now() < deadline, "the worker never woke the owner");
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the worker to wake the owner", || {
+            wakes.load(Ordering::SeqCst) != 0
+        });
         queue.poll().expect("the outcome the waker announced")
     }
 
@@ -441,7 +439,7 @@ mod tests {
     fn a_withdrawn_analysis_stops_within_a_chunk_and_ends_cancelled() {
         let rows = 48;
         let board = crate::ActivityBoard::with_recent_threshold(Duration::ZERO);
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let wakes = Arc::new(AtomicU64::new(0));
         let counter = wakes.clone();
         let mut queue = AnalysisQueue::new(Arc::new(move || {
@@ -453,14 +451,7 @@ mod tests {
         let job_id = job.job_id.clone();
         assert_eq!(queue.submit(job), None, "nothing was pending");
         assert!(!queue.is_pending(&job_id), "the worker took it");
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while gate.reached() == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "the render never reached its gate"
-            );
-            std::thread::yield_now();
-        }
+        gate.wait_reached(1, "the render");
         assert!(queue.withdraw(&job_id), "the worker still held it");
         gate.open();
         let outcome = outcome_after_wake(&mut queue, &wakes);
@@ -480,7 +471,7 @@ mod tests {
         assert_eq!(recent[0].outcome, Outcome::Cancelled);
 
         // The same job left alone evaluates every row and reports.
-        let gate = crate::modules::RenderGate::open_gate();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         let wakes = Arc::new(AtomicU64::new(0));
         let counter = wakes.clone();
         let mut queue = AnalysisQueue::new(Arc::new(move || {

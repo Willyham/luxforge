@@ -76,17 +76,15 @@ impl Json {
             let queued = Self::call(&owner, client, "catalog.import", json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))
                 .expect("import queues");
             let id = queued["job_id"].as_str().unwrap().to_owned();
-            loop {
+            luxforge_testbase::wait_for("the import job to finish", || {
                 let status = Self::call(&owner, client, "job.read", json!({"job_id": id}))
                     .expect("a job this client owns");
                 match status["status"].as_str() {
-                    Some("ready") => break status["result"]["asset"]["id"].clone(),
-                    Some("queued" | "running") => {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
+                    Some("ready") => Some(status["result"]["asset"]["id"].clone()),
+                    Some("queued" | "running") => None,
                     other => panic!("unexpected import job {other:?}"),
                 }
-            }
+            })
         };
         Self {
             owner,
@@ -845,7 +843,7 @@ fn a_gradient_drag_is_one_entry_and_a_drag_that_returns_to_its_start_is_none() {
                 json!({"asset_id": asset, "action": "set-basic", "mask": mask_id, "component": target.component.as_ref().unwrap().as_str()}),
             )
             .expect_err("a module edits through the whole mask")["detail"],
-        json!("action set-basic takes no mask component")
+        json!("unknown parameter component for action set-basic")
     );
     assert_eq!(
         client

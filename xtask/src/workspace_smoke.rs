@@ -394,9 +394,10 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let frame2 = second.at("reopened")?;
     ensure(
-        frame2["state"]["render_error"]["code"] == json!("incompatible"),
+        frame2["state"]["render_error"]["code"] == json!("incompatible")
+            && frame2["state"]["render_error"]["data"]["effect_id"] == json!(CROP_EFFECT),
         format!(
-            "Launch 2's render error is {}, expected incompatible",
+            "Launch 2's render error is {}, expected incompatible naming {CROP_EFFECT} in its data",
             frame2["state"]["render_error"]
         ),
     )?;

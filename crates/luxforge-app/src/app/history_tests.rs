@@ -1,7 +1,7 @@
 //! History selection, compare and navigation: a selection of the current entry returns to current,
 //! compare restores the selection it replaced, and an open draft refuses Undo, Redo and Restore.
 use super::{
-    message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
+    message::{CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::Upload,
     testing::{
         begun, boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for,
@@ -234,11 +234,7 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
 fn history_navigation_is_refused_while_a_slider_draft_is_open() {
     let (mut editor, catalog, asset, original) = navigable();
     let (action, parameter) = patch_control(&editor);
-    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: action.clone(),
-        parameter: parameter.clone(),
-        value: 25.0,
-    }));
+    let _ = testing::slide(&mut editor, &action, &parameter, 25.0);
     begun(&mut editor, &asset, &action, 1);
     assert!(editor.slider_gesture().is_some());
     history_refused(
@@ -254,6 +250,37 @@ fn history_navigation_is_refused_while_a_slider_draft_is_open() {
     assert!(
         editor.busy,
         "with no draft Undo goes out: {}",
+        editor.status
+    );
+    finish(editor, catalog);
+}
+
+/// Undo, Redo and Restore also wait for a request in flight, and say so rather than being dropped
+/// without a word; Restore still runs from the previewed entry it restores, since History never
+/// takes the editable half.
+#[test]
+fn history_navigation_is_refused_while_a_request_is_in_flight() {
+    let (mut editor, catalog, _, original) = navigable();
+    editor.busy = true;
+    let sequence = editor.api_sequence;
+    for message in [
+        HistoryMessage::Undo,
+        HistoryMessage::Redo,
+        HistoryMessage::Restore,
+    ] {
+        editor.session.preview.selection = HistorySelection::Entry(original.clone());
+        editor.status.clear();
+        let task = editor.update(Message::History(message.clone()));
+        assert_eq!(task.units(), 0, "{message:?}: nothing is sent");
+        assert_eq!(editor.status, crate::state::IN_FLIGHT, "{message:?}");
+    }
+    assert_eq!(editor.api_sequence, sequence);
+
+    editor.busy = false;
+    let _ = editor.update(Message::History(HistoryMessage::Restore));
+    assert!(
+        editor.busy,
+        "Restore runs from the previewed entry: {}",
         editor.status
     );
     finish(editor, catalog);

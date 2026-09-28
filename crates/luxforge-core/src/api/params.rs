@@ -9,10 +9,10 @@
 //!
 //! [`Mutation`]: crate::Mutation
 //! [`MutationRequest`]: crate::MutationRequest
-use crate::Error;
 #[cfg(test)]
 use crate::ErrorKind;
-use serde::de::DeserializeOwned;
+use crate::{Error, Mutation, MutationRequest};
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
 /// Which mutation envelope a method carries in its `mutation` field.
@@ -47,6 +47,24 @@ impl Envelope {
             Self::Revision => Some("revision"),
             Self::Request => Some("request"),
         }
+    }
+
+    /// Check the envelope a request's `params` carry: `request_id` and `actor` are 1..128
+    /// characters. The dispatcher calls this once for every method before any handler runs, so no
+    /// handler, service or store checks an envelope of its own. An absent or malformed envelope
+    /// passes here: the method's own parse refuses it by name, as it refuses any other field.
+    pub(crate) fn check(self, params: &Value) -> Result<(), Error> {
+        let Some(field) = params.get("mutation") else {
+            return Ok(());
+        };
+        let checked = match self {
+            Self::None => return Ok(()),
+            Self::Revision => Mutation::deserialize(field).map(|mutation| mutation.validate()),
+            Self::Request => {
+                MutationRequest::deserialize(field).map(|mutation| mutation.validate())
+            }
+        };
+        checked.unwrap_or(Ok(()))
     }
 }
 
@@ -147,11 +165,13 @@ macro_rules! host_params {
         $(#[$fmeta:meta])* $f:ident : Option<$t:ty> $(, $($rest:tt)*)?) => {
         compile_error!(concat!("optional parameter ", stringify!($f), " needs a note"));
     };
-    // The two mutation envelopes.
+    // The two mutation envelopes. The dispatcher checks either before the handler runs
+    // ([`Envelope::check`]), and a handler reads it only for what it records, such as the actor, so
+    // many never read it.
     (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
         mutation : Mutation $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* mutation: $crate::Mutation,]
+            @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] mutation: $crate::Mutation,]
             [$($req)* "mutation",] [$($opt)*] [$crate::api::params::Envelope::Revision]
             $($($rest)*)?
         );
@@ -159,7 +179,7 @@ macro_rules! host_params {
     (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
         mutation : MutationRequest $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* mutation: $crate::MutationRequest,]
+            @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] mutation: $crate::MutationRequest,]
             [$($req)* "mutation",] [$($opt)*] [$crate::api::params::Envelope::Request]
             $($($rest)*)?
         );
@@ -256,5 +276,56 @@ mod tests {
             .map(|_| ())
             .unwrap_err();
         assert_eq!(error.detail, "unknown field `filter`, there are no fields");
+    }
+
+    /// The one envelope check refuses a request identity or actor out of range for either
+    /// envelope, and leaves an absent or malformed envelope to the method's own parse, which names
+    /// the field.
+    #[test]
+    fn the_envelope_check_refuses_an_identity_out_of_range_and_leaves_the_shape_to_the_parse() {
+        let long = "a".repeat(129);
+        for (envelope, revision) in [
+            (Envelope::Revision, Some(json!(3))),
+            (Envelope::Request, None),
+        ] {
+            let with = |request_id: &str, actor: &str| {
+                let mut mutation = json!({"request_id": request_id, "actor": actor});
+                if let Some(revision) = &revision {
+                    mutation["expected_revision"] = revision.clone();
+                }
+                json!({"mutation": mutation, "other": 1})
+            };
+            envelope.check(&with("r", "a")).unwrap();
+            envelope
+                .check(&with(&"r".repeat(128), &"a".repeat(128)))
+                .unwrap();
+            for (params, refusal) in [
+                (with("", "a"), "request_id must contain 1..128 characters"),
+                (
+                    with(&long, "a"),
+                    "request_id must contain 1..128 characters",
+                ),
+                (with("r", ""), "actor must contain 1..128 characters"),
+                (with("r", &long), "actor must contain 1..128 characters"),
+            ] {
+                let error = envelope.check(&params).unwrap_err();
+                assert_eq!(
+                    (error.kind, error.detail.as_str()),
+                    (ErrorKind::Validation, refusal)
+                );
+            }
+            for params in [
+                json!({}),
+                Value::Null,
+                json!({"mutation": null}),
+                json!({"mutation": {"request_id": "", "actor": "a", "extra": 1}}),
+            ] {
+                envelope.check(&params).unwrap();
+            }
+        }
+        // A method without an envelope reads none, so a field of that name is its parse's to refuse.
+        Envelope::None
+            .check(&json!({"mutation": {"request_id": "", "actor": ""}}))
+            .unwrap();
     }
 }

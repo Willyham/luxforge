@@ -287,6 +287,15 @@ mod tests {
         tree.diff(widget as &dyn Widget<u8, iced::Theme, ()>);
     }
 
+    /// Wait only until the clock has moved past `pressed`, read just after a press: `mouse::Click`
+    /// needs the next press strictly later than the last, and within Iced's double-click interval,
+    /// which is its own wall-clock rule, so the wait is as short as the clock allows.
+    fn after(pressed: std::time::Instant) {
+        luxforge_testbase::wait_until("the clock moving past the first press", || {
+            std::time::Instant::now() > pressed
+        });
+    }
+
     /// A control that is disabled between the two presses of a double-click — which is what a
     /// request in flight does to a whole section — keeps the wrapper and its first press, so the
     /// second press still resets. A press while disabled publishes nothing and is not counted.
@@ -295,6 +304,7 @@ mod tests {
         let mut widget = wrapper(true);
         let mut tree = Tree::new(&widget as &dyn Widget<u8, iced::Theme, ()>);
         assert!(press(&mut widget, &mut tree).is_empty(), "the first press");
+        let pressed = std::time::Instant::now();
 
         let mut disabled = wrapper(false);
         rebuild(&mut tree, &disabled);
@@ -310,8 +320,11 @@ mod tests {
 
         let mut enabled = wrapper(true);
         rebuild(&mut tree, &enabled);
-        // `mouse::Click` needs the second press strictly later than the first.
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(
+            tree.state.downcast_ref::<State>().previous_click.is_some(),
+            "the first press is still held"
+        );
+        after(pressed);
         assert_eq!(
             press(&mut enabled, &mut tree),
             vec![7],
@@ -327,13 +340,14 @@ mod tests {
         let mut widget = wrapper(true);
         let mut tree = Tree::new(&widget as &dyn Widget<u8, iced::Theme, ()>);
         assert!(press(&mut widget, &mut tree).is_empty());
+        let pressed = std::time::Instant::now();
 
         let bare: Element<'static, u8, iced::Theme, ()> =
             Element::new(iced::widget::Space::new().width(40).height(12));
         tree.diff(bare.as_widget());
         let mut again = wrapper(true);
         rebuild(&mut tree, &again);
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        after(pressed);
         assert!(
             press(&mut again, &mut tree).is_empty(),
             "the retained click history went with the swapped-out wrapper"

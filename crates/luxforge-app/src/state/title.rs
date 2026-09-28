@@ -32,13 +32,6 @@ pub(crate) const EXPORT_ITEMS: [(&str, bool); 2] = [
     ("Export JPEG, keep metadata\u{2026}", true),
 ];
 
-/// Whether an export can start: a photograph is open, no request or dialog is in flight, and this
-/// window is not already exporting. One export per window is all the desktop runs; the core would
-/// queue more.
-pub(crate) fn can_export(open: bool, busy: bool, picker_open: bool, exporting: bool) -> bool {
-    open && !busy && !picker_open && !exporting
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TitleBarModel {
     pub(crate) developer: bool,
@@ -129,14 +122,14 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
-    let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
+    let editable = inputs.edit_refusal.is_none();
     // An open draft refuses Undo and Redo, so neither is offered while it is.
     let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;
     TitleBarModel {
         developer: inputs.developer,
+        // The gallery's one refusal already waits for a request in flight.
         can_open_gallery: inputs.developer
-            && !inputs.busy
             && inputs.gallery_refusal.is_none()
             && !inputs.compare_held,
         file_name: inputs.state.and_then(|state| {

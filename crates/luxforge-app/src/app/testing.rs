@@ -7,7 +7,7 @@ use crate::{
         draft::{CoreDraft, GestureId, Round},
         evidence::{Evidence, parse_script},
         gesture::{Gesture, Kind},
-        message::{DraftMessage, Message, SyncMessage},
+        message::{ControlMessage, DraftMessage, Message, SyncMessage},
         tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
     state::histogram::Analysis,
@@ -94,21 +94,14 @@ pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforg
         json!({"path": fixture, "mutation": crate::app::tasks::request()}),
     );
     let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
+    luxforge_testbase::wait_until("source preparation", || {
         let status = call("job.read", json!({"job_id": job_id}));
         match status["status"].as_str() {
-            Some("ready") => break,
-            Some("queued" | "running") => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "source preparation: {status}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            Some("ready") => true,
+            Some("queued" | "running") => false,
             other => panic!("source preparation failed {other:?}: {status}"),
         }
-    }
+    });
     let adopted = call("job.adopt", json!({"job_id": job_id}));
     let asset =
         AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();
@@ -133,7 +126,12 @@ pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, luxforg
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
         refreshed,
     )))));
-    assert!(editor.editable(), "{}", editor.status);
+    assert_eq!(
+        editor.gesture_refusal(crate::app::gesture::Starting::Action),
+        None,
+        "{}",
+        editor.status
+    );
     (editor, asset, agent)
 }
 
@@ -279,7 +277,12 @@ pub(crate) fn opened(
     let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
     refresh.recipe = described_at(&current, CROP_SOURCE);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
-    assert!(editor.editable(), "{}", editor.status);
+    assert_eq!(
+        editor.gesture_refusal(crate::app::gesture::Starting::Action),
+        None,
+        "{}",
+        editor.status
+    );
     (editor, catalog, asset, entry_id)
 }
 
@@ -414,6 +417,33 @@ pub(crate) fn pick_events(records: &[Value]) -> Vec<&Value> {
 
 pub(crate) fn evidence(editor: &Editor) -> &Evidence {
     editor.evidence.as_ref().expect("an evidence run")
+}
+
+/// Move a slider to `value` exactly as the widget does: the rail fraction that sends that value,
+/// through `ControlMessage::Fraction`, converted by the one path evidence scripts use
+/// ([`crate::app::evidence::rail_fractions`]). A value the rail cannot send fails the test.
+pub(crate) fn slide(
+    editor: &mut Editor,
+    action: &str,
+    parameter: &str,
+    value: f64,
+) -> iced::Task<Message> {
+    let fraction =
+        crate::app::evidence::rail_fractions(&editor.modules, action, parameter, &[value])
+            .unwrap_or_else(|reason| panic!("{reason}"))[0];
+    editor.update(Message::Control(ControlMessage::Fraction {
+        action: action.into(),
+        parameter: parameter.into(),
+        fraction,
+    }))
+}
+
+/// Let go of a slider, as the widget does when the pointer is released.
+pub(crate) fn let_go(editor: &mut Editor, action: &str, parameter: &str) -> iced::Task<Message> {
+    editor.update(Message::Control(ControlMessage::Released {
+        action: action.into(),
+        parameter: parameter.into(),
+    }))
 }
 
 /// Put an open slider gesture of this control in the editor's one slot directly, its `draft.begin`
@@ -748,7 +778,12 @@ pub(crate) fn opened_with_modules(
     let current = entry(&asset, revision, None);
     let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
-    assert!(editor.editable(), "{}", editor.status);
+    assert_eq!(
+        editor.gesture_refusal(crate::app::gesture::Starting::Action),
+        None,
+        "{}",
+        editor.status
+    );
     (editor, catalog)
 }
 

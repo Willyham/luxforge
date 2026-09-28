@@ -554,12 +554,7 @@ mod tests {
         assert!(!queue.is_busy());
         queue.request(source.clone(), request(1, (2, 1)));
         assert!(queue.is_busy());
-        let result = loop {
-            if let Some(result) = queue.poll() {
-                break result;
-            }
-            std::thread::yield_now();
-        };
+        let result = luxforge_testbase::wait_for("the overlay", || queue.poll());
         assert_eq!(result.request.generation, 1);
         let painted = result.result.expect("an overlay");
         assert_eq!(painted.len(), 2 * 4);
@@ -569,15 +564,11 @@ mod tests {
         // A cancel supersedes whatever is outstanding, so nothing arrives for the old frame.
         queue.request(source.clone(), request(2, (2, 1)));
         queue.cancel();
-        for _ in 0..1000 {
-            if queue.poll().is_some() {
-                panic!("a cancelled overlay was delivered");
-            }
-            if !queue.is_busy() {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        luxforge_testbase::wait_until("the cancelled overlay job ends", || {
+            assert!(queue.poll().is_none(), "a cancelled overlay was delivered");
+            !queue.is_busy()
+        });
+        assert!(queue.poll().is_none(), "a cancelled overlay was delivered");
     }
 
     /// A grid the core refuses (here, more cells than the cap allows) comes back as the error it
@@ -590,12 +581,7 @@ mod tests {
             source,
             request(1, (luxforge_core::analysis::MAX_OVERLAY_CELLS + 1, 1)),
         );
-        let result = loop {
-            if let Some(result) = queue.poll() {
-                break result;
-            }
-            std::thread::yield_now();
-        };
+        let result = luxforge_testbase::wait_for("the refused overlay", || queue.poll());
         assert!(result.result.is_err());
     }
 }

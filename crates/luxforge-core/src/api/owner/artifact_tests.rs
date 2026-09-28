@@ -13,7 +13,7 @@ use crate::{
 use sha2::Digest;
 use std::{
     fs::{self, File},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -59,19 +59,12 @@ fn failure(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -
 }
 
 /// Wait for a source job to leave `queued` and `running`. Nothing in the owner polls; this is the
-/// test standing in for a client, bounded by a deadline.
+/// test standing in for a client.
 fn settled(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
+    luxforge_testbase::wait_for("the job to settle", || {
         let status = ok(owner, client, "job.read", json!({"job_id": job_id}));
-        match status["status"].as_str() {
-            Some("queued" | "running") => {
-                assert!(Instant::now() < deadline, "the job never settled: {status}");
-                thread::sleep(Duration::from_millis(1));
-            }
-            _ => return status,
-        }
-    }
+        (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+    })
 }
 
 /// Retry a request through every preparation job it asks for, as a client does.
@@ -179,20 +172,15 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
         "analysis.request",
         json!({"asset_id": asset, "target": {"kind": "current"}}),
     );
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let read = loop {
+    let read = luxforge_testbase::wait_for("the analysis to settle", || {
         let read = ok(
             &owner,
             client,
             "job.read",
             json!({"job_id": requested["job_id"]}),
         );
-        if !matches!(read["status"].as_str(), Some("queued" | "running")) {
-            break read;
-        }
-        assert!(Instant::now() < deadline, "the analysis never settled");
-        thread::sleep(Duration::from_millis(1));
-    };
+        (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+    });
     assert_eq!(read["status"], "ready", "{read}");
     owner.stop();
     join.join().unwrap();
@@ -354,15 +342,9 @@ fn orphaned_catalog(
 /// Wait for a path to stop existing, as a client would wait for the source worker to finish a
 /// collection it has no job id for. Nothing polls this in production; the test stands in.
 fn removed_eventually(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "{} was never removed",
-            path.display()
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
+    luxforge_testbase::wait_until(&format!("{} to be removed", path.display()), || {
+        !path.exists()
+    });
 }
 
 #[test]

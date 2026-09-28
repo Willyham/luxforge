@@ -796,16 +796,16 @@ fn presence_timing() {
                 cpu.push((after - before) as f64 / elapsed.as_nanos() as f64 * 100.0);
                 assert_eq!((raster.width, raster.height), (width, height));
             }
-            samples.sort_by(f64::total_cmp);
-            cpu.sort_by(f64::total_cmp);
-            let p50 = samples[samples.len() / 2];
-            let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
+            let ms = luxforge_testbase::Distribution::of(samples).expect("runs ran");
+            let cpu = luxforge_testbase::Distribution::of(cpu).expect("runs ran");
             println!(
-                "{width}x{height} presence {name}: p50 {p50:.0} ms, p95 {p95:.0} ms over {} runs, \
+                "{width}x{height} presence {name}: p50 {:.0} ms, p95 {:.0} ms over {} runs, \
                  CPU p50 {:.0}% of one core; halo {} px, tiles {}, working set {:.1} MiB, \
                  concurrency {}, budget peak {:.1} MiB, target {:.1} MiB",
-                samples.len(),
-                cpu[cpu.len() / 2],
+                ms.p50,
+                ms.p95,
+                ms.count,
+                cpu.p50,
                 operation.summed_halo(stage),
                 plan.tiles().len(),
                 plan.working_set() as f64 / mib,

@@ -15,7 +15,9 @@ serde_json.workspace = true
 image = { workspace = true, features = ["jpeg"] }
 luxforge-core = { path = "../crates/luxforge-core" }
 luxforge-evidence = { path = "../crates/luxforge-evidence" }
+luxforge-raw = { path = "../crates/luxforge-raw" }
 luxforge-reference = { path = "../crates/luxforge-reference" }
+luxforge-testbase = { path = "../crates/luxforge-testbase" }
 luxforge-testkit = { path = "../crates/luxforge-testkit" }
 sha2 = "=0.10.9"
 regex = "=1.12.3"

@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "samples": [
+  "sources": [
     {
       "id": "z6-14-lossless",
       "path": "../private/raw/z6-14-lossless.NEF",
