@@ -315,7 +315,7 @@ Every one of these is the same feature made explicit rather than a new feature:
 
 ## Resource and responsiveness constraints
 
-Declared limits, each with a `resource-limit` error naming it — the [limits table](architecture.md#rendering-and-limits) gains this block:
+Declared limits, each with a `resource-limit` error naming it — the [limits table](architecture.md#limits) gains this block:
 
 | Limit | Value |
 | --- | --- |
