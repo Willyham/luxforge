@@ -16,7 +16,7 @@
 use crate::ErrorKind;
 use crate::{
     Cancel, Error, LinearImage, PreviewSource, Raster, SourceImage,
-    colour::srgb::{decode_pixel, quantize_channel},
+    colour::srgb::{decode_pixel_in, decode_table, quantizer},
     render::{frame_mut, zeroed_frame},
 };
 use rayon::prelude::*;
@@ -652,12 +652,14 @@ fn downscale_jpeg(
     }
     let output_len = Raster::expected_len(width, height)?;
     let source_stride = source.width as usize * 4;
+    // The tables are taken once for the build, not once per pixel.
+    let (table, quantizer) = (decode_table(), quantizer());
     let read_row = |y: u32| {
         let start = y as usize * source_stride;
         let bytes = &source.rgba[start..start + source_stride];
         move |x: u32| {
             let at = x as usize * 4;
-            decode_pixel([bytes[at], bytes[at + 1], bytes[at + 2]])
+            decode_pixel_in(table, [bytes[at], bytes[at + 1], bytes[at + 2]])
         }
     };
     let downscale = BoxDownscale::new(source.width, source.height, plan, band_bytes)?;
@@ -669,7 +671,7 @@ fn downscale_jpeg(
             downscale.band(band, rows, cancel, &read_row, |y, x, sum| {
                 let pixel = &mut out[y * output_stride + x * 4..][..4];
                 for (channel, value) in sum.iter().enumerate() {
-                    pixel[channel] = quantize_channel(*value);
+                    pixel[channel] = quantizer.channel(*value);
                 }
                 pixel[3] = 255;
             })

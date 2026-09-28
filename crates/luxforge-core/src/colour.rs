@@ -66,18 +66,17 @@ pub mod srgb {
         table
     });
 
-    /// The table itself, [`TO_LINEAR`], indexed by code, for a pass that decodes many codes per
-    /// pixel: it takes the table once, since every dereference of the lazy static is an atomic
-    /// load the compiler cannot merge.
+    /// The table itself, [`TO_LINEAR`], indexed by code, for a pass that decodes many pixels: it
+    /// takes the table once and hands it to [`decode_pixel_in`], since every dereference of the
+    /// lazy static is an atomic load the compiler cannot merge.
     #[inline]
     pub(crate) fn decode_table() -> &'static [f32; 256] {
         &TO_LINEAR
     }
 
-    /// One 8-bit pixel decoded into linear sRGB.
+    /// One 8-bit pixel decoded into linear sRGB through a table the caller already holds.
     #[inline]
-    pub(crate) fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
-        let table = &*TO_LINEAR;
+    pub(crate) fn decode_pixel_in(table: &[f32; 256], rgb: [u8; 3]) -> [f32; 3] {
         [
             table[rgb[0] as usize],
             table[rgb[1] as usize],
@@ -85,12 +84,18 @@ pub mod srgb {
         ]
     }
 
+    /// One 8-bit pixel decoded into linear sRGB.
+    #[inline]
+    pub(crate) fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
+        decode_pixel_in(decode_table(), rgb)
+    }
+
     /// The 255 linear-light thresholds that separate the 256 output codes: `t_k = decode((k −
     /// 0.5)/255)` for `k` in `1..=255`, at index `k − 1`. `floor(255·encode(v) + 0.5) = k` exactly
     /// when `encode(v)` lies in `[(k − 0.5)/255, (k + 0.5)/255)`, so the code of a clamped value is
     /// the number of thresholds at or below it. Computed once in `f64`, it quantizes the output
     /// boundary without a power function per pixel.
-    pub(crate) static CODE_THRESHOLDS: LazyLock<[f64; 255]> = LazyLock::new(|| {
+    static CODE_THRESHOLDS: LazyLock<[f64; 255]> = LazyLock::new(|| {
         let mut thresholds = [0.0; 255];
         for (index, slot) in thresholds.iter_mut().enumerate() {
             *slot = decode((index as f64 + 0.5) / 255.0);
@@ -100,16 +105,30 @@ pub mod srgb {
 
     pub(crate) const CODE_BINS: usize = 4096;
 
-    /// A small exact index into the canonical thresholds, not an approximation of the transfer
-    /// function. A bin is narrower than the closest pair of thresholds (the linear part of sRGB,
-    /// `1 / (255 * 12.92)`), so at most one code boundary lies after its lower endpoint. Store the
-    /// lower endpoint's code and compare against that one boundary using the original `f64` value.
-    struct CodeIndex {
+    /// How close to a code threshold a value must lie before [`Quantizer::rounded`] evaluates the
+    /// forward transfer function instead of trusting the threshold search. `f64` encode and decode
+    /// are not exact inverses, so a value within a few ULPs of a threshold can take the other code
+    /// through `round(255 · encode(v))` than the search gives it. That disagreement is a few ULPs
+    /// of a value no larger than 1, around 1e-16, so this band holds it with four orders of
+    /// magnitude to spare. Native boundary tests cover every threshold's ULP neighbourhood and
+    /// both edges of the band; `powf` has no cross-platform ULP bound, so those tests remain part
+    /// of platform qualification.
+    const ROUNDING_GUARD: f64 = 1e-12;
+
+    /// The output quantizer: a small exact index into the canonical thresholds, not an
+    /// approximation of the transfer function. A bin is narrower than the closest pair of
+    /// thresholds (the linear part of sRGB, `1 / (255 * 12.92)`), so at most one code boundary
+    /// lies after its lower endpoint. Store the lower endpoint's code and compare against that one
+    /// boundary using the original `f64` value.
+    ///
+    /// A pass that quantizes many values takes it once through [`quantizer`], since every
+    /// dereference of the lazy static is an atomic load the compiler cannot merge.
+    pub(crate) struct Quantizer {
         lower_codes: [u8; CODE_BINS],
         thresholds: &'static [f64; 255],
     }
 
-    static CODE_INDEX: LazyLock<CodeIndex> = LazyLock::new(|| {
+    static QUANTIZER: LazyLock<Quantizer> = LazyLock::new(|| {
         let thresholds = &*CODE_THRESHOLDS;
         let width = 1.0 / CODE_BINS as f64;
         assert!(thresholds.windows(2).all(|pair| pair[1] - pair[0] > width));
@@ -117,44 +136,77 @@ pub mod srgb {
             let lower = bin as f64 / CODE_BINS as f64;
             thresholds.partition_point(|threshold| *threshold <= lower) as u8
         });
-        CodeIndex {
+        Quantizer {
             lower_codes,
             thresholds,
         }
     });
 
-    /// The output boundary for one channel already carried in `f64`: clamp to `[0, 1]`, then take
-    /// the code whose exact threshold interval holds the value, which equals
-    /// `floor(255 · encode(v) + 0.5)`.
-    ///
-    /// A pass that accumulates in `f64` — the proxy downscale averages a source rectangle that way
-    /// — quantizes through this directly, so no `f32` rounding is inserted between its arithmetic
-    /// and the code boundary.
+    /// The output quantizer, for a pass to take once rather than per value.
+    #[inline]
+    pub(crate) fn quantizer() -> &'static Quantizer {
+        &QUANTIZER
+    }
+
+    impl Quantizer {
+        /// The output boundary for one channel already carried in `f64`: clamp to `[0, 1]`, then
+        /// take the code whose exact threshold interval holds the value, which equals
+        /// `floor(255 · encode(v) + 0.5)`.
+        ///
+        /// A pass that accumulates in `f64` — the proxy downscale averages a source rectangle that
+        /// way — quantizes through this directly, so no `f32` rounding is inserted between its
+        /// arithmetic and the code boundary.
+        #[inline]
+        pub(crate) fn channel(&self, value: f64) -> u8 {
+            let value = value.clamp(0.0, 1.0);
+            // Scaling by a power of two is exact in this clamped domain. The cast maps NaN to bin
+            // zero; its comparison below is false, preserving the binary search's zero code for
+            // either NaN.
+            let bin = ((value * CODE_BINS as f64) as usize).min(CODE_BINS - 1);
+            let lower = self.lower_codes[bin];
+            lower + u8::from(lower < 255 && self.thresholds[usize::from(lower)] <= value)
+        }
+
+        /// The output boundary for one pixel: [`Self::channel`] of each channel widened to `f64`.
+        #[inline]
+        pub(crate) fn pixel(&self, rgb: [f32; 3]) -> [u8; 3] {
+            [
+                self.channel(f64::from(rgb[0])),
+                self.channel(f64::from(rgb[1])),
+                self.channel(f64::from(rgb[2])),
+            ]
+        }
+
+        /// The sRGB transfer function applied forwards to a clamped value and rounded to the
+        /// nearest 8-bit code in floating point, `round(255 · encode(v))`: the RAW terminal
+        /// boundary and the byte resample's bilinear sample. The threshold search answers every
+        /// value farther than [`ROUNDING_GUARD`] from both thresholds around its code, without a
+        /// power function; inside that band the forward evaluation itself decides. So the code is
+        /// the forward rounding's for every input, NaN included, which both take to code 0.
+        #[inline]
+        pub(crate) fn rounded(&self, linear: f64) -> u8 {
+            let linear = linear.clamp(0.0, 1.0);
+            let code = self.channel(linear);
+            let lower = self.thresholds[usize::from(code.saturating_sub(1))];
+            let upper = self.thresholds[usize::from(code.min(254))];
+            if (linear - lower).abs() > ROUNDING_GUARD && (linear - upper).abs() > ROUNDING_GUARD {
+                return code;
+            }
+            // `encode` is increasing and at most 1 on the clamped domain, so this is a code.
+            (encode(linear) * 255.0).round() as u8
+        }
+    }
+
+    /// [`Quantizer::channel`], for a caller that quantizes one value.
     #[inline]
     pub(crate) fn quantize_channel(value: f64) -> u8 {
-        let index = &*CODE_INDEX;
-        let value = value.clamp(0.0, 1.0);
-        // Scaling by a power of two is exact in this clamped domain. The cast maps NaN to bin
-        // zero; its comparison below is false, preserving the binary search's zero code for either
-        // NaN.
-        let bin = ((value * CODE_BINS as f64) as usize).min(CODE_BINS - 1);
-        let lower = index.lower_codes[bin];
-        lower + u8::from(lower < 255 && index.thresholds[usize::from(lower)] <= value)
+        quantizer().channel(value)
     }
 
-    /// The output boundary: clamp to `[0, 1]`, then take the code whose exact threshold interval
-    /// holds the value, which equals `floor(255 · encode(v) + 0.5)`.
+    /// [`Quantizer::pixel`], for a caller that quantizes one pixel.
     #[inline]
     pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
-        rgb.map(|value| quantize_channel(f64::from(value)))
-    }
-
-    /// The sRGB transfer function applied forwards to a clamped value and rounded to the nearest
-    /// 8-bit code in floating point, `round(255 · encode(v))`: the resample's bilinear sample.
-    #[inline]
-    pub(crate) fn linear_to_srgb(linear: f64) -> u8 {
-        let linear = linear.clamp(0.0, 1.0);
-        (encode(linear) * 255.0).round() as u8
+        quantizer().pixel(rgb)
     }
 }
 
@@ -495,7 +547,7 @@ mod tests {
     fn srgb_round_trip_is_the_identity_across_the_byte_range() {
         for code in 0..=255u8 {
             let linear = srgb::decode_u8(code);
-            assert_eq!(srgb::linear_to_srgb(linear), code);
+            assert_eq!(srgb::quantizer().rounded(linear), code);
             assert_eq!(srgb::quantize_channel(linear), code);
         }
     }
