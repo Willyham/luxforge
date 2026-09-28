@@ -26,8 +26,8 @@ pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
     MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES,
-    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, SPATIAL_TILE, SPATIAL_WIDE_HALO,
-    SPATIAL_WIDE_TILE, spatial_tile,
+    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, RETAINED_DEVELOPMENT_BYTES, SPATIAL_TILE,
+    SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, spatial_tile,
 };
 pub use native_tiles::refill_each;
 use profiles::{Catalog, Crop};

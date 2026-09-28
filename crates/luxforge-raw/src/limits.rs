@@ -13,6 +13,10 @@ pub const MAX_PIXELS: usize = 128_000_000;
 pub const MAX_SIDE: u32 = 16_384;
 /// Maximum one planar RGB float allocation (1.5 GiB), not a process RSS limit.
 pub const MAX_RGB_BYTES: usize = 1536 * 1024 * 1024;
+/// The largest development whose planes the editor retains beside its current one (600 MiB), so
+/// that switching between two entries at different white balances redevelops neither: a 40.9 MP
+/// X100VI development (468 MiB of planes) fits, a development at the [`MAX_PIXELS`] limit does not.
+pub const RETAINED_DEVELOPMENT_BYTES: usize = 600 * 1024 * 1024;
 
 /// Above this many pixels a per-pixel pass moves from a serial loop to the shared Rayon pool: the
 /// point past which per-row or per-chunk parallel dispatch is paid back by the work it saves.

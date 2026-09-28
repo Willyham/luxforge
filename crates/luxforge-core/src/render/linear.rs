@@ -322,6 +322,17 @@ impl LinearImage {
         self.development
     }
 
+    /// The bytes of the planar allocation every view of this development shares.
+    pub(crate) fn plane_bytes(&self) -> u64 {
+        (self.planes.capacity() * std::mem::size_of::<f32>()) as u64
+    }
+
+    /// The memory gate's exemption for these planes while the returned hold lives, or `None` when
+    /// no gate leased them ([`crate::source::SecondDevelopment`]).
+    pub(crate) fn retention(&self) -> Option<crate::source::Retention> {
+        self.held.retention()
+    }
+
     /// Make the source worker's memory gate wait for these planes: every view and clone taken
     /// from now on shares the hold, and the gate opens when the last of them drops. Called once,
     /// before the development is shared.

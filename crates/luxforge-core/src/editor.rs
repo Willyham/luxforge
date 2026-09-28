@@ -527,6 +527,8 @@ struct CachedSource {
     asset_id: AssetId,
     signature: SourceSignature,
     source: PreparedSource,
+    /// A RAW source's second development, which goes with the source it develops.
+    second: crate::source::SecondDevelopment,
 }
 
 #[derive(Debug)]

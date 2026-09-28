@@ -8,7 +8,7 @@ use crate::{
     Snapshot,
     artifacts::{self, ArtifactRead, VerifiedArtifact},
     open_source_bytes, read_bounded_file,
-    source::{PreparedSource, RawPreparation, RawPrepared},
+    source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment},
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -198,6 +198,12 @@ impl SourceWork {
     /// released first. Artifact work allocates none.
     pub(crate) fn decodes(&self) -> bool {
         matches!(self, Self::File { .. } | Self::Develop(_))
+    }
+
+    /// Whether the work redevelops the cached mosaic, so the development it replaces may be
+    /// retained beside it ([`EditorService::evict_development`]).
+    pub(crate) fn redevelops(&self) -> bool {
+        matches!(self, Self::Develop(_))
     }
 
     /// Run the work: decode the original and develop a RAW, or redevelop a cached mosaic, and then
@@ -475,8 +481,8 @@ impl EditorService {
     }
 
     /// The development an asset's cached RAW source needs to hold `gains`: `None` when its planes
-    /// already hold them, and when the cache holds no RAW source of this asset, whose preparation
-    /// develops it.
+    /// or its second slot already hold them, and when the cache holds no RAW source of this asset,
+    /// whose preparation develops it.
     pub(crate) fn raw_development(
         &self,
         asset_id: &AssetId,
@@ -490,7 +496,7 @@ impl EditorService {
         let PreparedSource::Raw(raw) = &cached.source else {
             return Ok(None);
         };
-        if gains == raw.gains && raw.linear.is_some() {
+        if (gains == raw.gains && raw.linear.is_some()) || cached.second.holds(gains) {
             return Ok(None);
         }
         Ok(Some(RawDevelopment {
@@ -509,12 +515,15 @@ impl EditorService {
     }
 
     /// Release the cache's float planes before the sole source worker allocates another development.
-    /// Preview jobs may still hold the old Arc; the worker's memory gate waits for those to finish.
-    pub(crate) fn evict_development(&self) {
+    /// When `retain`, because the work is a redevelopment of this same mosaic, the most recently
+    /// used development stays in the second slot, within its byte budget and exempt from the
+    /// memory gate ([`SecondDevelopment::evict`]); every other one is dropped. Preview jobs may
+    /// still hold the old Arc; the worker's memory gate waits for those to finish.
+    pub(crate) fn evict_development(&self, retain: bool) {
         if let Some(cached) = self.source_cache.borrow_mut().as_mut()
             && let PreparedSource::Raw(raw) = &mut cached.source
         {
-            raw.linear.take();
+            cached.second.evict(raw.gains, &mut raw.linear, retain);
         }
     }
 
@@ -547,7 +556,7 @@ impl EditorService {
                 "RAW source cache was replaced during development",
             ));
         };
-        let PreparedSource::Raw(previous) = &cached.source else {
+        let PreparedSource::Raw(previous) = &mut cached.source else {
             return Err(Error::incompatible(
                 "RAW development targeted a JPEG source",
             ));
@@ -555,6 +564,12 @@ impl EditorService {
         if !Arc::ptr_eq(&previous.sensor, &request.sensor) {
             return Err(Error::conflict("RAW mosaic changed during development"));
         }
+        // A development read back from the second slot while this one was built is the less
+        // recently used now, and waits there in turn.
+        let replaced = previous.linear.take();
+        cached
+            .second
+            .keep(previous.gains, replaced, developed.linear.as_ref());
         cached.source = PreparedSource::Raw(developed);
         Ok(state)
     }
@@ -635,7 +650,7 @@ impl EditorService {
         };
         // As on the owner: the cache's float planes go before another development is allocated.
         if work.decodes() {
-            self.evict_development();
+            self.evict_development(work.redevelops());
         }
         let prepared = work.run(&reads, &AtomicBool::new(false))?;
         self.complete_preparation(prepared).map(|(state, _)| state)
@@ -695,6 +710,7 @@ impl EditorService {
                 asset_id: state.asset.id.clone(),
                 signature,
                 source,
+                second: SecondDevelopment::default(),
             }));
             return Ok((state, false));
         }
@@ -769,6 +785,7 @@ impl EditorService {
             asset_id: asset.id.clone(),
             signature,
             source,
+            second: SecondDevelopment::default(),
         }));
         Ok((
             EditorState {
@@ -782,10 +799,15 @@ impl EditorService {
     }
 
     /// The asset's prepared original from the verified cache, once its file still has the
-    /// signature it was prepared under. Nothing is read here: a cache miss is
-    /// `preparation-required`, which the evaluation that asked names with everything its stack
+    /// signature it was prepared under, holding the development of `recipe`'s white balance when
+    /// the second slot has it ([`SecondDevelopment::take_up`]). Nothing is read here: a cache miss
+    /// is `preparation-required`, which the evaluation that asked names with everything its stack
     /// needs ([`Self::needing`]), and a source job prepares ([`SourceWork`]).
-    pub(super) fn verified_prepared(&self, asset: &AssetRecord) -> Result<PreparedSource, Error> {
+    pub(super) fn verified_prepared(
+        &self,
+        asset: &AssetRecord,
+        recipe: &crate::Recipe,
+    ) -> Result<PreparedSource, Error> {
         let signature = original_signature(asset)?;
         let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
         let max_source_bytes = if raw_source {
@@ -798,10 +820,19 @@ impl EditorService {
                 "original source fingerprint changed",
             ));
         }
-        if let Some(cached) = self.source_cache.borrow().as_ref()
+        if let Some(cached) = self.source_cache.borrow_mut().as_mut()
             && cached.asset_id == asset.id
             && cached.signature == signature
         {
+            // Which development a stack reads is decided where it is evaluated; an unreadable
+            // development layer is refused there, so here it only leaves the cache as it is.
+            if let PreparedSource::Raw(raw) = &mut cached.source
+                && let Ok(Some(gains)) = development_gains(asset, recipe)
+            {
+                cached
+                    .second
+                    .take_up(&mut raw.gains, &mut raw.linear, gains);
+            }
             return Ok(cached.source.clone());
         }
         Err(Error::preparation_required("source preparation required"))
@@ -1783,7 +1814,7 @@ mod tests {
             .prepare(&service.entry_needs(&state.asset.id, None).unwrap())
             .expect("a preparation after reopen accepts the decoded interpretation");
         service
-            .verified_prepared(&state.asset)
+            .verified_prepared(&state.asset, &state.current_entry.snapshot.recipe)
             .expect("the prepared original is cached");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
