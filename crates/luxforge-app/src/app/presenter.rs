@@ -16,6 +16,7 @@
 //! while the same generation's photograph is on screen, so a mask derived from one frame is never
 //! drawn over another.
 use luxforge_ui::{Frame, RegionFrame, RegionOverlay, RegionQuality};
+use std::sync::Arc;
 
 /// Every frame the canvas draws, with the versions that tell the surface which are new.
 #[derive(Debug, Default)]
@@ -39,10 +40,10 @@ pub(crate) struct Presenter {
 }
 
 /// One frame of `width` × `height` RGBA pixels at the next of `versions`, or `None` when the buffer
-/// is not that size. The buffer is taken as it is: nothing is copied. A refused buffer does not use
-/// up a version.
-fn frame(
-    pixels: impl AsRef<[u8]> + Send + Sync + 'static,
+/// is not that size. The buffer is shared as it is: nothing is copied. A refused buffer does not
+/// use up a version.
+fn frame<P: AsRef<[u8]> + Send + Sync + 'static>(
+    pixels: Arc<P>,
     width: u32,
     height: u32,
     versions: &mut u64,
@@ -190,7 +191,7 @@ impl Presenter {
         rgba: Vec<u8>,
         (width, height): (u32, u32),
     ) -> bool {
-        self.clipping = frame(rgba, width, height, &mut self.clipping_versions)
+        self.clipping = frame(Arc::new(rgba), width, height, &mut self.clipping_versions)
             .map(|frame| (generation, frame));
         self.clipping.is_some()
     }
@@ -213,7 +214,7 @@ impl Presenter {
         rgba: Vec<u8>,
         (width, height): (u32, u32),
     ) -> bool {
-        self.coverage = frame(rgba, width, height, &mut self.coverage_versions)
+        self.coverage = frame(Arc::new(rgba), width, height, &mut self.coverage_versions)
             .map(|frame| (generation, frame));
         self.coverage.is_some()
     }
@@ -234,8 +235,8 @@ impl Presenter {
         size: (u32, u32),
         region: &super::preview::PresentedRegion,
     ) -> bool {
-        self.region_clipping =
-            frame(rgba, size.0, size.1, &mut self.clipping_versions).and_then(|frame| {
+        self.region_clipping = frame(Arc::new(rgba), size.0, size.1, &mut self.clipping_versions)
+            .and_then(|frame| {
                 RegionOverlay::new(
                     frame,
                     [
@@ -260,8 +261,8 @@ impl Presenter {
         size: (u32, u32),
         region: &super::preview::PresentedRegion,
     ) -> bool {
-        self.region_coverage =
-            frame(rgba, size.0, size.1, &mut self.coverage_versions).and_then(|frame| {
+        self.region_coverage = frame(Arc::new(rgba), size.0, size.1, &mut self.coverage_versions)
+            .and_then(|frame| {
                 RegionOverlay::new(
                     frame,
                     [

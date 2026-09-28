@@ -456,7 +456,7 @@ fn nearest_index(value: f64, limit: u32) -> u32 {
 pub struct Raster {
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<[u8]>,
+    pub rgba: Arc<Vec<u8>>,
     pub source_fingerprint: String,
     pub snapshot_id: SnapshotId,
 }
@@ -485,17 +485,18 @@ impl Raster {
     }
 }
 
-/// A zeroed byte frame of `len` bytes, allocated as the `Arc<[u8]>` a [`Raster`] holds so that the
-/// frame a pass writes is the frame the render returns. Converting a finished `Vec<u8>` instead
-/// allocates a second frame and copies the first into it. A `TrustedLen` iterator collects into one
-/// allocation of exactly this length, where the pass then writes in place through [`frame_mut`].
-pub(crate) fn zeroed_frame(len: usize) -> Arc<[u8]> {
-    std::iter::repeat_n(0, len).collect()
+/// A zeroed byte frame of `len` bytes, allocated as the `Arc<Vec<u8>>` a [`Raster`] holds so that
+/// the frame a pass writes is the frame the render returns, and the pass writes it in place through
+/// [`frame_mut`]. `vec![0; len]` asks the allocator for zeroed memory (`calloc`), whose fresh pages
+/// are already zero, so no thread fills the frame before the pass: each page is faulted in by
+/// whichever worker first writes it.
+pub(crate) fn zeroed_frame(len: usize) -> Arc<Vec<u8>> {
+    Arc::new(vec![0; len])
 }
 
 /// The bytes of a frame a pass is still writing. A frame is not shared until the render returns
-/// it, so this never fails.
-pub(crate) fn frame_mut(frame: &mut Arc<[u8]>) -> &mut [u8] {
+/// it, so this never fails, and it never clones one.
+pub(crate) fn frame_mut(frame: &mut Arc<Vec<u8>>) -> &mut [u8] {
     #[cfg(test)]
     frame_writes::note(frame);
     Arc::get_mut(frame).expect("a frame is not shared until its render returns it")
@@ -673,6 +674,12 @@ impl ExactGeometry {
         }
     }
 
+    /// Whether every output row is one run of an input row: the linear part is the identity, so
+    /// the geometry at most translates.
+    fn keeps_rows(self) -> bool {
+        (self.a, self.b, self.c, self.d) == (1, 0, 0, 1)
+    }
+
     fn is_identity(self, input_width: u32, input_height: u32) -> bool {
         self.output_width == input_width
             && self.output_height == input_height
@@ -776,7 +783,7 @@ fn resample_frame(
     origin: (u32, u32),
     window: Region,
     cancel: &Cancel,
-) -> Result<Arc<[u8]>, Error> {
+) -> Result<Arc<Vec<u8>>, Error> {
     if window.is_empty()
         || window.x1() > resample.output_width
         || window.y1() > resample.output_height
@@ -1218,7 +1225,7 @@ pub(crate) struct Byte<'a>(pub(crate) &'a SourceImage);
 
 impl PixelDomain for Byte<'_> {
     type Pixel = [u8; 4];
-    type SpatialFrame = Arc<[u8]>;
+    type SpatialFrame = Arc<Vec<u8>>;
     /// A tile's RGBA rows, quantized and with the input's alpha, exactly as the frame holds them.
     type TileOutput = Vec<u8>;
 
@@ -1287,7 +1294,7 @@ impl PixelDomain for Byte<'_> {
         Ok(pixel)
     }
 
-    fn spatial_frame(stage: Stage) -> Result<Arc<[u8]>, Error> {
+    fn spatial_frame(stage: Stage) -> Result<Arc<Vec<u8>>, Error> {
         Ok(zeroed_frame(Raster::expected_len(
             stage.width,
             stage.height,
@@ -1334,7 +1341,7 @@ impl PixelDomain for Byte<'_> {
         bytes
     }
 
-    fn write_tile(frame: &mut Arc<[u8]>, stage: Stage, tile: Region, bytes: Vec<u8>) {
+    fn write_tile(frame: &mut Arc<Vec<u8>>, stage: Stage, tile: Region, bytes: Vec<u8>) {
         let output = frame_mut(frame);
         let row_bytes = tile.width as usize * 4;
         for (row, y) in (tile.y0..tile.y1()).enumerate() {
@@ -1344,7 +1351,7 @@ impl PixelDomain for Byte<'_> {
         }
     }
 
-    fn frame_pixel(frame: &Arc<[u8]>, stage: Stage, x: u32, y: u32) -> [u8; 4] {
+    fn frame_pixel(frame: &Arc<Vec<u8>>, stage: Stage, x: u32, y: u32) -> [u8; 4] {
         let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
         let pixel = &frame[offset..offset + 4];
         [pixel[0], pixel[1], pixel[2], pixel[3]]
@@ -1353,7 +1360,7 @@ impl PixelDomain for Byte<'_> {
 
 /// One byte segment's rows, held in the frame the pass writes: loaded through the segment's exact
 /// geometry from its input frame, or left where they are when that geometry is the identity and the
-/// pass writes over its own copy of its input. Each colour run decodes the rows it reaches,
+/// pass writes over a frame this render already wrote. Each colour run decodes the rows it reaches,
 /// evaluates them and quantizes them back.
 struct ByteRows<'f> {
     /// The frame the geometry reads and its width, or `None` for a pass in place.
@@ -1387,12 +1394,23 @@ impl SegmentRows for ByteRows<'_> {
         }
     }
 
-    /// Every output pixel copies exactly one input pixel.
+    /// Every output pixel copies exactly one input pixel. A geometry that at most translates copies
+    /// each output row as one run of its input row.
     fn load(&self, _: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error> {
         let Some((input, input_width)) = self.input else {
             return Ok(());
         };
-        for (row, bytes) in chunk.chunks_exact_mut(self.width * 4).enumerate() {
+        let row_bytes = self.width * 4;
+        if self.geometry.keeps_rows() {
+            for (row, bytes) in chunk.chunks_exact_mut(row_bytes).enumerate() {
+                let (input_x, input_y) = self.geometry.unmap(0, y0 + row as u32);
+                let from = ((u64::from(input_y) * u64::from(input_width) + u64::from(input_x)) * 4)
+                    as usize;
+                bytes.copy_from_slice(&input[from..from + row_bytes]);
+            }
+            return Ok(());
+        }
+        for (row, bytes) in chunk.chunks_exact_mut(row_bytes).enumerate() {
             let out_y = y0 + row as u32;
             for out_x in 0..self.width as u32 {
                 let (input_x, input_y) = self.geometry.unmap(out_x, out_y);
@@ -1648,8 +1666,9 @@ pub(crate) fn transform_of(
 /// boundary reads: a segment's input frame is the source, a resample of the frame before it or a
 /// spatial operation's output, and one [`segment_pass`] writes the segment's frame from it through
 /// its exact geometry, replacements and colour runs. A segment whose geometry is the identity writes
-/// over its own copy of its input in place and one that writes nothing shares its input, so an
-/// identity stack returns the source allocation itself. At most two frames exist at once.
+/// in place over a frame this render wrote, loads the shared source's rows into its new frame
+/// inside the pass, and shares its input when it writes nothing, so an identity stack returns the
+/// source allocation itself. At most two frames exist at once.
 pub(super) fn rasterize(
     source: &SourceImage,
     compiled: &Compiled,
@@ -1661,13 +1680,13 @@ pub(super) fn rasterize(
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
     let domain = Byte(source);
-    // The frame the next pass reads; `None` is the source itself. Every frame is an `Arc<[u8]>`
-    // from the start, so the last one written is the one returned.
-    let mut frame: Option<Arc<[u8]>> = None;
+    // The frame the next pass reads; `None` is the source itself. Every frame is the raster's
+    // `Arc<Vec<u8>>` from the start, so the last one written is the one returned.
+    let mut frame: Option<Arc<Vec<u8>>> = None;
     let (mut width, mut height) = (source.width, source.height);
     for (index, segment) in compiled.segments.iter().enumerate() {
         if let Some(entry) = &segment.entry {
-            let input = frame.as_deref().unwrap_or(source.rgba.as_ref());
+            let input = frame.as_deref().unwrap_or(&source.rgba).as_slice();
             let next = match entry {
                 Entry::Resample(resample) => resample_frame(
                     input,
@@ -1722,13 +1741,19 @@ pub(super) fn rasterize(
         }
         let band = band(compiled, index);
         if segment.geometry.is_identity(width, height) {
-            // An identity pass with nothing to write shares its input instead of copying it.
+            // An identity pass with nothing to write shares its input instead of copying it. One
+            // over a frame this render wrote writes it in place. The source is shared, so a pass
+            // over it loads the source's rows into a new frame, chunk by chunk inside the pass.
             if segment.writes_pixels() {
-                let mut owned = frame
-                    .take()
-                    .unwrap_or_else(|| Arc::<[u8]>::from(source.rgba.as_ref()));
+                let (mut owned, input) = match frame.take() {
+                    Some(owned) => (owned, None),
+                    None => (
+                        zeroed_frame(source.rgba.len()),
+                        Some((source.rgba.as_slice(), width)),
+                    ),
+                };
                 segment_pass(
-                    &ByteRows::new(segment, None),
+                    &ByteRows::new(segment, input),
                     segment,
                     frame_mut(&mut owned),
                     band,
@@ -1744,7 +1769,7 @@ pub(super) fn rasterize(
             segment_pass(
                 &ByteRows::new(
                     segment,
-                    Some((input.as_deref().unwrap_or(source.rgba.as_ref()), width)),
+                    Some((input.as_deref().unwrap_or(&source.rgba).as_slice(), width)),
                 ),
                 segment,
                 frame_mut(&mut next),
@@ -3025,7 +3050,7 @@ mod tests {
                         "{layers:?}"
                     );
                     assert_eq!(
-                        raster.rgba.as_ref(),
+                        raster.rgba.as_slice(),
                         expected.2,
                         "{crop:?} {stack:?} {after:?}"
                     );
@@ -3578,7 +3603,7 @@ mod tests {
                 expected.extend(source_pixel(&source, offset_x + 1, offset_y + 1));
             }
         }
-        assert_eq!(raster.rgba.as_ref(), expected);
+        assert_eq!(raster.rgba.as_slice(), expected);
         for (x, y) in [(0, 0), (raster.width - 1, raster.height - 1)] {
             assert_eq!(
                 sample(&registry, &source, &recipe, x, y).unwrap().rgba,
@@ -3837,7 +3862,7 @@ mod tests {
                     let expected = reference(&source, &layers);
                     let actual = rendered(&source, layers);
                     assert_eq!((actual.width, actual.height), (expected.0, expected.1));
-                    assert_eq!(actual.rgba.as_ref(), expected.2);
+                    assert_eq!(actual.rgba.as_slice(), expected.2);
                 }
             }
         }
@@ -3872,7 +3897,7 @@ mod tests {
                         "{state:?} then {transform:?}"
                     );
                     assert_eq!(
-                        raster.rgba.as_ref(),
+                        raster.rgba.as_slice(),
                         expected.2,
                         "{state:?} then {transform:?}"
                     );
@@ -3892,7 +3917,7 @@ mod tests {
                         "{first:?} {second:?} {third:?}"
                     );
                     assert_eq!(
-                        collapsed.rgba.as_ref(),
+                        collapsed.rgba.as_slice(),
                         expected.2,
                         "{first:?} {second:?} {third:?}"
                     );
@@ -4356,7 +4381,7 @@ mod tests {
                 expected.push(pixel[3]);
             }
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-            assert_eq!(raster.rgba.as_ref(), expected, "{width}x{height}");
+            assert_eq!(raster.rgba.as_slice(), expected, "{width}x{height}");
         }
     }
 
@@ -4593,7 +4618,7 @@ mod tests {
         assert!(!compiled.segments[0].has_color);
     }
 
-    /// Every frame a pass writes is allocated as the raster's own `Arc<[u8]>`, so whatever pass
+    /// Every frame a pass writes is allocated as the raster's own `Arc<Vec<u8>>`, so whatever pass
     /// wrote last is what the render returns, with no copy after it, on each kind of stack: a
     /// colour pass over a copy of the source, an exact transform, a resample and a spatial
     /// boundary. The bytes are the ones a point sample reads, and a stack that writes nothing
@@ -4675,6 +4700,59 @@ mod tests {
         });
         assert!(written.is_empty(), "an identity stack writes no frame");
         assert!(Arc::ptr_eq(&raster.rgba, &source.rgba));
+    }
+
+    /// A pass over the shared source loads the source's rows into its own frame inside the pass,
+    /// and a geometry that only translates copies each output row as one run of its input row. The
+    /// source is never written, and every pixel of each frame is the point sample of the same
+    /// stack: a colour pass through the identity, a straight crop, and a straight crop around a
+    /// colour pass and a replacement.
+    #[test]
+    fn a_pass_over_the_source_loads_its_rows_and_leaves_the_source_alone() {
+        let registry = registry();
+        let (width, height) = (67, 41);
+        let source = gradient(width, height);
+        let original = source.rgba.as_slice().to_vec();
+        let colour = Layer {
+            id: LayerId::new(),
+            effect_id: crate::BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"exposure": 0.4, "contrast": 20.0}),
+            mask: None,
+            artifacts: Vec::new(),
+        };
+        let crop = Layer::crop(fitted_crop(width, height, 0.0, [0.1, 0.2, 0.7, 0.6]));
+        for (case, layers) in [
+            ("a colour pass through the identity", vec![colour.clone()]),
+            ("a straight crop", vec![crop.clone()]),
+            (
+                "a straight crop around a colour pass and a replacement",
+                vec![colour, Layer::pixel(3, 4, [250, 1, 2]), crop],
+            ),
+        ] {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            };
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            assert!(
+                !Arc::ptr_eq(&raster.rgba, &source.rgba),
+                "{case}: the pass writes its own frame"
+            );
+            assert_eq!(
+                source.rgba.as_slice(),
+                original,
+                "{case}: the source is untouched"
+            );
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
+                    assert_eq!(raster.pixel(x, y), sampled.rgba, "{case} at ({x}, {y})");
+                }
+            }
+        }
     }
 
     #[test]

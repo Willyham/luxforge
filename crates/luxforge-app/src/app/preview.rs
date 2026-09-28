@@ -26,7 +26,7 @@ const QUIET_INTERVAL: Duration = Duration::from_millis(120);
 ///
 /// It is what a zoom back to Fit hands the surface again instead of rendering, and what the
 /// clipping overlay is derived from while the exact phase of that generation is still outstanding.
-/// Retaining it copies no pixels: it shares the render's own `Arc<[u8]>` with the surface itself.
+/// Retaining it copies no pixels: it shares the render's own `Arc<Vec<u8>>` with the surface.
 ///
 /// Its generation is also the desktop's only record that the job of that generation *had* a proxy
 /// phase. The exact result cannot say so: `proxy_declined` is `None` both for a job that asked for
@@ -791,7 +791,7 @@ impl Editor {
                 // same update that hands the raster to the surface, so the plot,
                 // the overlays and the photograph are adopted together.
                 // Retaining the raster copies nothing: it shares the render's own
-                // `Arc<[u8]>` with the buffer the surface draws from.
+                // `Arc<Vec<u8>>` with the buffer the surface draws from.
                 let retained = Arc::new(raster.clone());
                 if proxy {
                     // A proxy raster is never reduced, so it replaces no report
@@ -1057,7 +1057,7 @@ impl Editor {
         // reports this render's time. The status bar keeps the proxy's figure meanwhile: the proxy
         // is the picture on screen.
         self.exact_render_ms = Some((generation, render_ms));
-        // Shares the render's own `Arc<[u8]>`: retaining it copies no pixels.
+        // Shares the render's own `Arc<Vec<u8>>`: retaining it copies no pixels.
         let retained = Arc::new(raster);
         match report {
             Some(report) => {
@@ -1680,8 +1680,8 @@ impl Editor {
     /// frame — the primitive's `prepare` writes them into its own texture on the way — so there is
     /// no allocation round trip between a rendered frame and the screen, and no message to wait for.
     ///
-    /// Retaining the raster copies nothing: the surface borrows the render's own `Arc<[u8]>`, which
-    /// the desktop already holds as the proxy frame or the exact raster of this generation.
+    /// Retaining the raster copies nothing: the surface borrows the render's own `Arc<Vec<u8>>`,
+    /// which the desktop already holds as the proxy frame or the exact raster of this generation.
     pub(super) fn present(&mut self, upload: Upload, raster: &luxforge_core::Raster) {
         // A new version, so the primitive writes the frame exactly once however often the same
         // raster is drawn. Nothing but a new frame moves it.

@@ -242,8 +242,8 @@ pub struct Turn {
 /// and never otherwise. The desktop gives each layer a counter it increments each time it hands a
 /// frame over; any monotone key with that property works.
 ///
-/// The buffer is whatever already holds the pixels — a render's shared `Arc<[u8]>`, or the `Vec` an
-/// overlay was painted into — taken as it is, so making a frame copies nothing.
+/// The buffer is whatever already holds the pixels, shared as it is — a render's own
+/// `Arc<Vec<u8>>`, or the `Vec` an overlay was painted into — so making a frame copies nothing.
 #[derive(Clone)]
 pub struct Frame {
     pixels: Arc<dyn AsRef<[u8]> + Send + Sync>,
@@ -265,9 +265,10 @@ impl std::fmt::Debug for Frame {
 
 impl Frame {
     /// A frame of `width` × `height` RGBA8 pixels, or `None` when the buffer does not hold exactly
-    /// that many bytes. A surface never draws a buffer it cannot account for.
-    pub fn new(
-        pixels: impl AsRef<[u8]> + Send + Sync + 'static,
+    /// that many bytes. A surface never draws a buffer it cannot account for. The frame holds the
+    /// caller's own `Arc`, so a buffer already shared is not wrapped again.
+    pub fn new<P: AsRef<[u8]> + Send + Sync + 'static>(
+        pixels: Arc<P>,
         width: u32,
         height: u32,
         version: u64,
@@ -275,8 +276,8 @@ impl Frame {
         let expected = (width as usize)
             .checked_mul(height as usize)
             .and_then(|pixels| pixels.checked_mul(4))?;
-        (width > 0 && height > 0 && pixels.as_ref().len() == expected).then(|| Self {
-            pixels: Arc::new(pixels),
+        (width > 0 && height > 0 && (*pixels).as_ref().len() == expected).then(|| Self {
+            pixels,
             width,
             height,
             version,
@@ -2348,7 +2349,7 @@ mod tests {
     use super::*;
 
     fn raster(width: u32, height: u32, version: u64) -> Frame {
-        let pixels: Arc<[u8]> = vec![0u8; (width * height * 4) as usize].into();
+        let pixels = Arc::new(vec![0u8; (width * height * 4) as usize]);
         Frame::new(pixels, width, height, version).expect("a whole raster")
     }
 
@@ -2586,7 +2587,7 @@ mod tests {
     /// A frame is exactly its declared size, or it is not a frame at all.
     #[test]
     fn a_raster_is_refused_unless_the_buffer_matches_its_dimensions() {
-        let pixels: Arc<[u8]> = vec![0u8; 16].into();
+        let pixels = Arc::new(vec![0u8; 16]);
         assert_eq!(
             raster(2, 2, 7).size(),
             (2, 2),
@@ -2600,7 +2601,7 @@ mod tests {
             );
         }
         // Any buffer that holds the bytes will do, taken as it is: a painted overlay's own `Vec`.
-        assert!(Frame::new(vec![0u8; 16], 2, 2, 1).is_some());
+        assert!(Frame::new(Arc::new(vec![0u8; 16]), 2, 2, 1).is_some());
     }
 
     /// Contain is the toolkit's own rule: the largest rectangle of the raster's ratio that fits,
@@ -3281,16 +3282,17 @@ mod gpu_surface_tests {
     }
 
     fn raster(width: u32, height: u32, version: u64) -> Frame {
-        let pixels: Arc<[u8]> = vec![0u8; (width * height * 4) as usize].into();
+        let pixels = Arc::new(vec![0u8; (width * height * 4) as usize]);
         Frame::new(pixels, width, height, version).expect("a whole raster")
     }
 
     fn solid_raster(width: u32, height: u32, version: u64, rgba: [u8; 4]) -> Frame {
-        let pixels: Arc<[u8]> = vec![rgba; (width * height) as usize]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .into();
+        let pixels = Arc::new(
+            vec![rgba; (width * height) as usize]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
+        );
         Frame::new(pixels, width, height, version).expect("an opaque raster")
     }
 
@@ -3301,7 +3303,7 @@ mod gpu_surface_tests {
                 pixels.extend_from_slice(&colours[usize::from(x >= width / 2)]);
             }
         }
-        Frame::new(pixels, width, height, version).expect("striped raster")
+        Frame::new(Arc::new(pixels), width, height, version).expect("striped raster")
     }
 
     fn full_primitive(frame: Frame) -> PhotoPrimitive {

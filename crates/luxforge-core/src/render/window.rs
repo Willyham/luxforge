@@ -651,7 +651,7 @@ mod tests {
                 }
                 for region in regions {
                     assert_eq!(
-                        region.raster.rgba.as_ref(),
+                        region.raster.rgba.as_slice(),
                         cropped_bytes(&whole, region.rect),
                         "{domain} case {case} at {:?}",
                         region.rect
@@ -733,7 +733,7 @@ mod tests {
                 .frame(SnapshotId::new())
                 .unwrap();
                 assert_eq!(
-                    region.raster.rgba.as_ref(),
+                    region.raster.rgba.as_slice(),
                     cropped_bytes(&reference, region.rect),
                     "{domain} at {requested:?}"
                 );
@@ -804,7 +804,7 @@ mod tests {
                         panic!("{domain}: serial quarter region declined")
                     };
                     assert_eq!(
-                        part.raster.rgba.as_ref(),
+                        part.raster.rgba.as_slice(),
                         cropped_bytes(&whole, rect),
                         "{domain}: heavy colour pool differs at quarter {rect:?}"
                     );
@@ -885,7 +885,7 @@ mod tests {
                         );
                     }
                     assert_eq!(
-                        part.raster.rgba.as_ref(),
+                        part.raster.rgba.as_slice(),
                         cropped_bytes(&whole, rect),
                         "{domain}: bounded resample differs at quarter {rect:?}"
                     );
@@ -1146,7 +1146,7 @@ mod tests {
                 panic!("{domain}, {width} px: region declined")
             };
             assert_eq!(
-                region.raster.rgba.as_ref(),
+                region.raster.rgba.as_slice(),
                 cropped_bytes(&whole, requested),
                 "{domain}, {width} px"
             );
@@ -1301,7 +1301,7 @@ mod tests {
                     &reference_context,
                 );
                 assert_eq!(
-                    frame.raster.rgba.as_ref(),
+                    frame.raster.rgba.as_slice(),
                     cropped_bytes(&whole_estimate_proxy, frame.rect),
                     "{domain}: production half viewport must use exact globals"
                 );
