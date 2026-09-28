@@ -841,7 +841,7 @@
     {
       "id": "TASK-012",
       "description": "Restructure `docs/design/architecture.md` into short sections with a limits table naming the constant that enforces each figure, and fold the finished, wave-named performance design documents into the performance spec they duplicate.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. `architecture.md` is the source the performance-rules review checklist names for every current limit, so its readability as a checklist matters more than most documents in the tree.",
@@ -879,20 +879,23 @@
         {
           "kind": "file",
           "label": "Source preparation and rendering performance",
-          "target": "docs/design/performance-second-wave.md",
-          "relevance": "One of the three finished-work documents to fold and delete."
+          "target": "docs/specs/performance.md",
+          "locator": "Source preparation and rendering: contract and review",
+          "relevance": "Where the folded performance-second-wave.md's scope and checklist now live."
         },
         {
           "kind": "file",
           "label": "Startup and RAW throughput",
-          "target": "docs/design/performance-third-wave.md",
-          "relevance": "Another of the three finished-work documents to fold and delete."
+          "target": "docs/specs/performance.md",
+          "locator": "Startup and RAW throughput: contract and review",
+          "relevance": "Where the folded performance-third-wave.md's scope and checklist now live."
         },
         {
           "kind": "file",
           "label": "Isolated rendering performance",
-          "target": "docs/design/isolated-performance.md",
-          "relevance": "Another of the three finished-work documents to fold and delete."
+          "target": "docs/specs/performance.md",
+          "locator": "The isolated kernels' contract and review",
+          "relevance": "Where the folded isolated-performance.md's kernels and review table now live."
         }
       ],
       "acceptance_criteria": [
