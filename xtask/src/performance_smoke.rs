@@ -3,8 +3,8 @@
 //!
 //! Its frames, in [`plan`] order: the photograph opened with the section open, as every launch
 //! starts it, and sampling; a 3.6 s wait, by which the one-second sampler has read at least four
-//! times; a 3° straighten; a Presence Clarity commit over it, whose exact render at 60 MP runs long
-//! enough to be listed as long work; a wait after which that render is listed as finished; the
+//! times; a 3° straighten; a Presence commit of all three fields over it, whose exact render at
+//! 60 MP runs long enough to be listed as long work; a wait after which that render is listed as finished; the
 //! section collapsed; a 2.5 s wait in which nothing more is read; and the section opened again,
 //! captured on its first read of a fresh window.
 //!
@@ -19,10 +19,8 @@
 //! they were, and the reopened frame proves that opening clears the window and reads at once.
 //! Everything compared is written to `app/performance-checks.json`.
 //!
-//! With `--source RAW` the heavy step is Presence Clarity and Texture together instead, because a
-//! RAW photograph of 24 to 40 MP renders Clarity alone, and redevelops for a temperature commit, in
-//! under the section's 0.5 s; that run is not part of `rendered`, because no RAW photograph is
-//! checked in.
+//! With `--source RAW` the heavy step is the same, over a photograph of 24 to 40 MP; that run is not
+//! part of `rendered`, because no RAW photograph is checked in.
 use crate::{
     scenario::{
         Checked, Plan, Run, Step,
@@ -47,19 +45,14 @@ const FILL_WAIT_MS: u64 = 3_600;
 const FINISHED_WAIT_MS: u64 = 2_500;
 /// Two and a half sampler intervals, in which a collapsed section must read nothing.
 const ASLEEP_WAIT_MS: u64 = 2_500;
-/// The straighten under the heavy edit. Clarity alone renders its exact phase in about 0.6 s on
-/// the owner's M4, too close to the section's 0.5 s threshold to be listed reliably; over a 3°
-/// straighten, whose interpolation it then renders through, it takes about 0.9 s.
+/// The straighten under the heavy edit, whose interpolation the heavy edit's exact phase then
+/// renders through.
 const ANGLE: f64 = 3.0;
-/// The heavy edit's Clarity: full Presence Clarity, a spatial operation over the whole frame at its
-/// exact phase. On the 60 MP JPEG it is the whole edit: Texture or Dehaze beside it would run for
-/// seconds more, which is more than the scenario needs.
-const CLARITY: f64 = 100.0;
-/// Texture beside Clarity in the heavy edit on a RAW source. A RAW photograph has 24 to 40 MP, so
-/// Clarity alone renders in less than the section's 0.5 s threshold, and so does a temperature
-/// commit's redevelopment since RCD runs on the pool (about 80 ms on the Z6 and 330 ms on the
-/// X100VI); both together over the straighten render for about 0.8 s on the Z6.
-const TEXTURE: f64 = 100.0;
+/// The heavy edit: all three Presence fields at full strength, spatial operations over the whole
+/// frame at its exact phase. Clarity alone at 60 MP over the straighten now renders in about
+/// 0.35 s on the owner's M4, under the section's 0.5 s threshold, and so does a RAW photograph's
+/// Clarity with Texture; all three render for over a second at 60 MP.
+const PRESENCE: [(&str, f64); 3] = [("clarity", 100.0), ("texture", 100.0), ("dehaze", 100.0)];
 /// The section's own display rules, restated here so the runner does not borrow them.
 const LONG_JOB_MS: u64 = 500;
 const RECENT_JOB_MS: u64 = 10_000;
@@ -80,43 +73,22 @@ const BRACKET_MS: u64 = 1_000;
 /// 16 KiB, covers small movements of that kind; `performance-checks.json` records the differences.
 const MEMORY_SLACK: u64 = 8 << 20;
 
-/// A RAW source is anything the editor opens that is not a JPEG.
-fn is_raw(sources: &[PathBuf]) -> bool {
-    sources.first().is_some_and(|source| {
-        !source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg")
-            })
-    })
-}
-
-/// The heavy step for this source: Presence Clarity on the JPEG, Clarity and Texture on a RAW.
-fn heavy_step(raw: bool) -> script::Step {
-    if raw {
-        script::Step::call(
-            "edit.set-presence",
-            json!({"clarity":CLARITY,"texture":TEXTURE}),
-        )
-    } else {
-        script::Step::call("edit.set-presence", json!({"clarity":CLARITY}))
-    }
+/// The heavy step: every Presence field at once, on a JPEG and a RAW alike.
+fn heavy_step() -> script::Step {
+    let fields: serde_json::Map<String, Value> = PRESENCE
+        .iter()
+        .map(|(field, amount)| ((*field).to_owned(), json!(amount)))
+        .collect();
+    script::Step::call("edit.set-presence", Value::Object(fields))
 }
 
 /// Every frame, in order, over the source the run opens. What each step commits is planned here:
 /// nothing but the two edits commits anything. What the section shows, `verify` checks.
-pub fn plan(sources: &[PathBuf]) -> Plan {
-    let raw = is_raw(sources);
-    // Each heavy commit is labelled by the Presence module: one field by its name and amount, two
-    // by the module's title and their count.
-    let heavy = Step::new("heavy", heavy_step(raw))
+pub fn plan(_sources: &[PathBuf]) -> Plan {
+    // The heavy commit is labelled by the Presence module: every field at once by its title alone.
+    let heavy = Step::new("heavy", heavy_step())
         .commits(1)
-        .label(if raw {
-            "Presence (2 fields)".to_owned()
-        } else {
-            format!("Clarity +{CLARITY}")
-        });
+        .label("Presence".to_owned());
     Plan::new(vec![
         // The photograph opened with the section open and sampling, as every launch starts it.
         Step::opened("opened"),
@@ -898,30 +870,24 @@ mod tests {
         assert_eq!(rows[0]["label"], json!("No background work"));
     }
 
-    /// The plan scripts one step per frame after the open, and its heavy step is Clarity on the
-    /// JPEG and Clarity with Texture on a RAW, over the straighten either way.
+    /// The plan scripts one step per frame after the open, and its heavy step is every Presence
+    /// field at once over the straighten, on a JPEG and a RAW alike.
     #[test]
-    fn the_plan_picks_the_heavy_step_by_its_source() {
+    fn the_plan_scripts_every_presence_field_as_the_heavy_step() {
         let call = |plan: &Plan, step: &str| {
             let at = plan.index(step).expect("a planned step");
             plan.steps()[at].script().expect("a scripted step")["api"].clone()
         };
-        let jpeg = plan(&[PathBuf::from("a/60mp.jpg")]);
-        assert_eq!(jpeg.script().as_array().map(Vec::len), Some(jpeg.len() - 1));
-        assert_eq!(
-            call(&jpeg, "straightened")["method"],
-            json!("edit.crop-fit")
-        );
-        assert_eq!(
-            call(&jpeg, "heavy"),
-            json!({"method":"edit.set-presence","params":{"clarity":100.0}})
-        );
-        let raw = plan(&[PathBuf::from("a/x.RAF")]);
-        assert_eq!(call(&raw, "straightened")["method"], json!("edit.crop-fit"));
-        assert_eq!(
-            call(&raw, "heavy"),
-            json!({"method":"edit.set-presence","params":{"clarity":100.0,"texture":100.0}})
-        );
+        let heavy = json!({"method":"edit.set-presence","params":{"clarity":100.0,"texture":100.0,"dehaze":100.0}});
+        for source in ["a/60mp.jpg", "a/x.RAF"] {
+            let plan = plan(&[PathBuf::from(source)]);
+            assert_eq!(plan.script().as_array().map(Vec::len), Some(plan.len() - 1));
+            assert_eq!(
+                call(&plan, "straightened")["method"],
+                json!("edit.crop-fit")
+            );
+            assert_eq!(call(&plan, "heavy"), heavy, "{source}");
+        }
     }
 
     /// A frame's recorded Performance state: the job rows it shows over the `activity.list` it read.
