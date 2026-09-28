@@ -203,6 +203,10 @@ struct ComponentKind {
     /// as a module descriptor names its own icon. It lives in the table so a panel, a menu and a
     /// draft bar show one glyph per kind without matching on kind tokens of their own.
     icon: &'static str,
+    /// What a menu offering this kind calls it: `Linear gradient` where the component it makes is
+    /// named `Linear 1`, because a menu names what you are about to draw and a row names the thing
+    /// drawn. Only a menu reads it; component names keep [`kind_title`].
+    menu_title: &'static str,
     /// The one control a kind whose geometry is a band on one axis declares beyond its number
     /// fields: a `range` over its patch method, named by that method. `None` for every kind that is
     /// not a band; its number fields are all a panel draws for it.
@@ -242,6 +246,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: false,
         limits: &[],
         icon: "linear",
+        menu_title: "Linear gradient",
         band: None,
     },
     ComponentKind {
@@ -253,6 +258,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: false,
         limits: &[],
         icon: "radial",
+        menu_title: "Radial gradient",
         band: None,
     },
     ComponentKind {
@@ -264,6 +270,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: false,
         limits: &[],
         icon: "brush",
+        menu_title: "Brush",
         band: None,
     },
     ComponentKind {
@@ -275,6 +282,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: true,
         limits: range::LUMINANCE_LIMITS,
         icon: "luminance",
+        menu_title: "Luminance range",
         band: Some(range::luminance_band),
     },
     ComponentKind {
@@ -289,6 +297,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         value_based: true,
         limits: range::COLOUR_LIMITS,
         icon: "colour",
+        menu_title: "Colour range",
         // A colour range is a set of swatches and a radius, not a band on one axis.
         band: None,
     },
@@ -315,6 +324,15 @@ pub fn kind_icon(kind: &str) -> Option<&'static str> {
         .iter()
         .find(|entry| entry.kind == kind)
         .map(|entry| entry.icon)
+}
+
+/// What a menu offering `kind` calls it — `Linear gradient`, `Radial gradient`, `Brush`,
+/// `Luminance range`, `Colour range` — or its [`kind_title`] for a kind this build does not know.
+pub fn kind_menu_title(kind: &str) -> String {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .map_or_else(|| kind_title(kind), |entry| entry.menu_title.to_owned())
 }
 
 /// Every component kind this build knows, in table order: every kind it can parse, evaluate, bound
@@ -947,6 +965,26 @@ mod tests {
     /// `docs/design/range-study.md`): the masks here hold gradients and their coverage is a
     /// function of position alone, so the value is arbitrary and the same at every call.
     const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+
+    #[test]
+    fn a_menu_names_each_kind_as_the_board_does_and_a_component_keeps_its_short_name() {
+        assert_eq!(
+            component_kinds().map(kind_menu_title).collect::<Vec<_>>(),
+            [
+                "Linear gradient",
+                "Radial gradient",
+                "Brush",
+                "Luminance range",
+                "Colour range"
+            ]
+        );
+        assert_eq!(kind_title(radial::KIND), "Radial");
+        assert_eq!(
+            kind_menu_title("cloud"),
+            "Cloud",
+            "an unknown kind keeps its title"
+        );
+    }
 
     fn stage(width: u32, height: u32) -> Stage {
         Stage { width, height }
