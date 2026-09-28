@@ -5861,6 +5861,132 @@ mod tests {
         }
     }
 
+    /// What one position of a painted stroke costs in path work, at each length the stroke reaches:
+    /// the per-point mask work a drafted stroke repeats on every `draft.set` — decimating the
+    /// captured path, checking the posted path, capturing and hashing the stroke, and building its
+    /// grid index — so a later reader can see it is not the latency. Ignored by default because it
+    /// is a recorded measurement:
+    ///
+    /// ```sh
+    /// cargo test --release --package luxforge-core --lib \
+    ///     render::tests::painted_stroke_path_work_per_position -- --ignored --nocapture
+    /// ```
+    ///
+    /// The path is `editor-latency --mode paint`'s own sine at its own brush (radius 0.06, feather
+    /// 50), sampled at `n` positions over the same span, so the decimated length grows with `n` as
+    /// a longer stroke's does.
+    #[test]
+    #[ignore = "a recorded measurement, not an assertion"]
+    fn painted_stroke_path_work_per_position() {
+        use crate::path::{PathCapture, Stroke, decimate};
+        let size = 0.06;
+        let sine = |n: usize| -> Vec<[f64; 2]> {
+            (0..n)
+                .map(|index| {
+                    let t = index as f64 / (n - 1) as f64;
+                    [
+                        0.2 + 0.8 * t,
+                        0.5 + 0.2 * (std::f64::consts::TAU * 2.5 * t).sin(),
+                    ]
+                })
+                .collect()
+        };
+        let points = crate::ParameterDescriptor::points("points", 1, 16384);
+        let time = |rounds: u32, mut work: Box<dyn FnMut() + '_>| {
+            work();
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                work();
+            }
+            started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
+        };
+        for n in [100usize, 400, 1600, 6400] {
+            let raw = sine(n);
+            let stored = decimate(&raw, size).unwrap();
+            let rounds = 200;
+            // The desktop, per pointer event: the whole captured path decimated again...
+            let whole = time(
+                rounds,
+                Box::new(|| {
+                    std::hint::black_box(decimate(&raw, size).unwrap());
+                }),
+            );
+            // ...or the new position pushed onto the held capture and the held grid reduced.
+            let mut capture = PathCapture::default();
+            for point in &raw[..n - 1] {
+                capture.push(*point);
+            }
+            let incremental = time(
+                rounds,
+                Box::new(|| {
+                    let mut held = capture.clone();
+                    held.push(raw[n - 1]);
+                    std::hint::black_box(held.decimated(size).unwrap());
+                }),
+            );
+            let clone_only = time(
+                rounds,
+                Box::new(|| {
+                    std::hint::black_box(capture.clone());
+                }),
+            );
+            let posted = json!(stored);
+            // The owner, per `draft.set`: the generic check of the posted path...
+            let check = time(
+                rounds,
+                Box::new(|| {
+                    crate::modules::check_value(&points, &posted).unwrap();
+                }),
+            );
+            // ...and, planning its preview, the capture and the content address...
+            let capture_hash = time(
+                rounds,
+                Box::new(|| {
+                    let stroke = Stroke::capture(&stored, size, 50.0, 100.0, false).unwrap();
+                    std::hint::black_box(stroke.id());
+                }),
+            );
+            // ...which, on the raw path an appending client would leave on the owner, costs this.
+            let raw_capture_hash = time(
+                rounds,
+                Box::new(|| {
+                    let stroke = Stroke::capture(&raw, size, 50.0, 100.0, false).unwrap();
+                    std::hint::black_box(stroke.id());
+                }),
+            );
+            // ...and the brush component's grid index, compiled at the paint workload's proxy
+            // stage and at the full 24 MP stage.
+            let stroke = Stroke::capture(&stored, size, 50.0, 100.0, false).unwrap();
+            let (mask, table) = brush_mask(std::slice::from_ref(&stroke));
+            let (mask, table) = (&mask, &table);
+            let index = |stage: Stage| {
+                time(
+                    rounds,
+                    Box::new(move || {
+                        std::hint::black_box(
+                            crate::mask::CompiledMask::new(mask, stage, table).unwrap(),
+                        );
+                    }),
+                )
+            };
+            let proxy = index(Stage {
+                width: 1716,
+                height: 1144,
+            });
+            let full = index(Stage {
+                width: 6000,
+                height: 4000,
+            });
+            println!(
+                "{n} positions, {} stored: decimate whole {whole:.4} ms, push and reduce \
+                 {incremental:.4} ms (of which the benchmark's clone {clone_only:.4}), check \
+                 {check:.4} ms, capture and hash {capture_hash:.4} ms (raw path {raw_capture_hash:.4}), \
+                 index {proxy:.4} ms proxy / {full:.4} ms 24 MP",
+                stored.len()
+            );
+        }
+    }
+
     // ---------------------------------------------------------------------------------------
     // Cooperative cancellation.
     // ---------------------------------------------------------------------------------------

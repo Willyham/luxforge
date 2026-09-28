@@ -199,6 +199,188 @@ fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
     }
 }
 
+/// Whole-path decimation written out in one pass, as a stepwise reference for [`PathCapture`]: check
+/// and snap every position of the slice, drop consecutive repeats, then reduce. It shares only the
+/// reduction and the grid rules with the code under test, never the capture.
+fn reference_decimate(points: &[[f64; 2]], size: f64) -> Result<Vec<[f64; 2]>, String> {
+    if !size_is_legal(size) {
+        return Err("illegal size".into());
+    }
+    if points.is_empty() {
+        return Err("empty".into());
+    }
+    let mut snapped: Vec<[i32; 2]> = Vec::new();
+    for (index, [x, y]) in points.iter().enumerate() {
+        for (axis, value) in [("x", *x), ("y", *y)] {
+            if !value.is_finite() || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&value) {
+                return Err(format!("position {index} {axis}"));
+            }
+        }
+        let point = [
+            (x * COORDINATE_STEPS_PER_UNIT).round() as i32,
+            (y * COORDINATE_STEPS_PER_UNIT).round() as i32,
+        ];
+        if snapped.last() != Some(&point) {
+            snapped.push(point);
+        }
+    }
+    let steps = (size * COORDINATE_STEPS_PER_UNIT).round() as i32;
+    Ok(reduce(&snapped, tolerance_steps(steps))
+        .into_iter()
+        .map(|[x, y]| {
+            [
+                f64::from(x) / COORDINATE_STEPS_PER_UNIT,
+                f64::from(y) / COORDINATE_STEPS_PER_UNIT,
+            ]
+        })
+        .collect())
+}
+
+/// What a refusal says, reduced to what the reference names: which position, on which axis.
+fn refusal(error: &Error) -> String {
+    if error.detail == "a path must hold at least one position" {
+        return "empty".into();
+    }
+    let words: Vec<&str> = error.detail.split(' ').collect();
+    match words.as_slice() {
+        ["path", "position", index, axis, ..] => format!("position {index} {axis}"),
+        _ => error.detail.clone(),
+    }
+}
+
+/// A random walk: long jumps, steps inside one grid cell that snap onto the position before them,
+/// a pointer held still, and turns in every direction.
+fn wandering(rng: &mut Rng, count: usize) -> Vec<[f64; 2]> {
+    let mut at = [rng.range(0.2, 1.2), rng.range(0.2, 0.8)];
+    (0..count)
+        .map(|_| {
+            let step = match rng.next() % 4 {
+                0 => 0.0,
+                1 => 0.2 / COORDINATE_STEPS_PER_UNIT,
+                2 => rng.range(0.0, 0.004),
+                _ => rng.range(0.0, 0.05),
+            };
+            let angle = rng.range(0.0, std::f64::consts::TAU);
+            at = [
+                (at[0] + step * angle.cos()).clamp(0.0, 1.5),
+                (at[1] + step * angle.sin()).clamp(0.0, 1.0),
+            ];
+            at
+        })
+        .collect()
+}
+
+/// A sine across the frame, the shape `editor-latency --mode paint` paints, at a random amplitude
+/// and frequency.
+fn sine(rng: &mut Rng, count: usize) -> Vec<[f64; 2]> {
+    let (amplitude, turns) = (rng.range(0.01, 0.3), rng.range(0.5, 6.0));
+    (0..count)
+        .map(|index| {
+            let t = index as f64 / count.max(2) as f64;
+            [
+                0.2 + 0.8 * t,
+                0.5 + amplitude * (std::f64::consts::TAU * turns * t).sin(),
+            ]
+        })
+        .collect()
+}
+
+/// The capture a gesture takes one position at a time decimates, after every position, exactly as
+/// the whole path it has drawn so far decimates in one pass: over curved, wandering and randomized
+/// paths, at every declared radius and random ones between, repeats and a still pointer included.
+/// So the stroke the desktop posts after each pointer event is the one whole-path decimation posts,
+/// bit for bit, and its content address and its coverage are unchanged.
+#[test]
+fn a_capture_taken_one_position_at_a_time_decimates_as_the_whole_path_does() {
+    let mut rng = Rng(0x0005_ca97);
+    for case in 0..240 {
+        let size = if case % 4 == 3 {
+            rng.range(SIZE_MIN, 0.4)
+        } else {
+            SIZES[case % SIZES.len()]
+        };
+        let count = 1 + (rng.next() % 400) as usize;
+        let path = match case % 3 {
+            0 => captured(&mut rng, count),
+            1 => wandering(&mut rng, count),
+            _ => sine(&mut rng, count),
+        };
+        let mut capture = PathCapture::default();
+        for (index, point) in path.iter().enumerate() {
+            capture.push(*point);
+            assert_eq!(capture.len(), index + 1);
+            assert_eq!(
+                capture.decimated(size).map_err(|error| refusal(&error)),
+                reference_decimate(&path[..=index], size),
+                "case {case} at position {index} of {count}, size {size}"
+            );
+        }
+        assert_eq!(
+            decimate(&path, size).map_err(|error| refusal(&error)),
+            reference_decimate(&path, size),
+            "case {case}: the whole path at once"
+        );
+    }
+}
+
+/// A capture refuses what whole-path decimation refuses, in the same words: nothing at all, a
+/// position outside the stored range — named by its index and axis, and kept refused whatever comes
+/// after it, since the stroke it would store is not the one drawn — and a radius no stroke takes.
+#[test]
+fn a_capture_refuses_what_whole_path_decimation_refuses() {
+    let empty = PathCapture::default();
+    assert!(empty.is_empty());
+    assert_eq!(
+        refusal(&empty.decimated(0.1).expect_err("nothing to decimate")),
+        "empty"
+    );
+    let path = [
+        [0.2, 0.2],
+        [0.3, 0.3],
+        [0.4, COORDINATE_MAX + 0.5],
+        [0.5, 0.5],
+    ];
+    let mut capture = PathCapture::default();
+    for (index, point) in path.iter().enumerate() {
+        capture.push(*point);
+        let whole = decimate(&path[..=index], 0.1);
+        let taken = capture.decimated(0.1);
+        match (whole, taken) {
+            (Ok(whole), Ok(taken)) => assert_eq!(whole, taken),
+            (Err(whole), Err(taken)) => {
+                assert_eq!(whole.kind, taken.kind);
+                assert_eq!(whole.detail, taken.detail);
+            }
+            (whole, taken) => panic!("at {index}: {whole:?} against {taken:?}"),
+        }
+    }
+    assert_eq!(
+        refusal(
+            &capture
+                .decimated(0.1)
+                .expect_err("an out-of-range position")
+        ),
+        "position 2 y"
+    );
+    let mut nan = PathCapture::default();
+    nan.push([f64::NAN, 0.5]);
+    assert_eq!(
+        refusal(&nan.decimated(0.1).expect_err("not a number")),
+        "position 0 x"
+    );
+    let mut legal = PathCapture::default();
+    legal.push([0.5, 0.5]);
+    assert_eq!(
+        legal
+            .decimated(SIZE_MAX * 2.0)
+            .expect_err("too large")
+            .detail,
+        decimate(&[[0.5, 0.5]], SIZE_MAX * 2.0)
+            .expect_err("too large")
+            .detail
+    );
+}
+
 /// The tolerance is a share of the stroke's radius as stored, and never under two grid steps: at the
 /// declared minimum it is the floor, at the default and the maximum it is four per cent of the radius.
 /// So one jagged path keeps fewer positions the larger the brush it is drawn with, and a bump a
