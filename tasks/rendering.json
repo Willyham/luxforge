@@ -241,12 +241,13 @@
     {
       "id": "TASK-004",
       "description": "Write each spatial tile's batch back with per-row copy_from_slice, produced in the frame's final layout during the parallel phase, instead of copying one pixel at a time on the calling thread.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
       "extra_context": [
         "Wave 3, speed. The clearest byte-identical win in the group: the same values move to the same places, only as whole rows instead of one pixel at a time.",
+        "Done: the byte domain's tile_output quantizes into RGBA rows with the input's alpha on the tile's worker and write_tile copies one row per copy_from_slice; the linear domain's write_tile copies three plane rows per row from the last unit's rectangle; run_batches keeps one TileScratch per batch slot. The tiled-render tests render at three tile sizes on each domain, including sizes that divide neither side, and compare samples with the render at three tile sizes on both domains. On the generated 24 MP and 60 MP JPEGs every Presence combination's frame had the same SHA-256 before and after; a single field renders 4 to 24% faster with 10 to 20% more of the pool busy, two or three fields 3 to 15% faster at 60 MP (M4, load 12 to 20, 5 renders per stack and run, back to back and reversed; docs/specs/performance.md, Tiles written back by row).",
         "`run_batches` (render/spatial.rs:605) evaluates a batch in parallel and then writes it back serially (render/spatial.rs:636): `for (tile, result) in batch.iter().zip(results) { write(*tile, result)?; }`. `Byte::write_tile` (render.rs:1305) copies three bytes and calls an alpha closure per pixel; `Linear::write_tile` (render/linear.rs:813) does the planar equivalent. The pool sits idle during every one of these writes.",
         "Recorded CPU utilisation on the generated fixtures matches a serial write of this size: Clarity at 60 MP renders in 620 ms at 1105% CPU (about 140 ms serial-equivalent), Dehaze in 355 ms at 713% (about 190 ms), Texture in 629 ms at 858% (about 260 ms); the 24 MP figures (193 ms at 1090%, 128 ms at 771%) scale down consistently (docs/specs/performance.md, Presence exact renders on the generated JPEGs).",
         "Proposal: have tile_output (already computed in the parallel phase) produce the tile in the frame's final row layout, then have write_tile copy whole rows with copy_from_slice, one memcpy per row for the byte frame's RGBA rows and three for the linear frame's planes, instead of a per-pixel loop; reuse one scratch buffer per worker in run_tile rather than reallocating and zero-filling it per tile."
