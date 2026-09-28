@@ -381,7 +381,7 @@
     {
       "id": "TASK-006",
       "description": "Quantize the byte resample's bilinear sample through the guarded threshold lookup the RAW terminal already uses, and remove per-pixel LazyLock dereferences and view-layout recomputation from the hot colour and RAW read loops.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
