@@ -1493,12 +1493,6 @@
         },
         {
           "kind": "file",
-          "label": "Gallery panels",
-          "target": "crates/luxforge-ui/src/gallery_panels.rs",
-          "relevance": "The panel-level mock states to delete."
-        },
-        {
-          "kind": "file",
           "label": "Gallery performance mock",
           "target": "crates/luxforge-ui/src/gallery_performance.rs",
           "relevance": "The Performance section's mock state and its copied constants, to delete; its widget-level rows stay."
