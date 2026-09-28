@@ -168,6 +168,7 @@ fn control(transform: Transform, label: &str) -> Control {
     Control::action(TRANSFORM_ACTION, label)
         .preset(preset)
         .icon(icon_name(transform))
+        .into()
 }
 
 #[derive(Debug)]
@@ -188,22 +189,12 @@ impl TransformModule {
                 id: "luxforge.transform".into(),
                 title: "Transforms".into(),
                 hint: Some("Rotate, mirror and flip".into()),
-                effects: vec![EffectDescriptor {
-                    id: ORIENTATION_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Geometry,
-                    order: 0,
-                    maskable: false,
-                    artifacts: false,
-                    single: false,
-                    sources: Vec::new(),
-                }],
+                effects: vec![EffectDescriptor::new(
+                    ORIENTATION_EFFECT,
+                    EffectStage::Geometry,
+                )],
                 actions: vec![ActionDescriptor {
-                    id: TRANSFORM_ACTION.into(),
-                    title: "Transform".into(),
-                    notes: "exact quarter turns and reflections; integer mappings with no interpolation".into(),
-                    patch: false,
-parameters: vec![
+                    parameters: vec![
                         ParameterDescriptor::enumeration(
                             "transform",
                             [
@@ -216,17 +207,25 @@ parameters: vec![
                         .required(true)
                         .notes("the exact transform to compose into the stack's orientation"),
                     ],
+                    ..ActionDescriptor::new(
+                        TRANSFORM_ACTION,
+                        "Transform",
+                        "exact quarter turns and reflections; integer mappings with no interpolation",
+                    )
                 }],
                 queries: Vec::new(),
-                controls: vec![Control::group(
-                    "Exact transforms",
-                    vec![
-                        control(Transform::RotateLeft, "Rotate left"),
-                        control(Transform::RotateRight, "Rotate right"),
-                        control(Transform::MirrorHorizontal, "Mirror horizontal"),
-                        control(Transform::FlipVertical, "Flip vertical"),
-                    ],
-                )],
+                controls: vec![
+                    Control::group(
+                        "Exact transforms",
+                        vec![
+                            control(Transform::RotateLeft, "Rotate left"),
+                            control(Transform::RotateRight, "Rotate right"),
+                            control(Transform::MirrorHorizontal, "Mirror horizontal"),
+                            control(Transform::FlipVertical, "Flip vertical"),
+                        ],
+                    )
+                    .into(),
+                ],
                 reset: None,
                 canvas: None,
                 developer: false,
@@ -454,7 +453,8 @@ impl ToolModule for TransformModule {
 mod tests {
     use super::*;
     use crate::{
-        CropPayload, LayerId, ModuleRegistry, PIXEL_EFFECT, VIGNETTE_EFFECT,
+        ActionControl, CropPayload, GroupControl, LayerId, ModuleRegistry, PIXEL_EFFECT,
+        VIGNETTE_EFFECT,
         modules::{ParameterKind, StageQuestions, check_parameters},
     };
     use serde_json::json;
@@ -596,16 +596,10 @@ mod tests {
         assert!(descriptor.collapsed, "the section starts collapsed");
         assert_eq!(
             descriptor.effects,
-            vec![EffectDescriptor {
-                id: ORIENTATION_EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Geometry,
-                order: 0,
-                maskable: false,
-                artifacts: false,
-                single: false,
-                sources: Vec::new(),
-            }]
+            vec![EffectDescriptor::new(
+                ORIENTATION_EFFECT,
+                EffectStage::Geometry,
+            )]
         );
         let action = descriptor
             .action(TRANSFORM_ACTION)
@@ -622,13 +616,13 @@ mod tests {
                 "flip-vertical"
             ]
         );
-        let [Control::Group { controls, .. }] = &descriptor.controls[..] else {
+        let [Control::Group(GroupControl { controls, .. })] = &descriptor.controls[..] else {
             panic!("the transform controls are one group")
         };
         let invoked: Vec<Value> = controls
             .iter()
             .map(|control| match control {
-                Control::Action { action, preset, .. } => {
+                Control::Action(ActionControl { action, preset, .. }) => {
                     assert_eq!(action, TRANSFORM_ACTION);
                     preset["transform"].clone()
                 }
@@ -639,7 +633,7 @@ mod tests {
         let icons: Vec<Option<&str>> = controls
             .iter()
             .map(|control| match control {
-                Control::Action { icon, .. } => icon.as_deref(),
+                Control::Action(ActionControl { icon, .. }) => icon.as_deref(),
                 _ => None,
             })
             .collect();

@@ -1709,9 +1709,9 @@ mod tests {
                     .expect("the providing module");
                 match (resolved.control, model) {
                     (
-                        Control::Number {
+                        Control::Number(luxforge_core::NumberControl {
                             action, parameter, ..
-                        },
+                        }),
                         ControlModel::Slider(slider),
                     ) => {
                         assert_eq!(
@@ -1728,9 +1728,11 @@ mod tests {
                             .expect("the declared parameter");
                         assert_eq!(slider.unit, declared.unit, "{name}: {}", slider.label);
                         let base = match control {
-                            Control::Number {
-                                action, parameter, ..
-                            } => basic.action(action).unwrap().parameter(parameter).unwrap(),
+                            Control::Number(luxforge_core::NumberControl {
+                                action,
+                                parameter,
+                                ..
+                            }) => basic.action(action).unwrap().parameter(parameter).unwrap(),
                             _ => unreachable!(),
                         };
                         if !resolved.variant {
@@ -1743,7 +1745,10 @@ mod tests {
                             );
                         }
                     }
-                    (Control::Action { action, preset, .. }, ControlModel::Action(model)) => {
+                    (
+                        Control::Action(luxforge_core::ActionControl { action, preset, .. }),
+                        ControlModel::Action(model),
+                    ) => {
                         assert_eq!(
                             (&model.action, &model.preset),
                             (action, preset),
@@ -1751,7 +1756,7 @@ mod tests {
                             model.label
                         );
                     }
-                    (Control::Picker { .. }, ControlModel::Picker(picker)) => {
+                    (Control::Picker(_), ControlModel::Picker(picker)) => {
                         assert_eq!(picker.module_id, resolved.module, "{name}: the picker");
                         // One letter, and the keyboard enters the mode the picker enters.
                         assert_eq!(picker.shortcut.as_deref(), Some("W"), "{name}");
@@ -1761,7 +1766,7 @@ mod tests {
                             picker.module_id
                         );
                     }
-                    (Control::Group { .. }, ControlModel::Group(group)) => {
+                    (Control::Group(_), ControlModel::Group(group)) => {
                         let reset =
                             resolve_group_reset(&basic.id, control, Some(*kind), target.as_ref())
                                 .map(|resolved| tools::ResetRef {
@@ -2633,7 +2638,8 @@ mod tests {
             "luxforge.vignette",
         ] {
             let module = modules.iter().find(|module| module.id == id).unwrap();
-            let [luxforge_core::Control::Group { controls, .. }] = module.controls.as_slice()
+            let [luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. })] =
+                module.controls.as_slice()
             else {
                 panic!("{id} declares exactly one group");
             };

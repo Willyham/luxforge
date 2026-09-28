@@ -1593,15 +1593,15 @@ mod tests {
     ) -> Option<Option<luxforge_core::ResetAction>> {
         controls.iter().find_map(|control| {
             match control {
-                luxforge_core::Control::Group { controls, .. } => {
+                luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. }) => {
                     declared_reset(controls, action, parameter)
                 }
-                luxforge_core::Control::Number {
+                luxforge_core::Control::Number(luxforge_core::NumberControl {
                     action: declared,
                     parameter: named,
                     reset,
                     ..
-                } if declared == action && named == parameter => Some(reset.clone()),
+                }) if declared == action && named == parameter => Some(reset.clone()),
                 _ => None,
             }
             .or_else(|| {

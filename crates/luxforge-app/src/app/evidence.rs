@@ -3160,7 +3160,7 @@ fn mask_kind_is_typed(kind: &str) -> bool {
 fn group_path(controls: &[luxforge_core::Control], label: &str) -> Option<Vec<usize>> {
     let mut controls = walk(controls);
     while let Some(control) = controls.next() {
-        if matches!(control, luxforge_core::Control::Group { label: declared, .. } if declared == label)
+        if matches!(control, luxforge_core::Control::Group(luxforge_core::GroupControl { label: declared, .. }) if declared == label)
         {
             return Some(controls.path());
         }

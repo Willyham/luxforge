@@ -13,7 +13,7 @@ pub(crate) trait ControlTree: Sized {
 impl ControlTree for Control {
     fn children(&self) -> Option<&[Self]> {
         match self {
-            Control::Group { controls, .. } => Some(controls),
+            Control::Group(luxforge_core::GroupControl { controls, .. }) => Some(controls),
             _ => None,
         }
     }
@@ -106,16 +106,17 @@ mod tests {
     use super::*;
 
     fn group(label: &str, controls: Vec<Control>) -> Control {
-        Control::group(label, controls)
+        Control::group(label, controls).into()
     }
 
     fn picker(label: &str) -> Control {
-        Control::picker(label)
+        Control::picker(label).into()
     }
 
     fn label(control: &Control) -> &str {
         match control {
-            Control::Group { label, .. } | Control::Picker { label, .. } => label,
+            Control::Group(luxforge_core::GroupControl { label, .. })
+            | Control::Picker(luxforge_core::PickerControl { label, .. }) => label,
             _ => unreachable!("only groups and pickers are built here"),
         }
     }

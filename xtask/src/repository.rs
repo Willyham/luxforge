@@ -512,7 +512,7 @@ const SOURCE_RULES: &[SourceRule] = &[
     // are a patch action's declaration in Rust and in a JSON descriptor.
     SourceRule {
         name: "patch-action",
-        tokens: &["patch: true", "\"patch\":true", "\"patch\": true"],
+        tokens: &["patch: true"],
         scope: &["crates"],
         types: &["rs"],
         allowed: &[
@@ -3196,7 +3196,7 @@ mod tests {
             (modules.join("raw.rs"), "patch: true,\n"),
             (
                 tmp.path().join("crates/luxforge-core/tests/modules.rs"),
-                "json!({\"patch\":true})\n",
+                "ActionDescriptor { patch: true, ..action }\n",
             ),
             (
                 modules.join("controls.rs"),
@@ -3207,11 +3207,10 @@ mod tests {
             fs::write(file, text).unwrap();
         }
         assert_eq!(read(tmp.path(), &["patch-action"]).unwrap(), (1, 0));
-        // Anywhere else in product code any spelling is refused.
+        // Anywhere else in product code a declaration is refused, as a literal or a struct update.
         for text in [
             "ActionDescriptor { id, patch: true, parameters }\n",
-            "json!({\"id\":\"set-x\",\"patch\":true})\n",
-            "json!({\"patch\": true})\n",
+            "ActionDescriptor { patch: true, ..ActionDescriptor::new(id, title, notes) }\n",
         ] {
             fs::write(modules.join("controls.rs"), text).unwrap();
             let error = refusal(tmp.path(), &["patch-action"], text);

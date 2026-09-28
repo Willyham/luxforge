@@ -46,36 +46,25 @@ pub fn find_query(method: &str) -> Option<&'static ActionDescriptor> {
     DESCRIPTOR.queries.iter().find(|query| query.id == method)
 }
 
-static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| {
-    ModuleDescriptor {
+static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| ModuleDescriptor {
     id: HOST_MODULE.to_owned(),
     title: "Masks".to_owned(),
     hint: Some(
-        "Selections the adjustments of Basic, Presence and the colour mixer apply through".to_owned(),
+        "Selections the adjustments of Basic, Presence and the colour mixer apply through"
+            .to_owned(),
     ),
-    actions: COMMANDS.iter().map(|command| command.action.clone()).collect(),
+    actions: COMMANDS
+        .iter()
+        .map(|command| command.action.clone())
+        .collect(),
     queries: vec![
+        ActionDescriptor::new(
+            LIST,
+            "Masks",
+            "every mask of one stack with its components, values, amount, invert and the \
+                    layers bound to it; read-only, writes no history and emits no event",
+        ),
         ActionDescriptor {
-            id: LIST.to_owned(),
-            title: "Masks".to_owned(),
-            notes: "every mask of one stack with its components, values, amount, invert and the \
-                    layers bound to it; read-only, writes no history and emits no event"
-                .to_owned(),
-            patch: false,
-            parameters: Vec::new(),
-        },
-        ActionDescriptor {
-            id: SAMPLE_INPUT.to_owned(),
-            title: "Sample input".to_owned(),
-            notes: "the pixel the operation this mask modulates receives, at one content position, \
-                    as linear-sRGB r, g and b. Read-only: it writes no history and emits no event. \
-                    It is where a canvas pick gets the colour a colour range's swatch is, because a \
-                    range selection is evaluated on the operation's input while the frame a client \
-                    can see holds that operation's output — so a colour read from the picture would \
-                    be a different colour. The position is a pixel of the stage that operation's \
-                    layer receives, and one outside it is refused rather than clamped"
-                .to_owned(),
-            patch: false,
             parameters: vec![
                 mask_parameter(true),
                 ParameterDescriptor::pixel_coordinate("x")
@@ -83,11 +72,21 @@ static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| {
                 ParameterDescriptor::pixel_coordinate("y")
                     .notes("the content row to read, in the same stage"),
             ],
+            ..ActionDescriptor::new(
+                SAMPLE_INPUT,
+                "Sample input",
+                "the pixel the operation this mask modulates receives, at one content position, \
+                    as linear-sRGB r, g and b. Read-only: it writes no history and emits no event. \
+                    It is where a canvas pick gets the colour a colour range's swatch is, because a \
+                    range selection is evaluated on the operation's input while the frame a client \
+                    can see holds that operation's output — so a colour read from the picture would \
+                    be a different colour. The position is a pixel of the stage that operation's \
+                    layer receives, and one outside it is refused rather than clamped",
+            )
         },
     ],
     controls: CONTROLS.clone(),
     ..ModuleDescriptor::default()
-}
 });
 
 /// The mask a command addresses, as the identity parameter every command that takes one declares.
@@ -611,13 +610,6 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
         method: DELETE_STROKE,
         op: MaskOp::DeleteStroke,
         action: ActionDescriptor {
-            id: DELETE_STROKE.to_owned(),
-            title: "Delete stroke".to_owned(),
-            notes: "remove one stroke from a brush component. A forward edit and not an undo: it \
-                    appends one entry, so a stroke made ten entries ago goes while everything after \
-                    it stays. A component's last stroke is not deletable; delete the component"
-                .to_owned(),
-            patch: false,
             parameters: addressed(
                 true,
                 true,
@@ -630,6 +622,13 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                         ),
                 ],
             ),
+            ..ActionDescriptor::new(
+                DELETE_STROKE,
+                "Delete stroke",
+                "remove one stroke from a brush component. A forward edit and not an undo: it \
+                 appends one entry, so a stroke made ten entries ago goes while everything after \
+                 it stays. A component's last stroke is not deletable; delete the component",
+            )
         },
     });
     // The geometry methods, generated from the host's kind table: registering a kind with declared
@@ -660,12 +659,13 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
 });
 
 static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
-    let mut controls = vec![
-        Control::number("mask.set-amount", "amount", "Amount"),
-        Control::toggle("mask.set-invert", "invert", "Invert mask"),
+    let mut controls: Vec<Control> = vec![
+        Control::number("mask.set-amount", "amount", "Amount").into(),
+        Control::toggle("mask.set-invert", "invert", "Invert mask").into(),
         Control::choice("mask.set-component-mode", "mode", "Mode")
-            .choice_style(ChoiceStyle::Segmented),
-        Control::toggle("mask.set-component-invert", "invert", "Invert component"),
+            .choice_style(ChoiceStyle::Segmented)
+            .into(),
+        Control::toggle("mask.set-component-invert", "invert", "Invert component").into(),
     ];
     // Every number a kind declares has a number field, generated from the same declarations the
     // patch method declares. The control's **action** names the kind it belongs to — a radius is a
@@ -712,6 +712,7 @@ pub(super) fn geometry_controls(
         .map(move |parameter| {
             Control::number(action, &parameter.name, control_label(&parameter.name))
                 .number_style(NumberStyle::Field)
+                .into()
         })
 }
 

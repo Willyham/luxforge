@@ -149,24 +149,15 @@ impl CropModule {
                 title: "Crop and straighten".into(),
                 hint: Some("Frame, ratio and angle".into()),
                 effects: vec![EffectDescriptor {
-                    id: CROP_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Geometry,
                     // Later than the orientation's default order, so the host places every
                     // transform ahead of the crop and the crop's input stage carries them all.
                     order: CROP_ORDER,
-                    maskable: false,
-                    artifacts: false,
                     single: true,
-                    sources: Vec::new(),
+                    ..EffectDescriptor::new(CROP_EFFECT, EffectStage::Geometry)
                 }],
                 actions: vec![
                     ActionDescriptor {
-                        id: CROP_ACTION.into(),
-                        title: "Crop".into(),
-                        notes: "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected".into(),
-                        patch: false,
-parameters: vec![
+                        parameters: vec![
                             angle_parameter(),
                             rectangle_parameter(
                                 "x",
@@ -185,13 +176,14 @@ parameters: vec![
                                 "height as a fraction of the rotated box height at angle; y + height may not exceed 1",
                             ),
                         ],
+                        ..ActionDescriptor::new(
+                            CROP_ACTION,
+                            "Crop",
+                            "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
+                        )
                     },
                     ActionDescriptor {
-                        id: CROP_FIT_ACTION.into(),
-                        title: "Fit crop to a ratio".into(),
-                        notes: "commits the largest covered rectangle with the chosen ratio about the chosen center".into(),
-                        patch: false,
-parameters: vec![
+                        parameters: vec![
                             ParameterDescriptor::enumeration("aspect", aspect_options())
                                 .default(FREE)
                                 .notes(
@@ -204,14 +196,17 @@ parameters: vec![
                             center_parameter("center-x"),
                             center_parameter("center-y"),
                         ],
+                        ..ActionDescriptor::new(
+                            CROP_FIT_ACTION,
+                            "Fit crop to a ratio",
+                            "commits the largest covered rectangle with the chosen ratio about the chosen center",
+                        )
                     },
-                    ActionDescriptor {
-                        id: CROP_RESET_ACTION.into(),
-                        title: "Reset crop".into(),
-                        notes: "returns an existing crop layer to the neutral payload; a no-op without one".into(),
-                        patch: false,
-parameters: Vec::new(),
-                    },
+                    ActionDescriptor::new(
+                        CROP_RESET_ACTION,
+                        "Reset crop",
+                        "returns an existing crop layer to the neutral payload; a no-op without one",
+                    ),
                 ],
                 // The section's reset is the same API action the header button calls.
                 queries: Vec::new(),

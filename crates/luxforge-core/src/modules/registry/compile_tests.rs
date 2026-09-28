@@ -294,14 +294,8 @@ fn a_maskable_effect_is_refused_at_the_geometry_and_finish_stages() {
         title: "Maskable".into(),
         hint: None,
         effects: vec![EffectDescriptor {
-            id: "test.maskable.effect".into(),
-            format: EFFECT_FORMAT,
-            stage,
-            order: 0,
             maskable: true,
-            artifacts: false,
-            single: false,
-            sources: Vec::new(),
+            ..EffectDescriptor::new("test.maskable.effect", stage)
         }],
         actions: Vec::new(),
         queries: Vec::new(),
@@ -855,15 +849,15 @@ impl CapabilityModule for BoundModule {
 }
 
 fn bound_descriptor() -> ModuleDescriptor {
-    ModuleDescriptor::parse(&json!({
-        "id": "test.bound",
-        "title": "Bound",
-        "effects": [{"id": BOUND_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "artifacts": true}],
-        "actions": [],
-        "controls": [],
-        "availability": {"kind": "available"},
-    }))
-    .unwrap()
+    ModuleDescriptor {
+        id: "test.bound".into(),
+        title: "Bound".into(),
+        effects: vec![EffectDescriptor {
+            artifacts: true,
+            ..EffectDescriptor::new(BOUND_EFFECT, EffectStage::Color)
+        }],
+        ..ModuleDescriptor::default()
+    }
 }
 
 /// The developer registry, whose pixel layer binds no artifact, and [`BoundModule`].

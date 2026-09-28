@@ -761,12 +761,12 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
     // every control kind, and `proof_controls_tests` proves its reset.
     for module in modules.iter().filter(|module| !module.developer) {
         for (index, control) in module.controls.iter().enumerate() {
-            let luxforge_core::Control::Group {
+            let luxforge_core::Control::Group(luxforge_core::GroupControl {
                 label,
                 controls,
                 reset: Some(reset),
                 ..
-            } = control
+            }) = control
             else {
                 continue;
             };
@@ -782,7 +782,10 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
             let mut own: Vec<&str> = controls
                 .iter()
                 .filter_map(|control| match control {
-                    luxforge_core::Control::Number { parameter, .. } => Some(parameter.as_str()),
+                    luxforge_core::Control::Number(luxforge_core::NumberControl {
+                        parameter,
+                        ..
+                    }) => Some(parameter.as_str()),
                     _ => None,
                 })
                 .collect();
@@ -1115,7 +1118,9 @@ fn every_generated_action_control_matches_its_declared_schema() {
 #[test]
 fn reset_group_dispatches_the_action_at_its_declared_position() {
     let mut module = crop_descriptor();
-    let luxforge_core::Control::Group { reset, .. } = &mut module.controls[0] else {
+    let luxforge_core::Control::Group(luxforge_core::GroupControl { reset, .. }) =
+        &mut module.controls[0]
+    else {
         unreachable!("the fixture's first control is a group")
     };
     *reset = Some(luxforge_core::ResetAction {
@@ -1410,16 +1415,18 @@ fn a_curve_in_a_hidden_section_queries_no_samples() {
 fn a_curve_in_a_hidden_tab_queries_no_samples() {
     let mut tabs = controls_descriptor();
     tabs.layout = luxforge_core::ModuleLayout::Tabs;
-    let luxforge_core::Control::Group { controls, .. } = &mut tabs.controls[0] else {
+    let luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. }) =
+        &mut tabs.controls[0]
+    else {
         unreachable!("the fixture's controls are one group")
     };
     let curve = controls
         .iter()
-        .position(|control| matches!(control, luxforge_core::Control::Curve { .. }))
+        .position(|control| matches!(control, luxforge_core::Control::Curve(_)))
         .expect("the fixture's curve");
     let curve = controls.remove(curve);
     tabs.controls
-        .push(luxforge_core::Control::group("Curve", vec![curve]));
+        .push(luxforge_core::Control::group("Curve", vec![curve]).into());
     let module_id = tabs.id.clone();
     let (mut editor, catalog) = sampling(vec![tabs]);
     assert!(
@@ -1500,7 +1507,9 @@ fn reset_group_runs_the_reset_the_panel_resolved() {
         })
         .expect("a group whose reset a RAW variant provides");
     let declared = match &basic.controls[path] {
-        luxforge_core::Control::Group { reset, .. } => reset.clone().expect("a declared reset"),
+        luxforge_core::Control::Group(luxforge_core::GroupControl { reset, .. }) => {
+            reset.clone().expect("a declared reset")
+        }
         _ => unreachable!("a group"),
     };
     let shown = editor

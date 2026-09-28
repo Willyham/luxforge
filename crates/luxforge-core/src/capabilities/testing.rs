@@ -116,10 +116,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 parameters: Vec::new(),
             },
         ],
-        controls: vec![Control::Task {
-            task: TASK.into(),
-            label: "Generate tint".into(),
-        }],
+        controls: vec![Control::task(TASK, "Generate tint").into()],
         settings: Some(SettingsDescriptor {
             schema: 1,
             fields: vec![

@@ -4,9 +4,9 @@
 //! of it that lists one proves the host refuses it.
 use super::{ArtifactMeta, PreparedArtifact};
 use crate::{
-    ActionInput, ActionPlan, CapabilityModule, ColorOperation, EFFECT_FORMAT, Error, LayerUpdate,
-    ModuleDescriptor, ModuleRegistry, NewLayer, PointwiseColor, Processing, Stage, StageContext,
-    ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, CapabilityModule, ColorOperation, EFFECT_FORMAT,
+    EffectDescriptor, EffectStage, Error, LayerUpdate, ModuleDescriptor, ModuleRegistry, NewLayer,
+    ParameterDescriptor, PointwiseColor, Processing, Stage, StageContext, ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -39,33 +39,36 @@ impl PointwiseColor for Gains {
 pub(crate) struct TintModule(ModuleDescriptor);
 
 impl TintModule {
-    /// Built from JSON, so descriptor fields added later default the way a client's would.
     pub(crate) fn shared() -> Arc<dyn ToolModule> {
-        let action = |id: &str, title: &str| {
-            json!({
-                "id": id,
-                "title": title,
-                "notes": "binds the tint to the published artifact that holds its three gains",
-                "parameters": [{
-                    "name": "artifact",
-                    "kind": "artifact",
-                    "required": true,
-                    "notes": "twelve bytes: three little-endian f32 linear gains",
-                }],
-            })
-        };
-        let descriptor = ModuleDescriptor::parse(&json!({
-            "id": TINT_MODULE,
-            "title": "Tint",
-            "effects": [
-                {"id": TINT_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "artifacts": true},
-                {"id": PLAIN_EFFECT, "format": EFFECT_FORMAT, "stage": "color"},
+        let action = |id: &str, title: &str| ActionDescriptor {
+            parameters: vec![
+                ParameterDescriptor::artifact("artifact")
+                    .required(true)
+                    .notes("twelve bytes: three little-endian f32 linear gains"),
             ],
-            "actions": [action(APPLY_TINT, "Apply tint"), action(APPLY_PLAIN, "Apply plain")],
-            "controls": [],
-            "availability": {"kind": "available"},
-        }))
-        .expect("the tint descriptor is valid");
+            ..ActionDescriptor::new(
+                id,
+                title,
+                "binds the tint to the published artifact that holds its three gains",
+            )
+        };
+        let descriptor = ModuleDescriptor {
+            id: TINT_MODULE.into(),
+            title: "Tint".into(),
+            effects: vec![
+                EffectDescriptor {
+                    artifacts: true,
+                    ..EffectDescriptor::new(TINT_EFFECT, EffectStage::Color)
+                },
+                EffectDescriptor::new(PLAIN_EFFECT, EffectStage::Color),
+            ],
+            actions: vec![
+                action(APPLY_TINT, "Apply tint"),
+                action(APPLY_PLAIN, "Apply plain"),
+            ],
+            ..ModuleDescriptor::default()
+        };
+        descriptor.validate().expect("the tint descriptor is valid");
         Arc::new(Self(descriptor))
     }
 

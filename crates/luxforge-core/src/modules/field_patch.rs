@@ -31,11 +31,11 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, ChoiceStyle,
     ColorOperation, ColorStyle, Control, ControlVariant, EffectDescriptor, EffectStage,
-    LayerReport, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, NumberStyle,
-    ParameterDescriptor, ParameterKind, Processing, RailDecoration, ResetAction, SpatialOperation,
-    Stage, StageContext, ToolModule, check_value, label_value,
+    GroupControl, LayerReport, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer,
+    NumberControl, NumberStyle, ParameterDescriptor, ParameterKind, Processing, RailDecoration,
+    ResetAction, SpatialOperation, Stage, StageContext, ToolModule, check_value, label_value,
 };
-use crate::{EFFECT_FORMAT, Error, SourceTag};
+use crate::{Error, SourceTag};
 use serde_json::{Map, Number, Value};
 
 /// A finite f64 as a JSON number. Every value written here is finite, so the fallback is never
@@ -276,13 +276,16 @@ impl Field {
                 self.variants
                     .iter()
                     .cloned()
-                    .fold(control, Control::variant)
+                    .fold(control, NumberControl::variant)
+                    .into()
             }
-            FieldControl::Toggle => Control::toggle(action, name, label),
-            FieldControl::Choice(style) => Control::choice(action, name, label).choice_style(style),
-            FieldControl::Color(style) => {
-                Control::color_field(action, name, label).color_style(style)
-            }
+            FieldControl::Toggle => Control::toggle(action, name, label).into(),
+            FieldControl::Choice(style) => Control::choice(action, name, label)
+                .choice_style(style)
+                .into(),
+            FieldControl::Color(style) => Control::color_field(action, name, label)
+                .color_style(style)
+                .into(),
             FieldControl::Channel => return None,
         })
     }
@@ -387,8 +390,8 @@ impl Group {
     }
 
     /// A control drawn after the group's own field controls.
-    pub fn extra(mut self, control: Control) -> Self {
-        self.extra.push(control);
+    pub fn extra(mut self, control: impl Into<Control>) -> Self {
+        self.extra.push(control.into());
         self
     }
 
@@ -411,7 +414,7 @@ struct ActionText {
 /// field table and how the fields are grouped and laid out. The descriptor is built from it once.
 ///
 /// A spec is made only by [`Spec::new`], which derives what every field-patch module shares and
-/// fixes what none may change: the effect's format is [`EFFECT_FORMAT`], it declares no artifacts,
+/// fixes what none may change: the effect's format is [`crate::EFFECT_FORMAT`], it declares no artifacts,
 /// it is `single` (the module owns one layer per target) and it applies to every source kind.
 pub struct Spec {
     id: &'static str,
@@ -457,14 +460,8 @@ impl Spec {
             hint,
             noun,
             effect: EffectDescriptor {
-                id: effect_id.into(),
-                format: EFFECT_FORMAT,
-                stage,
-                order: 0,
-                maskable: false,
-                artifacts: false,
                 single: true,
-                sources: Vec::new(),
+                ..EffectDescriptor::new(effect_id, stage)
             },
             set: ActionText {
                 id: format!("set-{noun}"),
@@ -643,7 +640,7 @@ impl Spec {
                         .chain(group.extra.iter().cloned())
                         .collect(),
                 )
-                .field_reset(ResetAction {
+                .reset(ResetAction {
                     action: self.set.id.clone(),
                     preset: fields()
                         .map(|field| (field.name().to_owned(), field.default_value().clone()))
@@ -654,7 +651,8 @@ impl Spec {
                     .reset_variants
                     .iter()
                     .cloned()
-                    .fold(control, Control::variant)
+                    .fold(control, GroupControl::variant)
+                    .into()
             })
             .collect();
         ModuleDescriptor {
@@ -664,23 +662,23 @@ impl Spec {
             effects: vec![self.effect.clone()],
             actions: vec![
                 ActionDescriptor {
-                    id: self.set.id.clone(),
-                    title: self.set.title.clone(),
-                    notes: self.set.notes.clone(),
                     patch: true,
                     parameters: self
                         .fields
                         .iter()
                         .map(|field| field.parameter.clone())
                         .collect(),
+                    ..ActionDescriptor::new(
+                        self.set.id.clone(),
+                        self.set.title.clone(),
+                        self.set.notes.clone(),
+                    )
                 },
-                ActionDescriptor {
-                    id: self.reset.id.clone(),
-                    title: self.reset.title.clone(),
-                    notes: self.reset.notes.clone(),
-                    patch: false,
-                    parameters: Vec::new(),
-                },
+                ActionDescriptor::new(
+                    self.reset.id.clone(),
+                    self.reset.title.clone(),
+                    self.reset.notes.clone(),
+                ),
             ],
             queries: self.queries.clone(),
             controls,
@@ -1162,7 +1160,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
 mod tests {
     use super::*;
     use crate::modules::{CurveChannel, FixedStage};
-    use crate::{Layer, ModuleRegistry};
+    use crate::{EFFECT_FORMAT, Layer, ModuleRegistry};
     use serde_json::json;
 
     const EFFECT: &str = "luxforge.test-patch.adjust";
@@ -1273,12 +1271,12 @@ mod tests {
         let [level, look] = descriptor.controls.as_slice() else {
             panic!("two groups: {:?}", descriptor.controls);
         };
-        let Control::Group {
+        let Control::Group(GroupControl {
             controls,
             reset: Some(reset),
             variants,
             ..
-        } = level
+        }) = level
         else {
             panic!("a resettable group");
         };
@@ -1291,11 +1289,11 @@ mod tests {
             json!({"level": 0.0, "midpoint": 50.0})
         );
         assert!(reset.preset["midpoint"].is_f64());
-        let Control::Group {
+        let Control::Group(GroupControl {
             controls,
             reset: Some(reset),
             ..
-        } = look
+        }) = look
         else {
             panic!("a resettable group");
         };
@@ -1483,14 +1481,9 @@ mod tests {
         assert_eq!(
             descriptor.effects,
             [EffectDescriptor {
-                id: EFFECT.into(),
-                format: EFFECT_FORMAT,
-                stage: EffectStage::Color,
-                order: 0,
                 maskable: true,
-                artifacts: false,
                 single: true,
-                sources: Vec::new(),
+                ..EffectDescriptor::new(EFFECT, EffectStage::Color,)
             }]
         );
         let actions: Vec<(&str, &str, &str, bool)> = descriptor

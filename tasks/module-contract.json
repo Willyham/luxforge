@@ -208,7 +208,7 @@
         {
           "kind": "file",
           "label": "Module descriptor",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
           "relevance": "check_settings, the settings-set shape rule and the wording kept."
         }
       ],
@@ -274,7 +274,7 @@
         {
           "kind": "file",
           "label": "Module descriptor",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
           "relevance": "check_value, summary_value and title_case to reuse."
         },
         {
@@ -662,7 +662,7 @@
     {
       "id": "TASK-009",
       "description": "Delete the prebuilt JSON-descriptor parse path, give each Control variant its own struct so a wrong builder call is a compile error, add EffectDescriptor and ActionDescriptor constructors, and split descriptor.rs by concern.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
@@ -683,7 +683,7 @@
         {
           "kind": "file",
           "label": "Module descriptor",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/mod.rs",
           "relevance": "The file to split; parse, check_raw_control_hints and the Control builders."
         },
         {

@@ -266,25 +266,28 @@ pub(crate) struct WhiteBalanceVariants {
 }
 
 pub(crate) fn white_balance_variants() -> WhiteBalanceVariants {
-    let control = |control| ControlVariant::control(SourceTag::Raw, RAW_MODULE, control);
+    let control = |control: Control| ControlVariant::control(SourceTag::Raw, RAW_MODULE, control);
     WhiteBalanceVariants {
         // Resetting either field returns the development to the camera's own white balance, as
         // Lightroom's Temp and Tint do, rather than switching it to a custom 6504 K.
         temperature: control(
             Control::number(SET_RAW, TEMPERATURE, TEMPERATURE_LABEL)
                 .rail(crate::RailDecoration::Temperature)
-                .field_reset(as_shot_reset()),
+                .field_reset(as_shot_reset())
+                .into(),
         ),
         tint: control(
             Control::number(SET_RAW, TINT, TINT_LABEL)
                 .rail(crate::RailDecoration::Tint)
-                .field_reset(as_shot_reset()),
+                .field_reset(as_shot_reset())
+                .into(),
         ),
-        picker: control(Control::picker(PICKER_LABEL)),
+        picker: control(Control::picker(PICKER_LABEL).into()),
         as_shot: control(
             Control::action(SET_RAW, AS_SHOT_LABEL)
                 .preset(as_shot_reset().preset)
-                .icon("target"),
+                .icon("target")
+                .into(),
         ),
         reset: ControlVariant::reset(SourceTag::Raw, RAW_MODULE, as_shot_reset()),
     }
@@ -292,11 +295,12 @@ pub(crate) fn white_balance_variants() -> WhiteBalanceVariants {
 
 fn action(id: &str, title: &str, parameters: Vec<ParameterDescriptor>) -> ActionDescriptor {
     ActionDescriptor {
-        id: id.into(),
-        title: title.into(),
-        notes: "updates the required RAW source layer through ordinary history".into(),
-        patch: false,
         parameters,
+        ..ActionDescriptor::new(
+            id,
+            title,
+            "updates the required RAW source layer through ordinary history",
+        )
     }
 }
 
@@ -346,26 +350,12 @@ impl RawModule {
                 title: "RAW".into(),
                 hint: Some("Source development".into()),
                 effects: vec![EffectDescriptor {
-                    id: RAW_EFFECT.into(),
                     format: RAW_EFFECT_FORMAT,
-                    stage: EffectStage::Source,
-                    order: 0,
-                    maskable: false,
-                    artifacts: false,
-                    single: false,
                     sources: vec![SourceTag::Raw],
+                    ..EffectDescriptor::new(RAW_EFFECT, EffectStage::Source)
                 }],
                 actions: vec![
                     ActionDescriptor {
-                        id: SET_RAW.into(),
-                        title: "Set RAW white balance".into(),
-                        notes: "sets the RAW development's white balance in the required RAW \
-                                source layer: temperature (K) and tint on the camera matrix's \
-                                locus, or white-balance as-shot for the camera's own. A field not \
-                                sent keeps the white balance in force, and custom may be sent \
-                                beside temperature or tint; as-shot beside either, and custom \
-                                alone, are refused"
-                            .into(),
                         patch: true,
                         parameters: vec![
                             ParameterDescriptor::number(
@@ -401,6 +391,16 @@ impl RawModule {
                                      sent beside it",
                                 ),
                         ],
+                        ..ActionDescriptor::new(
+                            SET_RAW,
+                            "Set RAW white balance",
+                            "sets the RAW development's white balance in the required RAW \
+                                source layer: temperature (K) and tint on the camera matrix's \
+                                locus, or white-balance as-shot for the camera's own. A field not \
+                                sent keeps the white balance in force, and custom may be sent \
+                                beside temperature or tint; as-shot beside either, and custom \
+                                alone, are refused",
+                        )
                     },
                     action(
                         SET_RED,

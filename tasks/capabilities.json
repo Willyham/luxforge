@@ -738,7 +738,7 @@
         {
           "kind": "file",
           "label": "Module parameter vocabulary",
-          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
           "locator": "EndpointClass, parse_endpoint import",
           "relevance": "Imports transport internals that should move to a neutral module, as does the capability descriptor."
         },

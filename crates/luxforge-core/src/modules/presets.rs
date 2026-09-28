@@ -56,21 +56,6 @@ impl PresetsModule {
                 hint: Some("Saved and imported settings".into()),
                 effects: Vec::new(),
                 actions: vec![ActionDescriptor {
-                    id: APPLY_PRESET.into(),
-                    title: "Apply preset".into(),
-                    notes: "applies a settings set as one history entry labelled `Preset: \
-                             <name>`. Each key of settings names a field-patch action and its \
-                             value the fields to send it; the host runs the actions in key order, \
-                             each against the stack the ones before it produced, exactly as it \
-                             would run that action alone, and commits the result once. Fields the \
-                             set does not name keep their values, and a set that changes nothing \
-                             is a reported no-op. A step whose module does not apply to the \
-                             photo's kind, and a field another control supersedes on the photo's \
-                             global target, are skipped and listed under skipped in the result. \
-                             An unknown, non-patch or unavailable action, or a field its action \
-                             refuses, refuses the whole preset and writes nothing."
-                        .into(),
-                    patch: false,
                     parameters: vec![
                         ParameterDescriptor::settings(PRESET_SETTINGS)
                             .required(true)
@@ -86,9 +71,24 @@ impl PresetsModule {
                              looked up",
                         ),
                     ],
+                    ..ActionDescriptor::new(
+                        APPLY_PRESET,
+                        "Apply preset",
+                        "applies a settings set as one history entry labelled `Preset: \
+                             <name>`. Each key of settings names a field-patch action and its \
+                             value the fields to send it; the host runs the actions in key order, \
+                             each against the stack the ones before it produced, exactly as it \
+                             would run that action alone, and commits the result once. Fields the \
+                             set does not name keep their values, and a set that changes nothing \
+                             is a reported no-op. A step whose module does not apply to the \
+                             photo's kind, and a field another control supersedes on the photo's \
+                             global target, are skipped and listed under skipped in the result. \
+                             An unknown, non-patch or unavailable action, or a field its action \
+                             refuses, refuses the whole preset and writes nothing.",
+                    )
                 }],
                 queries: Vec::new(),
-                controls: vec![Control::presets(APPLY_PRESET)],
+                controls: vec![Control::presets(APPLY_PRESET).into()],
                 reset: None,
                 canvas: None,
                 developer: false,
@@ -233,7 +233,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            &ModuleDescriptor::parse(&encoded).expect("the JSON form is valid"),
+            &serde_json::from_value::<ModuleDescriptor>(encoded).expect("the JSON form reads"),
             descriptor,
             "the descriptor round-trips through JSON"
         );

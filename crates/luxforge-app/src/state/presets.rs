@@ -271,7 +271,9 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
 pub(crate) fn presets_control(modules: &[ModuleDescriptor]) -> Option<(&ModuleDescriptor, &str)> {
     modules.iter().find_map(|module| {
         walk(&module.controls).find_map(|control| match control {
-            Control::Presets { action } => Some((module, action.as_str())),
+            Control::Presets(luxforge_core::PresetsControl { action }) => {
+                Some((module, action.as_str()))
+            }
             _ => None,
         })
     })
@@ -547,6 +549,7 @@ pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, Palet
 mod tests {
     use super::*;
     use crate::state::testing::{descriptors, listed};
+    use luxforge_core::ParameterDescriptor;
 
     fn labels(groups: &[PresettableGroup]) -> Vec<&str> {
         groups.iter().map(|group| group.label.as_str()).collect()
@@ -609,25 +612,42 @@ mod tests {
         // A module with patch controls outside any group gets one checkbox named for the module; a
         // group holding a `tint` field of a patch action is unchecked by default whatever its
         // module is called; a group of request inputs is no checkbox at all.
-        let module = ModuleDescriptor::parse(&json!({
-            "id":"fixture.look", "title":"Look", "effects":[],
-            "actions":[
-                {"id":"set-look","title":"Set look","notes":"patch","patch":true,"parameters":[
-                    {"name":"amount","kind":"number","min":-1.0,"max":1.0,"default":0.0,"required":false,"notes":"n"},
-                    {"name":"tint","kind":"number","min":-1.0,"max":1.0,"default":0.0,"required":false,"notes":"n"},
-                    {"name":"glow","kind":"number","min":0.0,"max":1.0,"default":0.0,"required":false,"notes":"n"}]},
-                {"id":"place","title":"Place","notes":"request","patch":false,"parameters":[
-                    {"name":"x","kind":"number","min":0.0,"max":1.0,"default":0.0,"required":false,"notes":"n"}]}],
-            "controls":[
-                {"kind":"number","action":"set-look","parameter":"amount","label":"Amount"},
-                {"kind":"group","label":"Cast","controls":[
-                    {"kind":"number","action":"set-look","parameter":"tint","label":"Tint"}]},
-                {"kind":"group","label":"Where","controls":[
-                    {"kind":"number","action":"place","parameter":"x","label":"X"}]},
-                {"kind":"number","action":"set-look","parameter":"glow","label":"Glow"}],
-            "availability":{"kind":"available"}
-        }))
-        .expect("a valid fixture descriptor");
+        let number = |name: &str, min: f64| {
+            ParameterDescriptor::number(name, min, 1.0)
+                .default(0.0)
+                .notes("n")
+        };
+        let module = ModuleDescriptor {
+            id: "fixture.look".into(),
+            title: "Look".into(),
+            actions: vec![
+                ActionDescriptor {
+                    patch: true,
+                    parameters: vec![
+                        number("amount", -1.0),
+                        number("tint", -1.0),
+                        number("glow", 0.0),
+                    ],
+                    ..ActionDescriptor::new("set-look", "Set look", "patch")
+                },
+                ActionDescriptor {
+                    parameters: vec![number("x", 0.0)],
+                    ..ActionDescriptor::new("place", "Place", "request")
+                },
+            ],
+            controls: vec![
+                Control::number("set-look", "amount", "Amount").into(),
+                Control::group(
+                    "Cast",
+                    vec![Control::number("set-look", "tint", "Tint").into()],
+                )
+                .into(),
+                Control::group("Where", vec![Control::number("place", "x", "X").into()]).into(),
+                Control::number("set-look", "glow", "Glow").into(),
+            ],
+            ..ModuleDescriptor::default()
+        };
+        module.validate().expect("a valid fixture descriptor");
         let groups = presettable_groups(std::slice::from_ref(&module), false);
         assert_eq!(labels(&groups), ["Look", "Look \u{00b7} Cast"]);
         assert_eq!(

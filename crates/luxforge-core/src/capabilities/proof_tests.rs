@@ -16,9 +16,9 @@ use super::{
 use crate::{
     ApiFailure, ApiRequest, ApiResponse, ArtifactId, AssetId, CapabilitiesProofModule,
     CapabilityModule, ClientAuthority, ClientId, EditorService, EntryId, Error, Layer, LayerUpdate,
-    ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK, Processing,
-    Stage, StageContext, ToolModule,
-    capabilities::context::ModuleContext,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK,
+    ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
+    capabilities::{context::ModuleContext, descriptor::TaskDescriptor},
     colour::srgb::{decode_u8, quantize_pixel},
     jobs::{JOB_CANCEL, JOB_READ},
     modules::{ActionInput, ActionPlan},
@@ -50,23 +50,27 @@ const PUBLISHED: &[u8] = b"published by a task";
 
 impl Publisher {
     fn shared() -> Arc<dyn ToolModule> {
-        Arc::new(Self(
-            ModuleDescriptor::parse(&json!({
-                "id": "test.publisher",
-                "title": "Publisher",
-                "effects": [],
-                "actions": [],
-                "controls": [],
-                "availability": {"kind": "available"},
-                "tasks": [{
-                    "id": PUBLISHER_TASK,
-                    "title": "Publish then answer",
-                    "notes": "publishes an artifact, then fails when asked to",
-                    "parameters": [{"name": "fail", "kind": "boolean", "required": false, "default": true, "notes": "fail after publishing"}],
-                }],
-            }))
-            .unwrap(),
-        ))
+        let descriptor = ModuleDescriptor {
+            id: "test.publisher".into(),
+            title: "Publisher".into(),
+            tasks: vec![TaskDescriptor {
+                id: PUBLISHER_TASK.into(),
+                title: "Publish then answer".into(),
+                notes: "publishes an artifact, then fails when asked to".into(),
+                asset: false,
+                profile: false,
+                uses: Vec::new(),
+                parameters: vec![
+                    ParameterDescriptor::boolean("fail")
+                        .default(true)
+                        .notes("fail after publishing"),
+                ],
+                apply: None,
+            }],
+            ..ModuleDescriptor::default()
+        };
+        descriptor.validate().unwrap();
+        Arc::new(Self(descriptor))
     }
 }
 

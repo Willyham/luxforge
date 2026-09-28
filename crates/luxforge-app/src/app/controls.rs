@@ -959,12 +959,12 @@ fn curve_query(
 ) -> Option<(String, usize, String)> {
     modules.iter().find_map(|module| {
         walk(&module.controls).find_map(|control| match control {
-            Control::Curve {
+            Control::Curve(luxforge_core::CurveControl {
                 action: a,
                 channels,
                 sample_query,
                 ..
-            } if a == action => {
+            }) if a == action => {
                 let index = channels
                     .iter()
                     .position(|channel| channel.parameter == parameter)?;
@@ -985,11 +985,11 @@ fn curve_channel_parameters(
 ) -> Option<Vec<String>> {
     modules.iter().find_map(|module| {
         walk(&module.controls).find_map(|control| match control {
-            Control::Curve {
+            Control::Curve(luxforge_core::CurveControl {
                 action: a,
                 channels,
                 ..
-            } if a == action && channels.iter().any(|c| c.parameter == parameter) => {
+            }) if a == action && channels.iter().any(|c| c.parameter == parameter) => {
                 Some(channels.iter().map(|c| c.parameter.clone()).collect())
             }
             _ => None,
@@ -1004,7 +1004,7 @@ pub(crate) fn initial_group_expanded(
 ) -> Option<bool> {
     let module = modules.iter().find(|module| module.id == module_id)?;
     match at_path(&module.controls, path)? {
-        Control::Group { collapsed, .. } => Some(!collapsed),
+        Control::Group(luxforge_core::GroupControl { collapsed, .. }) => Some(!collapsed),
         _ => None,
     }
 }
