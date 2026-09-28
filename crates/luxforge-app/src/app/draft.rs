@@ -1,39 +1,36 @@
 //! The core draft lifecycle as one pure state machine.
 //!
 //! Every desktop gesture — a slider, a mask shape or stroke, the crop frame — is one [`CoreDraft`].
-//! It holds no owner handle and no framework type: it takes an [`Event`] (the gesture offered
-//! fields, an owner answer arrived, the pointer was released, Discard or Reapply was pressed, the
-//! asset moved) and answers with the one [`Step`] the driver must take next. The
-//! driver in [`crate::app::gesture`] runs the step against the owner and feeds the answer back, so
-//! every rule of the lifecycle lives here once:
+//! It holds no owner handle and no framework type: it opens on the draft `draft.begin` answered
+//! with, takes an [`Event`] (the gesture offered fields, an owner answer arrived, the pointer was
+//! released, Discard or Reapply was pressed, the asset moved) and answers with the one [`Step`] the
+//! driver must take next. The driver in [`crate::app::gesture`] runs the step against the owner and
+//! feeds the answer back, so every rule of the lifecycle lives here once:
 //!
-//! - at most one owner round trip is in flight, and nothing else is sent while it is;
+//! - `draft.begin`, `draft.set`, `draft.reapply` and `draft.cancel` are answered in the update that
+//!   sends them, so `draft.commit` is the one round trip that outlives an update, and nothing else is
+//!   sent while it is in flight;
 //! - the newest offered fields win, and fields equal to the ones already accepted are not re-sent;
-//! - a release commits exactly once, after every offered field has reached the core draft, however
-//!   early it came — even before `draft.begin` has answered;
+//! - a release commits exactly once, after every offered field has reached the core draft;
 //! - a conflicted draft is never committed: release is refused until Discard or Reapply;
-//! - Discard while a round trip is in flight waits for its answer and then cancels the draft that
-//!   answer names, so no request races another; Discard during a commit lets the commit decide and
-//!   cancels only if the commit is refused;
-//! - every answer names the gesture (and, once known, the core draft) it belongs to, so a stale one
-//!   is recognised and dropped rather than adopted by a newer gesture.
+//! - Discard during a commit lets the commit decide and cancels only if the commit is refused;
+//! - the commit's answer names the gesture and the core draft it belongs to, so a stale one is
+//!   recognised and dropped rather than adopted by a newer gesture.
 use luxforge_core::{Draft, DraftId, ErrorKind};
 use serde_json::{Value, json};
 
-/// A desktop-local identity for one gesture, minted when it opens. The core's draft id is unknown
-/// until `draft.begin` answers, so that answer is matched to its gesture by this instead.
+/// A desktop-local identity for one gesture, minted when it opens, which the answers of its owner
+/// tasks — the commit, a mask gesture's `render.transform` — name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct GestureId(pub(crate) u64);
 
 /// The owner round trip a draft is waiting on. `draft.set` is answered in the update that sends it,
-/// so it is in flight only between [`Step::Set`] and the [`Event::Set`] that follows it.
+/// so it is in flight only between [`Step::Set`] and the [`Event::Set`] that follows it; the commit
+/// is the one owner task, in flight until its answer arrives as a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Round {
-    Begin,
     Set,
     Commit,
-    Reapply,
-    Cancel,
 }
 
 /// How a gesture that ended while a round trip was in flight is to finish once it answers.
@@ -48,12 +45,6 @@ pub(crate) enum Finish {
 pub(crate) enum Event {
     /// The gesture's fields now, as one JSON object: what the next `draft.set` carries.
     Offer(Value),
-    /// `draft.begin` answered. `seen` is the newest asset revision the desktop knows, so a commit
-    /// that landed between the begin and its answer still marks the draft conflicted.
-    Begun {
-        answer: Result<Draft, String>,
-        seen: u64,
-    },
     /// The synchronous `draft.set` answered: the draft it accepted, or why no frame follows.
     Set(Result<Draft, String>),
     /// The pointer was released, a key came up or Apply was pressed: commit once.
@@ -62,12 +53,11 @@ pub(crate) enum Event {
     Cancel,
     /// The Changed elsewhere notice's Reapply.
     Reapply,
-    /// `draft.reapply` answered.
+    /// The synchronous `draft.reapply` that [`Step::Reapply`] asked for answered.
     Reapplied(Result<Draft, String>),
-    /// `draft.commit` answered: `Ok` for an entry or a no-op, the refusal otherwise.
+    /// `draft.commit` answered: `Ok` for an entry or a no-op, which ends the gesture, the refusal
+    /// otherwise.
     Committed(Result<(), String>),
-    /// `draft.cancel` answered, either way: the draft is over.
-    Cancelled,
     /// A new authoritative asset revision arrived.
     Revision(u64),
 }
@@ -77,8 +67,6 @@ pub(crate) enum Event {
 pub(crate) enum Step {
     /// Nothing to send.
     None,
-    /// Open the core draft with `draft.begin`.
-    Begin,
     /// Send these fields with `draft.set`, synchronously, and feed the answer back.
     Set { draft_id: DraftId, fields: Value },
     /// Commit the core draft once, expecting the revision it is based on.
@@ -86,16 +74,15 @@ pub(crate) enum Step {
         draft_id: DraftId,
         expected_revision: u64,
     },
-    /// End the core draft with `draft.cancel`; the gesture is closing.
+    /// End the core draft with `draft.cancel`, synchronously: the gesture is over.
     Cancel(DraftId),
-    /// Rebase the core draft on the current revision with `draft.reapply`.
+    /// Rebase the core draft on the current revision with `draft.reapply`, synchronously, and feed
+    /// the answer back.
     Reapply(DraftId),
     /// The draft has just become conflicted: say so, keep it.
     Conflicted,
     /// Release was refused because the draft is conflicted.
     Refused,
-    /// The gesture is over and nothing of it remains at the owner.
-    Done,
 }
 
 /// One gesture's core draft, as the desktop tracks it. The authoritative draft lives in this
@@ -103,8 +90,7 @@ pub(crate) enum Step {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CoreDraft {
     pub(crate) gesture: GestureId,
-    /// Known once `draft.begin` has answered.
-    pub(crate) draft_id: Option<DraftId>,
+    pub(crate) draft_id: DraftId,
     pub(crate) base_revision: u64,
     pub(crate) draft_revision: u64,
     pub(crate) conflicted: bool,
@@ -117,36 +103,30 @@ pub(crate) struct CoreDraft {
 }
 
 impl CoreDraft {
-    /// A gesture opens: `draft.begin` goes out at once, carrying nothing but the action. `fields`
-    /// are what the gesture already holds, sent as soon as the draft exists.
-    pub(crate) fn open(
-        gesture: GestureId,
-        base_revision: u64,
-        fields: Option<Value>,
-    ) -> (Self, Step) {
-        let draft = Self {
+    /// A gesture opens on the draft its synchronous `draft.begin` answered with. `fields` are what
+    /// the gesture already holds, sent at once.
+    pub(crate) fn open(gesture: GestureId, opened: Draft, fields: Option<Value>) -> (Self, Step) {
+        let mut draft = Self {
             gesture,
-            draft_id: None,
-            base_revision,
-            draft_revision: 0,
-            conflicted: false,
-            in_flight: Some(Round::Begin),
+            draft_id: opened.draft_id,
+            base_revision: opened.base_revision,
+            draft_revision: opened.draft_revision,
+            conflicted: opened.conflicted,
+            in_flight: None,
             pending: fields,
             sent: None,
             finish: None,
         };
-        (draft, Step::Begin)
+        let step = match draft.advance() {
+            Step::None if draft.conflicted => Step::Conflicted,
+            step => step,
+        };
+        (draft, step)
     }
 
     /// The round trip in flight, if any.
     pub(crate) fn in_flight(&self) -> Option<Round> {
         self.in_flight
-    }
-
-    /// How the gesture finishes once the round trip in flight answers, if it has ended.
-    #[cfg(test)]
-    pub(crate) fn finishing(&self) -> Option<Finish> {
-        self.finish
     }
 
     /// The fields the last accepted `draft.set` carried.
@@ -166,12 +146,10 @@ impl CoreDraft {
     }
 
     /// Something the gesture asked for will still put a frame of its own on screen: a round trip
-    /// whose answer brings one, fields waiting to be sent, or a commit due. A `draft.begin` with
-    /// nothing to send — an armed brush opening — brings none, and neither do fields a conflicted
-    /// draft holds back until Reapply, so a frame on screen then is the gesture's newest.
+    /// whose answer brings one, fields waiting to be sent, or a commit due. Fields a conflicted
+    /// draft holds back until Reapply bring none, so a frame on screen then is the gesture's newest.
     pub(crate) fn frame_pending(&self) -> bool {
         match self.in_flight {
-            Some(Round::Begin) => self.pending.is_some() || self.finish.is_some(),
             Some(_) => true,
             None => (self.outstanding() && !self.conflicted) || self.finish.is_some(),
         }
@@ -182,33 +160,21 @@ impl CoreDraft {
         self.draft_revision > 0
     }
 
-    /// The gesture was discarded and is waiting only for its owner round trips to end. It shows
-    /// nothing and accepts nothing, but it still holds this client's one draft slot.
-    pub(crate) fn closing(&self) -> bool {
-        self.finish == Some(Finish::Cancel) && self.in_flight != Some(Round::Commit)
-    }
-
-    /// The draft takes no more fields and no second release: it is closing, or its commit is out.
+    /// The draft's commit is out: it takes no more fields and no second release.
     fn settled(&self) -> bool {
-        self.closing() || self.in_flight == Some(Round::Commit)
+        self.in_flight == Some(Round::Commit)
     }
 
-    /// Nothing is in flight and the core draft is open: the gesture could give its draft up now.
-    pub(crate) fn idle(&self) -> bool {
-        self.in_flight.is_none() && self.draft_id.is_some() && self.finish.is_none()
-    }
-
-    /// Whether an answer from the owner belongs to this draft: the gesture that asked, and once the
-    /// core draft is known, that draft.
-    pub(crate) fn answers(&self, gesture: GestureId, draft: Option<&DraftId>) -> bool {
-        self.gesture == gesture && (draft.is_none() || draft == self.draft_id.as_ref())
+    /// Whether an owner answer belongs to this draft: the gesture that asked, and its core draft.
+    pub(crate) fn answers(&self, gesture: GestureId, draft: &DraftId) -> bool {
+        self.gesture == gesture && draft == &self.draft_id
     }
 
     /// The draft as this desktop knows it, in the shape `session.state` reports, for the evidence
     /// frame while the session's own copy has not caught up.
     pub(crate) fn summary(&self, action: &str) -> Value {
         json!({
-            "draft_id": self.draft_id.as_ref().map(DraftId::as_str),
+            "draft_id": self.draft_id.as_str(),
             "action": action,
             "fields": self.sent.clone().unwrap_or_else(|| json!({})),
             "base_revision": self.base_revision,
@@ -225,27 +191,6 @@ impl CoreDraft {
                 self.pending = Some(fields);
                 self.advance()
             }
-            Event::Begun { answer, seen } => {
-                if self.in_flight != Some(Round::Begin) {
-                    return Step::None;
-                }
-                self.in_flight = None;
-                match answer {
-                    Ok(opened) => {
-                        self.draft_id = Some(opened.draft_id);
-                        self.base_revision = opened.base_revision;
-                        self.draft_revision = opened.draft_revision;
-                        self.conflicted = opened.conflicted || seen > opened.base_revision;
-                        match self.advance() {
-                            // Opened on a revision already replaced: say so, as a revision that
-                            // arrives later would.
-                            Step::None if self.conflicted => Step::Conflicted,
-                            step => step,
-                        }
-                    }
-                    Err(_) => Step::Done,
-                }
-            }
             Event::Set(answer) => {
                 if self.in_flight != Some(Round::Set) {
                     return Step::None;
@@ -258,10 +203,6 @@ impl CoreDraft {
                 self.advance()
             }
             Event::Release => {
-                if self.in_flight.is_some() {
-                    self.finish = Some(Finish::Commit);
-                    return Step::None;
-                }
                 if self.conflicted {
                     self.finish = None;
                     return Step::Refused;
@@ -270,32 +211,19 @@ impl CoreDraft {
                 self.advance()
             }
             Event::Cancel => {
-                if self.closing() {
-                    return Step::None;
-                }
-                self.finish = Some(Finish::Cancel);
+                // During a commit the commit decides: an entry ends the gesture, a refusal cancels
+                // it. Otherwise the draft is cancelled now.
                 self.pending = None;
-                match self.in_flight {
-                    // The commit decides: an entry ends the gesture, a refusal cancels it.
-                    Some(_) => Step::None,
-                    None => self.advance(),
-                }
+                self.finish = Some(Finish::Cancel);
+                self.advance()
             }
             Event::Reapply => {
-                let Some(draft_id) = self.draft_id.clone() else {
-                    return Step::None;
-                };
                 if self.in_flight.is_some() || self.finish.is_some() {
                     return Step::None;
                 }
-                self.in_flight = Some(Round::Reapply);
-                Step::Reapply(draft_id)
+                Step::Reapply(self.draft_id.clone())
             }
             Event::Reapplied(answer) => {
-                if self.in_flight != Some(Round::Reapply) {
-                    return Step::None;
-                }
-                self.in_flight = None;
                 if let Ok(rebased) = answer {
                     self.base_revision = rebased.base_revision;
                     self.draft_revision = rebased.draft_revision;
@@ -313,7 +241,12 @@ impl CoreDraft {
                 }
                 self.in_flight = None;
                 match answer {
-                    Ok(()) => Step::Done,
+                    // The gesture is over, a Discard pressed meanwhile included: the answer's
+                    // handler takes it out of the slot.
+                    Ok(()) => {
+                        self.finish = None;
+                        Step::None
+                    }
                     Err(error) => {
                         if error.starts_with(ErrorKind::Conflict.code()) {
                             self.conflicted = true;
@@ -326,19 +259,10 @@ impl CoreDraft {
                     }
                 }
             }
-            Event::Cancelled => {
-                if self.in_flight != Some(Round::Cancel) {
-                    return Step::None;
-                }
-                self.in_flight = None;
-                Step::Done
-            }
             Event::Revision(revision) => {
                 // While the commit is in flight the new revision is most likely its own; the
                 // commit's answer says whether it was refused as stale, so it decides.
-                if self.draft_id.is_none()
-                    || self.closing()
-                    || self.conflicted
+                if self.conflicted
                     || self.in_flight == Some(Round::Commit)
                     || revision == self.base_revision
                 {
@@ -357,11 +281,8 @@ impl CoreDraft {
         if self.in_flight.is_some() {
             return Step::None;
         }
-        let Some(draft_id) = self.draft_id.clone() else {
-            return Step::None;
-        };
+        let draft_id = self.draft_id.clone();
         if self.finish == Some(Finish::Cancel) {
-            self.in_flight = Some(Round::Cancel);
             return Step::Cancel(draft_id);
         }
         if self.outstanding() && !self.conflicted {
@@ -392,13 +313,6 @@ mod tests {
 
     const GESTURE: GestureId = GestureId(7);
 
-    /// A gesture opened on revision 4, whose `draft.begin` is on its way.
-    fn opened(fields: Option<Value>) -> CoreDraft {
-        let (draft, step) = CoreDraft::open(GESTURE, 4, fields);
-        assert_eq!(step, Step::Begin, "opening sends draft.begin");
-        draft
-    }
-
     fn answer(base_revision: u64) -> Draft {
         Draft::new("set-basic", AssetId::new(), base_revision)
     }
@@ -407,28 +321,17 @@ mod tests {
         json!({ "exposure": value })
     }
 
-    /// Answer `draft`'s begin with a draft on revision 4, the desktop having seen `seen`.
-    fn begin(draft: &mut CoreDraft, seen: u64) -> (Step, DraftId) {
-        let opened = answer(4);
-        let id = opened.draft_id.clone();
-        let step = draft.handle(Event::Begun {
-            answer: Ok(opened),
-            seen,
-        });
-        (step, id)
-    }
-
-    /// A draft that has opened on revision 4, with its begin answered.
+    /// A draft opened on revision 4 with nothing to send yet.
     fn begun() -> (CoreDraft, DraftId) {
-        let mut draft = opened(None);
-        let (step, id) = begin(&mut draft, 4);
+        let (draft, step) = CoreDraft::open(GESTURE, answer(4), None);
         assert_eq!(step, Step::None);
+        let id = draft.draft_id.clone();
         (draft, id)
     }
 
     fn accepted(draft: &CoreDraft, revision: u64) -> Draft {
         let mut set = answer(draft.base_revision);
-        set.draft_id = draft.draft_id.clone().unwrap();
+        set.draft_id = draft.draft_id.clone();
         set.draft_revision = revision;
         set
     }
@@ -441,18 +344,17 @@ mod tests {
     }
 
     #[test]
-    fn offers_before_the_begin_answers_are_sent_once_newest_first() {
-        let mut draft = opened(Some(fields(0.1)));
-        assert_eq!(draft.in_flight(), Some(Round::Begin));
-        assert_eq!(draft.handle(Event::Offer(fields(0.2))), Step::None);
-        assert_eq!(draft.handle(Event::Offer(fields(0.3))), Step::None);
-        let (step, id) = begin(&mut draft, 4);
+    fn a_gesture_opening_with_fields_sends_them_at_once() {
+        let opened = answer(4);
+        let id = opened.draft_id.clone();
+        let (mut draft, step) = CoreDraft::open(GESTURE, opened, Some(fields(0.3)));
         assert_eq!(
             step,
             Step::Set {
                 draft_id: id,
                 fields: fields(0.3)
-            }
+            },
+            "the begin has answered, so the fields go in the same update"
         );
         assert!(!draft.drained(), "the set is in flight");
         let set = accepted(&draft, 1);
@@ -461,15 +363,20 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_opened_conflicted_says_so_and_holds_its_fields() {
+        let mut opened = answer(4);
+        opened.conflicted = true;
+        let (draft, step) = CoreDraft::open(GESTURE, opened, Some(fields(0.3)));
+        assert_eq!(step, Step::Conflicted);
+        assert!(!draft.frame_pending(), "held back until Reapply");
+    }
+
+    #[test]
     fn a_frame_is_pending_only_while_something_asked_will_bring_one() {
-        // An armed brush opening sends nothing once its begin answers: no frame is coming.
-        let brush = opened(None);
-        assert!(!brush.frame_pending() && !brush.drained());
-        // A shape opening sends its geometry once the draft exists.
-        let shape = opened(Some(fields(0.1)));
-        assert!(shape.frame_pending());
+        // An armed brush opens with nothing to send: no frame is coming, and nothing is waiting.
+        let (brush, _) = begun();
+        assert!(!brush.frame_pending() && brush.drained());
         let (mut draft, _) = begun();
-        assert!(!draft.frame_pending());
         draft.handle(Event::Offer(fields(0.2)));
         assert!(draft.frame_pending(), "the set is answered with a frame");
         let answered = accepted(&draft, 1);
@@ -482,6 +389,9 @@ mod tests {
             "a conflicted draft holds its fields back and asks for no frame"
         );
         draft.handle(Event::Reapply);
+        let mut rebased = answer(5);
+        rebased.draft_id = draft.draft_id.clone();
+        draft.handle(Event::Reapplied(Ok(rebased)));
         assert!(draft.frame_pending(), "the reapply re-sends them");
     }
 
@@ -502,11 +412,10 @@ mod tests {
     }
 
     #[test]
-    fn a_release_before_the_begin_answers_commits_once_it_has() {
-        let mut draft = opened(Some(fields(0.4)));
+    fn a_release_while_a_set_is_in_flight_commits_once_it_has_answered() {
+        let (mut draft, id) = begun();
+        draft.handle(Event::Offer(fields(0.4)));
         assert_eq!(draft.handle(Event::Release), Step::None);
-        let (step, id) = begin(&mut draft, 4);
-        assert!(matches!(step, Step::Set { .. }));
         let set = accepted(&draft, 1);
         assert_eq!(
             draft.handle(Event::Set(Ok(set))),
@@ -516,7 +425,8 @@ mod tests {
             },
             "the newest fields go first, then the commit"
         );
-        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::Done);
+        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::None);
+        assert!(draft.drained(), "nothing is left in flight");
     }
 
     #[test]
@@ -551,7 +461,6 @@ mod tests {
             Step::Reapply(id.clone()),
             "Reapply rebases the draft"
         );
-        assert_eq!(draft.handle(Event::Reapply), Step::None, "one at a time");
         let mut rebased = answer(6);
         rebased.draft_id = id.clone();
         assert_eq!(
@@ -584,6 +493,27 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_reapply_keeps_the_draft_conflicted() {
+        let (mut draft, _) = begun();
+        set(&mut draft, 0.5, 1);
+        draft.handle(Event::Revision(5));
+        draft.handle(Event::Reapply);
+        assert_eq!(
+            draft.handle(Event::Reapplied(Err("not-found: gone".into()))),
+            Step::None
+        );
+        assert!(draft.conflicted && draft.base_revision == 4);
+        assert_eq!(draft.handle(Event::Release), Step::Refused);
+    }
+
+    #[test]
+    fn no_reapply_is_sent_behind_a_commit() {
+        let (mut draft, _) = begun();
+        draft.handle(Event::Release);
+        assert_eq!(draft.handle(Event::Reapply), Step::None);
+    }
+
+    #[test]
     fn a_revision_during_the_commit_is_left_to_the_commit_to_answer() {
         let (mut draft, _) = begun();
         draft.handle(Event::Release);
@@ -593,7 +523,8 @@ mod tests {
             "most likely the commit's own revision: no notice for it"
         );
         assert!(!draft.conflicted);
-        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::Done);
+        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::None);
+        assert!(draft.drained(), "nothing is left in flight");
     }
 
     #[test]
@@ -612,48 +543,15 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_that_lands_while_the_begin_is_in_flight_conflicts_the_draft() {
-        let mut draft = opened(None);
-        assert_eq!(draft.handle(Event::Revision(5)), Step::None, "no draft yet");
-        assert_eq!(begin(&mut draft, 5).0, Step::Conflicted);
-        assert!(draft.conflicted, "the revision seen meanwhile is newer");
-    }
-
-    #[test]
     fn cancel_while_idle_ends_the_draft_through_one_cancel() {
         let (mut draft, id) = begun();
-        assert_eq!(draft.handle(Event::Cancel), Step::Cancel(id));
-        assert!(draft.closing());
-        assert_eq!(draft.handle(Event::Offer(fields(0.1))), Step::None);
-        assert_eq!(draft.handle(Event::Release), Step::None);
-        assert_eq!(draft.handle(Event::Cancel), Step::None, "one cancel");
-        assert_eq!(draft.handle(Event::Cancelled), Step::Done);
-    }
-
-    #[test]
-    fn cancel_while_the_begin_is_in_flight_cancels_the_draft_it_answers_with() {
-        let mut draft = opened(Some(fields(0.1)));
-        assert_eq!(draft.handle(Event::Cancel), Step::None);
-        assert!(draft.closing(), "the slot is held until the begin answers");
-        let (step, id) = begin(&mut draft, 4);
+        set(&mut draft, 0.5, 1);
+        draft.handle(Event::Revision(5));
+        draft.handle(Event::Offer(fields(0.6)));
         assert_eq!(
-            step,
+            draft.handle(Event::Cancel),
             Step::Cancel(id),
-            "no field is sent to a discarded draft"
-        );
-        assert_eq!(draft.handle(Event::Cancelled), Step::Done);
-    }
-
-    #[test]
-    fn cancel_while_the_begin_is_in_flight_is_over_when_the_begin_is_refused() {
-        let mut draft = opened(None);
-        draft.handle(Event::Cancel);
-        assert_eq!(
-            draft.handle(Event::Begun {
-                answer: Err("conflict: held".into()),
-                seen: 4
-            }),
-            Step::Done
+            "a discarded draft sends no held field first"
         );
     }
 
@@ -662,57 +560,36 @@ mod tests {
         let (mut draft, _) = begun();
         draft.handle(Event::Release);
         assert_eq!(draft.handle(Event::Cancel), Step::None, "no racing cancel");
-        assert!(!draft.closing(), "the commit is still the gesture's");
-        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::Done);
+        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::None);
+        assert!(draft.drained(), "nothing is left in flight");
 
-        let (mut refused, _) = begun();
+        let (mut refused, id) = begun();
         refused.handle(Event::Release);
         refused.handle(Event::Cancel);
         assert_eq!(
             refused.handle(Event::Committed(Err("conflict: stale".into()))),
-            Step::Cancel(refused.draft_id.clone().unwrap()),
+            Step::Cancel(id),
             "a refused commit leaves a draft, which the Discard then cancels"
-        );
-    }
-
-    #[test]
-    fn cancel_during_a_reapply_waits_for_its_answer() {
-        let (mut draft, id) = begun();
-        draft.handle(Event::Revision(5));
-        draft.handle(Event::Reapply);
-        assert_eq!(draft.handle(Event::Cancel), Step::None);
-        assert!(draft.closing());
-        assert_eq!(
-            draft.handle(Event::Reapplied(Err("not-found".into()))),
-            Step::Cancel(id)
         );
     }
 
     #[test]
     fn answers_name_the_gesture_and_the_draft_they_belong_to() {
         let (draft, id) = begun();
-        assert!(draft.answers(GESTURE, Some(&id)));
-        assert!(draft.answers(GESTURE, None));
-        assert!(!draft.answers(GestureId(8), Some(&id)));
-        assert!(!draft.answers(GESTURE, Some(&DraftId::new())));
+        assert!(draft.answers(GESTURE, &id));
+        assert!(!draft.answers(GestureId(8), &id));
+        assert!(!draft.answers(GESTURE, &DraftId::new()));
     }
 
     #[test]
     fn an_answer_for_a_round_not_in_flight_changes_nothing() {
         let (mut draft, _) = begun();
         let before = draft.clone();
-        assert_eq!(
-            draft.handle(Event::Reapplied(Err("late".into()))),
-            Step::None
-        );
         assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::None);
-        assert_eq!(draft.handle(Event::Cancelled), Step::None);
         assert_eq!(
-            draft.handle(Event::Begun {
-                answer: Ok(answer(9)),
-                seen: 9
-            }),
-            Step::None
+            draft.handle(Event::Set(Ok(answer(9)))),
+            Step::None,
+            "a set nobody sent"
         );
         assert_eq!(draft, before);
     }

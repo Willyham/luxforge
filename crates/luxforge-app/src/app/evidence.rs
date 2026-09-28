@@ -530,14 +530,11 @@ impl Editor {
                 let proxy_ready = self.capture_proxy_ready();
                 let photo_ready = self.capture_photo_ready();
                 let clipping_ready = self.capture_clipping_ready();
-                let closing = self.gesture_closing();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
-                // always shows real controls and the library rather than their loading lines; and
-                // for a discarded draft to end at the owner, so the frame's session holds no draft
-                // and the next step may open one.
+                // always shows real controls and the library rather than their loading lines.
                 let overlay_wanted = evidence.capture_overlay;
                 // The screenshot reads back the frame drawn last, so it waits for a frame built
                 // after every update so far; the next frame tick tries again.
@@ -553,7 +550,6 @@ impl Editor {
                     || (!proxy_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
-                    || closing
                 {
                     return Task::none();
                 }
@@ -1779,7 +1775,6 @@ impl Editor {
             .is_some_and(|evidence| evidence.awaiting == Some(Settle::Quiet));
         if waiting
             && self.slider_gesture().is_none()
-            && !self.gesture_closing()
             && !self.busy
             && self.pending_reset.is_none()
             && !self.preview_queue.is_busy()

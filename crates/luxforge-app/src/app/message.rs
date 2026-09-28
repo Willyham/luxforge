@@ -22,8 +22,8 @@ use crate::{
     },
 };
 use luxforge_core::{
-    ClientSession, ContentPoint, Draft, DraftId, EntryId, HistoryPage, ModuleDescriptor,
-    PresetSummary, PreviewJob, StageTransform, Version, jobs::JobRecord,
+    ClientSession, ContentPoint, DraftId, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
+    PreviewJob, StageTransform, Version, jobs::JobRecord,
 };
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -152,11 +152,11 @@ pub(crate) enum BrushEdit {
     Reset(String),
 }
 
-/// The core draft lifecycle of the one open slider or mask gesture: the three decisions a person
-/// makes about it, and the owner's answers. Every answer names the gesture it belongs to — and,
-/// once known, the core draft — so an answer for a gesture that has since ended is recognised and
-/// dropped rather than taken up by a newer one. `draft.set` has no message: it is answered in the
-/// update that sends it.
+/// The core draft lifecycle of the open gesture: the three decisions a person makes about it, and
+/// the one owner answer that arrives as a message. `draft.begin`, `draft.set`, `draft.reapply` and
+/// `draft.cancel` have no message: each is answered in the update that sends it. The commit's
+/// answer names the gesture and the core draft it belongs to, so an answer for a gesture that has
+/// since ended is recognised and dropped rather than taken up by a newer one.
 #[derive(Clone, Debug)]
 pub(crate) enum DraftMessage {
     /// Release, Enter or Apply: commit the gesture once.
@@ -165,30 +165,12 @@ pub(crate) enum DraftMessage {
     Cancel,
     /// The Changed elsewhere notice's Reapply.
     Reapply,
-    /// `draft.begin` answered.
-    Begun {
-        gesture: GestureId,
-        result: Result<Box<Draft>, String>,
-    },
     /// `draft.commit` answered. `None` is a no-op outcome: the gesture returned to its start, so
     /// there is no entry and no history to refresh.
     Committed {
         gesture: GestureId,
         draft: DraftId,
         result: Result<Option<Box<Refresh>>, String>,
-    },
-    /// `draft.reapply` answered.
-    Reapplied {
-        gesture: GestureId,
-        draft: DraftId,
-        result: Result<Box<Draft>, String>,
-    },
-    /// `draft.cancel` answered, with the displayed entry's preview read after it when the gesture
-    /// left drafted pixels on screen.
-    Cancelled {
-        draft: DraftId,
-        cancelled: Result<(), String>,
-        reseed: Option<Result<Box<PreviewPayload>, String>>,
     },
 }
 

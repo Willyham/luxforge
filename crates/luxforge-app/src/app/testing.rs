@@ -6,7 +6,7 @@ use crate::{
         Boot, Editor,
         draft::{CoreDraft, GestureId, Round},
         evidence::{Evidence, parse_script},
-        gesture::{Gesture, Kind},
+        gesture::{CoreGesture, Kind},
         message::{ControlMessage, DraftMessage, Message, SyncMessage},
         tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
@@ -268,6 +268,8 @@ pub(crate) fn opened(
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(vec![
         crop_descriptor(),
     ]))));
+    // The owner does not hold this photograph, so its draft requests are answered by the stand-in.
+    stand_in(&mut editor);
     let asset = AssetId::new();
     let mut current = entry(&asset, revision, None);
     for layer in layers {
@@ -446,19 +448,77 @@ pub(crate) fn let_go(editor: &mut Editor, action: &str, parameter: &str) -> iced
     }))
 }
 
+/// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
+/// Every `draft.begin`, `draft.set` and `draft.reapply` is accepted, except that each queued
+/// refusal answers one request of its kind in turn; every `draft.cancel` is accepted and reads no
+/// frame back. The driver asks it exactly where it would ask the owner, synchronously.
+#[derive(Default)]
+pub(crate) struct StandIn {
+    pub(crate) begins: VecDeque<String>,
+    pub(crate) sets: VecDeque<String>,
+    pub(crate) reapplies: VecDeque<String>,
+}
+
+impl StandIn {
+    /// A fresh draft of `action` on the revision the desktop holds, as `draft.begin` answers.
+    pub(crate) fn begin(
+        &mut self,
+        state: Option<&EditorState>,
+        asset: AssetId,
+        action: &str,
+    ) -> Result<Draft, String> {
+        if let Some(refusal) = self.begins.pop_front() {
+            return Err(refusal);
+        }
+        Ok(Draft::new(
+            action,
+            asset,
+            state.map_or(0, |state| state.revision),
+        ))
+    }
+
+    /// The open gesture's draft on the revision the desktop holds, no longer conflicted, as
+    /// `draft.reapply` answers.
+    pub(crate) fn reapply(
+        &mut self,
+        state: Option<&EditorState>,
+        open: Option<&CoreGesture>,
+        draft_id: &DraftId,
+    ) -> Result<Draft, String> {
+        if let Some(refusal) = self.reapplies.pop_front() {
+            return Err(refusal);
+        }
+        let (Some(state), Some(open)) =
+            (state, open.filter(|open| &open.draft.draft_id == draft_id))
+        else {
+            return Err("not-found: this client holds no such draft".into());
+        };
+        let mut rebased = Draft::new(
+            &open.kind.action().unwrap_or_default(),
+            open.asset.clone(),
+            state.revision,
+        );
+        rebased.draft_id = draft_id.clone();
+        rebased.draft_revision = open.draft.draft_revision;
+        Ok(rebased)
+    }
+}
+
+/// Answer this editor's draft requests with the [`StandIn`] from now on, and return it so a test
+/// can queue refusals.
+pub(crate) fn stand_in(editor: &mut Editor) -> &mut StandIn {
+    editor.stand_in.get_or_insert_with(StandIn::default)
+}
+
 /// Put an open slider gesture of this control in the editor's one slot directly, its `draft.begin`
-/// on its way, as a test that is about something else needs one to be there.
+/// answered on the revision the desktop holds, as a test that is about something else needs one to
+/// be there.
 pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
-    let asset = editor
-        .state
-        .as_ref()
-        .expect("a photograph")
-        .asset
-        .id
-        .clone();
+    let state = editor.state.as_ref().expect("a photograph");
+    let (asset, revision) = (state.asset.id.clone(), state.revision);
     let gesture = editor.next_gesture();
-    let (draft, _) = CoreDraft::open(gesture, 0, None);
-    editor.gesture = Some(Gesture::Core(Box::new(crate::app::gesture::CoreGesture {
+    let (draft, _) = CoreDraft::open(gesture, Draft::new(action, asset.clone(), revision), None);
+    editor.gesture = Some(Box::new(crate::app::gesture::CoreGesture {
         asset,
         draft,
         kind: Kind::Slider(crate::app::gesture::SliderGesture {
@@ -468,38 +528,23 @@ pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
             target: Default::default(),
             unpreviewed: false,
         }),
-    })));
+    }));
 }
 
-/// The core draft of the open gesture, or of the discarded one still closing.
+/// The core draft of the open gesture.
 pub(crate) fn core_draft(editor: &Editor) -> Option<&CoreDraft> {
-    match editor.gesture.as_ref()? {
-        Gesture::Core(gesture) => Some(&gesture.draft),
-        Gesture::Closing { draft, .. } => Some(draft),
-    }
+    editor.core_gesture().map(|gesture| &gesture.draft)
 }
 
-/// The local identity of the open or closing core gesture, which its owner answers name.
+/// The local identity of the open core gesture, which its owner answers name.
 pub(crate) fn gesture_of(editor: &Editor) -> GestureId {
     core_draft(editor).expect("a core gesture").gesture
-}
-
-/// Answer the open gesture's `draft.begin` with this draft, as its task would, without an owner.
-pub(crate) fn answer_begin(editor: &mut Editor, draft: Draft) {
-    let gesture = gesture_of(editor);
-    let _ = editor.update(Message::Draft(DraftMessage::Begun {
-        gesture,
-        result: Ok(Box::new(draft)),
-    }));
 }
 
 /// Answer the open gesture's `draft.commit`, as its task would.
 pub(crate) fn answer_commit(editor: &mut Editor, result: Result<Option<Refresh>, String>) {
     let draft = core_draft(editor).expect("a core gesture");
-    let (gesture, draft) = (
-        draft.gesture,
-        draft.draft_id.clone().expect("an open core draft"),
-    );
+    let (gesture, draft) = (draft.gesture, draft.draft_id.clone());
     let _ = editor.update(Message::Draft(DraftMessage::Committed {
         gesture,
         draft,
@@ -507,113 +552,31 @@ pub(crate) fn answer_commit(editor: &mut Editor, result: Result<Option<Refresh>,
     }));
 }
 
-/// Answer the open gesture's `draft.reapply`, as its task would.
-pub(crate) fn answer_reapply(editor: &mut Editor, result: Result<Draft, String>) {
-    let draft = core_draft(editor).expect("a core gesture");
-    let (gesture, draft) = (
-        draft.gesture,
-        draft.draft_id.clone().expect("an open core draft"),
-    );
-    let _ = editor.update(Message::Draft(DraftMessage::Reapplied {
-        gesture,
-        draft,
-        result: result.map(Box::new),
-    }));
-}
-
-/// Answer a closing gesture's `draft.cancel`, as its task would, with no frame read after it.
-pub(crate) fn answer_cancel(editor: &mut Editor) {
-    let draft = core_draft(editor)
-        .and_then(|draft| draft.draft_id.clone())
-        .expect("a closing core draft");
-    let _ = editor.update(Message::Draft(DraftMessage::Cancelled {
-        draft,
-        cancelled: Ok(()),
-        reseed: None,
-    }));
-}
-
-/// Run the owner round trip the open or closing core gesture is waiting on, through the plain call
-/// its task runs, and hand the answer back as the runtime does. Returns the round that was run.
-///
-/// A `draft.begin` that displaced an armed brush cancels that brush's draft first, in its own task;
-/// here that is whatever draft the session still holds.
-pub(crate) fn run_round(editor: &mut Editor) -> Option<Round> {
-    let owner = editor.owner.clone();
-    let client = editor.client;
-    let draft = core_draft(editor)?.clone();
-    let round = draft.in_flight()?;
-    match round {
-        Round::Begin => {
-            let gesture = editor.core_gesture().expect("an open gesture");
-            let asset = gesture.asset.clone();
-            let action = gesture.kind.action().expect("a method");
-            let target = gesture.kind.target();
-            if let Ok((session, _)) =
-                crate::app::tasks::call(&owner, client, "session.state", json!({}))
-                && let Some(held) = session["draft"]["draft_id"].as_str()
-            {
-                let _ = crate::app::tasks::call(
-                    &owner,
-                    client,
-                    "draft.cancel",
-                    json!({"draft_id": held}),
-                );
-            }
-            let result = crate::app::tasks::call(
-                &owner,
-                client,
-                "draft.begin",
-                crate::app::tasks::draft_begin_params(asset, &action, target),
-            )
-            .and_then(|(value, _)| {
-                serde_json::from_value::<Draft>(value).map_err(|e| e.to_string())
-            });
-            let _ = editor.update(Message::Draft(DraftMessage::Begun {
-                gesture: draft.gesture,
-                result: result.map(Box::new),
-            }));
-        }
-        Round::Commit => {
-            let gesture = editor.core_gesture().expect("an open gesture");
-            let asset = gesture.asset.clone();
-            let draft_id = draft.draft_id.clone().expect("an open core draft");
-            let result = crate::app::tasks::draft_commit_now(
-                &owner,
-                client,
-                &draft_id,
-                asset,
-                crate::app::tasks::mutation(draft.base_revision),
-                None,
-            );
-            answer_commit(editor, result);
-        }
-        Round::Reapply => {
-            let draft_id = draft.draft_id.clone().expect("an open core draft");
-            let result = crate::app::tasks::draft_reapply_now(&owner, client, &draft_id);
-            let _ = editor.update(Message::Draft(DraftMessage::Reapplied {
-                gesture: draft.gesture,
-                draft: draft_id,
-                result: result.map(Box::new),
-            }));
-        }
-        Round::Cancel => {
-            let draft_id = draft.draft_id.clone().expect("a closing core draft");
-            let reseed = matches!(editor.gesture, Some(Gesture::Closing { reseed: true, .. }))
-                .then(|| editor.state.as_ref().map(|state| state.asset.id.clone()))
-                .flatten()
-                .map(|asset| (asset, editor.displayed_entry(), None));
-            let (cancelled, reseed) =
-                crate::app::tasks::draft_cancel_now(&owner, client, &draft_id, reseed);
-            let _ = editor.update(Message::Draft(DraftMessage::Cancelled {
-                draft: draft_id,
-                cancelled,
-                reseed,
-            }));
-        }
-        Round::Set => return None,
+/// Run the open gesture's `draft.commit`, the one draft round trip that is an owner task, through
+/// the plain call its task runs, and hand the answer back as the runtime does. Returns whether a
+/// commit was in flight.
+pub(crate) fn run_commit(editor: &mut Editor) -> bool {
+    let Some(draft) = core_draft(editor).cloned() else {
+        return false;
+    };
+    if draft.in_flight() != Some(Round::Commit) {
+        return false;
     }
-    Some(round)
+    let asset = editor
+        .core_gesture()
+        .expect("an open gesture")
+        .asset
+        .clone();
+    let result = crate::app::tasks::draft_commit_now(
+        &editor.owner,
+        editor.client,
+        &draft.draft_id,
+        asset,
+        crate::app::tasks::mutation(draft.base_revision),
+        None,
+    );
+    answer_commit(editor, result);
+    true
 }
 
 /// An owner that accepts every `draft.set`: the next draft revision, the fields merged, and a
@@ -688,6 +651,8 @@ pub(crate) fn patch_control(editor: &Editor) -> (String, String) {
 pub(crate) fn drafting() -> (Editor, PathBuf, PathBuf, AssetId, String, String) {
     let (mut editor, catalog) = boot();
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    // The owner does not hold this photograph, so its draft requests are answered by the stand-in.
+    stand_in(&mut editor);
     let asset = AssetId::new();
     let current = entry(&asset, 4, None);
     let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
@@ -698,31 +663,10 @@ pub(crate) fn drafting() -> (Editor, PathBuf, PathBuf, AssetId, String, String) 
     (editor, catalog, log, asset, action, parameter)
 }
 
-/// The `draft.begin` answer the core would send, so the state machine runs on real messages
-/// without a running task executor. The owner does not hold this photograph, so the editor's
-/// own `draft.set` is answered by the test's stand-in, which accepts it.
-pub(crate) fn begun(editor: &mut Editor, asset: &AssetId, action: &str, revision: u64) {
-    editor
-        .fake_sets
-        .get_or_insert_with(std::collections::VecDeque::new);
-    let draft = luxforge_core::Draft::new(action, asset.clone(), revision);
-    answer_begin(editor, draft);
-}
-
-/// Answer the started crop gesture's `draft.begin`, if it has not answered, with a draft on the
-/// revision the desktop holds, and take its input stage as shown: the draft a crop test drives,
-/// with every `draft.set` answered by [`accepted_set`]. The frame itself opened with the start.
+/// Take the started crop gesture's input stage as shown: the draft a crop test drives, its
+/// `draft.begin` answered at the start and every `draft.set` answered by the [`StandIn`]. The frame
+/// itself opened with the start.
 pub(crate) fn open_crop(editor: &mut Editor) {
-    if core_draft(editor).is_some_and(|draft| draft.in_flight() == Some(Round::Begin)) {
-        let state = editor.state.as_ref().expect("a photograph");
-        let (asset, revision) = (state.asset.id.clone(), state.revision);
-        let action = editor
-            .crop_gesture()
-            .expect("a crop gesture")
-            .action
-            .clone();
-        begun(editor, &asset, &action, revision);
-    }
     editor.crop_stage_shown();
 }
 
@@ -741,12 +685,8 @@ pub(crate) fn hold_crop(
         .id
         .clone();
     let gesture = editor.next_gesture();
-    let (mut draft, _) = CoreDraft::open(gesture, 0, None);
-    let _ = draft.handle(crate::app::draft::Event::Begun {
-        answer: Ok(Draft::new("crop", asset.clone(), 0)),
-        seen: 0,
-    });
-    editor.gesture = Some(Gesture::Core(Box::new(crate::app::gesture::CoreGesture {
+    let (draft, _) = CoreDraft::open(gesture, Draft::new("crop", asset.clone(), 0), None);
+    editor.gesture = Some(Box::new(crate::app::gesture::CoreGesture {
         asset,
         draft,
         kind: Kind::Crop(crate::app::crop::CropGesture {
@@ -754,7 +694,7 @@ pub(crate) fn hold_crop(
             frame,
             stage,
         }),
-    })));
+    }));
 }
 
 /// Every `draft.*` request this run logged, by event name.
@@ -774,6 +714,8 @@ pub(crate) fn opened_with_modules(
 ) -> (Editor, PathBuf) {
     let (mut editor, catalog) = boot();
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
+    // The owner does not hold this photograph, so its draft requests are answered by the stand-in.
+    stand_in(&mut editor);
     let asset = AssetId::new();
     let current = entry(&asset, revision, None);
     let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);

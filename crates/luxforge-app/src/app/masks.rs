@@ -31,7 +31,7 @@ impl Editor {
     }
 
     /// The open mask gesture will still put a frame of its own on screen: a `draft.set` or a commit
-    /// is in flight or queued, or its opening geometry waits for `draft.begin`. Until none is, the
+    /// is in flight or queued. Until none is, the
     /// frame on screen is not rendered from the geometry the gesture holds, which is what a captured
     /// frame has to be evidence of.
     pub(crate) fn mask_frame_pending(&self) -> bool {
@@ -320,8 +320,8 @@ impl Editor {
             return Task::none();
         };
         // An armed brush holds a core draft the command would move out from under it, and it has
-        // nothing painted to lose by giving it up.
-        let disarm = self.disarm();
+        // nothing painted to lose by giving it up: its draft is cancelled before the command goes.
+        self.disarm();
         self.event(
             "mask_command",
             json!({"method":method,"params":request.clone()}),
@@ -331,7 +331,7 @@ impl Editor {
         // `command` refuses while a request is in flight, but `mask_command` has already answered
         // that case above, so reaching here means this one went out and its answer is ours.
         self.mask_command_in_flight = true;
-        Task::batch([disarm, sent])
+        sent
     }
 
     /// One Masks-panel message.
@@ -998,8 +998,8 @@ impl Editor {
         };
         // A brush left armed from an earlier gesture holds this client's one core draft and has
         // painted nothing, so it gives it up here rather than refusing the gesture that wants it:
-        // the `draft.begin` below cancels it first.
-        let displaced = self.claim_slot();
+        // it is cancelled before the `draft.begin` below.
+        self.disarm();
         let entry = self.displayed_entry();
         self.event(
             "mask_draft_begin",
@@ -1014,7 +1014,7 @@ impl Editor {
         // A gesture opens with its shape already set, so its first frame shows what the release
         // would commit rather than the unmasked picture. An armed brush has nothing to send yet.
         let fields = mask.fields();
-        let begin = self.open_core(Kind::Mask(mask), fields, displaced);
+        let begin = self.open_core(Kind::Mask(mask), fields);
         let Some(gesture) = self.core_gesture().map(|gesture| gesture.draft.gesture) else {
             return begin;
         };

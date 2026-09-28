@@ -9,7 +9,7 @@
 use crate::{
     app::{
         Editor,
-        draft::{CoreDraft, Event, Round},
+        draft::{CoreDraft, Event},
         evidence::Settle,
         gesture::{Kind, Starting},
         message::{ControlMessage, CropMessage, CropPointer, Message},
@@ -53,8 +53,8 @@ pub(crate) enum StageView {
     /// A rebased frame's stage will not arrive. The draft is kept, still conflicted when it is, and
     /// the photograph is shown until a Reapply asks for the stage again.
     Missing,
-    /// A starting draft's stage will not arrive. The draft has ended for everything but its owner
-    /// round trips, and is discarded once the update is over ([`Editor::close_abandoned_crop`]).
+    /// A starting draft's stage will not arrive. The draft has ended for everything but its core
+    /// draft, which is discarded once the update is over ([`Editor::close_abandoned_crop`]).
     Abandoned,
 }
 
@@ -377,9 +377,9 @@ impl Editor {
         // in the idle section or a scripted `draft.start` — asks the session to enter this
         // module's mode, so the strip shows Crop selected for the whole life of the draft.
         self.mode_sync = Some(module_id);
-        // An armed brush gives its core draft up to the crop; the `draft.begin` task cancels it
-        // before anything else.
-        let displaced = self.claim_slot();
+        // An armed brush gives its core draft up to the crop: it is cancelled before the
+        // `draft.begin` below.
+        self.disarm();
         let crop = CropGesture {
             action,
             frame,
@@ -388,8 +388,12 @@ impl Editor {
                 base_revision,
             },
         };
-        let begin = self.open_core(Kind::Crop(crop), None, displaced);
-        // The opened frame is the draft's first fields, sent once `draft.begin` has answered.
+        let begin = self.open_core(Kind::Crop(crop), None);
+        // A refused begin opened nothing and has said why.
+        if self.crop().is_none() {
+            return begin;
+        }
+        // The opened frame is the draft's first fields, sent at once: `draft.begin` has answered.
         let fields = self.crop_changed("crop_draft_started");
         let stage = crop_preview_task(self.owner.clone(), self.client, asset, layer_index);
         self.status = "Preparing the crop's input stage…".into();
@@ -399,8 +403,8 @@ impl Editor {
     /// The Changed elsewhere notice's Reapply for the crop draft: the frame is rebased at once onto
     /// the stage the current rows report — carried through a turn committed ahead of it, and on a
     /// stage of another size keeping its composition as far as it fits — the core draft is rebased
-    /// by `draft.reapply` and the rebased frame's fields follow it, and the new stage's pixels are
-    /// asked for. Apply stays refused until the rebase has answered.
+    /// by `draft.reapply` and the rebased frame's fields follow it, both in this update, and the new
+    /// stage's pixels are asked for.
     pub(crate) fn crop_reapply(&mut self) -> Task<Message> {
         if self.busy || !self.session.preview.can_edit() || self.crop().is_none() {
             return Task::none();
@@ -436,11 +440,14 @@ impl Editor {
         if self.draft_generation.take().is_some() {
             self.preview_generation = self.cancel_preview_queue();
         }
-        let rebase = self.drive(Event::Reapply);
-        let fields = self.crop_changed("crop_draft_changed");
-        let stage = crop_preview_task(self.owner.clone(), self.client, asset, row.layer_index);
         self.status = "Preparing the crop's input stage…".into();
-        Task::batch([rebase, fields, stage])
+        // The rebased frame's fields are offered first, and held while the draft is conflicted, so
+        // the synchronous rebase sends them rather than the fields the frame was rebased away from.
+        // A refused rebase says why in place of the line above.
+        let fields = self.crop_changed("crop_draft_changed");
+        let rebase = self.drive(Event::Reapply);
+        let stage = crop_preview_task(self.owner.clone(), self.client, asset, row.layer_index);
+        Task::batch([fields, rebase, stage])
     }
 
     /// The input stage the draft asked for, planned from `entry`, is still the one its frame is
@@ -476,14 +483,13 @@ impl Editor {
     }
 
     /// A scripted step waiting for the crop draft settles once the frame can be captured over its
-    /// stage: the stage is on screen and a Reapply's `draft.reapply` has answered, so a captured
-    /// frame never shows the frame rebased and the draft still conflicted.
+    /// stage: the stage is on screen. A Reapply's `draft.reapply` answers in the update that sends
+    /// it, so a captured frame never shows the frame rebased and the draft still conflicted.
     pub(crate) fn settle_crop(&mut self) {
         let ready = self.core_gesture().is_some_and(|gesture| {
             gesture
                 .crop()
                 .is_some_and(|crop| crop.stage == StageView::Shown)
-                && gesture.draft.in_flight() != Some(Round::Reapply)
         });
         if ready {
             self.settle_step(Settle::Draft);
@@ -814,8 +820,8 @@ mod tests {
         },
         tasks::SyncResult,
         testing::{
-            CROP_ASPECTS, CROP_SOURCE, answer_begin, answer_cancel, answer_commit, answer_reapply,
-            core_draft, crop_layer, described_at, entry, finish, open_crop, opened, refresh_for,
+            CROP_ASPECTS, CROP_SOURCE, answer_commit, core_draft, crop_layer, described_at, entry,
+            finish, open_crop, opened, refresh_for,
         },
     };
     use crate::crop_draft::{Corner, Handle};
@@ -970,9 +976,9 @@ mod tests {
             }),
             "the stage's pixels are on their way"
         );
-        assert_eq!(
-            core_draft(&editor).and_then(CoreDraft::in_flight),
-            Some(Round::Begin)
+        assert!(
+            core_draft(&editor).is_some_and(CoreDraft::drained),
+            "the draft opened and took the frame's fields in the start's own update"
         );
         assert_eq!(editor.snapshot()["crop"]["layer_index"], json!(1));
         open_crop(&mut editor);
@@ -1038,10 +1044,6 @@ mod tests {
         };
         let revision = editor.state.as_ref().expect("a photograph").revision;
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        assert_eq!(
-            crate::app::testing::run_round(&mut editor),
-            Some(Round::Begin)
-        );
         step_angle(&mut editor, 1);
         assert_eq!(editor.crop().expect("a frame").stage.angle, STEP);
         let before = draft();
@@ -1329,25 +1331,9 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// The core draft rebased by `draft.reapply`, as the owner answers it: the same draft on `base`.
-    fn rebased(editor: &Editor, base: u64) -> luxforge_core::Draft {
-        let asset = editor
-            .state
-            .as_ref()
-            .expect("a photograph")
-            .asset
-            .id
-            .clone();
-        let mut draft = luxforge_core::Draft::new("crop", asset, base);
-        draft.draft_id = core_draft(editor)
-            .and_then(|draft| draft.draft_id.clone())
-            .expect("an open core draft");
-        draft
-    }
-
     /// Another client's commit conflicts the draft, which the one Changed elsewhere notice says;
     /// the shared Reapply rebases the frame at once, onto the stage the new rows report, and the
-    /// core draft through `draft.reapply`. Apply is refused until that answers.
+    /// core draft through `draft.reapply`, in the same update.
     #[test]
     fn an_external_commit_marks_the_draft_conflicted_and_reapply_rebases_it() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 1);
@@ -1379,9 +1365,11 @@ mod tests {
         assert_eq!(snapshot["render_error"], json!(null));
         assert_eq!(snapshot["compare"], json!(false));
 
-        // Reapply re-reads the rows, rebases the frame onto the new input stage now and the core
-        // draft onto the new revision, and asks for the new stage's pixels.
+        // Reapply re-reads the rows, rebases the frame onto the new input stage and the core draft
+        // onto the new revision, sends the rebased frame's fields, all in this update, and asks
+        // for the new stage's pixels.
         editor.busy = false;
+        let log = crate::app::testing::attach_log(&mut editor);
         draft_message(&mut editor, DraftMessage::Reapply);
         assert_eq!(
             editor.crop_stage(),
@@ -1390,19 +1378,18 @@ mod tests {
                 base_revision: 9
             })
         );
-        assert_eq!(
-            core_draft(&editor).and_then(CoreDraft::in_flight),
-            Some(Round::Reapply)
-        );
-        assert!(
-            editor.release_refusal().is_some(),
-            "Apply waits for the rebased draft"
-        );
-        let rebased = rebased(&editor, 9);
-        answer_reapply(&mut editor, Ok(rebased));
         let draft = core_draft(&editor).expect("the rebased draft");
-        assert!(!draft.conflicted);
+        assert!(!draft.conflicted && draft.drained());
         assert_eq!(draft.base_revision, 9);
+        let payload = editor.crop().expect("a frame").payload();
+        let records = crate::app::testing::logged(&mut editor, &log);
+        let sets = crate::app::testing::draft_events(&records, "crop_draft_set");
+        assert_eq!(
+            sets.len(),
+            1,
+            "one draft.set, of the rebased frame, follows the rebase: {sets:?}"
+        );
+        assert_eq!(sets[0]["fields"]["width"], json!(payload.width));
         assert_eq!(
             editor.crop().expect("a frame").stage.angle,
             6.0,
@@ -1437,10 +1424,6 @@ mod tests {
         let revision = editor.state.as_ref().expect("a photograph").revision;
 
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        assert_eq!(
-            crate::app::testing::run_round(&mut editor),
-            Some(Round::Begin)
-        );
         step_angle(&mut editor, 1);
         let payload = editor.crop().expect("an open frame").payload();
         let held = session(client);
@@ -1471,10 +1454,7 @@ mod tests {
         );
 
         draft_message(&mut editor, DraftMessage::Commit);
-        assert_eq!(
-            crate::app::testing::run_round(&mut editor),
-            Some(Round::Commit)
-        );
+        assert!(crate::app::testing::run_commit(&mut editor));
         assert!(editor.gesture.is_none() && editor.crop().is_none());
         assert_eq!(session(client)["draft"], Value::Null);
         let state = editor.state.as_ref().expect("a photograph");
@@ -1500,16 +1480,8 @@ mod tests {
             payload,
             "the frame reopens at what was committed"
         );
-        assert_eq!(
-            crate::app::testing::run_round(&mut editor),
-            Some(Round::Begin)
-        );
         assert_eq!(session(client)["draft"]["action"], json!("crop"));
         draft_message(&mut editor, DraftMessage::Cancel);
-        assert_eq!(
-            crate::app::testing::run_round(&mut editor),
-            Some(Round::Cancel)
-        );
         assert!(editor.gesture.is_none());
         assert_eq!(session(client)["draft"], Value::Null);
         assert_eq!(
@@ -1656,8 +1628,6 @@ mod tests {
             ),
             (160.0, 0.0, 160.0, 240.0)
         );
-        let rebased = rebased(&editor, 5);
-        answer_reapply(&mut editor, Ok(rebased));
         assert!(!core_draft(&editor).expect("the rebased draft").conflicted);
         finish(editor, catalog);
     }
@@ -1748,19 +1718,6 @@ mod tests {
             assert_eq!(editor.session.workspace.mode, mode, "{case}");
         };
 
-        // A discarded draft still closing holds the slot: the start is refused with its reason.
-        let (draft, _) = crate::app::draft::CoreDraft::open(editor.next_gesture(), 1, None);
-        editor.gesture = Some(crate::app::gesture::Gesture::Closing {
-            draft,
-            reseed: false,
-        });
-        refused(&mut editor, "a draft closing");
-        assert_eq!(
-            editor.status,
-            "Wait for the discarded draft to close before cropping"
-        );
-        editor.gesture = None;
-
         // A historical preview cannot be edited.
         let current = editor.session.preview.selection.clone();
         editor.session.preview.selection = HistorySelection::Entry(entry_id);
@@ -1771,8 +1728,8 @@ mod tests {
         let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
         assert_eq!(
             task.units(),
-            2,
-            "the draft's begin and its input stage's truncated preview"
+            1,
+            "its input stage's truncated preview: the draft's begin answered in this update"
         );
         assert!(editor.crop().is_some());
         assert_eq!(editor.mode_sync.as_deref(), Some(crop_id.as_str()));
@@ -1978,27 +1935,23 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// Cancel on a draft that is still starting — its `draft.begin` unanswered and its stage not
-    /// yet rendered — cancels it outright: the frame leaves at once, the stage's job is stopped,
-    /// the session returns to pointer, and the draft's own `draft.cancel` follows its begin.
+    /// Cancel on a draft whose stage has not yet rendered cancels it outright: the frame leaves,
+    /// the stage's job is stopped, the session returns to pointer, and the core draft is cancelled,
+    /// all in the update of the press.
     #[test]
-    fn cancel_while_the_draft_is_starting_cancels_it_outright() {
-        let (mut editor, catalog, asset, _) = opened(Vec::new(), 2);
+    fn cancel_while_the_stage_is_rendering_cancels_it_outright() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
         let _ = editor.update(Message::Crop(CropMessage::Start));
-        assert_eq!(
-            core_draft(&editor).and_then(CoreDraft::in_flight),
-            Some(Round::Begin)
-        );
+        assert!(matches!(
+            editor.crop_stage(),
+            Some(StageView::Rendering { .. })
+        ));
         let _ = editor.dispatch(Message::Draft(DraftMessage::Cancel));
         assert!(editor.crop().is_none(), "the frame left at once");
-        assert!(editor.gesture_closing(), "the slot waits for the begin");
+        assert!(editor.gesture.is_none(), "and its core draft with it");
         assert_eq!(editor.draft_generation, None);
         assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
         assert_eq!(editor.status, "Crop draft discarded");
-        let begun = luxforge_core::Draft::new("crop", asset, 2);
-        answer_begin(&mut editor, begun);
-        answer_cancel(&mut editor);
-        assert!(editor.gesture.is_none());
         assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
         finish(editor, catalog);
     }
@@ -2064,14 +2017,10 @@ mod tests {
         ))));
         assert!(editor.crop().is_none(), "nothing is left open");
         assert_eq!(editor.status, "the source is gone");
-        // Its core draft is discarded, and closes once its `draft.begin` and `draft.cancel` answer.
-        assert!(editor.gesture_closing());
-        let action = crop_frame(&editor.modules).expect("a crop frame").action;
-        let state = editor.state.as_ref().expect("a photograph");
-        let begun = luxforge_core::Draft::new(action, state.asset.id.clone(), state.revision);
-        answer_begin(&mut editor, begun);
-        answer_cancel(&mut editor);
-        assert!(editor.gesture.is_none());
+        assert!(
+            editor.gesture.is_none(),
+            "its core draft is cancelled in the same update"
+        );
 
         // The chip already chosen opens the draft and leaves the committed rectangle exactly.
         let _ = editor.update(Message::Crop(CropMessage::Preset(option("16:9"))));

@@ -557,9 +557,9 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         "the photograph's own state did not fail"
     );
     assert!(editor.presenter.photo().is_some());
-    // The update's end discards the start's core draft.
+    // The update's end discards the start's core draft, at the owner too.
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
-    assert!(editor.gesture_closing());
+    assert!(editor.gesture.is_none());
     assert!(
         editor
             .status
@@ -567,7 +567,6 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         "the discard keeps the reason: {}",
         editor.status
     );
-    editor.gesture = None;
 
     hold_crop(
         &mut editor,
@@ -805,8 +804,11 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
     );
     assert!(editor.crop().is_some(), "the reapply kept its draft");
     let draft = core_draft(&editor).expect("the reapply kept its draft");
-    assert!(draft.conflicted, "the kept draft is still conflicted");
-    assert_eq!(draft.base_revision, 4);
+    assert!(
+        draft.conflicted,
+        "the draft the reapply rebased onto the first commit is conflicted by the second"
+    );
+    assert_eq!(draft.base_revision, 5);
 
     first.open();
     poll_until(&mut editor, "the second commit's frame", |editor| {

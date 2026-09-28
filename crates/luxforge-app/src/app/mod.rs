@@ -98,7 +98,7 @@ use crate::{
     view,
 };
 use evidence::Evidence;
-use gesture::{Gesture, Starting};
+use gesture::{CoreGesture, Starting};
 use iced::{Element, Subscription, Task};
 use luxforge_core::{
     ClientAuthority, ClientId, ClientSession, EditorState, HistoryPage, HistorySelection,
@@ -350,19 +350,18 @@ pub(crate) struct Editor {
     pub(crate) editing: Option<(String, String)>,
     /// The (action, parameter) whose slider is being dragged.
     pub(crate) dragging: Option<(String, String)>,
-    /// This client's one draft: a slider or mask gesture on the core lifecycle, a discarded one
-    /// still closing, or the crop draft. One field, so two drafts cannot exist at once.
-    pub(crate) gesture: Option<Gesture>,
+    /// This client's one draft: a slider, mask or crop gesture on the core lifecycle. One field, so
+    /// two drafts cannot exist at once.
+    pub(crate) gesture: Option<Box<CoreGesture>>,
     /// The last local gesture identity minted, so every owner answer names the gesture it is for.
     pub(crate) gesture_serial: u64,
     /// An armed brush a new revision conflicted. It has sent nothing, so its draft is rebased with
     /// `draft.reapply` and no notice: set when the conflict is found, sent once the update is over
     /// ([`Editor::rebase_armed_brush`]) and taken by that reapply's answer.
     pub(crate) armed_rebase: Option<draft::GestureId>,
-    /// A test's stand-in for the owner's `draft.set`, for a photograph the owner does not hold:
-    /// every set is accepted, except that each queued refusal answers one set in turn.
+    /// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
     #[cfg(test)]
-    pub(crate) fake_sets: Option<std::collections::VecDeque<String>>,
+    pub(crate) stand_in: Option<testing::StandIn>,
     /// A field reset waiting for the gesture commit or request in flight to answer.
     pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
@@ -633,7 +632,7 @@ impl Editor {
             gesture_serial: 0,
             armed_rebase: None,
             #[cfg(test)]
-            fake_sets: None,
+            stand_in: None,
             pending_reset: None,
             displayed_draft_revision: None,
             displayed_draft_id: None,

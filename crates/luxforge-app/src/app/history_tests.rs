@@ -4,7 +4,7 @@ use super::{
     message::{CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::Upload,
     testing::{
-        begun, boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for,
+        boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for, stand_in,
     },
     *,
 };
@@ -177,6 +177,8 @@ fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
 fn navigable() -> (Editor, std::path::PathBuf, AssetId, luxforge_core::EntryId) {
     let (mut editor, catalog) = boot();
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    // The owner does not hold this photograph, so its draft requests are answered by the stand-in.
+    stand_in(&mut editor);
     let asset = AssetId::new();
     let original = entry(&asset, 0, None);
     let current = entry(&asset, 1, Some(&original.id));
@@ -232,10 +234,9 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
 /// other discrete commit; once the draft is gone they go out as before.
 #[test]
 fn history_navigation_is_refused_while_a_slider_draft_is_open() {
-    let (mut editor, catalog, asset, original) = navigable();
+    let (mut editor, catalog, _, original) = navigable();
     let (action, parameter) = patch_control(&editor);
     let _ = testing::slide(&mut editor, &action, &parameter, 25.0);
-    begun(&mut editor, &asset, &action, 1);
     assert!(editor.slider_gesture().is_some());
     history_refused(
         &mut editor,

@@ -9,7 +9,7 @@ use super::{
     testing::{self, *},
 };
 use crate::state::{fields, tools};
-use luxforge_core::{AssetId, Draft, HistorySelection, POINTER_MODE, RawPayload, WhiteBalanceMode};
+use luxforge_core::{AssetId, HistorySelection, POINTER_MODE, RawPayload, WhiteBalanceMode};
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -21,6 +21,8 @@ fn editor() -> (Editor, PathBuf, AssetId) {
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(vec![
         controls_descriptor(),
     ]))));
+    // The owner does not hold this photograph, so its draft requests are answered by the stand-in.
+    stand_in(&mut editor);
     let asset = AssetId::new();
     let current = entry(&asset, 4, None);
     let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
@@ -134,14 +136,12 @@ fn picker_and_curve_share_bounded_draft_and_commit_once() {
             json!([[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]),
         ),
     ] {
-        let (mut editor, catalog, asset) = editor();
+        let (mut editor, catalog, _) = editor();
         let log = attach_log(&mut editor);
         for _ in 0..3 {
             let _ = editor.update(message.clone());
         }
         assert_eq!(field_request(&mut editor, parameter), expected);
-        editor.fake_sets = Some(Default::default());
-        answer_begin(&mut editor, Draft::new(ACTION, asset.clone(), 4));
         for _ in 0..2 {
             let _ = editor.update(Message::Control(ControlMessage::Released {
                 action: ACTION.into(),
@@ -256,7 +256,7 @@ fn curve_channel_selection_changes_no_request_value_or_recipe() {
 }
 
 #[test]
-fn escape_cancels_picker_and_curve_even_while_begin_is_in_flight() {
+fn escape_cancels_picker_and_curve_and_commits_nothing() {
     for message in [
         Message::Control(ControlMessage::Picker {
             action: ACTION.into(),
@@ -272,20 +272,14 @@ fn escape_cancels_picker_and_curve_even_while_begin_is_in_flight() {
             },
         }),
     ] {
-        let (mut editor, catalog, asset) = editor();
+        let (mut editor, catalog, _) = editor();
         let log = attach_log(&mut editor);
         let _ = editor.update(message);
+        assert!(editor.slider_gesture().is_some(), "{}", editor.status);
         let _ = editor.update(Message::Draft(DraftMessage::Cancel));
         assert!(
-            editor.slider_gesture().is_none(),
-            "Discard ends the gesture"
-        );
-        answer_begin(&mut editor, Draft::new(ACTION, asset, 4));
-        assert!(editor.slider_gesture().is_none());
-        assert_eq!(
-            core_draft(&editor).and_then(|draft| draft.in_flight()),
-            Some(super::draft::Round::Cancel),
-            "the draft the begin opened is cancelled, and nothing is sent to it"
+            editor.gesture.is_none(),
+            "Discard ends the gesture and its draft in the same update"
         );
         let records = logged(&mut editor, &log);
         assert!(
@@ -294,9 +288,9 @@ fn escape_cancels_picker_and_curve_even_while_begin_is_in_flight() {
                 .any(|record| record["event"] == "slider_draft_commit")
         );
         assert!(
-            !records
+            records
                 .iter()
-                .any(|record| record["event"] == "slider_draft_set")
+                .any(|record| record["event"] == "slider_draft_cancelled")
         );
         assert_eq!(editor.state.as_ref().unwrap().revision, 4);
         finish(editor, catalog);
@@ -313,9 +307,9 @@ fn stepper_button_is_one_complete_draft_gesture() {
     }));
     assert_eq!(field_request(&mut editor, "count"), json!(3));
     assert_eq!(
-        editor.core_gesture().unwrap().draft.finishing(),
-        Some(super::draft::Finish::Commit),
-        "the step's release commits as soon as the draft is open"
+        core_draft(&editor).and_then(|draft| draft.in_flight()),
+        Some(super::draft::Round::Commit),
+        "the step's release commits in the update that opened the draft"
     );
     finish(editor, catalog);
 }
@@ -542,8 +536,6 @@ fn every_refused_control_start_says_why() {
 fn a_gesture_answer_leaves_busy_to_the_request_that_set_it() {
     let (mut editor, catalog, asset) = editor();
     hold_slider(&mut editor, ACTION, "amount");
-    editor.fake_sets = Some(Default::default());
-    answer_begin(&mut editor, Draft::new(ACTION, asset.clone(), 4));
     let _ = editor.update(Message::Draft(DraftMessage::Commit));
     assert_eq!(
         core_draft(&editor).and_then(|draft| draft.in_flight()),

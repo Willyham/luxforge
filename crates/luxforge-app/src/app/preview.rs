@@ -343,12 +343,7 @@ impl Editor {
             return Task::none();
         };
         let draft = match self.core_gesture() {
-            Some(gesture) if gesture.draft.drained() => {
-                let Some(draft) = gesture.draft.draft_id.clone() else {
-                    return Task::none();
-                };
-                Some(draft)
-            }
+            Some(gesture) if gesture.draft.drained() => Some(gesture.draft.draft_id.clone()),
             Some(_) => return Task::none(),
             None => None,
         };

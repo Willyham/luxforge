@@ -153,6 +153,84 @@ fn a_refused_crop_start_says_why() {
     finish(editor, catalog);
 }
 
+/// A `draft.begin` the owner refuses opens nothing. It answers in the update of the press, so its
+/// refusal is that update's answer: the status bar says why, what the start put up ends with it,
+/// and nothing follows it — no `draft.set`, no input stage, no draft on the desktop.
+#[test]
+fn a_refused_begin_opens_nothing_and_says_why() {
+    // A slider against the real owner, which does not hold this photograph and refuses the begin.
+    let (mut editor, catalog, log, asset, action, parameter) = testing::drafting();
+    editor.stand_in = None;
+    let refusal = tasks::draft_begin_now(
+        &editor.owner,
+        editor.client,
+        asset,
+        &action,
+        Default::default(),
+    )
+    .expect_err("the owner does not hold the photograph");
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
+    assert!(editor.gesture.is_none(), "nothing opened");
+    assert_eq!(editor.status, refusal, "the refusal is the answer");
+    assert_eq!(editor.dragging, None, "the drag ends with it");
+    assert!(editor.session.draft.is_none());
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        testing::draft_events(&records, "slider_draft_begin").len(),
+        1
+    );
+    assert!(testing::draft_events(&records, "slider_draft_set").is_empty());
+    finish(editor, catalog);
+
+    // The crop, whose start has already opened its frame and asked for its mode.
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    let refusal = "conflict: this client already holds a draft";
+    testing::stand_in(&mut editor)
+        .begins
+        .push_back(refusal.into());
+    let mode = editor.session.workspace.mode.clone();
+    let task = editor.update(Message::Crop(CropMessage::Start));
+    assert_eq!(
+        task.units(),
+        0,
+        "no input stage and no mode change are asked for"
+    );
+    assert!(editor.crop().is_none() && editor.gesture.is_none());
+    assert_eq!(editor.status, refusal);
+    assert_eq!(editor.mode_sync, None);
+    assert_eq!(editor.session.workspace.mode, mode);
+    // The next start opens as usual.
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    assert!(editor.crop().is_some(), "{}", editor.status);
+    finish(editor, catalog);
+}
+
+/// A `draft.reapply` the owner refuses keeps the draft conflicted and says why, in the update of
+/// the Reapply press, and a later Reapply can still rebase it.
+#[test]
+fn a_refused_reapply_keeps_the_draft_conflicted_and_says_why() {
+    let (mut editor, catalog, _, _, action, parameter) = testing::drafting();
+    let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
+    let state = editor.state.as_mut().expect("open");
+    state.revision += 1;
+    let newer = state.revision;
+    editor.gesture_revision(newer);
+    let refusal = "not-found: this client holds no such draft";
+    testing::stand_in(&mut editor)
+        .reapplies
+        .push_back(refusal.into());
+    let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+    assert_eq!(editor.status, refusal);
+    let draft = &editor.core_gesture().expect("the draft is kept").draft;
+    assert!(draft.conflicted && draft.base_revision == newer - 1);
+    assert!(editor.gesture_conflicted(), "the notice stays up");
+
+    let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+    let draft = &editor.core_gesture().expect("the rebased draft").draft;
+    assert!(!draft.conflicted && draft.base_revision == newer);
+    finish(editor, catalog);
+}
+
 /// A pick from a previewed entry is refused in the one wording every edit uses.
 #[test]
 fn a_refused_pick_uses_the_one_wording() {
