@@ -3,7 +3,7 @@
 use super::{
     message::{ControlMessage, PointerMessage},
     testing::{
-        attach_log, begun, descriptors, finish, logged, opened, opened_with_modules, patch_control,
+        attach_log, descriptors, finish, logged, opened, opened_with_modules, patch_control,
         pick_events, pick_fields, pick_mode, picking, sample_mode,
     },
     *,
@@ -293,9 +293,7 @@ fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
 
     // A pick while a slider gesture is open is refused, and the gesture is untouched.
     let (action, parameter) = patch_control(&editor);
-    let asset = editor.state.as_ref().expect("open").asset.id.clone();
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    begun(&mut editor, &asset, &action, 4);
     assert!(editor.slider_gesture().is_some());
     let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
     assert!(editor.status.contains("slider draft"), "{}", editor.status);

@@ -1,8 +1,10 @@
 //! The owner tasks. Every desktop request goes through [`send`], which is the same method table the
 //! JSON API dispatches; there is no desktop-only mutation path. Every request made off the update
 //! loop runs inside one [`owner_task`], and a source preparation is waited for by blocking on the
-//! owner's answer ([`wait_source_job`]), never by sleeping and asking again. Each task takes the narrowest completion path the performance rules allow; the gesture's
-//! own `draft.set` and preview job stay synchronous calls on the update loop ([`draft_set_now`]).
+//! owner's answer ([`wait_source_job`]), never by sleeping and asking again. Each task takes the narrowest completion path the performance rules allow; a
+//! gesture's session-only draft requests — `draft.begin`, `draft.set` with its preview job,
+//! `draft.reapply` and `draft.cancel` — stay synchronous calls on the update loop
+//! ([`draft_set_now`]), and only its `draft.commit` is a task.
 use crate::{
     app::{
         draft::GestureId,
@@ -951,46 +953,29 @@ pub(crate) fn crop_preview_task(
     )
 }
 
-/// Open this client's one draft for a gesture. The gesture sends nothing else until this answers,
-/// so the draft identity every later request needs is known before any of them; the answer names
-/// the gesture that asked, because the draft's own identity is what it brings.
+/// Open this client's one draft for a gesture, on the calling thread, as [`draft_set_now`] runs:
+/// `draft.begin` is a session-only request that writes no catalog, so the gesture's first
+/// `draft.set` goes in the same update as the press instead of a displayed frame later
+/// ([performance rule 12](../../../../docs/engineering/performance-rules.md#rules)).
 ///
 /// The target is the host's own envelope: for a module action it is the mask the panel's sections
 /// are bound to, so the drafted preview shows the masked layer the release will commit rather than
 /// the global one; for a `mask.*` command it is the mask and component the gesture edits, which no
 /// declared parameter kind could carry. A global gesture sends neither and drafts as it always has.
-///
-/// A draft the gesture displaced — an armed brush's — is cancelled first, in this same task, so the
-/// begin can never reach the owner while it still holds that draft.
-pub(crate) fn draft_begin_task(
-    owner: OwnerHandle,
+pub(crate) fn draft_begin_now(
+    owner: &OwnerHandle,
     client: ClientId,
-    gesture: GestureId,
     asset_id: AssetId,
-    action: String,
+    action: &str,
     target: MaskTarget,
-    displaced: Option<DraftId>,
-) -> Task<Message> {
-    owner_task(
-        move || {
-            if let Some(draft_id) = displaced {
-                let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
-            }
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.begin",
-                draft_begin_params(asset_id, &action, target),
-            )?;
-            parse::<Draft>(draft)
-        },
-        move |result| {
-            Message::Draft(DraftMessage::Begun {
-                gesture,
-                result: result.map(Box::new),
-            })
-        },
-    )
+) -> Result<Draft, String> {
+    let (draft, _) = call(
+        owner,
+        client,
+        "draft.begin",
+        draft_begin_params(asset_id, action, target),
+    )?;
+    parse::<Draft>(draft)
 }
 
 /// The `draft.begin` request one action and target produce. One spelling for every gesture, so no
@@ -1163,9 +1148,10 @@ pub(crate) type Cancelled = (
     Option<Result<Box<PreviewPayload>, String>>,
 );
 
-/// End the draft, then read back what the screen needs, as the plain calls the task runs. The
-/// session is read **after** the cancel in the same task, so the one the desktop adopts can no
-/// longer hold the draft; a separate task could read it first and put the ended draft back.
+/// End the draft, then read back what the screen needs, on the calling thread, as
+/// [`draft_set_now`] runs: `draft.cancel` is session-only, and the frame read back is one plan and
+/// one session read. The session is read **after** the cancel, so the one the desktop adopts can no
+/// longer hold the draft.
 pub(crate) fn draft_cancel_now(
     owner: &OwnerHandle,
     client: ClientId,
@@ -1179,26 +1165,8 @@ pub(crate) fn draft_cancel_now(
     (cancelled, reseed)
 }
 
-pub(crate) fn draft_cancel_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    draft_id: DraftId,
-    reseed: Option<Reseed>,
-) -> Task<Message> {
-    let draft = draft_id.clone();
-    owner_task(
-        move || draft_cancel_now(&owner, client, &draft_id, reseed),
-        move |(cancelled, reseed)| {
-            Message::Draft(DraftMessage::Cancelled {
-                draft,
-                cancelled,
-                reseed,
-            })
-        },
-    )
-}
-
-/// Rebase the draft on the current revision, as the plain call its task runs.
+/// Rebase the draft on the current revision, on the calling thread, as [`draft_set_now`] runs:
+/// `draft.reapply` is session-only, and the fields it re-sends follow it in the same update.
 pub(crate) fn draft_reapply_now(
     owner: &OwnerHandle,
     client: ClientId,
@@ -1206,25 +1174,6 @@ pub(crate) fn draft_reapply_now(
 ) -> Result<Draft, String> {
     let (draft, _) = call(owner, client, "draft.reapply", json!({"draft_id":draft_id}))?;
     parse::<Draft>(draft)
-}
-
-pub(crate) fn draft_reapply_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    gesture: GestureId,
-    draft_id: DraftId,
-) -> Task<Message> {
-    let draft = draft_id.clone();
-    owner_task(
-        move || draft_reapply_now(&owner, client, &draft_id),
-        move |result| {
-            Message::Draft(DraftMessage::Reapplied {
-                gesture,
-                draft,
-                result: result.map(Box::new),
-            })
-        },
-    )
 }
 
 /// The displayed entry's own preview again, without a draft: what the canvas must show once a

@@ -137,18 +137,7 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
         "outside a draft, refit is required"
     );
 
-    let (draft, _) = draft::CoreDraft::open(draft::GestureId(1), 4, None);
-    editor.gesture = Some(Gesture::Core(Box::new(gesture::CoreGesture {
-        asset: editor.state.as_ref().expect("open state").asset.id.clone(),
-        draft,
-        kind: gesture::Kind::Slider(gesture::SliderGesture {
-            action: "set-basic".into(),
-            parameter: "exposure".into(),
-            label: "Exposure".into(),
-            target: luxforge_core::mask::commands::MaskTarget::default(),
-            unpreviewed: false,
-        }),
-    })));
+    crate::app::testing::hold_slider(&mut editor, "set-basic", "exposure");
     let _ = editor.refit_proxy();
     assert!(!editor.refit_pending, "the slider defers refit");
     assert!(

@@ -1,16 +1,17 @@
 //! The one gesture this client holds, and the driver that runs its core draft.
 //!
 //! A client holds at most one draft, so the desktop has exactly one place for it: [`Editor::gesture`].
-//! A slider, a mask shape or stroke and the crop frame each draft through the core
-//! ([`Gesture::Core`]) as one [`CoreDraft`] state machine with a small kind of its own, and a
-//! discarded core draft whose owner round trip has not answered keeps the place
-//! ([`Gesture::Closing`]), so the next gesture's `draft.begin` can never overtake the `draft.cancel`
-//! of the last one. Whether anything may start is answered in one place, [`Editor::gesture_refusal`].
+//! A slider, a mask shape or stroke and the crop frame each draft through the core as one
+//! [`CoreGesture`]: a [`CoreDraft`] state machine with a small kind of its own. Whether anything
+//! may start is answered in one place, [`Editor::gesture_refusal`].
 //!
-//! The driver runs what the state machine answers: `draft.set` synchronously on this thread, in the
-//! update that produced the fields ([performance rule 12](../../../../docs/engineering/performance-rules.md#rules)),
-//! and `draft.begin`, `draft.commit`, `draft.cancel` and `draft.reapply` as owner tasks whose answers
-//! come back as one [`DraftMessage`] family, each naming the gesture and draft it belongs to.
+//! The driver runs what the state machine answers. `draft.begin`, `draft.set`, `draft.reapply` and
+//! `draft.cancel` are session-only requests, run synchronously on this thread in the update that
+//! asks for them ([performance rule 12](../../../../docs/engineering/performance-rules.md#rules)):
+//! a gesture's first `draft.set` goes in the update of its press, and a discarded draft has ended
+//! at the owner before the update that discarded it is over, so nothing can overtake its cancel.
+//! Only `draft.commit` is an owner task, whose answer comes back as [`DraftMessage::Committed`]
+//! naming the gesture and draft it belongs to.
 use crate::{
     app::{
         Editor,
@@ -18,7 +19,7 @@ use crate::{
         draft::{CoreDraft, Event, GestureId, Round, Step},
         evidence::Settle,
         message::{DraftMessage, Message, PreviewMessage},
-        tasks::{self, Refresh, RoundTrip, mutation},
+        tasks::{self, PreviewPayload, Refresh, RoundTrip, mutation},
     },
     mask_draft::{ContentMap, MaskDraft},
     state::{self, IN_FLIGHT},
@@ -27,23 +28,7 @@ use iced::Task;
 use luxforge_core::{AssetId, Draft, DraftId, ErrorKind, PreviewJob, mask::commands::MaskTarget};
 use serde_json::{Value, json};
 
-/// The one draft this client holds.
-#[derive(Clone, Debug)]
-pub(crate) enum Gesture {
-    /// A slider, mask or crop gesture on the core draft lifecycle, boxed: its kind's geometry is
-    /// far larger than a closing draft.
-    Core(Box<CoreGesture>),
-    /// A discarded core draft still waiting for its owner round trips. It shows nothing and takes
-    /// nothing, but a new core draft cannot start until it has ended at the owner.
-    Closing {
-        draft: CoreDraft,
-        /// Ask for the committed frame again once the cancel has answered: the gesture left
-        /// pixels on screen, and the session read with that frame no longer holds the draft.
-        reseed: bool,
-    },
-}
-
-/// A gesture and the core draft behind it.
+/// This client's one gesture and the core draft behind it.
 #[derive(Clone, Debug)]
 pub(crate) struct CoreGesture {
     pub(crate) asset: AssetId,
@@ -168,17 +153,6 @@ impl Starting {
         }
     }
 
-    /// This opens a draft of its own, so it takes the one slot.
-    fn claims_slot(self) -> bool {
-        matches!(self, Self::Slider | Self::Mask | Self::Crop)
-    }
-
-    /// This waits for a discarded draft to close: it would open a draft of its own, or ask for a
-    /// frame the closing draft's own read-back is already bringing.
-    fn waits_for_closing(self) -> bool {
-        self.claims_slot() || self == Self::Refit
-    }
-
     fn clause(self) -> &'static str {
         match self {
             Self::Slider => "before editing a slider",
@@ -261,12 +235,6 @@ impl Kind {
 }
 
 impl CoreGesture {
-    /// The gesture has nothing of its own to lose and can give its draft up: an armed brush whose
-    /// core draft is open and idle.
-    pub(crate) fn yields(&self) -> bool {
-        self.kind.armed() && self.draft.idle()
-    }
-
     pub(crate) fn slider(&self) -> Option<&SliderGesture> {
         match &self.kind {
             Kind::Slider(slider) => Some(slider),
@@ -292,22 +260,11 @@ impl CoreGesture {
 impl Editor {
     /// The open core gesture.
     pub(crate) fn core_gesture(&self) -> Option<&CoreGesture> {
-        match &self.gesture {
-            Some(Gesture::Core(gesture)) => Some(gesture),
-            _ => None,
-        }
+        self.gesture.as_deref()
     }
 
     pub(crate) fn core_gesture_mut(&mut self) -> Option<&mut CoreGesture> {
-        match &mut self.gesture {
-            Some(Gesture::Core(gesture)) => Some(gesture),
-            _ => None,
-        }
-    }
-
-    /// A discarded core draft is still ending at the owner.
-    pub(crate) fn gesture_closing(&self) -> bool {
-        matches!(self.gesture, Some(Gesture::Closing { .. }))
+        self.gesture.as_deref_mut()
     }
 
     /// The open slider gesture.
@@ -366,104 +323,54 @@ impl Editor {
     /// waits for the open gesture to be applied, cancelled or finished, and so does any mode
     /// change, pick, preset, gallery or comparison that would displace or pause it. An armed brush
     /// is the one gesture that never refuses: it has painted nothing, so the gesture that needs
-    /// the slot takes it ([`Editor::claim_slot`]) and everything else goes ahead around it. A
-    /// discarded core draft still closing refuses only what would open a draft of its own, or ask
-    /// for the frame its own read-back is already bringing.
+    /// the slot takes it ([`Editor::disarm`]) and everything else goes ahead around it.
     fn draft_refusal(&self, starting: Starting) -> Option<String> {
-        let held = match self.gesture.as_ref()? {
-            Gesture::Closing { .. } => {
-                return starting.waits_for_closing().then(|| {
-                    format!(
-                        "Wait for the discarded draft to close {}",
-                        starting.clause()
-                    )
-                });
+        let gesture = self.core_gesture()?;
+        let held = match (&gesture.kind, starting) {
+            _ if gesture.kind.armed() => return None,
+            (Kind::Slider(_), _) => {
+                return Some(format!(
+                    "Finish or discard the slider draft {}",
+                    starting.clause()
+                ));
             }
-            Gesture::Core(gesture) if gesture.yields() => return None,
-            // A brush still opening has no draft to hand over yet, so what would take the slot
-            // waits for it; everything else goes ahead around it.
-            Gesture::Core(gesture) if gesture.kind.armed() => {
-                return starting.claims_slot().then(|| {
-                    format!("Wait for the brush to finish opening {}", starting.clause())
-                });
+            (Kind::Mask(mask), Starting::Mode) => {
+                return Some(format!(
+                    "Apply or Cancel the {} gesture before leaving Mask mode",
+                    mask.shape.op.label().to_lowercase()
+                ));
             }
-            Gesture::Core(gesture) => match (&gesture.kind, starting) {
-                (Kind::Slider(_), _) => {
-                    return Some(format!(
-                        "Finish or discard the slider draft {}",
-                        starting.clause()
-                    ));
-                }
-                (Kind::Mask(mask), Starting::Mode) => {
-                    return Some(format!(
-                        "Apply or Cancel the {} gesture before leaving Mask mode",
-                        mask.shape.op.label().to_lowercase()
-                    ));
-                }
-                (Kind::Crop(_), Starting::Mode) => {
-                    return Some("Apply or Cancel the crop draft before leaving this mode".into());
-                }
-                (kind, _) => format!("Apply or Cancel the {}", kind.noun()),
-            },
+            (Kind::Crop(_), Starting::Mode) => {
+                return Some("Apply or Cancel the crop draft before leaving this mode".into());
+            }
+            (kind, _) => format!("Apply or Cancel the {}", kind.noun()),
         };
         Some(format!("{held} {}", starting.clause()))
     }
 
-    /// Take the slot for a new draft. An armed brush gives its core draft up and the returned
-    /// draft is the one to end: the new gesture's `draft.begin` task cancels it before anything
-    /// else, so no later request can overtake the cancel. Every other gesture was refused before
-    /// this is called, and leaves the slot as it is.
-    pub(crate) fn claim_slot(&mut self) -> Option<DraftId> {
-        self.put_down_brush(true)
-            .and_then(|draft| draft.draft_id.clone())
-    }
-
-    /// Take an armed brush out of the slot, when that is what the slot holds: only one whose core
-    /// draft is open and idle when it is to be handed over, any while it is only put down.
-    fn put_down_brush(&mut self, idle: bool) -> Option<CoreDraft> {
-        if !matches!(&self.gesture, Some(Gesture::Core(gesture))
-            if gesture.kind.armed() && (!idle || gesture.draft.idle()))
+    /// Put an armed brush down, when that is what the slot holds, so a new gesture or a command
+    /// that is not a gesture can run: its core draft is cancelled now, before that gesture's
+    /// `draft.begin` or that command is sent, and nothing is asked of the screen, because what
+    /// follows redraws it. Every other gesture was refused before this is called, and stays.
+    pub(crate) fn disarm(&mut self) {
+        if !self
+            .core_gesture()
+            .is_some_and(|gesture| gesture.kind.armed())
         {
-            return None;
+            return;
         }
-        let Some(Gesture::Core(gesture)) = self.gesture.take() else {
-            return None;
+        let Some(gesture) = self.gesture.take() else {
+            return;
         };
         self.session.draft = None;
         self.displayed_draft_id = None;
         self.displayed_draft_revision = None;
         self.event(
             "mask_draft_disarmed",
-            json!({"draft_id": gesture.draft.draft_id.as_ref().map(DraftId::as_str)}),
+            json!({"draft_id": gesture.draft.draft_id.as_str()}),
         );
-        Some(gesture.draft)
-    }
-
-    /// Put an armed brush down so a command that is not a gesture can run: its core draft closes —
-    /// at once, or once its `draft.begin` has answered — and nothing is asked of the screen,
-    /// because the command's own answer redraws it.
-    pub(crate) fn disarm(&mut self) -> Task<Message> {
-        let Some(mut draft) = self.put_down_brush(false) else {
-            return Task::none();
-        };
-        let step = draft.handle(Event::Cancel);
-        self.gesture = Some(Gesture::Closing {
-            draft,
-            reseed: false,
-        });
-        self.run(step)
-    }
-
-    /// Whether an owner answer for `gesture` (and, once known, `draft`) belongs to the draft in the
-    /// slot: `Some(true)` for an open gesture's, `Some(false)` for a closing one's, `None` for
-    /// neither, so a stale answer is recognised and never adopted by a newer gesture.
-    fn answered(&self, gesture: GestureId, draft: Option<&DraftId>) -> Option<bool> {
-        match self.gesture.as_ref()? {
-            Gesture::Core(open) => open.draft.answers(gesture, draft).then_some(true),
-            Gesture::Closing { draft: closing, .. } => {
-                closing.answers(gesture, draft).then_some(false)
-            }
-        }
+        // No frame is read back, so there is none to take up.
+        let _ = self.cancel_draft(&gesture.draft.draft_id, false);
     }
 
     /// A fresh local identity for the gesture about to open.
@@ -472,46 +379,99 @@ impl Editor {
         GestureId(self.gesture_serial)
     }
 
-    /// Open a core gesture: its `draft.begin` goes out now, after the cancel of any draft it
-    /// displaced. `fields` are what the gesture already holds; they are sent once the draft exists.
-    pub(crate) fn open_core(
-        &mut self,
-        kind: Kind,
-        fields: Option<Value>,
-        displaced: Option<DraftId>,
-    ) -> Task<Message> {
+    /// Open a core gesture: its `draft.begin` runs now, on this thread, and `fields` — what the
+    /// gesture already holds — go out as its first `draft.set` in the same update. A refused begin
+    /// opens nothing: what the start put up ends, and the status bar says why.
+    pub(crate) fn open_core(&mut self, kind: Kind, fields: Option<Value>) -> Task<Message> {
         let (Some(state), Some(action)) = (&self.state, kind.action()) else {
             return Task::none();
         };
-        let (asset, revision) = (state.asset.id.clone(), state.revision);
+        let asset = state.asset.id.clone();
+        let opened = match self.begin_draft(asset.clone(), &action, kind.target()) {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.dragging = None;
+                if matches!(kind, Kind::Crop(_)) {
+                    self.crop_ended();
+                }
+                self.status = error;
+                return Task::none();
+            }
+        };
+        self.session.draft = Some(opened.clone());
         let gesture = self.next_gesture();
-        let target = kind.target();
-        let (draft, step) = CoreDraft::open(gesture, revision, fields);
-        self.gesture = Some(Gesture::Core(Box::new(CoreGesture {
-            asset: asset.clone(),
-            draft,
-            kind,
-        })));
-        debug_assert_eq!(step, Step::Begin, "a gesture opens with its draft.begin");
-        tasks::draft_begin_task(
-            self.owner.clone(),
-            self.client,
-            gesture,
-            asset,
-            action,
-            target,
-            displaced,
-        )
+        let (draft, step) = CoreDraft::open(gesture, opened, fields);
+        self.gesture = Some(Box::new(CoreGesture { asset, draft, kind }));
+        self.run(step)
+    }
+
+    /// `draft.begin`, synchronously ([`tasks::draft_begin_now`]).
+    fn begin_draft(
+        &mut self,
+        asset: AssetId,
+        action: &str,
+        target: MaskTarget,
+    ) -> Result<Draft, String> {
+        #[cfg(test)]
+        if let Some(stand_in) = &mut self.stand_in {
+            return stand_in.begin(self.state.as_ref(), asset, action);
+        }
+        tasks::draft_begin_now(&self.owner, self.client, asset, action, target)
+    }
+
+    /// `draft.reapply`, synchronously ([`tasks::draft_reapply_now`]).
+    fn reapply_draft(&mut self, draft_id: &DraftId) -> Result<Draft, String> {
+        #[cfg(test)]
+        if let Some(stand_in) = &mut self.stand_in {
+            return stand_in.reapply(self.state.as_ref(), self.gesture.as_deref(), draft_id);
+        }
+        tasks::draft_reapply_now(&self.owner, self.client, draft_id)
+    }
+
+    /// End a core draft at the owner now ([`tasks::draft_cancel_now`]). With `reseed`, the
+    /// displayed entry's frame is read back after the cancel, so the session it carries no longer
+    /// holds the draft; that frame is returned for the caller to take up.
+    fn cancel_draft(
+        &mut self,
+        draft_id: &DraftId,
+        reseed: bool,
+    ) -> Option<Result<Box<PreviewPayload>, String>> {
+        let reseed = reseed
+            .then(|| {
+                self.state
+                    .as_ref()
+                    .map(|state| (state.asset.id.clone(), self.displayed_entry()))
+            })
+            .flatten()
+            .map(|(asset, entry)| (asset, entry, self.proxy_bounds()));
+        let (cancelled, reseed) = self.cancel_request(draft_id, reseed);
+        if let Err(error) = cancelled {
+            self.event(
+                "draft_cancel_failed",
+                json!({"draft_id":draft_id.as_str(),"error":error}),
+            );
+        }
+        reseed
+    }
+
+    fn cancel_request(
+        &self,
+        draft_id: &DraftId,
+        reseed: Option<tasks::Reseed>,
+    ) -> tasks::Cancelled {
+        #[cfg(test)]
+        if self.stand_in.is_some() {
+            return (Ok(()), None);
+        }
+        tasks::draft_cancel_now(&self.owner, self.client, draft_id, reseed)
     }
 
     /// Feed the open core gesture one event and run whatever it calls for.
     pub(crate) fn drive(&mut self, event: Event) -> Task<Message> {
-        let step = match &mut self.gesture {
-            Some(Gesture::Core(gesture)) => gesture.draft.handle(event),
-            Some(Gesture::Closing { draft, .. }) => draft.handle(event),
-            None => return Task::none(),
+        let Some(gesture) = self.core_gesture_mut() else {
+            return Task::none();
         };
-        self.close_if_discarded();
+        let step = gesture.draft.handle(event);
         self.run(step)
     }
 
@@ -562,7 +522,7 @@ impl Editor {
         self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
         self.released_draft = self
             .core_gesture()
-            .and_then(|gesture| gesture.draft.draft_id.clone());
+            .map(|gesture| gesture.draft.draft_id.clone());
         if self.released_draft.is_some() {
             self.displayed_draft_id = None;
             self.displayed_draft_revision = None;
@@ -589,30 +549,17 @@ impl Editor {
         self.drive(Event::Reapply)
     }
 
-    /// One answer or intent of the draft lifecycle.
+    /// One intent or owner answer of the draft lifecycle.
     pub(crate) fn draft_message(&mut self, message: DraftMessage) -> Task<Message> {
         match message {
             DraftMessage::Commit => self.release(),
             DraftMessage::Cancel => self.discard(),
             DraftMessage::Reapply => self.reapply(),
-            DraftMessage::Begun { gesture, result } => {
-                self.draft_begun(gesture, result.map(|draft| *draft))
-            }
             DraftMessage::Committed {
                 gesture,
                 draft,
                 result,
             } => self.draft_committed(gesture, &draft, result.map(|refresh| refresh.map(|r| *r))),
-            DraftMessage::Reapplied {
-                gesture,
-                draft,
-                result,
-            } => self.draft_reapplied(gesture, &draft, result.map(|draft| *draft)),
-            DraftMessage::Cancelled {
-                draft,
-                cancelled,
-                reseed,
-            } => self.draft_cancelled(&draft, cancelled, reseed),
         }
     }
 
@@ -633,14 +580,11 @@ impl Editor {
             return Task::none();
         };
         // The gesture ended, or its draft is no longer conflicted: nothing to rebase.
-        let Some(gesture) = self
+        if !self
             .core_gesture()
-            .filter(|gesture| gesture.draft.gesture == id && gesture.draft.conflicted)
-        else {
+            .is_some_and(|gesture| gesture.draft.gesture == id && gesture.draft.conflicted)
+        {
             self.armed_rebase = None;
-            return Task::none();
-        };
-        if gesture.draft.in_flight().is_some() {
             return Task::none();
         }
         let revision = self.state.as_ref().map(|state| state.revision);
@@ -656,23 +600,21 @@ impl Editor {
         })
     }
 
-    /// A discarded core gesture leaves the screen at once, whatever its owner round trips are still
-    /// doing: the field returns to the authoritative value, drafted frames still in the queue are
-    /// held back, and the slot keeps only the closing draft.
-    fn close_if_discarded(&mut self) {
-        if !matches!(&self.gesture, Some(Gesture::Core(gesture)) if gesture.draft.closing()) {
-            return;
-        }
-        let Some(Gesture::Core(gesture)) = self.gesture.take() else {
-            return;
+    /// A discarded core gesture ends in the update that discarded it: it leaves the screen — the
+    /// field returns to the authoritative value and drafted frames still in the queue are held back
+    /// — its core draft is cancelled at the owner, and the committed frame read back after that
+    /// cancel is taken up.
+    fn discarded(&mut self, draft_id: &DraftId) -> Task<Message> {
+        let Some(gesture) = self.gesture.take() else {
+            return Task::none();
         };
         self.session.draft = None;
         self.displayed_draft_id = None;
         self.displayed_draft_revision = None;
         // Nothing the gesture asked for reaches the screen after this: its drafted frames are
         // stopped and held below the delivery floor, so the next frame presented is the committed
-        // one the cancel asks for. The drafted pixels already on screen stay until it lands. An
-        // armed brush drafted nothing, so it has nothing to hold back.
+        // one read back below. The drafted pixels already on screen stay until it lands. An armed
+        // brush drafted nothing, so it has nothing to hold back.
         if gesture.draft.drafted() {
             self.preview_generation = self.cancel_preview_queue();
         }
@@ -692,37 +634,24 @@ impl Editor {
         if self.state.is_none() {
             self.settle_step(Settle::Preview);
         }
-        self.gesture = Some(Gesture::Closing {
-            draft: gesture.draft,
-            reseed: true,
-        });
+        match self.cancel_draft(draft_id, true) {
+            Some(reseed) => self.dispatch(Message::Preview(PreviewMessage::Loaded(reseed))),
+            None => Task::none(),
+        }
     }
 
     fn run(&mut self, step: Step) -> Task<Message> {
         match step {
-            Step::None | Step::Begin => Task::none(),
+            Step::None => Task::none(),
             Step::Set { draft_id, fields } => self.send_set(draft_id, fields),
             Step::Commit {
                 draft_id,
                 expected_revision,
             } => self.send_commit(draft_id, expected_revision),
-            Step::Cancel(draft_id) => {
-                let reseed = match &self.gesture {
-                    Some(Gesture::Closing { reseed, .. }) => *reseed,
-                    _ => true,
-                };
-                self.closing_cancel(draft_id, reseed)
-            }
+            Step::Cancel(draft_id) => self.discarded(&draft_id),
             Step::Reapply(draft_id) => {
-                let Some(gesture) = self.core_gesture() else {
-                    return Task::none();
-                };
-                tasks::draft_reapply_task(
-                    self.owner.clone(),
-                    self.client,
-                    gesture.draft.gesture,
-                    draft_id,
-                )
+                let result = self.reapply_draft(&draft_id);
+                self.reapplied(result)
             }
             Step::Conflicted => {
                 let revision = self.state.as_ref().map(|state| state.revision);
@@ -753,10 +682,6 @@ impl Editor {
                 Some(gesture) => self.changed_elsewhere(gesture.kind.noun()),
                 None => Task::none(),
             },
-            Step::Done => {
-                self.end_gesture();
-                Task::none()
-            }
         }
     }
 
@@ -766,19 +691,6 @@ impl Editor {
         self.status = format!("Changed elsewhere: discard the {noun} or reapply it");
         self.settle_step(Settle::SliderDraft);
         Task::none()
-    }
-
-    /// Drop the gesture from the slot: its core draft was ended by its own request, or never began.
-    fn end_gesture(&mut self) {
-        if let Some(Gesture::Core(gesture)) = self.gesture.take() {
-            self.session.draft = None;
-            self.displayed_draft_id = None;
-            self.displayed_draft_revision = None;
-            self.dragging = None;
-            if gesture.crop().is_some() {
-                self.crop_ended();
-            }
-        }
     }
 
     /// The one `draft.set` the state machine asked for, with the one preview job for the fields it
@@ -795,12 +707,8 @@ impl Editor {
             json!({"draft_id":draft_id.as_str(),"fields":fields}),
         );
         #[cfg(test)]
-        if self.fake_sets.is_some() {
-            let refused = self
-                .fake_sets
-                .as_mut()
-                .and_then(std::collections::VecDeque::pop_front);
-            let result = match refused {
+        if let Some(stand_in) = &mut self.stand_in {
+            let result = match stand_in.sets.pop_front() {
                 Some(error) => Err(error),
                 None => crate::app::testing::accepted_set(self, &draft_id, &fields),
             };
@@ -874,7 +782,7 @@ impl Editor {
         requested_at: Option<std::time::Instant>,
     ) {
         let generation = self.preview_generation;
-        let Some(Gesture::Core(gesture)) = &mut self.gesture else {
+        let Some(gesture) = self.gesture.as_deref_mut() else {
             return;
         };
         let sent = gesture.draft.sent().cloned();
@@ -928,7 +836,7 @@ impl Editor {
 
     /// The draft accepted the fields but its preview job was refused, or the set itself was.
     fn set_unpreviewed(&mut self, error: &str) {
-        let Some(Gesture::Core(gesture)) = &mut self.gesture else {
+        let Some(gesture) = self.gesture.as_deref_mut() else {
             return;
         };
         let draft_revision = gesture.draft.draft_revision;
@@ -988,52 +896,6 @@ impl Editor {
         )
     }
 
-    /// End a closing core draft at the owner. The committed frame is read back after the cancel,
-    /// in the same task, so the session it carries can no longer hold the draft.
-    fn closing_cancel(&mut self, draft_id: DraftId, reseed: bool) -> Task<Message> {
-        let reseed = reseed
-            .then(|| {
-                self.state
-                    .as_ref()
-                    .map(|state| (state.asset.id.clone(), self.displayed_entry()))
-            })
-            .flatten()
-            .map(|(asset, entry)| (asset, entry, self.proxy_bounds()));
-        tasks::draft_cancel_task(self.owner.clone(), self.client, draft_id, reseed)
-    }
-
-    /// `draft.begin` answered. Only the gesture that asked takes it up; a discarded gesture cancels
-    /// the draft it answers with, and an answer nobody asked for ends its draft rather than leaving
-    /// one behind.
-    fn draft_begun(&mut self, gesture: GestureId, result: Result<Draft, String>) -> Task<Message> {
-        let seen = self.state.as_ref().map_or(0, |state| state.revision);
-        let Some(open) = self.answered(gesture, None) else {
-            let dropped = result.as_ref().ok().map(|draft| draft.draft_id.clone());
-            self.event(
-                "draft_begin_dropped",
-                json!({"draft_id":dropped.as_ref().map(DraftId::as_str)}),
-            );
-            return match dropped {
-                Some(draft_id) => {
-                    tasks::draft_cancel_task(self.owner.clone(), self.client, draft_id, None)
-                }
-                None => Task::none(),
-            };
-        };
-        if open && let Ok(opened) = &result {
-            self.session.draft = Some(opened.clone());
-        }
-        let error = result.as_ref().err().cloned();
-        let task = self.drive(Event::Begun {
-            answer: result,
-            seen,
-        });
-        if open && let Some(error) = error {
-            self.status = error;
-        }
-        task
-    }
-
     /// `draft.commit` answered. A real outcome merges into history like any other command; a no-op
     /// ends the gesture with no entry and no history refresh; a refusal keeps the draft, so it can
     /// be discarded or reapplied deliberately.
@@ -1044,7 +906,10 @@ impl Editor {
         result: Result<Option<Refresh>, String>,
     ) -> Task<Message> {
         // A gesture's commit never set `busy`, so its answer leaves it to whatever did.
-        if self.answered(gesture, Some(draft_id)) != Some(true) {
+        if !self
+            .core_gesture()
+            .is_some_and(|open| open.draft.answers(gesture, draft_id))
+        {
             // Nothing else ends a gesture while its commit is in flight, so this does not happen;
             // if it ever did, the refresh is still the owner's own state.
             if let Ok(Some(refresh)) = result {
@@ -1074,7 +939,7 @@ impl Editor {
                 return self.drive(Event::Committed(Err(error)));
             }
         };
-        let Some(Gesture::Core(open)) = self.gesture.take() else {
+        let Some(open) = self.gesture.take() else {
             return Task::none();
         };
         self.session.draft = None;
@@ -1127,70 +992,31 @@ impl Editor {
         ))
     }
 
-    /// `draft.reapply` answered: the draft is based on the current revision again and the fields
-    /// this client set are re-sent, so the drafted preview returns. An answer for a gesture that is
-    /// no longer open, or for another draft, is dropped: storing it would report a draft that
-    /// nothing holds, and clearing a round trip would unblock a newer gesture's own.
-    fn draft_reapplied(
-        &mut self,
-        gesture: GestureId,
-        draft_id: &DraftId,
-        result: Result<Draft, String>,
-    ) -> Task<Message> {
-        let Some(open) = self.answered(gesture, Some(draft_id)) else {
-            self.event(
-                "draft_reapply_dropped",
-                json!({"draft_id":draft_id.as_str(),"accepted":result.is_ok()}),
-            );
+    /// The synchronous `draft.reapply` answered: the draft is based on the current revision again
+    /// and the fields this client set are re-sent in this same update, so the drafted preview
+    /// returns. A refusal keeps the draft conflicted and says why.
+    fn reapplied(&mut self, result: Result<Draft, String>) -> Task<Message> {
+        let Some(gesture) = self.core_gesture().map(|open| open.draft.gesture) else {
             return Task::none();
         };
-        // An armed brush's own rebase: a stroke begun while it was in flight carries on into the
-        // rebased draft, since the conflict it answers came before the stroke did.
+        // An armed brush's own rebase shows no notice, so it has no pointer gesture to end.
         let silent = self.armed_rebase.take_if(|id| *id == gesture).is_some();
-        if open {
-            match &result {
-                Ok(rebased) => {
-                    self.session.draft = Some(rebased.clone());
-                    if !silent && let Some(open) = self.core_gesture_mut() {
-                        open.kind.interrupt();
-                    }
-                    if let Some(slider) = self.slider_gesture() {
-                        self.status = format!("Drafting {}…", slider.label);
-                    }
+        match &result {
+            Ok(rebased) => {
+                self.session.draft = Some(rebased.clone());
+                if !silent && let Some(open) = self.core_gesture_mut() {
+                    open.kind.interrupt();
                 }
-                Err(error) => self.status = error.clone(),
+                if let Some(slider) = self.slider_gesture() {
+                    self.status = format!("Drafting {}…", slider.label);
+                }
             }
+            Err(error) => self.status = error.clone(),
         }
         let task = self.drive(Event::Reapplied(result));
         // A crop draft's Reapply is over once its draft is rebased and the rebased frame's stage
         // is on screen.
-        if open {
-            self.settle_crop();
-        }
+        self.settle_crop();
         task
-    }
-
-    /// `draft.cancel` answered, with the committed frame read after it when one was asked for.
-    fn draft_cancelled(
-        &mut self,
-        draft_id: &DraftId,
-        cancelled: Result<(), String>,
-        reseed: Option<Result<Box<tasks::PreviewPayload>, String>>,
-    ) -> Task<Message> {
-        if matches!(&self.gesture, Some(Gesture::Closing { draft, .. })
-            if draft.draft_id.as_ref() == Some(draft_id))
-        {
-            let _ = self.drive(Event::Cancelled);
-        }
-        if let Err(error) = cancelled {
-            self.event(
-                "draft_cancel_failed",
-                json!({"draft_id":draft_id.as_str(),"error":error}),
-            );
-        }
-        match reseed {
-            Some(result) => self.dispatch(Message::Preview(PreviewMessage::Loaded(result))),
-            None => Task::none(),
-        }
     }
 }

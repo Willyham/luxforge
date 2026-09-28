@@ -4,8 +4,8 @@
 //! module is named here.
 //!
 //! One gesture is one core draft, run by the shared driver in [`crate::app::gesture`]: the first
-//! move opens it with `draft.begin`, every later move offers its value, which goes out with its one
-//! preview job the moment nothing is in flight, release commits once, Escape cancels, and an
+//! move opens it with `draft.begin` and sends its value in the same update, every later move offers
+//! its value, which goes out with its one preview job at once, release commits once, Escape cancels, and an
 //! external revision marks the draft conflicted until the Changed elsewhere notice is answered with
 //! Discard or Reapply. What is here is only what a slider adds: the field it moves, the label the
 //! status line names, and the double-click reset.
@@ -78,8 +78,8 @@ impl Editor {
             return self.drive(Event::Offer(fields));
         }
         // An armed brush holds the one core draft this gesture needs and has nothing painted to
-        // lose by giving it up; the `draft.begin` below cancels it first.
-        let displaced = self.claim_slot();
+        // lose by giving it up: it is cancelled before the `draft.begin` below.
+        self.disarm();
         let Some(state) = &self.state else {
             return Task::none();
         };
@@ -106,7 +106,7 @@ impl Editor {
             target,
             unpreviewed: false,
         });
-        self.open_core(kind, Some(fields), displaced)
+        self.open_core(kind, Some(fields))
     }
 
     /// A release of a drafting control with no draft open. Such a control opens its draft on its

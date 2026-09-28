@@ -4,8 +4,8 @@ use super::{
     message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::mutation,
     testing::{
-        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, begun, descriptors, draft_events, drafting, entry,
-        finish, logged, opened_with_modules, patch_control, raw_entry, raw_refresh, refresh_for,
+        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, descriptors, draft_events, drafting, entry, finish,
+        logged, opened_with_modules, patch_control, raw_entry, raw_refresh, refresh_for,
     },
     *,
 };
@@ -16,9 +16,8 @@ use serde_json::Map;
 #[test]
 fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
     for cancel in [false, true] {
-        let (mut editor, catalog, _, asset, action, parameter) = drafting();
+        let (mut editor, catalog, _, _, action, parameter) = drafting();
         let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-        begun(&mut editor, &asset, &action, 4);
         let id = editor.session.draft.as_ref().unwrap().draft_id.clone();
         editor.displayed_draft_id = Some(id);
         editor.displayed_draft_revision = Some(1);
@@ -33,16 +32,36 @@ fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
     }
 }
 
-/// A drag of a patch action's slider opens exactly one draft, sends exactly one `draft.set`
-/// for the newest value, and sends nothing at all while a round trip is in flight.
+/// A drag of a patch action's slider opens exactly one draft and sends one `draft.set` per new
+/// value, in the update that produced it: the first in the update of the press, since
+/// `draft.begin` answers there too.
 #[test]
-fn a_drag_sends_one_draft_set_for_the_newest_value() {
-    let (mut editor, catalog, log, asset, action, parameter) = drafting();
+fn a_drag_sends_one_draft_set_per_new_value_from_the_press_on() {
+    let (mut editor, catalog, log, _, action, parameter) = drafting();
 
-    // Every move while `draft.begin` is in flight replaces one pending value: the answer sends
-    // the last. The values are ones the widget would send: it quantizes each drag to the
-    // parameter's declared step and precision before the message is published.
-    for value in [25.0, 50.0, 75.0] {
+    // The values are ones the widget would send: it quantizes each drag to the parameter's
+    // declared step and precision before the message is published.
+    let _ = testing::slide(&mut editor, &action, &parameter, 25.0);
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        draft_events(&records, "slider_draft_begin").len(),
+        1,
+        "a gesture opens one draft"
+    );
+    let sets = draft_events(&records, "slider_draft_set");
+    assert_eq!(
+        sets.len(),
+        1,
+        "the press's own value goes out in the update that opened the draft: {sets:?}"
+    );
+    assert_eq!(
+        sets[0]["fields"],
+        json!({ parameter.clone(): 25.0 }),
+        "as one field patch"
+    );
+
+    let log = attach_log(&mut editor);
+    for value in [50.0, 75.0] {
         let _ = testing::slide(&mut editor, &action, &parameter, value);
     }
     assert_eq!(
@@ -56,27 +75,23 @@ fn a_drag_sends_one_draft_set_for_the_newest_value() {
         "the status bar names the gesture: {}",
         editor.status
     );
-
-    begun(&mut editor, &asset, &action, 4);
     // A move to the value already accepted sends nothing again.
     let _ = testing::slide(&mut editor, &action, &parameter, 75.0);
 
     let records = logged(&mut editor, &log);
-    assert_eq!(
-        draft_events(&records, "slider_draft_begin").len(),
-        1,
-        "a gesture opens one draft"
+    assert!(
+        draft_events(&records, "slider_draft_begin").is_empty(),
+        "the open gesture's moves open no second draft"
     );
     let sets = draft_events(&records, "slider_draft_set");
+    let sent: Vec<&Value> = sets.iter().map(|set| &set["fields"]).collect();
     assert_eq!(
-        sets.len(),
-        1,
-        "three moves with one round trip in flight send one draft.set: {sets:?}"
-    );
-    assert_eq!(
-        sets[0]["fields"],
-        json!({ parameter.clone(): 75.0 }),
-        "and it carries the newest value, as one field patch"
+        sent,
+        [
+            &json!({ parameter.clone(): 50.0 }),
+            &json!({ parameter.clone(): 75.0 })
+        ],
+        "one draft.set per new value, none for a repeat"
     );
     assert_eq!(
         editor
@@ -84,7 +99,7 @@ fn a_drag_sends_one_draft_set_for_the_newest_value() {
             .draft
             .as_ref()
             .map(|draft| draft.draft_revision),
-        Some(1),
+        Some(3),
         "the adopted draft carries the revision the frame is correlated with"
     );
     finish(editor, catalog);
@@ -129,7 +144,7 @@ fn the_single_parameter_control_under_test_is_one_number_with_a_default() {
 /// nothing special and the person sees the preview move while dragging.
 #[test]
 fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
-    let (mut editor, catalog, log, asset, _, _) = drafting();
+    let (mut editor, catalog, log, _, _, _) = drafting();
     let (action, parameter) = single_parameter_control(&editor);
 
     for value in [0.25, 0.5] {
@@ -140,7 +155,6 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
         "the gesture opened a draft: {}",
         editor.status
     );
-    begun(&mut editor, &asset, &action, 4);
     let _ = testing::slide(&mut editor, &action, &parameter, 0.75);
     let _ = testing::let_go(&mut editor, &action, &parameter);
 
@@ -151,16 +165,19 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
         "one gesture opens one draft"
     );
     let sets = draft_events(&records, "slider_draft_set");
-    assert_eq!(sets.len(), 2, "one draft.set per accepted value: {sets:?}");
+    let sent: Vec<&Value> = sets.iter().map(|set| &set["fields"]).collect();
     assert_eq!(
-        sets[0]["fields"],
-        json!({ parameter.clone(): 0.5 }),
-        "and it carries the newest value, as the whole request"
+        sent,
+        [
+            &json!({ parameter.clone(): 0.25 }),
+            &json!({ parameter.clone(): 0.5 }),
+            &json!({ parameter.clone(): 0.75 })
+        ],
+        "one draft.set per value, each carrying it as the whole request"
     );
-    assert_eq!(sets[1]["fields"], json!({ parameter.clone(): 0.75 }));
     assert_eq!(
         draft_events(&records, "slider_draft_preview").len(),
-        2,
+        3,
         "each accepted set queues the preview its value produces"
     );
     assert_eq!(
@@ -234,7 +251,6 @@ fn double_click_before_the_commit_answers(
         .current_entry
         .clone();
     let _ = testing::slide(editor, action, parameter, value);
-    begun(editor, asset, action, current.sequence);
     let _ = editor.update(Message::Control(ControlMessage::Released {
         action: action.into(),
         parameter: parameter.into(),
@@ -509,14 +525,15 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
 /// commits.
 #[test]
 fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
-    let (mut editor, catalog, log, asset, _, _) = drafting();
+    let (mut editor, catalog, log, _, _, _) = drafting();
     // A RAW photo's global target, where Basic's Temperature is the development's `set-raw`.
     editor.state.as_mut().expect("an open asset").asset.source =
         crate::state::testing::raw_source();
-    let _ = testing::slide(&mut editor, "set-raw", "temperature", 5000.0);
     // The owner accepts the value, but its preview job answers preparation-required.
-    editor.fake_sets = Some(["preparation-required: source-job-7".to_owned()].into());
-    begun(&mut editor, &asset, "set-raw", 4);
+    testing::stand_in(&mut editor)
+        .sets
+        .push_back("preparation-required: source-job-7".to_owned());
+    let _ = testing::slide(&mut editor, "set-raw", "temperature", 5000.0);
     assert_eq!(
         editor.status,
         "Temperature cannot be previewed until the RAW development is ready; it shows on release"
@@ -616,9 +633,8 @@ fn the_double_click_reset_of_a_single_parameter_action_sends_its_declared_defaul
 /// another request.
 #[test]
 fn a_slider_released_while_another_request_is_in_flight_commits() {
-    let (mut editor, catalog, log, asset, action, parameter) = drafting();
+    let (mut editor, catalog, log, _, action, parameter) = drafting();
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    begun(&mut editor, &asset, &action, 4);
     editor.busy = true;
     assert_eq!(
         editor.release_refusal(),
@@ -646,10 +662,9 @@ fn a_slider_released_while_another_request_is_in_flight_commits() {
 /// A no-op outcome ends the gesture with no entry and no history refresh.
 #[test]
 fn release_commits_once_and_a_return_to_start_commits_nothing() {
-    let (mut editor, catalog, log, asset, action, parameter) = drafting();
+    let (mut editor, catalog, log, _, action, parameter) = drafting();
     let history = editor.history.entries.len();
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    begun(&mut editor, &asset, &action, 4);
 
     let _ = testing::let_go(&mut editor, &action, &parameter);
     let _ = testing::let_go(&mut editor, &action, &parameter);
@@ -680,14 +695,13 @@ fn release_commits_once_and_a_return_to_start_commits_nothing() {
 /// authoritative value the displayed entry reports.
 #[test]
 fn escape_cancels_the_gesture_and_commits_nothing() {
-    let (mut editor, catalog, log, asset, action, parameter) = drafting();
+    let (mut editor, catalog, log, _, action, parameter) = drafting();
     let default = editor
         .fields
         .get(&action, &parameter)
         .expect("a seeded field")
         .to_owned();
     let _ = testing::slide(&mut editor, &action, &parameter, 2.0);
-    begun(&mut editor, &asset, &action, 4);
 
     // Exactly the message the keyboard table raises for Escape while a gesture is open.
     let context = keymap::KeyContext {
@@ -736,7 +750,6 @@ fn escape_cancels_the_gesture_and_commits_nothing() {
 fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     let (mut editor, catalog, log, asset, action, parameter) = drafting();
     let _ = testing::slide(&mut editor, &action, &parameter, 15.0);
-    begun(&mut editor, &asset, &action, 4);
 
     // Somebody else committed, which is also what this desktop's own undo looks like.
     let newer = entry(&asset, 9, None);
@@ -773,17 +786,10 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     );
     assert!(editor.core_gesture().expect("kept").draft.conflicted);
 
-    // Reapply rebases it on the new revision and re-sends the value this client set.
+    // Reapply rebases it on the new revision and re-sends the value this client set, in the
+    // update of the press.
     let log3 = attach_log(&mut editor);
-    let mut rebased = luxforge_core::Draft::new(&action, asset.clone(), 9);
-    rebased.draft_revision = 1;
-    rebased.fields = json!({ parameter.clone(): 1.5 })
-        .as_object()
-        .cloned()
-        .expect("an object");
-    rebased.conflicted = false;
     let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
-    testing::answer_reapply(&mut editor, Ok(rebased));
     let draft = &editor.core_gesture().expect("the rebased draft").draft;
     assert!(!draft.conflicted);
     assert_eq!(draft.base_revision, 9);
@@ -804,9 +810,8 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
 /// when the same value is typed and submitted with Enter.
 #[test]
 fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
-    let (mut editor, catalog, log, asset, action, parameter) = drafting();
+    let (mut editor, catalog, log, _, action, parameter) = drafting();
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    begun(&mut editor, &asset, &action, 4);
     let sets = {
         let records = logged(&mut editor, &log);
         draft_events(&records, "slider_draft_set")
@@ -865,7 +870,6 @@ fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
 #[test]
 fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
-    let asset = editor.state.as_ref().expect("open").asset.id.clone();
     let (action, _) = patch_control(&editor);
     let declared = tools::declared_action(&editor.modules, &action)
         .expect("the declared patch action")
@@ -902,7 +906,6 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             "{parameter} did not open a draft: {}",
             editor.status
         );
-        begun(&mut editor, &asset, &action, 4);
         let records = logged(&mut editor, &log);
         let sets = draft_events(&records, "slider_draft_set");
         assert_eq!(sets.len(), 1, "{parameter}: {sets:?}");
@@ -940,7 +943,6 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         editor.busy = false;
         let log = attach_log(&mut editor);
         let _ = testing::slide(&mut editor, &action, parameter, *value);
-        begun(&mut editor, &asset, &action, 4);
         let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
         let records = logged(&mut editor, &log);
         assert!(
@@ -956,7 +958,6 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             "{parameter} kept its draft"
         );
         // The slot is free once the owner has ended the draft.
-        testing::answer_cancel(&mut editor);
         assert!(
             editor.gesture.is_none(),
             "{parameter} left its draft closing"
@@ -965,24 +966,22 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         // An external commit under the gesture, then Reapply.
         editor.busy = false;
         let _ = testing::slide(&mut editor, &action, parameter, *value);
-        begun(&mut editor, &asset, &action, 4);
-        editor.gesture_revision(5);
+        let state = editor.state.as_mut().expect("open");
+        state.revision += 1;
+        let newer = state.revision;
+        editor.gesture_revision(newer);
         assert!(
             editor
                 .core_gesture()
                 .is_some_and(|gesture| gesture.draft.conflicted),
             "{parameter} was not marked conflicted"
         );
-        let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
         let log = attach_log(&mut editor);
-        testing::answer_reapply(
-            &mut editor,
-            Ok(luxforge_core::Draft::new(&action, asset.clone(), 5)),
-        );
+        let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
         let rebased = &editor.core_gesture().expect("the rebased draft").draft;
         assert!(!rebased.conflicted, "{parameter} stayed conflicted");
         assert_eq!(
-            rebased.base_revision, 5,
+            rebased.base_revision, newer,
             "{parameter} was not rebased on the new revision"
         );
         assert_eq!(
@@ -996,7 +995,6 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             "{parameter}: the reapply re-sent it once"
         );
         let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
-        testing::answer_cancel(&mut editor);
         assert!(editor.gesture.is_none());
     }
     finish(editor, catalog);
@@ -1087,12 +1085,10 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     assert!(editor.slider_gesture().is_none(), "{}", editor.status);
     assert!(editor.status.contains("crop draft"), "{}", editor.status);
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    crate::app::testing::answer_cancel(&mut editor);
 
     // The crop mode and Compare while a gesture is open.
     editor.busy = false;
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    begun(&mut editor, &asset, "unused", 4);
     assert!(editor.slider_gesture().is_some());
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop)));
     assert!(editor.crop_gesture().is_none());
