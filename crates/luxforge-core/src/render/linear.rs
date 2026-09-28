@@ -1693,8 +1693,8 @@ mod tests {
                 generic_linear_reference(&registry, &source, snapshot.clone(), &recipe, settings);
             let actual = render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
                 .expect("production render");
-            let reference_hash = Sha256::digest(&reference.rgba);
-            let actual_hash = Sha256::digest(&actual.rgba);
+            let reference_hash = Sha256::digest(reference.rgba.as_slice());
+            let actual_hash = Sha256::digest(actual.rgba.as_slice());
             assert_eq!(
                 reference.rgba.as_ref(),
                 actual.rgba.as_ref(),

@@ -36,7 +36,7 @@ const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
 pub struct SourceImage {
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<[u8]>,
+    pub rgba: Arc<Vec<u8>>,
     pub fingerprint: String,
     pub orientation: u8,
     /// The original's kept EXIF fields, read from the same bytes as the pixels; empty for a source
@@ -62,20 +62,20 @@ impl SourceImage {
                 "source pixel buffer has the wrong length",
             ));
         }
-        let len = Raster::expected_len(region.width, region.height)?;
-        let mut rgba = crate::render::zeroed_frame(len);
+        // Each row is appended once to an allocation of exactly the window's length: nothing is
+        // written before the row that fills it.
+        let mut rgba = Vec::with_capacity(Raster::expected_len(region.width, region.height)?);
         let stride = self.width as usize * 4;
         let row_len = region.width as usize * 4;
-        for (row, y) in (region.y0..region.y1()).enumerate() {
+        for y in region.y0..region.y1() {
             cancel.check()?;
             let offset = y as usize * stride + region.x0 as usize * 4;
-            crate::render::frame_mut(&mut rgba)[row * row_len..(row + 1) * row_len]
-                .copy_from_slice(&self.rgba[offset..offset + row_len]);
+            rgba.extend_from_slice(&self.rgba[offset..offset + row_len]);
         }
         Ok(Self {
             width: region.width,
             height: region.height,
-            rgba,
+            rgba: Arc::new(rgba),
             fingerprint: self.fingerprint.clone(),
             orientation: self.orientation,
             capture: self.capture.clone(),
@@ -140,7 +140,7 @@ fn upright_position(
 
 /// A decoded original turned upright: its frame, its dimensions and the EXIF orientation applied.
 struct Upright {
-    rgba: Arc<[u8]>,
+    rgba: Arc<Vec<u8>>,
     width: u32,
     height: u32,
     orientation: u8,
@@ -209,7 +209,7 @@ pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
 }
 
 /// Decode straight into the shared frame a [`Raster`] would hold, so a JPEG's decoded pixels are
-/// written once: no intermediate RGBA buffer that this then copies into an `Arc<[u8]>`.
+/// written once: no intermediate RGBA buffer that this then copies into another frame.
 pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
     let capture = Arc::new(CaptureMetadata::from_jpeg(&bytes));
@@ -1306,7 +1306,7 @@ mod jpeg_tests {
     }
 
     /// A JPEG decode allocates its RGBA frame once and writes straight into it: no `into_rgba8()`
-    /// buffer that a second allocation then copies into the `Arc<[u8]>` a [`SourceImage`] holds.
+    /// buffer that a second allocation then copies into the `Arc<Vec<u8>>` a [`SourceImage`] holds.
     /// Proved the way the render tests prove a pass writes the frame it returns
     /// ([`crate::render::frame_writes`]): the address [`crate::render::frame_mut`] hands out while
     /// decoding is the address the returned `SourceImage.rgba` itself points at.
@@ -1507,7 +1507,7 @@ mod jpeg_tests {
     /// The previous decode as the import ran it, for timing: `image` 0.25.9's reader with the same
     /// limits, its ICC and orientation reads, the decode to RGB, `apply_orientation`, and the copy
     /// to RGBA into the frame, after the same header walk.
-    fn previous_decode(bytes: &[u8]) -> Arc<[u8]> {
+    fn previous_decode(bytes: &[u8]) -> Arc<Vec<u8>> {
         use image::{ImageDecoder, ImageReader, Limits};
         luxforge_jpeg::header(bytes).unwrap();
         let mut reader =
@@ -1576,7 +1576,7 @@ mod jpeg_tests {
                 Ok(_) => continue,
                 Err(_) => {}
             }
-            let time = |decode: &dyn Fn(&[u8]) -> Arc<[u8]>| {
+            let time = |decode: &dyn Fn(&[u8]) -> Arc<Vec<u8>>| {
                 let start = std::time::Instant::now();
                 std::hint::black_box(decode(&bytes));
                 start.elapsed().as_secs_f64() * 1000.0

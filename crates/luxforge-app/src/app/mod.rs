@@ -215,7 +215,7 @@ pub(crate) struct Editor {
     pub(crate) viewport_disabled_content: Option<u64>,
     /// The displayed frame's own raster, with the preview generation it arrived under, retained
     /// beside the picture on screen so a clipping overlay can be re-derived from it on a zoom, a
-    /// pan or a toggle without a second render. It shares the render's `Arc<[u8]>`: retaining it
+    /// pan or a toggle without a second render. It shares the render's `Arc<Vec<u8>>`: retaining it
     /// copies no pixels.
     ///
     /// The generation travels with it because the overlay is keyed on **this** image rather than on
