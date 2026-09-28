@@ -393,7 +393,6 @@ fn main_result() -> Result {
                 .value("--binary")?
                 .map(|path| absolute(&root, Path::new(&path)))
                 .map_or_else(|| binary(&root), Ok)?;
-            let samples = samples(&mut a, 30)?;
             let crop = a
                 .value("--crop")?
                 .map(|s| s.to_string_lossy().parse::<f64>())
@@ -407,6 +406,7 @@ fn main_result() -> Result {
                 .map(|value| value.to_string_lossy().parse::<f32>())
                 .transpose()?;
             let moving_pan = a.flag("--moving-pan");
+            let mask_overlay = a.flag("--mask-overlay");
             let control = match a.value("--control")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("slider") => editor_latency::Control::Slider,
                 Some("curve") => editor_latency::Control::Curve,
@@ -428,6 +428,18 @@ fn main_result() -> Result {
                     .into());
                 }
             };
+            // A paint run's samples are the stroke's positions, and it paints hundreds by default.
+            let samples = samples(
+                &mut a,
+                if mode == editor_latency::Mode::Paint {
+                    editor_latency::PAINT_POSITIONS
+                } else {
+                    30
+                },
+            )?;
+            if mask_overlay && mode != editor_latency::Mode::Paint {
+                return Err("--mask-overlay requires --mode paint".into());
+            }
             let action = a
                 .value("--action")?
                 .map(|v| v.to_string_lossy().into_owned());
@@ -454,6 +466,7 @@ fn main_result() -> Result {
                     mask,
                     zoom,
                     moving_pan,
+                    mask_overlay,
                 },
             )?;
         }
@@ -581,7 +594,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }
