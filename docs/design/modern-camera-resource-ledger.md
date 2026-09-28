@@ -59,7 +59,7 @@ not just queue state, before admitting another large source.
 Native RCD and Markesteijn workspaces are additional to these formulas. The
 standalone probe recorded historical peak RSS of approximately 425 MiB for
 24 MP Z6 RCD and 707 MiB for 40.2 MP X100VI Markesteijn in
-[the probe notes](../../probes/raw/README.md) (those are decoder-stage trials,
+[the RAW backend research](../research/raw-backend-selection.md#measured-scope-and-limits) (those are decoder-stage trials,
 not current editor limits). Scratch generally scales with implementation and
 working tiles rather than only final pixel count, so a 128 MP value cannot be
 extrapolated as a release guarantee. The adapter sets LibRaw's

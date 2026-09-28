@@ -64,12 +64,17 @@ qualification remain separate work.
 ## Reproducing adapter qualification
 
 Download the selected public sources with the bounded
-`probes/raw/collect_camera_metadata.py` tool using the raw.pixls.us repository
-index and selected numeric sample IDs. Pass `--max-source-mib 512` for the
-complete selection; its conservative default download cap is 128 MiB. It verifies the repository's CC0
-license and SHA-256 and refuses to reuse an output directory. The separate
-native probe can inspect larger files, but does not establish application
-support. Keep images and generated results in an ignored evidence directory.
+`cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR`,
+passing the raw.pixls.us repository index (`json/getrepository.php?set=all`)
+and the selected numeric sample IDs. Pass `--max-source-mib 512` for the
+complete selection; its conservative default download cap is 128 MiB. It
+verifies the repository's CC0 license and SHA-256, downloads one sample at a
+time through `curl` over HTTPS and refuses to reuse an output directory. It then
+decodes each file once with the RAW adapter and records its metadata, or the
+adapter's refusal (an unrecognised mode names LibRaw's make, model, decoder, bit
+depth and size), and hashes it again; a decode alone does not establish
+application support. Keep images and generated results in an ignored evidence
+directory.
 
 Create a qualifier manifest containing `{"samples": [{"id": "sample-id",
 "path": "/absolute/source/path", "sha256": "expected-source-sha256"}]}` for

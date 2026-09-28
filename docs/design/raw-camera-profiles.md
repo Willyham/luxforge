@@ -86,11 +86,11 @@ after the new recording modes are demonstrated. Changing a profile does not
 rewrite catalogs: incompatible source interpretation still fails explicitly.
 
 Reproduce corpus selection and decoder evidence with
-`python3 probes/raw/collect_camera_metadata.py --help` and the generated
-`fixtures/modern-camera-selection.json`; inspect DNG geometry and ordered
-opcodes with `python3 probes/raw/inspect_dng.py PATH`. The checked-in selection
-file records source URLs, hashes and licensing metadata; downloaded RAW payloads
-and generated probe outputs remain outside the repository.
+`cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR`
+and the generated `fixtures/modern-camera-selection.json`; inspect DNG geometry
+and ordered opcodes with `cargo xtask inspect-dng --source PATH`. The checked-in
+selection file records source URLs, hashes and licensing metadata; downloaded
+RAW payloads and generated outputs remain outside the repository.
 
 ## Acceptance
 
