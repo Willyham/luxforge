@@ -1745,13 +1745,16 @@ mod tests {
                 worker_started.store(true, Ordering::Release);
                 while worker_running.load(Ordering::Acquire) {
                     worker_exact_started.fetch_add(1, Ordering::AcqRel);
-                    let developed = worker_raw
-                        .develop_for_performance_diagnostic(
-                            gains,
-                            &worker_cancel,
-                            parallel_normalization,
-                        )
-                        .expect("concurrent exact Bayer development");
+                    let developed = luxforge_raw::develop_with(
+                        &worker_raw,
+                        gains,
+                        &worker_cancel,
+                        luxforge_raw::DevelopOptions {
+                            executor: parallel_normalization,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("concurrent exact Bayer development");
                     std::hint::black_box(&developed.data);
                     drop(developed);
                     worker_exact_completed.fetch_add(1, Ordering::AcqRel);
@@ -1915,13 +1918,16 @@ mod tests {
         );
         // Warm native exact and proxy paths in both normalizer modes before sampling.
         for parallel in [false, true] {
-            let developed = raw
-                .develop_for_performance_diagnostic(
-                    gains,
-                    &std::sync::atomic::AtomicBool::new(false),
-                    parallel,
-                )
-                .expect("warm exact native development");
+            let developed = luxforge_raw::develop_with(
+                &raw,
+                gains,
+                &std::sync::atomic::AtomicBool::new(false),
+                luxforge_raw::DevelopOptions {
+                    executor: parallel,
+                    ..Default::default()
+                },
+            )
+            .expect("warm exact native development");
             std::hint::black_box(&developed.data);
             drop(developed);
             let _ = render_checked(

@@ -6,6 +6,9 @@ mod limits;
 // The catalog's calibration determinant.
 #[path = "src/mat3.rs"]
 mod mat3;
+// The native adapter's status codes, written into its header.
+#[path = "src/native_status.rs"]
+mod native_status;
 // The catalog is validated against the one opcode allowlist; the list tags it also names are for
 // the library's container parser.
 #[path = "src/opcodes.rs"]
@@ -159,6 +162,18 @@ fn apply_patch(root: &Path, patch: &str) {
         }
         fs::write(path, result).expect("write patched native source");
     }
+}
+
+/// `UnsupportedCfa` as `UNSUPPORTED_CFA`: a status variant's name as a C enumerator's suffix.
+fn screaming_snake(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i > 0 && c.is_ascii_uppercase() {
+            out.push('_');
+        }
+        out.push(c.to_ascii_uppercase());
+    }
+    out
 }
 
 /// Borrowed static text: a `Debug`-escaped string is a valid Rust string literal.
@@ -316,6 +331,15 @@ fn main() {
         "\n#define LF_MAX_SOURCE_BYTES {}ull\n#define LF_MAX_PIXELS {}ull\n#define LF_MAX_SIDE {}u\n#define LF_MAX_RGB_BYTES {}ull\n",
         limits::MAX_SOURCE_BYTES, limits::MAX_PIXELS, limits::MAX_SIDE, limits::MAX_RGB_BYTES
     ));
+    native.push_str("\nenum LfStatus {\n");
+    for status in native_status::NativeStatus::ALL {
+        native.push_str(&format!(
+            "  LF_STATUS_{} = {},\n",
+            screaming_snake(&format!("{status:?}")),
+            status as i32
+        ));
+    }
+    native.push_str("};\n");
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
     fs::write(out.join("raw_modes.rs"), rust).expect("write mode identifiers");
     fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
@@ -354,6 +378,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/mat3.rs");
     println!("cargo:rerun-if-changed=src/opcodes.rs");
     println!("cargo:rerun-if-changed=src/limits.rs");
+    println!("cargo:rerun-if-changed=src/native_status.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");

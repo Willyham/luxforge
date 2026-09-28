@@ -1,6 +1,6 @@
 --- a/src/demosaic/markesteijn.cc
 +++ b/src/demosaic/markesteijn.cc
-@@ -20,7 +20,11 @@
+@@ -20,7 +20,10 @@
  ////////////////////////////////////////////////////////////////
  
  #include <float.h>
@@ -8,11 +8,10 @@
 +#include <functional>
  #include <memory>
 +#include <mutex>
-+#include <stdexcept>
  
  #include "librtprocess.h"
  #include "LUT.h"
-@@ -46,8 +50,8 @@
+@@ -46,8 +49,8 @@
      static LUTf cbrt(0x14000);
  
      if (!rgb) {
@@ -23,7 +22,7 @@
              //sRGB epsilon and kappa
              constexpr double eps = 216.0 / 24389.0;
              constexpr double kappa = 24389.0 / 27.0;
-@@ -56,8 +60,7 @@
+@@ -56,8 +59,7 @@
                  cbrt[i] = r > eps ? std::cbrt(r) : (kappa * r + 16.0) / 116.0;
              }
  
@@ -33,7 +32,7 @@
  
          return;
      }
-@@ -119,6 +122,31 @@
+@@ -119,6 +121,31 @@
  }
  }
  
@@ -65,16 +64,16 @@
  
  /*
     Frank Markesteijn's algorithm for Fuji X-Trans sensors
-@@ -126,7 +154,7 @@
+@@ -126,7 +153,7 @@
  */
  
  using namespace librtprocess;
 -rpError markesteijn_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure)
-+rpError markesteijn_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext, unsigned testFault)
++rpError markesteijn_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
  {
      BENCHFUN
      std::unique_ptr<StopWatch> stop;
-@@ -141,9 +169,6 @@
+@@ -141,9 +168,6 @@
  
      rpError rc = RP_NO_ERROR;
  
@@ -84,7 +83,7 @@
      double progress = 0.0;
      setProgCancel(progress);
  
-@@ -208,7 +233,6 @@
+@@ -208,7 +232,6 @@
      setProgCancel(progress);
  
  
@@ -92,7 +91,7 @@
      const int ndir = 4 << (passes > 1);
      cielab (nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr);
      struct s_minmaxgreen {
-@@ -229,27 +253,45 @@
+@@ -229,27 +252,37 @@
          RightShift[row] = (greencount == 2);
      }
  
@@ -134,9 +133,10 @@
 +        [&](size_t job) {
 +            if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
 +            float dcolor[3][6];
-+            // Private adapter tests inject these failures without provoking
-+            // process-wide OOM or exposing a user-facing control.
-+            if (testFault == 1 && job == 0) {
++            std::unique_ptr<float, decltype(&free)> scratch(
++                (float *)malloc((ts * ts * (ndir * 4 + 3) + 128) * sizeof(float)), &free);
++            float *buffer = scratch.get();
++            if (!buffer) {
 +                rpError expected = RP_NO_ERROR;
 +                tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
 +                return;
@@ -146,19 +146,10 @@
 -        #pragma omp barrier
 -#endif
 -        if(!rc) {
-+            if (testFault == 2 && job == 0) throw std::runtime_error("native tile test fault");
-+            std::unique_ptr<float, decltype(&free)> scratch(
-+                (float *)malloc((ts * ts * (ndir * 4 + 3) + 128) * sizeof(float)), &free);
-+            float *buffer = scratch.get();
-+            if (!buffer) {
-+                rpError expected = RP_NO_ERROR;
-+                tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
-+                return;
-+            }
              float (*rgb)[ts][ts][3] = (float(*)[ts][ts][3]) buffer;
              float (*lab)[ts - 8][ts - 8] = (float (*)[ts - 8][ts - 8])(buffer + ts * ts * (ndir * 3));
              float (*drv)[ts - 10][ts - 10] = (float (*)[ts - 10][ts - 10])   (buffer + ts * ts * (ndir * 3 + 3));
-@@ -258,12 +300,36 @@
+@@ -258,12 +291,36 @@
              uint8_t (*homosum)[ts][ts] = (uint8_t (*)[ts][ts]) (drv); // we can reuse the drv-buffer because they are not used together
              uint8_t (*homosummax)[ts] = (uint8_t (*)[ts]) homo[ndir - 1]; // we can reuse the homo-buffer because they are not used together
  
@@ -201,7 +192,7 @@
                      int mrow = std::min(top + ts, height - 3);
                      int mcol = std::min(left + ts, width - 3);
  
-@@ -901,22 +967,24 @@
+@@ -901,22 +958,24 @@
                              blue[row + top][col + left] = avg[2] / avg[3];
                          }
  
@@ -242,7 +233,7 @@
  }
 --- a/src/demosaic/rcd.cc
 +++ b/src/demosaic/rcd.cc
-@@ -16,8 +16,12 @@
+@@ -16,8 +16,11 @@
   *  You should have received a copy of the GNU General Public License
   *  along with RawTherapee.  If not, see <http://www.gnu.org/licenses/>.
   */
@@ -251,11 +242,10 @@
 +#include <cstdlib>
 +#include <functional>
  #include <memory>
-+#include <stdexcept>
  
  #include "bayerhelper.h"
  #include "librtprocess.h"
-@@ -26,6 +30,39 @@
+@@ -26,6 +29,39 @@
  #include "StopWatch.h"
  
  using namespace librtprocess;
@@ -295,16 +285,16 @@
  
  /*
  * RATIO CORRECTED DEMOSAICING
-@@ -42,7 +79,7 @@
+@@ -42,7 +78,7 @@
  // coefficients in an exact, shorter and more performant formula.
  // In cooperation with Hanno Schwalm (hanno@schwalm-bremen.de) and Luis Sanz Rodriguez this has been tuned for performance.
  
 -rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread)
-+rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext, unsigned testFault)
++rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
  {
      BENCHFUN
  
-@@ -58,51 +95,77 @@
+@@ -58,51 +94,69 @@
  
      rpError rc = RP_NO_ERROR;
  
@@ -359,14 +349,6 @@
 +    RcdWorkerCall call{
 +        [&](size_t job) {
 +    if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
-+    // Private adapter tests inject these failures without provoking
-+    // process-wide OOM or exposing a user-facing control.
-+    if (testFault == 1 && job == 0) {
-+        rpError expected = RP_NO_ERROR;
-+        tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
-+        return;
-+    }
-+    if (testFault == 2 && job == 0) throw std::runtime_error("native tile test fault");
 +    std::unique_ptr<float, decltype(&free)> cfaBuffer((float*) calloc(tileSize * tileSize, sizeof(float)), &free);
 +    std::unique_ptr<float, decltype(&free)> rgbBuffer((float*) malloc(3 * tileSize * tileSize * sizeof(float)), &free);
 +    std::unique_ptr<float, decltype(&free)> vhBuffer((float*) calloc(tileSize * tileSize, sizeof(float)), &free);
@@ -423,7 +405,7 @@
                  const int rowStart = tr * tileSizeN;
                  const int rowEnd = std::min(rowStart + tileSize, height);
                  if(rowStart + rcdBorder == rowEnd - rcdBorder) {
-@@ -309,33 +372,23 @@
+@@ -309,33 +363,23 @@
                      }
                  }
  
@@ -497,8 +479,8 @@
  RTPROCESS_API rpError hphd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);
 -RTPROCESS_API rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize = 2, bool measure = false, bool multiThread = true);
 -RTPROCESS_API rpError markesteijn_demosaic(int width, int height, const float * const *rawdata, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize = 2, bool measure = false);
-+RTPROCESS_API rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize = 2, bool measure = false, bool multiThread = true, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr, unsigned testFault = 0);
-+RTPROCESS_API rpError markesteijn_demosaic(int width, int height, const float * const *rawdata, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize = 2, bool measure = false, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr, unsigned testFault = 0);
++RTPROCESS_API rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize = 2, bool measure = false, bool multiThread = true, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr);
++RTPROCESS_API rpError markesteijn_demosaic(int width, int height, const float * const *rawdata, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize = 2, bool measure = false, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr);
  RTPROCESS_API rpError xtransfast_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const std::function<bool(double)> &setProgCancel);
  RTPROCESS_API rpError vng4_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);
  RTPROCESS_API rpError igv_demosaic(int winw, int winh, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);
