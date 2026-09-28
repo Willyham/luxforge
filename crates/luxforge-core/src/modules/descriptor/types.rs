@@ -191,10 +191,10 @@ pub enum ParameterKind {
     /// host checks every action and field against its own descriptor when the set is applied.
     Settings,
     /// A network destination: a URL of at most [`MAX_ENDPOINT_BYTES`] that the capability
-    /// transport's policy accepts as one of `classes`. Only a module setting declares one, because
-    /// only the host contacts anything and a destination is the person's choice: an action, query
-    /// or task that declared one would let a request name where the host sends data. It never has a
-    /// default.
+    /// transport's policy accepts as one of `classes`. Only a module setting declares one, and only
+    /// a provider profile's, because only the host contacts anything and a destination is the
+    /// person's choice: an action, query or task that declared one would let a request name where
+    /// the host sends data. It never has a default.
     Endpoint {
         classes: Vec<EndpointClass>,
     },

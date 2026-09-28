@@ -307,6 +307,13 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
         )));
     }
     validate_fields(module, "setting", &settings.fields)?;
+    // The host sends only to a profile's endpoint, so a module-level one would do nothing.
+    if let Some(field) = settings.fields.iter().find(|field| field.is_endpoint()) {
+        return Err(Error::validation(format!(
+            "setting {} of module {module} is an endpoint; only a profile field declares one",
+            field.id()
+        )));
+    }
     let Some(profiles) = &settings.profiles else {
         return Ok(());
     };
@@ -862,8 +869,8 @@ mod tests {
                 "secret parameter token declares a default",
             ),
             (
-                |d| field(d, "local-service").parameter.default = Some(json!("http://127.0.0.1/")),
-                "endpoint parameter local-service declares a default",
+                |d| profiles(d).fields[0].parameter.default = Some(json!("http://127.0.0.1/")),
+                "endpoint parameter endpoint declares a default",
             ),
             // Kinds whose own declaration is unsound.
             (
@@ -913,19 +920,19 @@ mod tests {
             ),
             (
                 |d| {
-                    field(d, "local-service").parameter.kind = ParameterKind::Endpoint {
+                    profiles(d).fields[0].parameter.kind = ParameterKind::Endpoint {
                         classes: Vec::new(),
                     }
                 },
-                "endpoint parameter local-service declares no class",
+                "endpoint parameter endpoint declares no class",
             ),
             (
                 |d| {
-                    field(d, "local-service").parameter.kind = ParameterKind::Endpoint {
+                    profiles(d).fields[0].parameter.kind = ParameterKind::Endpoint {
                         classes: vec![EndpointClass::Loopback, EndpointClass::Loopback],
                     }
                 },
-                "endpoint parameter local-service declares a class twice",
+                "endpoint parameter endpoint declares a class twice",
             ),
             // A setting takes the kinds a settings store holds and a settings view edits.
             (
@@ -945,6 +952,18 @@ mod tests {
                         .push(ParameterDescriptor::endpoint("to", [EndpointClass::Remote]))
                 },
                 "parameter to of action apply-test-tint declares kind endpoint, which only a module setting declares",
+            ),
+            // The host sends only to a profile's endpoint, so a module-level one is refused.
+            (
+                |d| {
+                    settings(d)
+                        .fields
+                        .push(setting(ParameterDescriptor::endpoint(
+                            "local-service",
+                            [EndpointClass::Loopback],
+                        )))
+                },
+                "setting local-service of module test.capabilities is an endpoint; only a profile field declares one",
             ),
             (
                 |d| {
@@ -984,7 +1003,7 @@ mod tests {
             // Bounds on the number of fields and profiles.
             (
                 |d| {
-                    settings(d).fields.extend((0..25).map(|index| {
+                    settings(d).fields.extend((0..26).map(|index| {
                         setting(ParameterDescriptor::boolean(format!("extra-{index}")))
                     }))
                 },

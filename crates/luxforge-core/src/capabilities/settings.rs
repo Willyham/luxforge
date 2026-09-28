@@ -118,13 +118,11 @@ pub struct WriteResult {
     pub changed: Vec<String>,
 }
 
-/// A write as the host sees it: the result a client receives, and what the host needs to revoke
-/// grants scoped to old values.
+/// A write as the host sees it: the result a client receives, and the removed profiles whose
+/// grants the host revokes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsWrite {
     pub result: WriteResult,
-    /// The previous stored value of every changed non-secret field, `null` where none was stored.
-    pub previous: Map<String, Value>,
     /// Profiles the write removed, with the values they held.
     pub removed: Vec<StoredProfile>,
 }
@@ -189,6 +187,18 @@ pub enum ProfileStatus {
     /// The profile names an adapter the module no longer declares, or the module's stored settings
     /// are incompatible.
     Incompatible,
+}
+
+impl ProfileStatus {
+    /// The status as it is serialized.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Incomplete => "incomplete",
+            Self::MissingCredentials => "missing-credentials",
+            Self::Incompatible => "incompatible",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -541,7 +551,6 @@ struct Applied {
     profile_id: Option<String>,
     profile: Option<ProfileSummary>,
     changed: Vec<String>,
-    previous: Map<String, Value>,
     removed: Vec<StoredProfile>,
 }
 
@@ -552,7 +561,6 @@ impl Applied {
             profile_id: profile_id.map(str::to_owned),
             profile: None,
             changed: Vec::new(),
-            previous: Map::new(),
             removed: Vec::new(),
         }
     }
@@ -644,14 +652,10 @@ impl SettingsStore {
                 }
             };
             for (field, value) in normalized {
-                let previous = stored.get(field.id()).cloned();
-                if previous == value {
+                if stored.get(field.id()) == value.as_ref() {
                     continue;
                 }
                 applied.change(field);
-                applied
-                    .previous
-                    .insert(field.id().to_owned(), previous.unwrap_or(Value::Null));
                 match value {
                     Some(value) => stored.insert(field.id().to_owned(), value),
                     None => stored.remove(field.id()),
@@ -780,7 +784,7 @@ impl SettingsStore {
             if !entry.values.is_empty() || !entry.profiles.is_empty() {
                 applied.outcome = WriteOutcome::Committed;
             }
-            applied.previous = std::mem::take(&mut entry.values);
+            entry.values.clear();
             applied.removed = std::mem::take(&mut entry.profiles);
             Ok(applied)
         })
@@ -933,7 +937,6 @@ impl SettingsStore {
                     profile: applied.profile,
                     changed: applied.changed,
                 },
-                previous: applied.previous,
                 removed: applied.removed,
             })
         })
@@ -962,7 +965,7 @@ mod tests {
         value.as_object().expect("an object of values").clone()
     }
 
-    /// A settings store in its own directory, with a file beside it a file setting can select.
+    /// A settings store in its own directory.
     struct Fixture {
         root: PathBuf,
         store: SettingsStore,
@@ -974,7 +977,6 @@ mod tests {
         fn new(name: &str) -> Self {
             let root = temp(name);
             fs::create_dir_all(&root).unwrap();
-            fs::write(root.join("input.bin"), b"tint").unwrap();
             Self {
                 store: SettingsStore::new(root.join("modules")),
                 root,
@@ -1060,18 +1062,6 @@ mod tests {
                 "parameter note must not contain control characters",
             ),
             (
-                json!({"local-service": "https://example.com/"}),
-                "parameter local-service: remote endpoints are not allowed here",
-            ),
-            (
-                json!({"local-service": "ftp://127.0.0.1/"}),
-                "parameter local-service: scheme ftp is not allowed",
-            ),
-            (
-                json!({"local-service": "http://user:pass@127.0.0.1/"}),
-                "parameter local-service: URLs with credentials are not allowed",
-            ),
-            (
                 json!({"token": "abc"}),
                 "setting token is a secret; set it with module.settings.set-secret",
             ),
@@ -1096,7 +1086,6 @@ mod tests {
                 None,
                 json!({
                     "strength": 0.25, "mode": "fast", "count": 3, "enabled": false, "note": "hello",
-                    "local-service": "http://127.0.0.1:8080",
                     "label": "tint",
                 }),
                 0,
@@ -1107,25 +1096,11 @@ mod tests {
         assert_eq!(write.result.revision, 1);
         assert_eq!(
             write.result.changed,
-            [
-                "count",
-                "enabled",
-                "label",
-                "local-service",
-                "mode",
-                "note",
-                "strength"
-            ]
+            ["count", "enabled", "label", "mode", "note", "strength"]
         );
-        assert!(write.previous.values().all(Value::is_null));
         let read = fixture.read();
         assert_eq!(read.revision, 1);
         assert_eq!(read.state, SettingsState::Ready);
-        assert_eq!(
-            value_of(&read, "local-service"),
-            (json!("http://127.0.0.1:8080/"), ValueSource::User, true),
-            "an endpoint is stored as the URL the policy parsed"
-        );
         assert_eq!(
             value_of(&read, "label"),
             (json!("tint"), ValueSource::User, true)
@@ -1139,7 +1114,6 @@ mod tests {
             .set(None, json!({"strength": null}), 1, "default")
             .unwrap();
         assert_eq!(write.result.changed, ["strength"]);
-        assert_eq!(write.previous, values(json!({"strength": 0.25})));
         assert_eq!(
             value_of(&fixture.read(), "strength"),
             (json!(0.5), ValueSource::Default, true)
@@ -1554,26 +1528,37 @@ mod tests {
             .create_profile(&fixture.descriptor, "missing", "X", &mutation(2, "five"))
             .unwrap_err();
         assert!(unknown.detail.contains("declares no adapter missing"));
-        // Profile fields are set per profile and validated by kind.
+        // Profile fields are set per profile and validated by kind; an endpoint is stored as the URL
+        // the policy parsed.
         let write = fixture
             .set(
                 Some(&id),
-                json!({"endpoint": "https://example.com/v1", "model": "large"}),
+                json!({"endpoint": "HTTPS://Example.COM/v1", "model": "large"}),
                 2,
                 "values",
             )
             .unwrap();
         assert_eq!(write.result.changed, ["endpoint", "model"]);
         assert_eq!(write.result.profile_id.as_deref(), Some(id.as_str()));
-        let refused = fixture
-            .set(
-                Some(&second),
-                json!({"endpoint": "http://example.com/"}),
-                3,
-                "http",
-            )
-            .unwrap_err();
-        assert!(refused.detail.contains("a remote endpoint must use https"));
+        for (endpoint, expected) in [
+            (
+                "http://example.com/",
+                "parameter endpoint: a remote endpoint must use https",
+            ),
+            (
+                "ftp://127.0.0.1/",
+                "parameter endpoint: scheme ftp is not allowed",
+            ),
+            (
+                "http://user:pass@127.0.0.1/",
+                "parameter endpoint: URLs with credentials are not allowed",
+            ),
+        ] {
+            let refused = fixture
+                .set(Some(&second), json!({"endpoint": endpoint}), 3, "refused")
+                .unwrap_err();
+            assert!(refused.detail.contains(expected), "{}", refused.detail);
+        }
         let unknown = fixture
             .set(
                 Some("profile-missing"),
@@ -1668,6 +1653,20 @@ mod tests {
         assert_eq!(again.detail, format!("unknown profile {id}"));
     }
 
+    /// A task's `not-ready` requirement and the desktop's profile line name a status as it is
+    /// serialized.
+    #[test]
+    fn a_profile_status_is_named_as_it_is_serialized() {
+        for status in [
+            ProfileStatus::Ready,
+            ProfileStatus::Incomplete,
+            ProfileStatus::MissingCredentials,
+            ProfileStatus::Incompatible,
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), json!(status.name()));
+        }
+    }
+
     #[test]
     fn secrets_are_set_cleared_and_reported_by_presence_only() {
         let fixture = Fixture::new("secrets");
@@ -1684,10 +1683,6 @@ mod tests {
         let write = set("abc", 0, "one").unwrap();
         assert_eq!(write.result.outcome, WriteOutcome::Committed);
         assert_eq!(write.result.changed, ["token"]);
-        assert!(
-            write.previous.is_empty(),
-            "a secret has no previous value to report"
-        );
         assert_eq!(
             fixture.read().fields["token"],
             FieldRead::Secret {

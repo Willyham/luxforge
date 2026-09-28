@@ -79,7 +79,7 @@ pub(crate) fn adapter() -> AdapterDescriptor {
     }
 }
 
-/// Every remaining setting kind at module level, a bearer adapter whose profiles hold an endpoint,
+/// Every setting kind a module-level field takes, a bearer adapter whose profiles hold an endpoint,
 /// a secret and a choice, the two implemented capabilities, one resource, and one task that uses
 /// both capabilities and applies its artifact.
 pub(crate) fn capability_descriptor() -> ModuleDescriptor {
@@ -133,10 +133,6 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 setting(ParameterDescriptor::boolean("enabled").default(true)),
                 setting(ParameterDescriptor::string("note", 16)),
                 setting(ParameterDescriptor::string("label", 32).required(true)),
-                setting(ParameterDescriptor::endpoint(
-                    "local-service",
-                    [EndpointClass::Loopback],
-                )),
                 setting(ParameterDescriptor::secret("token", 64)),
             ],
             profiles: Some(ProfilesDescriptor {

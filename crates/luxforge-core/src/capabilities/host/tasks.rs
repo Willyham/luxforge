@@ -8,7 +8,8 @@
 //! reads succeeded; a failed or cancelled task commits nothing. See
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
-    CapabilityHost, Requirement, asset_exists, effective_values, profile_endpoint, secret_fields,
+    CapabilityHost, Requirement, RequirementKind, asset_exists, effective_values, profile_endpoint,
+    secret_fields,
 };
 use crate::{
     AssetId, Availability, EditorService, Error, JobId, ModuleDescriptor, MutationRequest,
@@ -64,15 +65,6 @@ fn adapter<'a>(descriptor: &'a ModuleDescriptor, id: &str) -> Result<&'a Adapter
                 descriptor.id
             ))
         })
-}
-
-fn profile_status(status: ProfileStatus) -> &'static str {
-    match status {
-        ProfileStatus::Ready => "ready",
-        ProfileStatus::Incomplete => "incomplete",
-        ProfileStatus::MissingCredentials => "missing-credentials",
-        ProfileStatus::Incompatible => "incompatible",
-    }
 }
 
 /// A profile as a task sees it: its non-secret values without its endpoint, which only the host
@@ -210,9 +202,9 @@ impl CapabilityHost {
             && profile.status != ProfileStatus::Ready
         {
             missing.push(Requirement {
-                kind: "profile".into(),
+                kind: RequirementKind::Profile,
                 id: profile.id.clone(),
-                state: profile_status(profile.status).into(),
+                state: profile.status.name().into(),
             });
         }
         let rows = self.resource_rows(jobs, descriptor);
@@ -229,7 +221,7 @@ impl CapabilityHost {
                             }
                         }
                         row => missing.push(Requirement {
-                            kind: "resource".into(),
+                            kind: RequirementKind::Resource,
                             id: resource.clone(),
                             state: row
                                 .map_or(ResourceState::NotInstalled, |row| row.state)
@@ -247,7 +239,9 @@ impl CapabilityHost {
                 .map(|requirement| {
                     format!(
                         "{} {} is {}",
-                        requirement.kind, requirement.id, requirement.state
+                        requirement.kind.name(),
+                        requirement.id,
+                        requirement.state
                     )
                 })
                 .collect::<Vec<_>>()
@@ -318,7 +312,7 @@ impl CapabilityHost {
         let mut context =
             ModuleContext::new(module_id, self.config.secrets.clone(), run.control.clone())
                 .with_settings(
-                    effective_values(descriptor, settings.as_ref()),
+                    effective_values(settings.as_ref()),
                     secret_fields(descriptor),
                 )
                 .with_artifacts(service.artifact_writer()?, run.outcome.clone());
