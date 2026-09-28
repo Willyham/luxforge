@@ -6,9 +6,9 @@ use super::{
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    AssetId, Cancel, ContentPoint, Draft, EntryId, Error, HistoryEntry, ModuleRegistry, PreviewJob,
-    PreviewSource, ProxyBounds, Raster, Recipe, Render, RenderContext, RenderOptions,
-    StageTransform,
+    AssetId, Cancel, ContentPoint, Draft, EffectStage, EntryId, Error, HistoryEntry,
+    ModuleRegistry, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Render, RenderContext,
+    RenderOptions, StageTransform,
     analysis::AnalysisIdentity,
     export::CaptureMetadata,
     render::{Compiled, locate, transform_of},
@@ -255,6 +255,22 @@ impl EditorService {
                 let (asset, entry) = self.saved_entry(asset_id, Some(entry_id))?;
                 (asset, entry, None)
             }
+            // A framed entry is evaluated from its own immutable stack with another immutable
+            // entry's geometry tail: both are frozen, so the composition is too. It is never
+            // persisted and never relabelled; its identity hashes the composed stack.
+            AnalysisSelection::Framed {
+                entry: entry_id,
+                geometry,
+            } => {
+                let (asset, entry) = self.saved_entry(asset_id, Some(entry_id))?;
+                let (_, framing) = self.saved_entry(asset_id, Some(geometry))?;
+                let recipe = framed(
+                    &self.registry,
+                    &entry.snapshot.recipe,
+                    &framing.snapshot.recipe,
+                )?;
+                (asset, entry, Some((recipe, None)))
+            }
             // A draft is evaluated at the revision it holds now: its effective recipe is planned
             // against the current stack and never persisted.
             AnalysisSelection::Draft(draft) => {
@@ -264,7 +280,7 @@ impl EditorService {
                     draft_id: draft.draft_id.clone(),
                     draft_revision: draft.draft_revision,
                 };
-                (head.asset, entry, Some((recipe, stamp)))
+                (head.asset, entry, Some((recipe, Some(stamp))))
             }
         };
         if let Purpose::Preview {
@@ -291,7 +307,7 @@ impl EditorService {
         // no development at all names the one its entry holds, which the gesture's release
         // redevelops from anyway, rather than one per drafted value.
         let rule = match (purpose, &drafted) {
-            (Purpose::Preview { .. }, Some(_)) => RawSettingsMode::DraftPreview,
+            (Purpose::Preview { .. }, Some((_, Some(_)))) => RawSettingsMode::DraftPreview,
             _ => RawSettingsMode::Strict,
         };
         let needs = |recipe| Evaluated {
@@ -310,7 +326,7 @@ impl EditorService {
             Some((mut recipe, stamp)) => {
                 let bound = self.bind_artifacts(&mut recipe);
                 self.needing(needs(&recipe), bound)?;
-                (Some(recipe), Some(stamp))
+                (Some(recipe), stamp)
             }
             None => match self.bound(&entry.snapshot.recipe) {
                 Ok(Cow::Borrowed(_)) => (None, None),
@@ -414,6 +430,38 @@ impl EditorService {
             (None, Some(entry_id)) => AnalysisSelection::Entry(entry_id),
             (None, None) => AnalysisSelection::Current,
         };
+        self.selected_preview_job(asset_id, selection, layer_count, proxy)
+    }
+
+    /// A whole preview job for one saved entry framed by another entry's geometry
+    /// ([`AnalysisSelection::Framed`]): what Compare shows. Like any preview job its identity is
+    /// its evaluation's, which hashes the composed stack, so its frame and histogram are never
+    /// confused with the entry's own.
+    pub fn framed_preview_job(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+        geometry: &EntryId,
+        proxy: Option<ProxyBounds>,
+    ) -> Result<PreviewJob, Error> {
+        self.selected_preview_job(
+            asset_id,
+            AnalysisSelection::Framed {
+                entry: entry_id,
+                geometry,
+            },
+            None,
+            proxy,
+        )
+    }
+
+    fn selected_preview_job(
+        &self,
+        asset_id: &AssetId,
+        selection: AnalysisSelection<'_>,
+        layer_count: Option<usize>,
+        proxy: Option<ProxyBounds>,
+    ) -> Result<PreviewJob, Error> {
         let stack = self.evaluation(asset_id, selection, Purpose::Preview { layer_count })?;
         // The identity is the evaluation's, exactly as an analysis job's is, so a report the
         // preview worker produces from this frame is a cache hit for a later `analysis.request`.
@@ -532,7 +580,18 @@ impl EditorService {
         x: u32,
         y: u32,
     ) -> Result<PointPlan, Error> {
-        let evaluation = self.exact_evaluation(asset_id, AnalysisSelection::Entry(entry_id))?;
+        self.point_selected(asset_id, AnalysisSelection::Entry(entry_id), x, y)
+    }
+
+    /// [`Self::point_entry`] for any saved selection, a framed one included.
+    pub(crate) fn point_selected(
+        &self,
+        asset_id: &AssetId,
+        selection: AnalysisSelection<'_>,
+        x: u32,
+        y: u32,
+    ) -> Result<PointPlan, Error> {
+        let evaluation = self.exact_evaluation(asset_id, selection)?;
         PointPlan::new(evaluation, x, y)
     }
 
@@ -589,8 +648,18 @@ impl EditorService {
         x: u32,
         y: u32,
     ) -> Result<ContentPoint, Error> {
-        let stack =
-            self.evaluation(asset_id, AnalysisSelection::Entry(entry_id), Purpose::Exact)?;
+        self.locate_selected(asset_id, AnalysisSelection::Entry(entry_id), x, y)
+    }
+
+    /// [`Self::locate_entry`] for any saved selection, a framed one included.
+    pub fn locate_selected(
+        &self,
+        asset_id: &AssetId,
+        selection: AnalysisSelection<'_>,
+        x: u32,
+        y: u32,
+    ) -> Result<ContentPoint, Error> {
+        let stack = self.evaluation(asset_id, selection, Purpose::Exact)?;
         locate(
             stack.evaluation.compiled()?,
             stack.asset.width,
@@ -609,8 +678,16 @@ impl EditorService {
         asset_id: &AssetId,
         entry_id: &EntryId,
     ) -> Result<StageTransform, Error> {
-        let stack =
-            self.evaluation(asset_id, AnalysisSelection::Entry(entry_id), Purpose::Exact)?;
+        self.transform_selected(asset_id, AnalysisSelection::Entry(entry_id))
+    }
+
+    /// [`Self::transform_entry`] for any saved selection, a framed one included.
+    pub fn transform_selected(
+        &self,
+        asset_id: &AssetId,
+        selection: AnalysisSelection<'_>,
+    ) -> Result<StageTransform, Error> {
+        let stack = self.evaluation(asset_id, selection, Purpose::Exact)?;
         transform_of(
             stack.evaluation.compiled()?,
             stack.asset.width,
@@ -702,6 +779,38 @@ impl PointPlan {
     }
 }
 
+/// `entry` framed by `framing`'s geometry: `entry`'s stack with its geometry layers removed and
+/// `framing`'s geometry layers, in their stored order, placed where the host places a geometry
+/// layer — before the first finish layer. Every other layer, the mask table and the strokes are
+/// `entry`'s own, so only the framing changes. A geometry layer carries no mask, so no mask
+/// reference crosses entries. `O(layers)` descriptor lookups; no pixel is read.
+///
+/// A layer of `framing` whose effect no provider declares is refused rather than guessed at or
+/// left out: whether it frames the photograph is exactly what its missing descriptor would say.
+fn framed(registry: &ModuleRegistry, entry: &Recipe, framing: &Recipe) -> Result<Recipe, Error> {
+    let stage = |layer: &crate::Layer| registry.effect_stage(&layer.effect_id);
+    if let Some(unknown) = framing.layers.iter().find(|layer| stage(layer).is_none()) {
+        return Err(Error::validation(format!(
+            "the framing entry holds a layer of {}, which no provider declares, so its geometry cannot be applied",
+            unknown.effect_id
+        )));
+    }
+    let mut recipe = entry.clone();
+    recipe
+        .layers
+        .retain(|layer| stage(layer) != Some(EffectStage::Geometry));
+    let at = registry.insertion_index(&recipe.layers, EffectStage::Geometry, u16::MAX);
+    recipe.layers.splice(
+        at..at,
+        framing
+            .layers
+            .iter()
+            .filter(|layer| stage(layer) == Some(EffectStage::Geometry))
+            .cloned(),
+    );
+    Ok(recipe)
+}
+
 /// A saved entry of an asset: the named one, or its current entry.
 fn saved(entry_id: Option<&EntryId>) -> AnalysisSelection<'_> {
     match entry_id {
@@ -775,6 +884,104 @@ mod tests {
                 .detail
                 .contains("preview layer count 3 exceeds the 2 layers"),
             "{error}"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Compare's framed Original: the Original's stack with the displayed entry's geometry. Its
+    /// frame is exactly the Original's own frame cut to that geometry — the same bytes, only the
+    /// framing changed — its size is the framing entry's output size, and its identity is its own.
+    #[test]
+    fn a_framed_preview_renders_the_entry_with_the_other_entrys_geometry() {
+        let catalog = temp("framed-preview.sqlite");
+        let mut service = EditorService::open_with(&catalog, ShrinkModule::registry()).unwrap();
+        let imported = service.import(&fixture()).unwrap();
+        let asset = imported.asset.id;
+        let original = imported.current_entry.id;
+        service
+            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "shrink"),
+                SHRINK_ACTION,
+                shrink(100, 60),
+            )
+            .unwrap();
+        let current = service.current_entry_id(&asset).unwrap();
+        let rendered = |job: PreviewJob| -> Raster {
+            let mut queue = PreviewQueue::default();
+            queue.request(job);
+            luxforge_testbase::wait_for("the preview worker's answer", || queue.poll())
+                .into_raster()
+                .unwrap()
+        };
+        let whole = service.render_entry(&asset, &original).unwrap();
+        assert_eq!((whole.width, whole.height), (480, 320));
+        let edited = rendered(service.preview_job(&asset, None, None, None, None).unwrap());
+        assert_eq!((edited.width, edited.height), (100, 60));
+
+        let job = service
+            .framed_preview_job(&asset, &original, &current, None)
+            .unwrap();
+        assert_eq!(job.evaluation.entry().id, original, "it shows the Original");
+        assert_eq!(
+            (job.identity.width, job.identity.height),
+            (100, 60),
+            "the frame is laid out at the framing entry's size"
+        );
+        let own = service
+            .preview_job(&asset, Some(&original), None, None, None)
+            .unwrap();
+        assert_ne!(
+            job.identity, own.identity,
+            "a framed frame is never taken for the entry's own"
+        );
+        let effects: Vec<&str> = job
+            .evaluation
+            .recipe()
+            .layers
+            .iter()
+            .map(|layer| layer.effect_id.as_str())
+            .collect();
+        assert_eq!(
+            effects,
+            [crate::editor::test_support::SHRINK_EFFECT],
+            "the Original's adjustments, none, with the current geometry"
+        );
+        let framed = rendered(job);
+        assert_eq!((framed.width, framed.height), (100, 60));
+        for y in 0..60 {
+            for x in 0..100 {
+                assert_eq!(framed.pixel(x, y), whole.pixel(x, y), "({x}, {y})");
+            }
+        }
+        assert_ne!(
+            framed.pixel(0, 0),
+            edited.pixel(0, 0),
+            "only the adjustments differ"
+        );
+
+        // The point, locate and transform questions answer for the same composed stack.
+        let selection = AnalysisSelection::framed(&original, Some(&current));
+        let transform = service.transform_selected(&asset, selection).unwrap();
+        assert_eq!((transform.output.width, transform.output.height), (100, 60));
+        let sample = service
+            .point_selected(&asset, selection, 0, 0)
+            .unwrap()
+            .evaluate()
+            .unwrap();
+        assert_eq!(sample.entry_id, original);
+        assert_eq!(Some(sample.rgba), whole.pixel(0, 0));
+        assert!(
+            service
+                .point_selected(&asset, selection, 100, 0)
+                .unwrap()
+                .evaluate()
+                .is_err(),
+            "a point outside the framed output is outside the image"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

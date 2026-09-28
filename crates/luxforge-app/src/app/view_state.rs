@@ -8,7 +8,7 @@ use super::{
     message::{CropMessage, Message, Panel, ViewMessage},
     tasks::{pan_task, session_task, workspace_task},
 };
-use crate::{state::tools, view};
+use crate::{state::tools, view, window_frame};
 use iced::{Task, widget::operation};
 use serde_json::{Map, Value, json};
 
@@ -84,7 +84,20 @@ impl Editor {
                 }
                 self.settle_step(Settle::Pan);
             }
-            ViewMessage::Resized(width, height) => self.window = (width, height),
+            ViewMessage::Resized(width, height) => {
+                self.window = (width, height);
+                // Entering or leaving fullscreen resizes the window, and nothing else reports it.
+                if window_frame::INTEGRATED_TITLE_BAR {
+                    return iced::window::oldest()
+                        .and_then(iced::window::mode)
+                        .map(|mode| {
+                            Message::View(ViewMessage::Fullscreen(
+                                mode == iced::window::Mode::Fullscreen,
+                            ))
+                        });
+                }
+            }
+            ViewMessage::Fullscreen(fullscreen) => self.fullscreen = fullscreen,
             ViewMessage::TogglePanel(panel) => {
                 let open = match panel {
                     Panel::State => self.session.workspace.state_panel,

@@ -117,18 +117,38 @@ pub fn icon_button<'a, M: Clone + 'a>(
     model: &IconButtonModel,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let color = match (model.enabled, model.selected) {
-        (false, _) => theme::TEXT_FAINT,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::TEXT_SECONDARY,
-    };
     sized_icon_button(
         model,
         on_press,
         theme::ICON_BUTTON_SIZE,
         theme::ICON_SIZE,
-        color,
+        action_color(model),
+        tooltip::Position::Top,
     )
+}
+
+/// An [`icon_button`] for the title bar, whose tooltip opens below it: there is no room above the
+/// window's top edge, so a tooltip placed on top is pushed back down over the button it names.
+pub fn title_bar_icon_button<'a, M: Clone + 'a>(
+    model: &IconButtonModel,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    sized_icon_button(
+        model,
+        on_press,
+        theme::ICON_BUTTON_SIZE,
+        theme::ICON_SIZE,
+        action_color(model),
+        tooltip::Position::Bottom,
+    )
+}
+
+fn action_color(model: &IconButtonModel) -> Color {
+    match (model.enabled, model.selected) {
+        (false, _) => theme::TEXT_FAINT,
+        (true, true) => theme::ACCENT,
+        (true, false) => theme::TEXT_SECONDARY,
+    }
 }
 
 /// The compact icon button a module band or a sub-group header carries at its right end, such as
@@ -154,6 +174,7 @@ pub fn header_icon_button<'a, M: Clone + 'a>(
         theme::HEADER_BUTTON_SIZE,
         theme::HEADER_ICON_SIZE,
         color,
+        tooltip::Position::Top,
     )
 }
 
@@ -163,6 +184,7 @@ fn sized_icon_button<'a, M: Clone + 'a>(
     size: f32,
     icon_size: f32,
     color: Color,
+    position: tooltip::Position,
 ) -> Element<'a, M> {
     let style = if model.selected {
         theme::button_selected
@@ -186,7 +208,7 @@ fn sized_icon_button<'a, M: Clone + 'a>(
         )
         .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),
-        tooltip::Position::Top,
+        position,
     )
     .into()
 }

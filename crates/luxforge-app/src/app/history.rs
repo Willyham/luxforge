@@ -54,36 +54,8 @@ impl Editor {
                     Err(error) => self.status = error,
                 }
             }
-            HistoryMessage::CompareBegin => {
-                // Compare selects the Original entry, which pauses an open draft: the draft would
-                // have to be resumed on release, and the design keeps one draft and one preview
-                // selection at a time. Refuse it and say so rather than pausing silently.
-                if let Some(reason) = self.gesture_refusal(Starting::Compare) {
-                    self.status = reason;
-                    return Task::none();
-                }
-                let (Some(state), Some(original)) = (&self.state, self.original_entry.clone())
-                else {
-                    return Task::none();
-                };
-                if self.compare_return.is_some() {
-                    return Task::none();
-                }
-                self.compare_return = Some(self.session.preview.selection.clone());
-                let asset = state.asset.id.clone();
-                self.status = "Comparing with the original…".into();
-                let proxy = self.proxy_bounds();
-                return preview_task(
-                    self.owner.clone(),
-                    self.client,
-                    asset.clone(),
-                    Some(original.clone()),
-                    "preview.select",
-                    json!({"asset_id":asset,"entry_id":original}),
-                    proxy,
-                    |value| Message::Preview(PreviewMessage::Loaded(value)),
-                );
-            }
+            HistoryMessage::CompareBegin => return self.compare_begin(true),
+            HistoryMessage::CompareUncropped => return self.compare_begin(false),
             HistoryMessage::CompareEnd => {
                 let (Some(state), Some(previous)) = (&self.state, self.compare_return.take())
                 else {
@@ -237,5 +209,41 @@ impl Editor {
         self.busy = true;
         self.status = format!("Running {method}…");
         versions_task(self.owner.clone(), self.client, asset, method, params)
+    }
+}
+
+impl Editor {
+    /// Hold the Original entry's preview, remembering the selection it replaces. `keep_geometry`
+    /// frames the Original with the geometry of the entry displayed now, so the framing matches and
+    /// only the adjustments differ; without it the whole original is shown. Either way it is the
+    /// read-only `preview.select` an API client calls.
+    fn compare_begin(&mut self, keep_geometry: bool) -> Task<Message> {
+        // Compare selects the Original entry, which pauses an open draft: the draft would have to
+        // be resumed on release, and the design keeps one draft and one preview selection at a
+        // time. Refuse it and say so rather than pausing silently.
+        if let Some(reason) = self.gesture_refusal(Starting::Compare) {
+            self.status = reason;
+            return Task::none();
+        }
+        let (Some(state), Some(original)) = (&self.state, self.original_entry.clone()) else {
+            return Task::none();
+        };
+        if self.compare_return.is_some() {
+            return Task::none();
+        }
+        self.compare_return = Some(self.session.preview.selection.clone());
+        let asset = state.asset.id.clone();
+        self.status = "Comparing with the original…".into();
+        let proxy = self.proxy_bounds();
+        preview_task(
+            self.owner.clone(),
+            self.client,
+            asset.clone(),
+            Some(original.clone()),
+            "preview.select",
+            json!({"asset_id":asset,"entry_id":original,"keep_geometry":keep_geometry}),
+            proxy,
+            |value| Message::Preview(PreviewMessage::Loaded(value)),
+        )
     }
 }

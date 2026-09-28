@@ -38,6 +38,7 @@ pub(crate) const STATUS_BAR_HEIGHT: f32 = 25.0;
 
 /// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
 /// data: the model says what to draw, these are what it is drawn from.
+#[derive(Clone, Copy)]
 pub(crate) struct Surfaces<'a> {
     /// The frames below are plain data rather than allocations: the photo surface owns their
     /// textures and writes each into its own while it draws, so no round trip stands between a

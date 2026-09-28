@@ -33,12 +33,13 @@ const PIVOT: f64 = 0.5;
 const ALPHA_MAX: f64 = 6.0;
 
 /// Whites/Blacks endpoint range: at Whites = +-100 the white point moves by
-/// -+K_W from 1.0; at Blacks = +-100 the black point moves by +-K_B from 0.0.
+/// -+K_W from 1.0; at Blacks = +-100 the black point moves by -+K_B from 0.0,
+/// so positive Blacks lifts the dark end and negative Blacks crushes it.
 const K_W: f64 = 0.25;
 const K_B: f64 = 0.25;
 
 /// The minimum white-point-minus-black-point gap the crossing-prevention clamp
-/// enforces. With K_W = K_B = 0.25 the worst corner (Whites = Blacks = +100)
+/// enforces. With K_W = K_B = 0.25 the worst corner (Whites = +100, Blacks = -100)
 /// leaves a gap of 0.5, so this clamp is provably never active over the agreed
 /// +-100 range; it exists for defensive correctness if that range ever changes.
 const EPSILON_GAP: f64 = 0.05;
@@ -113,7 +114,7 @@ pub fn decode_srgb_extended(e: f64) -> f64 {
 /// `wp - bp >= EPSILON_GAP`.
 fn whites_blacks_stage(x: f64, whites: f64, blacks: f64) -> f64 {
     let wp = 1.0 - (whites / 100.0) * K_W;
-    let bp = (blacks / 100.0) * K_B;
+    let bp = -(blacks / 100.0) * K_B;
     let wp = if wp - bp < EPSILON_GAP {
         bp + EPSILON_GAP
     } else {

@@ -221,7 +221,7 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
         highlights: -40.0,
         shadows: 30.0,
         whites: -20.0,
-        blacks: 20.0,
+        blacks: -20.0,
     };
     let mut payload = tone_payload(params);
     payload["exposure"] = json!(ev);

@@ -276,12 +276,31 @@ pub struct PixelInput {
 }
 
 /// Which evaluated stack an analysis job should describe: the asset's current entry, one frozen
-/// historical entry, or the caller's own open draft.
+/// historical entry, the caller's own open draft, or one historical entry framed by another
+/// entry's geometry.
 #[derive(Clone, Copy, Debug)]
 pub enum AnalysisSelection<'a> {
     Current,
     Entry(&'a EntryId),
     Draft(&'a Draft),
+    /// `entry`'s stack with its geometry layers (orientation, straighten, crop) replaced by those
+    /// of `geometry`, both entries of one asset: what Compare shows, so the Original is framed as
+    /// the entry the client was looking at and only the adjustments differ. Read-only; nothing is
+    /// committed.
+    Framed {
+        entry: &'a EntryId,
+        geometry: &'a EntryId,
+    },
+}
+
+impl<'a> AnalysisSelection<'a> {
+    /// One saved entry, framed by `geometry`'s geometry when one is given.
+    pub fn framed(entry: &'a EntryId, geometry: Option<&'a EntryId>) -> Self {
+        match geometry {
+            Some(geometry) => Self::Framed { entry, geometry },
+            None => Self::Entry(entry),
+        }
+    }
 }
 
 /// One planned analysis job: the identity that names its result, and the evaluation its worker
