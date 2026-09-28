@@ -19,6 +19,7 @@ mod launch;
 mod mask_acceptance;
 mod mask_brush_smoke;
 mod mask_combine_smoke;
+mod mask_panel_smoke;
 mod mask_range_smoke;
 mod mask_smoke;
 mod mixer_smoke;

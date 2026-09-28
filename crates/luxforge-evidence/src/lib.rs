@@ -1489,6 +1489,12 @@ pub enum MaskStep {
     /// Put the pointer on that component's row, or take it off the list with `null`. While a row
     /// is hovered the overlay shows that component's own contribution instead of the composed mask.
     Hover(Option<Reference>),
+    /// Press one mask's eye, which shows or hides that mask's overlay. Per-client view state: the
+    /// mask still applies to the picture either way.
+    Eye(Reference),
+    /// Open the New mask or the Add component kind menu, as its button does. An `Escape` key step
+    /// puts it away again; a kind from it is the `new`, `add` or `paint` step the choice starts.
+    Menu(KindMenuStep),
     /// Reopen one component's geometry as a canvas gesture, so its handles are drawn.
     EditShape(Reference),
     /// The mode the next Add gesture will use, chosen before the gesture as the Add row does.
@@ -1560,7 +1566,10 @@ impl MaskStep {
 
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Select(reference) | Self::EditShape(reference) => reference.validate(),
+            Self::Select(reference) | Self::EditShape(reference) | Self::Eye(reference) => {
+                reference.validate()
+            }
+            Self::Menu(_) => Ok(()),
             Self::SelectComponent(reference) | Self::Hover(reference) => {
                 optional_reference(reference.as_ref())
             }
@@ -1629,6 +1638,18 @@ pub enum DragHandle {
     Rotation,
     #[serde(rename = "feather")]
     Feather,
+}
+
+/// Which of the Masks panel's two kind menus a `menu` step opens: `"new-mask"` or
+/// `"add-component"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KindMenuStep {
+    /// The New mask menu: a kind chosen from it becomes a new mask's first component.
+    NewMask,
+    /// The Add component menu under the open mask: a kind chosen from it is added in the chosen
+    /// mode.
+    AddComponent,
 }
 
 /// What the next stroke will land on, named before the gesture rather than guessed from where the
