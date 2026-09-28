@@ -1248,7 +1248,9 @@ mod tests {
             &out,
             "unit",
             &bin,
-            Duration::from_secs(20),
+            // The deadline only bounds a hang: the launch copies this large test binary into a
+            // background bundle, which a loaded host can make slow.
+            luxforge_testbase::HANG,
         )
         .unwrap();
         let error = run
