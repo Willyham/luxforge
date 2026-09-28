@@ -3,7 +3,7 @@
   "plan_id": "masking",
   "title": "Masking, paths and strokes",
   "objective": "Make brush masks safe to paint on — the occupancy cap refused on the stroke that crosses it and a decimation that keeps ordinary painting under it — make the path limits agree, get the kind table ready for the next kinds, cut paint latency where the measurement points, store only new strokes, type the mask commands, and prove each mask property once; then generalize the path primitives before Corrections needs them.",
-  "context_summary": "Masks run on the one action path, the component-kind table dispatches validate and compile, the desktop has one shape editor per drawn kind, and strokes are content-addressed and shared, with coverage bit-identical to its frozen f64 reference. The 64-segments-per-cell occupancy cap was never measured on real painting and is enforced only when a layer first draws the mask, so ordinary strokes commit and it is the next masked adjustment that gets refused. Paint latency misses its bound for reasons outside the mask mathematics, and the mask tests — about 21,000 lines against roughly 12,000 lines of production — repeat each kind's checklist by hand and keep reference studies inside the core's own test binary. The path primitives a brush stroke is built from are still the mask's own, and both the next proposed kind and the Corrections brush need them generalized.",
+  "context_summary": "Masks run on the one action path. The component-kind table dispatches validate and compile and also names each kind's glyph, menu title and band control, which the rebuilt Masks panel draws from; the desktop has one shape editor per drawn kind. A brush stroke is captured one position at a time on the stored grid (`path::PathCapture`), decimated relative to its radius, refused where it is painted if it would pass the 64-segment occupancy cap, and stored by content address, with only fresh strokes written per commit; coverage stays bit-identical to its frozen f64 reference. What remains is structure and tests: typed mask commands and kind-validated ranges over that settled shape, the reference studies moved out of the core's own test binary, one kind-conformance suite in place of per-kind checklists written by hand; and, before Corrections, path primitives generalized beyond the mask's own.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -530,10 +530,10 @@
       ],
       "extra_context": [
         "Wave 4, structure. This follows once the kind table is ready for new kinds, so the split lands on a settled shape.",
-        "`plan` in `mask/commands.rs` dispatches the generated geometry and sample methods cleanly through `command.geometry`/`command.samples`, but falls through to `match command.method { \"mask.delete\" => .., \"mask.rename\" => .., \"mask.duplicate\" => .., .. other => .. }` for every kind-independent command, with a string fallback arm. `Planned`, what one command touched, is an unnamed five-value tuple built at over a dozen call sites, which invites a positional mistake the compiler cannot catch.",
-        "`mask/commands.rs` is about 3,400 lines: roughly 800 of declaration (the COMMANDS table, CONTROLS, the descriptor), 800 of planning, 130 of listing and result types, 200 of helpers and 1,400 of tests. The old JSON-versus-in-process command path is already gone, so what remains here is what stays, just not yet organized by concern.",
-        "Two small cleanups in the same file: `unknown_kind` only forwards to `rules::unknown_kind`, and the desktop's `app/masks.rs` hand-copies `MaskTarget::insert_into` instead of calling it.",
-        "No behavior change: this is a dispatch and file-shape change over the same commands, the same COMMANDS table and the same `schema.list` output."
+        "`plan` in `mask/commands.rs` dispatches the generated geometry and sample methods through `command.geometry`/`command.samples` (`GeometryOp`, `SampleOp`), but falls through to `match command.method { \"mask.delete\" => .., \"mask.rename\" => .., \"mask.rename-component\" => .., .. other => .. }` for its thirteen kind-independent commands, with a string fallback arm. `Planned`, what one command touched, is an unnamed five-value tuple built at about a dozen sites, which invites a positional mistake the compiler cannot catch.",
+        "`mask/commands.rs` is about 4,000 lines: roughly 950 of declaration (the COMMANDS table, CONTROLS, the host descriptor and the canvas interactions), 800 of planning, 200 of listing and result types (`mask.list` reports each stroke's settings), 190 of helpers and 1,880 of tests. The old JSON-versus-in-process command path is already gone, so what remains here is what stays, just not yet organized by concern.",
+        "Two small cleanups beside it: `unknown_kind` only forwards to `rules::unknown_kind`, and the desktop writes a `MaskTarget`'s fields into a request by hand instead of calling `MaskTarget::insert_into`: all four in `Editor::mask_request` (`app/masks.rs`), and the mask and component in `draft_begin_params` (`app/tasks.rs`).",
+        "No behavior change: this is a dispatch and file-shape change over the same commands, the same COMMANDS table and the same `schema.list` output, which the built-in descriptor snapshot (`fixtures/modules/builtin-descriptors.json`) pins byte for byte."
       ],
       "context_links": [
         {
@@ -553,38 +553,53 @@
           "kind": "file",
           "label": "Mask commands",
           "target": "crates/luxforge-core/src/mask/commands.rs",
-          "locator": "plan, MaskCommand, Planned, unknown_kind",
+          "locator": "plan, MaskCommand, GeometryOp, SampleOp, Planned, unknown_kind, MaskTarget::insert_into",
           "relevance": "The string-dispatched match and the tuple this task types and splits."
         },
         {
           "kind": "file",
           "label": "Desktop mask actions",
           "target": "crates/luxforge-app/src/app/masks.rs",
-          "locator": "the hand copy of insert_into",
-          "relevance": "The duplicate this task replaces with a call to the shared implementation."
+          "locator": "Editor::mask_request",
+          "relevance": "The hand copy of insert_into this task replaces with a call to the shared implementation."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop draft requests",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
+          "locator": "draft_begin_params",
+          "relevance": "A second hand-written copy of a target's identities."
+        },
+        {
+          "kind": "file",
+          "label": "Built-in descriptor snapshot",
+          "target": "fixtures/modules/builtin-descriptors.json",
+          "relevance": "What `schema.list` publishes for the mask host, which must not change."
         }
       ],
       "acceptance_criteria": [
-        "Every command dispatches through an exhaustive match on a MaskOp enum; no command reaches its behavior by comparing command.method to a string.",
+        "Every command dispatches through an exhaustive match on a MaskOp enum, the generated geometry and sample methods included; no command reaches its behavior by comparing command.method to a string.",
         "The touched-object tuple becomes a named struct with named fields.",
         "mask/commands.rs is split into modules by concern (declaration, planning, listing) with no behavior change.",
-        "The desktop's hand copy of insert_into is replaced with a call to the shared implementation; unknown_kind's pass-through is removed or justified.",
-        "schema.list's output and the mask command test suite are unchanged."
+        "The desktop puts a target's identities into a request through `MaskTarget::insert_into` rather than by hand; unknown_kind's pass-through is removed or justified.",
+        "`fixtures/modules/builtin-descriptors.json` is unchanged and the mask command test suites pass unchanged."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
           "Introduce MaskOp and the touched-object struct, and convert the string match to an exhaustive enum match.",
           "Split the file along the declared boundaries and update module paths.",
-          "Point the desktop's insert_into call at the shared implementation.",
-          "Run the existing commands.rs and mask command test suites unchanged."
+          "Point the desktop's request builders at the shared implementation.",
+          "Run the existing mask command suites and the descriptor snapshot unchanged."
         ],
         "commands": [
           "cargo test -p luxforge-core mask",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-core --test modules descriptors::",
+          "cargo test -p luxforge-app masks",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
-          "Every existing mask command test passes unchanged; schema.list output is byte-identical.",
+          "Every existing mask command test passes unchanged; the descriptor snapshot matches without regeneration.",
           "The compiler enforces exhaustiveness on the new MaskOp match."
         ]
       }
@@ -598,9 +613,10 @@
       ],
       "extra_context": [
         "Wave 4, structure. Cleanup inside the kind modules, sequenced after the occupancy fix since both touch the brush's compile path.",
-        "`linear.rs`, `radial.rs` and `range.rs` hand-write range checks that restate ranges their own declared parameters already state, instead of validating a payload against `parameters(true)`.",
-        "The roughly 25-line block that turns a feathered floating bounding box into an integer Region — the grow_low/grow_high closures, the is_finite guard, the whole_stage/empty_region fallbacks — is byte-identical between `mask/brush.rs`'s box-bounds function and `mask/radial.rs`'s ellipse-bounds function, differing only in the earlier lines that compute the box from different inputs (corner points versus centre and extent).",
+        "`linear.rs`, `radial.rs` and `range.rs` hand-write range checks that restate ranges their own declared parameters already state: linear's positions, radial's position, extent, angle and feather, and `range.rs`'s `parse_luminance` and `parse_colour` levels, feathers, refine and sample codes, instead of validating a payload against `parameters(true)` and `colour_sample_parameters`.",
+        "The roughly 25-line block that turns a feathered floating bounding box into an integer Region — the grow_low/grow_high closures, the is_finite guard, the whole_stage/empty_region fallbacks — is byte-identical between `mask/brush.rs`'s `box_bounds` and `mask/radial.rs`'s `ellipse_bounds`, differing only in the earlier lines that compute the box from different inputs (corner points versus centre and extent).",
         "Several kinds also implement `ComponentField` only as inherent methods plus a trait impl that forwards to them, one extra layer with nothing behind it.",
+        "The kind table also names each kind's glyph, menu title and, for a band, its `range` control: the luminance range's `luminance_band` binds `low`, `high`, `low_feather` and `high_feather` of `mask.set-luminance-range` by name, so validating against those declarations leaves the band unchanged.",
         "No product change: bounds stay conservative (the existing bounds-never-excludes-a-non-zero-pixel tests guard this), and refusal wording may change to the generic check's wording, which current shapes only allows."
       ],
       "context_links": [
@@ -641,7 +657,8 @@
           "kind": "file",
           "label": "Range component",
           "target": "crates/luxforge-core/src/mask/range.rs",
-          "relevance": "A third copy of hand-written range checks."
+          "locator": "parse_luminance, parse_colour, luminance_band",
+          "relevance": "A third copy of hand-written range checks, beside the band control bound to the same parameters."
         },
         {
           "kind": "file",
@@ -681,8 +698,8 @@
       "dependencies": [],
       "extra_context": [
         "Wave 5, tests. A move plus a deletion, independent of the other masking work.",
-        "`crates/luxforge-core/tests/mask/study.rs` (1,081 lines), `brush_study.rs` (986) and `range_study.rs` (1,381) — 3,448 lines and 66 tests in all — import only `luxforge_reference` and its reference-typed helpers; no `luxforge_core` item appears in any of them, and `range_study.rs`'s own header already says the binary \"shares no code with luxforge-core's production sources.\" Every other independent study (mixer, presence, tone, vignette, colour, white balance, exposure) already lives in `crates/luxforge-reference/tests/studies/`; these three are the exceptions, so they rebuild and relink as part of the core's `mask` test binary — about 31% of its 11,300 lines — on every core edit that touches nothing they use.",
-        "Separately, roughly 330 lines of production tests in `tests/mask/radial.rs` and `tests/mask/brush.rs` re-prove algebraic properties — a feather of zero is a hard edge, invert is the exact complement, a circle is a circle at every aspect ratio, strokes commute — that the studies already prove on the reference, and that bit-identity to the reference (already tested over randomized payloads and whole small stages) already carries over to production.",
+        "`crates/luxforge-core/tests/mask/study.rs` (1,081 lines), `brush_study.rs` (949) and `range_study.rs` (1,380) — 3,410 lines and 65 tests in all, one ignored figure test in each — import only `luxforge_reference` and the reference-typed helpers `LANDSCAPE`, `PORTRAIT` and `ANY_PIXEL` from the binary's `main.rs`; no `luxforge_core` item appears in any of them, and `range_study.rs`'s own header already says the binary \"shares no code with luxforge-core's production sources.\" Every other independent study (mixer, presence, tone, vignette, colour, white balance, exposure) already lives in `crates/luxforge-reference/tests/studies/`; these three are the exceptions, so they rebuild and relink as part of the core's `mask` test binary — about 29% of its 11,775 lines — on every core edit that touches nothing they use. The `independent-references` repository rule keeps `luxforge-reference` free of workspace crates, dev-dependencies included, which the studies need none of.",
+        "Separately, production tests in `tests/mask/radial.rs` (`feather_zero_is_a_hard_edge_by_both_routes`, `feather_one_hundred_ramps_from_the_centre`, `invert_is_the_exact_complement_and_inside_is_selected`, `a_circle_is_a_circle_at_every_aspect_ratio`) and `tests/mask/brush.rs` (`add_strokes_commute_and_an_erase_stroke_does_not`), roughly 330 lines, re-prove algebraic properties the studies already prove on the reference, and that bit-identity to the reference (already tested over randomized payloads and whole small stages) already carries over to production.",
         "No product change and no coverage loss: keep every kind's bit-identity tests, move the studies as they are including their ignored figure tests, and update docs/engineering/development.md's description of the mask test binary to match."
       ],
       "context_links": [
@@ -757,10 +774,10 @@
       ],
       "extra_context": [
         "Wave 5, tests. Sequenced after the typed command dispatch so the suite this task writes is tested against a settled shape.",
-        "The same per-kind checklist — bit-identical to the reference on random and small-stage payloads, bounds never exclude a non-zero pixel, an off-frame shape bounds to nothing and an inverted one to the whole stage, validation names the field, min_feature_px is the measured ramp, the kind table claims the kind, a sample equals the rendered byte — is written out by hand in `tests/mask/unit.rs`, `radial.rs`, `brush.rs`, `range.rs` and again inside `mask/mod.rs`'s own tests: about 1,500 lines across five places for four kinds.",
-        "`mask/command_contracts.rs` (1,806 lines) was written when the JSON path and the in-process path were two separate implementations; since a prior change made `Direct::run` call the same `EditorService::run_action` the JSON path already reaches, its parity test and driver compare that one function with itself, and its retry test re-proves generic deduplication already tested elsewhere. It is a `#[cfg(test)]` module inside `src/`, so it cannot use the shared JSON test client and carries its own.",
-        "Masked-edit tests overlap the field-patch conformance suite, which already drafts, commits and updates a masked layer for every maskable module through JSON: parts of `tests/mask/masked_edit_end_to_end.rs`, `masked_colour.rs`'s schema check, and part of `editor/masks.rs`'s own mask-target test duplicate what that suite proves once for every module.",
-        "No product change: keep each kind's genuinely distinct tests (the radial's rotated box, the brush index and occupancy, range's value-basedness), the draft-lifecycle tests, and the mask-order and non-maskable-action refusal tests that nothing else covers. Run the old and new suites side by side with the same seeds before deleting anything."
+        "The same per-kind checklist — bit-identical to the reference on random and small-stage payloads, bounds never exclude a non-zero pixel, an off-frame shape bounds to nothing and an inverted one to the whole stage, validation names the field, min_feature_px is the measured ramp, the kind table claims the kind, a sample equals the rendered byte — is written out by hand in `tests/mask/unit.rs`, `radial.rs`, `brush.rs`, `range.rs` and again inside `mask/mod.rs`'s own tests: about 1,500 lines across five places for the five kinds. The kind table also names each kind's glyph, menu title and band control (`kind_icon`, `kind_menu_title`, `component_band_control`), which the checklist gains as rows rather than as a sixth copy.",
+        "`mask/command_contracts.rs` (about 1,800 lines) was written when the JSON path and the in-process path were two separate implementations; since `Direct::run` calls the same `EditorService::run_action` the JSON path reaches, its parity test (`every_command_is_identical_from_an_independent_json_client_and_from_inside`) compares that one function with itself, and its retry test (`a_retried_command_returns_its_original_result_and_a_reused_id_conflicts`, which also covers `mask.rename-component`) re-proves generic deduplication that the dispatcher's one envelope check and `editor/masks.rs`'s `a_retried_mask_command_answers_with_the_identities_it_minted` prove. It is a `#[cfg(test)]` module inside `src/`, so it cannot use the shared JSON test client and carries its own. Its other tests (draft lifecycle and conflict, discovery, collision, painting and decimation, delete reporting) are unique and move.",
+        "Masked-edit tests overlap the field-patch conformance suite, which already drafts, commits and updates a masked layer for every maskable module through JSON: parts of `tests/mask/masked_edit_end_to_end.rs`, `masked_colour.rs`'s `the_schema_lists_the_mask_field_on_exactly_the_maskable_actions`, and part of `editor/masks.rs`'s `the_mask_target_commits_updates_and_orders_one_layer_per_target` duplicate what that suite proves once for every module.",
+        "No product change: keep each kind's genuinely distinct tests (the radial's rotated box, the brush index and occupancy, range's value-basedness), the draft-lifecycle tests, `a_component_rename_writes_one_entry_and_undo_restores_the_name`, and the mask-order and non-maskable-action refusal tests that nothing else covers. New tests take their gate and wait from the test base (repository rules `test-waits` and `test-gates`). Run the old and new suites side by side with the same seeds before deleting anything."
       ],
       "context_links": [
         {
@@ -780,6 +797,7 @@
           "kind": "file",
           "label": "Command contracts",
           "target": "crates/luxforge-core/src/mask/command_contracts.rs",
+          "locator": "every_command_is_identical_from_an_independent_json_client_and_from_inside, a_retried_command_returns_its_original_result_and_a_reused_id_conflicts",
           "relevance": "The parity and retry tests that now duplicate run_action against itself."
         },
         {
@@ -792,7 +810,7 @@
           "kind": "file",
           "label": "Kind table",
           "target": "crates/luxforge-core/src/mask/mod.rs",
-          "relevance": "Holds its own copy of the linear kind's conformance tests."
+          "relevance": "Holds its own copy of the linear kind's conformance tests, and the kind table's glyph, menu title and band rows the suite checks."
         },
         {
           "kind": "file",
@@ -819,7 +837,7 @@
         "commands": [
           "cargo test -p luxforge-core --test mask",
           "cargo test -p luxforge-core --lib mask",
-          "cargo xtask verify --tier quick"
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The new kind-conformance suite passes for every kind with the same seeds the old per-kind tests used.",
@@ -835,8 +853,8 @@
       "extra_context": [
         "Wave 6, roadmap groundwork.",
         "Blocked: starts with the Corrections brush-based repair work; do not begin until that work starts.",
-        "Today `path.rs` — meant to be a host primitive with no mention of masks — imports `mask::{REFINE_MAX, REFINE_MIN}` and defines `ColourLimit` as \"the pixel the operation the mask modulates receives.\" The desktop's brush gesture (`mask_draft/brush.rs`) hard-codes the `mask.add-stroke` method by name, and the core `Draft.target` field is typed as an optional `MaskTarget`, so no other module's identity can be a draft target. docs/design/masking.md and docs/design/corrections.md both describe these primitives as already shared, which the code does not yet support.",
-        "Masks must keep working unchanged once the primitives generalize: the same content-addressed store, the same stroke addresses, and bit-identical coverage.",
+        "`path.rs` holds the grid, the decimation (`decimate`, and `PathCapture`, which the desktop brush pushes one position at a time), `Stroke`, `StrokeId` and the content-addressed `StrokeTable`, and most of it names no mask. What still does: `path.rs` imports `mask::{REFINE_MAX, REFINE_MIN}` for `ColourLimit`, a stroke's colour limit in the domain of the operation the mask modulates, and defines `SIZE_MIN` as `mask::DISTANCE_MIN`; `StrokeTable` holds only `path::Stroke`; `Recipe::stroke_references` (`model.rs`) finds strokes from mask components only, as the owner decided until a second consumer exists; the core `Draft.target` field (`draft.rs`) is an optional `MaskTarget`, which `EditorService::draft_target` (`editor/plan.rs`) builds for host mask commands and module actions alike; and on the desktop the brush gesture (`mask_draft/brush.rs`) drives `mask.add-stroke` alone, through `commands::ADD_STROKE`, while `draft_begin_params` (`app/tasks.rs`) takes a `MaskTarget`. docs/design/masking.md (\"One brush system\") and docs/design/corrections.md describe these primitives as shared, which the code supports only for the path kind, the decimation and the store.",
+        "Masks must keep working unchanged once the primitives generalize: the same content-addressed store, the same stroke addresses, bit-identical coverage, and the fresh-only commit write, in which a commit writes only the referenced strokes the table does not already know are stored (`insert_stored`, `mark_stored`, `is_known_stored`).",
         "Update docs/design/masking.md and docs/design/corrections.md to describe the shared primitive as the code now actually supports it."
       ],
       "context_links": [
@@ -863,8 +881,8 @@
           "kind": "file",
           "label": "Path primitives",
           "target": "crates/luxforge-core/src/path.rs",
-          "locator": "ColourLimit, Stroke",
-          "relevance": "Where mask-specific imports and types sit in a file meant to hold none."
+          "locator": "ColourLimit, SIZE_MIN, Stroke, StrokeTable, PathCapture",
+          "relevance": "Where mask-specific imports and types sit in a file meant to hold none, beside the capture and store that already hold none."
         },
         {
           "kind": "file",
@@ -875,29 +893,44 @@
         },
         {
           "kind": "file",
+          "label": "Draft target",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "locator": "draft_target",
+          "relevance": "Builds a draft's target from a mask command's or a module action's identities."
+        },
+        {
+          "kind": "file",
+          "label": "Recipe stroke references",
+          "target": "crates/luxforge-core/src/model.rs",
+          "locator": "stroke_references",
+          "relevance": "Finds strokes from mask components only, which a second consumer has to declare beside."
+        },
+        {
+          "kind": "file",
           "label": "Desktop brush gesture",
           "target": "crates/luxforge-app/src/mask_draft/brush.rs",
-          "relevance": "Hard-codes the mask.add-stroke method by name."
+          "relevance": "Drives mask.add-stroke alone."
         }
       ],
       "acceptance_criteria": [
         "path.rs carries no mask-specific import or type; each consumer, including the mask brush, declares its own stroke payload and colour or limit semantics.",
-        "The content-addressed store holds consumer-declared stroke types, not only the mask's own Stroke.",
-        "Draft.target is taken from an action's declared identity parameters, checked the way is_identity already checks them, rather than a fixed MaskTarget; MaskTarget leaves draft.rs.",
+        "The content-addressed store holds consumer-declared stroke types, not only the mask's own Stroke, and a commit still writes only the strokes the store does not already hold, for every consumer.",
+        "Draft.target is taken from an action's declared identity parameters, checked as `check_target` and `ParameterKind::is_identity` already check them, rather than a fixed MaskTarget; MaskTarget leaves draft.rs.",
         "Masks use the generalized store and draft target unchanged: the same stroke content addresses and bit-identical coverage.",
         "docs/design/masking.md and docs/design/corrections.md describe the shared primitive as the code now supports it."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Move the mask-specific colour-limit and stroke-field logic out of path.rs and into the mask module's own stroke type.",
-          "Widen Draft.target to an action's declared identity parameters and update draft_begin's mask-specific handling.",
-          "Re-run the full mask test suite to confirm identical stroke content addresses and coverage."
+          "Move the mask-specific colour-limit and radius logic out of path.rs and into the mask module's own stroke type.",
+          "Widen Draft.target to an action's declared identity parameters and update draft_target's and the desktop's mask-specific handling.",
+          "Re-run the full mask test suite to confirm identical stroke content addresses, coverage and fresh-only writes."
         ],
         "commands": [
           "cargo test -p luxforge-core mask",
           "cargo test -p luxforge-core path",
-          "cargo xtask verify --tier quick"
+          "cargo test -p luxforge-app mask_draft",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Every existing mask test passes unchanged, with the same stroke content addresses and bit-identical coverage.",

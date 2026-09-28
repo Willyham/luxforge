@@ -3,7 +3,7 @@
   "plan_id": "raw",
   "title": "RAW development and qualification",
   "objective": "Make RAW development fast and simple — one tile executor on the shared pool, normalization in Rust, a GainMap without repeated weights, a measured source-cache policy, a narrow safe develop boundary, one container parser, a trimmed public API and tooling — and finish the qualification of continuous RAW editing for the Nikon Z6, Fujifilm X100VI and DJI Air 2S.",
-  "context_summary": "Continuous RAW editing is implemented: LibRaw decodes a retained u16 mosaic, pinned librtprocess RCD and Markesteijn develop float planes, and one verified source cache with single-flight preparation keyed by gains feeds the renderer. The performance waves layered a process-wide scratch semaphore production cannot contend, a batch-and-barrier tile executor that idles the pool behind its tail job, and normalization written twice in C++ (parallel for Bayer, serial for X-Trans); history, compare and a second client each redevelop the one cached development. The RAW qualification milestone's tasks (controlled quality, the foundation and journey checkpoints, failure hardening, packaging, whole-editor measurement and RAW export) run beside the engineering waves. Decisions: docs/decisions.md \"Post-consolidation review\"; constraints: docs/design/post-consolidation.md; RAW contracts: docs/design/initial-raw.md, raw-integration.md, air2s-dng.md.",
+  "context_summary": "Continuous RAW editing is implemented: LibRaw decodes a retained u16 mosaic; Rust normalizes it and scales the planes, and the pinned librtprocess RCD and Markesteijn only demosaic; the native tile jobs and the Rust development passes share one refill executor on the shared pool; the DNG GainMap derives its taps once per row and column; and one verified source cache with single-flight preparation keyed by gains feeds the renderer, keeps a second development within a 600 MiB budget and evicts only for queued work that allocates planes. What remains of the engineering work is structure: a narrower develop FFI boundary, one container parser, a trimmed public API and the finished RAW tooling. The RAW qualification milestone's tasks (controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement) run beside the engineering waves; RAW export is delivered. Decisions: docs/decisions.md \"Post-consolidation review\"; constraints: docs/design/post-consolidation.md; RAW contracts: docs/design/initial-raw.md, raw-integration.md, air2s-dng.md.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -375,16 +375,17 @@
     },
     {
       "id": "TASK-006",
-      "description": "Narrow the RAW develop FFI boundary to one safe crate-private wrapper taking an options struct, with generated status codes and no test or diagnostic hooks in the production ABI.",
+      "description": "Narrow the RAW develop FFI boundary: one crate-private `develop_with(options)` in place of the forwarding chain, a small shape struct instead of the whole decode metadata, generated status codes and no test fault injector in the production ABI.",
       "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
       "extra_context": [
         "Wave 4, structure. The decode half of the boundary is already minimal and stays as it is; only the develop half is wider than its job.",
-        "`lf_raw_develop` takes 17 positional arguments across 10 unsafe call blocks (1 production, 9 tests), each restating the same safety argument. Four forwarding wrappers (`develop`, `develop_uncorrected`, `develop_uncorrected_with_workers`, `develop_for_performance_diagnostic`) exist for three knobs: the worker limit, whether the executor runs, and a diagnostics pointer. Status codes 1-7 are literals on both sides of the boundary, matched by hand in Rust. Test and diagnostic hooks (a fault injector, a normalized-mosaic capture pointer) sit in the same signature production uses.",
-        "Add one crate-private `native_develop(&NativeDevelop) -> Result<(), RawError>` holding the only unsafe call, used by production and tests alike; add one `develop_with(options)` in place of the four-level chain; generate a status enum into the header `build.rs` already writes for the limits, mapped in one match.",
-        "With the previous task's normalization move, `lf_raw_develop` takes a small shape struct (dimensions, CFA kind and pattern, `rgb_cam`) instead of the full metadata box, which then serves only the decode call."
+        "Already in place: normalization and the /65535 scale run in Rust (`normalize.rs`: `Normalization`, `BlackLevels`, `scale_planes`), so `lf_raw_develop` only demosaics and the normalized-mosaic capture hook is gone. `native_demosaic` in `lib.rs` holds the one unsafe `lf_raw_develop` call, used by production (`develop_uncorrected_diagnostic`) and the tests (`develop_synthetic`, and the Markesteijn fault and cancellation cases in `markesteijn_parallel_complete_float_oracle`). Development timing is a Rust-side `DevelopDiagnostics`, not an ABI pointer.",
+        "Still wider than its job: `lf_raw_develop` takes 13 positional arguments and the whole decode `NativeMetadata`, 4,096-value black-repeat table included, although the demosaic reads only the dimensions, the CFA shape and pattern and, for Markesteijn, `rgb_cam`. The `test_fault` injector sits in the production signature and is forwarded into the patched librtprocess (`testFault` in `patches/librtprocess-local.patch`); `rcd_job_faults_join_and_release_scratch` and the Markesteijn oracle's fault cases use it. Status codes 1-7 are literals on both sides, matched by hand in `native_error`. Four forwarding functions (`develop_uncorrected`, `develop_uncorrected_with_workers`, `develop_uncorrected_diagnostic` and the `performance-diagnostics` feature's `develop_for_performance_diagnostic`) carry three knobs: the worker limit, whether the development executor runs, and the diagnostics.",
+        "Add one crate-private `develop_with(options)` in place of that chain. Its options carry the worker limit and the executor choice that both lane rules read (`native_tiles::native_lanes`, at most eight, for the native jobs; `development_lanes`, the pool's width, for the Rust passes on `native_tiles::refill` and `refill_each`), plus the optional diagnostics. Keep `native_demosaic` the one unsafe call and give `lf_raw_develop` a shape struct (dimensions, CFA kind and pattern, `rgb_cam`) instead of `NativeMetadata`, which then serves only the decode. Generate a status enum into the header `build.rs` already writes for the limits (`camera_allowlist.h`), mapped in one match. Keep native fault injection for the tests without a production parameter, for example through a test-only entry point or a fault raised by the Rust executor's job callback.",
+        "Keep every caller working through the new entry: the ignored release profiles `owner_development_timing` and `bayer_normalization_release_abba_profile`, the core's ignored contention diagnostics in `render/linear.rs` that call `develop_for_performance_diagnostic`, and the second development, whose read-back core's ignored `supplied_raw_preparation_keeps_its_pinned_bits` checks against the pinned development digests."
       ],
       "context_links": [
         {
@@ -397,40 +398,65 @@
           "kind": "file",
           "label": "Develop FFI boundary",
           "target": "crates/luxforge-raw/src/lib.rs",
-          "relevance": "The 17-argument extern call, its four wrappers and ten unsafe blocks this task narrows to one.",
-          "locator": "lf_raw_develop, develop_uncorrected_diagnostic"
+          "relevance": "The extern declaration, the one unsafe call, the forwarding chain and the lane rule for the Rust passes.",
+          "locator": "lf_raw_develop, native_demosaic, develop_uncorrected_diagnostic, development_lanes, native_error"
+        },
+        {
+          "kind": "file",
+          "label": "Development executor",
+          "target": "crates/luxforge-raw/src/native_tiles.rs",
+          "relevance": "The native jobs' lane cap and the refill executor both lane rules feed.",
+          "locator": "ExecutorContext, native_lanes, execute, refill"
         },
         {
           "kind": "file",
           "label": "Native develop entry",
           "target": "crates/luxforge-raw/native/adapter.cpp",
-          "relevance": "The C++ side of the same boundary, including the status codes and test hooks."
+          "relevance": "The C++ side of the same boundary, including the status codes and the fault parameter.",
+          "locator": "lf_raw_develop"
+        },
+        {
+          "kind": "file",
+          "label": "librtprocess patch",
+          "target": "crates/luxforge-raw/patches/librtprocess-local.patch",
+          "relevance": "Where `testFault` reaches the pinned demosaics."
         },
         {
           "kind": "file",
           "label": "Generated headers",
           "target": "crates/luxforge-raw/build.rs",
           "relevance": "Where a generated status enum joins the limits already generated for both languages."
+        },
+        {
+          "kind": "file",
+          "label": "Native demosaic parallelism design",
+          "target": "docs/design/native-demosaic-parallelism.md",
+          "relevance": "States that the native call receives only the mosaic, the frame's shape and CFA and the planes, which this task makes true of the signature.",
+          "locator": "Execution boundary"
         }
       ],
       "acceptance_criteria": [
-        "Exactly one unsafe call site remains for develop, in the crate-private wrapper; production and tests both go through it.",
+        "Production and the tests reach the one unsafe develop call, `native_demosaic`, through `develop_with(options)` or, for synthetic mosaics, `native_demosaic` with a shape struct; the four forwarding functions are gone.",
+        "`lf_raw_develop` receives a shape struct instead of `NativeMetadata`.",
         "Status codes are generated once and shared by both languages instead of matched literals.",
-        "Renders and samples stay byte-identical on both pixel domains; the existing develop bit tests pass unchanged.",
-        "No test- or diagnostic-only field remains in the production ABI."
+        "No test- or diagnostic-only parameter remains in the production ABI, `test_fault` included, and the RCD and Markesteijn native fault cases still run by another route.",
+        "Renders and samples stay byte-identical on both pixel domains: `synthetic_developments_keep_their_pinned_bits`, `normalized_mosaics_keep_the_native_bits` and `rcd_tile_jobs_match_the_serial_raster_bits` pass unchanged, and so, with the owner's files, do `markesteijn_parallel_complete_float_oracle` and core's `supplied_raw_preparation_keeps_its_pinned_bits`."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Route every existing develop test through the new safe wrapper instead of its own unsafe block.",
-          "Run the full RAW crate suite and the quick verify tier."
+          "Route production, the synthetic tests and the ignored profiles through `develop_with` or the shape-struct `native_demosaic`.",
+          "Move native fault injection off the production signature and rerun the RCD and Markesteijn fault cases.",
+          "Run the RAW crate suite, the owner-file bit oracles and the quick verify tier."
         ],
         "commands": [
           "cargo test -p luxforge-raw",
-          "cargo xtask verify --tier quick"
+          "LUXFORGE_RAW_OWNER_DIR=DIR cargo test --release --locked -p luxforge-raw --lib markesteijn_parallel_complete_float_oracle -- --ignored",
+          "LUXFORGE_RAW_OWNER_DIR=DIR cargo test --release --locked -p luxforge-core --lib supplied_raw_preparation -- --ignored",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
-          "All develop-path tests pass through the one wrapper.",
+          "All develop-path tests pass through the one entry, the fault cases included.",
           "No behavior changes; the ABI carries only what the demosaic needs."
         ]
       }
@@ -442,8 +468,8 @@
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. Three walks over the same untrusted structure, each bounded slightly differently, are copies that drift apart; one walk is one set of bounds to get right.",
-        "`format.rs` walks IFDs three times (`dng_opcodes`, `dng_container`, `dng_color_calibration`), each with its own SubIFD-offset decoding, and the three do not agree on whether a zero offset or a zero SubIFD count is allowed. `dng_ops.rs` is a second, isolated module with its own error type (`OpcodeError`) and its own byte readers, adapted by `dng.rs` rather than sharing `RawError` and one reader set. \"Required opcode IDs\" (filter by the optional flag, collect, sort, dedup) is written three times: twice in `lib.rs` and once in `format.rs`. The same 3x3 cofactor-expansion determinant is written out four times: twice in `lib.rs`, once in `format.rs` and once in `profiles.rs`. DNG opcode lists are parsed for every TIFF-magic RAW file, NEF included, though only DNG needs them.",
-        "Write one `Tiff::walk(first, limit, |ifd, entries| ...)` with one bounds policy; merge `dng_ops.rs` into `dng.rs` on `RawError` and one reader set; write one `required_ids` helper; add a small `mat3` helper that `build.rs` includes the way it already includes `limits`, `opcodes` and `profiles`; gate opcode-list parsing on LibRaw reporting a DNG version.",
+        "`format.rs` walks IFDs three times (`dng_opcodes`, `dng_container`, `dng_color_calibration`), each with its own SubIFD-offset decoding, and the three do not agree on whether a zero offset or a zero SubIFD count is allowed. `dng_ops.rs` is a second, isolated module with its own error type (`OpcodeError`) and its own byte readers, adapted by `dng.rs` rather than sharing `RawError` and one reader set. \"Required opcode IDs\" (filter by the optional flag, collect, sort, dedup) is written three times: in `lib.rs`'s `reject_unhandled_required_opcodes` and `RawSource::decode`, and in `format.rs`'s `required_dng_opcodes`. The same 3x3 cofactor-expansion determinant is written out four times: `lib.rs`'s `validate_camera_response` and `interpret`, `format.rs` and `profiles.rs`. `RawSource::decode` parses DNG opcode lists for every TIFF-magic RAW file, NEF included, before `lf_raw_open`, though only DNG needs them.",
+        "Write one `Tiff::walk(first, limit, |ifd, entries| ...)` with one bounds policy; merge `dng_ops.rs` into `dng.rs` on `RawError` and one reader set, keeping `dng.rs`'s GainMap taps and its correction rows on the development executor (`native_tiles::refill_each`) as they are; write one `required_ids` helper; add a small `mat3` helper that `build.rs` includes the way it already includes `limits`, `opcodes` and `profiles`; gate opcode-list parsing on LibRaw reporting a DNG version, which moves the parse after `lf_raw_open`.",
         "This reorganizes the Rust-side parsing that already runs after LibRaw's own unpack; it does not touch or replace that unpack. Replacing LibRaw's unpack with RawSpeed is a separate proposal awaiting the owner and is out of scope here.",
         "Malformed-input edge behavior (for example a zero SubIFD offset) may change where the three walks disagreed; every existing malformed-input case, in both the unit tests and the real-file suite, must still resolve the same way or fail explicitly, never silently."
       ],
@@ -484,29 +510,32 @@
         "approach": "unit",
         "steps": [
           "Run the existing malformed-input and container tests against the merged walk and readers.",
-          "Run the real-file suite against the owner's RAW directory."
+          "Run the real-file suite against the owner's RAW directory and the public CC0 files, and the camera-catalog qualifier."
         ],
         "commands": [
           "cargo test -p luxforge-raw",
-          "cargo test -p luxforge-raw --test real_files -- --ignored"
+          "LUXFORGE_RAW_OWNER_DIR=DIR LUXFORGE_RAW_PUBLIC_DIR=DIR cargo test --release --locked -p luxforge-raw --test real_files -- --ignored --nocapture",
+          "cargo run --release --locked -p luxforge-raw --example qualify_profiles -- MANIFEST NEW_RESULTS_JSON"
         ],
         "expected_results": [
           "Every container and malformed-input test passes.",
-          "The real-file suite passes against the owner's private RAW originals; it is skipped, not failed, when that directory is absent."
+          "The real-file suite passes against the owner's private RAW originals and the public files, and the qualifier passes every enabled catalog source; without those files this evidence is missing, not passed."
         ]
       }
     },
     {
       "id": "TASK-008",
-      "description": "Trim `luxforge-raw`'s public API to what the core and xtask actually use, and replace the generated 103-variant `RawMode` enum with a validated static reference.",
+      "description": "Trim `luxforge-raw`'s public API to what `luxforge-core`, `xtask` and the crate's own example use, beside the limits module's shared items, and replace the generated 103-variant `RawMode` enum with a validated static reference into the camera catalog.",
       "status": "pending",
       "dependencies": [
         "TASK-006"
       ],
       "extra_context": [
         "Wave 4, structure. A public surface wider than its consumers, and a generated enum matched on only as a string, are both maintenance cost with no behavior behind them.",
-        "`mosaic_arc` has no caller anywhere; `mosaic_corrections`, `corrected_sensor_sample_location` and `gain_at_corrected_sensor` are used only by in-crate callers or the real-file test suite; `required_dng_opcodes` is re-exported but used only by tests. The generated `RawMode` enum (103 variants across the 100-camera catalog) is used in production only through its serde form and `requires_dng_corrections`, which scans the catalog anyway; one call site builds a `RawMode` by writing its id as JSON and parsing it back.",
-        "Make the four functions crate-private, moving their real-file assertions into `dng.rs`'s own tests; replace the generated enum with `RawMode(&'static Mode)`, deserialized by catalog lookup, with `requires_dng_corrections` as a field on `Mode` instead of a generated match. The generated `raw_modes.rs` and the JSON round trip both go."
+        "Unused or crate-only public items: `RawSource::mosaic_arc` has no caller; `mosaic_corrections` has none outside the crate; `corrected_sensor_sample_location` and `gain_at_corrected_sensor` are used by the neutral picker (`neutral.rs`) and the real-file suite; `required_dng_opcodes` is re-exported for `real_files.rs` alone. `RawSource::mosaic` stays public for `examples/qualify_profiles.rs`.",
+        "Public by design, not to trim: the limits module's cross-crate items, which exist so `luxforge-core` imports each bound from its one home (repository rule `render-limits-home`): the admission limits, `MAX_FRAME_BYTES`, `PARALLEL_PIXELS`, the per-pass threshold table (`RenderPass`, `parallel_pixels` and its `PARALLEL_*_PIXELS` constants, all but `PARALLEL_TRANSFORM_PIXELS` and `PARALLEL_PROXY_PIXELS` named by core), the spatial tile rule (`spatial_tile`, `SPATIAL_TILE`, `SPATIAL_WIDE_TILE`, `SPATIAL_WIDE_HALO`) and `RETAINED_DEVELOPMENT_BYTES`, the second development's budget in core's `source.rs`; and `refill_each`, the development executor core's camera conversion (`source.rs`) runs its chunks on. `develop_for_performance_diagnostic` is public only under the `performance-diagnostics` feature, for core's ignored diagnostics; the develop-boundary task in this plan decides how it reaches the development.",
+        "`build.rs` generates `RawMode` into `raw_modes.rs` (103 variants over the 100-camera catalog, with a generated `id` match); production uses it only through its serde form and `requires_dng_corrections`, which scans the catalog, and `RawSource::interpret` builds one by writing the matched mode's id as JSON and parsing it back. The same build script already generates the catalog itself as static Rust data (`camera_catalog.rs`), so a `&'static` mode is a lookup away.",
+        "Make the unused and crate-only items crate-private, moving their real-file assertions into `dng.rs`'s and `format.rs`'s own tests; replace the enum with `RawMode(&'static Mode)`, deserialized by catalog lookup, with `requires_dng_corrections` read from the mode's camera instead of a catalog scan. The generated `raw_modes.rs` and the JSON round trip both go. Callers that name a variant construct by id instead: `xtask/src/raw.rs`'s manifest entries (through serde), core's `editor/test_support.rs` and the tests in `editor/source.rs` and `render/linear.rs`, `real_files.rs` and `profiles.rs`'s tests."
       ],
       "context_links": [
         {
@@ -519,47 +548,62 @@
           "kind": "file",
           "label": "Public API and RawMode",
           "target": "crates/luxforge-raw/src/lib.rs",
-          "relevance": "The four underused public functions and the generated enum this task trims.",
-          "locator": "mosaic_arc, RawMode"
+          "relevance": "The re-exports, the underused public methods and the JSON round trip this task trims.",
+          "locator": "pub use, mosaic_arc, RawMode, interpret"
+        },
+        {
+          "kind": "file",
+          "label": "Shared limits",
+          "target": "crates/luxforge-raw/src/limits.rs",
+          "relevance": "The cross-crate bounds and threshold table that stay public by design."
         },
         {
           "kind": "file",
           "label": "Generated mode identifiers",
           "target": "crates/luxforge-raw/build.rs",
-          "relevance": "Where RawMode's variants and id function are generated from the camera catalog today."
+          "relevance": "Where RawMode's variants and id function, and the static catalog, are generated from the camera catalog today."
+        },
+        {
+          "kind": "file",
+          "label": "Camera catalog profiles",
+          "target": "crates/luxforge-raw/src/profiles.rs",
+          "relevance": "`Mode` and the catalog-sharing test that proves the serialized mode id.",
+          "locator": "Mode, generated_modes_and_capabilities_share_the_catalog"
         }
       ],
       "acceptance_criteria": [
-        "The crate's public surface matches what `luxforge-core` and `xtask` actually call; the four crate-internal functions are no longer `pub`.",
+        "The crate's public surface is what `luxforge-core`, `xtask` and `examples/qualify_profiles.rs` call, plus the limits module's shared items; `mosaic_arc` is gone and `mosaic_corrections`, `corrected_sensor_sample_location`, `gain_at_corrected_sensor` and `required_dng_opcodes` are no longer `pub`.",
         "`RawMode` is `RawMode(&'static Mode)` with no generated enum and no JSON round trip needed to construct one.",
-        "The serialized form (the mode id string) is unchanged, proven by the existing catalog/capability sharing test.",
+        "The serialized form (the mode id string) is unchanged, proven by the catalog-sharing test in `profiles.rs` and by `xtask`'s RAW manifest tests.",
         "No behavior changes; every existing test passes with its constructor updated for the new shape."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Move the four functions' real-file assertions into dng.rs's own test module.",
-          "Update every test constructor for the new RawMode shape and run the crate's full suite."
+          "Move the crate-only functions' real-file assertions into `dng.rs`'s and `format.rs`'s own test modules.",
+          "Update every test constructor for the new RawMode shape and run the crate's, xtask's and the workspace's suites."
         ],
         "commands": [
           "cargo test -p luxforge-raw",
-          "cargo build --workspace"
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "The crate builds and its tests pass with the trimmed API.",
-          "The workspace builds with no caller of the removed public items."
+          "The workspace and its tests build with no caller of the removed public items."
         ]
       }
     },
     {
       "id": "TASK-009",
-      "description": "Delete `cargo xtask raw-corpus` and the finished RAW backend probes, and port or explicitly exempt the two remaining Python camera-addition tools.",
+      "description": "Delete `cargo xtask raw-corpus` and the finished RAW backend probes, and port or explicitly exempt the three remaining Python camera-addition tools.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Wave 4, structure. Superseded tooling and finished experiments left in the tree cost maintenance and contradict the one-toolchain decision; `raw-editor` and `raw-panel` are still needed and keep their place.",
-        "`xtask/src/raw.rs`'s `raw-corpus` command (272 lines) runs in no verification tier, carries a stale 128 MiB source limit against the 512 MiB RAW bound, and is superseded: `raw-editor` already verifies each source's SHA-256 and `qualify_profiles` already hashes each source before and after. `probes/raw` (about 2,800 lines of Python and C++, plus a 1,373-line `Cargo.lock` for its own Rawler-based Rust workspace) mixes three finished backend-selection experiments (the Rawler crate, three C++ probes, `run.py`, `compare.py`) with two tools still used to add a camera (`dng_reference.py` and its JSON fixture, `collect_camera_metadata.py`); their Python contradicts the decision that all development tooling is Rust.",
-        "Delete `raw-corpus` and its usage/documentation references; delete the finished Rawler crate, the three C++ probes, `run.py` and `compare.py`; port `dng_reference.py` into an independent Rust reference crate and `collect_camera_metadata.py`'s workflow into xtask when it is next touched, or record an explicit exception to the one-toolchain rule in docs/decisions.md with a reason.",
+        "Wave 4, structure. Superseded tooling and finished experiments left in the tree cost maintenance and contradict the one-toolchain decision; the `raw-editor` and `raw-panel` smoke scenarios are still needed and keep their place.",
+        "`raw-corpus` runs in no verification tier, carries a stale 128 MiB source limit (`MAX_SOURCE` in `xtask/src/raw.rs`) against the 512 MiB RAW bound, and is superseded: the `raw-editor` scenario verifies each source's SHA-256 against its manifest and `qualify_profiles` hashes each source before and after. `xtask/src/raw.rs` is also the one RAW manifest reader (`raw::manifest`, held by the `raw-manifest-reader` repository rule) that `verify` and the `raw-editor` scenario use, so only the command's own parts go: its `Provenance` entry kind, `verify`, `corpus`, `MAX_SOURCE` and their tests. Nothing else reads `fixtures/raw-public.json`, which stays as the public files' provenance record.",
+        "`probes/raw` holds about 1,400 lines of Python and C++, a 49-line Rawler probe crate with its own 1,373-line `Cargo.lock` (excluded from the workspace by the root `Cargo.toml`), and the 1,396-line `dng_reference.json`. It mixes finished backend-selection experiments (the Rawler crate, `libraw_probe.cpp`, `float_probe.cpp`, `wb_probe.cpp`, `run.py`, `compare.py`) with three tools still used to add a camera: `dng_reference.py` and its JSON fixture, `collect_camera_metadata.py` (docs/design/modern-camera-support.md) and `inspect_dng.py` (docs/design/raw-camera-profiles.md). Their Python contradicts the decision that all development tooling is Rust. `dng.rs`'s tests and `real_files.rs` compile `dng_reference.json` in with `include_str!`, so it moves with the port rather than going.",
+        "Delete `raw-corpus`, its `main.rs` arm and usage text, and its references (docs/engineering/development.md's commands table and `raw-manifest-reader` row, the rule's own comment in `xtask/src/repository.rs`, fixtures/README.md, docs/design/initial-raw.md); delete the finished probes and the references to them (the root `Cargo.toml`'s exclude, CONTRIBUTING.md, `probes/raw/README.md`); port `dng_reference.py` into an independent Rust reference, for example in `luxforge-reference`, which the `independent-references` rule keeps free of workspace crates, and the two camera-addition workflows into xtask; or record an explicit exception to the one-toolchain rule in docs/decisions.md with a reason, which is the owner's to accept.",
         "The RAW backend research document keeps its recorded findings regardless of whether the probes that produced them stay in the tree."
       ],
       "context_links": [
@@ -571,15 +615,22 @@
         },
         {
           "kind": "file",
-          "label": "raw-corpus command",
+          "label": "raw-corpus command and the RAW manifest reader",
           "target": "xtask/src/raw.rs",
-          "relevance": "The superseded command this task deletes."
+          "relevance": "The superseded command's parts this task deletes, beside the one manifest reader it keeps.",
+          "locator": "Provenance, verify, corpus, MAX_SOURCE, manifest"
         },
         {
           "kind": "file",
           "label": "DNG reference probe",
           "target": "probes/raw/dng_reference.py",
-          "relevance": "The still-used tool this task ports into a Rust reference crate."
+          "relevance": "The still-used tool this task ports into a Rust reference."
+        },
+        {
+          "kind": "file",
+          "label": "Camera profile format",
+          "target": "docs/design/raw-camera-profiles.md",
+          "relevance": "Documents `inspect_dng.py` in the steps for adding a camera."
         },
         {
           "kind": "file",
@@ -596,23 +647,24 @@
         }
       ],
       "acceptance_criteria": [
-        "`raw-corpus` and its usage and documentation references are gone.",
-        "The finished Rawler crate, the three C++ probes, `run.py` and `compare.py` are gone.",
-        "`dng_reference.py` is ported to a Rust reference crate and the camera-addition workflow to xtask, or an explicit exception with a reason is recorded in docs/decisions.md.",
-        "`raw-editor` and `raw-panel` are unaffected; the RAW backend research document's findings are unchanged."
+        "`raw-corpus` and its usage and documentation references are gone; `raw::manifest` and its other readers are unchanged.",
+        "The finished Rawler crate, the three C++ probes, `run.py` and `compare.py` are gone, and nothing refers to them.",
+        "`dng_reference.py` is ported to an independent Rust reference that reproduces `dng_reference.json`'s values and `collect_camera_metadata.py`'s and `inspect_dng.py`'s workflows to xtask, or an explicit exception with a reason is recorded in docs/decisions.md.",
+        "The `raw-editor` and `raw-panel` scenarios are unaffected; the RAW backend research document's findings are unchanged."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Remove the command and its usage/doc references; confirm nothing still refers to it.",
-          "Confirm the ported reference tool reproduces the same DNG reference values it replaces, or record the exception."
+          "Remove the command and its usage and documentation references; confirm nothing still refers to it.",
+          "Confirm the ported reference reproduces the DNG reference values it replaces and that the tests reading them pass, or record the exception."
         ],
         "commands": [
           "cargo xtask check",
-          "cargo test -p xtask"
+          "cargo test -p xtask",
+          "cargo test -p luxforge-raw dng"
         ],
         "expected_results": [
-          "No reference to raw-corpus remains anywhere in the tree.",
+          "No code or documentation reference to raw-corpus remains.",
           "The camera-addition workflow still works, either in Rust or under a recorded exception."
         ]
       }
@@ -627,7 +679,9 @@
         "The selected production path uses retained u16 mosaics and LibRaw metadata with float RCD/Markesteijn development. LibRaw processed 8/16-bit RGB remains a comparison input, not the editable source.",
         "The established demosaicers are integrated; controlled quality and resource qualification of that selected path remains open.",
         "Include the supplied DJI FC3411 DNG in precision/development comparison and inspect OpcodeList requirements, DNG calibration, active/default crop and stored precision separately from NEF/RAF.",
-        "The retained float path, full parameter ranges and actual supplied-file render/edit behavior are implemented. Controlled chart, deliberate highlight/shadow, high ISO, fabric/foliage and Fuji DR/shutter coverage remain open. Do not mark this quality gate complete from the current corpus."
+        "Exposure is Basic's on every kind (docs/design/source-controls.md): on RAW it multiplies the developed scene-linear planes in Basic's colour stage, and the source development carries white balance only.",
+        "Bayer highlight latitude: the pinned RCD clips each gained Bayer site at sensor white before interpolating (`bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not`), while X-Trans keeps over-white values. Retaining it is an open owner decision recorded in docs/design/initial-raw.md, \"Remaining qualification and decisions\"; until it is taken, the retained-latitude criterion cannot close for Bayer.",
+        "Outstanding: the retained float path, full parameter ranges and actual supplied-file render/edit behavior are implemented. Controlled chart, deliberate highlight/shadow, high ISO, fabric/foliage and Fuji DR/shutter coverage remain open. Do not mark this quality gate complete from the current corpus."
       ],
       "context_links": [
         {
@@ -638,9 +692,15 @@
         },
         {
           "kind": "file",
-          "label": "Basic and histogram proposal",
+          "label": "Basic and histogram design",
           "target": "docs/design/basic-and-histogram.md",
-          "relevance": "Coordinate source domains and ownership without assuming proposed Basic capabilities are delivered."
+          "relevance": "Basic's delivered controls, including the one Exposure every source kind shares, applied to the developed RAW planes."
+        },
+        {
+          "kind": "file",
+          "label": "Source-kind controls",
+          "target": "docs/design/source-controls.md",
+          "relevance": "Exposure is Basic's on every kind; the RAW development carries white balance only."
         },
         {
           "kind": "file",
@@ -666,7 +726,7 @@
         "Demonstrate a reusable sensor/high-precision path with white balance, calibration, scene exposure and terminal output mapping; negative and above-display-white values survive until their declared boundary.",
         "Freeze proposed working primaries/white point, normalization, brightness reference, demosaic method for each CFA, tone/gamut/rounding equations, default artifact handling and exact calibration provenance.",
         "Use authentic Z6 shadow/PDAF/highlight cases and X100VI foliage/fabric/color-edge/DR/shutter cases, with independent 100% references and explicit DR compensation rather than accidental double scaling.",
-        "Prove -5..+5 EV and proposed WB/picker mappings or present exact range/algorithm limitations for owner choice; do not silently reduce capability or process an embedded JPEG.",
+        "Prove Basic's -5..+5 EV on the developed planes and the proposed WB/picker mappings, or present exact range/algorithm limitations for owner choice; do not silently reduce capability or process an embedded JPEG.",
         "Measure whole-path memory/cancellation and acceptably neutral color/detail under the frozen numerical/visual criteria; document active/default crop interpretation and uncorrected lens limitations.",
         "Resolve the explicit controlled-scene, chart, detail, high-ISO, highlight and shadow gaps recorded in fixtures/raw-coverage.json before claiming production visual quality; individual decoder successes do not close these gaps."
       ],
@@ -694,7 +754,7 @@
         "RAW qualification milestone on the roadmap, not a wave of the post-consolidation work.",
         "This is checkpoint A, not completion of the requested minimum adjustment workflow. All underlying rendering remains high precision.",
         "Use real rendered M4 evidence in addition to exact synthetic tests; no new foreground activation.",
-        "Supplied-file and public four-mode editor workflows pass on M4. Complete coverage of every geometry, version and recovery combination through both UI and independent JSON remains required by this broader checkpoint."
+        "Outstanding: supplied-file and public four-mode editor workflows pass on M4, and the `raw-panel` scenario passes on the Z6, X100VI and Air 2S. The editor journey is the `raw-editor` smoke scenario, one functional run per source; `verify --tier full --manifest FILE` runs it and `raw-panel` for every manifest source, and `raw-authentic` once. Complete coverage of every geometry, version and recovery combination through both UI and independent JSON remains required by this broader checkpoint."
       ],
       "context_links": [
         {
@@ -733,7 +793,7 @@
         "Correlate source hashes, processing keys, entry/revision/generation, exact/high-precision references, logs and background window captures.",
         "Verify missing/changed originals, failed replacement, unavailable RAW provider and orientation/active-area edge cases preserve data and expose precise errors.",
         "Confirm current JPEG source/profile rejection, exact geometry/pixel fixtures and content-space semantics remain valid.",
-        "Publish supported/unsupported/untested mode outcomes and checkpoint limitations without claiming editable controls or export not yet delivered."
+        "Publish supported/unsupported/untested mode outcomes and checkpoint limitations, claiming only what the evidence demonstrates."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -742,7 +802,8 @@
           "Inspect independent 100% crops and mixed-stack samples; audit actual mode coverage and source preservation."
         ],
         "commands": [
-          "cargo xtask check"
+          "cargo xtask check",
+          "cargo run --release --locked --package xtask -- verify --tier full --output NEW_DIR --binary PATH --manifest FILE"
         ],
         "expected_results": [
           "Checkpoint A proves the complete RAW foundation and reveals any remaining mode/quality failures before UI adjustments are accepted."
@@ -776,9 +837,9 @@
         },
         {
           "kind": "file",
-          "label": "Basic and histogram proposal",
+          "label": "Basic and histogram design",
           "target": "docs/design/basic-and-histogram.md",
-          "relevance": "Coordinate source domains and ownership without assuming proposed Basic capabilities are delivered."
+          "relevance": "Basic's delivered controls, including the one Exposure every source kind shares, applied to the developed RAW planes."
         },
         {
           "kind": "file",
@@ -800,7 +861,7 @@
         }
       ],
       "acceptance_criteria": [
-        "For every required mode, import RAW, edit WB/exposure, add geometry/content edits, change earlier RAW settings again, undo/redo, preview/Restore/version, close/reopen and continue editing.",
+        "For every required mode, import RAW, edit white balance (`edit.set-raw`) and Basic's Exposure, add geometry/content edits, change earlier RAW settings again, undo/redo, preview/Restore/version, close/reopen and continue editing.",
         "Compare the final result with a fresh evaluation from the original and final recipe; prove preserved high precision and no cumulative quantization/resampling or hidden JPEG/TIFF/DNG intermediate.",
         "Verify UI/JSON parity with processing identities, samples, complete stacks, generations, history count and source hashes; include concurrent edits and selected historical entries.",
         "Meet frozen quality criteria at Fit/100%, including retained highlight/shadow latitude, Fuji detail/DR, Nikon shadows and current JPEG regressions.",
@@ -813,7 +874,8 @@
           "Inspect captures/logs/state and hashes; compare changing earlier settings after crop to rebuilding the final recipe on a fresh catalog."
         ],
         "commands": [
-          "cargo xtask check"
+          "cargo xtask check",
+          "cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR"
         ],
         "expected_results": [
           "Continuous non-destructive RAW editing is demonstrated without a bake-and-reimport workflow."
@@ -886,7 +948,9 @@
       "extra_context": [
         "RAW qualification milestone on the roadmap, not a wave of the post-consolidation work.",
         "Deterministic bound/error tests belong in CI; latency is measured separately. Do not treat a decoder memory option as a whole-process cap.",
-        "Deterministic source, metadata, queue, cancellation, provider-loss and shutdown checks are implemented. Native fuzzing/sanitizers and systematic fault-injection coverage remain open."
+        "Already in place: a panic on the source worker or while the catalog owner serves a message is contained and answered as `internal` (`run_source_task`, `owner_loop`), and the develop boundary catches every C++ exception. The native fault injector covers RCD tile-job faults and, in the ignored owner-file oracle, Markesteijn's; this plan's develop-boundary task moves it out of the production ABI and keeps that coverage.",
+        "The source cache keeps a second development within `luxforge_raw::RETAINED_DEVELOPMENT_BYTES`, taken out of the plane gate's count by its `Retention`, and a completed job evicts only for queued work that allocates planes (docs/design/raw-integration.md, \"Second development\"); the in-flight accounting this task verifies covers both.",
+        "Outstanding: deterministic source, metadata, queue, cancellation, provider-loss and shutdown checks are implemented. Native fuzzing/sanitizers and systematic fault-injection coverage remain open."
       ],
       "context_links": [
         {
@@ -909,6 +973,13 @@
         },
         {
           "kind": "file",
+          "label": "RAW integration contract",
+          "target": "docs/design/raw-integration.md",
+          "relevance": "The plane gate, the eviction rule and the second development's retention this task's bounds cover.",
+          "locator": "Allocation and liveness"
+        },
+        {
+          "kind": "file",
           "label": "Dependency policy",
           "target": "docs/engineering/dependencies.md",
           "relevance": "Pin/inventory native dependencies and keep manual audits explicitly deferred."
@@ -918,7 +989,7 @@
           "label": "Single catalog owner",
           "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "Serial dispatch must remain responsive while bounded workers prepare RAW.",
-          "locator": "OwnerHandle, OwnerMessage, owner_loop"
+          "locator": "OwnerHandle, OwnerMessage, owner_loop, run_source_task"
         },
         {
           "kind": "file",
@@ -930,7 +1001,7 @@
       "acceptance_criteria": [
         "Exercise malformed container offsets, dimensions, strides, precision, CFA, levels, matrices, metadata recursion/lengths and optional preview data with bounded failures.",
         "Inject native/allocation/I/O/catalog failures, cancellation and shutdown at each stage; release resources and preserve prior asset/selection/history/source bytes.",
-        "Verify one-active/one-pending interactive limits, bounded independent requests/results, byte quotas including in-flight references, no stale results and no leaks during repeated JPEG/NEF/RAF replacements.",
+        "Verify one-active/one-pending interactive limits, bounded independent requests/results, byte quotas including in-flight references and the retained second development, no stale results and no leaks during repeated JPEG/NEF/RAF replacements.",
         "Prove source mutation/alias/reopen/provider/interpretation failures are explicit and never silently omit effects or downgrade to an embedded JPEG.",
         "Use the appropriate native fuzz/sanitizer route where supported and report its real coverage; keep all diagnostics off protocol stdout."
       ],
@@ -956,8 +1027,8 @@
       "extra_context": [
         "RAW qualification milestone on the roadmap, not a wave of the post-consolidation work.",
         "Native Windows/Linux desktop verification and manual license/native/asset audits remain deferred. This task covers builds/packages/headless correctness and native M4 packaging.",
-        "Native M4 packaging, static linkage/no external RAW runtime, bundled notices, packaged NEF/RAF edit/reopen and 12 packaged JPEG/background smoke scenarios pass. Windows/Linux build and native desktop qualification remain open.",
-        "The bundled adapter and notice inventory are implemented. Qualification across the target matrix remains open; native M4 evidence does not establish Windows/Linux build or desktop behavior."
+        "The bundled adapter and notice inventory are implemented. The bundled RAW build compiles with MSVC, applies its librtprocess changes as a build-time patch (`patches/librtprocess-local.patch`), and the CI workflow (`.github/workflows/check.yml`) runs `verify --tier quick`, a release build and `package` on macos-14, windows-2022 and ubuntu-24.04; a hosted run is headless build and test evidence, not native desktop qualification.",
+        "Outstanding: native M4 packaging, static linkage/no external RAW runtime, bundled notices, packaged NEF/RAF edit/reopen and 12 packaged JPEG/background smoke scenarios pass. The hosted Windows/Linux build and package baseline needs a refresh (docs/features.md), and qualification across the target matrix remains open; native M4 evidence does not establish Windows/Linux build or desktop behavior."
       ],
       "context_links": [
         {
@@ -1018,10 +1089,12 @@
       ],
       "extra_context": [
         "RAW qualification milestone on the roadmap, not a wave of the post-consolidation work.",
-        "This measurement is taken after the development executor and normalization changes land, so the recorded distributions describe the code that ships, not the code this plan's speed work replaces.",
+        "This measurement is taken after the development executor, the Rust normalization and the second development landed, so the recorded distributions describe the code that ships.",
         "Provisional time/RSS targets are investigation hypotheses until the owner accepts measured budgets. Do not hide misses by changing input modes or quietly enabling embedded previews.",
-        "The implemented raw-editor command records whole-editor edit/history/reopen distributions and sampled process RSS. Fine-grained stage, GPU, cancellation and idle attribution remain separate outstanding work; JPEG baselines use editor-performance.",
-        "Thirty complete native M4 trials per owner camera and four public mode workflows pass. The same 24/60 MP JPEG core diagnostic is recorded before/after. Fuji captured RSS p95 is 1992 MiB with an unexplained 2436 MiB maximum; screenshot-free peaks are 1583-1647 MiB. Fine-grained stage/GPU/cancellation/idle attribution and an accepted budget remain open.",
+        "Tools: the RAW editor journey is the `raw-editor` smoke scenario, which records one functional run's request-to-display and capture times per source in `raw-editor-checks.json`, so a distribution is 30 runs of it; RAW memory under a heavy edit is the `performance` scenario's over a RAW `--source`; below the editor, `luxforge-raw`'s ignored release tests `owner_development_timing` (development and DNG corrections) and `bayer_normalization_release_abba_profile` (normalization against demosaic) time the development's own stages. JPEG baselines use editor-performance.",
+        "Recorded before waves 1 to 3 (docs/specs/performance.md, \"Current RAW and JPEG measurements\"): thirty complete native M4 trials per owner camera and four public mode workflows pass; the same 24/60 MP JPEG core diagnostic is recorded before/after; Fuji captured RSS p95 is 1992 MiB with an unexplained 2436 MiB maximum, and screenshot-free peaks are 1583-1647 MiB. Those history rows predate the refill executor, the Rust normalization and the second development.",
+        "Current figures, on a shared host: retained-mosaic development p50 is about 184-232 ms on the X100VI, 37-40 ms on the Z6 and 31-34 ms on the Air 2S (\"Mosaic normalization\"); a switch whose development the second slot holds displays in about 20 ms p50 on the X100VI and Air 2S and about 32 ms on the Z6, and holding both developments adds 230 to 458 MiB of RSS, the X100VI's edit launch reaching 2290 / 2352 MiB p50 / p95 over the switch window (\"Second development\"). A redevelopment's peak also holds the retained development. Fine-grained stage/GPU/cancellation/idle attribution and an accepted budget remain open.",
+        "The second development and its memory cost were decided on 2026-09-28 (docs/decisions.md, \"Post-consolidation review\"); the 1.5 GiB investigation target predates it. This task's M4 RSS measurement is the one that decision names before any byte-budgeted source cache that keeps JPEG decodes beside the RAW developments.",
         "Measurement depends on the implemented editor, not on completion of broad controlled-scene/fuzz/portability gates. Those gates remain independently open. RSS sampling includes renderer/capture effects and must not be relabelled as isolated CPU heap or GPU memory."
       ],
       "context_links": [
@@ -1042,12 +1115,18 @@
           "label": "Evidence and development commands",
           "target": "docs/engineering/development.md",
           "relevance": "Existing commands, background-only Mac launches and correlated evidence requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "The current RAW rows and their scope: \"Current RAW and JPEG measurements\", \"Development executor refill\", \"Mosaic normalization\" and \"Second development\"."
         }
       ],
       "acceptance_criteria": [
         "Record at least 30 samples with exact host/build/decoder/configuration/fixture/cache/display/storage state for authentic 24 MP Z6 and 40 MP X100VI workloads.",
         "Separate read/hash/identify/unpack/normalize/demosaic/color/geometry/resize/upload/observed-frame time, owner responsiveness, cancellation and first/steady WB/exposure behavior.",
-        "Measure process/helper RSS, native scratch, cache/live frame bytes and GPU allocations without double-counting unified memory; include worst old/new replacement liveness and repeated switching.",
+        "Measure process/helper RSS, native scratch, cache/live frame bytes and GPU allocations without double-counting unified memory; include worst old/new replacement liveness, a redevelopment beside the retained second development, and repeated switching.",
         "Measure Fit/100%, mixed stack edits/history/reopen, idle CPU and current 24/60 MP JPEG before/after regressions; retain failures/tails.",
         "Resolve measured misses with a concrete optimization/scope/budget proposal, without changing appearance, relaxing accepted bounds silently or adding CI timing gates."
       ],
@@ -1061,6 +1140,9 @@
         ],
         "commands": [
           "cargo xtask check",
+          "cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR",
+          "cargo xtask smoke --scenario performance --source RAW --output NEW_DIR",
+          "LUXFORGE_RAW_OWNER_DIR=DIR LUXFORGE_RAW_PROFILE_SOURCE=NAME cargo test --release --locked -p luxforge-raw --lib -- --ignored --exact tests::owner_development_timing --nocapture",
           "cargo run --release --locked --package xtask -- editor-performance --source fixtures/generated/24mp.jpg --output artifacts/raw-jpeg-regression-24 --samples 30",
           "cargo run --release --locked --package xtask -- editor-performance --source fixtures/generated/60mp.jpg --output artifacts/raw-jpeg-regression-60 --samples 30"
         ],
