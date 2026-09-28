@@ -5,7 +5,7 @@
 //! pixel *is* between those steps is the only thing that differs between a JPEG and a developed
 //! RAW, and [`PixelDomain`] is where that difference lives:
 //!
-//! - **Byte** ([`super::Byte`]): 8-bit sRGB with alpha. Each colour run decodes through the sRGB
+//! - **Byte** ([`super::Byte`]): opaque 8-bit sRGB. Each colour run decodes through the sRGB
 //!   table, runs its units and quantizes at the run's end, so a point replacement, a resample and
 //!   the end of the recipe are quantization boundaries, as is a spatial operation's output.
 //! - **Linear** ([`super::linear::Linear`]): signed unbounded `f64` linear sRGB, with the RAW
@@ -84,9 +84,6 @@ pub(crate) trait PixelDomain: Sync {
     /// One pixel of the source, which is the first segment's input.
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error>;
 
-    /// The source's alpha at one pixel, which only the byte domain has.
-    fn source_alpha(&self, x: u32, y: u32) -> u8;
-
     /// A point replacement's value written over `pixel`.
     fn replace(pixel: Self::Pixel, rgb: [u8; 3]) -> Self::Pixel;
 
@@ -130,9 +127,8 @@ pub(crate) trait PixelDomain: Sync {
     /// A pixel as a spatial operation reads it, in linear `f32`.
     fn spatial_input(pixel: Self::Pixel) -> [f32; 3];
 
-    /// A spatial operation's output value as a pixel; `alpha` is the input's alpha there, asked
-    /// only by a domain that has one.
-    fn spatial_output(rgb: [f32; 3], alpha: impl FnOnce() -> u8) -> Result<Self::Pixel, Error>;
+    /// A spatial operation's output value as a pixel.
+    fn spatial_output(rgb: [f32; 3]) -> Result<Self::Pixel, Error>;
 
     /// The terminal byte of one output pixel.
     fn terminal(pixel: Self::Pixel) -> Result<[u8; 4], Error>;
@@ -141,14 +137,12 @@ pub(crate) trait PixelDomain: Sync {
     fn spatial_frame(stage: Stage) -> Result<Self::SpatialFrame, Error>;
 
     /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
-    /// rows in the layout the frame holds it in, computed in the parallel phase. `alpha` reads the
-    /// operation's input alpha, which the byte frame carries and the linear planes do not hold.
+    /// rows in the layout the frame holds it in, computed in the parallel phase.
     fn tile_output(
         region: Region,
         values: Vec<f32>,
         tile: Region,
         parallelism: Parallelism,
-        alpha: &(impl Fn(u32, u32) -> u8 + Sync),
     ) -> Self::TileOutput;
 
     /// Place one tile's output into the frame of `stage`, one `copy_from_slice` per row and plane.
@@ -250,7 +244,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 |region, planes, parallelism| {
                     evaluation.fill_rows(index - 1, region, planes, parallelism)
                 },
-                |x, y| evaluation.alpha_in(index - 1, x, y).unwrap_or(255),
             )?);
             #[cfg(test)]
             {
@@ -543,42 +536,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             || self.spatial_globals(index, entry),
             |region, planes| self.fill_rows(index - 1, region, planes, Parallelism::Serial),
         )?;
-        // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
-        // it.
-        D::spatial_output(rgb, || self.alpha_in(index - 1, x, y).unwrap_or(255))
-    }
-
-    /// The alpha of one pixel of one segment's output stage, or `None` outside it. No unit, point
-    /// replacement or colour run writes alpha and a spatial boundary copies its input's, so this
-    /// walks the geometry alone, blending through a resample exactly as the byte frame does, and
-    /// never evaluates a colour run or a spatial tile.
-    fn alpha_in(&self, index: usize, x: u32, y: u32) -> Option<u8> {
-        let segment = &self.compiled.segments[index];
-        let resolved = segment.resolve(x, y)?;
-        let (x, y) = (resolved.input_x, resolved.input_y);
-        match &segment.entry {
-            None => Some(self.domain.source_alpha(x, y)),
-            Some(Entry::Spatial { .. }) => self.alpha_in(index - 1, x, y),
-            Some(Entry::Resample(resample)) => {
-                let previous = &self.compiled.segments[index - 1];
-                let (full_x, full_y) = segment.resample_output_at(x, y);
-                let (u, v) = resample.input_from(segment.entry_origin, full_x, full_y);
-                let taps = Taps::new(u, v, previous.width, previous.height);
-                let alpha: f64 = taps
-                    .corners
-                    .iter()
-                    .zip(taps.weights)
-                    .map(|(&(x, y), weight)| {
-                        weight
-                            * f64::from(
-                                self.alpha_in(index - 1, x, y)
-                                    .expect("clamped indices stay inside"),
-                            )
-                    })
-                    .sum();
-                Some(alpha.round().clamp(0.0, 255.0) as u8)
-            }
-        }
+        D::spatial_output(rgb)
     }
 }
 
@@ -696,7 +654,7 @@ impl<'e> SpatialEntry<'e> {
 /// One spatial entry's output over its whole `stage`, written tile by tile into the domain's frame:
 /// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
 /// stage it reads into three planes, for every tile and, on a store miss, for the reduction its
-/// global estimates ([`SpatialEntry::globals`]) are prepared from; `alpha` reads one pixel's alpha.
+/// global estimates ([`SpatialEntry::globals`]) are prepared from.
 /// Every tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets,
 /// checking `cancel` between batches. No full-frame float buffer exists beside the output, only
 /// one tile's working set per tile in flight, charged to the spatial budget before each batch of
@@ -710,7 +668,6 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     cancel: &Cancel,
     context: &RenderContext,
     fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
-    alpha: impl Fn(u32, u32) -> u8 + Sync,
 ) -> Result<D::SpatialFrame, Error> {
     let operation = entry.operation;
     let plan = SpatialPlan::new(operation, stage, tiling)?;
@@ -736,7 +693,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
                 scratch,
                 |region, planes| fill(region, planes, parallelism),
             )?;
-            Ok(D::tile_output(region, values, tile, parallelism, &alpha))
+            Ok(D::tile_output(region, values, tile, parallelism))
         },
         |tile, output| {
             D::write_tile(&mut frame, stage, tile, output);

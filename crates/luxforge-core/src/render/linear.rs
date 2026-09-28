@@ -657,10 +657,6 @@ impl PixelDomain for Linear<'_> {
         self.adjust_source_pixel(pixel.map(f64::from))
     }
 
-    fn source_alpha(&self, _: u32, _: u32) -> u8 {
-        255
-    }
-
     #[inline]
     fn replace(_: [f64; 3], rgb: [u8; 3]) -> [f64; 3] {
         decode_rgb(rgb)
@@ -761,7 +757,7 @@ impl PixelDomain for Linear<'_> {
     }
 
     #[inline]
-    fn spatial_output(rgb: [f32; 3], _: impl FnOnce() -> u8) -> Result<[f64; 3], Error> {
+    fn spatial_output(rgb: [f32; 3]) -> Result<[f64; 3], Error> {
         Ok(rgb.map(f64::from))
     }
 
@@ -784,7 +780,6 @@ impl PixelDomain for Linear<'_> {
         values: Vec<f32>,
         _: Region,
         _: Parallelism,
-        _: &(impl Fn(u32, u32) -> u8 + Sync),
     ) -> (Region, Vec<f32>) {
         (region, values)
     }

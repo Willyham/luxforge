@@ -660,7 +660,7 @@ pub(crate) fn reset_masked_tile_counts() {
 /// `work` computes one tile's result under the parallelism it is given, with the unit scratch of
 /// the batch slot it runs in, and `write` places it, so the tiles themselves never share a mutable
 /// frame: a batch's results are bounded by its concurrency times one tile. `work` runs in the
-/// parallel phase, so everything done per pixel belongs there — the quantization, the alpha and the
+/// parallel phase, so everything done per pixel belongs there — the quantization and the
 /// layout of the frame's rows — and `write` is left the serial copy of whole rows. A slot keeps its
 /// scratch from batch to batch and releases it when a narrower reservation drops the slot, so while
 /// a batch runs the scratch held covers no more tiles than its reservation; between one batch's
@@ -2091,14 +2091,9 @@ mod tests {
             )
             .unwrap();
             assert_frame(&raster, &expected, &format!("tile {tile}"));
-            // Each tile's rows carry the input's alpha beside the filtered colour.
-            for (index, (written, read)) in raster
-                .rgba
-                .chunks_exact(4)
-                .zip(source.rgba.chunks_exact(4))
-                .enumerate()
-            {
-                assert_eq!(written[3], read[3], "tile {tile}: alpha of pixel {index}");
+            // Each tile's rows are opaque beside the filtered colour.
+            for (index, written) in raster.rgba.chunks_exact(4).enumerate() {
+                assert_eq!(written[3], 255, "tile {tile}: alpha of pixel {index}");
             }
             frames.push(raster.rgba.as_ref().to_vec());
         }
