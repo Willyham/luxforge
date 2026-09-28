@@ -978,7 +978,10 @@ mod tests {
                 .request(Value::Null),
             )
             .unwrap();
-        assert_eq!(renamed.label.as_deref(), Some("Rename Linear 1 to Sky edge"));
+        assert_eq!(
+            renamed.label.as_deref(),
+            Some("Rename Linear 1 to Sky edge")
+        );
         assert_eq!(
             service.history(&asset, None, 10).unwrap().entries.len(),
             before + 1,
@@ -993,8 +996,7 @@ mod tests {
         service.undo(&asset, mutation(2, "undo")).unwrap();
         let after_undo = service.state(&asset).unwrap();
         assert_eq!(
-            after_undo.current_entry.snapshot.recipe.masks[0].components[0].name,
-            "Linear 1",
+            after_undo.current_entry.snapshot.recipe.masks[0].components[0].name, "Linear 1",
             "undo restores the component's previous name"
         );
         drop(service);
