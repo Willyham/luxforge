@@ -11,14 +11,16 @@ impl Editor {
             controls: &[tools::ControlModel],
             curves: &mut Vec<Value>,
             pickers: &mut Vec<Value>,
-            samples: &std::collections::BTreeMap<(String, String), tools::CurveSamples>,
+            local: &tools::ControlsUi,
             entry: Option<&luxforge_core::EntryId>,
         ) {
             for control in state::control_tree::walk(controls) {
                 match control {
                     tools::ControlModel::Curve(curve) => {
                         let parameter = &curve.channels[curve.selected_channel].parameter;
-                        let sampled = samples.get(&(curve.action.clone(), parameter.clone()));
+                        let sampled = local
+                            .curve(&curve.id)
+                            .and_then(|local| local.samples.get(parameter));
                         curves.push(json!({"action":curve.action,"parameter":parameter,
                             "channel":curve.selected_channel,"selected_point":curve.selected_point,
                             "point_count":curve.points.len(),"sample_count":curve.sampled.len(),
@@ -47,33 +49,25 @@ impl Editor {
             .evidence
             .as_ref()
             .and_then(|evidence| evidence.tools_scroll);
-        let curve_channels: Vec<Value> = self
-            .controls_ui
-            .curve_channels
-            .iter()
-            .map(|((action, parameter), channel)| {
-                json!({"action":action,
-                "parameter":parameter,"channel":channel})
-            })
-            .collect();
-        let curve_points: Vec<Value> = self
-            .controls_ui
-            .curve_points
-            .iter()
-            .map(|((action, parameter), point)| {
-                json!({"action":action,
-                "parameter":parameter,"point":point})
-            })
-            .collect();
-        let picker_open: Vec<Value> = self
-            .controls_ui
-            .color_open
-            .iter()
-            .map(|((action, parameter), open)| {
-                json!({"action":action,
-                "parameter":parameter,"open":open})
-            })
-            .collect();
+        // Each control's local state, as three lists: a curve's channel, its selected point where it
+        // has one, and whether a colour field's picker is open.
+        let mut curve_channels = Vec::new();
+        let mut curve_points = Vec::new();
+        let mut picker_open = Vec::new();
+        for ((action, parameter), local) in self.controls_ui.controls() {
+            match local {
+                tools::ControlUi::Curve(curve) => {
+                    curve_channels.push(json!({"action":action,
+                        "parameter":parameter,"channel":curve.channel}));
+                    if let Some(point) = curve.point {
+                        curve_points.push(json!({"action":action,
+                            "parameter":parameter,"point":point}));
+                    }
+                }
+                tools::ControlUi::Color(color) => picker_open.push(json!({"action":action,
+                    "parameter":parameter,"open":color.open})),
+            }
+        }
         let entry = self.displayed_entry();
         let mut curves = Vec::new();
         let mut pickers = Vec::new();
@@ -82,7 +76,7 @@ impl Editor {
                 &section.controls,
                 &mut curves,
                 &mut pickers,
-                &self.controls_ui.curve_samples,
+                &self.controls_ui,
                 entry.as_ref(),
             );
         }

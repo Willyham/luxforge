@@ -660,7 +660,7 @@ impl Editor {
         let task = Task::batch([task, self.run_pending_reset()]);
         self.settle_when_quiet();
         if self.displayed_entry() != before_entry {
-            self.controls_ui.curve_samples.clear();
+            self.controls_ui.clear_curve_samples();
             self.curve_sample_requested_source.clear();
         }
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's

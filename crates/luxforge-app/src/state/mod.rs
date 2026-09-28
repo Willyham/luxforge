@@ -2553,16 +2553,13 @@ mod tests {
         );
         let crop = section(&workspace, "luxforge.crop").clone();
         let fixture_before = fixture_section.clone();
-        scene
+        let curve = scene
             .control_ui
-            .curve_channels
-            .insert(("fixture-set".into(), "master".into()), 1);
-        scene
-            .control_ui
-            .curve_points
-            .insert(("fixture-set".into(), "master".into()), 2);
-        scene.control_ui.curve_samples.insert(
-            ("fixture-set".into(), "red".into()),
+            .curve_mut(("fixture-set".into(), "master".into()));
+        curve.channel = 1;
+        curve.point = Some(2);
+        curve.samples.insert(
+            "red".into(),
             tools::CurveSamples {
                 asset: scene.state.as_ref().unwrap().asset.id.clone(),
                 entry: scene.display_entry.clone().unwrap(),
@@ -2775,17 +2772,17 @@ mod tests {
         scene.dragging = None;
         scene
             .control_ui
-            .curve_points
-            .insert(("fixture-set".into(), "master".into()), 1);
+            .curve_mut(("fixture-set".into(), "master".into()))
+            .point = Some(1);
         workspace.derive(&scene.inputs());
         assert_ne!(versions(&workspace).1, initial.1);
-        scene.control_ui.picker_hsv.insert(
-            ("fixture-set".into(), "rgb".into()),
-            tools::PickerHsv {
-                rgb: [32, 64, 128],
-                hsv: [0.7, 0.75, 0.5],
-            },
-        );
+        scene
+            .control_ui
+            .color_mut(("fixture-set".into(), "rgb".into()))
+            .hsv = Some(tools::PickerHsv {
+            rgb: [32, 64, 128],
+            hsv: [0.7, 0.75, 0.5],
+        });
         workspace.derive(&scene.inputs());
         assert_eq!(versions(&workspace).2, Some([0.7, 0.75, 0.5]));
         assert_ne!(versions(&workspace).0, initial.0);
