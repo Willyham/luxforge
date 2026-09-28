@@ -39,20 +39,26 @@ pub(crate) struct CropGesture {
     pub(crate) action: String,
     pub(crate) frame: CropDraft,
     pub(crate) stage: StageView,
-    /// The input stage's planned job and the frames its phases have delivered.
+    /// The frames the input stage's phases have delivered, and which stack it was planned from.
     pub(crate) frames: StageFrames,
 }
 
 /// The crop layer's input stage as the draft holds it, by the one rule the photograph follows
 /// ([`Editor::proxy_bounds_for`]): a display-size proxy of the layer prefix wherever the view draws
-/// the stage smaller than it is, and the exact stage only at a percentage zoom that needs it. The
-/// planned job is kept so a zoom that crosses between the two asks for the other without planning
-/// the stage again; each frame is kept once delivered, so crossing back hands it over again.
-/// Everything here ends with the draft. No frame here is ever reduced, sampled or committed: the
-/// draft commits its fields.
+/// the stage smaller than it is, and the exact stage only at a percentage zoom that needs it. Each
+/// frame is kept once delivered, so a zoom that crosses back hands it over again. The planned job
+/// is never kept: it holds its stack, and a RAW development's planes hold the source worker's
+/// memory gate, so a kept one would keep a development the owner needs waiting for as long as the
+/// draft is open. A zoom that needs a phase no held frame serves plans the stage again, from the
+/// stack's identity, on an owner task ([`StagePlan::Zoom`]). Everything here ends with the draft.
+/// No frame here is ever reduced, sampled or committed: the draft commits its fields.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StageFrames {
-    job: Option<Box<luxforge_core::PreviewJob>>,
+    /// The stack the stage was planned from: the entry a zoom plans it again from, and what the
+    /// plan it answers must be.
+    planned: Option<Box<luxforge_core::analysis::AnalysisIdentity>>,
+    /// A zoom's plan of the stage is on its way, so a second is not asked for.
+    replanning: bool,
     /// The frame for a view that draws the stage smaller than it is: the prefix's proxy, or the
     /// exact stage when the worker declined one (the stage already fits the bounds, or a layer of
     /// the prefix has no proxy).
@@ -81,6 +87,17 @@ impl Shown {
     fn serves(self, bounded: bool) -> bool {
         if bounded { self.bounded } else { !self.proxy }
     }
+}
+
+/// Which plan of a crop draft's input stage an owner task answers
+/// ([`crate::app::tasks::crop_preview_task`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StagePlan {
+    /// The stage a start or a Reapply opens on, planned from the current entry.
+    Open,
+    /// The stage already on screen, planned again from its entry for a zoom that needs a phase
+    /// no held frame serves.
+    Zoom(luxforge_core::EntryId),
 }
 
 /// Where the crop layer's input stage has got to. The frame never waits for it: the section and
@@ -306,7 +323,17 @@ impl Editor {
             CropMessage::Space(space) => self.crop_space = space,
             CropMessage::Guide(guide) => self.crop_guide = guide && self.crop().is_some(),
             CropMessage::Start => return self.crop_start(),
-            CropMessage::PreviewReady(result) => match result {
+            // The job goes straight to the preview worker, as a start's does, or is dropped: this
+            // module names no planned job, so none is kept here (`desktop-keeps-no-preview-job`).
+            CropMessage::PreviewReady(StagePlan::Zoom(entry), result) => {
+                let planned = result.as_ref().map(|job| (&job.identity, job.layer_count));
+                if self.crop_stage_replanned(&entry, planned)
+                    && let Ok(job) = result
+                {
+                    self.draft_generation = Some(self.request_preview(*job));
+                }
+            }
+            CropMessage::PreviewReady(StagePlan::Open, result) => match result {
                 // The stack or the selection changed since the stage was asked for, so the input
                 // stage the owner planned is not the one the frame is on, and nothing else will
                 // arrive for it.
@@ -314,9 +341,10 @@ impl Editor {
                     self.draft_preview_superseded(None);
                 }
                 Ok(job) => {
-                    // Kept for a zoom that needs the stage's other phase.
+                    // Only the stack's identity is kept, for a zoom that needs the stage's other
+                    // phase: the job goes to the preview worker.
                     if let Some(crop) = self.crop_gesture_mut() {
-                        crop.frames.job = Some(job.clone());
+                        crop.frames.planned = Some(Box::new(job.identity.clone()));
                     }
                     // A job an earlier start asked for is no longer the draft's once this one is
                     // requested, so this request superseding it ends nothing.
@@ -440,7 +468,13 @@ impl Editor {
         }
         // The opened frame is the draft's first fields, sent at once: `draft.begin` has answered.
         let fields = self.crop_changed("crop_draft_started");
-        let stage = crop_preview_task(self.owner.clone(), self.client, asset, layer_index);
+        let stage = crop_preview_task(
+            self.owner.clone(),
+            self.client,
+            asset,
+            layer_index,
+            StagePlan::Open,
+        );
         self.status = "Preparing the crop's input stage…".into();
         Task::batch([begin, fields, stage])
     }
@@ -492,7 +526,13 @@ impl Editor {
         // A refused rebase says why in place of the line above.
         let fields = self.crop_changed("crop_draft_changed");
         let rebase = self.drive(Event::Reapply);
-        let stage = crop_preview_task(self.owner.clone(), self.client, asset, row.layer_index);
+        let stage = crop_preview_task(
+            self.owner.clone(),
+            self.client,
+            asset,
+            row.layer_index,
+            StagePlan::Open,
+        );
         Task::batch([fields, rebase, stage])
     }
 
@@ -551,20 +591,21 @@ impl Editor {
     /// shows even when the worker declined the proxy and rendered it exactly; `last` says the job
     /// has nothing more to deliver. The frame is kept for the view it serves, and shown when it is
     /// the draft's first frame or serves the view now; the other is then asked for if the view has
-    /// moved on. Returns whether a frame was handed to the display.
+    /// moved on. Returns whether a frame was handed to the display, and the plan of that other
+    /// phase when one is needed.
     pub(crate) fn crop_stage_ready(
         &mut self,
         raster: &luxforge_core::Raster,
         proxy: bool,
         bounded: bool,
         last: bool,
-    ) -> bool {
+    ) -> (bool, Task<Message>) {
         if last {
             self.draft_generation = None;
         }
         let wants_bounded = self.crop_stage_bounds().is_some();
         let Some(crop) = self.crop_gesture_mut() else {
-            return false;
+            return (false, Task::none());
         };
         if bounded {
             crop.frames.bounded = Some(StageFrame {
@@ -578,31 +619,60 @@ impl Editor {
         let shown = Shown { bounded, proxy };
         let first = matches!(crop.stage, StageView::Rendering { .. });
         if !first && !shown.serves(wants_bounded) {
-            return false;
+            return (false, Task::none());
         }
         crop.frames.shown = Some(shown);
         if !self.presenter.show_stage(raster) {
             self.crop_stage_lost();
             self.status = "Could not show the crop's input stage".into();
             self.settle_step(Settle::Draft);
-            return true;
+            return (true, Task::none());
         }
         self.crop_stage_shown();
         self.settle_crop();
-        self.present_crop_stage();
-        true
+        (true, self.present_crop_stage())
     }
 
     /// Put the input-stage frame the view wants on screen: the one the draft already holds, or
-    /// else one request for it once no stage job is on its way — the one on its way lands first
-    /// and this runs again. Answers every zoom while the stage owns the view and every stage frame,
-    /// so a zoom that changed while the stage rendered is picked up. A scripted step waits for the
-    /// frame it asks for.
-    pub(crate) fn present_crop_stage(&mut self) {
-        let wants_bounded = self.crop_stage_bounds().is_some();
+    /// else one plan of the stage once no stage job or plan is on its way — the one on its way
+    /// lands first and this runs again. Answers every zoom while the stage owns the view and every
+    /// stage frame, so a zoom that changed while the stage rendered is picked up. The stage is
+    /// planned again from the entry it was planned from, as a start plans it
+    /// ([`crop_preview_task`]), and its answer ([`Self::crop_stage_replanned`]) requests it. A
+    /// scripted step waits for the frame it asks for.
+    pub(crate) fn present_crop_stage(&mut self) -> Task<Message> {
+        if !self.show_held_crop_stage() {
+            return Task::none();
+        }
+        self.await_frame(Settle::Draft);
         let in_flight = self.draft_generation.is_some();
         let Some(crop) = self.crop_gesture_mut() else {
-            return;
+            return Task::none();
+        };
+        if in_flight || crop.frames.replanning {
+            return Task::none();
+        }
+        let Some(planned) = &crop.frames.planned else {
+            return Task::none();
+        };
+        let (asset, entry) = (planned.asset_id.clone(), planned.entry_id.clone());
+        let layer_count = crop.frame.layer_index;
+        crop.frames.replanning = true;
+        crop_preview_task(
+            self.owner.clone(),
+            self.client,
+            asset,
+            layer_count,
+            StagePlan::Zoom(entry),
+        )
+    }
+
+    /// Hand over the held frame the view wants when the one on screen does not serve it. Returns
+    /// whether the view still wants a frame of the stage the draft does not hold.
+    fn show_held_crop_stage(&mut self) -> bool {
+        let wants_bounded = self.crop_stage_bounds().is_some();
+        let Some(crop) = self.crop_gesture_mut() else {
+            return false;
         };
         if crop.stage != StageView::Shown
             || crop
@@ -610,7 +680,7 @@ impl Editor {
                 .shown
                 .is_some_and(|shown| shown.serves(wants_bounded))
         {
-            return;
+            return false;
         }
         let held = if wants_bounded {
             crop.frames.bounded.as_ref().map(|frame| {
@@ -633,23 +703,57 @@ impl Editor {
                 )
             })
         };
-        if let Some((raster, shown)) = held {
-            crop.frames.shown = Some(shown);
-            if !self.presenter.show_stage(&raster) {
-                self.status = "Could not show the crop's input stage".into();
-            }
-            return;
-        }
-        let job = crop.frames.job.clone();
-        self.await_frame(Settle::Draft);
-        if in_flight {
-            return;
-        }
-        let Some(job) = job else {
-            return;
+        let Some((raster, shown)) = held else {
+            return true;
         };
-        self.event("crop_stage_requested", json!({ "bounded": wants_bounded }));
-        self.draft_generation = Some(self.request_preview(*job));
+        crop.frames.shown = Some(shown);
+        if !self.presenter.show_stage(&raster) {
+            self.status = "Could not show the crop's input stage".into();
+        }
+        false
+    }
+
+    /// The stage a zoom planned again ([`Self::present_crop_stage`]) answered with the stack it
+    /// planned and the layers it truncates to. Returns whether to request it, exactly as a start's
+    /// is: when it answers the draft's own plan of the stack on screen and the view still wants a
+    /// phase no held frame serves. Otherwise it is dropped: the draft ended, a Reapply moved the
+    /// stage to another entry, or the zoom moved back.
+    fn crop_stage_replanned(
+        &mut self,
+        entry: &luxforge_core::EntryId,
+        answer: Result<(&luxforge_core::analysis::AnalysisIdentity, Option<usize>), &String>,
+    ) -> bool {
+        let Some(crop) = self.crop_gesture_mut() else {
+            return false;
+        };
+        let Some(planned) = crop
+            .frames
+            .planned
+            .as_ref()
+            .filter(|planned| crop.frames.replanning && &planned.entry_id == entry)
+        else {
+            return false;
+        };
+        let current = answer.map_err(Clone::clone).and_then(|(identity, layers)| {
+            if identity == &**planned && layers == Some(crop.frame.layer_index) {
+                Ok(())
+            } else {
+                Err("The crop's input stage planned again is not the one on screen".to_owned())
+            }
+        });
+        crop.frames.replanning = false;
+        if let Err(error) = current {
+            self.status = error;
+            self.settle_step(Settle::Draft);
+            return false;
+        }
+        if self.draft_generation.is_some() || !self.show_held_crop_stage() {
+            self.settle_step(Settle::Draft);
+            return false;
+        }
+        let bounded = self.crop_stage_bounds().is_some();
+        self.event("crop_stage_requested", json!({ "bounded": bounded }));
+        true
     }
 
     /// Correlated evidence of the input stage on screen: whether it is a proxy and the frame's
@@ -2196,9 +2300,10 @@ mod tests {
         // A start whose input stage cannot be prepared ends, taking the change it made with it.
         let _ = editor.update(Message::Crop(CropMessage::Swap));
         assert!(editor.crop().is_some(), "the swap opened a draft");
-        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Err(
-            "the source is gone".into(),
-        ))));
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Open,
+            Err("the source is gone".into()),
+        )));
         assert!(editor.crop().is_none(), "nothing is left open");
         assert_eq!(editor.status, "the source is gone");
         assert!(
@@ -2236,9 +2341,14 @@ mod tests {
         let input = editor.crop().expect("a frame").stage;
         let job = editor
             .owner
-            .preview_job(luxforge_core::PreviewRequest::new(editor.client, asset).layers(count))
+            .preview_job(
+                luxforge_core::PreviewRequest::new(editor.client, asset.clone()).layers(count),
+            )
             .expect("the input stage's job");
-        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Open,
+            Ok(Box::new(job)),
+        )));
         let shown = |editor: &mut Editor, phase: &str| -> Value {
             luxforge_testbase::wait_until(&format!("the {phase} stage"), || {
                 let _ = editor.update(Message::Preview(crate::app::message::PreviewMessage::Poll));
@@ -2265,7 +2375,9 @@ mod tests {
         assert_eq!(editor.draft_generation, None, "nothing more is on its way");
 
         editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
-        let _ = editor.zoom_changed(&Zoom::Fit);
+        let plan = editor.zoom_changed(&Zoom::Fit);
+        assert_eq!(plan.units(), 1, "the stage is planned again");
+        let _ = editor.update(stage_replanned(&editor, &asset, count).0);
         assert!(
             editor.draft_generation.is_some(),
             "the exact stage is asked for"
@@ -2275,11 +2387,315 @@ mod tests {
         assert_eq!(editor.draft_generation, None);
 
         editor.session.preview.view.zoom = Zoom::Fit;
-        let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
+        let plan = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
+        assert_eq!(plan.units(), 0, "nothing is planned");
         let back = editor.snapshot()["crop"]["input_stage_frame"].clone();
         assert_eq!(back["phase"], json!("proxy"), "the held proxy, at once");
         assert_eq!(back["size"], fit["size"]);
         assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        finish(editor, catalog);
+    }
+
+    /// The owner task's answer to the plan a zoom asked for ([`Editor::present_crop_stage`]): the
+    /// stage on screen planned again from its entry, over a new allocation of its pixels, and a
+    /// handle that says whether anything still holds them.
+    fn stage_replanned(
+        editor: &Editor,
+        asset: &luxforge_core::AssetId,
+        count: usize,
+    ) -> (Message, std::sync::Weak<Vec<u8>>) {
+        let crop = editor.crop_gesture().expect("a draft");
+        let entry = crop
+            .frames
+            .planned
+            .as_ref()
+            .expect("a planned stage")
+            .entry_id
+            .clone();
+        let job = crate::app::tasks::crop_preview(
+            &editor.owner,
+            editor.client,
+            asset.clone(),
+            Some(entry.clone()),
+            count,
+        )
+        .expect("the stage planned again");
+        let (evaluation, pixels) = crate::app::testing::fresh_stack(&job.evaluation);
+        let job = luxforge_core::PreviewJob { evaluation, ..job };
+        (
+            Message::Crop(CropMessage::PreviewReady(
+                StagePlan::Zoom(entry),
+                Ok(Box::new(job)),
+            )),
+            pixels,
+        )
+    }
+
+    /// An open crop draft holds frames only. Once its input stage is delivered nothing of the
+    /// planned stack is left on the desktop: a RAW development's planes would hold the source
+    /// worker's memory gate, so a development the owner needs would wait on the draft. A zoom that
+    /// needs a phase no held frame serves plans the stage again, once, from the entry it was
+    /// planned from; its answer is requested only while the view still wants that phase, and an
+    /// answer to no plan the draft is waiting for is dropped.
+    #[test]
+    fn an_open_crop_draft_keeps_no_stack_once_its_stage_is_delivered() {
+        use crate::app::message::PreviewMessage;
+        use luxforge_core::Zoom;
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-crop-stage-stack-{}-{}.sqlite",
+            std::process::id(),
+            crate::app::tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
+        editor.session.workspace.state_panel = false;
+        editor.session.workspace.tools_panel = false;
+        editor.window = (360.0, 300.0);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let count = editor.crop().expect("a frame").layer_index;
+        let job = editor
+            .owner
+            .preview_job(
+                luxforge_core::PreviewRequest::new(editor.client, asset.clone()).layers(count),
+            )
+            .expect("the input stage's job");
+        let (evaluation, pixels) = crate::app::testing::fresh_stack(&job.evaluation);
+        let job = Box::new(luxforge_core::PreviewJob { evaluation, ..job });
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Open,
+            Ok(job),
+        )));
+        let phase =
+            |editor: &Editor| editor.snapshot()["crop"]["input_stage_frame"]["phase"].clone();
+        let settled = |editor: &mut Editor, wanted: &str| {
+            luxforge_testbase::wait_until(&format!("the {wanted} stage"), || {
+                let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+                phase(editor) == json!(wanted) && !editor.preview_queue.is_busy()
+            });
+        };
+        settled(&mut editor, "proxy");
+        assert_eq!(
+            pixels.strong_count(),
+            0,
+            "the draft keeps its stage's frame, not its stack"
+        );
+
+        // A zoom that needs the exact stage plans it again, once, and asks for no render yet.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        assert_eq!(editor.zoom_changed(&Zoom::Fit).units(), 1, "one plan");
+        assert!(editor.crop_gesture().expect("a draft").frames.replanning);
+        editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
+        let again = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
+        assert_eq!(again.units(), 0, "a plan is already on its way");
+        assert_eq!(editor.draft_generation, None);
+
+        // The zoom moved back to Fit before the answer: the held proxy serves, and the answer is
+        // dropped without a render.
+        editor.session.preview.view.zoom = Zoom::Fit;
+        assert_eq!(
+            editor.zoom_changed(&Zoom::Percent { value: 200.0 }).units(),
+            0
+        );
+        let (answer, pixels) = stage_replanned(&editor, &asset, count);
+        let _ = editor.update(answer);
+        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert!(!editor.crop_gesture().expect("a draft").frames.replanning);
+        assert_eq!(phase(&editor), json!("proxy"));
+        assert_eq!(pixels.strong_count(), 0, "a dropped answer is not kept");
+
+        // An answer to another entry's plan is not this draft's; one for this entry that is not
+        // the stage on screen is said and not rendered.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        assert_eq!(editor.zoom_changed(&Zoom::Fit).units(), 1);
+        let (answer, _) = stage_replanned(&editor, &asset, count);
+        let Message::Crop(CropMessage::PreviewReady(StagePlan::Zoom(entry), Ok(job))) = answer
+        else {
+            unreachable!()
+        };
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Zoom(luxforge_core::EntryId::new()),
+            Ok(job.clone()),
+        )));
+        assert!(
+            editor.crop_gesture().expect("a draft").frames.replanning,
+            "still waiting for its own plan"
+        );
+        let other = luxforge_core::PreviewJob {
+            layer_count: Some(count + 1),
+            ..*job
+        };
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Zoom(entry),
+            Ok(Box::new(other)),
+        )));
+        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert!(!editor.crop_gesture().expect("a draft").frames.replanning);
+        assert_eq!(
+            editor.status,
+            "The crop's input stage planned again is not the one on screen"
+        );
+
+        // The next zoom plans it again, and its answer is requested as a start's is and shown.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
+        assert_eq!(
+            editor.zoom_changed(&Zoom::Percent { value: 100.0 }).units(),
+            1
+        );
+        let (answer, pixels) = stage_replanned(&editor, &asset, count);
+        let _ = editor.update(answer);
+        assert!(
+            editor.draft_generation.is_some(),
+            "the exact stage is asked for"
+        );
+        settled(&mut editor, "exact");
+        // The worker releases the stack with its job. With no layer ahead of the crop the exact
+        // stage is the source's own pixels, shared by the frame the draft holds and the one on
+        // screen, and by nothing else; a frame holds no plane lease.
+        let exact = editor.crop_gesture().expect("a draft").frames.exact.clone();
+        let exact = exact.expect("the exact stage is held");
+        let shared = usize::from(std::ptr::eq(
+            std::sync::Arc::as_ptr(&exact.rgba),
+            pixels.as_ptr(),
+        ));
+        drop(exact);
+        assert_eq!(pixels.strong_count(), 2 * shared, "only the frames hold it");
+
+        // Once the draft has ended its frames are gone, and an answer finds nothing to show.
+        editor.session.preview.view.zoom = Zoom::Fit;
+        assert_eq!(
+            editor.zoom_changed(&Zoom::Percent { value: 200.0 }).units(),
+            0
+        );
+        let (answer, dropped) = stage_replanned(&editor, &asset, count);
+        draft_message(&mut editor, DraftMessage::Cancel);
+        assert!(editor.crop_gesture().is_none());
+        assert_eq!(pixels.strong_count(), 0, "the frames end with the draft");
+        let _ = editor.update(answer);
+        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert!(editor.presenter.stage().is_none());
+        assert_eq!(dropped.strong_count(), 0, "a dropped answer is not kept");
+        finish(editor, catalog);
+    }
+
+    /// With the real owner and a real RAW, while a crop draft is open over its input stage — the
+    /// proxy at Fit, the exact stage planned again for 100%, and the proxy again at Fit — another
+    /// client's white balance and another photograph each prepare their development within a
+    /// bounded wait. Each runs on a thread of its own, so a development that waits on planes the
+    /// draft holds fails the test instead of hanging it.
+    ///
+    /// `LUXFORGE_RAW_FIXTURE=/path/to/file.NEF cargo test --release -p luxforge-app --bin luxforge \
+    ///   a_raw_develops_again_while_a_crop_draft_is_open -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires a private RAW fixture: set LUXFORGE_RAW_FIXTURE"]
+    fn a_raw_develops_again_while_a_crop_draft_is_open() {
+        use crate::app::{
+            message::PreviewMessage,
+            tasks::{self, Scope},
+        };
+        use luxforge_core::Zoom;
+        use std::time::{Duration, Instant};
+        /// Far above a release development of any supported camera, far below a hang.
+        const DEADLINE: Duration = Duration::from_secs(60);
+        let raw = std::path::PathBuf::from(
+            std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"),
+        );
+        let catalog =
+            std::env::temp_dir().join(format!("luxforge-crop-gate-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&catalog);
+        let (mut editor, asset, other) = crate::app::testing::real_photo_at(&catalog, &raw);
+        let (owner, client) = (editor.owner.clone(), editor.client);
+        fn bounded<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+            let started = Instant::now();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(work());
+            });
+            let done = receiver.recv_timeout(DEADLINE).unwrap_or_else(|_| {
+                panic!("{what}: the development did not finish in {DEADLINE:?}")
+            });
+            eprintln!("{what}: {:?}", started.elapsed());
+            done
+        }
+        let phase =
+            |editor: &Editor| editor.snapshot()["crop"]["input_stage_frame"]["phase"].clone();
+        let settled = |editor: &mut Editor, wanted: &str| {
+            luxforge_testbase::wait_until(&format!("the {wanted} stage"), || {
+                let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+                phase(editor) == json!(wanted) && !editor.preview_queue.is_busy()
+            });
+        };
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let count = editor.crop().expect("a frame").layer_index;
+        let plan = |entry: Option<luxforge_core::EntryId>| {
+            let (owner, asset) = (owner.clone(), asset.clone());
+            bounded("the input stage's plan", move || {
+                tasks::crop_preview(&owner, client, asset, entry, count)
+            })
+            .map(Box::new)
+        };
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Open,
+            plan(None),
+        )));
+        settled(&mut editor, "proxy");
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        assert_eq!(editor.zoom_changed(&Zoom::Fit).units(), 1, "planned again");
+        let entry = editor
+            .crop_gesture()
+            .expect("a draft")
+            .frames
+            .planned
+            .as_ref();
+        let entry = entry.expect("a planned stage").entry_id.clone();
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+            StagePlan::Zoom(entry.clone()),
+            plan(Some(entry)),
+        )));
+        settled(&mut editor, "exact");
+        editor.session.preview.view.zoom = Zoom::Fit;
+        assert_eq!(
+            editor.zoom_changed(&Zoom::Percent { value: 100.0 }).units(),
+            0
+        );
+        assert_eq!(phase(&editor), json!("proxy"));
+
+        // Another client's white balance, read back as the desktop reads it: its refresh plans the
+        // new entry's preview and waits for the development it needs.
+        let revision = editor.state.as_ref().expect("an open photo").revision;
+        tasks::call(
+            &owner,
+            other,
+            "edit.set-raw",
+            json!({"asset_id": asset, "temperature": 3500.0,
+                   "mutation": tasks::mutation(revision)}),
+        )
+        .expect("another client's white balance");
+        let refresh = {
+            let (owner, asset) = (owner.clone(), asset.clone());
+            bounded("another client's white balance", move || {
+                tasks::refresh(&owner, client, asset, Scope::Elsewhere, None)
+            })
+            .expect("the refresh")
+        };
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+        assert!(editor.crop().is_some(), "the draft is kept");
+
+        // Another photograph: its original's preparation retains no development of this one.
+        let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0/orientation-1.jpg");
+        let (queued, _) = tasks::call(
+            &owner,
+            client,
+            "catalog.import",
+            json!({"path": jpeg, "mutation": tasks::request()}),
+        )
+        .expect("an import");
+        let job = queued["job_id"].as_str().expect("a source job").to_owned();
+        let import_owner = owner.clone();
+        bounded("another photograph", move || {
+            tasks::wait_source_job(&import_owner, client, &job)
+        })
+        .expect("another photograph prepares");
+        assert!(editor.crop().is_some(), "the draft is still open");
         finish(editor, catalog);
     }
 }

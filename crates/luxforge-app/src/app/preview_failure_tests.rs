@@ -696,7 +696,10 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     let (stage, frame) = (Hold::shut(), Hold::shut());
     let mut job = draft_job(&editor, small());
     stage.hold(&mut job);
-    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+        crate::app::crop::StagePlan::Open,
+        Ok(Box::new(job)),
+    )));
     let draft = editor
         .draft_generation
         .expect("the draft's job was requested");
@@ -775,7 +778,10 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
     let (stage, frame) = (Hold::shut(), Hold::shut());
     let mut job = draft_job(&editor, small());
     stage.hold(&mut job);
-    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+        crate::app::crop::StagePlan::Open,
+        Ok(Box::new(job)),
+    )));
     let draft = editor
         .draft_generation
         .expect("the draft's job was requested");
@@ -832,7 +838,10 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
     ));
     let log = attach_log(&mut editor);
     let job = draft_job(&editor, small());
-    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+        crate::app::crop::StagePlan::Open,
+        Ok(Box::new(job)),
+    )));
     let reapply = editor
         .draft_generation
         .expect("the reapply's job was requested");
@@ -895,7 +904,10 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
     let mut job = draft_job(&editor, small());
     let stale = entry(&asset, 5, Some(&job.evaluation.entry().id));
     rebuild(&mut job, |parts| parts.entry = stale);
-    let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(
+        crate::app::crop::StagePlan::Open,
+        Ok(Box::new(job)),
+    )));
     assert_eq!(
         editor.draft_generation, None,
         "the stale stage was not requested"
@@ -926,7 +938,10 @@ fn a_draft_shows_its_input_stage_in_the_update_that_takes_it_up() {
     let photo = editor.presenter.photo_version();
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let job = draft_job(&editor, small());
-    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+        crate::app::crop::StagePlan::Open,
+        Ok(Box::new(job)),
+    )));
     let draft = editor.draft_generation.expect("the draft's job");
     // Nothing is taken up until the stage is ready, so one `Poll` takes it up.
     deliver_until(

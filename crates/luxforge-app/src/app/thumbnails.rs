@@ -328,6 +328,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::testing::fresh_stack;
     use luxforge_core::{
         AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EntryId, Evaluation,
         HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, PreviewSource, RECIPE_FORMAT, Recipe,
@@ -602,30 +603,6 @@ mod tests {
         );
     }
 
-    /// The same stack as `stack` — the same entry, recipe and source identity, so the same
-    /// analysis identity — over a new allocation of its pixels, and a handle that says whether
-    /// anything still holds that allocation: what a test needs to see that nothing kept a stack.
-    fn fresh(stack: &Evaluation) -> (Evaluation, std::sync::Weak<Vec<u8>>) {
-        let PreviewSource::Jpeg(image) = stack.source() else {
-            panic!("a JPEG stack");
-        };
-        let pixels = Arc::new(image.rgba.as_ref().clone());
-        let held = Arc::downgrade(&pixels);
-        let source = PreviewSource::Jpeg(SourceImage {
-            rgba: pixels,
-            ..image.clone()
-        });
-        let evaluation = Evaluation::new(
-            stack.registry().clone(),
-            stack.context().clone(),
-            source,
-            stack.entry().clone(),
-            stack.recipe().clone(),
-            None,
-        );
-        (evaluation, held)
-    }
-
     /// Through the editor: outside Mask mode a settled stack starts nothing and only its identity
     /// is noted; entering Mask mode plans that stack again once, and its delivered thumbnails reach
     /// each mask's row; in Mask mode a new settled stack is handed to the worker as its frame is
@@ -686,7 +663,7 @@ mod tests {
         let identity = PreviewJob::new(stack.clone()).expect("a job").identity;
 
         // Outside Mask mode: nothing is filled, and nothing of the stack outlives its frame.
-        let (settled, pixels) = fresh(&stack);
+        let (settled, pixels) = fresh_stack(&stack);
         editor.request_preview(PreviewJob::new(settled).expect("a job"));
         assert!(
             !editor.thumbnail_queue.is_busy(),
@@ -713,7 +690,7 @@ mod tests {
         );
         assert!(!editor.thumbnail_queue.is_busy());
         // The owner task's answer: the same stack, planned again.
-        let (planned, pixels) = fresh(&stack);
+        let (planned, pixels) = fresh_stack(&stack);
         let _ = editor.update(Message::Preview(PreviewMessage::ThumbnailSource(Ok(
             Box::new(PreviewJob::new(planned).expect("a job")),
         ))));
@@ -737,7 +714,7 @@ mod tests {
         let version = editor.thumbnails.version;
 
         // The same settled stack again starts nothing.
-        let (again, _) = fresh(&stack);
+        let (again, _) = fresh_stack(&stack);
         editor.request_preview(PreviewJob::new(again).expect("a job"));
         assert!(!editor.thumbnail_queue.is_busy());
         idle(&mut editor);
@@ -756,7 +733,7 @@ mod tests {
             },
             None,
         );
-        let (brighter, pixels) = fresh(&brighter);
+        let (brighter, pixels) = fresh_stack(&brighter);
         let job = PreviewJob::new(brighter).expect("a job");
         let brighter = job.identity.clone();
         editor.request_preview(job);
