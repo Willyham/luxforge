@@ -1630,6 +1630,45 @@ latency distribution.
 The local evidence is under `artifacts/performance-first-wave/`; the implementation and
 performance review checklist are in [isolated rendering performance](../design/isolated-performance.md).
 
+### Straightened-crop resample
+
+The byte resample's bilinear sample rounds each channel forward, `round(255 · encode(v))`, through
+the same guarded threshold search as the RAW terminal (`srgb::Quantizer::rounded`): the code-boundary
+index answers every value more than `1e-12` linear from both thresholds around its code, and the
+forward transfer function answers the rest. A 10° crop of the 24 MP fixture outputs 3695 × 2077, so
+this removes about 23 million `powf` calls from the exact render. The colour row loops, the byte
+proxy build, the byte spatial entry's read and the RAW terminal rows take the decode table and the
+quantizer once per pass instead of dereferencing a lazy static per pixel, the linear point path
+reads its source through the view resolved once at construction, and the finiteness scan after each
+colour unit no longer short-circuits, so it vectorises.
+
+Byte identity: the boundary tests drive `bilinear` itself across every code threshold, with
+horizontal and two-row blends of three corner pairs per threshold stepped ULP by ULP through and
+around the guard band, plus 200,000 random frames and taps; the quantizer without its guard fails
+them. Full-frame SHA-256 of the exact render, the exact render with a full Basic layer, the display
+proxy source and both proxy renders, and 2048 point samples each, at 3°, 10°, −7.5° and 45°
+`crop-fit`, match between a release build of `7759f5cb` and this change for the generated 24 MP and
+60 MP JPEGs, the photographic `will-sapa-drone.jpg`, the Z6 NEF and the X100VI RAF (140 hashes).
+
+`editor-performance --source fixtures/generated/24mp.jpg --samples 30`, release `--locked`, native
+M4 Pro, warm cache, two ABBA rounds: A is the retained `ec132e71` baseline build, whose resample,
+colour loops and linear point path are those of `7759f5cb`; B is this change. The host was heavily
+shared: the one-minute load at the start of each leg was 10.7, 14.3, 15.2 and 29.3 in the first
+round and 12.0, 15.2, 15.6 and 17.1 in the second. p50 of each leg, in run order:
+
+| 24 MP, p50 ms (A, B, B, A) | Round 1 | Round 2 |
+| --- | --- | --- |
+| 200 transforms and a 10° `crop-fit` | 30.5, 22.0, 29.7, 52.5 | 35.7, 18.9, 22.9, 42.4 |
+| The same, less the 200-transform row (the crop's own cost) | 24.0, 12.9, 18.1, 41.5 | 28.6, 10.5, 15.5, 33.9 |
+| Proxy frame of the crop stack (2879 × 1618) | 21.7, 11.9, 12.8, 24.5 | 22.5, 10.5, 11.7, 27.9 |
+| Proxy frame of the crop stack with a full Basic layer | 69.1, 47.9, 45.6, 51.9 | 52.7, 42.8, 45.0, 66.2 |
+
+Every B leg is below both A legs of its round in all four rows. The straightened crop's own cost
+over the unrotated stack falls from 24 to 42 ms to 11 to 18 ms at the median, and the proxy frame
+of the crop stack roughly halves, from 22 to 28 ms to 11 to 13 ms. At this load these are relative
+results, not new absolute budgets. The proxy build row is not compared: the baseline predates the
+banded proxy build.
+
 ## Source preparation and exact rendering
 
 The source worker develops a cold known RAW directly at the validated requested white balance.

@@ -10,7 +10,7 @@ The recorded pre-viewport baseline sent every slider input through a full-resolu
 | --- | --- |
 | Wait for the 16 ms slider tick before `draft.set` is sent | 0 to 16 ms |
 | `draft.set` round trip plus the preview job, on the owner | 8 ms (33 ms under a rotated crop, which is CPU contention with the render, not owner work) |
-| Full-resolution CPU render: orientation copy, colour pass over 24 MP, crop resample | 15 ms (Exposure alone) to 140 ms (every Basic unit), plus 30 ms for a rotated crop |
+| Full-resolution CPU render: orientation copy, colour pass over 24 MP, crop resample | 15 ms (Exposure alone) to 140 ms (every Basic unit), plus 30 ms for a rotated crop (11 to 18 ms in the current build, whose resample quantizes without a power function; [performance](../specs/performance.md#straightened-crop-resample)) |
 | Wait for the 16 ms preview poll after the worker finishes | 0 to 16 ms |
 | GPU upload of the 24 MP RGBA raster | 32 ms (50 ms at 60 MP) |
 
@@ -206,6 +206,6 @@ Region buffers are checked against the matching rectangle of the full render for
 
 Recorded here as proposals, not decisions.
 
-- **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is a substantial remaining cost per input (about 50 ms at 24 MP under a rotated crop in the recorded diagnostic). Half the linear display resolution has one quarter as many output pixels and gives a softer picture during motion; a fourfold latency improvement is not established. Measure the reduction, including proxy builds and global estimates. It can complement GPU execution; neither approach's gain is assumed.
+- **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is a substantial remaining cost per input (about 45 ms at 24 MP under a rotated crop in the [recorded diagnostic](../specs/performance.md#straightened-crop-resample)). Half the linear display resolution has one quarter as many output pixels and gives a softer picture during motion; a fourfold latency improvement is not established. Measure the reduction, including proxy builds and global estimates. It can complement GPU execution; neither approach's gain is assumed.
 - **GPU colour stage.** If the proxy render of the full Basic layer still misses the two-frame target at Fit, the next step is to draw the proxy of the drafted layer's input stage through an `iced` shader primitive and apply the colour units as a fragment program with the coefficients as uniforms, so a tick costs a uniform write. That needs a WGSL transcription of each unit, a headless readback test against the CPU path within one code, and a fallback to the CPU proxy whenever a unit has no GPU program. The proxy source and the two-phase job are the foundation it needs and are built so that it changes only the presentation of the proxy phase.
 - **Reduced pool.** Leaving one or two cores out of the shared Rayon pool for the desktop and owner threads may lower jitter; it is a measurement, not a default.
