@@ -14,13 +14,13 @@
 
 use super::{PRESENCE_EFFECT, PresenceModule, presence_halo};
 use crate::{
-    EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, RenderContext,
-    RenderOptions, SnapshotId, SourceImage,
+    Cancel, EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe,
+    RenderContext, RenderOptions, SnapshotId, SourceImage,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
         spatial::{
-            Cancel, SpatialPlan, TileScratch, Tiling, build_reduction, fill_planes,
-            resolve_globals, run_tile,
+            SpatialPlan, TileScratch, Tiling, build_reduction, fill_planes, resolve_globals,
+            run_tile,
         },
         testing::{frame_in, render_tiled, sample_in},
     },

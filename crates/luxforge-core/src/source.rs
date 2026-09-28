@@ -1,8 +1,14 @@
 //! Decoding an original into pixels: the JPEG path (its limits, the profile check, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
-//! JPEG or an immutable RAW mosaic with one WB development.
+//! JPEG or an immutable RAW mosaic with one WB development. The two sources' own data types are
+//! [`SourceImage`], here, and [`LinearImage`], in [`linear`].
+mod linear;
+
+pub use linear::LinearImage;
+pub(crate) use linear::{ViewReader, layout};
+
 use crate::{
-    Error, ErrorKind, LinearImage, Raster,
+    Error, ErrorKind, Raster,
     colour::mat3::matvec_f32,
     export::{CaptureMetadata, metadata::jpeg_orientation},
 };

@@ -2009,8 +2009,16 @@ mod tests {
                 job.evaluation.recipe(),
             )
             .expect("a rendered frame");
-        serde_json::to_value(crate::analysis::reduce_raster(&raster).expect("a reduction"))
-            .expect("an encodable report")
+        serde_json::to_value(
+            crate::analysis::reduce(
+                &raster.rgba,
+                raster.width,
+                raster.height,
+                &crate::Cancel::never(),
+            )
+            .expect("a reduction"),
+        )
+        .expect("an encodable report")
     }
 
     fn pixel_edit(
@@ -3710,7 +3718,13 @@ mod tests {
         let report = exact.report.clone().expect("the job asked for a report");
         assert_eq!(
             report,
-            crate::analysis::reduce_raster(raster).unwrap(),
+            crate::analysis::reduce(
+                &raster.rgba,
+                raster.width,
+                raster.height,
+                &crate::Cancel::never()
+            )
+            .unwrap(),
             "the report is the exact reduction of the frame that was rendered"
         );
         let encoded = serde_json::to_value(&report).unwrap();

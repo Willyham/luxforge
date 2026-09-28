@@ -313,7 +313,7 @@ pub(super) fn run(
     // as the reduction, so the phase answers cancelled rather than a frame nothing will adopt.
     let (result, report) = match rendered {
         Ok(raster) if analyse => {
-            match crate::analysis::reduce_raster_cancellable(&raster, full_cancel) {
+            match crate::analysis::reduce(&raster.rgba, raster.width, raster.height, full_cancel) {
                 Ok(report) => (Ok(raster), Some(report)),
                 Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
                 Err(_) => (Ok(raster), None),
@@ -578,7 +578,7 @@ fn run_viewport(
         .and_then(|exact| exact.frame(snapshot_id.clone()));
     let (result, report) = match rendered {
         Ok(raster) if job.analyse && !approximate_white_balance => {
-            match crate::analysis::reduce_raster_cancellable(&raster, cancel) {
+            match crate::analysis::reduce(&raster.rgba, raster.width, raster.height, cancel) {
                 Ok(report) => (Ok(raster), Some(report)),
                 Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
                 Err(_) => (Ok(raster), None),
@@ -710,20 +710,17 @@ pub(super) fn mask_overlay_for(
             // Two different stages would be two different coverage fields, and `coverage_grid`
             // refuses that mismatch for the frame; it is refused here for the operation, in the same
             // voice, rather than read at coordinates of another stage.
-            Ok(prefix) if prefix.stage() != stage => {
+            Ok((received, _)) if received != stage => {
                 unavailable = format!(
                     "the masked operation receives a {}x{} stage and this mask is compiled against \
                      {}x{}",
-                    prefix.stage().width,
-                    prefix.stage().height,
-                    stage.width,
-                    stage.height
+                    received.width, received.height, stage.width, stage.height
                 );
                 MaskPixels::Unavailable(&unavailable)
             }
-            Ok(prefix) => {
+            Ok((_, prefix)) => {
                 input = prefix;
-                MaskPixels::Input(&input)
+                MaskPixels::Input(&*input)
             }
             // No layer is bound to this mask, or its prefix holds a spatial layer, or it does not
             // compile: in every case there is no operation whose input this grid can read, and the

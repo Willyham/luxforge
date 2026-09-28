@@ -1,14 +1,14 @@
-//! Executing the spatial primitive: the tiling, the unit chain, the global estimates and the
-//! cancellation token. The budget and the estimate store themselves belong to the
-//! [`RenderContext`](super::RenderContext) every evaluation is handed.
+//! Executing the spatial primitive: the tiling, the unit chain and the global estimates. The budget
+//! and the estimate store themselves belong to the [`RenderContext`](super::RenderContext) every
+//! evaluation is handed.
 //!
 //! The contract a module writes against is in [`crate::modules::SpatialUnit`]. This module owns the
 //! other half: how much one tile costs, how many tiles may be in flight, where the intermediate
 //! planes come from and how a point query evaluates only the tiles it needs, each once, so that a
 //! sampled byte is the byte a render of that tile produces.
 
-pub(crate) use super::Cancel;
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
+use crate::Cancel;
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{

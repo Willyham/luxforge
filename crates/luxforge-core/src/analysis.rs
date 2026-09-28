@@ -15,13 +15,14 @@ pub use mask_overlay::{
     MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskInputPixel, MaskOverlay, MaskPixels, coverage_grid,
     coverage_grid_region, quantize_coverage,
 };
+pub(crate) use overlay::cell_pixel;
 pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,
 };
 
 #[cfg(test)]
 use crate::ErrorKind;
-use crate::{Cancel, Error, Raster};
+use crate::{Cancel, Error};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -313,8 +314,8 @@ fn reduce_parallel(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
     Ok(*boxed)
 }
 
-/// `reduce` with an explicit parallel threshold, so tests can force either path on the same
-/// buffer. Production code always goes through `reduce`, which fixes the threshold at
+/// [`reduce`] with an explicit parallel threshold: the hook the tests use to force either path on
+/// the same buffer. Production code always goes through [`reduce`], which fixes the threshold at
 /// [`luxforge_raw::PARALLEL_PIXELS`], the one the passes that are not rendering passes share.
 fn reduce_with_threshold(
     rgba: &[u8],
@@ -347,41 +348,22 @@ fn reduce_with_threshold(
     Ok(bins.into_report(width, height))
 }
 
-/// Reduce one immutable byte raster (tightly packed RGBA, row-major) into an exact [`Report`].
+/// Reduce one immutable byte raster (tightly packed RGBA, row-major) into an exact [`Report`]: a
+/// rendered [`crate::Raster`]'s `rgba`, `width` and `height`, or any buffer of that layout.
 /// Reduces serially below the one-megapixel threshold [`luxforge_raw::PARALLEL_PIXELS`],
 /// and on the shared Rayon pool above it, using bounded worker-local bins merged by addition. Reads
 /// `rgba` in place: no copy of the raster and no allocation proportional to the image (`Bins` is a
-/// fixed handful of kilobytes per worker, not per pixel).
-pub fn reduce(rgba: &[u8], width: u32, height: u32) -> Result<Report, Error> {
-    reduce_cancellable(rgba, width, height, &Cancel::never())
-}
-
-/// [`reduce`] under a [`Cancel`] token read once per worker chunk. With a token that is never
-/// cancelled this is [`reduce`]; it is the same code, and [`reduce`] is one call to it.
-pub fn reduce_cancellable(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    cancel: &Cancel,
-) -> Result<Report, Error> {
+/// fixed handful of kilobytes per worker, not per pixel). `cancel` is read once per worker chunk,
+/// so the exact phase's reduction stops within one chunk of a newer request; a caller with nothing
+/// to supersede passes [`Cancel::never`].
+pub fn reduce(rgba: &[u8], width: u32, height: u32, cancel: &Cancel) -> Result<Report, Error> {
     reduce_with_threshold(rgba, width, height, luxforge_raw::PARALLEL_PIXELS, cancel)
-}
-
-/// [`reduce`] over a rendered [`Raster`], for callers that already hold one (a preview job, a
-/// desktop analysis request, `editor-performance`).
-pub fn reduce_raster(raster: &Raster) -> Result<Report, Error> {
-    reduce_raster_cancellable(raster, &Cancel::never())
-}
-
-/// [`reduce_raster`] under a [`Cancel`] token: the exact phase's reduction, which a newer request
-/// stops within one worker chunk.
-pub fn reduce_raster_cancellable(raster: &Raster, cancel: &Cancel) -> Result<Report, Error> {
-    reduce_cancellable(raster.rgba.as_ref(), raster.width, raster.height, cancel)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Raster;
     use std::{collections::HashMap, fs, path::PathBuf};
 
     fn fixtures_dir() -> PathBuf {
@@ -461,8 +443,13 @@ mod tests {
     #[test]
     fn hand_counted_fixtures_match_exactly() {
         for (name, fixture) in load_histogram_fixtures() {
-            let report = reduce(&fixture.rgba, fixture.width, fixture.height)
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let report = reduce(
+                &fixture.rgba,
+                fixture.width,
+                fixture.height,
+                &Cancel::never(),
+            )
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(report.r, fixture.counts.r, "{name}: r channel");
             assert_eq!(report.g, fixture.counts.g, "{name}: g channel");
             assert_eq!(report.b, fixture.counts.b, "{name}: b channel");
@@ -507,8 +494,8 @@ mod tests {
         let fixtures: HashMap<String, Fixture> = load_histogram_fixtures().into_iter().collect();
         let full = &fixtures["cropped-population-full-6x4.json"];
         let crop = &fixtures["cropped-population-crop-4x2.json"];
-        let full_report = reduce(&full.rgba, full.width, full.height).unwrap();
-        let crop_report = reduce(&crop.rgba, crop.width, crop.height).unwrap();
+        let full_report = reduce(&full.rgba, full.width, full.height, &Cancel::never()).unwrap();
+        let crop_report = reduce(&crop.rgba, crop.width, crop.height, &Cancel::never()).unwrap();
 
         // The README's hand check: the full composition's border ring is 12 black pixels (code 0)
         // and 4 white pixels (code 255); the crop excludes the whole ring, so subtracting the
@@ -586,11 +573,12 @@ mod tests {
     fn invalid_length_and_overflow_are_structured_errors() {
         // A 4x1 image needs 16 bytes; give it 15.
         let short = vec![0u8; 15];
-        let error = reduce(&short, 4, 1).expect_err("a short buffer must be rejected");
+        let error =
+            reduce(&short, 4, 1, &Cancel::never()).expect_err("a short buffer must be rejected");
         assert_eq!(error.kind, ErrorKind::Validation);
 
-        let error =
-            reduce(&[], u32::MAX, u32::MAX).expect_err("overflowing dimensions must be rejected");
+        let error = reduce(&[], u32::MAX, u32::MAX, &Cancel::never())
+            .expect_err("overflowing dimensions must be rejected");
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
     }
 
@@ -675,7 +663,7 @@ mod tests {
         let raster = cancellation_raster(2000, 600);
         let cancel = Cancel::new();
         cancel.cancel();
-        let error = reduce_raster_cancellable(&raster, &cancel)
+        let error = reduce(&raster.rgba, raster.width, raster.height, &cancel)
             .expect_err("a cancelled token refuses the reduction");
         assert_eq!(error.kind, ErrorKind::Cancelled);
         assert_eq!(error.kind.code(), "cancelled");

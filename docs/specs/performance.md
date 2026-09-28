@@ -94,7 +94,7 @@ work on identical frames.
 | … with `+1 EV` and all five Tone fields | 80.8 / 105.2 | 196.4 / 210.8 |
 | … with `vibrance 50, saturation 20` (the fused `ColourAdjust` unit) | 106.0 / 117.3 | 273.6 / 289.9 |
 | … with `temperature 30, tint −10` (white balance) | 53.4 / 70.3 | 128.0 / 136.4 |
-| `analysis::reduce_raster` alone, over an already-rendered raster | 6.9 / 7.7 | 17.4 / 27.5 |
+| `analysis::reduce` alone, over an already-rendered raster | 6.9 / 7.7 | 17.4 / 27.5 |
 | `query.neutral-sample`: the whole picker, 25 point samples | 0.01 / 0.03 | 0.02 / 0.03 |
 | `crop-fit` commit: validation, fitting, compile and persistence, no render | 0.79 (single) | 0.85 (single) |
 | Import | 54.4 (single) | 127.3 (single) |
@@ -135,7 +135,7 @@ A masked colour layer costs the units it would have cost unmasked, plus one cove
 one blend per pixel **inside the mask's bounds rectangle**, and nothing at all outside it. Measured on
 the host above, release, single invocation, three measured renders after one warm pass, over a
 programmatically filled 6000 × 4000 frame with one `+1 EV` exposure unit
-(`render::tests::masked_colour_cost_on_a_24_megapixel_frame`, an ignored measurement test):
+(`render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame`, an ignored measurement test):
 
 | 24 MP render, one colour unit | ms per render |
 | --- | --- |
@@ -150,7 +150,7 @@ quantization of the rows it touches, because the frame must still be written: sk
 chunk when every operation in its run is masked and the chunk lies outside every rectangle is possible
 and is not built. The unit-evaluation claim itself is asserted rather than inferred, by a counting
 colour unit in
-`render::tests::a_masked_operation_evaluates_no_unit_outside_its_bounds`, which requires the count to
+`render::mask_tests::a_masked_operation_evaluates_no_unit_outside_its_bounds`, which requires the count to
 equal the rectangle's area exactly.
 
 `editor-performance` on 24 MP, 30 samples, after the change: colour baseline 33.1 / 38.3 ms and one
@@ -301,7 +301,7 @@ What a painted mask costs, as against the gradients whose cost is already record
 (the grid index over segments, built before a pixel is read), the rectangle it bounds, the render it
 modulates, and the point query it answers. `cargo test --release --locked --package luxforge-core
 --lib -- --ignored masked_brush_cost_on_photo_sized_frames --nocapture`
-(`render::tests::masked_brush_cost_on_photo_sized_frames`, an ignored measurement test), on the M4
+(`render::mask_tests::masked_brush_cost_on_photo_sized_frames`, an ignored measurement test), on the M4
 MacBook Pro, release, one warm-up render then the mean of three, twenty compiles, and a thousand
 point queries spread over the frame. **One-minute load average 3.96 before the run and 9.87 after**,
 the run itself taking 8.8 s; the figures below are therefore taken on a quiet host by the
@@ -664,7 +664,7 @@ a press that found a frame already presenting).
 the owner's `draft.set` stays at 0.03 ms p50 from the first quarter to the last, and planning the
 drafted preview (capturing and hashing the stroke) goes from 0.08 to 0.09–0.10 ms, in both builds;
 the position-to-frame p50 does not grow along the stroke at all. The per-point work measured on
-its own (`render::tests::painted_stroke_path_work_per_position`, an ignored measurement test,
+its own (`render::mask_tests::painted_stroke_path_work_per_position`, an ignored measurement test,
 release, 200 rounds each on the workload's own sine and brush) is microseconds at every length:
 
 | Positions drawn (stored) | Decimate the whole path | Push one and reduce | Check the posted path | Capture and hash the stroke | Grid index, proxy / 24 MP stage |

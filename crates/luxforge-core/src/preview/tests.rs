@@ -266,7 +266,8 @@ fn an_analysing_preview_returns_the_exact_reduction_of_the_frame_it_rendered() {
             .exact()
             .and_then(|exact| exact.report.clone())
             .expect("the job asked for a report"),
-        crate::analysis::reduce_raster(raster).unwrap()
+        crate::analysis::reduce(&raster.rgba, raster.width, raster.height, &Cancel::never())
+            .unwrap()
     );
     assert!(result.identity.has_output_stage());
     // A job that does not ask carries no report: `None` is "not asked", never empty counts.

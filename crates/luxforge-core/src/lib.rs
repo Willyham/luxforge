@@ -4,6 +4,7 @@ pub mod analysis;
 mod api;
 pub mod artifacts;
 mod atomic_file;
+mod cancel;
 pub mod capabilities;
 /// One home for the sRGB transfer function, Rec. 709 luminance, the Oklab conversion, small 3×3
 /// linear algebra and the Planckian locus, shared by every renderer and colour module.
@@ -37,6 +38,7 @@ mod source;
 pub use activity::{Activity, ActivityBoard, ActivitySnapshot, ActivitySpec};
 pub use api::*;
 pub use artifacts::ArtifactId;
+pub use cancel::Cancel;
 pub use capabilities::{
     host::HostConfig,
     redact::{redact_params, redact_request},
@@ -52,10 +54,10 @@ pub use proxy::{
     ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan, ProxyWindow,
 };
 pub use render::{
-    Cancel, ContentPoint, LinearImage, LinearSettings, ProxyRegionPlan, Raster, RegionFallback,
-    RegionFrame, RegionRenderOutcome, Render, RenderContext, RenderOptions, RenderPhase,
-    RenderSource, Sample, ScratchBudget, SpatialBudget, StageSize, StageTransform,
-    WhiteBalanceApproximation, render, stage_transform,
+    ContentPoint, LinearSettings, ProxyRegionPlan, Raster, RegionFallback, RegionFrame,
+    RegionRenderOutcome, Render, RenderContext, RenderOptions, RenderPhase, RenderSource, Sample,
+    ScratchBudget, SpatialBudget, StageSize, StageTransform, WhiteBalanceApproximation, render,
+    stage_transform,
 };
-pub use source::{SourceImage, open_source};
+pub use source::{LinearImage, SourceImage, open_source};
 pub(crate) use source::{open_source_bytes, read_bounded_file};

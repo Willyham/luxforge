@@ -7,7 +7,7 @@
 //! commits one `edit.set-pixel` of `(0, 128, 255)` to make exactly one both-endpoint pixel — which
 //! is also the isolated-clipped-pixel case the contract asks the Fit overlay to survive.
 //!
-//! Every count a frame reports is checked against `analysis::reduce_raster` of an **independent**
+//! Every count a frame reports is checked against `analysis::reduce` of an **independent**
 //! core render of the same fixture through the same recipe, so the plot is verified against the
 //! reducer rather than against itself — and so are the words the triangles' tooltips state them in.
 //!
@@ -20,7 +20,7 @@ use crate::{
     *,
 };
 use luxforge_core::{
-    BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, PIXEL_EFFECT,
+    BASIC_EFFECT, CROP_EFFECT, Cancel, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, PIXEL_EFFECT,
     RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
 };
 use luxforge_evidence::{self as script, PreviewStep, SliderStep, ViewStep, WorkspaceStep};
@@ -182,7 +182,12 @@ fn reduction(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
     let options = luxforge_core::RenderOptions::default();
     let raster =
         core_render(&registry, &source, recipe, options, &context)?.frame(SnapshotId::new())?;
-    Ok(analysis::reduce_raster(&raster)?)
+    Ok(analysis::reduce(
+        &raster.rgba,
+        raster.width,
+        raster.height,
+        &Cancel::never(),
+    )?)
 }
 
 /// The stack a frame says it is displaying, rebuilt as a recipe so this runner renders and reduces

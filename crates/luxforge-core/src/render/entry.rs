@@ -12,19 +12,20 @@
 //! ([`super::rasterize`] or [`linear::rasterize`]) writes its frame.
 
 use super::{
-    Byte, Cancel, Compiled, Evaluation, LayerInput, PixelDomain, Raster, Sample, SpatialMode,
-    StageSize, StageTransform, check_source, grid_centres,
-    linear::{self, Linear, LinearImage, LinearSettings},
+    Byte, Compiled, Evaluation, PixelDomain, Raster, Sample, SpatialMode, StageSize,
+    StageTransform, check_source,
+    linear::{self, Linear, LinearSettings},
     rasterize,
     spatial::Tiling,
     transform_of,
     window::{RegionFallback, WindowPlan},
 };
 use crate::{
-    Error, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
-    SnapshotId, SourceImage,
+    Cancel, Error, LinearImage, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan,
+    ProxyWindow, Recipe, SnapshotId, SourceImage,
+    analysis::{MaskInputPixel, cell_pixel},
     mask_field::MaskSampling,
-    modules::{Global, Region},
+    modules::{Global, Region, Stage},
 };
 use std::borrow::Cow;
 
@@ -385,10 +386,11 @@ impl<'a> Render<'a> {
         self.options.cancel.check()?;
         let source = match self.source {
             RenderSource::Byte(image) => RegionSource::Byte(
-                if windows.source.x0 == 0
-                    && windows.source.y0 == 0
-                    && windows.source.width == image.width
-                    && windows.source.height == image.height
+                if windows.source
+                    == Region::whole(Stage {
+                        width: image.width,
+                        height: image.height,
+                    })
                 {
                     image.clone()
                 } else {
@@ -526,12 +528,10 @@ impl<'a> Render<'a> {
             Err(reason) => return Ok(RegionRenderOutcome::Declined(reason)),
         };
         let expected = plan.proxy.window.map_or(
-            Region {
-                x0: 0,
-                y0: 0,
+            Region::whole(Stage {
                 width: plan.proxy.width,
                 height: plan.proxy.height,
-            },
+            }),
             |window| Region {
                 x0: window.x,
                 y0: window.y,
@@ -797,7 +797,6 @@ impl<'a> Render<'a> {
         let evaluation = self.evaluation(domain, SpatialMode::Point)?;
         let outside = || Error::internal("a grid centre lies outside the stage");
         grid_centres(side, width, height)
-            .into_iter()
             .map(|(x, y)| {
                 checkpoint()?;
                 evaluation.terminal(x, y)?.ok_or_else(outside)
@@ -846,13 +845,19 @@ fn same_segments(left: &Compiled, right: &Compiled) -> bool {
 /// display cell over the whole stage, which would evaluate every tile of it on every overlay, so
 /// it is refused rather than paid: the check is the prefix's own compilation, which is
 /// `O(layers)` and allocates no frame, and the evaluation reuses that compilation.
+///
+/// The answer is the stage the layer receives, which is the stage a mask bound to it is compiled
+/// against, and the point query over it, in the domain the render's masked primitives blend in.
+/// The byte path's prefix ends at a quantized boundary, exactly as the brush's stored seed and
+/// `mask.sample-input` do, so the overlay and the seed read one value; the linear path never
+/// quantizes at all.
 pub(crate) fn layer_input<'a>(
     registry: &ModuleRegistry,
     source: RenderSource<'a>,
     recipe: &Recipe,
     layer: usize,
     context: &'a RenderContext,
-) -> Result<LayerInput<'a>, Error> {
+) -> Result<(Stage, Box<dyn MaskInputPixel + 'a>), Error> {
     let layers = crate::editor::prefix(&recipe.layers, layer)?;
     let (width, height) = source.dimensions();
     let compiled = registry.compile_layers(
@@ -872,30 +877,51 @@ pub(crate) fn layer_input<'a>(
     match source {
         RenderSource::Byte(image) => {
             check_source(image)?;
-            Ok(LayerInput::Byte(point(Byte(image), compiled, context)?))
+            point(Byte(image), compiled, context)
         }
-        RenderSource::Linear { image, settings } => Ok(LayerInput::Linear(point(
-            Linear::new(image, settings)?,
-            compiled,
-            context,
-        )?)),
+        RenderSource::Linear { image, settings } => {
+            linear::check_resamples(&compiled)?;
+            point(Linear::new(image, settings)?, compiled, context)
+        }
     }
+}
+
+/// A layer's input is one point evaluation of its prefix in either domain, read in linear light.
+impl<D: PixelDomain> MaskInputPixel for Evaluation<'_, D> {
+    fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        Ok(self.pixel(x, y)?.map(D::linear))
+    }
+}
+
+/// The centres of the cells of a `side` × `side` grid over a `width` × `height` stage, row by row
+/// from the top-left: each cell's [`cell_pixel`], the clipping and coverage overlays' own cell
+/// rule, on both axes.
+pub(super) fn grid_centres(side: u32, width: u32, height: u32) -> impl Iterator<Item = (u32, u32)> {
+    (0..side).flat_map(move |row| {
+        (0..side).map(move |column| {
+            (
+                cell_pixel(column, width, side),
+                cell_pixel(row, height, side),
+            )
+        })
+    })
 }
 
 /// A point query of `compiled` in `domain`: this prefix is read one pixel per display cell, or once
 /// for a stroke's colour seed, never as a whole frame. A prefix holding a spatial layer is refused
 /// before this, so the mode changes nothing admissible; it is named for what the read is.
-fn point<'a, D: PixelDomain>(
+fn point<'a, D: PixelDomain + 'a>(
     domain: D,
     compiled: Compiled,
     context: &'a RenderContext,
-) -> Result<Evaluation<'a, D>, Error> {
-    Evaluation::new(
+) -> Result<(Stage, Box<dyn MaskInputPixel + 'a>), Error> {
+    let evaluation = Evaluation::new(
         domain,
         Cow::Owned(compiled),
         Tiling::Halo,
         SpatialMode::Point,
         &Cancel::never(),
         context,
-    )
+    )?;
+    Ok((evaluation.stage(), Box::new(evaluation)))
 }

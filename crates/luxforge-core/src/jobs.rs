@@ -1663,7 +1663,7 @@ mod tests {
 
     fn report() -> Output {
         Output::Report(Box::new(
-            crate::analysis::reduce(&[0, 0, 0, 255], 1, 1).unwrap(),
+            crate::analysis::reduce(&[0, 0, 0, 255], 1, 1, &crate::Cancel::never()).unwrap(),
         ))
     }
 

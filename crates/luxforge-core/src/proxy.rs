@@ -769,7 +769,7 @@ mod tests {
     use crate::{
         BASIC_EFFECT, BoxRect, CROP_EFFECT, CropStage, EFFECT_FORMAT, Layer, LayerId,
         LinearSettings, Mask, ModuleRegistry, Orientation, PIXEL_EFFECT, RECIPE_FORMAT, Recipe,
-        SnapshotId, Stage, colour::srgb::decode_u8, render::Cancel,
+        SnapshotId, Stage, colour::srgb::decode_u8,
     };
     use luxforge_reference::srgb;
     use serde_json::json;
