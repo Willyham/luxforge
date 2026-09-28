@@ -175,8 +175,8 @@ pub(crate) struct SectionModel {
     /// `[0]` ([`headerless_group`]). The panel draws no header for that group, so no
     /// [`GroupControl`] carries it, but a `ResetGroup` naming the group still runs it.
     pub(crate) headerless_reset: Option<ResetRef>,
-    /// The module's status and settings, above its controls, when it declares settings,
-    /// resources or tasks.
+    /// The module's resources, settings and permissions, above its controls, when it declares
+    /// settings, resources or tasks.
     pub(crate) capability: Option<CapabilityModel>,
     pub(crate) controls: Vec<ControlModel>,
     pub(crate) layout: SectionLayout,
@@ -212,14 +212,9 @@ impl SectionModel {
             .collect()
     }
 
-    /// The section draws its controls: it is expanded, its module is available, and a capability
-    /// module's settings view is not standing in for them.
+    /// The section draws its controls: it is expanded and its module is available.
     pub(crate) fn shows_controls(&self) -> bool {
-        self.expanded
-            && self.unavailable.is_none()
-            && !self.capability.as_ref().is_some_and(|capability| {
-                capability.view == capabilities::CapabilityView::Settings && !capability.loading
-            })
+        self.expanded && self.unavailable.is_none()
     }
 
     /// The one top-level group a `layout: tabs` section shows: the selected tab's, or the first
@@ -241,11 +236,10 @@ impl SectionModel {
     }
 
     /// Every curve this section has on screen, in the order the panel draws them: none while the
-    /// section is collapsed, unavailable or showing its capability settings; in a tabbed section
-    /// only the visible tab's; and none inside a collapsed group. The section already holds only the
-    /// controls that apply to the photo's source kind, each resolved to the variant that provides
-    /// it, so this is the whole of "which curves are visible". No allocation beyond the walk's
-    /// one frame per open group.
+    /// section is collapsed or unavailable; in a tabbed section only the visible tab's; and none
+    /// inside a collapsed group. The section already holds only the controls that apply to the
+    /// photo's source kind, each resolved to the variant that provides it, so this is the whole of
+    /// "which curves are visible". No allocation beyond the walk's one frame per open group.
     pub(crate) fn shown_curves(&self) -> ShownCurves<'_> {
         let controls: &[ControlModel] = if self.shows_controls() {
             &self.controls

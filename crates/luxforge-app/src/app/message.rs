@@ -17,10 +17,7 @@ use crate::{
     },
     crop_draft::Handle,
     mask_draft::MaskHandle,
-    state::{
-        capabilities::{CapabilityView, SecretText},
-        histogram::Readout,
-    },
+    state::histogram::Readout,
 };
 use luxforge_core::{
     ClientSession, ContentPoint, DraftId, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
@@ -387,71 +384,28 @@ pub(crate) enum CropMessage {
     },
 }
 
-/// One capability gesture on a module's section or on the consent notice, or an owner answer the
-/// capability driver started. Every gesture becomes the same owner requests an independent JSON
-/// client sends; the text a person is typing stays here until it is committed.
+/// One capability gesture on a module's block, its task control or the consent notice, or an owner
+/// answer the capability driver started. Every gesture becomes the same owner requests an
+/// independent JSON client sends; the text a person is typing stays here until it is committed.
 #[derive(Clone, Debug)]
 pub(crate) enum CapabilityMessage {
-    /// Show the section's status or its settings.
-    Show {
-        module_id: String,
-        view: CapabilityView,
-    },
-    /// Open or close the permissions list under the permissions line.
-    TogglePermissions(String),
-    /// Text typed into a number, text or endpoint field.
+    /// Text typed into a number or text setting.
     FieldText {
         module_id: String,
-        profile: Option<String>,
         field: String,
         text: String,
     },
-    /// Enter in a typed field: commit its text.
+    /// Enter in a typed setting: commit its text.
     FieldCommit {
         module_id: String,
-        profile: Option<String>,
         field: String,
     },
-    /// A toggle or a choice: commit this value at once.
+    /// A toggle or a choice, or a double-click that returns a number to its default: commit this
+    /// value at once.
     FieldValue {
         module_id: String,
-        profile: Option<String>,
         field: String,
         value: Value,
-    },
-    /// Replace on a secret: open its masked input.
-    SecretEdit {
-        module_id: String,
-        profile: Option<String>,
-        field: String,
-    },
-    /// What has been typed into the open masked input.
-    SecretText {
-        module_id: String,
-        text: SecretText,
-    },
-    /// Save the open masked input's text as the secret.
-    SecretCommit(String),
-    /// Close the masked input without saving.
-    SecretCancel(String),
-    SecretClear {
-        module_id: String,
-        profile: Option<String>,
-        field: String,
-    },
-    /// The Add profile form's adapter and label, and its button.
-    ProfileAdapter {
-        module_id: String,
-        adapter: String,
-    },
-    ProfileLabel {
-        module_id: String,
-        label: String,
-    },
-    ProfileCreate(String),
-    ProfileRemove {
-        module_id: String,
-        profile: String,
     },
     Install {
         module_id: String,
@@ -465,16 +419,8 @@ pub(crate) enum CapabilityMessage {
         module_id: String,
         job: String,
     },
-    Revoke {
-        module_id: String,
-        grant: String,
-    },
-    /// The profile a task run sends, when several are ready.
-    TaskProfile {
-        module_id: String,
-        task: String,
-        profile: String,
-    },
+    /// Withdraw every live grant of the module.
+    RevokeAll(String),
     RunTask {
         module_id: String,
         task: String,

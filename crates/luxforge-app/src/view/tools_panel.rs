@@ -216,8 +216,7 @@ fn section_view<'a>(
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
     let body = (section.expanded && section.unavailable.is_none()).then(|| {
-        // A capability module's status sits above its controls; its settings are a sub-view of
-        // the section that stands in for them until Done.
+        // A capability module's block sits above its controls.
         let mut rows = Vec::new();
         if let Some(capability) = &section.capability {
             rows.push(PanelRow::Plain(super::capabilities::block(capability)));

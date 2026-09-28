@@ -1,22 +1,22 @@
 //! The capability surface against the real owner and the developer proof module: every gesture
 //! goes through the update function, the operations it starts run through the same owner methods
-//! an independent JSON client calls, and their answers come back through the update function. A
-//! loopback [`ProofEndpoint`] stands in for the provider, and the secret store is in memory.
+//! an independent JSON client calls, and their answers come back through the update function. What
+//! the block does not draw — profiles, secrets, a single grant — is set up through those methods
+//! directly, as any client sets it. A loopback [`ProofEndpoint`] stands in for the provider, and
+//! the secret store is in memory.
 use super::{
     Boot, Editor,
     capabilities::{poll, run},
-    evidence::{CapabilityAction, Step, parse_script, record},
+    evidence::{Settle, Step, parse_script, record},
     message::{CapabilityMessage, ControlMessage, Message, SyncMessage},
-    tasks::{ACTOR, REQUEST_NUMBER, Scope, call, refresh},
+    tasks::{ACTOR, HostAnswer, REQUEST_NUMBER, Scope, call, refresh, request},
     testing::{attach_log, logged},
 };
 use crate::{
     Config,
     state::{
         canvas::NoticeAction,
-        capabilities::{
-            CapabilityView, FieldKindModel, Operation, SecretText, TaskControlState, TaskPhase,
-        },
+        capabilities::{FieldKindModel, Operation, TaskControlState, TaskPhase},
         tools::ControlModel,
     },
 };
@@ -26,7 +26,7 @@ use luxforge_core::{
 };
 use luxforge_testbase::{wait_for, wait_until};
 use luxforge_testkit::ProofEndpoint;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
@@ -98,7 +98,7 @@ impl Proof {
             &owner,
             client,
             "catalog.import",
-            json!({"path": fixture, "mutation": crate::app::tasks::request()}),
+            json!({"path": fixture, "mutation": request()}),
         )
         .unwrap();
         let asset: AssetId = wait_for("the import", || {
@@ -144,14 +144,7 @@ impl Proof {
                 return sent;
             }
             for (module, op) in started {
-                // The list is read while it is open, as `capability_op` decides.
-                let list = self
-                    .editor
-                    .capabilities
-                    .modules
-                    .get(&module)
-                    .is_some_and(|state| state.permissions_open);
-                let answer = run(&self.editor.owner, self.editor.client, module, op, list);
+                let answer = run(&self.editor.owner, self.editor.client, module, op);
                 sent.extend(answer.sent.clone());
                 self.send(CapabilityMessage::Answered(Box::new(answer)));
             }
@@ -175,6 +168,73 @@ impl Proof {
         });
     }
 
+    /// Expand the proof section, which reads its settings and status once.
+    fn expand(&mut self) {
+        let _ = self
+            .editor
+            .update(Message::Control(ControlMessage::ToggleSection(
+                MODULE.into(),
+            )));
+        self.answer();
+    }
+
+    /// One owner request of this desktop's client, as any client sends it.
+    fn api(&self, method: &str, params: Value) -> Value {
+        call(&self.editor.owner, self.editor.client, method, params)
+            .unwrap_or_else(|error| panic!("{method}: {error}"))
+            .0
+    }
+
+    /// The settings envelope another client sends: the revision it has just read.
+    fn settings_mutation(&self) -> Value {
+        let read = self.api("module.settings.read", json!({"module_id": MODULE}));
+        json!({"expected_revision": read["revision"], "request_id": format!("agent-{}", REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)), "actor": "agent"})
+    }
+
+    /// A profile with the endpoint and `key`, created through the API, and the block read again.
+    fn profile(&mut self, key: &str) -> String {
+        let created = self.api(
+            "module.profile.create",
+            json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": self.settings_mutation()}),
+        );
+        let profile = created["profile"]["id"].as_str().unwrap().to_owned();
+        self.api(
+            "module.settings.set",
+            json!({"module_id": MODULE, "profile_id": profile, "values": {"endpoint": self.endpoint.generate_url()}, "mutation": self.settings_mutation()}),
+        );
+        self.set_key(&profile, key);
+        profile
+    }
+
+    fn set_key(&mut self, profile: &str, key: &str) {
+        self.api(
+            "module.settings.set-secret",
+            json!({"module_id": MODULE, "profile_id": profile, "setting": "api-key", "value": key, "mutation": self.settings_mutation()}),
+        );
+        let _ = self.editor.reload_capabilities();
+        self.answer();
+    }
+
+    /// Expand the section, give it a ready profile and install its resource through the API.
+    fn ready(&mut self) -> String {
+        self.expand();
+        let profile = self.profile(&self.key.clone());
+        self.api(
+            "module.permission.grant",
+            json!({"module_id": MODULE, "capability": "palette", "scope": {"resource": "proof-palette", "version": "1", "origin": self.endpoint.base_url()}, "mutation": request()}),
+        );
+        let install = self.api(
+            "module.resource.install",
+            json!({"module_id": MODULE, "resource_id": "proof-palette", "mutation": request()}),
+        );
+        wait_until("the install", || {
+            self.api("job.read", json!({"job_id": install["job_id"]}))["status"] == "ready"
+        });
+        let _ = self.editor.reload_capabilities();
+        self.answer();
+        profile
+    }
+
     fn section(&self) -> &crate::state::tools::SectionModel {
         self.editor
             .workspace
@@ -182,6 +242,13 @@ impl Proof {
             .all()
             .find(|section| section.module_id == MODULE)
             .expect("the proof section is listed in developer mode")
+    }
+
+    fn block(&self) -> crate::state::capabilities::CapabilityModel {
+        self.section()
+            .capability
+            .clone()
+            .expect("a capability block")
     }
 
     fn task_control(&self) -> crate::state::capabilities::TaskControl {
@@ -196,62 +263,19 @@ impl Proof {
     }
 
     fn state(&self) -> &crate::state::capabilities::ModuleCapabilities {
-        &self.editor.capabilities.modules[MODULE]
+        self.editor.capabilities.module(MODULE)
     }
 
-    fn type_and_commit(&mut self, profile: Option<String>, field: &str, text: &str) {
+    fn type_and_commit(&mut self, field: &str, text: &str) {
         self.send(CapabilityMessage::FieldText {
             module_id: MODULE.into(),
-            profile: profile.clone(),
             field: field.into(),
             text: text.into(),
         });
         self.send(CapabilityMessage::FieldCommit {
             module_id: MODULE.into(),
-            profile,
             field: field.into(),
         });
-    }
-
-    /// Expand the section, fill every setting a task needs and install its resource, allowing each
-    /// consent the core asks for.
-    fn ready(&mut self) -> String {
-        let _ = self
-            .editor
-            .update(Message::Control(ControlMessage::ToggleSection(
-                MODULE.into(),
-            )));
-        self.answer();
-        self.send(CapabilityMessage::ProfileLabel {
-            module_id: MODULE.into(),
-            label: "Local".into(),
-        });
-        self.send(CapabilityMessage::ProfileCreate(MODULE.into()));
-        self.answer();
-        let profile = self.state().profile_at(0).expect("a profile");
-        let generate = self.endpoint.generate_url();
-        self.type_and_commit(Some(profile.clone()), "endpoint", &generate);
-        self.answer();
-        self.send(CapabilityMessage::SecretEdit {
-            module_id: MODULE.into(),
-            profile: Some(profile.clone()),
-            field: "api-key".into(),
-        });
-        self.send(CapabilityMessage::SecretText {
-            module_id: MODULE.into(),
-            text: SecretText::new(self.key.clone()),
-        });
-        self.send(CapabilityMessage::SecretCommit(MODULE.into()));
-        self.answer();
-        self.send(CapabilityMessage::Install {
-            module_id: MODULE.into(),
-            resource: "proof-palette".into(),
-        });
-        self.answer();
-        self.send(CapabilityMessage::Consent(true));
-        self.answer();
-        self.finish_jobs();
-        profile
     }
 
     fn stop(mut self) {
@@ -268,13 +292,7 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
     let mut proof = Proof::start();
     // Discovery and a collapsed developer section read nothing.
     assert!(proof.editor.capability_started.is_empty());
-    assert!(
-        proof
-            .section()
-            .capability
-            .as_ref()
-            .is_some_and(|model| model.loading)
-    );
+    assert!(proof.block().loading);
     let _ = proof
         .editor
         .update(Message::Control(ControlMessage::ToggleSection(
@@ -291,26 +309,31 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
         .map(|request| request["method"].as_str().unwrap())
         .collect();
     assert_eq!(methods, ["module.settings.read", "module.status"]);
-    let model = proof
-        .section()
-        .capability
-        .clone()
-        .expect("a capability block");
+    let model = proof.block();
     assert!(!model.loading && model.enabled);
     assert_eq!(model.resources[0].state, "Not installed");
     assert_eq!(model.resources[0].detail, "v1 · 20 B");
-    assert_eq!(model.permissions.summary, "0 permissions");
+    assert_eq!(model.permissions, "0 permissions");
+    assert!(!model.revoke_all, "nothing to revoke");
+    // The form holds the module-level setting, drawn as a number field; the profile block's
+    // endpoint and secret are set through the API.
+    assert_eq!(model.fields.len(), 1);
+    assert_eq!(model.fields[0].label, "Strength");
+    assert!(
+        matches!(&model.fields[0].kind, FieldKindModel::Number { display, typing: None } if display == "0.50"),
+        "{:?}",
+        model.fields[0]
+    );
+    // The section's own controls are drawn under the block.
+    assert!(proof.section().shows_controls());
     // Collapsing and expanding again reads nothing more.
-    let _ = proof
-        .editor
-        .update(Message::Control(ControlMessage::ToggleSection(
-            MODULE.into(),
-        )));
-    let _ = proof
-        .editor
-        .update(Message::Control(ControlMessage::ToggleSection(
-            MODULE.into(),
-        )));
+    for _ in 0..2 {
+        let _ = proof
+            .editor
+            .update(Message::Control(ControlMessage::ToggleSection(
+                MODULE.into(),
+            )));
+    }
     assert!(proof.editor.capability_started.is_empty());
     // With nothing in flight there is no poll timer.
     assert!(proof.editor.capability_poll_subscription().is_none());
@@ -318,23 +341,13 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
 }
 
 #[test]
-fn settings_writes_send_the_envelope_and_show_refusals_and_conflicts_at_the_field() {
+fn a_settings_conflict_reads_the_settings_again_and_says_so_on_one_status_line() {
     let mut proof = Proof::start();
-    let _ = proof
-        .editor
-        .update(Message::Control(ControlMessage::ToggleSection(
-            MODULE.into(),
-        )));
-    proof.answer();
-    proof.send(CapabilityMessage::Show {
-        module_id: MODULE.into(),
-        view: CapabilityView::Settings,
-    });
-    proof.type_and_commit(None, "strength", "0.8");
+    proof.expand();
+    proof.type_and_commit("strength", "0.8");
     assert_eq!(
         proof.editor.capability_started[0].1,
         Operation::Set {
-            profile: None,
             field: "strength".into(),
             value: json!(0.8),
             revision: 0,
@@ -350,118 +363,77 @@ fn settings_writes_send_the_envelope_and_show_refusals_and_conflicts_at_the_fiel
             .is_some_and(|id| id.starts_with("desktop-"))
     );
     assert_eq!(proof.state().revision(), Some(1));
-    let settings = proof
-        .section()
-        .capability
-        .clone()
-        .and_then(|model| model.settings)
-        .expect("the settings sub-view");
-    let strength = &settings.fields[0];
     assert!(
-        matches!(&strength.kind, FieldKindModel::Number { display, typing: None, .. } if display == "0.80"),
-        "{strength:?}"
+        matches!(&proof.block().fields[0].kind, FieldKindModel::Number { display, typing: None } if display == "0.80")
     );
-    // A value outside the declared range is read back against the setting's parameter exactly as a
-    // module control's text is: refused under the field, and nothing is sent.
-    proof.type_and_commit(None, "strength", "7");
+    assert_eq!(proof.block().status_line, None);
+    // A value outside the declared range is read back against the setting's parameter exactly as
+    // a module control's text is: nothing is sent, and the status line says why.
+    proof.type_and_commit("strength", "7");
     assert!(proof.answer().is_empty(), "a refused value is not sent");
     assert_eq!(
-        proof.state().errors[&(None, "strength".to_owned())],
-        "strength must be a number from 0 to 1",
+        proof.block().status_line.as_deref(),
+        Some("strength must be a number from 0 to 1")
     );
-    assert_eq!(proof.state().revision(), Some(1));
     // Another client writes first: the desktop's write is a conflict, the settings are read
-    // again and the field says it changed elsewhere.
-    let (_, _) = call(
-        &proof.editor.owner,
-        proof.editor.client,
+    // again, the form shows the other client's value and one status line says what happened.
+    proof.api(
         "module.settings.set",
-        json!({"module_id": MODULE, "values": {"strength": 0.3},
-            "mutation": {"expected_revision": 1, "request_id": "agent", "actor": "agent"}}),
-    )
-    .unwrap();
-    proof.type_and_commit(None, "strength", "0.6");
-    proof.answer();
-    assert!(
-        proof
-            .state()
-            .conflicts
-            .contains(&(None, "strength".to_owned()))
+        json!({"module_id": MODULE, "values": {"strength": 0.3}, "mutation": proof.settings_mutation()}),
+    );
+    proof.type_and_commit("strength", "0.6");
+    let sent = proof.answer();
+    let methods: Vec<&str> = sent
+        .iter()
+        .map(|request| request["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "module.settings.set",
+            "module.settings.read",
+            "module.status"
+        ]
     );
     assert_eq!(proof.state().revision(), Some(2), "the conflict re-read");
-    let settings = proof
-        .section()
-        .capability
-        .clone()
-        .and_then(|model| model.settings)
-        .unwrap();
-    assert!(settings.fields[0].conflict);
+    let block = proof.block();
     assert!(
-        matches!(&settings.fields[0].kind, FieldKindModel::Number { display, .. } if display == "0.30")
+        matches!(&block.fields[0].kind, FieldKindModel::Number { display, typing: None } if display == "0.30"),
+        "{:?}",
+        block.fields[0]
     );
+    let line = block.status_line.expect("one status line");
+    assert!(
+        line.starts_with("Changed elsewhere, so the settings were read again: "),
+        "{line}"
+    );
+    assert_eq!(proof.editor.status, line);
+    assert_eq!(
+        proof.editor.snapshot()["capabilities"][MODULE]["status_line"],
+        line.as_str()
+    );
+    // The next write is made against the re-read revision and clears the line.
+    proof.type_and_commit("strength", "0.6");
+    proof.answer();
+    assert_eq!(proof.state().revision(), Some(3));
+    assert_eq!(proof.block().status_line, None);
     proof.stop();
 }
 
 #[test]
-fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere() {
+fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws_every_grant() {
     let mut proof = Proof::start();
     let log = attach_log(&mut proof.editor);
-    let _ = proof
-        .editor
-        .update(Message::Control(ControlMessage::ToggleSection(
-            MODULE.into(),
-        )));
-    proof.answer();
-    proof.send(CapabilityMessage::ProfileLabel {
-        module_id: MODULE.into(),
-        label: "Local".into(),
-    });
-    proof.send(CapabilityMessage::ProfileCreate(MODULE.into()));
-    proof.answer();
-    let profile = proof.state().profile_at(0).expect("a profile");
-    let generate = proof.endpoint.generate_url();
-    proof.type_and_commit(Some(profile.clone()), "endpoint", &generate);
-    proof.answer();
-    proof.send(CapabilityMessage::Show {
-        module_id: MODULE.into(),
-        view: CapabilityView::Settings,
-    });
-    let endpoint_field = proof
-        .section()
-        .capability
-        .clone()
-        .and_then(|model| model.settings)
-        .map(|settings| settings.profiles[0].fields[0].kind.clone());
-    assert!(
-        matches!(&endpoint_field, Some(FieldKindModel::Text { class: Some(class), .. }) if class == "loopback"),
-        "{endpoint_field:?}"
-    );
-    // The secret goes out once, redacted in everything the desktop records.
-    proof.send(CapabilityMessage::SecretEdit {
-        module_id: MODULE.into(),
-        profile: Some(profile.clone()),
-        field: "api-key".into(),
-    });
-    proof.send(CapabilityMessage::SecretText {
-        module_id: MODULE.into(),
-        text: SecretText::new(proof.key.clone()),
-    });
-    assert!(
-        !proof.editor.snapshot().to_string().contains(&proof.key),
-        "a typed secret is not in the captured state"
-    );
-    proof.send(CapabilityMessage::SecretCommit(MODULE.into()));
-    let sent = proof.answer();
-    assert_eq!(sent[0]["method"], "module.settings.set-secret");
-    assert_eq!(sent[0]["params"]["value"], "<redacted>");
-    assert!(proof.state().secret.is_none(), "the masked input closed");
+    proof.expand();
+    let profile = proof.profile(&proof.key.clone());
     let summary = proof.editor.snapshot()["capabilities"][MODULE].clone();
     assert_eq!(
         summary["settings"]["profiles"][0]["fields"]["api-key"],
-        "set"
+        json!({"secret_present": true, "valid": true}),
+        "the summary is the core's own read: a secret only as whether it is set"
     );
     assert_eq!(summary["settings"]["profiles"][0]["status"], "ready");
-    // Install is refused for consent: the notice names what would happen.
+    // Download is refused for consent: the notice names what would happen.
     proof.send(CapabilityMessage::Install {
         module_id: MODULE.into(),
         resource: "proof-palette".into(),
@@ -490,13 +462,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     let sent = proof.answer();
     assert_eq!(sent[0]["method"], "module.permission.deny");
     assert!(proof.editor.workspace.canvas.notices.is_empty());
-    assert!(
-        proof
-            .section()
-            .capability
-            .as_ref()
-            .is_some_and(|model| model.permissions.summary == "0 permissions · 1 declined")
-    );
+    assert_eq!(proof.block().permissions, "0 permissions · 1 declined");
     proof.send(CapabilityMessage::Install {
         module_id: MODULE.into(),
         resource: "proof-palette".into(),
@@ -522,7 +488,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     // The transfer lane reports its first progress asynchronously, and the download stays held at
     // the endpoint's palette gate until the test opens it, so the install is observed running.
     let installing = wait_for("the install reporting progress", || {
-        let installing = proof.section().capability.clone().unwrap().resources[0].clone();
+        let installing = proof.block().resources[0].clone();
         if installing
             .progress
             .is_some_and(|fraction| (0.0..=1.0).contains(&fraction))
@@ -541,16 +507,9 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     proof.endpoint.palette().open();
     proof.finish_jobs();
     assert!(proof.editor.capability_poll_subscription().is_none());
-    assert_eq!(
-        proof.section().capability.clone().unwrap().resources[0].state,
-        "Installed"
-    );
-    // The task sends the open asset and the only ready profile, asks for the photo-data consent
-    // and, once allowed, runs to a result Apply can commit.
-    assert_eq!(
-        proof.task_control().profile.as_deref(),
-        Some(profile.as_str())
-    );
+    assert_eq!(proof.block().resources[0].state, "Installed");
+    // The task sends the open asset and the ready profile, asks for the photo-data consent and,
+    // once allowed, runs to a result Apply can commit.
     proof.send(CapabilityMessage::RunTask {
         module_id: MODULE.into(),
         task: TASK.into(),
@@ -614,18 +573,23 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     assert!(proof.editor.busy, "{}", proof.editor.status);
     assert_eq!(proof.editor.status, "Running edit.apply-proof-tint…");
     // Once the commit is read back, the control says the result is applied and offers no Apply.
-    let client = proof.editor.client;
-    let owner = proof.editor.owner.clone();
     let (applied, _) = call(
-        &owner,
-        client,
+        &proof.editor.owner,
+        proof.editor.client,
         "edit.apply-proof-tint",
         request["params"].clone(),
     )
     .unwrap();
     assert_eq!(applied["outcome"], "applied");
     let scope = Scope::after("edit.apply-proof-tint", &applied);
-    let shown = refresh(&owner, client, proof.asset.clone(), scope, None).unwrap();
+    let shown = refresh(
+        &proof.editor.owner,
+        proof.editor.client,
+        proof.asset.clone(),
+        scope,
+        None,
+    )
+    .unwrap();
     let _ = proof
         .editor
         .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(shown)))));
@@ -637,73 +601,50 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
         proof.editor.snapshot()["capabilities"][MODULE]["tasks"][TASK]["applied"],
         true
     );
-    // The permissions line shows the counts the status carries; the rows are read only once the
-    // list is opened.
-    assert!(proof.state().grants().is_empty());
+    // Revoke all lists the module's grants and withdraws each live one through the one revoke
+    // method, and the counts read after it say so.
+    let block = proof.block();
     assert_eq!(
-        proof
-            .section()
-            .capability
-            .as_ref()
-            .map(|model| model.permissions.summary.clone()),
-        Some("2 permissions".into())
+        block.permissions, "2 permissions",
+        "the grant cleared the denial"
     );
-    proof.send(CapabilityMessage::TogglePermissions(MODULE.into()));
-    assert!(
-        proof
-            .section()
-            .capability
-            .as_ref()
-            .is_some_and(|model| model.permissions.open && model.permissions.reading)
-    );
+    assert!(block.revoke_all);
+    proof.send(CapabilityMessage::RevokeAll(MODULE.into()));
+    assert_eq!(proof.editor.capability_started[0].1, Operation::RevokeAll);
     let sent = proof.answer();
     let methods: Vec<&str> = sent
         .iter()
         .map(|request| request["method"].as_str().unwrap())
         .collect();
-    assert_eq!(methods, ["module.status", "module.permission.list"]);
-    assert_eq!(proof.state().grants().len(), 2);
-    // A revocation is shown in the open permissions list, read again with the status.
-    let grant = proof.state().grants()[1].grant_id.clone();
-    proof.send(CapabilityMessage::Revoke {
-        module_id: MODULE.into(),
-        grant: grant.clone(),
-    });
-    let sent = proof.answer();
-    assert!(
-        sent.iter()
-            .any(|request| request["method"] == "module.permission.list")
+    assert_eq!(
+        methods,
+        [
+            "module.permission.list",
+            "module.permission.revoke",
+            "module.permission.revoke",
+            "module.status"
+        ]
     );
-    let summary = proof.editor.snapshot()["capabilities"][MODULE].clone();
-    assert_eq!(summary["permissions"]["revoked"], 1);
-    assert_eq!(summary["permissions"]["live"], 1);
+    assert!(sent[1]["params"]["mutation"]["request_id"].is_string());
+    let block = proof.block();
+    assert_eq!(block.permissions, "0 permissions · 2 revoked");
+    assert!(!block.revoke_all, "nothing is left to revoke");
+    assert_eq!(
+        proof.editor.status,
+        "Revoked 2 permission(s) of luxforge.capabilities"
+    );
+    let listed = proof.api("module.permission.list", json!({"module_id": MODULE}));
     assert!(
-        summary["permissions"]["grants"]
+        listed["grants"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|listed| listed["grant_id"] == grant.as_str() && !listed["revoked"].is_null()),
-        "{summary}"
-    );
-    // Closing the list drops its rows and reads nothing.
-    proof.send(CapabilityMessage::TogglePermissions(MODULE.into()));
-    assert!(proof.editor.capability_started.is_empty());
-    assert!(proof.state().grants().is_empty());
-    assert_eq!(
-        proof.editor.snapshot()["capabilities"][MODULE]["permissions"]["revoked"],
-        1
+            .all(|grant| !grant["revoked"].is_null()),
+        "{listed}"
     );
     // Nothing the desktop recorded holds the key.
     let events = logged(&mut proof.editor, &log);
-    let recorded = serde_json::to_string(&events).unwrap();
-    assert!(
-        !recorded.contains(&proof.key),
-        "the event log holds the key"
-    );
-    assert!(
-        recorded.contains("\"<redacted>\""),
-        "the secret's request is logged redacted"
-    );
+    assert!(!serde_json::to_string(&events).unwrap().contains(&proof.key));
     assert!(!proof.editor.snapshot().to_string().contains(&proof.key));
     proof.stop();
 }
@@ -712,18 +653,26 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
 fn a_task_result_belongs_to_its_asset_and_a_wrong_key_fails_the_job() {
     let mut proof = Proof::start();
     let profile = proof.ready();
-    // A wrong key reaches the endpoint, which answers 401: the job fails with its error.
-    proof.send(CapabilityMessage::SecretEdit {
+    // Don't allow on the photo-data notice ends the run it was asked for.
+    proof.send(CapabilityMessage::RunTask {
         module_id: MODULE.into(),
-        profile: Some(profile),
-        field: "api-key".into(),
+        task: TASK.into(),
     });
-    proof.send(CapabilityMessage::SecretText {
-        module_id: MODULE.into(),
-        text: SecretText::new("wrong-key".into()),
-    });
-    proof.send(CapabilityMessage::SecretCommit(MODULE.into()));
     proof.answer();
+    assert_eq!(proof.task_control().state, TaskControlState::Consent);
+    proof.send(CapabilityMessage::Consent(false));
+    assert_eq!(
+        proof.answer()[0]["method"],
+        "module.permission.deny",
+        "the answer is sent"
+    );
+    assert_eq!(
+        proof.task_control().state,
+        TaskControlState::Failed("consent-required: echo was not allowed".into())
+    );
+    assert!(proof.task_control().runnable, "and it may be asked again");
+    // A wrong key reaches the endpoint, which answers 401: the job fails with its error.
+    proof.set_key(&profile, "wrong-key");
     proof.send(CapabilityMessage::RunTask {
         module_id: MODULE.into(),
         task: TASK.into(),
@@ -756,15 +705,9 @@ fn a_cancel_goes_through_the_job_method() {
     proof.answer();
     proof.send(CapabilityMessage::Consent(true));
     proof.answer();
-    let job = proof
-        .state()
-        .newest_live()
-        .map(|job| job.job_id.as_str().to_owned())
-        .expect("a running task");
-    assert!(matches!(
-        proof.task_control().state,
-        TaskControlState::Running { .. }
-    ));
+    let TaskControlState::Running { job, .. } = proof.task_control().state else {
+        panic!("a running task: {:?}", proof.task_control().state);
+    };
     proof.send(CapabilityMessage::Cancel {
         module_id: MODULE.into(),
         job: job.clone(),
@@ -786,132 +729,101 @@ fn a_cancel_goes_through_the_job_method() {
 }
 
 #[test]
-fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
+fn capability_steps_parse_and_an_api_step_that_stores_a_secret_is_recorded_redacted() {
     let steps = parse_script(
         &json!([
-            {"capability": {"module": MODULE, "section": "settings"}},
-            {"capability": {"module": MODULE, "set": {"field": "strength", "value": 0.8}}},
-            {"capability": {"module": MODULE, "set": {"field": "endpoint", "value": "http://127.0.0.1:1/generate", "profile": 0}}},
-            {"capability": {"module": MODULE, "secret": {"field": "api-key", "value": "script-sentinel", "profile": 0}}},
-            {"capability": {"module": MODULE, "profile": {"create": {"adapter": "proof-echo", "label": "Local"}}}},
-            {"capability": {"module": MODULE, "profile": {"remove": 0}}},
-            {"capability": {"module": MODULE, "install": {"resource": "proof-palette"}}},
-            {"capability": {"module": MODULE, "remove": {"resource": "proof-palette"}}},
             {"capability": {"module": MODULE, "task": {"task": TASK}}},
             {"capability": {"module": MODULE, "consent": "allow", "wait": false}},
             {"capability": {"module": MODULE, "apply": true}},
-            {"capability": {"module": MODULE, "cancel": true}},
-            {"capability": {"module": MODULE, "permissions": true}},
-            {"capability": {"module": MODULE, "revoke": 2}},
-            {"capability": {"module": MODULE, "settle": true}}
+            {"capability": {"module": MODULE, "settle": true}},
+            {"api": {"method": "module.settings.set-secret", "params": {"module_id": MODULE, "setting": "api-key", "value": "script-sentinel"}}}
         ])
         .to_string(),
     )
     .expect("a valid script");
-    assert_eq!(steps.len(), 15);
-    let Step::Capability(secret) = &steps[3] else {
-        panic!("a capability step");
-    };
-    assert!(matches!(
-        &secret.action,
-        CapabilityAction::Secret { value, profile: Some(0), .. } if value.expose() == "script-sentinel"
-    ));
-    let recorded = record(&steps[3]).to_string();
-    assert!(!recorded.contains("script-sentinel"), "{recorded}");
+    assert_eq!(steps.len(), 5);
+    assert!(matches!(steps[0], Step::Capability(_)));
+    let recorded = record(&steps[4]);
+    assert_eq!(recorded["api"]["params"]["value"], "<redacted>");
+    assert!(!recorded.to_string().contains("script-sentinel"));
     assert_eq!(
-        record(&steps[3]),
-        json!({"capability": {"module": MODULE, "secret": {"field": "api-key", "value": "<redacted>", "profile": 0}}})
-    );
-    assert!(!format!("{:?}", steps[3]).contains("script-sentinel"));
-    // A raw API step that stores a secret is recorded redacted too.
-    let raw = parse_script(
-        &json!([{"api": {"method": "module.settings.set-secret", "params": {"module_id": MODULE, "setting": "api-key", "value": "script-sentinel"}}}])
-            .to_string(),
-    )
-    .expect("a valid script");
-    assert_eq!(record(&raw[0])["api"]["params"]["value"], "<redacted>");
-    assert_eq!(
-        record(&steps[9]),
+        record(&steps[1]),
         json!({"capability": {"module": MODULE, "consent": "allow", "wait": false}})
     );
-    for (script, expected) in [
-        (json!({"capability": {"module": MODULE}}), "exactly one of"),
-        (
-            json!({"capability": {"module": MODULE, "apply": true, "cancel": true}}),
-            "exactly one of",
-        ),
-        (
-            json!({"capability": {"section": "status"}}),
-            "missing field `module`",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "section": "elsewhere"}}),
-            "unknown variant `elsewhere`, expected `status` or `settings`",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "consent": "maybe"}}),
-            "unknown variant `maybe`, expected `allow` or `deny`",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "revoke": -1}}),
-            "expected usize",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "wait": "no", "apply": true}}),
-            "expected a boolean",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "nowhere": 1}}),
-            "unknown field `nowhere`",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "secret": {"field": "api-key", "value": "leaky", "extra": 1}}}),
-            "unknown field `extra`",
-        ),
-        (
-            json!({"capability": {"module": MODULE, "secret": {"field": "api-key", "value": 31_415_926}}}),
-            "a secret is text",
-        ),
-    ] {
-        let error = parse_script(&json!([script]).to_string()).expect_err(expected);
-        assert!(error.contains(expected), "{error}");
-        assert!(
-            !error.contains("leaky") && !error.contains("31415926"),
-            "a refusal never echoes a value: {error}"
-        );
-    }
 }
 
 #[test]
-fn a_scripted_gesture_is_captured_only_once_its_round_trip_has_answered() {
+fn an_api_settings_step_carries_the_held_revision_and_is_captured_once_the_block_is_read_again() {
     let mut proof = Proof::start();
-    let _ = proof
-        .editor
-        .update(Message::Control(ControlMessage::ToggleSection(
-            MODULE.into(),
-        )));
-    proof.answer();
+    proof.expand();
+    let profile = proof.profile("a-key");
     proof.editor.evidence = Some(crate::app::testing::scripted_evidence(
-        r#"[{"capability":{"module":"luxforge.capabilities","set":{"field":"strength","value":0.8}}},
-            {"capability":{"module":"luxforge.capabilities","settle":true}}]"#,
+        r#"[{"api":{"method":"module.settings.set","params":{"module_id":"luxforge.capabilities","values":{"strength":0.8}}}}]"#,
     ));
-    let _ = proof.editor.next_step();
-    // Typing and Enter are one gesture: nothing is captured between them or before the answer.
-    let evidence = proof.editor.evidence.as_ref().unwrap();
-    assert!(
-        !evidence.capture_pending,
-        "captured before the write answered"
+    // The desktop fills the envelope with the settings revision it holds, as the form's own write
+    // does, and names a profile by its label as the identity the host assigned it.
+    let revision = proof.state().revision().expect("the settings were read");
+    let params: Map<String, Value> = serde_json::from_value(json!({"module_id": MODULE})).unwrap();
+    let envelope = proof
+        .editor
+        .settings_envelope("module.settings.set", &params)
+        .unwrap();
+    assert_eq!(envelope["expected_revision"], revision);
+    assert_eq!(envelope["actor"], ACTOR);
+    assert_eq!(
+        proof.editor.resolve_profile(
+            Some(MODULE),
+            &crate::app::evidence::Reference::name("Local")
+        ),
+        Ok(profile.clone())
     );
-    assert_eq!(evidence.awaiting, Some(super::evidence::Settle::Capability));
-    assert_eq!(proof.state().view, CapabilityView::Settings);
+    assert_eq!(
+        proof
+            .editor
+            .resolve_profile(Some(MODULE), &crate::app::evidence::Reference::Index(0)),
+        Ok(profile)
+    );
+    assert!(
+        proof
+            .editor
+            .resolve_profile(
+                Some(MODULE),
+                &crate::app::evidence::Reference::name("Other")
+            )
+            .is_err()
+    );
+    let _ = proof.editor.next_step();
+    let evidence = proof.editor.evidence.as_ref().unwrap();
+    assert_eq!(evidence.awaiting, Some(Settle::Host));
+    assert_eq!(evidence.capability_wait, Some((MODULE.to_owned(), false)));
+    // The host answers; the frame waits for the block to be read again.
+    let (result, sequence) = call(
+        &proof.editor.owner,
+        proof.editor.client,
+        "module.settings.set",
+        json!({"module_id": MODULE, "values": {"strength": 0.8}, "mutation": envelope}),
+    )
+    .unwrap();
+    let _ = proof.editor.host_answered(Ok(HostAnswer {
+        method: "module.settings.set".into(),
+        result,
+        presets: None,
+        sequence,
+    }));
+    assert_eq!(
+        proof.editor.capability_started,
+        vec![(MODULE.to_owned(), Operation::Load)]
+    );
+    let evidence = proof.editor.evidence.as_ref().unwrap();
+    assert!(!evidence.capture_pending, "captured before the read");
+    assert_eq!(evidence.awaiting, Some(Settle::Capability));
     proof.answer();
     let evidence = proof.editor.evidence.as_ref().unwrap();
     assert!(evidence.capture_pending && evidence.capability_wait.is_none());
-    assert_eq!(proof.state().revision(), Some(1));
-    // A settle with nothing in flight captures at once.
-    proof.editor.evidence.as_mut().unwrap().capture_pending = false;
-    let _ = proof.editor.next_step();
-    assert!(proof.editor.evidence.as_ref().unwrap().capture_pending);
+    assert_eq!(proof.state().revision(), Some(revision + 1));
+    assert!(
+        matches!(&proof.block().fields[0].kind, FieldKindModel::Number { display, .. } if display == "0.80")
+    );
     proof.stop();
 }
 

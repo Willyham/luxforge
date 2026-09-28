@@ -479,7 +479,7 @@
     {
       "id": "TASK-007",
       "description": "Trim the desktop capability surface to the consent notice, the task control, one resource row and a settings form built from the tool panel's controls, with a per-module 'Revoke all'.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
@@ -778,7 +778,7 @@
     {
       "id": "TASK-010",
       "description": "Test each capability behaviour at one level: fixture-level lifecycle tests own the behaviours, one core proof journey, one CLI authority test, one desktop consent-and-apply test and the smoke.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-006",
         "TASK-007"
