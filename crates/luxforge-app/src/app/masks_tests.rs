@@ -620,18 +620,18 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
         "a drag committed something before Apply"
     );
     // The number fields show the exact values the drag produced, to the declared precision.
-    let readout = masking
+    let fields = masking
         .editor
         .workspace
         .masks
         .draft
         .as_ref()
-        .expect("the draft bar reads out the gesture")
-        .readout
+        .expect("the panel shows the gesture's fields")
+        .fields
         .clone();
-    assert_eq!(readout.len(), 4, "{readout:?}");
-    assert_eq!(readout[3].0, "y1");
-    assert!(readout[3].1.starts_with("0.9"), "{readout:?}");
+    assert_eq!(fields.len(), 4, "{fields:?}");
+    assert_eq!(fields[3].name, "y1");
+    assert!(fields[3].text.starts_with("0.9"), "{fields:?}");
 
     masking.apply();
     assert_eq!(

@@ -364,6 +364,8 @@ pub(crate) struct DraftField {
     pub(crate) step: f64,
     /// The declared range, steps and precision, which a slider for this field is drawn over.
     pub(crate) spec: Option<NumberSpec>,
+    /// The declared unit (`frame`, `h`, `deg`, `%`), for the view to show or leave out.
+    pub(crate) unit: Option<String>,
     /// The text as it is being typed into this field, and why it cannot be read when it cannot.
     pub(crate) typing: Option<String>,
     pub(crate) invalid: Option<String>,
@@ -380,8 +382,6 @@ pub(crate) struct MaskDraftModel {
     /// The method the commit calls, which is what Copy as JSON request copies.
     pub(crate) method: String,
     pub(crate) kind: String,
-    /// The gesture's own numbers, each a declared field name and its formatted value.
-    pub(crate) readout: Vec<(String, String)>,
     pub(crate) conflicted: bool,
     pub(crate) can_apply: bool,
     pub(crate) apply_reason: Option<String>,
@@ -591,7 +591,11 @@ impl MasksModel {
                 "title": draft.title,
                 "method": draft.method,
                 "conflicted": draft.conflicted,
-                "readout": draft.readout,
+                // The gesture's numbers as the panel shows them; the bar's compact readout is the
+                // frame's own `draft_bar`.
+                "fields": draft.fields.iter()
+                    .map(|field| (field.name.clone(), serde_json::json!(field.text)))
+                    .collect::<serde_json::Map<_, _>>(),
             })),
             "name": self.name,
             "enabled": self.enabled,
@@ -891,7 +895,7 @@ fn kinds(enabled: bool) -> Vec<KindOption> {
             let typed = luxforge_core::mask::component_geometry_is_defaulted(kind);
             (drawable || typed).then(|| KindOption {
                 kind: kind.to_owned(),
-                label: luxforge_core::mask::kind_title(kind),
+                label: luxforge_core::mask::kind_menu_title(kind),
                 drawable,
                 typed,
                 paints: crate::mask_draft::paintable(kind),
@@ -1265,6 +1269,9 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
                 name: name.to_owned(),
                 value,
                 spec,
+                unit: declared
+                    .and_then(|command| command.action.parameter(name))
+                    .and_then(|parameter| parameter.unit.clone()),
                 typing,
                 invalid,
             }
@@ -1456,6 +1463,9 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
                 typing,
                 invalid,
                 spec,
+                unit: patch
+                    .and_then(|command| command.action.parameter(name))
+                    .and_then(|parameter| parameter.unit.clone()),
             }
         })
         .collect();
@@ -1464,11 +1474,6 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         title: draft.op.label().to_owned(),
         method: draft.method().unwrap_or_default().to_owned(),
         kind: draft.kind().to_owned(),
-        readout: draft
-            .values()
-            .into_iter()
-            .map(|(name, value)| (name.to_owned(), format!("{value:.4}")))
-            .collect(),
         conflicted: inputs.gesture_conflicted,
         can_apply: apply_reason.is_none(),
         apply_reason,
