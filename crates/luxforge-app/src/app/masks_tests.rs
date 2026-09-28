@@ -4149,3 +4149,81 @@ fn the_band_collapses_and_the_brush_section_shows_on_demand() {
         json!(false)
     );
 }
+
+/// A script opens a kind menu and presses a mask's eye through the panel's own messages: the menu is
+/// view state captured on the next redraw, and the eye's frame waits for the coverage grid exactly
+/// when the press leaves the overlay something to draw.
+#[test]
+fn a_script_opens_a_kind_menu_and_presses_an_eye() {
+    use crate::app::{
+        evidence::Settle,
+        testing::{attach_script, evidence},
+    };
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+
+    attach_script(
+        &mut masking.editor,
+        r#"[{"mask":{"menu":"new-mask"}},{"mask":{"menu":"add-component"}}]"#,
+    );
+    let _ = masking.editor.next_step();
+    // A step runs outside `update`, which derives the panel after every message.
+    masking.editor.rederive();
+    assert_eq!(masking.editor.menu.as_ref(), Some(&MenuTarget::NewMask));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["menu"],
+        json!("new_mask")
+    );
+    let run = evidence(&masking.editor);
+    assert!(run.capture_pending && run.awaiting.is_none());
+    assert_eq!(run.current.as_ref().unwrap()["status"], json!("sent"));
+    let _ = masking.editor.next_step();
+    assert_eq!(
+        masking.editor.menu.as_ref(),
+        Some(&MenuTarget::AddComponent)
+    );
+
+    // The eye on the open mask with the tint on: hiding it leaves the overlay nothing to draw, so the
+    // frame is the next redraw; showing it again asks for the grid, and the step waits for it.
+    masking.message(MaskMessage::ToggleOverlay);
+    attach_script(
+        &mut masking.editor,
+        r#"[{"mask":{"eye":{"name":"Mask 1"}}},{"mask":{"eye":0}}]"#,
+    );
+    let _ = masking.editor.next_step();
+    masking.editor.rederive();
+    assert!(!masking.editor.workspace.masks.masks[0].visible);
+    assert!(masking.editor.mask_overlay_request().is_none());
+    let run = evidence(&masking.editor);
+    assert!(run.capture_pending && run.awaiting.is_none());
+    let _ = masking.editor.next_step();
+    masking.editor.rederive();
+    assert!(masking.editor.workspace.masks.masks[0].visible);
+    assert_eq!(
+        evidence(&masking.editor).awaiting,
+        Some(Settle::MaskOverlay)
+    );
+
+    // A captured frame records the draft bar as it is drawn, and none with no gesture open.
+    assert_eq!(masking.editor.snapshot()["draft_bar"], Value::Null);
+    let component = masking.listing().masks[0].components[0]
+        .id
+        .as_str()
+        .to_owned();
+    masking.message(MaskMessage::EditShape(component));
+    let bar = masking.editor.snapshot()["draft_bar"].clone();
+    assert_eq!(bar["title"], json!("Mask 1"), "{bar}");
+    assert_eq!(bar["subject"], json!("Linear 1 · Add"), "{bar}");
+    assert_eq!(bar["kind"], json!(LINEAR), "{bar}");
+    assert_eq!(bar["done"], json!(false), "{bar}");
+    let _ = masking.editor.update(Message::Draft(DraftMessage::Cancel));
+
+    // An eye on a mask the listing does not hold fails its step with the reason.
+    attach_script(&mut masking.editor, r#"[{"mask":{"eye":{"name":"Sky"}}}]"#);
+    let _ = masking.editor.next_step();
+    let step = evidence(&masking.editor).current.clone().unwrap();
+    assert_eq!(step["status"], json!("failed"));
+    assert_eq!(step["reason"], json!("no mask is named Sky"));
+}
