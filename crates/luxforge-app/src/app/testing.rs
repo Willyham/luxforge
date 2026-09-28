@@ -836,3 +836,28 @@ pub(crate) fn drafted(
     });
     (analysis, raster)
 }
+
+/// An exact frame of `generation` retained as the preview worker's exact phase leaves it: exact,
+/// rendered in `render_ms`, and of no content serial yet.
+pub(crate) fn exact(
+    generation: u64,
+    raster: Arc<luxforge_core::Raster>,
+    render_ms: f64,
+) -> super::preview::ExactFrame {
+    super::preview::ExactFrame {
+        generation,
+        raster,
+        approximate_white_balance: false,
+        render_ms,
+        content: None,
+    }
+}
+
+/// An analysed frame waiting to be adopted with its pixels, as an exact phase leaves it.
+pub(crate) fn incoming(
+    analysis: Analysis,
+    raster: Arc<luxforge_core::Raster>,
+) -> Option<(Analysis, super::preview::ExactFrame)> {
+    let frame = exact(analysis.generation, raster, 0.0);
+    Some((analysis, frame))
+}

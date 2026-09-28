@@ -13,10 +13,11 @@
 //! while it is loaded. Every wait fails at once, naming what it waited for, when nothing more can
 //! arrive: the queue is idle, or its job is held at a gate this test has not opened.
 use super::{
-    Editor, ProxyFrame,
+    Editor,
     crop::StageView,
     evidence::Settle,
     message::{CropMessage, DraftMessage, Message, PointerMessage, PreviewMessage, SyncMessage},
+    preview::ProxyFrame,
     tasks::SyncResult,
     testing::{
         CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, finish, hold_crop,
@@ -167,7 +168,7 @@ impl Hold {
                 return true;
             }
             assert!(
-                editor.preview_queue.is_busy() && !editor.preview_queue.ready(),
+                editor.presentation.queue.is_busy() && !editor.presentation.queue.ready(),
                 "{what} can never reach its gate: the job ended first: {}",
                 editor.status
             );
@@ -200,7 +201,7 @@ fn deliver_until(
         if done(editor) {
             return true;
         }
-        let queue = &editor.preview_queue;
+        let queue = &editor.presentation.queue;
         assert!(
             queue.is_busy(),
             "{what} can never happen: the preview queue has nothing running, waiting or ready: {}",
@@ -293,7 +294,7 @@ fn over_the_frame_limit() -> SourceImage {
 fn opened_and_shown() -> (Editor, PathBuf, AssetId, HistoryEntry) {
     let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 4);
     poll_until(&mut editor, "the opened entry's frame", |editor| {
-        editor.presented_entry.as_ref() == Some(&entry_id)
+        editor.presentation.presented_entry.as_ref() == Some(&entry_id)
     });
     let current = editor
         .state
@@ -319,9 +320,9 @@ fn events<'a>(records: &'a [Value], name: &str) -> Vec<&'a Value> {
 fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenting_it() {
     let (mut editor, catalog, asset, original) = opened_and_shown();
     let log = attach_log(&mut editor);
-    let version = editor.presenter.photo_version();
+    let version = editor.presentation.presenter.photo_version();
     assert!(
-        editor.presenter.photo().is_some(),
+        editor.presentation.presenter.photo().is_some(),
         "the opened frame is on screen"
     );
 
@@ -334,24 +335,32 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
         "history names the crop"
     );
     poll_until(&mut editor, "the crop's failure", |editor| {
-        editor.render_error.is_some()
+        editor.presentation.render_error.is_some()
     });
 
     assert_eq!(
-        editor.render_error.as_ref().map(|error| error.kind),
+        editor
+            .presentation
+            .render_error
+            .as_ref()
+            .map(|error| error.kind),
         Some(ErrorKind::ResourceLimit)
     );
     assert!(
-        editor.presenter.photo().is_none(),
+        editor.presentation.presenter.photo().is_none(),
         "the uncropped picture is still on the surface under the crop's entry"
     );
-    assert_eq!(editor.presented_entry, None);
+    assert_eq!(editor.presentation.presented_entry, None);
     assert_eq!(
         editor.stack_summary()["displayed"],
         Value::Null,
         "the evidence names a displayed entry although nothing is shown"
     );
-    assert!(editor.raster.is_none() && editor.proxy_frame.is_none() && editor.analysis.is_none());
+    assert!(
+        editor.presentation.exact.is_none()
+            && editor.presentation.proxy_frame.is_none()
+            && editor.presentation.analysis.is_none()
+    );
     assert!(
         editor.status.starts_with("resource-limit: "),
         "{}",
@@ -379,25 +388,28 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     );
 
     // A zoom either way hands nothing retained over in the picture's place and asks for no render.
-    let generation = editor.preview_generation;
+    let generation = editor.presentation.preview_generation;
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.zoom_changed(&Zoom::Fit);
     editor.session.preview.view.zoom = Zoom::Fit;
     let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
     assert!(
-        editor.presenter.photo().is_none(),
+        editor.presentation.presenter.photo().is_none(),
         "a zoom put a stale picture back"
     );
     assert_eq!(
-        editor.presenter.photo_version(),
+        editor.presentation.presenter.photo_version(),
         version,
         "nothing was handed over"
     );
     assert_eq!(
-        editor.preview_generation, generation,
+        editor.presentation.preview_generation, generation,
         "nothing was asked for"
     );
-    assert!(editor.render_error.is_some(), "the failure is still shown");
+    assert!(
+        editor.presentation.render_error.is_some(),
+        "the failure is still shown"
+    );
 
     // The next state that renders is shown, and the failure with it is over.
     let mut next = entry(&asset, 6, Some(&crop.id));
@@ -405,10 +417,10 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     let refresh = committed(&asset, &next, &[&crop, &original], small());
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     poll_until(&mut editor, "the next frame", |editor| {
-        editor.presenter.photo().is_some()
+        editor.presentation.presenter.photo().is_some()
     });
-    assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
-    assert!(editor.render_error.is_none());
+    assert_eq!(editor.presentation.presented_entry.as_ref(), Some(&next.id));
+    assert!(editor.presentation.render_error.is_none());
     assert_eq!(editor.workspace.canvas.photo, PhotoView::Plain);
 
     let records = logged(&mut editor, &log);
@@ -436,15 +448,18 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
 #[test]
 fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
     let (mut editor, catalog, _, current) = opened_and_shown();
-    let presented = editor.presented_generation;
+    let presented = editor.presentation.presented_generation;
     let error = Error::resource_limit("linear output exceeds 512 MiB");
     editor.preview_failed(presented, false, &current.id, None, &error);
     editor.rederive();
     assert!(
-        editor.presenter.photo().is_some(),
+        editor.presentation.presenter.photo().is_some(),
         "the target's own proxy was withdrawn"
     );
-    assert_eq!(editor.presented_entry.as_ref(), Some(&current.id));
+    assert_eq!(
+        editor.presentation.presented_entry.as_ref(),
+        Some(&current.id)
+    );
     assert_eq!(editor.workspace.canvas.photo, PhotoView::Plain);
     assert!(
         editor
@@ -458,7 +473,7 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
     // A drafted revision of the same entry is another picture: its failure withdraws the frame.
     editor.preview_failed(presented + 1, false, &current.id, Some(3), &error);
     assert!(
-        editor.presenter.photo().is_none(),
+        editor.presentation.presenter.photo().is_none(),
         "a frame of another revision stayed"
     );
     finish(editor, catalog);
@@ -470,7 +485,7 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
 fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     let (mut editor, catalog, asset, current) = opened_and_shown();
     editor.window = (1440.0, 900.0);
-    editor.dimensions = Some((4000, 3000));
+    editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
     let raster = |code: u8| {
         Arc::new(luxforge_core::Raster {
@@ -481,9 +496,9 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
             snapshot_id: current.snapshot.id.clone(),
         })
     };
-    let generation = editor.presented_generation;
-    editor.presented_proxy = true;
-    editor.proxy_frame = Some(ProxyFrame {
+    let generation = editor.presentation.presented_generation;
+    editor.presentation.presented_proxy = true;
+    editor.presentation.proxy_frame = Some(ProxyFrame {
         generation,
         raster: raster(1),
         dimensions: (1200, 900),
@@ -492,7 +507,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
         approximate_white_balance: false,
         render_ms: 5.0,
     });
-    editor.raster = Some((generation, raster(2)));
+    editor.presentation.exact = Some(super::testing::exact(generation, raster(2), 5.0));
     // The next entry is committed and asked for; its frame has not arrived.
     let next: EntryId = cropped(&asset, &current, 5).id;
     editor.display_entry = Some(next.clone());
@@ -501,10 +516,13 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.zoom_changed(&Zoom::Fit);
     assert!(
-        !editor.presented_proxy,
+        !editor.presentation.presented_proxy,
         "the retained exact raster is on screen"
     );
-    assert_eq!(editor.presented_entry.as_ref(), Some(&current.id));
+    assert_eq!(
+        editor.presentation.presented_entry.as_ref(),
+        Some(&current.id)
+    );
     assert_eq!(
         editor.display_entry.as_ref(),
         Some(&next),
@@ -553,10 +571,10 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         editor.status
     );
     assert!(
-        editor.render_error.is_none(),
+        editor.presentation.render_error.is_none(),
         "the photograph's own state did not fail"
     );
-    assert!(editor.presenter.photo().is_some());
+    assert!(editor.presentation.presenter.photo().is_some());
     // The update's end discards the start's core draft, at the owner too.
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
     assert!(editor.gesture.is_none());
@@ -596,7 +614,7 @@ fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(&steps);
     let error = Error::resource_limit("linear output exceeds 512 MiB");
     let entry = EntryId::new();
-    editor.preview_generation = 9;
+    editor.presentation.preview_generation = 9;
     if let Some(evidence) = editor.evidence.as_mut() {
         evidence.awaiting = Some(Settle::Preview);
         evidence.capture_pending = false;
@@ -688,7 +706,7 @@ fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) 
 fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
-        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+        editor.presentation.presented_generation > 0 && !editor.presentation.queue.is_busy()
     });
     let log = attach_log(&mut editor);
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
@@ -705,17 +723,17 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         .expect("the draft's job was requested");
     assert_eq!(editor.status, "Rendering the crop's input stage…");
     assert_eq!(
-        editor.preview_queue.pending_generation(),
+        editor.presentation.queue.pending_generation(),
         None,
         "the draft's job is running"
     );
     stage.reached(&editor, "the draft's input stage");
 
     let next = committed_elsewhere(&mut editor, &asset, 5, Some(&frame));
-    let newer = editor.preview_generation;
+    let newer = editor.presentation.preview_generation;
     assert!(newer > draft);
     assert_eq!(
-        editor.preview_queue.pending_generation(),
+        editor.presentation.queue.pending_generation(),
         Some(newer),
         "the new entry's job waits behind the draft's"
     );
@@ -724,7 +742,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         editor.crop().is_none()
     });
     assert_eq!(editor.draft_generation, None);
-    assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
+    assert!(editor.crop().is_none() && editor.presentation.presenter.stage().is_none());
     assert_eq!(
         editor.mode_sync.as_deref(),
         Some(POINTER_MODE),
@@ -737,15 +755,15 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
 
     frame.open();
     dispatch_polls_until(&mut editor, "the new entry's frame", |editor| {
-        editor.presented_generation == newer && !editor.preview_queue.is_busy()
+        editor.presentation.presented_generation == newer && !editor.presentation.queue.is_busy()
     });
     assert!(
-        editor.presenter.stage().is_none(),
+        editor.presentation.presenter.stage().is_none(),
         "nothing of the draft was shown"
     );
-    assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
-    assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
-    assert!(editor.render_error.is_none());
+    assert!(editor.crop().is_none() && editor.presentation.presenter.stage().is_none());
+    assert_eq!(editor.presentation.presented_entry.as_ref(), Some(&next.id));
+    assert!(editor.presentation.render_error.is_none());
     let records = logged(&mut editor, &log);
     assert_eq!(
         events(&records, "preview_exact_cancelled"),
@@ -772,7 +790,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
 fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes_it() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
-        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+        editor.presentation.presented_generation > 0 && !editor.presentation.queue.is_busy()
     });
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let (stage, frame) = (Hold::shut(), Hold::shut());
@@ -788,23 +806,23 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
     stage.reached(&editor, "the draft's input stage");
 
     let next = committed_elsewhere(&mut editor, &asset, 5, Some(&frame));
-    let newer = editor.preview_generation;
+    let newer = editor.presentation.preview_generation;
     assert!(newer > draft);
     stage.open();
     poll_until(&mut editor, "the draft's input stage", |editor| {
         editor.crop_stage() == Some(StageView::Shown)
     });
-    assert!(editor.presenter.stage().is_some());
+    assert!(editor.presentation.presenter.stage().is_some());
     assert!(core_draft(&editor).expect("the draft is kept").conflicted);
     assert_eq!(editor.draft_generation, None, "nothing more is on its way");
 
     frame.open();
     poll_until(&mut editor, "the new entry's frame", |editor| {
-        editor.presented_generation == newer && !editor.preview_queue.is_busy()
+        editor.presentation.presented_generation == newer && !editor.presentation.queue.is_busy()
     });
-    assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
+    assert_eq!(editor.presentation.presented_entry.as_ref(), Some(&next.id));
     assert!(
-        editor.crop().is_some() && editor.presenter.stage().is_some(),
+        editor.crop().is_some() && editor.presentation.presenter.stage().is_some(),
         "the stage stays under the frame"
     );
     finish(editor, catalog);
@@ -822,7 +840,7 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
 fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_draft() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
-        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+        editor.presentation.presented_generation > 0 && !editor.presentation.queue.is_busy()
     });
     let _ = editor.update(Message::Crop(CropMessage::Start));
     open_crop(&mut editor);
@@ -846,7 +864,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         .draft_generation
         .expect("the reapply's job was requested");
     assert_eq!(
-        editor.preview_queue.pending_generation(),
+        editor.presentation.queue.pending_generation(),
         Some(reapply),
         "the reapply's job waits behind the first commit's frame"
     );
@@ -866,10 +884,11 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
 
     first.open();
     poll_until(&mut editor, "the second commit's frame", |editor| {
-        editor.presented_entry.as_ref() == Some(&next.id) && !editor.preview_queue.is_busy()
+        editor.presentation.presented_entry.as_ref() == Some(&next.id)
+            && !editor.presentation.queue.is_busy()
     });
     assert!(
-        editor.presenter.stage().is_none(),
+        editor.presentation.presenter.stage().is_none(),
         "the replaced job delivered a stage"
     );
     assert!(core_draft(&editor).expect("the draft is kept").conflicted);
@@ -933,9 +952,9 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
 fn a_draft_shows_its_input_stage_in_the_update_that_takes_it_up() {
     let (mut editor, catalog, _, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
-        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+        editor.presentation.presented_generation > 0 && !editor.presentation.queue.is_busy()
     });
-    let photo = editor.presenter.photo_version();
+    let photo = editor.presentation.presenter.photo_version();
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let job = draft_job(&editor, small());
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
@@ -947,25 +966,32 @@ fn a_draft_shows_its_input_stage_in_the_update_that_takes_it_up() {
     deliver_until(
         &mut editor,
         "the draft's input stage",
-        |editor| editor.preview_queue.ready(),
+        |editor| editor.presentation.queue.ready(),
         |_| {},
     );
     assert!(!editor.drafting(), "the frame waits for its stage");
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     assert_eq!(editor.crop_stage(), Some(StageView::Shown));
     assert_eq!(
-        editor.presenter.stage().map(luxforge_ui::Frame::size),
+        editor
+            .presentation
+            .presenter
+            .stage()
+            .map(luxforge_ui::Frame::size),
         Some((64, 48))
     );
     assert!(editor.drafting());
     assert_eq!(
-        editor.presenter.photo_version(),
+        editor.presentation.presenter.photo_version(),
         photo,
         "the stage is not a photograph"
     );
-    assert!(editor.presenter.photo().is_some());
-    assert_ne!(editor.presented_generation, draft);
+    assert!(editor.presentation.presenter.photo().is_some());
+    assert_ne!(editor.presentation.presented_generation, draft);
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    assert!(editor.presenter.stage().is_none(), "the stage was kept");
+    assert!(
+        editor.presentation.presenter.stage().is_none(),
+        "the stage was kept"
+    );
     finish(editor, catalog);
 }

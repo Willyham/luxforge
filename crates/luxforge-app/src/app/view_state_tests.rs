@@ -184,7 +184,7 @@ fn a_status_line_reaches_the_status_bar() {
 #[test]
 fn the_percentage_segment_opens_as_the_zoom_field_and_a_zoom_closes_it() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
-    editor.dimensions = Some((480, 320));
+    editor.presentation.dimensions = Some((480, 320));
     editor.rederive();
     let shown = editor.workspace.title.zoom_percent.clone();
     assert!(shown.ends_with('%'), "{shown}");

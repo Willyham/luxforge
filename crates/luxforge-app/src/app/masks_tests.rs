@@ -2157,7 +2157,7 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
         "the host's own reason is what is recorded, and it says which half is missing: {step}"
     );
     assert!(
-        masking.editor.mask_overlay_surface().is_none(),
+        masking.editor.presentation.coverage().is_none(),
         "nothing is drawn over the photograph for a mask that has no grid"
     );
 }
@@ -2512,8 +2512,8 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     // The committed frame is on screen and nothing else is queued, so every frame the queue holds
     // from here on is one the gesture asked for.
     drain_queue(&mut masking);
-    let presented = masking.editor.presented_generation;
-    assert_eq!(masking.editor.displayed_draft_revision, None);
+    let presented = masking.editor.presentation.presented_generation;
+    assert_eq!(masking.editor.presentation.displayed_draft_revision, None);
     let log = attach_log(&mut masking.editor);
 
     // A drag whose drafted frames are still being rendered: nothing polls the queue until Discard.
@@ -2525,7 +2525,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     }));
     masking.assert_geometry_sent();
     assert!(
-        masking.editor.preview_queue.is_busy(),
+        masking.editor.presentation.queue.is_busy(),
         "the drag's drafted frames are queued"
     );
     let draft_id = masking
@@ -2561,12 +2561,12 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     )
     .unwrap();
     assert_eq!(session["draft"], json!(null), "nor in the owner");
-    let asked = masking.editor.preview_generation;
+    let asked = masking.editor.presentation.preview_generation;
 
     // The late answer arrives.
     let _ = masking.editor.draft_set(late_set);
     assert_eq!(
-        masking.editor.preview_generation, asked,
+        masking.editor.presentation.preview_generation, asked,
         "a late answer asks for no frame"
     );
     assert!(
@@ -2579,12 +2579,12 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     // one of their frames is presented: the next frame on screen is the committed one the discard
     // read back after its cancel.
     drain_queue(&mut masking);
-    assert!(masking.editor.presented_generation > presented);
+    assert!(masking.editor.presentation.presented_generation > presented);
     assert_eq!(
-        masking.editor.presented_generation, asked,
+        masking.editor.presentation.presented_generation, asked,
         "the committed frame read back after the cancel is on screen"
     );
-    assert_eq!(masking.editor.displayed_draft_revision, None);
+    assert_eq!(masking.editor.presentation.displayed_draft_revision, None);
     assert!(masking.editor.session.draft.is_none());
 
     let records = logged(&mut masking.editor, &log);
@@ -2791,7 +2791,7 @@ fn drain_queue(masking: &mut Masking) {
         let _ = masking
             .editor
             .update(Message::Preview(PreviewMessage::Poll));
-        !masking.editor.preview_queue.is_busy()
+        !masking.editor.presentation.queue.is_busy()
     });
 }
 
@@ -2832,10 +2832,10 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     use crate::app::testing::{attach_log, logged};
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
-    let presented = masking.editor.presented_generation;
+    let presented = masking.editor.presentation.presented_generation;
     let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert!(
-        masking.editor.preview_queue.is_busy(),
+        masking.editor.presentation.queue.is_busy(),
         "the drafted frame is queued"
     );
     let log = attach_log(&mut masking.editor);
@@ -2845,13 +2845,13 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     assert!(masking.editor.gesture.is_none());
     assert!(masking.editor.session.draft.is_none());
     assert_eq!(masking.editor.snapshot()["draft"], json!(null));
-    let asked = masking.editor.preview_generation;
+    let asked = masking.editor.presentation.preview_generation;
     drain_queue(&mut masking);
     // The committed frame the cancel read back is the next one on screen, and no drafted frame
     // was presented before it.
-    assert!(masking.editor.presented_generation > presented);
-    assert_eq!(masking.editor.presented_generation, asked);
-    assert_eq!(masking.editor.displayed_draft_revision, None);
+    assert!(masking.editor.presentation.presented_generation > presented);
+    assert_eq!(masking.editor.presentation.presented_generation, asked);
+    assert_eq!(masking.editor.presentation.displayed_draft_revision, None);
     let records = logged(&mut masking.editor, &log);
     assert!(
         records
@@ -2872,18 +2872,19 @@ fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
     masking.open_gesture();
     masking.sweep((0.5, 0.2), (0.5, 0.8));
     masking.editor.window = (1440.0, 900.0);
-    masking.editor.dimensions = Some((4000, 3000));
+    masking.editor.presentation.dimensions = Some((4000, 3000));
     masking.editor.session.preview.view.zoom = luxforge_core::Zoom::Fit;
     masking.editor.scale_factor = 1.0;
-    masking.editor.presented_generation = masking.editor.preview_generation;
-    masking.editor.presented_proxy = true;
-    masking.editor.presented_bounds = masking.editor.proxy_bounds();
-    masking.editor.refit_pending = false;
+    masking.editor.presentation.presented_generation =
+        masking.editor.presentation.preview_generation;
+    masking.editor.presentation.presented_proxy = true;
+    masking.editor.presentation.presented_bounds = masking.editor.proxy_bounds();
+    masking.editor.presentation.refit_pending = false;
     let _ = masking
         .editor
         .update(Message::View(ViewMessage::ScaleFactor(2.0)));
     assert!(
-        !masking.editor.refit_pending,
+        !masking.editor.presentation.refit_pending,
         "a refit displaced the mask gesture's drafted frame"
     );
 }
@@ -2986,13 +2987,13 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
         to: (0.5, 0.7),
     }));
     masking.assert_geometry_sent();
-    let asked = masking.editor.preview_generation;
+    let asked = masking.editor.presentation.preview_generation;
 
     attach_script(&mut masking.editor, r#"[{"mask":{"release":true}}]"#);
     let log = attach_log(&mut masking.editor);
     let _ = masking.editor.next_step();
     assert_eq!(
-        masking.editor.preview_generation, asked,
+        masking.editor.presentation.preview_generation, asked,
         "the release asked for no frame"
     );
     let run = evidence(&masking.editor);
@@ -3034,9 +3035,9 @@ fn a_stroke_settles_on_its_committed_frame_while_the_brush_re_arms() {
         masking.editor.armed_brush(),
         "the brush went back in hand in the update that took the commit up"
     );
-    let committed = masking.editor.preview_generation;
+    let committed = masking.editor.presentation.preview_generation;
     drain_queue(&mut masking);
-    assert_eq!(masking.editor.presented_generation, committed);
+    assert_eq!(masking.editor.presentation.presented_generation, committed);
     assert_eq!(
         evidence(&masking.editor).awaiting,
         None,

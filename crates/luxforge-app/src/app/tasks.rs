@@ -132,40 +132,6 @@ pub(crate) struct PreviewPayload {
     pub(crate) session: ClientSession,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct Upload {
-    pub(crate) generation: u64,
-    /// The draft revision this frame was rendered from, when a draft produced it.
-    pub(crate) draft_revision: Option<u64>,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) entry_id: EntryId,
-    pub(crate) snapshot_id: String,
-    pub(crate) source_fingerprint: String,
-    /// These pixels are the display proxy of the frame, not its exact render. `width`/`height`
-    /// above are the texture's own size, which at a proxy is the proxy's; the exact stage the
-    /// picks, the percent box and the overlay grid map through stays on `Editor::dimensions`.
-    pub(crate) proxy: bool,
-    /// The proxy source dimensions this frame was rendered against, when it is one.
-    pub(crate) proxy_dimensions: Option<(u32, u32)>,
-    /// The proxy source was built for this frame rather than taken from the queue's cache.
-    pub(crate) proxy_built: bool,
-    /// Whether these proxy pixels approximate the exact render at display size, and why: a
-    /// spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
-    /// narrower than two proxy pixels, or both.
-    pub(crate) proxy_approximation: luxforge_core::ProxyApproximation,
-    /// These pixels approximate a drafted RAW white balance on planes developed at another one,
-    /// at either phase ([`luxforge_core::PreviewResult::approximate_white_balance`]).
-    pub(crate) approximate_white_balance: bool,
-    /// Why these pixels are being uploaded when no render asked for it: `Some("zoom")` is the
-    /// retained raster a zoom change needed. `None` is the ordinary path, a rendered frame.
-    pub(crate) reason: Option<&'static str>,
-    /// How long these pixels took to render: the preview worker's own time for the phase that
-    /// produced them, carried with a retained frame when a zoom hands it back. `None` only when
-    /// nothing recorded one for a retained raster.
-    pub(crate) render_ms: Option<f64>,
-}
-
 /// What one live-refresh poll found. One poll answers every kind of change: the asset's state is
 /// read back when an event names the open asset at a revision the desktop does not hold, or names
 /// it with no revision (a version), the preset library when a `preset.*` event arrived, and

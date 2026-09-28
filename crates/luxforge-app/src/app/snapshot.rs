@@ -86,7 +86,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -190,25 +190,36 @@ impl Editor {
                     .is_some_and(|overlay| gpu.drawn_clipping_version == Some(overlay.version()));
                 let drawn = clipping_drawn
                     && match request.region {
-                        Some(rect) => self.region_raster.as_ref().is_some_and(|region| {
-                            region.rect == rect
-                                && self.presenter.region().is_some_and(|surface_region| {
-                                    gpu.drawn_regions.iter().flatten().any(|drawn| {
-                                        drawn.version == surface_region.frame.version()
-                                            && drawn.content_id == region.content
-                                            && drawn.generation == region.generation
-                                            && drawn.quality == region.quality
-                                    })
+                        Some(rect) => {
+                            self.presentation
+                                .region_raster
+                                .as_ref()
+                                .is_some_and(|region| {
+                                    region.rect == rect
+                                        && self.presentation.presenter.region().is_some_and(
+                                            |surface_region| {
+                                                gpu.drawn_regions.iter().flatten().any(|drawn| {
+                                                    drawn.version == surface_region.frame.version()
+                                                        && drawn.content_id == region.content
+                                                        && drawn.generation == region.generation
+                                                        && drawn.quality == region.quality
+                                                })
+                                            },
+                                        )
                                 })
-                        }),
+                        }
                         None => {
                             // Fit uses the surface's ordinary (non-viewport) path, which has
                             // no content ID. Its exact photo Frame version and clipping Frame
                             // version still prove both draw calls were encoded together.
-                            gpu.drawn_content
-                                .is_none_or(|content| content == self.presented_content)
-                                && gpu.drawn_full_version
-                                    == self.presenter.photo().map(luxforge_ui::Frame::version)
+                            gpu.drawn_content.is_none_or(|content| {
+                                content == self.presentation.presented_content
+                            }) && gpu.drawn_full_version
+                                == self
+                                    .presentation
+                                    .presenter
+                                    .photo()
+                                    .map(luxforge_ui::Frame::version)
                         }
                     };
                 json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,
@@ -230,12 +241,12 @@ impl Editor {
         let gpu = luxforge_ui::surface_diagnostics();
         json!({
             "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
-            "generation": self.presented_generation,
-            "raster": self.presenter.photo().map(|photo| {
+            "generation": self.presentation.presented_generation,
+            "raster": self.presentation.presenter.photo().map(|photo| {
                 let (width, height) = photo.size();
                 json!([width, height])
             }),
-            "version": self.presenter.photo().map(luxforge_ui::Frame::version),
+            "version": self.presentation.presenter.photo().map(luxforge_ui::Frame::version),
             "texture_writes": luxforge_ui::photo_surface::texture_writes(),
             "detail_updating":self.visible_detail_updating(),
             "desired_view_dirty":self.desired_view_dirty,
@@ -293,23 +304,23 @@ impl Editor {
     pub(super) fn proxy_summary(&self) -> Value {
         let bounds = self.proxy_bounds();
         json!({
-            "eligible": match (&self.proxy_declined, self.proxy_frame.is_some()) {
+            "eligible": match (&self.presentation.proxy_declined, self.presentation.proxy_frame.is_some()) {
                 (Some(_), _) => Some(false),
                 (None, true) => Some(true),
                 (None, false) => None,
             },
-            "declined": self.proxy_declined,
+            "declined": self.presentation.proxy_declined,
             "approximate": self
-                .presented_proxy_frame()
+                .presentation.proxy()
                 .map(|frame| frame.approximation.is_approximate()),
             "approximate_reason": self
-                .presented_proxy_frame()
+                .presentation.proxy()
                 .and_then(|frame| frame.approximation.reason()),
             "dimensions": self
-                .presented_proxy_frame()
+                .presentation.proxy()
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
-            "presented": self.presented_proxy,
+            "presented": self.presentation.presented_proxy,
         })
     }
 
@@ -356,7 +367,7 @@ impl Editor {
 
     /// The failure the notices were derived from, as its code, detail and data.
     pub(super) fn render_error_summary(&self) -> Value {
-        match &self.render_error {
+        match &self.presentation.render_error {
             Some(error) => {
                 json!({"code":error.kind.code(),"detail":error.detail,"data":error.data})
             }
@@ -380,10 +391,10 @@ impl Editor {
                         json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(luxforge_core::MaskId::as_str),"artifacts":layer.artifacts})
                     })
                     .collect();
-                let displayed = self.rendered_entry.as_ref().map(|entry| json!({
+                let displayed = self.presentation.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
-                    "dimensions": self.dimensions,
+                    "dimensions": self.presentation.dimensions,
                     "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(luxforge_core::MaskId::as_str),"artifacts":layer.artifacts})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
@@ -413,7 +424,7 @@ impl Editor {
                     );
                     object.insert(
                         "input_stage_loaded".into(),
-                        Value::from(self.presenter.stage().is_some()),
+                        Value::from(self.presentation.presenter.stage().is_some()),
                     );
                     // Which phase of the stage is on screen, and the size of the frame drawn:
                     // the display-size proxy at Fit, the exact stage at a percentage zoom.

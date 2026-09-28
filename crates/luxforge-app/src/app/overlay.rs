@@ -20,7 +20,7 @@ use super::{
     message::{ClipEndpoint, Message, OverlayMessage},
     tasks::workspace_task,
 };
-use crate::{layout, state};
+use crate::state;
 use iced::Task;
 use luxforge_core::{
     Error, Raster,
@@ -217,13 +217,13 @@ impl Editor {
         let Some((request, raster)) = wanted.clone().zip(source) else {
             // Both overlays are off, or there is nothing to derive one from.
             self.overlay_queue.cancel();
-            self.presenter.clear_clipping();
+            self.presentation.presenter.clear_clipping();
             return;
         };
         // A mask derived from another image never stands in for this one while its replacement is
         // derived; the same image at another cell grid keeps its overlay until the new one lands.
         if previous.map(|request| request.generation) != Some(request.generation) {
-            self.presenter.clear_clipping();
+            self.presentation.presenter.clear_clipping();
         }
         self.overlay_request = wanted;
         self.overlay_queue.request(raster, request);
@@ -244,16 +244,19 @@ impl Editor {
         let mut failure = None;
         match done.result {
             Ok(rgba) => {
-                let shown = match self.region_raster.as_ref().filter(|region| {
+                let shown = match self.presentation.region_raster.as_ref().filter(|region| {
                     region.generation == generation && done.request.region == Some(region.rect)
                 }) {
-                    Some(region) => {
-                        self.presenter
-                            .show_region_clipping(rgba, (width, height), region)
+                    Some(region) => self.presentation.presenter.show_region_clipping(
+                        rgba,
+                        (width, height),
+                        region,
+                    ),
+                    None => {
+                        self.presentation
+                            .presenter
+                            .show_clipping(generation, rgba, (width, height))
                     }
-                    None => self
-                        .presenter
-                        .show_clipping(generation, rgba, (width, height)),
                 };
                 if shown {
                     self.event(
@@ -266,7 +269,7 @@ impl Editor {
                 }
             }
             Err(error) => {
-                self.presenter.clear_clipping();
+                self.presentation.presenter.clear_clipping();
                 self.status = format!("Clipping overlay unavailable: {error}");
                 failure = Some(self.status.clone());
                 self.event(
@@ -304,9 +307,8 @@ impl Editor {
         // not — which is what lets the overlay follow a drag. A proxy-derived mask says so.
         let (generation, raster, approximate) = self.overlay_source()?;
         let source = (raster.width, raster.height);
-        let surface =
-            layout::photo_surface(self.window, workspace.state_panel, workspace.tools_panel);
         let region = self
+            .presentation
             .region_raster
             .as_ref()
             .filter(|region| region.generation == generation);
@@ -322,18 +324,7 @@ impl Editor {
                 region.rect.height as f32 * scale,
             ))
         } else {
-            state::histogram::displayed_size(
-                match self.session.preview.view.zoom {
-                    luxforge_core::Zoom::Fit => state::canvas::ZoomView::Fit,
-                    luxforge_core::Zoom::Percent { value } => {
-                        state::canvas::ZoomView::Percent(value)
-                    }
-                },
-                source,
-                surface,
-                self.scale_factor,
-                layout::FIT_INSET,
-            )
+            self.displayed_size(source)
         }?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
         Some(OverlayRequest {
@@ -353,7 +344,7 @@ impl Editor {
         // grid is bounded by what the display can show, and the aspect ratio is what decides how
         // the cells divide, so a mask overlay can be asked for with the first preview job rather
         // than only from the second one onwards.
-        let source = self.dimensions.or_else(|| {
+        let source = self.presentation.dimensions.or_else(|| {
             self.state
                 .as_ref()
                 .map(|state| (state.asset.width, state.asset.height))
@@ -374,24 +365,12 @@ impl Editor {
     /// A settled whole-frame mask grid has the full stage's aspect ratio and physical display
     /// density. Reusing the viewport's counts for that grid makes a large photograph coarse.
     pub(crate) fn whole_overlay_cells(&self) -> Option<(u32, u32)> {
-        let source = self.dimensions.or_else(|| {
+        let source = self.presentation.dimensions.or_else(|| {
             self.state
                 .as_ref()
                 .map(|state| (state.asset.width, state.asset.height))
         })?;
-        let workspace = &self.session.workspace;
-        let surface =
-            layout::photo_surface(self.window, workspace.state_panel, workspace.tools_panel);
-        let displayed = state::histogram::displayed_size(
-            match self.session.preview.view.zoom {
-                luxforge_core::Zoom::Fit => state::canvas::ZoomView::Fit,
-                luxforge_core::Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
-            },
-            source,
-            surface,
-            self.scale_factor,
-            layout::FIT_INSET,
-        )?;
+        let displayed = self.displayed_size(source)?;
         state::histogram::overlay_cells(source, displayed)
     }
 
@@ -403,43 +382,27 @@ impl Editor {
     /// lands, at which point the request changes and the mask is re-derived exactly. The full-size
     /// phase of an approximate white balance is still approximate, and says so.
     pub(super) fn overlay_source(&self) -> Option<(u64, &Arc<luxforge_core::Raster>, bool)> {
-        let generation = self.presented_generation;
-        if let Some(region) = self
+        let presentation = &self.presentation;
+        let generation = presentation.presented_generation;
+        if let Some(region) = presentation
             .region_raster
             .as_ref()
             .filter(|region| region.generation == generation)
         {
             return Some((generation, &region.raster, region.approximate));
         }
-        if let Some(raster) = self.presented_exact_raster() {
-            return Some((generation, raster, self.raster_approximate_white_balance));
+        if let Some(frame) = presentation.exact() {
+            return Some((generation, &frame.raster, frame.approximate_white_balance));
         }
-        self.presented_proxy_frame()
+        presentation
+            .proxy()
             .map(|frame| (generation, &frame.raster, true))
     }
 
-    /// The overlay to draw over the photograph: the one on the presenter, when it belongs to the
-    /// frame that is on screen. An overlay derived from a superseded raster is held back rather
-    /// than drawn over another image.
+    /// The clipping overlay to draw over the photograph: the one on the presenter, when it was
+    /// derived for the request in force and belongs to the frame that is on screen.
     pub(crate) fn overlay_surface(&self) -> Option<&luxforge_ui::Frame> {
-        let request = self.overlay_request.as_ref()?;
-        if request.generation != self.presented_generation {
-            return None;
-        }
-        if let Some(region) = self.region_raster.as_ref().filter(|region| {
-            request.region == Some(region.rect) && region.generation == request.generation
-        }) {
-            return self
-                .presenter
-                .region_clipping()
-                .filter(|overlay| {
-                    overlay.content_id == region.content
-                        && overlay.generation == region.generation
-                        && overlay.quality == region.quality
-                })
-                .map(|overlay| &overlay.frame);
-        }
-        self.presenter.clipping(request.generation)
+        self.presentation.clipping(self.overlay_request.as_ref())
     }
 }
 

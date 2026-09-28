@@ -516,9 +516,9 @@ impl Editor {
         // The stage on screen is the one the frame was rebased away from, and one still rendering
         // for it is stopped and held below the delivery floor, so neither is drawn under the
         // rebased frame nor taken up as the photograph.
-        self.presenter.end_stage();
+        self.presentation.presenter.end_stage();
         if self.draft_generation.take().is_some() {
-            self.preview_generation = self.cancel_preview_queue();
+            self.presentation.preview_generation = self.cancel_preview_queue();
         }
         self.status = "Preparing the crop's input stage…".into();
         // The rebased frame's fields are offered first, and held while the draft is conflicted, so
@@ -622,7 +622,7 @@ impl Editor {
             return (false, Task::none());
         }
         crop.frames.shown = Some(shown);
-        if !self.presenter.show_stage(raster) {
+        if !self.presentation.presenter.show_stage(raster) {
             self.crop_stage_lost();
             self.status = "Could not show the crop's input stage".into();
             self.settle_step(Settle::Draft);
@@ -707,7 +707,7 @@ impl Editor {
             return true;
         };
         crop.frames.shown = Some(shown);
-        if !self.presenter.show_stage(&raster) {
+        if !self.presentation.presenter.show_stage(&raster) {
             self.status = "Could not show the crop's input stage".into();
         }
         false
@@ -764,7 +764,7 @@ impl Editor {
         };
         json!({
             "phase": frames.shown.map(|shown| if shown.proxy { "proxy" } else { "exact" }),
-            "size": self.presenter.stage().map(|frame| [frame.size().0, frame.size().1]),
+            "size": self.presentation.presenter.stage().map(|frame| [frame.size().0, frame.size().1]),
             "held_bounded": frames.bounded.is_some(),
             "held_exact": frames.exact.is_some(),
         })
@@ -1001,11 +1001,11 @@ impl Editor {
     /// stage still on its way, and return the session to pointer. Every way a crop draft ends —
     /// Apply, Cancel, a scripted cancel or apply, a start that failed — comes through here.
     pub(crate) fn end_crop_view(&mut self) {
-        self.presenter.end_stage();
+        self.presentation.presenter.end_stage();
         // A stage still rendering is stopped and held below the delivery floor, so it can never be
         // taken up as the photograph once nothing marks it as the draft's.
         if self.draft_generation.take().is_some() {
-            self.preview_generation = self.cancel_preview_queue();
+            self.presentation.preview_generation = self.cancel_preview_queue();
         }
         self.crop_guide = false;
         if self.editing_angle() {
@@ -1535,7 +1535,7 @@ mod tests {
         // Cancel is the one draft lifecycle's, as it is for every gesture.
         draft_message(&mut editor, DraftMessage::Cancel);
         assert!(editor.crop().is_none());
-        assert!(editor.presenter.stage().is_none());
+        assert!(editor.presentation.presenter.stage().is_none());
         assert!(!editor.crop_guide, "cancelling leaves no guide mode on");
         let summary = editor.snapshot()["crop"].clone();
         assert_eq!(summary["drafting"], json!(false));
@@ -1940,7 +1940,7 @@ mod tests {
         answer_commit(&mut editor, Ok(Some(refresh)));
         assert!(editor.crop().is_none() && editor.gesture.is_none());
         assert!(editor.session.draft.is_none());
-        assert!(editor.presenter.stage().is_none());
+        assert!(editor.presentation.presenter.stage().is_none());
         assert!(editor.status.contains("Crop applied"), "{}", editor.status);
         finish(editor, catalog);
     }
@@ -2469,7 +2469,7 @@ mod tests {
         let settled = |editor: &mut Editor, wanted: &str| {
             luxforge_testbase::wait_until(&format!("the {wanted} stage"), || {
                 let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-                phase(editor) == json!(wanted) && !editor.preview_queue.is_busy()
+                phase(editor) == json!(wanted) && !editor.presentation.queue.is_busy()
             });
         };
         settled(&mut editor, "proxy");
@@ -2571,7 +2571,7 @@ mod tests {
         assert_eq!(pixels.strong_count(), 0, "the frames end with the draft");
         let _ = editor.update(answer);
         assert_eq!(editor.draft_generation, None, "nothing is rendered");
-        assert!(editor.presenter.stage().is_none());
+        assert!(editor.presentation.presenter.stage().is_none());
         assert_eq!(dropped.strong_count(), 0, "a dropped answer is not kept");
         finish(editor, catalog);
     }
@@ -2620,7 +2620,7 @@ mod tests {
         let settled = |editor: &mut Editor, wanted: &str| {
             luxforge_testbase::wait_until(&format!("the {wanted} stage"), || {
                 let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-                phase(editor) == json!(wanted) && !editor.preview_queue.is_busy()
+                phase(editor) == json!(wanted) && !editor.presentation.queue.is_busy()
             });
         };
         let _ = editor.update(Message::Crop(CropMessage::Start));

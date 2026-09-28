@@ -19,15 +19,15 @@ fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
         let (mut editor, catalog, _, _, action, parameter) = drafting();
         let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
         let id = editor.session.draft.as_ref().unwrap().draft_id.clone();
-        editor.displayed_draft_id = Some(id);
-        editor.displayed_draft_revision = Some(1);
+        editor.presentation.displayed_draft_id = Some(id);
+        editor.presentation.displayed_draft_revision = Some(1);
         if cancel {
             let _ = editor.discard();
         } else {
             let _ = editor.release();
         }
-        assert_eq!(editor.displayed_draft_id, None);
-        assert_eq!(editor.displayed_draft_revision, None);
+        assert_eq!(editor.presentation.displayed_draft_id, None);
+        assert_eq!(editor.presentation.displayed_draft_revision, None);
         finish(editor, catalog);
     }
 }

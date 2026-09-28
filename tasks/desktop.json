@@ -987,7 +987,7 @@
     {
       "id": "TASK-013",
       "description": "Give presentation its own owner, `preview::Presentation`, holding the presenter and the frame bookkeeping, with typed retained frames and one displayed-size rule.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-011"
       ],
@@ -1092,7 +1092,7 @@
     {
       "id": "TASK-014",
       "description": "Give each desktop seam its own state and message enum, list the seams' post-message hooks once, and share one coalescing slot type.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-012",
         "TASK-013"
