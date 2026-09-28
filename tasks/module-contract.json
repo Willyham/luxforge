@@ -734,7 +734,7 @@
     {
       "id": "TASK-010",
       "description": "Register test-only modules, including the always-on pixel proof, only in developer mode, and assemble the built-in registry through one function shared by the desktop and luxforge-json.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure.",

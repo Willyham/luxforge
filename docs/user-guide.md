@@ -16,7 +16,7 @@ cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
 
 Omit `--catalog` to use the platform configuration directory. `--data-root DIRECTORY` isolates config, data and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
 
-`--developer` shows the pixel and controls proof modules under Developer. It also registers `luxforge.controls` and its API methods; without the flag that module is absent from both discovery and the workspace. The pixel proof remains discoverable through the API either way. `--disable-module luxforge.crop` (or another built-in id) registers that module as unavailable, which keeps its stored layers readable and reports them instead of rendering without them.
+`--developer` registers the test modules, the pixel proof (`luxforge.pixel`) and the controls proof (`luxforge.controls`), with their API methods, and shows them under Developer. Without the flag they are absent from both discovery and the workspace: `module.list` and `schema.list` name no test module or method, and a stored layer of one is reported unavailable rather than rendered. `--disable-module luxforge.crop` (or another built-in id) registers that module as unavailable, which keeps its stored layers readable and reports them instead of rendering without them.
 
 For agent-driven API or rendered checks on macOS, add `--background` to keep the editor from taking desktop focus. Use a separate test catalog or `--evidence-dir NEW_DIR`; background evidence runs capture the editor and exit automatically. `--hidden-window` additionally creates the window invisible: it still renders and captures through a real surface, but never appears on the desktop. Smoke and diagnostic harnesses use background, hidden launches by default on macOS. Launch normally for keyboard, mouse and native-dialog interaction.
 
@@ -396,6 +396,8 @@ The headless owner, `luxforge-json`, reads one JSON request per line and writes 
 target/release/luxforge-json --catalog /path/to/catalog.sqlite
 ```
 
+It serves the same modules as the desktop through the same registry. `--developer` adds the test modules, the pixel and controls proofs, as the desktop's flag does; unlike the desktop, a debug build of `luxforge-json` is never in developer mode without it, so what `schema.list` lists never depends on how the binary was built. `--proof-endpoint URL` needs `--developer` in both, and each refuses it otherwise with the same message.
+
 Keep the process and its input open while requests are in progress. For example, send:
 
 ```json
@@ -562,7 +564,7 @@ Read the export with `job.read {job_id}`: its `kind` is `export`, its `status` i
 
 ### Module settings, consent and resources
 
-Modules can declare settings, provider profiles, secrets, resources to download, an activation and worker tasks; the [module capabilities](design/module-capabilities.md) design has the whole contract. They live outside every catalog: settings and grants in `<config>/modules/` (`~/Library/Application Support/Luxforge/modules` on macOS), installed resources in `<data>/modules/resources/`, secrets in the macOS Keychain. `luxforge-json --data-root DIRECTORY` isolates both directories like the desktop's flag, and `--secret-store memory` keeps secrets for the process only, for scripts and tests. Nothing is read, created, downloaded or loaded merely because a module is listed or a catalog is opened. Only the capability proof module declares any of this today, and only with `--developer --proof-endpoint URL` in the desktop or `--proof-endpoint URL` headless.
+Modules can declare settings, provider profiles, secrets, resources to download, an activation and worker tasks; the [module capabilities](design/module-capabilities.md) design has the whole contract. They live outside every catalog: settings and grants in `<config>/modules/` (`~/Library/Application Support/Luxforge/modules` on macOS), installed resources in `<data>/modules/resources/`, secrets in the macOS Keychain. `luxforge-json --data-root DIRECTORY` isolates both directories like the desktop's flag, and `--secret-store memory` keeps secrets for the process only, for scripts and tests. Nothing is read, created, downloaded or loaded merely because a module is listed or a catalog is opened. Only the capability proof module declares any of this today, and only with `--developer --proof-endpoint URL`, in the desktop and headless alike.
 
 `module.settings.read {module_id}` returns each field's value, default and validity, each secret field only as `secret_present`, and each provider profile with its status. `module.settings.set {module_id, profile_id?, values, mutation}` commits non-secret fields together (`null` resets one); `module.settings.set-secret {module_id, profile_id?, setting, value, mutation}` stores a secret and never echoes it; `module.settings.clear-secret`, `module.settings.reset`, `module.profile.create {module_id, adapter, label, mutation}` and `module.profile.remove` complete the set. The `mutation` envelope is the edit one, with `expected_revision` the module's settings revision. A locked or unavailable secure store answers `not-ready`; nothing falls back to plain text.
 
