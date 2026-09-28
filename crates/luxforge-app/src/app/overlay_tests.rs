@@ -15,7 +15,7 @@ fn failed_clipping_derivation_marks_the_evidence_step_and_releases_capture() {
     editor.await_step(evidence::Settle::Overlay);
     editor.session.workspace.clip_highlights = true;
     let request = overlay::OverlayRequest {
-        generation: editor.presented_generation,
+        generation: editor.presentation.presented_generation,
         cells_w: 1,
         cells_h: 1,
         shadows: false,
@@ -47,7 +47,7 @@ fn viewport_and_whole_mask_grids_use_physical_density_at_their_own_stage_sizes()
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.window = (1440.0, 900.0);
     editor.scale_factor = 2.0;
-    editor.dimensions = Some((6000, 4000));
+    editor.presentation.dimensions = Some((6000, 4000));
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let visible = editor
         .desired_view_for((6000, 4000))
@@ -70,11 +70,11 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
     editor.session.workspace.clip_highlights = true;
     editor.session.preview.view.zoom = Zoom::Fit;
     let (committed, raster) = analysed(&editor, 4, &[[9, 9, 9, 255]; 4], 2, 2);
-    editor.preview_generation = 4;
-    // The pixels reach the screen first, exactly as `Message::Uploaded` presents them: the
+    editor.presentation.preview_generation = 4;
+    // The pixels reach the screen first, exactly as `Editor::present` records them: the
     // overlay describes the frame on screen, so nothing is derived until one is.
-    editor.presented_generation = 4;
-    editor.incoming = Some((committed, raster));
+    editor.presentation.presented_generation = 4;
+    editor.presentation.incoming = testing::incoming(committed, raster);
     editor.adopt_analysis(4);
     let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
     let derived = editor.overlay_request.clone().expect("an overlay");
@@ -83,7 +83,7 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
 
     // The gesture's tick asks for a drafted preview. Nothing new can be derived from an image
     // that has not arrived, so the mask of the frame on screen is left alone.
-    editor.preview_generation = 5;
+    editor.presentation.preview_generation = 5;
     editor.refresh_overlay();
     assert_eq!(
         editor.overlay_request.as_ref(),
@@ -95,13 +95,20 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
     let draft_id = luxforge_core::DraftId::new();
     let (analysis, drafted_raster) =
         drafted(&editor, 5, &draft_id, 2, &[[255, 255, 255, 255]; 4], 2, 2);
-    editor.presented_generation = 5;
-    editor.incoming = Some((analysis, drafted_raster));
+    editor.presentation.presented_generation = 5;
+    editor.presentation.incoming = testing::incoming(analysis, drafted_raster);
     editor.adopt_analysis(5);
     editor.refresh_overlay();
-    let (generation, retained) = editor.raster.as_ref().expect("the drafted raster");
-    assert_eq!(*generation, 5);
-    assert_eq!(retained.rgba[0], 255, "the drafted pixels are retained");
+    let retained = editor
+        .presentation
+        .exact
+        .as_ref()
+        .expect("the drafted raster");
+    assert_eq!(retained.generation, 5);
+    assert_eq!(
+        retained.raster.rgba[0], 255,
+        "the drafted pixels are retained"
+    );
     let drafted_overlay = editor.overlay_request.as_ref().expect("a drafted overlay");
     assert_eq!(
         drafted_overlay.generation, 5,
@@ -124,9 +131,9 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
     editor.session.workspace.clip_shadows = true;
     editor.session.preview.view.zoom = Zoom::Fit;
     let (committed, raster) = analysed(&editor, 4, &[[255, 255, 255, 255]; 4], 2, 2);
-    editor.preview_generation = 4;
-    editor.presented_generation = 4;
-    editor.incoming = Some((committed, raster));
+    editor.presentation.preview_generation = 4;
+    editor.presentation.presented_generation = 4;
+    editor.presentation.incoming = testing::incoming(committed, raster);
     editor.adopt_analysis(4);
     let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
     let request = editor.overlay_request.clone().expect("an overlay");
@@ -145,7 +152,7 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
     };
     editor.overlay_ready(stale);
     assert!(
-        editor.presenter.clipping(4).is_none(),
+        editor.presentation.presenter.clipping(4).is_none(),
         "a stale grid was drawn"
     );
     editor.overlay_request = Some(request.clone());
@@ -168,7 +175,7 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
         ]
     );
     // Another frame on screen: the overlay of generation 4 is not drawn over it.
-    editor.presented_generation = 5;
+    editor.presentation.presented_generation = 5;
     assert!(editor.overlay_surface().is_none());
     finish(editor, catalog);
 }
@@ -180,7 +187,7 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
 fn a_coverage_grid_is_laid_over_its_own_frame_in_the_same_update() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.session.workspace.mask_overlay = luxforge_core::MaskOverlayMode::Tint;
-    editor.presented_generation = 7;
+    editor.presentation.presented_generation = 7;
     let grid = |cells: (u32, u32)| luxforge_core::analysis::MaskOverlay {
         mask: luxforge_core::MaskId::new(),
         component: None,
@@ -189,11 +196,10 @@ fn a_coverage_grid_is_laid_over_its_own_frame_in_the_same_update() {
         coverage: vec![255; (cells.0 * cells.1) as usize],
     };
     let log = testing::attach_log(&mut editor);
-    editor.mask_overlay_pending = Some((7, grid((3, 2))));
-    editor.present_mask_overlay();
-    assert!(editor.mask_overlay_pending.is_none());
+    editor.present_mask_overlay(7, grid((3, 2)));
     let drawn = editor
-        .mask_overlay_surface()
+        .presentation
+        .coverage()
         .expect("the coverage is drawn");
     assert_eq!(drawn.size(), (3, 2));
     let records = testing::logged(&mut editor, &log);
@@ -205,14 +211,13 @@ fn a_coverage_grid_is_laid_over_its_own_frame_in_the_same_update() {
         1
     );
     // Another frame on screen: the grid of generation 7 is not drawn over it.
-    editor.presented_generation = 8;
-    assert!(editor.mask_overlay_surface().is_none());
+    editor.presentation.presented_generation = 8;
+    assert!(editor.presentation.coverage().is_none());
     // With the overlay off the grid paints nothing, and nothing is left drawn.
-    editor.presented_generation = 7;
+    editor.presentation.presented_generation = 7;
     editor.session.workspace.mask_overlay = luxforge_core::MaskOverlayMode::Off;
-    editor.mask_overlay_pending = Some((7, grid((3, 2))));
-    editor.present_mask_overlay();
-    assert!(editor.mask_overlay_surface().is_none());
+    editor.present_mask_overlay(7, grid((3, 2)));
+    assert!(editor.presentation.coverage().is_none());
     finish(editor, catalog);
 }
 

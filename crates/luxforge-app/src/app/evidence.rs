@@ -421,24 +421,30 @@ impl Editor {
         if self.state.is_none()
             || self.crop().is_some()
             || self.gallery_page().is_some()
-            || self.render_error.is_some()
+            || self.presentation.render_error.is_some()
         {
             return true;
         }
-        let full = self.presenter.photo_for(self.presented_content);
-        let full_current = self.presenter.full_content() == Some(self.presented_content);
+        let full = self
+            .presentation
+            .presenter
+            .photo_for(self.presentation.presented_content);
+        let full_current =
+            self.presentation.presenter.full_content() == Some(self.presentation.presented_content);
         let expected = if matches!(
             self.session.preview.view.zoom,
             luxforge_core::Zoom::Percent { .. }
         ) && !full_current
         {
-            self.presenter.region().and_then(|region| {
-                (region.content_id == self.presented_content).then_some(ExpectedPhotoDraw::Region {
-                    version: region.frame.version(),
-                    content: region.content_id,
-                    generation: region.generation,
-                    quality: region.quality,
-                })
+            self.presentation.presenter.region().and_then(|region| {
+                (region.content_id == self.presentation.presented_content).then_some(
+                    ExpectedPhotoDraw::Region {
+                        version: region.frame.version(),
+                        content: region.content_id,
+                        generation: region.generation,
+                        quality: region.quality,
+                    },
+                )
             })
         } else {
             None
@@ -450,7 +456,7 @@ impl Editor {
                     self.session.preview.view.zoom,
                     luxforge_core::Zoom::Percent { .. }
                 ) && full_current)
-                    .then_some(self.presented_content),
+                    .then_some(self.presentation.presented_content),
             })
         });
         expected.is_some_and(|expected| photo_drawn(expected, luxforge_ui::surface_diagnostics()))
@@ -462,7 +468,7 @@ impl Editor {
         if self.state.is_none()
             || self.crop().is_some()
             || self.gallery_page().is_some()
-            || self.render_error.is_some()
+            || self.presentation.render_error.is_some()
         {
             return true;
         }
@@ -550,7 +556,7 @@ impl Editor {
                     || (!proxy_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
-                    || self.overlay_awaited.is_some()
+                    || self.presentation.overlay_awaited.is_some()
                 {
                     return Task::none();
                 }
@@ -558,7 +564,7 @@ impl Editor {
                 // grid belongs to one generation, and a newer frame presented after it leaves the
                 // canvas drawing the photograph alone. This subscription runs per window frame, so
                 // waiting costs nothing and the grid of that newer frame arrives a message later.
-                if overlay_wanted && self.mask_overlay_surface().is_none() {
+                if overlay_wanted && self.presentation.coverage().is_none() {
                     return Task::none();
                 }
                 let Some(evidence) = &mut self.evidence else {
@@ -569,8 +575,11 @@ impl Editor {
                 let recorded = (self.snapshot(), self.activity.requested);
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {
-                    evidence.sync.state =
-                        Some((recorded.0, recorded.1, self.presenter.photo_version()));
+                    evidence.sync.state = Some((
+                        recorded.0,
+                        recorded.1,
+                        self.presentation.presenter.photo_version(),
+                    ));
                     evidence.sync.clipping_version = clipping_version;
                 }
                 return iced::window::oldest()
@@ -589,7 +598,7 @@ impl Editor {
                     && !self.capture_proxy_ready()
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence.sync.state.as_ref().is_some_and(|(_, _, version)| {
-                            *version != self.presenter.photo_version()
+                            *version != self.presentation.presenter.photo_version()
                         })
                     })
                     || self.evidence.as_ref().is_some_and(|evidence| {
@@ -623,7 +632,7 @@ impl Editor {
                         (
                             self.snapshot(),
                             self.activity.requested,
-                            self.presenter.photo_version(),
+                            self.presentation.presenter.photo_version(),
                         )
                     });
                 let scale = shot.scale_factor;
@@ -841,7 +850,7 @@ impl Editor {
     /// A frame will follow the mask gesture messages sent since the preview generation was
     /// `asked`: they requested one, or a round trip whose answer brings one is still in flight.
     fn mask_frame_coming(&self, asked: u64) -> bool {
-        self.preview_generation != asked || self.mask_frame_pending()
+        self.presentation.preview_generation != asked || self.mask_frame_pending()
     }
 
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
@@ -1085,7 +1094,7 @@ impl Editor {
             if self.mask_gesture().is_none() {
                 return self.fail_step("no mask gesture is open to drag");
             }
-            let asked = self.preview_generation;
+            let asked = self.presentation.preview_generation;
             let mut tasks = vec![self.mask_message(MaskMessage::Handle(MaskPointer::Begin {
                 handle,
                 x: first[0],
@@ -1313,7 +1322,7 @@ impl Editor {
                 let Some((first, rest)) = points.split_first() else {
                     return self.fail_step("a stroke needs at least one position");
                 };
-                let asked = self.preview_generation;
+                let asked = self.presentation.preview_generation;
                 let mut tasks =
                     vec![
                         self.mask_message(MaskMessage::Handle(MaskPointer::PaintBegin {
@@ -1439,7 +1448,7 @@ impl Editor {
         } else {
             self.mask_settle()
         });
-        let asked = self.preview_generation;
+        let asked = self.presentation.preview_generation;
         let task = self.dispatch(message);
         let armed = match expect {
             Expect::Redraw | Expect::Overlay => true,
@@ -1788,9 +1797,9 @@ impl Editor {
             && self.slider_gesture().is_none()
             && !self.busy
             && self.pending_reset.is_none()
-            && !self.preview_queue.is_busy()
-            && self.held_by_proxy.is_none()
-            && self.presented_generation == self.preview_generation
+            && !self.presentation.queue.is_busy()
+            && self.presentation.held_by_proxy.is_none()
+            && self.presentation.presented_generation == self.presentation.preview_generation
         {
             self.settle_step(Settle::Quiet);
         }
@@ -1852,7 +1861,8 @@ impl Editor {
     /// it is still waiting on, until that render has actually reached the screen. A slow host then
     /// stretches the stroke's real time instead of losing positions to the render pipeline.
     fn paced_stroke_settled(&self) -> bool {
-        !self.mask_frame_pending() && self.presented_generation == self.preview_generation
+        !self.mask_frame_pending()
+            && self.presentation.presented_generation == self.presentation.preview_generation
     }
 
     /// One tick of a paced stroke step: the next pointer position, through the same
@@ -1903,7 +1913,7 @@ impl Editor {
         } else {
             MaskPointer::PaintTo { x, y }
         };
-        let asked = self.preview_generation;
+        let asked = self.presentation.preview_generation;
         let mut tasks = vec![self.mask_message(MaskMessage::Handle(pointer))];
         if done {
             if release {
@@ -2446,7 +2456,11 @@ impl Editor {
             .stale_photo_draws
             .saturating_sub(observation.stale_before);
         let drawn_delta = gpu.drawn_frames.saturating_sub(observation.drawn_before);
-        let expected_version = self.presenter.photo().map(luxforge_ui::Frame::version);
+        let expected_version = self
+            .presentation
+            .presenter
+            .photo()
+            .map(luxforge_ui::Frame::version);
         let ready = self.capture_photo_ready();
         let passed = ready && blank_delta == 0 && drawn_delta > 0;
         let detail = json!({

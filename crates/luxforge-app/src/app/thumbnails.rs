@@ -650,7 +650,7 @@ mod tests {
         let idle = |editor: &mut Editor| {
             luxforge_testbase::wait_until("the preview and thumbnail workers", || {
                 let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-                !editor.preview_queue.is_busy() && !editor.thumbnail_queue.is_busy()
+                !editor.presentation.queue.is_busy() && !editor.thumbnail_queue.is_busy()
             });
         };
         let identity = PreviewJob::new(stack.clone()).expect("a job").identity;
@@ -841,7 +841,7 @@ mod tests {
             let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
             luxforge_testbase::wait_until("the frame and its thumbnails", || {
                 let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-                !editor.preview_queue.is_busy() && !editor.thumbnail_queue.is_busy()
+                !editor.presentation.queue.is_busy() && !editor.thumbnail_queue.is_busy()
             });
         };
         let commit = |editor: &Editor, method: &str, params: Value| {

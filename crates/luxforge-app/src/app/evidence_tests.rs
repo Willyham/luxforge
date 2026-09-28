@@ -49,7 +49,7 @@ fn clipping_readiness_applies_only_to_the_ordinary_photo() {
         "the gallery has its own surface"
     );
     editor.gallery = None;
-    editor.render_error = Some(luxforge_core::Error::render("failed"));
+    editor.presentation.render_error = Some(luxforge_core::Error::render("failed"));
     assert!(
         editor.capture_clipping_ready(),
         "an error is captured explicitly"
@@ -81,10 +81,10 @@ fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
     editor.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.scale_factor = 1.0;
-    editor.presented_proxy = true;
-    editor.presented_bounds = editor.proxy_bounds();
+    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_bounds = editor.proxy_bounds();
     editor.scale_factor = 2.0;
-    editor.refit_pending = true;
+    editor.presentation.refit_pending = true;
     editor.outcome_ready(false);
     assert!(crate::app::testing::evidence(&editor).capture_pending);
     assert!(
@@ -92,15 +92,15 @@ fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
         "the old 1× proxy is not ready"
     );
 
-    editor.presented_bounds = editor.proxy_bounds();
+    editor.presentation.presented_bounds = editor.proxy_bounds();
     assert!(!editor.capture_proxy_ready(), "the refit is still pending");
-    editor.render_error = Some(luxforge_core::Error::resource_limit("refit failed"));
+    editor.presentation.render_error = Some(luxforge_core::Error::resource_limit("refit failed"));
     assert!(
         editor.capture_proxy_ready(),
         "a failed refit is captured as an error"
     );
-    editor.render_error = None;
-    editor.refit_pending = false;
+    editor.presentation.render_error = None;
+    editor.presentation.refit_pending = false;
     assert!(editor.capture_proxy_ready(), "the 2× proxy is ready");
 
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
@@ -108,7 +108,7 @@ fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
         editor.capture_proxy_ready(),
         "100% does not require a proxy"
     );
-    editor.presented_proxy = false;
+    editor.presentation.presented_proxy = false;
     assert!(
         editor.capture_proxy_ready(),
         "an exact frame needs no proxy refit"
@@ -126,12 +126,12 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
     editor.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.scale_factor = 2.0;
-    editor.presented_proxy = true;
-    editor.presented_generation = 7;
+    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_generation = 7;
     editor.session.workspace.tools_panel = true;
-    editor.presented_bounds = editor.proxy_bounds();
+    editor.presentation.presented_bounds = editor.proxy_bounds();
     editor.session.workspace.tools_panel = false;
-    assert_ne!(editor.presented_bounds, editor.proxy_bounds());
+    assert_ne!(editor.presentation.presented_bounds, editor.proxy_bounds());
     assert!(
         !editor.capture_proxy_ready(),
         "outside a draft, refit is required"
@@ -139,7 +139,10 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
 
     crate::app::testing::hold_slider(&mut editor, "set-basic", "exposure");
     let _ = editor.refit_proxy();
-    assert!(!editor.refit_pending, "the slider defers refit");
+    assert!(
+        !editor.presentation.refit_pending,
+        "the slider defers refit"
+    );
     assert!(
         editor.capture_proxy_ready(),
         "the slider's frame can be captured"
@@ -158,7 +161,7 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
         ),
         crate::app::crop::StageView::Shown,
     );
-    editor.refit_pending = true; // The queued refit was superseded by crop input-stage work.
+    editor.presentation.refit_pending = true; // The queued refit was superseded by crop input-stage work.
     assert!(
         editor.capture_proxy_ready(),
         "the crop frame can be captured"
@@ -180,19 +183,22 @@ fn evidence_retries_a_readback_superseded_by_new_pixels() {
     editor.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.scale_factor = 2.0;
-    editor.presented_proxy = true;
-    editor.presented_bounds = editor.proxy_bounds();
+    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_bounds = editor.proxy_bounds();
     // Two photographs have reached the surface since the capture recorded the first.
     for _ in 0..2 {
-        editor.presenter.show_photo(&luxforge_core::Raster {
-            width: 1,
-            height: 1,
-            rgba: vec![0, 0, 0, 255].into(),
-            source_fingerprint: "f".into(),
-            snapshot_id: luxforge_core::SnapshotId::new(),
-        });
+        editor
+            .presentation
+            .presenter
+            .show_photo(&luxforge_core::Raster {
+                width: 1,
+                height: 1,
+                rgba: vec![0, 0, 0, 255].into(),
+                source_fingerprint: "f".into(),
+                snapshot_id: luxforge_core::SnapshotId::new(),
+            });
     }
-    assert_eq!(editor.presenter.photo_version(), 2);
+    assert_eq!(editor.presentation.presenter.photo_version(), 2);
     let path = crate::app::testing::attach_log(&mut editor);
     let evidence = editor.evidence.as_mut().expect("evidence run");
     evidence.sync.state = Some((json!({"old":"proxy"}), 1, 1));
@@ -225,16 +231,19 @@ fn evidence_retries_a_readback_superseded_by_new_pixels() {
 #[test]
 fn evidence_retries_a_readback_superseded_only_by_clipping() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
-    editor.presenter.show_photo(&luxforge_core::Raster {
-        width: 1,
-        height: 1,
-        rgba: vec![0, 0, 0, 255].into(),
-        source_fingerprint: "f".into(),
-        snapshot_id: luxforge_core::SnapshotId::new(),
-    });
-    let photo_version = editor.presenter.photo_version();
+    editor
+        .presentation
+        .presenter
+        .show_photo(&luxforge_core::Raster {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255].into(),
+            source_fingerprint: "f".into(),
+            snapshot_id: luxforge_core::SnapshotId::new(),
+        });
+    let photo_version = editor.presentation.presenter.photo_version();
     editor.session.workspace.clip_highlights = true;
-    let generation = editor.presented_generation;
+    let generation = editor.presentation.presented_generation;
     editor.overlay_request = Some(overlay::OverlayRequest {
         generation,
         cells_w: 1,
@@ -246,16 +255,18 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     });
     assert!(
         editor
+            .presentation
             .presenter
             .show_clipping(generation, vec![255; 4], (1, 1))
     );
     let first_clipping = editor.overlay_surface().unwrap().version();
     assert!(
         editor
+            .presentation
             .presenter
             .show_clipping(generation, vec![0; 4], (1, 1))
     );
-    assert_eq!(editor.presenter.photo_version(), photo_version);
+    assert_eq!(editor.presentation.presenter.photo_version(), photo_version);
     assert_ne!(editor.overlay_surface().unwrap().version(), first_clipping);
 
     let evidence = editor.evidence.as_mut().expect("evidence run");

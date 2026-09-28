@@ -484,8 +484,8 @@ impl Editor {
             .core_gesture()
             .map(|gesture| gesture.draft.draft_id.clone());
         if self.released_draft.is_some() {
-            self.displayed_draft_id = None;
-            self.displayed_draft_revision = None;
+            self.presentation.displayed_draft_id = None;
+            self.presentation.displayed_draft_revision = None;
         }
         self.drive(Event::Release)
     }
@@ -493,8 +493,8 @@ impl Editor {
     /// Escape, Discard or a script: end the open core gesture and commit nothing.
     pub(crate) fn discard(&mut self) -> Task<Message> {
         if self.core_gesture().is_some() {
-            self.displayed_draft_id = None;
-            self.displayed_draft_revision = None;
+            self.presentation.displayed_draft_id = None;
+            self.presentation.displayed_draft_revision = None;
         }
         self.drive(Event::Cancel)
     }
@@ -552,14 +552,14 @@ impl Editor {
             return Task::none();
         };
         self.session.draft = None;
-        self.displayed_draft_id = None;
-        self.displayed_draft_revision = None;
+        self.presentation.displayed_draft_id = None;
+        self.presentation.displayed_draft_revision = None;
         // Nothing the gesture asked for reaches the screen after this: its drafted frames are
         // stopped and held below the delivery floor, so the next frame presented is the committed
         // one read back below. The drafted pixels already on screen stay until it lands. A gesture
         // that drafted nothing has nothing to hold back.
         if gesture.draft.drafted() {
-            self.preview_generation = self.cancel_preview_queue();
+            self.presentation.preview_generation = self.cancel_preview_queue();
         }
         match &gesture.kind {
             Kind::Slider(slider) => {
@@ -683,7 +683,7 @@ impl Editor {
                         } else {
                             (self.request_preview(job), None)
                         };
-                    self.preview_generation = generation;
+                    self.presentation.preview_generation = generation;
                     self.set_previewed(set.draft_revision, round_trip, requested_at);
                 }
                 self.drive(Event::Set(Ok(set)))
@@ -717,7 +717,7 @@ impl Editor {
         round_trip: RoundTrip,
         requested_at: Option<std::time::Instant>,
     ) {
-        let generation = self.preview_generation;
+        let generation = self.presentation.preview_generation;
         let Some(gesture) = self.gesture.as_deref_mut() else {
             return;
         };
@@ -879,8 +879,8 @@ impl Editor {
             return Task::none();
         };
         self.session.draft = None;
-        self.displayed_draft_id = None;
-        self.displayed_draft_revision = None;
+        self.presentation.displayed_draft_id = None;
+        self.presentation.displayed_draft_revision = None;
         self.dragging = None;
         match (open.kind, outcome) {
             (Kind::Slider(_), Some(refresh)) => {

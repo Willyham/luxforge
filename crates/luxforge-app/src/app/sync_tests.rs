@@ -30,7 +30,7 @@ fn initial_open_keeps_its_prequeue_clock_and_normal_generation() {
 fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
     let (mut editor, catalog, current_asset, _) = opened(Vec::new(), 2);
     let displayed = editor.display_entry.clone();
-    let preview_generation = editor.preview_generation;
+    let preview_generation = editor.presentation.preview_generation;
     let session = editor.session.clone();
     editor.activity.requested = 5;
     editor.open_generation.store(5, Ordering::Release);
@@ -49,7 +49,7 @@ fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
     )));
     assert_eq!(editor.state.as_ref().unwrap().asset.id, current_asset);
     assert_eq!(editor.display_entry, displayed);
-    assert_eq!(editor.preview_generation, preview_generation);
+    assert_eq!(editor.presentation.preview_generation, preview_generation);
     assert_eq!(editor.session, session);
     finish(editor, catalog);
 }
@@ -218,7 +218,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
     assert_eq!(editor.display_entry, Some(older.id.clone()));
     let held = (
         editor.display_entry.clone(),
-        editor.preview_generation,
+        editor.presentation.preview_generation,
         editor.session.clone(),
         editor.api_sequence,
     );
@@ -226,7 +226,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
         assert_eq!(
             (
                 editor.display_entry.clone(),
-                editor.preview_generation,
+                editor.presentation.preview_generation,
                 editor.session.clone(),
                 editor.api_sequence,
             ),

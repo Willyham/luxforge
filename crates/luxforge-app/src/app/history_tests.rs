@@ -2,7 +2,6 @@
 //! compare restores the selection it replaced, and an open draft refuses Undo, Redo and Restore.
 use super::{
     message::{CropMessage, DraftMessage, HistoryMessage, SyncMessage},
-    tasks::Upload,
     testing::{
         boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for, stand_in,
     },
@@ -114,24 +113,8 @@ fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
     let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 4);
     let older = entry(&asset, 2, None);
     editor.history.entries.push(HistoryRow::from(&older));
-    let upload = Upload {
-        generation: 1,
-        draft_revision: None,
-        width: 480,
-        height: 320,
-        entry_id: older.id.clone(),
-        snapshot_id: "snapshot-1".into(),
-        source_fingerprint: "source-1".into(),
-        proxy: false,
-        proxy_dimensions: None,
-        proxy_built: false,
-        proxy_approximation: luxforge_core::ProxyApproximation::default(),
-        approximate_white_balance: false,
-        reason: None,
-        render_ms: Some(3.0),
-    };
     // The current state says what last happened, in words: no entry, snapshot or source identity.
-    let current = editor.displayed_status(&upload);
+    let current = editor.displayed_status(&older.id);
     assert!(!current.starts_with("Previewing"), "{current}");
     for identity in [entry_id.as_str(), older.id.as_str(), "snapshot", "source"] {
         assert!(!current.contains(identity), "{current}");
@@ -139,15 +122,14 @@ fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
 
     editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
     assert_eq!(
-        editor.displayed_status(&upload),
+        editor.displayed_status(&older.id),
         format!("Previewing entry 2 \u{b7} {}", older.label)
     );
     // An entry the loaded page does not hold is still reported, without inventing a number.
-    let unknown = Upload {
-        entry_id: luxforge_core::EntryId::new(),
-        ..upload
-    };
-    assert_eq!(editor.displayed_status(&unknown), "Previewing history");
+    assert_eq!(
+        editor.displayed_status(&luxforge_core::EntryId::new()),
+        "Previewing history"
+    );
 
     editor.rederive();
     assert!(

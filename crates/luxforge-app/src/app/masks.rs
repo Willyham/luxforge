@@ -1406,22 +1406,24 @@ pub(crate) mod mask_overlay {
 }
 
 impl Editor {
-    /// Lay the coverage grid the preview worker filled beside the last frame over the photograph,
-    /// if there is one.
+    /// Lay a coverage grid the preview worker filled for `generation` over the photograph, in the
+    /// update that takes it up: beside an exact-only frame or a region once that frame is on
+    /// screen, or in the overlay phase that follows a proxy frame.
     ///
     /// It goes to the presenter in this update and the photo surface draws it over the photograph,
     /// never changing the photograph, in the next redraw. It is kept with its generation and drawn
     /// only while that frame is the one on screen — an overlay drawn over another image would claim
     /// a selection covers pixels it does not. The grid is agnostic to which phase of the job
     /// delivered it.
-    pub(crate) fn present_mask_overlay(&mut self) {
-        let Some((generation, grid)) = self.mask_overlay_pending.take() else {
-            return;
-        };
+    pub(crate) fn present_mask_overlay(
+        &mut self,
+        generation: u64,
+        grid: luxforge_core::analysis::MaskOverlay,
+    ) {
         let workspace = &self.session.workspace;
         let mode = self.effective_mask_overlay();
         let Some(rgba) = mask_overlay::paint(&grid, mode, workspace.mask_overlay_colour) else {
-            self.presenter.clear_coverage();
+            self.presentation.presenter.clear_coverage();
             return;
         };
         let (width, height) = (grid.cells_w, grid.cells_h);
@@ -1430,14 +1432,18 @@ impl Editor {
             json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
         let shown = match self
+            .presentation
             .region_raster
             .as_ref()
             .filter(|region| region.generation == generation)
         {
-            Some(region) => self
-                .presenter
-                .show_region_coverage(rgba, (width, height), region),
+            Some(region) => {
+                self.presentation
+                    .presenter
+                    .show_region_coverage(rgba, (width, height), region)
+            }
             None => self
+                .presentation
                 .presenter
                 .show_coverage(generation, rgba, (width, height)),
         };
@@ -1471,8 +1477,7 @@ impl Editor {
     /// status in the same update, so a line written here would be replaced before it was ever
     /// drawn.
     pub(crate) fn mask_overlay_unavailable(&mut self, generation: u64, reason: &str) {
-        self.mask_overlay_pending = None;
-        self.presenter.clear_coverage();
+        self.presentation.presenter.clear_coverage();
         let forced = self.mask_overlay_forced();
         self.event(
             "mask_overlay_absent",
@@ -1486,24 +1491,5 @@ impl Editor {
         } else {
             self.mask_overlay_refused_step(reason);
         }
-    }
-
-    /// The mask overlay to draw over the photograph: the one on the presenter, when it belongs to
-    /// the frame that is on screen.
-    pub(crate) fn mask_overlay_surface(&self) -> Option<&luxforge_ui::Frame> {
-        if let Some(region) = self.region_raster.as_ref()
-            && region.generation == self.presented_generation
-        {
-            return self
-                .presenter
-                .region_coverage()
-                .filter(|overlay| {
-                    overlay.content_id == region.content
-                        && overlay.generation == region.generation
-                        && overlay.quality == region.quality
-                })
-                .map(|overlay| &overlay.frame);
-        }
-        self.presenter.coverage(self.presented_generation)
     }
 }

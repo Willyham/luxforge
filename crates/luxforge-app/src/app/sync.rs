@@ -252,7 +252,7 @@ impl Editor {
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
         // the image for this newer open request.
-        self.preview_generation = self.cancel_preview_queue();
+        self.presentation.preview_generation = self.cancel_preview_queue();
         self.busy = true;
         self.status = "Importing photograph…".into();
         let file = path
@@ -443,8 +443,9 @@ impl Editor {
         }
         self.state = Some(refresh.state);
         self.show_entry(refresh.job.evaluation.entry().id.clone());
-        self.requested_render_entry = Some(refresh.job.evaluation.entry().clone());
-        self.preview_generation = self.request_preview(refresh.job);
+        self.presentation
+            .expect_entry(refresh.job.evaluation.entry());
+        self.presentation.preview_generation = self.request_preview(refresh.job);
         self.status = "Rendering selected history state…".into();
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
         // or historical value of the module's one layer. This reads the values already fetched with

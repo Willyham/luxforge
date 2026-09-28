@@ -83,7 +83,6 @@ mod view_state_tests;
 pub(crate) mod waker;
 
 pub(crate) use lifecycle::{Boot, run};
-pub(crate) use preview::{HeldByProxy, ProxyFrame};
 
 use crate::{
     diagnostics::Diagnostics,
@@ -91,7 +90,7 @@ use crate::{
         self, Workspace,
         capabilities::CapabilityStore,
         fields::Fields,
-        histogram::{Analysis, Readout},
+        histogram::Readout,
         presets::{PresetForm, PresetLibrary},
         tools,
     },
@@ -102,17 +101,15 @@ use gesture::{CoreGesture, Starting};
 use iced::{Element, Subscription, Task};
 use luxforge_core::{
     ClientAuthority, ClientId, ClientSession, EditorState, HistoryPage, HistorySelection,
-    LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue, ProxyBounds,
-    RecipeDescription, Version,
+    LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, RecipeDescription, Version,
 };
 use message::{
     EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, ViewMessage,
 };
 use overlay::{OverlayQueue, OverlayRequest};
-use presenter::Presenter;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -181,93 +178,12 @@ pub(crate) struct Editor {
     /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
     pub(crate) lineage_floor: Option<u64>,
     pub(crate) display_entry: Option<luxforge_core::EntryId>,
-    /// The entry whose pixels the photo surface holds: the entry the presented generation was
-    /// rendered for. [`Self::display_entry`] moves to a newly requested entry as soon as its job is
-    /// asked for; this moves only when that entry's frame is on screen, and is cleared when a
-    /// failure withdraws the frame.
-    pub(crate) presented_entry: Option<luxforge_core::EntryId>,
-    requested_render_entry: Option<luxforge_core::HistoryEntry>,
-    rendered_entry: Option<luxforge_core::HistoryEntry>,
     /// The Original entry, so Compare needs no search.
     pub(crate) original_entry: Option<luxforge_core::EntryId>,
     /// What the selection was before Compare took it.
     pub(crate) compare_return: Option<HistorySelection>,
-    /// Every frame the photo surface draws: the photograph, the crop draft's input stage and the
-    /// overlays over the photograph. None of it is a GPU allocation — the surface owns the textures
-    /// — so putting a frame on screen costs an `Arc` clone.
-    pub(crate) presenter: Presenter,
-    pub(crate) dimensions: Option<(u32, u32)>,
-    pub(crate) preview_queue: PreviewQueue,
-    pub(crate) preview_generation: u64,
-    /// One opaque surface identity per evaluated content. A pan/zoom retains it; a new draft
-    /// revision, history entry, source development or recipe gets another id.
-    pub(crate) content_key: Option<(
-        luxforge_core::analysis::AnalysisIdentity,
-        luxforge_core::ProxyIdentity,
-    )>,
-    pub(crate) content_serial: u64,
-    pub(crate) pending_content: BTreeMap<u64, u64>,
-    pub(crate) pending_intent: BTreeMap<u64, luxforge_core::PreviewIntent>,
-    pub(crate) presented_content: u64,
-    pub(crate) analysis_content: Option<u64>,
-    pub(crate) raster_content: Option<u64>,
-    pub(crate) region_raster: Option<preview::PresentedRegion>,
-    pub(crate) viewport_disabled_content: Option<u64>,
-    /// The displayed frame's own raster, with the preview generation it arrived under, retained
-    /// beside the picture on screen so a clipping overlay can be re-derived from it on a zoom, a
-    /// pan or a toggle without a second render. It shares the render's `Arc<Vec<u8>>`: retaining it
-    /// copies no pixels.
-    ///
-    /// The generation travels with it because the overlay is keyed on **this** image rather than on
-    /// the newest preview asked for: a frame that has arrived re-derives the overlay, and a frame
-    /// still rendering does not, so the mask always describes the photograph on screen — a drafted
-    /// one during a gesture exactly as much as a committed one.
-    pub(crate) raster: Option<(u64, Arc<luxforge_core::Raster>)>,
-    /// The retained raster approximates a drafted RAW white balance: it is the full-size phase of
-    /// such a job, which carries no report. A clipping overlay derived from it says `approximate`,
-    /// and it replaces no report.
-    pub(crate) raster_approximate_white_balance: bool,
-    /// The exact phase's own worker time for the generation it names, recorded when that phase is
-    /// taken up, so a zoom that hands the retained exact raster to the surface reports that
-    /// picture's render time. Keyed by generation like [`Self::raster`], and only read for the
-    /// generation on screen.
-    pub(crate) exact_render_ms: Option<(u64, f64)>,
-    /// The displayed frame's histogram report, adopted with the pixels under the same generation.
-    pub(crate) analysis: Option<Analysis>,
-    /// The report and raster of a frame whose pixels have not reached the GPU yet. The histogram
-    /// and the photograph are adopted together, so the plot never describes a frame that is not on
-    /// screen.
-    pub(crate) incoming: Option<(Analysis, Arc<luxforge_core::Raster>)>,
-    /// The generation whose pixels are on screen.
-    ///
-    /// The delivery rule is the queue's own, monotone rather than newest-only: a delivered result
-    /// is presented when it is not older than this. Under a sustained drag a render almost always
-    /// finishes after a newer job was requested, so rejecting everything but the newest generation
-    /// presents no frames at all. What makes work in flight stale is `preview_queue.cancel()`,
-    /// which an asset or selection change calls, and so does a discarded mask gesture whose drafted
-    /// frames must not reach the screen; nothing else has to.
-    pub(crate) presented_generation: u64,
-    /// The texture on screen is the display proxy rather than the exact render.
-    pub(crate) presented_proxy: bool,
-    /// The frame on screen approximates a drafted RAW white balance on planes developed at another
-    /// one. The histogram is never adopted from such a frame.
-    pub(crate) presented_approximate_white_balance: bool,
-    /// The bounds each requested job was given, by generation, until its frame is presented. The
-    /// bounds are decided when the job is requested, on this thread, so the frame reflects the
-    /// window, the panels and the display scale of that moment rather than of the moment its
-    /// owner task was created.
-    pub(crate) pending_bounds: BTreeMap<u64, Option<ProxyBounds>>,
-    /// The bounds the frame on screen was rendered for, when it was requested through
-    /// [`Self::request_preview`].
-    pub(crate) presented_bounds: Option<ProxyBounds>,
-    /// A refit of the proxy to new bounds has been asked for and has not been presented yet.
-    pub(crate) refit_pending: bool,
-    /// The proxy frame of the newest job that had a proxy phase.
-    pub(crate) proxy_frame: Option<ProxyFrame>,
-    /// Why the newest job that offered bounds has no proxy phase, as the core reported it.
-    pub(crate) proxy_declined: Option<String>,
-    /// What the presented proxy is holding until its exact phase lands.
-    pub(crate) held_by_proxy: Option<HeldByProxy>,
+    /// What the photo surface shows and the bookkeeping that decides it.
+    pub(crate) presentation: preview::Presentation,
     /// One active and one replaceable pending overlay derivation, off the UI thread.
     pub(crate) overlay_queue: OverlayQueue,
     /// The overlay request the clipping overlay on the presenter was derived for, so an unchanged
@@ -285,9 +201,6 @@ pub(crate) struct Editor {
     pub(crate) fullscreen: bool,
     /// Where the main thread's time goes, for the evidence events; never read by the view.
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
-    /// Why the last preview failed, cleared by the next presented frame. The canvas turns this
-    /// into the notice that names the cause; nothing here decides what it means.
-    pub(crate) render_error: Option<luxforge_core::Error>,
     pub(crate) busy: bool,
     /// The event sync's one poll is in flight.
     pub(crate) syncing: bool,
@@ -363,10 +276,6 @@ pub(crate) struct Editor {
     pub(crate) stand_in: Option<testing::StandIn>,
     /// A field reset waiting for the gesture commit or request in flight to answer.
     pub(crate) pending_reset: Option<slider::PendingReset>,
-    /// The draft revision the displayed preview was rendered from, for correlation.
-    pub(crate) displayed_draft_revision: Option<u64>,
-    /// Revisions are ordered only within this draft; a new draft starts at zero.
-    pub(crate) displayed_draft_id: Option<luxforge_core::DraftId>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
@@ -442,14 +351,6 @@ pub(crate) struct Editor {
     /// without this the refusal arrives with no frame behind it and a driven run waits out its
     /// deadline on a step that has already been answered.
     pub(crate) mask_command_in_flight: bool,
-    /// A coverage grid the preview worker filled beside a frame, waiting for the presenter.
-    pub(crate) mask_overlay_pending: Option<(u64, luxforge_core::analysis::MaskOverlay)>,
-    /// Generations whose job asked for a coverage grid and has not presented its frame yet: a
-    /// proxy frame of one of these is followed by its grid in an overlay phase of its own.
-    pub(crate) pending_overlay: BTreeSet<u64>,
-    /// The proxy frame on screen whose grid is still on its way. A captured frame waits for it, so
-    /// evidence never records the photograph before the overlay that belongs over it.
-    pub(crate) overlay_awaited: Option<u64>,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, off the
     /// UI thread and the owner thread.
     pub(crate) thumbnail_queue: thumbnails::ThumbnailQueue,
@@ -556,38 +457,9 @@ impl Editor {
             lineage: Default::default(),
             lineage_floor: None,
             display_entry: None,
-            presented_entry: None,
-            requested_render_entry: None,
-            rendered_entry: None,
             original_entry: None,
             compare_return: None,
-            presenter: Presenter::default(),
-            dimensions: None,
-            preview_queue: PreviewQueue::default(),
-            preview_generation: 0,
-            content_key: None,
-            content_serial: 0,
-            pending_content: BTreeMap::new(),
-            pending_intent: BTreeMap::new(),
-            presented_content: 0,
-            analysis_content: None,
-            raster_content: None,
-            region_raster: None,
-            viewport_disabled_content: None,
-            raster: None,
-            raster_approximate_white_balance: false,
-            exact_render_ms: None,
-            analysis: None,
-            incoming: None,
-            presented_generation: 0,
-            presented_proxy: false,
-            presented_approximate_white_balance: false,
-            pending_bounds: BTreeMap::new(),
-            presented_bounds: None,
-            refit_pending: false,
-            proxy_frame: None,
-            proxy_declined: None,
-            held_by_proxy: None,
+            presentation: preview::Presentation::default(),
             overlay_queue: OverlayQueue::default(),
             overlay_request: None,
             readout: None,
@@ -595,7 +467,6 @@ impl Editor {
             pending_sample: None,
             window,
             fullscreen: false,
-            render_error: None,
             busy: false,
             syncing: false,
             sync_wanted: false,
@@ -636,8 +507,6 @@ impl Editor {
             #[cfg(test)]
             stand_in: None,
             pending_reset: None,
-            displayed_draft_revision: None,
-            displayed_draft_id: None,
             expanded: Default::default(),
             recipe: Default::default(),
             current_recipe: Default::default(),
@@ -671,9 +540,6 @@ impl Editor {
             mask_drag: None,
             last_mask_request: None,
             mask_command_in_flight: false,
-            mask_overlay_pending: None,
-            pending_overlay: BTreeSet::new(),
-            overlay_awaited: None,
             thumbnail_queue: thumbnails::ThumbnailQueue::default(),
             thumbnail_source: thumbnails::ThumbnailSource::default(),
             thumbnails: state::masks::MaskThumbnails::default(),
@@ -689,7 +555,7 @@ impl Editor {
         // Both workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
         // its signals comes and goes with the queues' business.
-        editor.preview_queue.set_waker(waker::waker());
+        editor.presentation.queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
         editor.thumbnail_queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
@@ -699,7 +565,10 @@ impl Editor {
             .owner
             .watch_events(editor.client, waker::events_waker());
         // Preview jobs are listed on the owner's activity board beside its own work.
-        editor.preview_queue.set_activity(editor.owner.activity());
+        editor
+            .presentation
+            .queue
+            .set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
             editor.status = "Editor ready; live API unavailable on this host".into();
         }
@@ -767,7 +636,7 @@ impl Editor {
             self.local_pan,
         );
         let previous_view_epoch = self.view_plan_epoch;
-        let busy = self.preview_queue.is_busy()
+        let busy = self.presentation.queue.is_busy()
             || self.overlay_queue.is_busy()
             || self.thumbnail_queue.is_busy();
         let before_entry = self.displayed_entry();
@@ -808,7 +677,6 @@ impl Editor {
         if self.follow_mask_selection() {
             self.seed_values();
         }
-        self.present_mask_overlay();
         let brush = self.follow_armed_brush();
         let abandoned = self.close_abandoned_crop();
         // A wake that arrived while a request was in flight is read once it has been answered.
@@ -833,7 +701,7 @@ impl Editor {
         // subscription for it. The signal is buffered rather than lost, so this is the second
         // guarantee and it is free: `Poll` against an empty queue does nothing at all.
         let woken = if !busy
-            && (self.preview_queue.is_busy()
+            && (self.presentation.queue.is_busy()
                 || self.overlay_queue.is_busy()
                 || self.thumbnail_queue.is_busy())
         {
@@ -918,15 +786,15 @@ impl Editor {
             fullscreen: self.fullscreen,
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
-            dimensions: self.dimensions,
-            photo: self.presenter.photo().is_some() || self.presenter.region().is_some(),
+            dimensions: self.presentation.dimensions,
+            photo: self.presentation.has_picture(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.preview_queue.is_busy() || self.surface_photo_updating(),
+            rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
-            render_error: self.render_error.as_ref(),
+            render_error: self.presentation.render_error.as_ref(),
             pointer: self.pointer,
-            analysis: self.analysis.as_ref(),
-            analysis_updating: self.analysis_updating(),
+            analysis: self.presentation.analysis.as_ref(),
+            analysis_updating: self.presentation.analysis_updating(),
             readout: self.readout.as_ref(),
             menu: self.menu.as_ref(),
             palette_open: self.palette_open,
@@ -1001,18 +869,10 @@ impl Editor {
             None => view::workspace(
                 &self.workspace,
                 view::Surfaces {
-                    photo: self.presenter.photo_for(self.presented_content),
-                    photo_content: self.presenter.full_content(),
-                    current_content: self.presented_content,
-                    region: self.presenter.region(),
-                    region_clipping: self.presenter.region_clipping(),
-                    region_coverage: self.presenter.region_coverage(),
-                    stage: self.presenter.stage(),
-                    clipping: self.overlay_surface(),
-                    coverage: self.mask_overlay_surface(),
                     mask_draft: self.mask_shape(),
                     mask_map: self.held_mask().and_then(|mask| mask.map),
                     draft: self.crop(),
+                    ..self.presentation.surfaces(self.overlay_request.as_ref())
                 },
             ),
         };
@@ -1077,7 +937,7 @@ impl Editor {
     /// can trigger the redraw that admits a deferred texture without another user event.
     pub(crate) fn preview_wake_needed(&self) -> bool {
         self.state.is_some()
-            || self.preview_queue.is_busy()
+            || self.presentation.queue.is_busy()
             || self.overlay_queue.is_busy()
             || self.thumbnail_queue.is_busy()
             || luxforge_ui::surface_retirement_pending()
