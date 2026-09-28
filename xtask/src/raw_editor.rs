@@ -1,7 +1,8 @@
 //! The `raw-editor` smoke scenario: the authentic RAW editing journey over one supplied file, then
 //! a reopen. The edit launch sets Basic's exposure, the RAW channel gains, a custom temperature and
 //! tint, picks the sensor neutral at the source's manifest point, rotates, crops and undoes the
-//! crop, previews Original from history and returns to current, then views 100% and Fit. The
+//! crop, previews Original from history and returns to current twice — the second pair is the
+//! hold-`\` compare once both developments have been made — then views 100% and Fit. The
 //! reopen launch opens the same file through the edit launch's catalog and must show the committed
 //! current entry and the same picture.
 //!
@@ -52,6 +53,8 @@ mod names {
     pub const UNDO: &str = "undo";
     pub const HISTORICAL: &str = "historical-original";
     pub const CURRENT: &str = "current";
+    pub const HISTORICAL_AGAIN: &str = "historical-original-again";
+    pub const CURRENT_AGAIN: &str = "current-again";
     pub const ZOOM: &str = "zoom-100";
     pub const FIT: &str = "fit";
     pub const REOPENED: &str = "reopened";
@@ -130,6 +133,9 @@ fn journey([x, y]: [u32; 2]) -> Plan {
             .label("Rotate right"),
         Step::new(HISTORICAL, PreviewStep::Sequence(0)).commits(0),
         Step::new(CURRENT, PreviewStep::Current).commits(0),
+        // The same pair again, once both entries' developments have been made.
+        Step::new(HISTORICAL_AGAIN, PreviewStep::Sequence(0)).commits(0),
+        Step::new(CURRENT_AGAIN, PreviewStep::Current).commits(0),
         Step::new(ZOOM, ViewStep::Percent(100.0)).commits(0),
         Step::new(FIT, ViewStep::Fit).commits(0),
     ])
@@ -475,10 +481,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && displayed_entry(opened)? == original,
         "RAW Original dimensions/orientation/identity mismatch",
     )?;
-    let historical = edit.index(HISTORICAL)?;
+    let historical = [edit.index(HISTORICAL)?, edit.index(HISTORICAL_AGAIN)?];
     for (index, (name, frame)) in edit.names().iter().zip(&edit.frames).enumerate() {
         let stack = &frame.state()["stack"];
-        if index == historical {
+        if historical.contains(&index) {
             ensure(
                 stack["displayed"]["layers"] == opened.state()["stack"]["displayed"]["layers"],
                 "Historical preview did not display Original RAW recipe",
@@ -492,13 +498,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         }
     }
     let preview = edit.at(HISTORICAL)?;
-    ensure(
-        preview.state()["selection"]["entry"] == original.as_str()
-            && displayed_entry(preview)? == original
-            && preview.entry()? == current,
-        "Historical RAW preview did not display Original without changing current state",
-    )?;
-    for name in [CURRENT, ZOOM, FIT] {
+    for frame in [preview, edit.at(HISTORICAL_AGAIN)?] {
+        ensure(
+            frame.state()["selection"]["entry"] == original.as_str()
+                && displayed_entry(frame)? == original
+                && frame.entry()? == current,
+            "Historical RAW preview did not display Original without changing current state",
+        )?;
+    }
+    for name in [CURRENT, CURRENT_AGAIN, ZOOM, FIT] {
         let frame = edit.at(name)?;
         ensure(
             frame.state()["selection"] == "current" && displayed_entry(frame)? == current,
@@ -531,6 +539,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     }
     for (what, before, after) in [
         ("historical Original", edit.at(OPENED)?, preview),
+        (
+            "historical Original again",
+            edit.at(OPENED)?,
+            edit.at(HISTORICAL_AGAIN)?,
+        ),
+        ("current again", edit.at(CURRENT)?, edit.at(CURRENT_AGAIN)?),
         ("reopened current", edit.at(FIT)?, reopened),
     ] {
         let moved = moved(before, after)?;
@@ -571,9 +585,9 @@ mod tests {
     fn the_journey_picks_the_sources_own_neutral_point() {
         let plan = journey([1609, 2419]);
         assert!(plan.validate().is_ok());
-        assert_eq!(plan.len(), 1 + MUTATIONS.len() + 4);
+        assert_eq!(plan.len(), 1 + MUTATIONS.len() + 6);
         let script = plan.script();
-        assert_eq!(script.as_array().unwrap().len(), MUTATIONS.len() + 4);
+        assert_eq!(script.as_array().unwrap().len(), MUTATIONS.len() + 6);
         assert_eq!(
             script[5],
             json!({"api":{"method":"edit.pick-raw-neutral","params":{"x":1609,"y":2419}}})
