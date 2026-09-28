@@ -8,7 +8,7 @@ Read [AGENTS.md](AGENTS.md) first. It holds the pillars, workflow and engineerin
 - `crates/luxforge-app`: Iced desktop adapter and the `luxforge` desktop binary.
 - `crates/luxforge-cli`: the headless `luxforge-json` binary, built without the GUI stack.
 - `xtask`: all development, check, evidence and packaging commands.
-- The full crate list, with what each one holds and depends on, is in [architecture](docs/design/architecture.md#workspace).
+- The full crate list, with what each one holds and depends on, is in [architecture](docs/design/architecture.md#crates).
 - `docs/`: product, design, spec, engineering and research documentation.
 - `tasks/`: JSON task plans ([index](tasks/README.md)).
 - `fixtures/`: small synthetic inputs with a hash manifest ([details](fixtures/README.md)). Generated large workloads live in ignored `fixtures/generated/`.

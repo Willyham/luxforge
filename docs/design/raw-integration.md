@@ -63,7 +63,7 @@ Nothing polls a source job: a client waiting on one — for its preparation, or 
 
 ## Allocation and liveness
 
-Hard adapter limits are the RAW admission limits in [architecture](architecture.md#rendering-and-limits) (`crates/luxforge-raw/src/limits.rs`). The supported camera geometries are additionally checked before unpack. Native decode uses a 512 MiB LibRaw allocation setting; the adapter bounds metadata traversal, strides, black patterns and output arithmetic. These limits do not independently constitute a whole-process RSS promise.
+Hard adapter limits are the RAW admission limits in [architecture](architecture.md#limits) (`crates/luxforge-raw/src/limits.rs`). The supported camera geometries are additionally checked before unpack. Native decode uses a 512 MiB LibRaw allocation setting; the adapter bounds metadata traversal, strides, black patterns and output arithmetic. These limits do not independently constitute a whole-process RSS promise.
 
 For the full Fuji sensor, the retained u16 mosaic is 78.02 MiB, the temporary normalized mosaic 156.03 MiB and the output RGB planes 468.10 MiB. Markesteijn runs at most 7.54 MiB of explicit tile scratch per development, one development at a time in the editor, plus row tables, stacks and allocator overhead; see [the current native bounds](native-demosaic-parallelism.md). Camera calibration overwrites the planes in place. The terminal camera-cropped RGBA image is 151.9 MiB; GPU textures and renderer overhead are additional.
 

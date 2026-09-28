@@ -59,7 +59,7 @@ The source path is integrated into the existing M4/Develop editor. JPEG Basic, e
 | App `app/` / `state/` | Source readiness, current/historical control values, stale-result rejection and displayed frame identity |
 | The `raw-editor` smoke scenario | Source integrity (each source's SHA-256 against its manifest) and correlated real-editor evidence |
 
-The workspace forbids unsafe Rust outside the few crates the [architecture](architecture.md#workspace) names, among them the private `luxforge-raw` native adapter. That crate exposes a safe ownership API and contains the locally documented FFI and callback lifetimes. Core, app and other crates retain the workspace forbid policy. No public provider ABI or generalized graph is needed.
+The workspace forbids unsafe Rust outside the few crates the [architecture](architecture.md#unsafe-code) names, among them the private `luxforge-raw` native adapter. That crate exposes a safe ownership API and contains the locally documented FFI and callback lifetimes. Core, app and other crates retain the workspace forbid policy. No public provider ABI or generalized graph is needed.
 
 ## Decoder and development selection
 
@@ -150,7 +150,7 @@ One source worker admits at most eight pending tasks and retains 64 terminal res
 
 Use generation-bound identities containing source fingerprint, interpretation/decoder build, development settings/effect format, recipe snapshot, selected entry, output dimensions, color domain and quality. Include draft identity if that shared capability exists. Full-quality and reduced previews have different keys. A late load or render cannot replace a newer selection. A failed replacement preserves the last successful asset and all its edits.
 
-RAW admission uses the [approved contract](architecture.md#rendering-and-limits). Terminal RGBA8 remains capped at 512 MiB. JPEG retains its independent 128 MiB encoded, 64 MP and 512 MiB frame limits. The [RAW resource ledger](modern-camera-resource-ledger.md) accounts for overlapping allocations and measured editor memory; per-buffer bounds do not constitute a process memory ceiling.
+RAW admission uses the [approved contract](architecture.md#limits). Terminal RGBA8 remains capped at 512 MiB. JPEG retains its independent 128 MiB encoded, 64 MP and 512 MiB frame limits. The [RAW resource ledger](modern-camera-resource-ledger.md) accounts for overlapping allocations and measured editor memory; per-buffer bounds do not constitute a process memory ceiling.
 
 Approximate payload sizes below use nominal delivered dimensions and MiB = 2²⁰ bytes. Native margins, allocator overhead and workspaces are additional:
 
@@ -249,7 +249,7 @@ Neutral rendering, exact as-shot defaults, custom WB mapping and the retained wo
 | Required question | Implementation / evidence contract |
 | --- | --- |
 | Reads/hashes/decodes | One verified preparation/cache route; no direct request-path `open_source`; consistent source bytes and signature validation |
-| Full-frame allocations | Explicit typed source/development/output buffers with a phase ledger, within the [RAW admission contract](architecture.md#rendering-and-limits), plus bounded worker concurrency |
+| Full-frame allocations | Explicit typed source/development/output buffers with a phase ledger, within the [RAW admission contract](architecture.md#limits), plus bounded worker concurrency |
 | Point/no-op work | Parameter/geometry checks stay bounded; prepared point sampling uses shared math; cache misses return preparation state; the as-shot equivalent `recipe.describe` reports is a bounded solve over the locus, about 190 scanned temperatures and 13 µs, with no source access |
 | Owner-thread work | Only metadata/transactions/session completions; no RAW read/hash/unpack/develop/raster/encode |
 | Desktop refreshes | One state/entry merge and preview request per committed change; source readiness never refetches whole history |

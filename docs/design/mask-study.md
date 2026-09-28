@@ -88,7 +88,7 @@ Both ends are load-bearing rather than decorative.
 - **The floor replaces a runtime guard.** Every falloff divides by a stored distance, so a floor is
   what makes the divisor bounded instead of checked. `1e-4` mask-space units is below one pixel on
   every supported stage — 0.4 px at 4000 px of height, 1.6 px at the 16384 px per-side
-  [admission limit](architecture.md#rendering-and-limits) — so nothing a gesture can draw is
+  [admission limit](architecture.md#limits) — so nothing a gesture can draw is
   excluded by it, and it bounds every reciprocal the falloffs take by `1e4`.
 - **The ceiling bounds the arithmetic.** A distance of `sqrt((W/H)² + 1)` from any point already
   covers the whole stage, so `64` covers every aspect ratio up to 63.99:1, far beyond anything the

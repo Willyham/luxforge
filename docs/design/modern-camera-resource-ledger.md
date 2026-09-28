@@ -1,7 +1,7 @@
 # Modern camera resource ledger
 
 Status: design and measurement ledger for the modern-camera expansion, applying
-the [owner-approved RAW admission contract](architecture.md#rendering-and-limits)
+the [owner-approved RAW admission contract](architecture.md#limits)
 against real camera files. This is an implementation contract, not a
 process RSS limit or a broad quality claim. All 100 selected models have
 authentic adapter qualification. JPEG limits remain independent and
@@ -9,8 +9,8 @@ unchanged.
 
 ## Scope and accounting rules
 
-JPEG keeps the existing [architecture](architecture.md#rendering-and-limits) evaluated-frame and
-aggregate-scratch limits; RAW uses the same [admission contract](architecture.md#rendering-and-limits).
+JPEG keeps the existing [architecture](architecture.md#limits) evaluated-frame and
+aggregate-scratch limits; RAW uses the same [admission contract](architecture.md#limits).
 The standalone raw probe has separate diagnostic checks and must not be used
 as evidence that the editor admits a camera mode. A decoder limit is not a
 process or GPU limit.
@@ -218,7 +218,7 @@ references and measured native/display phases.
 ## Practical recommendation
 
 Keep JPEG's existing frame and scratch limits. For RAW, use the [approved admission
-contract](architecture.md#rendering-and-limits) while qualification
+contract](architecture.md#limits) while qualification
 continues. Prefer single-frame modes whose measured liveness fits the available
 buffer and worker budgets, release native scratch before display conversion, and enforce one
 active plus one pending preview with byte-accounted eviction. Measure complete editor workflows at each supported resolution before making process-memory claims;
