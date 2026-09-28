@@ -3,11 +3,11 @@
 //!
 //! The menu is a [`theme::MENU_WIDTH`] list of [`theme::MENU_ITEM_HEIGHT`] items — an icon, a
 //! label and a right-aligned key or tag (`L`, `model`) — with separators between groups and
-//! disabled items in tertiary ink. [`dropdown`] drops it under its button through
+//! disabled items in tertiary ink, each carrying its refusal as a tooltip. [`dropdown`] drops it under its button through
 //! [`crate::popover`]; [`menu_list`] is the list alone, for a menu the caller anchors itself, such
 //! as a row's.
 
-use super::icon_button::{Icon, icon};
+use super::icon_button::{Icon, icon, with_tooltip};
 use super::popover::popover;
 use crate::theme;
 use iced::widget::text::{LineHeight, Wrapping};
@@ -40,6 +40,9 @@ pub struct MenuItem<M> {
     /// A key that does the same (`L`) or a short tag (`model`, `install…`), right-aligned.
     pub trailing: Option<String>,
     pub on_press: Option<M>,
+    /// Why a disabled item is refused, in the host's words, shown as the item's tooltip so a
+    /// greyed item always says what would make it available. Ignored while the item is enabled.
+    pub reason: Option<String>,
 }
 
 /// Renders the button: a plus, the label and a chevron on the Control surface.
@@ -151,13 +154,18 @@ fn menu_item<'a, M: Clone + 'a>(item: MenuItem<M>) -> Element<'a, M> {
                 .color(theme::TEXT_TERTIARY),
         );
     }
-    button(content)
+    let reason = item.reason.filter(|_| !enabled);
+    let control = button(content)
         .padding([0.0, theme::MENU_ITEM_PADDING])
         .width(Length::Fill)
         .height(Length::Fixed(theme::MENU_ITEM_HEIGHT))
         .style(theme::menu_item)
-        .on_press_maybe(item.on_press)
-        .into()
+        .on_press_maybe(item.on_press);
+    match reason {
+        // The menu sits at the panel's right edge, so the reason opens to its left.
+        Some(reason) => with_tooltip(control, reason, iced::widget::tooltip::Position::Left),
+        None => control.into(),
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +186,7 @@ mod tests {
                     label: "Linear gradient".into(),
                     trailing: Some("L".into()),
                     on_press: Some(1),
+                    reason: None,
                 }),
                 MenuEntry::Separator,
                 MenuEntry::Item(MenuItem {
@@ -185,6 +194,7 @@ mod tests {
                     label: "Background".into(),
                     trailing: Some("install\u{2026}".into()),
                     on_press: None,
+                    reason: Some("Selection model not installed".into()),
                 }),
             ];
             let _: Element<'_, u8> = dropdown(&model, 0, Some(entries.clone()), 9);

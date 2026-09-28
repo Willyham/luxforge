@@ -511,6 +511,62 @@ pub struct ComponentReport {
     /// Whether this build can evaluate the kind. A stored kind it cannot is reported here and kept
     /// byte for byte, exactly as a layer whose effect has no provider is reported and kept.
     pub available: bool,
+    /// The strokes the payload's reserved `strokes` field references, in the order they compose,
+    /// each with the settings it was drawn with as the recipe's stroke store holds them. Empty for a
+    /// component that references none, which is every component whose geometry is declared as
+    /// numbers; the payload itself is still reported unchanged beside it.
+    pub strokes: Vec<StrokeReport>,
+}
+
+/// One stroke a component references: its content address and, when the recipe's stroke store
+/// resolves it, the settings it was drawn with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StrokeReport {
+    pub id: StrokeId,
+    /// `None` when the store does not hold the referenced stroke. The reference is still listed —
+    /// a stroke the store cannot resolve is reported, never dropped — and rendering the mask is
+    /// refused by name as it always is.
+    pub settings: Option<StrokeSettings>,
+}
+
+impl Eq for StrokeReport {}
+
+/// A stored stroke's settings, exactly as stored: `size` is the radius in normalized units (one
+/// unit the content stage's height), `feather` and `flow` whole percentages, `erase` whether it takes
+/// coverage away, and `colour` the hold it carries when it is limited to a colour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StrokeSettings {
+    pub erase: bool,
+    pub size: f64,
+    pub feather: f64,
+    pub flow: f64,
+    pub colour: Option<StrokeColour>,
+}
+
+/// The colour a limited stroke holds: the sRGB codes it was seeded on and its refine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StrokeColour {
+    pub seed: [u8; 3],
+    pub refine: f64,
+}
+
+impl StrokeReport {
+    fn of(id: StrokeId, strokes: &path::StrokeTable) -> Self {
+        let settings = strokes.get(&id).map(|stroke| StrokeSettings {
+            erase: stroke.erase(),
+            size: stroke.size(),
+            feather: stroke.feather(),
+            flow: stroke.flow(),
+            colour: stroke.colour_limit().map(|limit| StrokeColour {
+                seed: limit.codes(),
+                refine: limit.refine(),
+            }),
+        });
+        Self { id, settings }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,6 +608,13 @@ pub(crate) fn listing(
                     kind: component.kind.clone(),
                     payload: component.payload.clone(),
                     available: knows_component_kind(&component.kind),
+                    // A malformed reserved field is reported as the payload it is and refused where
+                    // the mask is drawn; the listing names no stroke it cannot read.
+                    strokes: path::references(&component.payload, &component.name)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|id| StrokeReport::of(id, &recipe.strokes))
+                        .collect(),
                 })
                 .collect(),
             layers: recipe
@@ -646,7 +709,8 @@ pub(crate) fn plan(
                         Error::validation("missing required field name for mask.rename-component")
                     })?;
                     let mask = &mut next.masks[mask_index];
-                    let previous = std::mem::replace(&mut mask.components[index].name, name.clone());
+                    let previous =
+                        std::mem::replace(&mut mask.components[index].name, name.clone());
                     let component_id = mask.components[index].id.clone();
                     // Structural only, exactly as a mask's own rename: printable, trimmed and not
                     // empty, and — unlike a mask's name — unique within this mask, because that is
@@ -1891,7 +1955,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                     )
                     .step(0.01)
                     .fine_step(0.002)
-                    .precision(4),
+                    .precision(3),
                 ParameterDescriptor::number("feather", 0.0, 100.0)
                     .required(true)
                     .notes(
@@ -1937,7 +2001,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                     )
                     .unit("%")
                     .step(1.0)
-                    .precision(1)
+                    .precision(0)
                     .fine_step(0.1)
                     .zero(REFINE_DEFAULT)
                     .default(REFINE_DEFAULT),
@@ -2006,7 +2070,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
 static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
     let mut controls = vec![
         Control::number("mask.set-amount", "amount", "Amount"),
-        Control::toggle("mask.set-invert", "invert", "Invert"),
+        Control::toggle("mask.set-invert", "invert", "Invert mask"),
         Control::choice("mask.set-component-mode", "mode", "Mode")
             .choice_style(ChoiceStyle::Segmented),
         Control::toggle("mask.set-component-invert", "invert", "Invert component"),
@@ -2396,7 +2460,15 @@ mod tests {
                     let fine = parameter.fine_step.expect("a fine step");
                     assert!(step.is_finite() && step > 0.0, "{where_}");
                     assert!(fine.is_finite() && fine > 0.0 && fine <= step, "{where_}");
-                    assert!(parameter.precision.expect("a precision") <= 6, "{where_}");
+                    let precision = parameter.precision.expect("a precision");
+                    assert!(precision <= 6, "{where_}");
+                    // A precision is a display hint and must never hide the step a key press moves
+                    // by: the step is a whole number of the shown decimals.
+                    let shown = step * 10f64.powi(i32::from(precision));
+                    assert!(
+                        (shown - shown.round()).abs() < 1e-9,
+                        "{where_} shows {precision} decimals, which hides its step {step}"
+                    );
                     let soft_min = parameter.soft_min.unwrap_or(min);
                     let soft_max = parameter.soft_max.unwrap_or(max);
                     assert!(
@@ -3538,6 +3610,70 @@ mod tests {
             "a kind this build does not know is named, kept and reported"
         );
         assert!(listed.masks[1].layers.is_empty());
+    }
+
+    #[test]
+    fn the_listing_reports_each_strokes_settings_in_stored_order() {
+        // Sizes on the stored grid, so the reported radius is the posted one exactly; any other
+        // size is reported as the grid step it was stored at.
+        let mut recipe = Recipe::default();
+        let add = Stroke::capture(&[[0.2, 0.2], [0.4, 0.4]], 0.0625, 50.0, 100.0, false).unwrap();
+        let erase = Stroke::capture(&[[0.3, 0.3], [0.5, 0.2]], 0.03125, 30.0, 80.0, true)
+            .unwrap()
+            .with_colour_limit(path::ColourLimit::sampled([200, 120, 40], 50.0).unwrap());
+        let add = recipe.strokes.insert(add);
+        let erase = recipe.strokes.insert(erase);
+        // A reference the store does not hold is listed with no settings rather than dropped.
+        let missing = StrokeId::parse("0".repeat(32)).unwrap();
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name(stroke_kind());
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            stroke_kind(),
+            strokes_payload(&[add.clone(), erase.clone(), missing.clone()]),
+        ));
+        recipe.masks.push(mask);
+        let listed = listing(crate::EntryId::new(), &recipe, &registry());
+        let strokes = &listed.masks[0].components[0].strokes;
+        assert_eq!(
+            strokes.iter().map(|stroke| &stroke.id).collect::<Vec<_>>(),
+            [&add, &erase, &missing]
+        );
+        assert_eq!(
+            strokes[0].settings,
+            Some(StrokeSettings {
+                erase: false,
+                size: 0.0625,
+                feather: 50.0,
+                flow: 100.0,
+                colour: None,
+            })
+        );
+        assert_eq!(
+            strokes[1].settings,
+            Some(StrokeSettings {
+                erase: true,
+                size: 0.03125,
+                feather: 30.0,
+                flow: 80.0,
+                colour: Some(StrokeColour {
+                    seed: [200, 120, 40],
+                    refine: 50.0,
+                }),
+            })
+        );
+        assert_eq!(strokes[2].settings, None);
+        let spelled = serde_json::to_value(&strokes[1]).unwrap();
+        assert_eq!(
+            spelled,
+            json!({"id": erase.as_str(), "settings": {"erase": true, "size": 0.03125, "feather": 30.0,
+                "flow": 80.0, "colour": {"seed": [200, 120, 40], "refine": 50.0}}})
+        );
+        // A component whose geometry is declared as numbers references no stroke.
+        let (gradient, _) = created();
+        let listed = listing(crate::EntryId::new(), &gradient, &registry());
+        assert!(listed.masks[0].components[0].strokes.is_empty());
     }
 
     #[test]

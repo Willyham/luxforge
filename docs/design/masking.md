@@ -221,7 +221,7 @@ Masks are the host's own objects, not a tool module — a module commits layers 
 
 | Method | Purpose |
 | --- | --- |
-| `mask.list {asset_id, entry_id?}` | Every mask with its components, values, amount, invert and the layers bound to it. Read-only, no history |
+| `mask.list {asset_id, entry_id?}` | Every mask with its components, values, amount, invert and the layers bound to it. Each component also reports `strokes`: the strokes its payload references, in stored order, as `{id, settings}` with `settings` `{erase, size, feather, flow, colour: {seed, refine} \| null}` from the recipe's stroke store, or `null` for a reference the store does not hold; empty for a component that references none. Read-only, no history |
 
 The relation is readable from both sides: `mask.list` names the layers bound to each mask, and `recipe.describe` reports each layer's mask on its own row, so a client reading the durable processing order can tell a masked layer from a global one without asking a second question.
 | `mask.create-<kind> {…geometry}` | A new mask whose first component is an `add` component of that kind |

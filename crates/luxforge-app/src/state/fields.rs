@@ -694,7 +694,7 @@ mod tests {
         // walk, so a gradient endpoint and a mask's amount are fields exactly as a module's are.
         assert_eq!(fields.get("mask.set-amount", "amount"), Some("0"));
         assert_eq!(fields.get("mask.set-component-mode", "mode"), Some("add"));
-        assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.0000"));
+        assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.00"));
         // Only declared fields exist: an action driven by presets alone has none, and every
         // declared number, integer and colour parameter of a built-in has exactly one.
         assert_eq!(

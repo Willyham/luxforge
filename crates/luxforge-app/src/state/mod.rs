@@ -2411,6 +2411,7 @@ mod tests {
             kind: kind.into(),
             payload: json!({}),
             available: true,
+            strokes: Vec::new(),
         };
         let listing = MaskListing {
             entry_id: EntryId::new(),
