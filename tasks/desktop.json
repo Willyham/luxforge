@@ -738,7 +738,7 @@
     {
       "id": "TASK-010",
       "description": "Hold an armed brush as view state and open its core draft at the press, so no empty draft exists between strokes.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-009"
       ],
