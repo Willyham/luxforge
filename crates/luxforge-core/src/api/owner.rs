@@ -1596,7 +1596,9 @@ impl Owner {
             }),
         );
         self.sources.complete(id);
-        if self.jobs.source_in_flight() {
+        // A queued preparation or redevelopment waits on the memory gate for these planes; an
+        // artifact read allocates none and leaves them cached.
+        if self.jobs.development_in_flight() {
             self.service.evict_development();
         }
         // A wait for this job is over, and so is every wait for room on the source worker.
@@ -2401,6 +2403,47 @@ mod tests {
                 .unwrap(),
             id
         );
+    }
+
+    /// A completion evicts the cached development only while a queued job will allocate planes of
+    /// its own: a preparation of an original or a redevelopment. A flight that only reads
+    /// artifacts allocates none, so a completion beside it leaves the development cached.
+    #[test]
+    fn only_a_queued_preparation_or_redevelopment_evicts_the_cached_development() {
+        let (mut sources, mut jobs, _receiver) = source_queue();
+        let client = ClientId(1);
+        assert!(!jobs.development_in_flight(), "nothing is queued");
+        let reads = sources
+            .enqueue(
+                &mut jobs,
+                client,
+                SourceWork::Artifacts(AssetId::new()),
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(
+            !jobs.development_in_flight(),
+            "an artifact read allocates no planes"
+        );
+        let file = sources
+            .enqueue(
+                &mut jobs,
+                client,
+                SourceWork::file(&fixture(), None).unwrap(),
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(
+            jobs.development_in_flight(),
+            "a preparation of an original allocates planes"
+        );
+        jobs.finish(&file, Err(Error::conflict("finished")));
+        assert!(
+            !jobs.development_in_flight(),
+            "a finished preparation is no longer in flight, and the artifact read never was"
+        );
+        jobs.finish(&reads, Err(Error::conflict("finished")));
+        assert!(!jobs.development_in_flight());
     }
 
     #[test]

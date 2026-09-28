@@ -692,11 +692,16 @@ impl Jobs {
             .any(|entry| entry.family() == family && entry.is_live())
     }
 
-    /// Whether a source flight is still joinable: a live preparation nobody has left.
-    pub(crate) fn source_in_flight(&self) -> bool {
-        self.keys
-            .keys()
-            .any(|key| matches!(key, JoinKey::Source(_)))
+    /// Whether a joinable source flight will allocate new planes: a live preparation of an
+    /// original or a redevelopment nobody has left. A flight that only reads artifacts allocates
+    /// none.
+    pub(crate) fn development_in_flight(&self) -> bool {
+        self.keys.iter().any(|(key, job_id)| {
+            matches!(key, JoinKey::Source(_))
+                && self.entries.get(job_id).is_some_and(|entry| {
+                    matches!(entry.record.kind, JobKind::Prepare | JobKind::Develop)
+                })
+        })
     }
 
     /// The request that started the job, when one did.
