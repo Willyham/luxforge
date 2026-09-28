@@ -53,8 +53,10 @@ pub(crate) struct MaskRow {
     /// A component of a kind this build cannot evaluate is retained and reported; the row says so
     /// rather than drawing the mask as if it were complete.
     pub(crate) unavailable: Option<String>,
-    pub(crate) can_move_up: bool,
-    pub(crate) can_move_down: bool,
+    /// Why this mask cannot move up or down the list, when it cannot: it is already at that end, or
+    /// the panel is waiting for a request.
+    pub(crate) up_reason: Option<String>,
+    pub(crate) down_reason: Option<String>,
     /// The mask's coverage over the whole photograph, reduced to the row's thumbnail cells, or
     /// `None` while there is none to draw: not yet delivered, a mask with nothing to describe, or
     /// a mask that reads pixels with no operation whose input it can read. The widget draws its
@@ -300,6 +302,16 @@ pub(crate) struct StrokeRow {
     /// Why this stroke cannot be removed, when it cannot: a component with no stroke covers nothing,
     /// so its last stroke goes by removing the component.
     pub(crate) delete_reason: Option<String>,
+}
+
+impl MaskRow {
+    pub(crate) fn can_move_up(&self) -> bool {
+        self.up_reason.is_none()
+    }
+
+    pub(crate) fn can_move_down(&self) -> bool {
+        self.down_reason.is_none()
+    }
 }
 
 impl ComponentRow {
@@ -740,8 +752,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
                 .map(|layer| layer.title.clone().unwrap_or_else(|| layer.effect.clone()))
                 .collect(),
             unavailable: unavailable(&report.components),
-            can_move_up: enabled && report.index > 0,
-            can_move_down: enabled && report.index + 1 < reports.len(),
+            up_reason: mask_move_reason(report, reports.len(), -1, enabled),
+            down_reason: mask_move_reason(report, reports.len(), 1, enabled),
             thumbnail: inputs.thumbnails.get(&report.id).cloned(),
             renaming: renaming(
                 inputs,
@@ -1317,6 +1329,18 @@ fn control_label(action: &str, parameter: &str) -> String {
     )
     .unwrap_or(parameter)
     .to_owned()
+}
+
+/// Why one mask cannot move by `step` places in a list of `len`, or `None` when it can: the host's
+/// own refusal of a destination outside the list.
+fn mask_move_reason(report: &MaskReport, len: usize, step: i64, enabled: bool) -> Option<String> {
+    if !enabled {
+        return Some("Waiting for the last request".into());
+    }
+    let Ok(target) = u64::try_from(report.index as i64 + step) else {
+        return Some(format!("{} is already at the top of the list", report.name));
+    };
+    reason(rules::position(target, len, "masks").map(|_| ()))
 }
 
 /// Why one component cannot move by `step` places, or `None` when it can: the host's own refusal of

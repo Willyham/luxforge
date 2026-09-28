@@ -3690,6 +3690,68 @@ fn every_row_menu_item_is_copyable_as_the_request_it_sends() {
     }
 }
 
+/// **A disabled menu item says why.** Every item a row's menu draws disabled carries the host's
+/// refusal as its tooltip: the first mask's Move up, and a subtract component's Move up, which would
+/// leave it leading.
+#[test]
+fn every_disabled_menu_item_carries_its_reason() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.add_component(RADIAL, ComponentMode::Subtract);
+    masking.create_mask_through_the_api();
+    let mask = masking.listing().masks[0].id.clone();
+    masking.message(MaskMessage::Select(mask.as_str().to_owned()));
+    let component = masking.listing().masks[0].components[1].id.clone();
+    let model = masking.editor.workspace.masks.clone();
+    let row = model.masks.iter().find(|row| row.id == mask).unwrap();
+    let part = model
+        .components
+        .iter()
+        .find(|row| row.id == component)
+        .unwrap();
+    let reason_of = |entries: &[luxforge_ui::MenuEntry<Message>], label: &str| {
+        entries.iter().find_map(|entry| match entry {
+            luxforge_ui::MenuEntry::Item(item) if item.label == label => {
+                Some((item.on_press.is_some(), item.reason.clone()))
+            }
+            _ => None,
+        })
+    };
+    let mask_menu = crate::view::masks_panel::mask_menu(&model, row, false);
+    let component_menu = crate::view::masks_panel::component_menu(&model, row, part);
+    let kinds = crate::view::masks_panel::kind_menu(&model, crate::app::message::KindMenu::Add);
+    for entries in [&mask_menu, &component_menu, &kinds] {
+        for entry in entries.iter() {
+            if let luxforge_ui::MenuEntry::Item(item) = entry
+                && item.on_press.is_none()
+            {
+                assert!(
+                    item.reason
+                        .as_deref()
+                        .is_some_and(|reason| !reason.is_empty()),
+                    "{} is disabled without a reason",
+                    item.label
+                );
+            }
+        }
+    }
+    assert_eq!(
+        reason_of(&mask_menu, "Move up"),
+        Some((
+            false,
+            Some(format!("{} is already at the top of the list", row.name))
+        ))
+    );
+    assert_eq!(reason_of(&mask_menu, "Move down"), Some((true, None)));
+    let (live, reason) = reason_of(&component_menu, "Move up").unwrap();
+    assert!(!live);
+    assert_eq!(
+        reason, part.up_reason,
+        "the host's own refusal of the reorder"
+    );
+}
+
 /// **Rename in place.** Rename in a row's menu turns the name into a field in the row, with no
 /// always-visible rename field anywhere; Enter sends exactly the request its Copy as JSON request
 /// shows, and Escape closes it with nothing sent. A component is renamed the same way, through the

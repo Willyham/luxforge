@@ -84,8 +84,9 @@ pub use inline_menu::inline_menu;
 pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{
-    ComponentRowMessages, ComponentRowModel, MaskRowMessages, MaskRowModel, RenameMessages,
-    StrokeRowModel, component_note, component_row, mask_row, rename_input_id, stroke_row,
+    ComponentRowMessages, ComponentRowModel, DropEdge, MaskRowMessages, MaskRowModel,
+    RenameMessages, StrokeRowModel, component_note, component_row, drop_feedback, mask_row,
+    rename_input_id, stroke_row,
 };
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
