@@ -15,6 +15,7 @@ mod export_smoke;
 mod fixtures;
 mod gallery_smoke;
 mod histogram_smoke;
+mod inspect_dng;
 mod launch;
 mod mask_acceptance;
 mod mask_brush_smoke;
@@ -30,6 +31,7 @@ mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
 mod presets_smoke;
 mod raw;
+mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
 mod repository;
@@ -355,11 +357,30 @@ fn main_result() -> Result {
             a.done()?;
             fixtures::generate(&absolute(&root, &out))?;
         }
-        "raw-corpus" => {
-            let manifest = absolute(&root, &a.path("--manifest")?);
+        "raw-camera-metadata" => {
+            let index = absolute(&root, &a.path("--index")?);
+            let ids: Vec<String> = a
+                .value("--ids")?
+                .ok_or("Required: --ids")?
+                .to_string_lossy()
+                .split(',')
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .collect();
             let out = absolute(&root, &a.path("--output")?);
+            let mib = a
+                .value("--max-source-mib")?
+                .map(|s| s.to_string_lossy().parse::<u64>())
+                .transpose()?
+                .unwrap_or(raw_camera::DEFAULT_SOURCE_MIB);
             a.done()?;
-            raw::corpus(&manifest, &out)?;
+            raw_camera::run(&index, &ids, &out, mib)?;
+        }
+        "inspect-dng" => {
+            let source = absolute(&root, &a.path("--source")?);
+            let out = a.value("--json")?.map(|p| absolute(&root, Path::new(&p)));
+            a.done()?;
+            inspect_dng::run(&source, out.as_deref())?;
         }
         "raw-authentic" => {
             let manifest = absolute(&root, &a.path("--manifest")?);
@@ -601,7 +622,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

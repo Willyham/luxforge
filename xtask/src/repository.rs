@@ -875,13 +875,13 @@ const SOURCE_RULES: &[SourceRule] = &[
                  (crates/luxforge-core/src/modules/registry/mod.rs), so test modules join only a \
                  developer run and every binary refuses the same flags in the same words",
     },
-    // One RAW manifest reader: `raw::manifest` reads and checks every RAW manifest, for
-    // `raw-corpus`, `verify` and the `raw-editor` scenario alike. A reader elsewhere names the
-    // manifest's list untyped (`["sources"]`) or declares its fields again (`neutral_point:`,
-    // `source_url:`); code that uses a source `raw::manifest` read names neither.
+    // One RAW manifest reader: `raw::manifest` reads and checks every RAW manifest, for `verify`
+    // and the `raw-editor` scenario alike. A reader elsewhere names the manifest's list untyped
+    // (`["sources"]`) or declares its fields again (`neutral_point:`); code that uses a source
+    // `raw::manifest` read names neither.
     SourceRule {
         name: "raw-manifest-reader",
-        tokens: &["[\"sources\"]", "neutral_point:", "source_url:"],
+        tokens: &["[\"sources\"]", "neutral_point:"],
         scope: &["xtask"],
         types: &["rs"],
         allowed: &["xtask/src/raw.rs"],
@@ -2790,10 +2790,7 @@ mod tests {
         write_all(
             root,
             &[
-                (
-                    "xtask/src/raw.rs",
-                    "    pub neutral_point: [u32; 2],\n    source_url: Option<String>,\n",
-                ),
+                ("xtask/src/raw.rs", "    pub neutral_point: [u32; 2],\n"),
                 (
                     "xtask/src/raw_editor.rs",
                     "let (listed, _) = listed(run)?;\njourney(listed.neutral_point)\n\
@@ -2815,7 +2812,6 @@ mod tests {
                     "xtask/src/raw_editor.rs",
                     "struct Source {\n    neutral_point: [u32; 2],\n}\n",
                 ),
-                ("xtask/src/corpus.rs", "    source_url: Option<String>,\n"),
             ],
             "raw::manifest",
         );

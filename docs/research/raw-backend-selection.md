@@ -11,7 +11,7 @@ Implementation direction: use LibRaw for unpacking and metadata, with librtproce
 | [librtprocess](https://github.com/CarVac/librtprocess/tree/9a858270acb2096e2e403d932760ee688fcac425) | revision `9a858270acb2096e2e403d932760ee688fcac425` | Established float demosaicers extracted from RawTherapee |
 | [ExifTool](https://github.com/exiftool/exiftool/tree/13.59) | 13.59; source archive SHA-256 `87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac` | Independent technical capture metadata, local diagnostics only |
 
-The isolated comparison workspace is `probes/raw`; source provenance and coverage are in [fixtures](../../fixtures/README.md). The supplied files comprise a Z6 14-bit lossless NEF, X100VI 14-bit uncompressed RAF and DJI FC3411 DNG1.4 with uncompressed 16-bit storage. Four individually obtained public CC0 samples cover Z6 12/14-bit lossless and X100VI uncompressed/lossless. Stored u16 precision is not an assertion about sensor precision. Originals remain outside Git.
+The isolated comparison probes (a Rawler crate with its own lockfile, LibRaw and librtprocess C++ programs and their Python drivers) were removed from the tree once the selection was made; the findings below are their record. Source provenance and coverage are in [fixtures](../../fixtures/README.md). The supplied files comprise a Z6 14-bit lossless NEF, X100VI 14-bit uncompressed RAF and DJI FC3411 DNG1.4 with uncompressed 16-bit storage. Four individually obtained public CC0 samples cover Z6 12/14-bit lossless and X100VI uncompressed/lossless. Stored u16 precision is not an assertion about sensor precision. Originals remain outside Git.
 
 ## Findings that determine the implementation
 

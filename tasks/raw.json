@@ -598,7 +598,7 @@
     {
       "id": "TASK-009",
       "description": "Delete `cargo xtask raw-corpus` and the finished RAW backend probes, and port or explicitly exempt the three remaining Python camera-addition tools.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. Superseded tooling and finished experiments left in the tree cost maintenance and contradict the one-toolchain decision; the `raw-editor` and `raw-panel` smoke scenarios are still needed and keep their place.",
@@ -623,9 +623,9 @@
         },
         {
           "kind": "file",
-          "label": "DNG reference probe",
-          "target": "probes/raw/dng_reference.py",
-          "relevance": "The still-used tool this task ports into a Rust reference."
+          "label": "DNG reference",
+          "target": "crates/luxforge-reference/src/dng.rs",
+          "relevance": "The independent Rust reference `dng_reference.py` was ported to; its study regenerates `fixtures/raw-dng-reference.json`."
         },
         {
           "kind": "file",
