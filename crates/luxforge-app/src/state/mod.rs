@@ -42,11 +42,14 @@ pub(crate) enum MenuTarget {
     /// A saved version's chip: Delete.
     Version(String),
     /// A generated control: Copy as JSON request. `parameter` names the one field a control of a
-    /// patch action submits, so the copied request is exactly what that control would send.
+    /// patch action submits, so the copied request is exactly what that control would send, and
+    /// `method` is the method that request carries, read from the host's command table once, when
+    /// the menu is opened ([`MenuTarget::control`]).
     Control {
         action: String,
         parameter: Option<String>,
         preset: Option<Map<String, Value>>,
+        method: String,
     },
     /// The open crop draft's own Apply: Copy as JSON request for its current values.
     Draft,

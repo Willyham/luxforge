@@ -403,7 +403,7 @@
         {
           "kind": "file",
           "label": "Mask canvas",
-          "target": "crates/luxforge-app/src/mask_canvas.rs",
+          "target": "crates/luxforge-app/src/view/mask_canvas.rs",
           "relevance": "Re-decimates and re-serializes the whole path on every CursorMoved."
         },
         {

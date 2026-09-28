@@ -20,7 +20,7 @@ use super::{
     message::{ClipEndpoint, Message, OverlayMessage},
     tasks::workspace_task,
 };
-use crate::{state, view};
+use crate::{layout, state};
 use iced::Task;
 use luxforge_core::{
     Error, Raster,
@@ -304,11 +304,8 @@ impl Editor {
         // not — which is what lets the overlay follow a drag. A proxy-derived mask says so.
         let (generation, raster, approximate) = self.overlay_source()?;
         let source = (raster.width, raster.height);
-        let surface = state::histogram::photo_surface(
-            self.window,
-            workspace.state_panel,
-            workspace.tools_panel,
-        );
+        let surface =
+            layout::photo_surface(self.window, workspace.state_panel, workspace.tools_panel);
         let region = self
             .region_raster
             .as_ref()
@@ -335,7 +332,7 @@ impl Editor {
                 source,
                 surface,
                 self.scale_factor,
-                view::canvas::FIT_INSET,
+                layout::FIT_INSET,
             )
         }?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
@@ -383,11 +380,8 @@ impl Editor {
                 .map(|state| (state.asset.width, state.asset.height))
         })?;
         let workspace = &self.session.workspace;
-        let surface = state::histogram::photo_surface(
-            self.window,
-            workspace.state_panel,
-            workspace.tools_panel,
-        );
+        let surface =
+            layout::photo_surface(self.window, workspace.state_panel, workspace.tools_panel);
         let displayed = state::histogram::displayed_size(
             match self.session.preview.view.zoom {
                 luxforge_core::Zoom::Fit => state::canvas::ZoomView::Fit,
@@ -396,7 +390,7 @@ impl Editor {
             source,
             surface,
             self.scale_factor,
-            view::canvas::FIT_INSET,
+            layout::FIT_INSET,
         )?;
         state::histogram::overlay_cells(source, displayed)
     }

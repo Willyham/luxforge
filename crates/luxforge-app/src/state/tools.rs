@@ -2441,7 +2441,8 @@ pub(crate) fn labelled_control<'a>(
 /// for a host `mask.*` command, whose method name *is* its action identity.
 ///
 /// It lives here rather than in the view because "which method does this control send" is a fact about
-/// the host's command table, and the view layer holds no core dependency. Reading it from that table
+/// the host's command table, and the view layer holds no core dependency: a control's menu target
+/// carries it from the moment the menu opens ([`MenuTarget::control`]). Reading it from that table
 /// is also what keeps the caption a person copies and the method the request carries from drifting
 /// apart when a kind is registered.
 pub(crate) fn published_method(action: &str) -> String {
@@ -2449,6 +2450,23 @@ pub(crate) fn published_method(action: &str) -> String {
         action.to_owned()
     } else {
         format!("edit.{action}")
+    }
+}
+
+impl MenuTarget {
+    /// The menu target of one generated control, with the method its copied request carries.
+    pub(crate) fn control(
+        action: String,
+        parameter: Option<String>,
+        preset: Option<Map<String, Value>>,
+    ) -> Self {
+        let method = published_method(&action);
+        Self::Control {
+            action,
+            parameter,
+            preset,
+            method,
+        }
     }
 }
 
@@ -3045,5 +3063,23 @@ mod tests {
             ..crop_descriptor()
         }];
         assert!(crop_frame(&unavailable).is_none());
+    }
+
+    /// A control's menu target carries the method its copied request is published as, read from
+    /// the host's command table when the menu opens: `edit.<action>` for a module action, and the
+    /// command itself for a host `mask.*` command.
+    #[test]
+    fn a_control_menu_target_carries_its_published_method() {
+        let method = |action: &str| match MenuTarget::control(action.to_owned(), None, None) {
+            MenuTarget::Control { method, .. } => method,
+            other => panic!("{other:?} is not a control's menu"),
+        };
+        assert_eq!(method("basic"), "edit.basic");
+        let command = luxforge_core::mask::commands::all()
+            .first()
+            .expect("the host has mask commands")
+            .method;
+        assert!(command.starts_with("mask."), "{command}");
+        assert_eq!(method(command), command);
     }
 }

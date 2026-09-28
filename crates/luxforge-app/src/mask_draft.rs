@@ -47,19 +47,30 @@ impl ContentMap {
     /// The map one `render.transform` answer describes, or `None` for a degenerate stage, which is
     /// a stack that has no output to draw handles over.
     pub(crate) fn new(transform: &StageTransform) -> Option<Self> {
-        let content = (
-            f64::from(transform.content.width),
-            f64::from(transform.content.height),
-        );
-        let output = (
-            f64::from(transform.output.width),
-            f64::from(transform.output.height),
-        );
+        Self::from_affine(
+            (transform.content.width, transform.content.height),
+            (transform.output.width, transform.output.height),
+            transform.forward,
+            transform.inverse,
+        )
+    }
+
+    /// The same map in plain numbers: the content and output stages' pixel sizes and the affine
+    /// between them, forward (content to output) and inverse, each as `[a, b, c, d, e, f]` for
+    /// `x' = a·x + b·y + c`, `y' = d·x + e·y + f`.
+    pub(crate) fn from_affine(
+        content: (u32, u32),
+        output: (u32, u32),
+        forward: [f64; 6],
+        inverse: [f64; 6],
+    ) -> Option<Self> {
+        let content = (f64::from(content.0), f64::from(content.1));
+        let output = (f64::from(output.0), f64::from(output.1));
         (content.0 > 0.0 && content.1 > 0.0 && output.0 > 0.0 && output.1 > 0.0).then_some(Self {
             content,
             output,
-            forward: transform.forward,
-            inverse: transform.inverse,
+            forward,
+            inverse,
         })
     }
 
@@ -1062,5 +1073,21 @@ mod tests {
         assert_eq!(radial["kind"], json!(RADIAL));
         assert_eq!(radial["aspect"], json!(1.5));
         assert_eq!(radial["shape"]["feather"], json!(NEUTRAL_RADIAL.feather));
+    }
+
+    /// What a painted stroke posts is the host's own decimation of what it captured, which is what
+    /// makes the same drawn path always the same stored stroke.
+    #[test]
+    fn a_painted_stroke_posts_the_hosts_decimation_of_its_captured_path() {
+        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a drawn kind");
+        draft.paint_begin((0.5, 0.5));
+        assert!(draft.paint_to((0.6, 0.55)), "a move extends the path");
+        let stroke = draft.brush().expect("a painted gesture");
+        assert_eq!(stroke.captured(), [[0.5, 0.5], [0.6, 0.55]]);
+        assert_eq!(
+            stroke.points(),
+            luxforge_core::path::decimate(stroke.captured(), stroke.brush.size)
+                .expect("a decimated path")
+        );
     }
 }

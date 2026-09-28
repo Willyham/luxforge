@@ -626,8 +626,17 @@ pub(crate) enum ViewMessage {
     Gallery(Option<usize>),
     /// Reference gallery examples never operate the photograph.
     GalleryPreview,
-    /// Open an inline menu on a version chip, a control or the open crop draft.
+    /// Open an inline menu on a version chip, the open crop draft, a mask row or another target
+    /// the view names whole.
     OpenMenu(MenuTarget),
+    /// Open a generated control's Copy as JSON request menu. The update builds its target
+    /// ([`MenuTarget::control`]), which reads the method the request carries from the host's command
+    /// table once rather than on every view.
+    OpenControlMenu {
+        action: String,
+        parameter: Option<String>,
+        preset: Option<Map<String, Value>>,
+    },
     /// Close the open inline menu.
     CloseMenu,
     /// Move focus to the next generated field.

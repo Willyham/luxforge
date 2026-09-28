@@ -9,7 +9,7 @@ use super::{
     message::{Message, PreviewMessage},
     tasks::{self, Upload, recipe_task},
 };
-use crate::{state, state::histogram::Analysis, view};
+use crate::{layout, state, state::histogram::Analysis};
 use iced::Task;
 use luxforge_core::{PhaseOutcome, PreviewIntent, PreviewPhase, ProxyBounds, Region, Zoom};
 use serde_json::json;
@@ -206,7 +206,7 @@ impl Editor {
             stage,
             &self.session.preview.view.zoom,
             self.scale_factor,
-            state::histogram::photo_surface(
+            layout::photo_surface(
                 self.window,
                 self.session.workspace.state_panel,
                 self.session.workspace.tools_panel,
@@ -473,14 +473,11 @@ impl Editor {
     /// percentage that draws it smaller than it is, and the exact render otherwise.
     pub(crate) fn proxy_bounds_for(&self, stage: Option<(u32, u32)>) -> Option<ProxyBounds> {
         let workspace = &self.session.workspace;
-        let surface = state::histogram::photo_surface(
-            self.window,
-            workspace.state_panel,
-            workspace.tools_panel,
-        );
+        let surface =
+            layout::photo_surface(self.window, workspace.state_panel, workspace.tools_panel);
         match self.session.preview.view.zoom {
             Zoom::Fit => {
-                let inset = view::canvas::FIT_INSET;
+                let inset = layout::FIT_INSET;
                 bounds_of((
                     (surface.0 - inset.0).max(0.0) * self.scale_factor,
                     (surface.1 - inset.1).max(0.0) * self.scale_factor,
@@ -493,7 +490,7 @@ impl Editor {
                     stage,
                     surface,
                     self.scale_factor,
-                    view::canvas::FIT_INSET,
+                    layout::FIT_INSET,
                 )?;
                 // Strictly smaller in both axes, so a proxy is never asked for a frame that would
                 // have to be magnified back up to show the detail the zoom asked for.

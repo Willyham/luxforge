@@ -629,11 +629,17 @@ impl Editor {
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
                 // The photo surface spans the window minus padding, the sidebar and their spacing.
-                let columns = view::surface_columns(logical_width, scale, &self.workspace);
-                let canvas = view::canvas_rect(
+                let (state_panel, tools_panel) = (
+                    self.workspace.title.state_panel_open,
+                    self.workspace.title.tools_panel_open,
+                );
+                let columns =
+                    crate::layout::surface_columns(logical_width, scale, state_panel, tools_panel);
+                let canvas = crate::layout::canvas_rect(
                     (logical_width, shot.size.height as f32 / scale),
                     scale,
-                    &self.workspace,
+                    state_panel,
+                    tools_panel,
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);

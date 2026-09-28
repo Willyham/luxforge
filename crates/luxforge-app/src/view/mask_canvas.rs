@@ -13,8 +13,8 @@
 //! `render.locate` per move, which would put a runtime hop on the input path.
 use crate::{
     app::message::{MaskMessage, MaskPointer, Message},
-    canvas_view::{self, CanvasView},
     mask_draft::{ContentMap, Grip, MaskDraft, MaskHandle, Pen},
+    view::canvas_view::{self, CanvasView},
 };
 use iced::{
     Point, Rectangle, Renderer, Theme,
@@ -382,23 +382,12 @@ mod tests {
     use super::*;
     use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, NEUTRAL_BRUSH, RADIAL};
     use iced::Size;
-    use luxforge_core::{StageSize, StageTransform};
 
     fn placement(output: (u32, u32), available: Size) -> Placement {
-        let transform = StageTransform {
-            content: StageSize {
-                width: output.0,
-                height: output.1,
-            },
-            output: StageSize {
-                width: output.0,
-                height: output.1,
-            },
-            forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        };
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         Placement {
-            map: ContentMap::new(&transform).expect("a drawable stage"),
+            map: ContentMap::from_affine(output, output, identity, identity)
+                .expect("a drawable stage"),
             view: CanvasView::fit((f64::from(output.0), f64::from(output.1)), available)
                 .expect("a fitted view"),
         }
@@ -495,21 +484,15 @@ mod tests {
     /// A quarter turn and a crop as one affine, so a brush's circles and its painted path can be
     /// checked under a tail that is not the identity.
     fn rotated(content: (u32, u32), output: (u32, u32), available: Size) -> Placement {
-        let transform = StageTransform {
-            content: StageSize {
-                width: content.0,
-                height: content.1,
-            },
-            output: StageSize {
-                width: output.0,
-                height: output.1,
-            },
-            // A quarter turn clockwise: x' = H - y, y' = x, with the crop's origin folded in.
-            forward: [0.0, -1.0, f64::from(content.1), 1.0, 0.0, 0.0],
-            inverse: [0.0, 1.0, 0.0, -1.0, 0.0, f64::from(content.1)],
-        };
         Placement {
-            map: ContentMap::new(&transform).expect("a drawable stage"),
+            map: ContentMap::from_affine(
+                content,
+                output,
+                // A quarter turn clockwise: x' = H - y, y' = x, with the crop's origin folded in.
+                [0.0, -1.0, f64::from(content.1), 1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, -1.0, 0.0, f64::from(content.1)],
+            )
+            .expect("a drawable stage"),
             view: CanvasView::fit((f64::from(output.0), f64::from(output.1)), available)
                 .expect("a fitted view"),
         }
@@ -563,13 +546,6 @@ mod tests {
         );
         let stroke = draft.brush().expect("a painted gesture");
         assert_eq!(stroke.captured(), [[0.5, 0.5], [0.6, 0.55]]);
-        // What it posts is the host's own decimation of what it captured, which is what makes the
-        // same drawn path always the same stored stroke.
-        assert_eq!(
-            stroke.points(),
-            luxforge_core::path::decimate(stroke.captured(), stroke.brush.size)
-                .expect("a decimated path")
-        );
         draft.paint_end();
         assert!(!draft.dragging());
     }
