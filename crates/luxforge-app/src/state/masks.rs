@@ -756,8 +756,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
                 .map(|layer| layer.title.clone().unwrap_or_else(|| layer.effect.clone()))
                 .collect(),
             unavailable: unavailable(&report.components),
-            up_reason: mask_move_reason(report, reports.len(), -1, enabled),
-            down_reason: mask_move_reason(report, reports.len(), 1, enabled),
+            up_reason: mask_move_reason(report, reports.len(), -1, disabled_reason.as_deref()),
+            down_reason: mask_move_reason(report, reports.len(), 1, disabled_reason.as_deref()),
             thumbnail: inputs.thumbnails.get(&report.id).cloned(),
             renaming: renaming(
                 inputs,
@@ -1331,9 +1331,14 @@ fn control_label(action: &str, parameter: &str) -> String {
 
 /// Why one mask cannot move by `step` places in a list of `len`, or `None` when it can: the host's
 /// own refusal of a destination outside the list.
-fn mask_move_reason(report: &MaskReport, len: usize, step: i64, enabled: bool) -> Option<String> {
-    if !enabled {
-        return Some("Waiting for the last request".into());
+fn mask_move_reason(
+    report: &MaskReport,
+    len: usize,
+    step: i64,
+    refusal: Option<&str>,
+) -> Option<String> {
+    if let Some(reason) = refusal {
+        return Some(reason.to_owned());
     }
     let Ok(target) = u64::try_from(report.index as i64 + step) else {
         return Some(format!("{} is already at the top of the list", report.name));
