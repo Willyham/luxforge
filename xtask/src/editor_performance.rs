@@ -119,6 +119,12 @@ fn recipe_render_samples(
     Ok((timings, stage))
 }
 
+/// The SHA-256 of a rendered frame's bytes, so two builds' frames can be compared without keeping
+/// either.
+fn frame_sha256(raster: &Raster) -> String {
+    format!("{:x}", Sha256::digest(&raster.rgba[..]))
+}
+
 fn mutation(revision: u64, request: impl Into<String>) -> Mutation {
     Mutation {
         expected_revision: revision,
@@ -210,6 +216,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         Transform::RotateRight,
     )?;
     let one_transform = render_samples(&service, &asset, samples)?;
+    let one_transform_sha256 = frame_sha256(&service.render_current(&asset)?);
 
     // Every further transform composes into the same orientation layer, so this measures 200
     // actions against one layer, not 200 layers: the render cost is the commit path's, not the
@@ -291,6 +298,32 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         &identity,
         samples,
     )?;
+    // One +1 EV Basic layer on the upright source and nothing else: one segment through the
+    // identity, whose colour pass writes a frame the size of the source.
+    let exposure_only = Recipe {
+        layers: vec![basic_exposure_layer(1.0)],
+        ..identity.clone()
+    };
+    let (exposure_only_samples, exposure_only_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &exposure_only,
+        samples,
+    )?;
+    ensure(
+        exposure_only_stage == (state.asset.width, state.asset.height),
+        "The Exposure-only render has wrong dimensions",
+    )?;
+    let exposure_only_sha256 = frame_sha256(
+        &render(
+            &colour_registry,
+            colour_job.evaluation.source(),
+            &exposure_only,
+            RenderOptions::default(),
+            &RenderContext::new(),
+        )?
+        .frame(SnapshotId::new())?,
+    );
     let (stack_samples, stack_stage) = recipe_render_samples(
         &colour_registry,
         colour_job.evaluation.source(),
@@ -491,6 +524,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             angled_crop,
         ),
         ("colour_identity_render", identity_render),
+        ("exposure_only_1ev_basic_layer", exposure_only_samples),
         ("colour_baseline_same_stack_without_colour", stack_render),
         ("colour_same_stack_with_one_1ev_basic_layer", colour_render),
         (
@@ -547,12 +581,17 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "output":[proxy_stack_stage.0,proxy_stack_stage.1],
         },
         "samples_per_recipe":samples,
+        "frame_sha256":{
+            "one_transform":one_transform_sha256,
+            "exposure_only_1ev_basic_layer":exposure_only_sha256,
+        },
         "method":"Core request-to-render diagnostics with a warm filesystem cache; excludes desktop scheduling, GPU upload and presentation.",
         "rows":rows,
         "checks":[
             "Decoded source is cached after import",
             "Original render dimensions are exact",
             "analysis::reduce_raster's pixel_count matches the rendered raster on every sample",
+            "One +1 EV Basic exposure layer alone renders the upright source's own dimensions",
             "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
             "One +1 EV Basic exposure layer, compiled by the real luxforge.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
