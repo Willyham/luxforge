@@ -71,7 +71,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 
 | Rule | Refuses | Where |
 | --- | --- | --- |
-| `state-layer`, `view-layer`, `widget-crate` | Iced and `app::` in the view model; the core, `OwnerHandle` and `.call(` in the view; the core in `luxforge-ui` | Those directories, tests included |
+| `state-layer`, `view-layer`, `widget-crate` | Iced, `luxforge_ui`, `view::` and `app::` in the view model; the core, `OwnerHandle` and `.call(` in the view, its canvases included; the core in `luxforge-ui` | Those directories, tests included |
 | `jpeg-codec-name`, `jpeg-through-codec` | `mozjpeg` outside `luxforge-jpeg`; decoding JPEG through `image` | Shipped crates' production code |
 | `raw-identity` | `"luxforge.raw"` and `RAW_EFFECT` outside the RAW module | Production code under `crates/` |
 | `presettable-action` | The refusal `is not a field-patch action` outside `ModuleRegistry::patch_action`, the one answer to whether an action is presettable | Production code under `crates/` |
