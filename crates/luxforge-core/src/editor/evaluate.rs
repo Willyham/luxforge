@@ -467,10 +467,9 @@ impl EditorService {
         // preview worker produces from this frame is a cache hit for a later `analysis.request`.
         let mut job = PreviewJob::new(self.read(stack)?.0)?;
         job.layer_count = layer_count;
-        // A truncated job renders a layer prefix, whose output stage a plan computed from the
-        // whole stack does not describe, and the desktop shows it only as a drafting aid. It
-        // therefore never has a proxy phase, whatever bounds the caller offered.
-        job.proxy = proxy.filter(|_| layer_count.is_none());
+        // A truncated job's proxy phase is planned on the worker from the layer prefix it renders,
+        // never from the whole stack, so the bounds are offered to it as to any other job.
+        job.proxy = proxy;
         Ok(job)
     }
 
@@ -885,6 +884,48 @@ mod tests {
                 .contains("preview layer count 3 exceeds the 2 layers"),
             "{error}"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A truncated preview job keeps the display bounds it was offered, so the crop's input stage
+    /// at Fit has a proxy phase: the layer prefix at display size, then the prefix exactly. The
+    /// whole stack's output (100 × 100 after the shrink) never sizes it.
+    #[test]
+    fn a_truncated_preview_job_with_bounds_gets_a_proxy_phase_of_its_prefix() {
+        let catalog = temp("truncated-proxy.sqlite");
+        let mut service = EditorService::open_with(&catalog, ShrinkModule::registry()).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "shrink"),
+                SHRINK_ACTION,
+                shrink(100, 100),
+            )
+            .unwrap();
+        let display = ProxyBounds {
+            width: 120,
+            height: 120,
+        };
+        let job = service
+            .preview_job(&asset, None, Some(0), None, Some(display))
+            .unwrap();
+        assert_eq!(job.proxy, Some(display), "the bounds reach the worker");
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let proxy = luxforge_testbase::wait_for("the proxy phase", || queue.poll());
+        assert_eq!(proxy.phase(), crate::PreviewPhase::Proxy);
+        let frame = proxy.into_raster().unwrap();
+        assert_eq!(
+            (frame.width, frame.height),
+            (120, 80),
+            "the 480 × 320 input stage fitted to the bounds"
+        );
+        let exact = luxforge_testbase::wait_for("the exact phase", || queue.poll());
+        assert_eq!(exact.phase(), crate::PreviewPhase::Exact);
+        let frame = exact.into_raster().unwrap();
+        assert_eq!((frame.width, frame.height), (480, 320));
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
