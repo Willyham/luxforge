@@ -151,7 +151,7 @@
     {
       "id": "TASK-003",
       "description": "Move RAW mosaic normalization and the post-demosaic /65535 scale into Rust on the development pool, so the native `lf_raw_develop` call only demosaics.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -283,7 +283,7 @@
     {
       "id": "TASK-005",
       "description": "Evict the cached RAW development only when a queued task will allocate new planes, then measure the hold-`\\` compare on the X100VI and add a byte-budgeted second slot or a proxy-only compare if a switch still costs more than about 150 ms.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002",
         "TASK-003"
@@ -376,7 +376,7 @@
     {
       "id": "TASK-006",
       "description": "Narrow the RAW develop FFI boundary to one safe crate-private wrapper taking an options struct, with generated status codes and no test or diagnostic hooks in the production ABI.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -1011,7 +1011,7 @@
     {
       "id": "TASK-016",
       "description": "Measure full-editor RAW responsiveness, memory and JPEG regressions on the owner's M4.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002",
         "TASK-003"
