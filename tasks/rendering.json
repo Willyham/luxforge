@@ -453,7 +453,7 @@
     {
       "id": "TASK-007",
       "description": "Choose each rendering pass's parallel threshold from its measured work per pixel instead of the one one-megapixel constant, so small proxies of heavy stacks still use the pool.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],

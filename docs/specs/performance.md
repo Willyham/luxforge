@@ -688,6 +688,43 @@ raw positions to the draft would move the path's decimation onto the owner, whos
 would then grow with the drawn path (6.8 µs at 400 raw positions and 106 µs at 6400, against
 2.5 µs for the stored path) instead of staying flat.
 
+#### Per-pass parallel thresholds
+
+Each rendering pass kind runs on the shared Rayon pool from its own threshold (`luxforge_raw::parallel_pixels`, [performance rule 9](../engineering/performance-rules.md#rules)), chosen from `render::parallel`'s `parallel_break_even_per_pass`: one unit per case through the built-in modules, serial against pooled (forced on the rendering thread) at 0.025 to 2 MP of the pixels that pass's gate counts, the two ways alternating sample by sample. Release test build on the native Apple M4 Pro, 28 September 2026, not holding the timing lock, while other sessions built: four runs, 21 samples per way (one-minute load 20.6 → 21.2), 31 (19.5 → 25.2), 41 for the spatial cases only (22.3 → 13.9) and 31 (7.5 → 44.4, a build starting part-way). Under that load a pooled run is the one that suffers, because a pool worker the scheduler has parked holds the join: pooled medians wander by several times between runs at every size, including the one-megapixel threshold every pass shared before, while serial medians stay within a few percent. The table therefore gives the pooled/serial p50 of the second run, which covers every case, and for the spatial cases the p50 and, after the slash, the ratio of the fastest runs from the third.
+
+| Case (pooled/serial) | 0.025 MP | 0.05 MP | 0.1 MP | 0.25 MP | 0.5 MP | 1 MP | 2 MP |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Transform: quarter turn | 6.11 | 4.14 | 2.71 | 1.24 | 0.73 | 0.46 | 0.31 |
+| Colour: Exposure, bytes | 1.55 | 0.89 | 0.58 | 0.31 | 0.26 | 0.20 | 0.16 |
+| Colour: Exposure, linear | 0.78 | 0.51 | 0.34 | 0.19 | 0.18 | 0.14 | 0.13 |
+| Heavy colour: full Basic, bytes | 0.31 | 0.35 | 0.44 | 0.19 | 0.13 | 0.12 | 0.12 |
+| Heavy colour: full Basic, linear | 0.77 | 0.56 | 0.29 | 0.26 | 0.13 | 0.13 | 0.16 |
+| Resample: 10° crop (output 0.034 … 2.78 MP) | 1.14 | 0.75 | 0.59 | 0.33 | 0.27 | 0.20 | 0.13 |
+| Spatial: Texture +100 | 6.12 / 1.42 | 4.19 / 0.96 | 0.63 / 0.62 | 0.35 / 0.32 | 1.53 / 0.24 | 0.23 / 0.18 | 0.20 / 0.17 |
+| Spatial: Clarity +100 | 1.40 / 1.21 | 0.85 / 0.78 | 0.53 / 0.47 | 0.28 / 0.25 | 0.56 / 0.19 | 0.41 / 0.16 | 0.32 / 0.15 |
+| Spatial: Dehaze +100 | 6.62 / 2.12 | 4.60 / 1.87 | 7.22 / 0.98 | 1.73 / 0.49 | 2.29 / 0.44 | 1.56 / 0.54 | 0.25 / 0.21 |
+| Spatial: all three +100 | 1.67 / 1.51 | 1.08 / 0.97 | 0.69 / 0.65 | 0.33 / 0.30 | 0.23 / 0.21 | 0.45 / 0.18 | 0.19 / 0.17 |
+| Spatial: Clarity +100, linear | 0.97 / 0.85 | 0.61 / 0.55 | 0.37 / 0.33 | 0.49 / 0.21 | 0.18 / 0.17 | 0.16 / 0.15 | 0.16 / 0.14 |
+| Proxy: box downscale to a third, JPEG | 0.88 | 1.00 | 1.00 | 1.23 | 0.69 | 0.54 | 0.52 |
+| Proxy: box downscale to a third, RAW | 1.00 | 1.00 | 1.00 | 1.00 | 0.56 | 0.82 | 0.65 |
+
+Each threshold is the smallest size at which every case of its kind won in every run: the transform 0.5 MP (1.24 to 1.26 at 0.25 MP in all three runs that measured it); one or two colour units 0.1 MP (bytes 0.89 to 0.93 at 0.05 MP); three or more units or a mask 25,000 pixels, the smallest size measured (a mask stays in this group, as before, and was not measured on its own); the resample 0.1 MP of output (1.14 at 0.03 MP; its fastest runs 0.46 at 0.07 MP); a spatial operation 0.25 MP of stage (at 0.1 MP Texture's fastest runs lost in the fourth run, 1.67, and Dehaze's broke even, 0.97 to 0.98); and the proxy 0.5 MP of source read, where up to 0.25 MP the downscale is one band and pooling changes nothing. A serial run at 0.025 MP often reports several hundred percent of one core: that is the pool still spinning down from the pooled run before it, which the CPU sampler charges to the process. RAW development, a spatial operation's global-estimate reduction, the analysis reducer and the overlays keep the one-megapixel threshold and were not measured here. Serial and pooled write the same bytes at a size between the old and the new threshold for every kind on both pixel domains (`a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
+
+`editor-performance --samples 30` measures proxy renders at a 1280 × 800 display bound, where a 3:2 photograph's whole proxy is 1200 × 800 (0.96 MP) and the crop stack's proxy is 2078 × 1386 rendering a 1280 × 719 output: a full Basic layer and a full-strength Presence layer (texture, clarity and dehaze at 100) on each. Release `--locked`, the base `eda010a3` with these rows added (before) against this change (after), in-process on the native Apple M4 Pro, 28 September 2026, holding the host-wide timing lock, in the order before, after, after, before. Each cell is the p50 of each run in that order, then the p95s.
+
+| Proxy render at 1280 × 800 (ms) | Before p50 | After p50 | Before p95 | After p95 |
+| --- | --- | --- | --- | --- |
+| 24 MP upright, full Basic | 4.23 · 4.43 | 4.37 · 4.79 | 4.54 · 4.55 | 4.55 · 6.27 |
+| 24 MP upright, Presence | 64.63 · 68.81 | 13.81 · 15.10 | 66.98 · 72.04 | 20.45 · 20.28 |
+| 24 MP crop stack, full Basic | 15.84 · 15.89 | 7.55 · 7.51 | 16.47 · 16.50 | 9.41 · 7.99 |
+| 24 MP crop stack, Presence | 58.29 · 58.27 | 50.33 · 52.04 | 63.44 · 63.19 | 56.65 · 60.30 |
+| 60 MP upright, full Basic | 5.04 · 5.17 | 4.80 · 7.69 | 5.56 · 5.40 | 5.34 · 11.83 |
+| 60 MP upright, Presence | 76.22 · 70.00 | 15.48 · 20.51 | 79.65 · 80.80 | 18.37 · 43.44 |
+| 60 MP crop stack, full Basic | 16.80 · 15.91 | 7.82 · 7.89 | 19.02 · 16.50 | 8.42 · 32.70 |
+| 60 MP crop stack, Presence | 74.65 · 62.99 | 58.56 · 71.05 | 83.18 · 67.01 | 65.98 · 890.09 |
+
+The 60 MP source (10000 × 6000) fits the bound in 1280 × 768 (0.98 MP) and its crop stack's proxy is 2310 × 1386, rendering 1280 × 720. The 24 MP runs started at a one-minute load of 11.8, 12.6, 14.2 and 14.5; the 60 MP runs at 35.4, 29.9, 27.3 and 25.2, a loaded host, and the second after run is the loaded one (its proxy builds took 26 to 28 ms against 7 to 11 ms in the other three), so its figures are not attributed to the change. Every run's frames, including all four new proxy renders, had the same SHA-256 before and after (`ce95dd3f…` and `8e98cc7e…` for the 24 and 60 MP upright Presence frames, `c8a3deab…` and `73b0eeff…` for their crop stacks with full Basic). The upright Presence render is the change's case: its tiles ran serially below one megapixel and now run on the pool. The crop stack's full Basic render gains from its resample, whose 1280 × 719 output is now pooled; its colour pass, on the 2.9 MP proxy stage, already was. The crop stack's Presence render gains the same resample at 24 MP (58.3 against 50.3 and 52.0 ms); at 60 MP the loaded runs spread wider than that. The upright full Basic render was already pooled by the heavy-colour gate and does not move. The existing 2880 × 1800 proxy rows and the full-resolution rows are unchanged within the runs' spread: at that bound every pass is above the old threshold too. The native scenarios above use the owner's 2880 × 1800 window, whose Fit proxy and 100% regions are above the thresholds that applied before for the passes they run. One was rerun to check: the 24 MP 100% full-Basic burst (`editor-latency --basic --mode burst --zoom 100`, 360 inputs, regions of 1797 × 1661 rendered at half resolution), before, after, after, before at a one-minute load of 10.2, 12.3, 11.4 and 11.1. It adopted 317, 359, 361 and 360 frames with draft staleness p50 / p95 of 9.00 / 33.92, 8.45 / 16.61, 8.42 / 15.95 and 8.39 / 15.88 ms and no blank or stale photo draws: no change, the first run's tail being its load.
+
 ### Desktop slider-to-presented-frame and settled histogram
 
 `editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples
