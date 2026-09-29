@@ -15,7 +15,7 @@
 //! to a hard step at the midpoint radius while a feather of 100 spreads it from the centre to the
 //! corner, so a point partway out is always darkened more at feather 0 than at feather 100.
 use crate::{
-    scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, pixels, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
 };
 use luxforge_core::{CROP_EFFECT, VIGNETTE_EFFECT};
@@ -50,7 +50,7 @@ const EDGE_X: f64 = 0.52;
 const EDGE_Y_INSET: f64 = 0.04;
 /// Half the side length, in pixels, of a sampled patch: wide enough that even a sample point close
 /// to one of the fixture's own quadrant-label strokes still covers plenty of the plain background
-/// around it, which [`patch_luminance`]'s darkest-pixel reading then picks out.
+/// around it, which [`patch`]'s darkest-pixel reading then picks out.
 const PATCH_HALF: i64 = 8;
 
 /// How far a patch's darkest-pixel luminance must move before this scenario calls it darkened. The
@@ -117,9 +117,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 7: the same committed state at 100%.
         Step::new("percent", ViewStep::Percent(100.0))
             .no_draft()
-            .commits(0),
+            .commits(0)
+            .percent(100.0),
         // 8: back to Fit for the roundness and feather commits below.
-        Step::new("fit", ViewStep::Fit).no_draft().commits(0),
+        Step::new("fit", ViewStep::Fit).no_draft().commits(0).fit(),
         // 9: Roundness -100, a rounded rectangle, updating the same layer.
         release("rectangle", ROUNDNESS, -100.0)
             .label("Vignette roundness -100")
@@ -163,18 +164,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     ])
 }
 
-/// Every section this scenario toggles, for the correlation every recorded
-/// frame carries alongside its revision, entry and draft.
-const SECTIONS: [&str; 4] = [BASIC_MODULE, TRANSFORM_MODULE, CROP_MODULE, VIGNETTE_MODULE];
-
-fn vignette_payload(frame: &Frame) -> Option<&Value> {
-    frame.payload(VIGNETTE_EFFECT)
-}
-
-/// The stack's layer identities in stored order, so the crop-recentre frame can prove the crop
-/// layer the host inserted sits before the vignette layer it recentres.
+/// The stack's layer effects in stored order, so the crop-recentre frame can prove the crop layer
+/// the host inserted sits before the vignette layer it recentres.
 fn layer_effects(frame: &Frame) -> Vec<String> {
-    frame["state"]["stack"]["layers"]
+    frame.state()["stack"]["layers"]
         .as_array()
         .map(|layers| {
             layers
@@ -185,72 +178,45 @@ fn layer_effects(frame: &Frame) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Where the photograph is drawn: found by the column with the tallest run of bright pixels, and
-/// then by the widest run of bright pixels among that vertical extent's own rows, its last row
-/// included (a rectangular fixture's least-vignetted row — the one through its own vertical centre —
-/// is always at least as wide as any other). See [`Scan::Tallest`] for why the vertical extent comes
-/// first. `presets` measures its photograph the same way.
-pub const BOUNDS: Bright = Bright {
-    threshold: 60,
-    scan: Scan::Tallest { last_row: true },
-    least: None,
-};
-
-/// The darkest pixel in a small patch at fraction `(fx, fy)` of `bounds`. The fixture draws its
-/// quadrant labels in white, so a mean over the patch can read bright when a sample point happens
-/// to sit close to a label stroke; the darkest pixel instead reads the plain background colour
-/// underneath, which is what every check here actually means by "this point of the mask".
-fn patch_luminance(frame: &Frame, bounds: [u32; 4], fx: f64, fy: f64) -> Result<f64> {
-    pixels::darkest_luminance(frame.image()?, pixels::at(bounds, [fx, fy]), PATCH_HALF)
+/// The darkest pixel in a small patch at fraction `(fx, fy)` of the photograph. The fixture draws
+/// its quadrant labels in white, so a mean over the patch can read bright when a sample point
+/// happens to sit close to a label stroke; the darkest pixel instead reads the plain background
+/// colour underneath, which is what every check here actually means by "this point of the mask".
+fn patch(frame: &Frame, fx: f64, fy: f64) -> Result<f64> {
+    frame.darkest_at([fx, fy], PATCH_HALF)
 }
 
 /// The four corners, inset by [`CORNER_INSET`], each safely in the mask's fully darkened zone at
-/// every parameter combination this scenario commits.
-fn corner_luminances(frame: &Frame, bounds: [u32; 4]) -> Result<[f64; 4]> {
-    let mut values = [0.0; 4];
-    for (index, (fx, fy)) in [
-        (CORNER_INSET, CORNER_INSET),
-        (1.0 - CORNER_INSET, CORNER_INSET),
-        (CORNER_INSET, 1.0 - CORNER_INSET),
-        (1.0 - CORNER_INSET, 1.0 - CORNER_INSET),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        values[index] = patch_luminance(frame, bounds, fx, fy)?;
-    }
-    Ok(values)
+/// every parameter combination this scenario commits, then the near-centre patch.
+fn readings(frame: &Frame) -> Result<([f64; 4], f64)> {
+    let (near, far) = (CORNER_INSET, 1.0 - CORNER_INSET);
+    let corners = [
+        patch(frame, near, near)?,
+        patch(frame, far, near)?,
+        patch(frame, near, far)?,
+        patch(frame, far, far)?,
+    ];
+    Ok((
+        corners,
+        patch(frame, 0.5 - CENTRE_OFFSET, 0.5 - CENTRE_OFFSET)?,
+    ))
 }
 
-fn centre_luminance(frame: &Frame, bounds: [u32; 4]) -> Result<f64> {
-    patch_luminance(frame, bounds, 0.5 - CENTRE_OFFSET, 0.5 - CENTRE_OFFSET)
-}
-
-/// The mean of the top and bottom edge-midpoint patches: see the module doc for why roundness and
-/// feather each move this reading in a known direction.
-fn edge_luminance(frame: &Frame, bounds: [u32; 4]) -> Result<f64> {
-    let top = patch_luminance(frame, bounds, EDGE_X, EDGE_Y_INSET)?;
-    let bottom = patch_luminance(frame, bounds, EDGE_X, 1.0 - EDGE_Y_INSET)?;
-    Ok((top + bottom) / 2.0)
-}
-
-/// The edge-midpoint reading of the named step's frame.
+/// The mean of the top and bottom edge-midpoint patches of the named step's frame: see the module
+/// doc for why roundness and feather each move this reading in a known direction.
 fn edge(launch: &Checked, step: &str) -> Result<f64> {
     let frame = launch.at(step)?;
-    edge_luminance(frame, pixels::bright_bounds(frame, BOUNDS)?)
+    Ok((patch(frame, EDGE_X, EDGE_Y_INSET)? + patch(frame, EDGE_X, 1.0 - EDGE_Y_INSET)?) / 2.0)
 }
 
 /// What the photograph shows at each step, once the plan has held.
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
-    let mut checks = Vec::new();
-    let mut record = |frame: &Value, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
-    };
+    let mut checks = Checks::new();
 
-    // The fixture as launched: the Vignette module listed, available and collapsed.
+    // The fixture as launched: the Vignette module listed and available.
     let opened = launch.at("opened")?;
-    let vignette = opened["state"]["modules"]
+    let vignette = opened.state()["modules"]
         .as_array()
         .ok_or("Missing modules")?
         .iter()
@@ -260,74 +226,44 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         vignette["available"] == json!(true),
         "The Vignette module is not available",
     )?;
-    let opened_bounds = pixels::bright_bounds(opened, BOUNDS)?;
-    let opened_corners = corner_luminances(opened, opened_bounds)?;
-    let opened_centre = centre_luminance(opened, opened_bounds)?;
-    record(
+    let (opened_corners, opened_centre) = readings(opened)?;
+    checks.note(
         opened,
         "the collapsed Vignette section as launched",
-        json!({"corner_luminance": opened_corners, "centre_luminance": opened_centre, "expanded": opened.expanded_sections(&SECTIONS)}),
-    );
-
-    // Basic, Transform and Crop collapsed in turn, each above Vignette in the registry order and
-    // declaring a real toggleable section (Pixel does not), each expanded by its own default, so
-    // none of them is still expanded once Vignette itself opens.
-    for (step, module) in [
-        ("basic-collapsed", BASIC_MODULE),
-        ("transform-collapsed", TRANSFORM_MODULE),
-        ("crop-collapsed", CROP_MODULE),
-    ] {
-        let frame = launch.at(step)?;
-        record(
-            frame,
-            "a section above Vignette collapsed, out of the way of its own sliders",
-            json!({"collapsed": module, "expanded": frame.expanded_sections(&SECTIONS)}),
-        );
-    }
-    let expanded = launch.at("expanded")?;
-    record(
-        expanded,
-        "the Vignette section expanded: its four sliders on screen with nothing above it expanded",
-        json!({"expanded": expanded.expanded_sections(&SECTIONS)}),
+        json!({"corner_luminance": opened_corners, "centre_luminance": opened_centre}),
     );
 
     // Mid-gesture at Amount -60: the frame on screen is the drafted one.
     let drag = launch.at("drag")?;
-    let drafted = drag.draft();
     ensure(
-        drag["state"]["displayed_draft_revision"] == drafted["draft_revision"],
+        drag.state()["displayed_draft_revision"] == drag.draft()["draft_revision"],
         format!(
             "The drag displays draft revision {} while the draft is at {}",
-            drag["state"]["displayed_draft_revision"], drafted["draft_revision"]
+            drag.state()["displayed_draft_revision"],
+            drag.draft()["draft_revision"]
         ),
     )?;
-    record(
-        drag,
-        "a drag to Amount -60, mid-gesture: the drafted preview",
-        json!({"draft": drafted, "expanded": drag.expanded_sections(&SECTIONS)}),
-    );
 
     // The release at Fit: every corner is darker than it was at the opened baseline, and the
     // near-centre patch is unaffected.
     let released = launch.at("release")?;
-    let fit_bounds = pixels::bright_bounds(released, BOUNDS)?;
-    let fit_corners = corner_luminances(released, fit_bounds)?;
-    let fit_centre = centre_luminance(released, fit_bounds)?;
+    let (fit_corners, fit_centre) = readings(released)?;
     for (index, (opened, darkened)) in opened_corners.iter().zip(fit_corners).enumerate() {
-        ensure(
-            *opened - darkened > DARKER,
-            format!("Corner {index} did not darken: {opened} against {darkened}"),
+        checks.compare(
+            released,
+            &format!("corner {index} darkened by Amount -60"),
+            *opened,
+            darkened,
+            Tolerance::Above(DARKER),
         )?;
     }
-    ensure(
-        (opened_centre - fit_centre).abs() < SAME,
-        format!("Amount -60 moved the unaffected centre: {opened_centre} against {fit_centre}"),
-    )?;
-    record(
+    checks.compare(
         released,
-        "released: one entry \"Vignette amount -60\" at Fit, every corner darker, the centre unaffected",
-        json!({"revision": released.revision()?, "label": released.label()?, "corner_luminance": fit_corners, "centre_luminance": fit_centre, "layer": released.layer_id(VIGNETTE_EFFECT), "expanded": released.expanded_sections(&SECTIONS)}),
-    );
+        "the centre unaffected by Amount -60",
+        opened_centre,
+        fit_centre,
+        Tolerance::Under(SAME),
+    )?;
 
     // The same committed state at 100%. The near-centre patch is clear of the fixture's own
     // quadrant labels at both zooms, so it reads the same regardless of scale; a corner patch can
@@ -335,73 +271,40 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     // reading, which is a rendering detail of this label-bearing fixture, not a claim about the
     // committed edit these frames share.
     let percent = launch.at("percent")?;
-    let percent_bounds = pixels::bright_bounds(percent, BOUNDS)?;
-    let percent_corners = corner_luminances(percent, percent_bounds)?;
-    let percent_centre = centre_luminance(percent, percent_bounds)?;
-    ensure(
-        (fit_centre - percent_centre).abs() < SAME,
-        format!(
-            "The unaffected centre reads differently at Fit and at 100%: {fit_centre} against {percent_centre}"
-        ),
+    let (percent_corners, percent_centre) = readings(percent)?;
+    checks.compare(
+        percent,
+        "the unaffected centre at Fit and at 100%",
+        fit_centre,
+        percent_centre,
+        Tolerance::Under(SAME),
     )?;
-    record(
+    checks.note(
         percent,
         "the same committed Amount -60, at 100%",
-        json!({"corner_luminance": percent_corners, "centre_luminance": percent_centre, "zoom_request": percent["step"]["request"], "expanded": percent.expanded_sections(&SECTIONS)}),
-    );
-    let fit = launch.at("fit")?;
-    record(
-        fit,
-        "back to Fit",
-        json!({"zoom_request": fit["step"]["request"]}),
+        json!({"corner_luminance": percent_corners}),
     );
 
     // Roundness: at the default midpoint and feather, an edge midpoint of a rounded rectangle is
     // beyond the falloff's outer bound and reads as darkened as a corner, while a circle's is well
     // inside its inner bound and reads brighter.
-    let rect_edge = edge(launch, "rectangle")?;
-    let circle_edge = edge(launch, "circle")?;
-    ensure(
-        circle_edge - rect_edge > DARKER,
-        format!(
-            "Roundness +100's edge midpoint is not brighter than -100's: {circle_edge} against {rect_edge}"
-        ),
+    checks.compare(
+        launch.at("circle")?,
+        "Roundness +100's edge midpoint brighter than -100's",
+        edge(launch, "circle")?,
+        edge(launch, "rectangle")?,
+        Tolerance::Above(DARKER),
     )?;
-    let rectangle = launch.at("rectangle")?;
-    record(
-        rectangle,
-        "Roundness -100 (a rounded rectangle) at Fit",
-        json!({"label": rectangle.label()?, "edge_luminance": rect_edge, "expanded": rectangle.expanded_sections(&SECTIONS)}),
-    );
-    let circle = launch.at("circle")?;
-    record(
-        circle,
-        "Roundness +100 (a circle) at Fit: its edge midpoint reads brighter than the rectangle's did",
-        json!({"label": circle.label()?, "edge_luminance": circle_edge}),
-    );
 
     // Feather: a hard step at the midpoint radius fully darkens the same edge midpoint, beyond
     // that radius; the widest falloff leaves it only partway through and reads brighter.
-    let hard_edge = edge(launch, "hard")?;
-    let soft_edge = edge(launch, "soft")?;
-    ensure(
-        soft_edge - hard_edge > DARKER,
-        format!(
-            "Feather 100's edge midpoint is not brighter than Feather 0's: {soft_edge} against {hard_edge}"
-        ),
+    checks.compare(
+        launch.at("soft")?,
+        "Feather 100's edge midpoint brighter than Feather 0's",
+        edge(launch, "soft")?,
+        edge(launch, "hard")?,
+        Tolerance::Above(DARKER),
     )?;
-    let hard = launch.at("hard")?;
-    record(
-        hard,
-        "Feather 0 (a hard step) at Fit",
-        json!({"label": hard.label()?, "edge_luminance": hard_edge}),
-    );
-    let soft = launch.at("soft")?;
-    record(
-        soft,
-        "Feather 100 (the widest falloff) at Fit: its edge midpoint reads brighter than the hard step did",
-        json!({"label": soft.label()?, "edge_luminance": soft_edge}),
-    );
 
     // A crop applied after the vignette already existed. The host still places the crop layer
     // before it, so the mask recentres on the cropped output stage: the new frame's own corners
@@ -409,62 +312,44 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     // photograph.
     let cropped = launch.at("cropped")?;
     let effects = layer_effects(cropped);
-    let crop_position = effects
-        .iter()
-        .position(|effect| effect == CROP_EFFECT)
-        .ok_or("The crop commit added no crop layer")?;
-    let vignette_position = effects
-        .iter()
-        .position(|effect| effect == VIGNETTE_EFFECT)
-        .ok_or("The crop commit lost the Vignette layer")?;
+    let position = |effect: &str| effects.iter().position(|e| e == effect);
     ensure(
-        crop_position < vignette_position,
+        position(CROP_EFFECT)
+            .is_some_and(|crop| position(VIGNETTE_EFFECT).is_some_and(|vignette| crop < vignette)),
         format!("The crop layer does not precede the Vignette layer: {effects:?}"),
     )?;
-    let cropped_bounds = pixels::bright_bounds(cropped, BOUNDS)?;
-    let cropped_corners = corner_luminances(cropped, cropped_bounds)?;
-    let cropped_centre = centre_luminance(cropped, cropped_bounds)?;
     // Each corner against its own un-vignetted baseline from the open (same hue, same corner
     // index), not against a single shared centre reading: the fixture's four quadrant colours have
     // very different Rec. 709 luminance to begin with, so the same relative darkening moves each of
     // them by a different absolute amount, and a fixed threshold shared across hues is not the
     // claim this check makes. A 1:1 crop keeps the full height and trims width symmetrically, so
     // each corner of the crop is still deep in its own quadrant's flat colour.
-    for (index, (opened, cropped)) in opened_corners.iter().zip(cropped_corners).enumerate() {
-        ensure(
-            *opened - cropped > DARKER,
-            format!(
-                "Corner {index} of the cropped frame is not darker than its own un-vignetted baseline, so the mask did not recentre: {opened} against {cropped}"
-            ),
+    let (cropped_corners, _) = readings(cropped)?;
+    for (index, (opened, cropped_corner)) in opened_corners.iter().zip(cropped_corners).enumerate()
+    {
+        checks.compare(
+            cropped,
+            &format!("corner {index} of the 1:1 crop darker than its un-vignetted baseline"),
+            *opened,
+            cropped_corner,
+            Tolerance::Above(DARKER),
         )?;
     }
-    record(
-        cropped,
-        "a 1:1 crop applied after the vignette: the mask recentres on the cropped output stage",
-        json!({"corner_luminance": cropped_corners, "centre_luminance": cropped_centre, "layers": effects}),
-    );
 
     // The module's own header reset leaves the crop from the step before untouched.
-    let reset = launch.at("reset")?;
     ensure(
-        layer_effects(reset).contains(&CROP_EFFECT.to_owned()),
+        layer_effects(launch.at("reset")?).contains(&CROP_EFFECT.to_owned()),
         "The module reset lost the crop from the previous step",
     )?;
-    record(
-        reset,
-        "the module's own header reset: entry \"Reset Vignette\", the layer kept and neutral",
-        json!({"label": reset.label()?, "payload": vignette_payload(reset), "layer": reset.layer_id(VIGNETTE_EFFECT), "expanded": reset.expanded_sections(&SECTIONS)}),
-    );
 
-    write_json(
-        &launch.evidence.join("vignette-checks.json"),
-        &json!({
-            "checks": checks,
+    checks.write(
+        &launch.evidence,
+        "vignette",
+        json!({
             "darker_margin": DARKER,
             "same_tolerance": SAME,
             "sample_geometry": {"corner_inset": CORNER_INSET, "centre_offset": CENTRE_OFFSET, "edge_x": EDGE_X, "edge_y_inset": EDGE_Y_INSET},
-            "scope": "Mean Rec. 709 luminance of small patches, read back from the renderer; a mask-shape and recentring demonstration, not a colorimetric claim",
+            "scope": "Darkest Rec. 709 luminance of small patches of the photograph the editor records drawing, read back from the renderer; a mask-shape and recentring demonstration, not a colorimetric claim",
         }),
-    )?;
-    Ok(())
+    )
 }
