@@ -1186,7 +1186,7 @@
     {
       "id": "TASK-015",
       "description": "Have production code report typed evidence outcomes instead of steering the evidence driver, build diagnostic events only when a log exists, and keep evidence-only state inside the evidence driver.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-014"
       ],
@@ -1707,7 +1707,7 @@
     {
       "id": "TASK-021",
       "description": "Render the live-agent path in evidence: a scripted step that edits through a second client, with the event sync on in evidence runs, and move the \"Changed elsewhere\" frames onto it.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-015"
       ],
