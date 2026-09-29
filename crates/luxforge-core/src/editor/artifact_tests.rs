@@ -1,11 +1,11 @@
 //! Derived artifacts through the editor service: publish, commit and reopen, history reachability,
 //! collection, missing and corrupt bytes, crash points, moving the catalog and binding.
+use super::test_support::mutation;
 use super::*;
 use crate::artifacts::{
     ArtifactId, collect_files, object_path,
     testing::{APPLY_PLAIN, APPLY_TINT, TINT_EFFECT, TINT_MODULE, TintModule},
 };
-use super::test_support::mutation;
 use crate::{Layer, Recipe};
 use rusqlite::params;
 use serde_json::json;
