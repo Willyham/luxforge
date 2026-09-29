@@ -4,9 +4,12 @@ use super::test_support::mutation;
 use super::*;
 use crate::artifacts::{
     ArtifactId, collect_files, object_path,
-    testing::{APPLY_PLAIN, APPLY_TINT, TINT_EFFECT, TINT_MODULE, TintModule},
+    testing::{registry, tint_bytes, tint_meta},
 };
-use crate::{Layer, Recipe};
+use crate::{
+    Layer, Recipe,
+    modules::{APPLY_PROOF_TINT, PROOF_EFFECT, PROOF_MODULE},
+};
 use rusqlite::params;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -35,7 +38,7 @@ fn source() -> PathBuf {
 }
 
 fn open(catalog: &Path) -> EditorService {
-    EditorService::open_with(catalog, TintModule::registry()).unwrap()
+    EditorService::open_with(catalog, registry()).unwrap()
 }
 
 /// Publish three gains the way a module task will: a writer on any thread, then the owner records
@@ -43,7 +46,7 @@ fn open(catalog: &Path) -> EditorService {
 fn publish(service: &mut EditorService, gains: [f32; 3]) -> ArtifactId {
     let writer = service.artifact_writer().unwrap();
     let (record, prepared) = writer
-        .write(&TintModule::bytes(gains), TintModule::meta(), TINT_MODULE)
+        .write(&tint_bytes(gains), tint_meta(), PROOF_MODULE)
         .unwrap();
     let id = record.id.clone();
     service.register_artifact(record, prepared, true).unwrap();
@@ -60,7 +63,7 @@ fn tint(
     service.apply_action(
         asset,
         mutation(revision, request),
-        APPLY_TINT,
+        APPLY_PROOF_TINT,
         json!({"artifact": artifact}),
     )
 }
@@ -128,7 +131,7 @@ fn a_published_artifact_commits_renders_and_survives_reopen() {
             .recipe
             .layers;
         assert_eq!(layers.len(), 1);
-        assert_eq!(layers[0].effect_id, TINT_EFFECT);
+        assert_eq!(layers[0].effect_id, PROOF_EFFECT);
         assert_eq!(layers[0].artifacts, std::slice::from_ref(&artifact));
         // The bytes decide the pixels: red is scaled down in linear light, green and blue are not.
         rendered = service.render_current(&asset).unwrap();
@@ -285,7 +288,7 @@ fn collection_removes_only_unreferenced_rows_orphans_and_stale_staging() {
     tint(&mut service, &asset, 3, "current", &current).unwrap();
     let unused = publish(&mut service, [0.7, 1.0, 0.7]);
     // An object an interrupted session left without a row, and staged files old and new.
-    let orphan_bytes = TintModule::bytes([0.7, 0.5, 0.5]);
+    let orphan_bytes = tint_bytes([0.7, 0.5, 0.5]);
     let orphan = ArtifactId::for_hash(&format!("{:x}", Sha256::digest(&orphan_bytes))).unwrap();
     fs::write(object_path(&root, &orphan), &orphan_bytes).unwrap();
     let stale = root.join("tmp").join("stale");
@@ -467,7 +470,7 @@ fn a_corrupt_artifact_is_refused_when_read_and_is_not_rewritten() {
     // The same length with other bytes: the changed file signature is a cache miss, and the
     // preparation that reads it finds the hash wrong.
     let object = object_path(&root, &artifact);
-    let damaged = TintModule::bytes([9.0, 9.0, 9.0]);
+    let damaged = tint_bytes([9.0, 9.0, 9.0]);
     fs::write(&object, &damaged).unwrap();
     let refused = service.render_current(&asset).unwrap_err();
     assert_eq!(
@@ -507,29 +510,27 @@ fn a_commit_naming_an_unknown_or_missing_artifact_or_the_wrong_effect_writes_not
     let error = tint(&mut service, &asset, 0, "absent", &absent).unwrap_err();
     assert_eq!(error.kind, ErrorKind::SourceUnavailable);
     assert_eq!(error.detail, format!("artifact {absent} is missing"));
-    // Only an effect that declares artifacts may hold one.
+    // Only an effect that declares artifacts may hold one: the admission every write passes
+    // refuses a stack whose pixel layer lists one.
     let present = publish(&mut service, [0.8, 0.8, 1.0]);
-    let error = service
-        .apply_action(
-            &asset,
-            mutation(0, "plain"),
-            APPLY_PLAIN,
-            json!({"artifact": present}),
-        )
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Validation);
-    assert!(
-        error.detail.ends_with(
-            "of effect test.tint.plain references artifacts, which its effect does not declare"
-        ),
-        "{error}"
-    );
     let mut pixel = Layer::pixel(0, 0, [1, 2, 3]);
     pixel.artifacts.push(present.clone());
-    assert_eq!(
-        service.registry().validate_layer(&pixel).unwrap_err().kind,
-        ErrorKind::Validation
-    );
+    let stack = Recipe {
+        layers: vec![pixel.clone()],
+        ..before.current_entry.snapshot.recipe.clone()
+    };
+    for error in [
+        service.registry().validate_recipe(&stack).unwrap_err(),
+        service.registry().validate_layer(&pixel).unwrap_err(),
+    ] {
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error
+                .detail
+                .ends_with("references artifacts, which its effect does not declare"),
+            "{error}"
+        );
+    }
     assert_eq!(service.state(&asset).unwrap(), before);
     assert_eq!(tables(&service), untouched, "nothing was written");
     drop(service);
@@ -548,11 +549,7 @@ fn crash_points_between_publish_and_commit_leave_only_collectable_artifacts() {
         let (record, _) = service
             .artifact_writer()
             .unwrap()
-            .write(
-                &TintModule::bytes([0.9, 0.1, 0.1]),
-                TintModule::meta(),
-                TINT_MODULE,
-            )
+            .write(&tint_bytes([0.9, 0.1, 0.1]), tint_meta(), PROOF_MODULE)
             .unwrap();
         record.id
     };
@@ -660,7 +657,7 @@ fn copying_only_the_catalog_fails_artifact_layers_while_history_reads() {
     assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 2);
     assert_eq!(
         service.describe_entry(&asset, Some(&entry)).unwrap().layers[0].summary,
-        "Tint"
+        "Proof tint"
     );
     drop(service);
     fs::remove_dir_all(original).unwrap();
@@ -765,7 +762,7 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
         service
             .connection
             .execute(
-                "INSERT INTO artifacts VALUES (?1,?2,?3,'tint',NULL,NULL,NULL,'test.tint',0)",
+                "INSERT INTO artifacts VALUES (?1,?2,?3,'luxforge.capabilities.tint',NULL,NULL,NULL,'luxforge.capabilities',0)",
                 params![id.as_str(), id.sha256(), 200_i64 * 1024 * 1024],
             )
             .unwrap();
@@ -774,7 +771,7 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
         format: crate::RECIPE_FORMAT,
         layers: vec![Layer {
             id: LayerId::new(),
-            effect_id: TINT_EFFECT.into(),
+            effect_id: PROOF_EFFECT.into(),
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             artifacts: ids,

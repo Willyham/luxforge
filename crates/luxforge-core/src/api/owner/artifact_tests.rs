@@ -3,12 +3,13 @@
 //! and the explicit `artifact.collect` method.
 use super::*;
 use crate::{
-    Mutation,
     api::ApiFailure,
     artifacts::{
         ArtifactId, object_path,
-        testing::{APPLY_TINT, TINT_MODULE, TintModule},
+        testing::{registry, tint_bytes, tint_meta},
     },
+    editor::mutation,
+    modules::{APPLY_PROOF_TINT, PROOF_MODULE},
 };
 use sha2::Digest;
 use std::{
@@ -87,24 +88,20 @@ fn prepared(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) 
 /// direct service and closed, so the owner that opens it next has nothing prepared. Returns the
 /// asset, the entry, the artifact and the pixel the entry shows at (3, 4).
 fn tinted_catalog(catalog: &Path, gains: [f32; 3]) -> (AssetId, EntryId, ArtifactId, [u8; 4]) {
-    let mut service = EditorService::open_with(catalog, TintModule::registry()).unwrap();
+    let mut service = EditorService::open_with(catalog, registry()).unwrap();
     let asset = service.import(&source()).unwrap().asset.id;
     let (record, bytes) = service
         .artifact_writer()
         .unwrap()
-        .write(&TintModule::bytes(gains), TintModule::meta(), TINT_MODULE)
+        .write(&tint_bytes(gains), tint_meta(), PROOF_MODULE)
         .unwrap();
     let artifact = record.id.clone();
     service.register_artifact(record, bytes, true).unwrap();
     let entry = service
         .apply_action(
             &asset,
-            Mutation {
-                expected_revision: 0,
-                request_id: "tint".into(),
-                actor: "test".into(),
-            },
-            APPLY_TINT,
+            mutation(0, "tint"),
+            APPLY_PROOF_TINT,
             json!({"artifact": artifact}),
         )
         .unwrap()
@@ -127,7 +124,7 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
     let directory = directory("prepare");
     let catalog = directory.join("catalog.sqlite");
     let (asset, _, artifact, expected) = tinted_catalog(&catalog, [0.35, 1.0, 1.0]);
-    let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
+    let (owner, join) = OwnerHandle::start_with(&catalog, registry()).unwrap();
     let client = owner.register();
     let sample = json!({"asset_id": asset, "x": 3, "y": 4});
     // Neither the source nor the artifact is prepared: one source job readies both.
@@ -194,11 +191,11 @@ fn a_missing_artifact_fails_sampling_and_analysis_while_history_reads() {
     let source_bytes = fs::read(source()).unwrap();
     let (asset, entry, artifact, _) = tinted_catalog(&catalog, [0.35, 0.6, 0.6]);
     let stored = {
-        let service = EditorService::open_with(&catalog, TintModule::registry()).unwrap();
+        let service = EditorService::open_with(&catalog, registry()).unwrap();
         serde_json::to_value(service.entry(&asset, &entry).unwrap()).unwrap()
     };
     fs::remove_file(object_path(&directory.join("catalog.artifacts"), &artifact)).unwrap();
-    let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
+    let (owner, join) = OwnerHandle::start_with(&catalog, registry()).unwrap();
     let client = owner.register();
     // The file is checked before anything is prepared, so the refusal is immediate.
     for (method, params) in [
@@ -254,9 +251,9 @@ fn a_corrupt_artifact_fails_its_preparation_job_and_nothing_is_rewritten() {
     let source_bytes = fs::read(source()).unwrap();
     let (asset, entry, artifact, _) = tinted_catalog(&catalog, [0.35, 0.8, 1.0]);
     let object = object_path(&directory.join("catalog.artifacts"), &artifact);
-    let damaged = TintModule::bytes([7.0, 7.0, 7.0]);
+    let damaged = tint_bytes([7.0, 7.0, 7.0]);
     fs::write(&object, &damaged).unwrap();
-    let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
+    let (owner, join) = OwnerHandle::start_with(&catalog, registry()).unwrap();
     let client = owner.register();
     let inspect = json!({"asset_id": asset, "entry_id": entry});
     let stored = ok(&owner, client, "history.inspect", inspect.clone());
@@ -310,21 +307,17 @@ fn orphaned_catalog(
 ) {
     let (asset, _, kept, expected) = tinted_catalog(catalog, [0.35, 0.8, 0.8]);
     let unused = {
-        let mut service = EditorService::open_with(catalog, TintModule::registry()).unwrap();
+        let mut service = EditorService::open_with(catalog, registry()).unwrap();
         let (record, bytes) = service
             .artifact_writer()
             .unwrap()
-            .write(
-                &TintModule::bytes([0.35, 0.8, 0.35]),
-                TintModule::meta(),
-                TINT_MODULE,
-            )
+            .write(&tint_bytes([0.35, 0.8, 0.35]), tint_meta(), PROOF_MODULE)
             .unwrap();
         let id = record.id.clone();
         service.register_artifact(record, bytes, true).unwrap();
         id
     };
-    let orphan_bytes = TintModule::bytes([0.35, 0.35, 0.8]);
+    let orphan_bytes = tint_bytes([0.35, 0.35, 0.8]);
     let orphan =
         ArtifactId::for_hash(&format!("{:x}", sha2::Sha256::digest(&orphan_bytes))).unwrap();
     fs::write(object_path(root, &orphan), &orphan_bytes).unwrap();
@@ -355,7 +348,7 @@ fn opening_a_catalog_collects_what_a_closed_session_left_and_keeps_what_is_refer
     let (asset, unused, orphan, stale, kept, expected) = orphaned_catalog(&catalog, &root);
 
     // No client calls `artifact.collect` anywhere in this test.
-    let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
+    let (owner, join) = OwnerHandle::start_with(&catalog, registry()).unwrap();
     let client = owner.register();
 
     // The row query and deletion already ran on the thread that opened the catalog, before the
@@ -418,7 +411,7 @@ fn artifact_collect_through_the_api_answers_once_the_open_has_already_swept_ever
     let catalog = directory.join("catalog.sqlite");
     let root = directory.join("catalog.artifacts");
     let (asset, _, kept, expected) = tinted_catalog(&catalog, [0.35, 0.8, 0.8]);
-    let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
+    let (owner, join) = OwnerHandle::start_with(&catalog, registry()).unwrap();
     let client = owner.register();
     // Nothing is left for the explicit method to find: the automatic collection at open already
     // swept anything a prior session could have left.

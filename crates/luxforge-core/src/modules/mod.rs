@@ -22,11 +22,13 @@ mod vignette;
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
+#[cfg(test)]
+pub(crate) use capabilities_proof::{
+    APPLY_PROOF_TINT, PROOF_EFFECT, PROOF_MODULE, PROOF_PALETTE_GAINS, PROOF_TINT_KIND,
+};
 pub use capabilities_proof::{
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
-#[cfg(test)]
-pub(crate) use capabilities_proof::PROOF_PALETTE_GAINS;
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, Controls, ControlsModule};
 pub(crate) use crop::CropModule;
