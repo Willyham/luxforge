@@ -15,7 +15,7 @@
 //! shorter wait that lets the launch's own refit to the display scale land first. A wgpu
 //! validation error or a panic in either launch fails the run.
 use crate::{
-    scenario::{Checked, Fixture, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, plan::only},
     smoke::Scenario,
     *,
 };
@@ -94,13 +94,19 @@ fn request(kind: Kind, zoom: Zoom) -> Option<script::Step> {
 }
 
 /// Every frame of one launch: the photograph opened unedited, then each zoom, pan and wait, none of
-/// which commits anything.
+/// which commits anything, each at the zoom its row names.
 pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(
         PLAN.iter()
-            .map(|(name, kind, zoom)| match request(*kind, *zoom) {
-                None => Step::opened(*name).label("Original"),
-                Some(request) => Step::new(*name, request).commits(0),
+            .map(|(name, kind, zoom)| {
+                let step = match request(*kind, *zoom) {
+                    None => Step::opened(*name).label("Original"),
+                    Some(request) => Step::new(*name, request).commits(0),
+                };
+                match zoom {
+                    Zoom::Fit => step.fit(),
+                    Zoom::Percent(value) => step.percent(*value),
+                }
             })
             .collect(),
     )
@@ -172,29 +178,25 @@ fn matches(pixel: [u8; 3], colour: [u8; 3]) -> bool {
         .all(|(a, b)| a.abs_diff(b) <= TOLERANCE)
 }
 
-/// Where a percentage frame maps captured pixels to source pixels: the canvas's top-left corner in
-/// physical pixels, the pan in physical pixels and the zoom as physical pixels per source pixel.
-/// At every zoom this scenario takes, the zoomed box is larger than the canvas on both axes, so the
-/// scrollable anchors it at the canvas's corner and the pan is the whole offset.
+/// Where a percentage frame maps captured pixels to source pixels: where the editor records drawing
+/// the photograph's top-left corner, in physical pixels — the canvas's corner less the pan, at every
+/// zoom this scenario takes, since the zoomed box is larger than the canvas on both axes — and the
+/// zoom as physical pixels per source pixel.
 struct Mapping {
     origin: (f64, f64),
-    pan: (f64, f64),
     zoom: f64,
 }
 
 impl Mapping {
     fn source(&self, (x, y): (f64, f64)) -> (f64, f64) {
         (
-            (x - self.origin.0 + self.pan.0) / self.zoom,
-            (y - self.origin.1 + self.pan.1) / self.zoom,
+            (x - self.origin.0) / self.zoom,
+            (y - self.origin.1) / self.zoom,
         )
     }
 
     fn screen(&self, (x, y): (f64, f64)) -> (f64, f64) {
-        (
-            self.origin.0 - self.pan.0 + x * self.zoom,
-            self.origin.1 - self.pan.1 + y * self.zoom,
-        )
+        (self.origin.0 + x * self.zoom, self.origin.1 + y * self.zoom)
     }
 }
 
@@ -211,28 +213,24 @@ fn canvas_rect(frame: &Value) -> Result<[u32; 4]> {
 /// Check a percentage frame against the source pixels the zoom and pan put on screen: every sample
 /// on a grid over the canvas that lands in a flat quadrant interior must show that quadrant's
 /// colour, and any quadrant boundary in view must sit where the geometry puts it.
-fn check_mapping(
-    image: &image::RgbImage,
-    frame: &Value,
-    zoom: f64,
-    stage: (u32, u32),
-) -> Result<Value> {
+fn check_mapping(frame: &Frame, zoom: f64, stage: (u32, u32)) -> Result<Value> {
+    let image = frame.image()?;
     let [left, top, right, bottom] = canvas_rect(frame)?;
-    let scale = frame["scale"].as_f64().ok_or("Frame records no scale")?;
-    let view = &frame["state"]["surface"]["view"];
-    let pan = (
-        view["pan_x"].as_f64().ok_or("Frame records no pan")? * scale,
-        view["pan_y"].as_f64().ok_or("Frame records no pan")? * scale,
-    );
+    let photo = frame.photo_rect()?;
     let mapping = Mapping {
-        origin: (f64::from(left), f64::from(top)),
-        pan,
+        origin: (photo[0] as f64, photo[1] as f64),
         zoom: zoom / 100.0,
     };
     let (w, h) = (f64::from(stage.0), f64::from(stage.1));
     ensure(
         w * mapping.zoom > f64::from(right - left) && h * mapping.zoom > f64::from(bottom - top),
         "The zoomed box does not cover the canvas; this check assumes it does",
+    )?;
+    // The recorded rectangle is the zoomed box, to the pixel its edges snap to.
+    ensure(
+        ((photo[2] - photo[0]) as f64 - w * mapping.zoom).abs() <= 1.0
+            && ((photo[3] - photo[1]) as f64 - h * mapping.zoom).abs() <= 1.0,
+        format!("The photograph is drawn in {photo:?}, not a {zoom}% box of {stage:?}"),
     )?;
     let pixel = |x: u32, y: u32| image.get_pixel(x, y).0;
     let (mut checked, mut matched) = (0u32, 0u32);
@@ -375,7 +373,7 @@ fn check_mapping(
     Ok(json!({
         "samples": checked,
         "per_quadrant": colours,
-        "pan_physical": [pan.0, pan.1],
+        "photo_rect": photo,
         "boundaries": boundaries,
     }))
 }
@@ -432,7 +430,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 .map_err(|_| "The opened frame records no source dimensions")?;
         (dims[0], dims[1])
     };
-    let mut checks = Vec::new();
+    let mut checks = Checks::new();
     for (index, ((name, kind, zoom), frame)) in PLAN.iter().zip(frames).enumerate() {
         let what = format!("step {name:?} (frame {index}, {kind:?} at {zoom:?})");
         let state = &frame["state"];
@@ -442,14 +440,6 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             format!("{what}: not a ready frame of the opened photograph"),
         )?;
         let surface = &state["surface"];
-        let expected_zoom = match zoom {
-            Zoom::Fit => json!({"mode":"fit"}),
-            Zoom::Percent(value) => json!({"mode":"percent","value":value}),
-        };
-        ensure(
-            surface["view"]["zoom"] == expected_zoom,
-            format!("{what}: the session's zoom is {}", surface["view"]["zoom"]),
-        )?;
 
         // The texture on screen: the proxy wherever the stage is drawn smaller than itself, the
         // exact render from 100% up.
@@ -520,8 +510,9 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                     ..Fixture::fit(1)
                 })
                 .map_err(|error| format!("{what}: {error}"))?,
-            Zoom::Percent(value) => check_mapping(image, frame, *value, stage)
-                .map_err(|error| format!("{what}: {error}"))?,
+            Zoom::Percent(value) => {
+                check_mapping(frame, *value, stage).map_err(|error| format!("{what}: {error}"))?
+            }
         };
 
         let writes = number(&surface["texture_writes"], "texture write count")?;
@@ -589,11 +580,12 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 idle = json!({"views_rebuilt":views - previous_views,"canvas_identical":true,"events_between":between.len()});
             }
         }
-        checks.push(json!({
-            "frame": frame["file"],
+        checks.note(
+            frame,
+            "the texture on screen, the source pixels under the samples and, idle, a view rebuilt with no new frame",
+            json!({
             "step": name,
             "kind": format!("{kind:?}"),
-            "zoom": expected_zoom,
             "proxy": proxy,
             "raster": raster,
             "displayed_generation": displayed["detail"]["generation"],
@@ -603,20 +595,20 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             "pan": [surface["view"]["pan_x"], surface["view"]["pan_y"]],
             "pixels": pixels,
             "idle": idle,
-        }));
+            }),
+        );
     }
-    write_json(
-        &evidence.join("zoom-checks.json"),
-        &json!({
+    checks.write(
+        evidence,
+        "zoom",
+        json!({
             "stage": [stage.0, stage.1],
-            "checks": checks,
             "tolerance_per_channel": TOLERANCE,
             "feature_margin_source_pixels": FEATURE_MARGIN,
             "sample_step_physical_pixels": SAMPLE_STEP,
             "scope": "Displayed geometry, texture identity and idle stability read back from the window renderer; not display scanout or colour calibration",
         }),
-    )?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]
@@ -671,8 +663,7 @@ mod tests {
     #[test]
     fn the_mapping_round_trips() {
         let mapping = Mapping {
-            origin: (482.0, 90.0),
-            pan: (47102.0, 31172.0),
+            origin: (482.0 - 47102.0, 90.0 - 31172.0),
             zoom: 16.0,
         };
         for point in [(482.0, 90.0), (1000.5, 700.25)] {
