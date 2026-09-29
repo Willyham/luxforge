@@ -86,6 +86,7 @@ Paths are under `crates/luxforge-app/src`.
 - `state/`: the pure view model, with no framework types, no widget crate and no view.
 - `view/`: rendering, with no core types and no owner access, including the crop and mask canvases (`view/crop_canvas.rs` and `view/mask_canvas.rs`) and the one view transform and ellipse builder both draw through (`view/canvas_view.rs`).
 - `layout.rs`: the window's framework-free layout: the bar and panel sizes, the rules between them, the Fit inset and the photo surface they leave.
+- `coalesce.rs`: the one "one request in flight, newest waiting" slot, which the pointer sample, the pan, the curve samples, the event sync and the Performance sampler share.
 - `crop_draft.rs`: the crop frame's geometry, whose draft is a core draft like every other gesture's.
 - `mask_draft.rs` and `mask_draft/`: the mask draft, with one shape editor per drawn kind.
 - Native adapters and diagnostics.

@@ -1092,7 +1092,7 @@
     {
       "id": "TASK-014",
       "description": "Give each desktop seam its own state and message enum, list the seams' post-message hooks once, and share one coalescing slot type.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-012",
         "TASK-013"
@@ -1186,7 +1186,7 @@
     {
       "id": "TASK-015",
       "description": "Have production code report typed evidence outcomes instead of steering the evidence driver, build diagnostic events only when a log exists, and keep evidence-only state inside the evidence driver.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-014"
       ],
