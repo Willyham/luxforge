@@ -1,4 +1,4 @@
-//! Evidence capture waits for the frame its state describes.
+//! Evidence capture waits for the frame its state describes, and an event is built only for a log.
 use super::{
     message::sync::SyncMessage,
     testing::{boot, finish},
@@ -286,6 +286,32 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     assert!(
         evidence.frames.is_empty(),
         "no mismatched frame was published"
+    );
+    finish(editor, catalog);
+}
+
+/// An ordinary session has no diagnostics log and asked for no events on stderr, so an event builds
+/// nothing, not even its detail; once a log exists the same call writes its record.
+#[test]
+fn an_event_is_built_only_when_a_log_takes_it() {
+    let (mut editor, catalog) = boot();
+    assert!(editor.log.diagnostics.is_none() && !editor.log.verbose);
+    editor.event("unbuilt", || {
+        panic!("an event with no log built its detail")
+    });
+    let path = crate::app::testing::attach_log(&mut editor);
+    let built = std::cell::Cell::new(false);
+    editor.event(format_args!("{}_built", "event"), || {
+        built.set(true);
+        json!({"built": true})
+    });
+    assert!(built.get());
+    let records = crate::app::testing::logged(&mut editor, &path);
+    assert!(
+        records
+            .iter()
+            .any(|record| record["event"] == "event_built" && record["detail"]["built"] == true),
+        "{records:?}"
     );
     finish(editor, catalog);
 }

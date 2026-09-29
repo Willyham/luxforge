@@ -460,7 +460,7 @@ impl Editor {
         }
         editor.event(
             "startup",
-            json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
+            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
         let scale = iced::window::oldest()
             .and_then(iced::window::scale_factor)
@@ -490,8 +490,14 @@ impl Editor {
         )
     }
 
-    pub(crate) fn event(&self, name: &str, detail: Value) {
-        let value = json!({"event":name,"run_id":self.log.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail});
+    /// Log one event where this run's events go: its diagnostics log, or stderr when events were
+    /// asked for and the log is unavailable. With neither, nothing is built: the name and the
+    /// detail are formatted only once there is a sink to take them.
+    pub(crate) fn event(&self, name: impl std::fmt::Display, detail: impl FnOnce() -> Value) {
+        if self.log.diagnostics.is_none() && !self.log.verbose {
+            return;
+        }
+        let value = json!({"event":name.to_string(),"run_id":self.log.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail()});
         if let Some(log) = &self.log.diagnostics {
             log.event(value);
         } else if self.log.verbose {

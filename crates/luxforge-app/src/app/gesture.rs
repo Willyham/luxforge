@@ -417,7 +417,7 @@ impl Editor {
         if let Err(error) = cancelled {
             self.event(
                 "draft_cancel_failed",
-                json!({"draft_id":draft_id.as_str(),"error":error}),
+                || json!({"draft_id":draft_id.as_str(),"error":error}),
             );
         }
         reseed
@@ -571,12 +571,18 @@ impl Editor {
             Kind::Slider(slider) => {
                 self.controls.dragging = None;
                 self.status.text = format!("{} draft discarded", slider.label);
-                self.event("slider_draft_cancelled", json!({ "label": slider.label }));
+                self.event(
+                    "slider_draft_cancelled",
+                    || json!({ "label": slider.label }),
+                );
                 self.seed_values();
             }
             Kind::Mask(mask) => {
                 self.status.text = format!("{} discarded", mask.shape.op.label());
-                self.event("mask_draft_cancelled", json!({"op": mask.shape.op.label()}));
+                self.event(
+                    "mask_draft_cancelled",
+                    || json!({"op": mask.shape.op.label()}),
+                );
             }
             Kind::Crop(crop) => self.crop_discarded(crop, &gesture.draft),
         }
@@ -609,15 +615,21 @@ impl Editor {
                 };
                 gesture.kind.interrupt();
                 let (prefix, noun) = (gesture.kind.prefix(), gesture.kind.noun());
-                let detail = match &gesture.kind {
-                    Kind::Slider(slider) => json!({"label":slider.label,"revision":revision}),
-                    Kind::Crop(crop) => crop.summary(&gesture.draft),
-                    Kind::Mask(_) => json!({ "revision": revision }),
-                };
                 if let Some(session) = &mut self.session.draft {
                     session.conflicted = true;
                 }
-                self.event(&format!("{prefix}_conflicted"), detail);
+                self.event(format_args!("{prefix}_conflicted"), || {
+                    match self
+                        .core_gesture()
+                        .map(|gesture| (&gesture.kind, &gesture.draft))
+                    {
+                        Some((Kind::Slider(slider), _)) => {
+                            json!({"label":slider.label,"revision":revision})
+                        }
+                        Some((Kind::Crop(crop), draft)) => crop.summary(draft),
+                        Some((Kind::Mask(_), _)) | None => json!({ "revision": revision }),
+                    }
+                });
                 self.changed_elsewhere(noun)
             }
             Step::Refused => match self.core_gesture() {
@@ -645,8 +657,8 @@ impl Editor {
         let (prefix, asset) = (gesture.kind.prefix(), gesture.asset.clone());
         let previews = gesture.kind.previews();
         self.event(
-            &format!("{prefix}_set"),
-            json!({"draft_id":draft_id.as_str(),"fields":fields}),
+            format_args!("{prefix}_set"),
+            || json!({"draft_id":draft_id.as_str(),"fields":fields}),
         );
         #[cfg(test)]
         if let Some(stand_in) = &mut self.stand_in {
@@ -673,7 +685,10 @@ impl Editor {
             .core_gesture()
             .is_none_or(|gesture| gesture.draft.in_flight() != Some(Round::Set))
         {
-            self.event("draft_set_dropped", json!({ "accepted": result.is_ok() }));
+            self.event(
+                "draft_set_dropped",
+                || json!({ "accepted": result.is_ok() }),
+            );
             return Task::none();
         }
         match result {
@@ -749,28 +764,30 @@ impl Editor {
                 self.status.text = format!("Drafting {label}…");
                 self.event(
                     "slider_draft_preview",
-                    json!({"generation":generation,"draft_revision":draft_revision,"value":value,"round_trip_ms":{"executor_wait":legs[0],"draft_set":legs[1],"preview_job":legs[2],"return":legs[3]},"loop":loop_timing}),
+                    || json!({"generation":generation,"draft_revision":draft_revision,"value":value,"round_trip_ms":{"executor_wait":legs[0],"draft_set":legs[1],"preview_job":legs[2],"return":legs[3]},"loop":loop_timing}),
                 );
             }
             Kind::Mask(mask) => {
                 // `positions` is the path's length and not the path: a measurement needs to know
                 // how much geometry the frame carries, and a log is not where a stroke is stored.
                 let positions = mask.shape.brush().map(|stroke| stroke.captured().len());
-                let mut detail = json!({
-                    "generation":generation,
-                    "draft_revision":draft_revision,
-                    "positions":positions,
-                });
-                if let Some(requested_at) = requested_at {
-                    let legs = round_trip.legs_ms(requested_at);
-                    detail["round_trip_ms"] = json!({
-                        "executor_wait":legs[0],
-                        "draft_set":legs[1],
-                        "preview_job":legs[2],
-                        "return_to_queue":legs[3],
+                self.event("mask_draft_preview", || {
+                    let mut detail = json!({
+                        "generation":generation,
+                        "draft_revision":draft_revision,
+                        "positions":positions,
                     });
-                }
-                self.event("mask_draft_preview", detail);
+                    if let Some(requested_at) = requested_at {
+                        let legs = round_trip.legs_ms(requested_at);
+                        detail["round_trip_ms"] = json!({
+                            "executor_wait":legs[0],
+                            "draft_set":legs[1],
+                            "preview_job":legs[2],
+                            "return_to_queue":legs[3],
+                        });
+                    }
+                    detail
+                });
             }
             Kind::Crop(_) => {}
         }
@@ -804,7 +821,7 @@ impl Editor {
                 };
                 self.event(
                     "slider_draft_unpreviewed",
-                    json!({"draft_revision":draft_revision,"value":value,"error":error}),
+                    || json!({"draft_revision":draft_revision,"value":value,"error":error}),
                 );
             }
             _ => self.status.text = error.to_owned(),
@@ -822,9 +839,8 @@ impl Editor {
             gesture.asset.clone(),
         );
         let mutation = mutation(expected_revision);
-        self.event(
-            &format!("{prefix}_commit"),
-            json!({"draft_id":draft_id.as_str(),"request_id":mutation.request_id,"expected_revision":expected_revision}),
+        self.event(format_args!("{prefix}_commit"),
+            || json!({"draft_id":draft_id.as_str(),"request_id":mutation.request_id,"expected_revision":expected_revision}),
         );
         let proxy = self.proxy_bounds();
         tasks::draft_commit_task(
@@ -875,7 +891,10 @@ impl Editor {
                 }
                 // A refusal belongs in the evidence log beside the commit it answers: a run that
                 // shows the request and not its outcome cannot be read afterwards.
-                self.event(&format!("{prefix}_refused"), json!({ "reason": error }));
+                self.event(
+                    format_args!("{prefix}_refused"),
+                    || json!({ "reason": error }),
+                );
                 self.status.text = error.clone();
                 self.settle_step(Settle::SliderDraft);
                 return self.drive(Event::Committed(Err(error)));
@@ -895,7 +914,7 @@ impl Editor {
             }
             (Kind::Slider(slider), None) => {
                 self.status.text = format!("{} unchanged; nothing was committed", slider.label);
-                self.event("slider_draft_noop", json!({ "label": slider.label }));
+                self.event("slider_draft_noop", || json!({ "label": slider.label }));
                 // The drafted pixels are still on screen and they are not the committed ones, so
                 // the step settles on the render that replaces them rather than on this message.
                 match self.reseed_committed() {

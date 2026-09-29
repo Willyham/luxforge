@@ -994,7 +994,7 @@ impl Editor {
                         self.presentation.preview_generation = generation;
                         self.view_plan.request_generation = Some(generation);
                         self.view_plan.dirty = false;
-                        self.event("preview_view_requested", json!({
+                        self.event("preview_view_requested", || json!({
                             "generation":generation,
                             "intent":if intent == PreviewIntent::Settle {"settle"} else {"interactive"},
                         }));
@@ -1186,13 +1186,12 @@ impl Editor {
             return Task::none();
         }
         self.view_plan.quiet_settle_requested = true;
-        self.event(
-            "preview_quiet_refine",
+        self.event("preview_quiet_refine", || {
             json!({
                 "elapsed_ms":since.elapsed().as_secs_f64()*1000.0,
                 "interval_ms":QUIET_INTERVAL.as_millis(),
-            }),
-        );
+            })
+        });
         self.view_plan(PreviewIntent::Settle)
     }
 
@@ -1285,7 +1284,7 @@ impl Editor {
             }
             self.event(
                 "preview_exact_cancelled",
-                json!({ "generation": result.generation, "draft": draft }),
+                || json!({ "generation": result.generation, "draft": draft }),
             );
             if draft {
                 self.draft_preview_superseded(Some(result.generation));
@@ -1355,15 +1354,14 @@ impl Editor {
                 PreviewPhase::Overlay => "overlay",
                 PreviewPhase::Exact => "exact",
             };
-            self.event(
-                "preview_result_received",
+            self.event("preview_result_received", || {
                 json!({
                     "generation":result.generation,
                     "phase":phase,
                     "queue_wait_ms":queue_wait_ms,
                     "render_ms":result.render_ms,
-                }),
-            );
+                })
+            });
         }
         if for_draft {
             return self.stage_ready(result);
@@ -1409,7 +1407,7 @@ impl Editor {
         if let Some(reason) = declined {
             self.event(
                 "preview_view_fallback",
-                json!({"generation":generation,"reason":reason,"phase":phase}),
+                || json!({"generation":generation,"reason":reason,"phase":phase}),
             );
         }
     }
@@ -1503,7 +1501,7 @@ impl Editor {
             self.activity.preview_dimensions = Some(stage);
             self.event(
                 "decoded",
-                json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[stage.0,stage.1],"proxy":proxy}),
+                || json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[stage.0,stage.1],"proxy":proxy}),
             );
         }
         // The photograph reaches the screen from here: the raster becomes the surface's source now
@@ -1597,7 +1595,7 @@ impl Editor {
         {
             self.event(
                 "mask_overlay_dropped",
-                json!({"generation":generation,"presented_generation":self.presentation.presented_generation}),
+                || json!({"generation":generation,"presented_generation":self.presentation.presented_generation}),
             );
             return;
         }
@@ -1653,7 +1651,7 @@ impl Editor {
         }
         if !luxforge_ui::region_texture_admissible((frame.raster.width, frame.raster.height), 8192)
         {
-            self.event("preview_region_declined", json!({
+            self.event("preview_region_declined", || json!({
                 "generation":generation,"reason":"region texture exceeds the surface allocation limit"
             }));
             self.presentation.viewport_disabled_content = Some(content);
@@ -1681,7 +1679,7 @@ impl Editor {
         });
         // A region carries its own grid, laid over it once it is on screen.
         let grid = self.grid_arrived(generation, mask_overlay);
-        self.event("preview_displayed", json!({
+        self.event("preview_displayed", || json!({
             "generation":generation,"entry_id":entry_id,
             "draft_revision":draft_revision,"snapshot_id":frame.raster.snapshot_id.to_string(),
             "source_fingerprint":frame.raster.source_fingerprint,
@@ -1765,7 +1763,7 @@ impl Editor {
         self.adopt_analysis(generation);
         self.event(
             "preview_exact_adopted",
-            json!({"generation":generation,"dimensions":[stage.0,stage.1],"render_ms":render_ms,"approximate_white_balance":approximate_white_balance}),
+            || json!({"generation":generation,"dimensions":[stage.0,stage.1],"render_ms":render_ms,"approximate_white_balance":approximate_white_balance}),
         );
         self.release_held(generation);
     }
@@ -1794,7 +1792,7 @@ impl Editor {
             self.activity.phase = "ready";
             self.event(
                 "render_ready",
-                json!({"displayed_generation":self.activity.displayed}),
+                || json!({"displayed_generation":self.activity.displayed}),
             );
             self.outcome_ready(false);
         }
@@ -1825,7 +1823,7 @@ impl Editor {
         self.presentation.render_error = Some(error.clone());
         self.event(
             "preview_failed",
-            json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
+            || json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
         );
         let shows_target = self.presentation.presented_entry.as_ref() == Some(entry)
             && self.presentation.displayed_draft_revision == draft_revision
@@ -1855,7 +1853,7 @@ impl Editor {
             self.activity.pending = false;
             self.activity.phase = "error";
             self.activity.error_code = Some(error.kind.code().into());
-            self.event("render_failed", json!({"error_code":error.kind.code()}));
+            self.event("render_failed", || json!({"error_code":error.kind.code()}));
             self.outcome_ready(true);
         }
     }
@@ -1870,16 +1868,15 @@ impl Editor {
         error: &luxforge_core::Error,
     ) {
         let shown = self.presentation.withdraw();
-        self.event(
-            "preview_withdrawn",
+        self.event("preview_withdrawn", || {
             json!({
                 "generation": generation,
                 "presented_generation": self.presentation.presented_generation,
                 "target_entry": target,
                 "withdrawn_entry": shown,
                 "error_code": error.kind.code(),
-            }),
-        );
+            })
+        });
         self.hover.readout = None;
         self.hover.sample.drop_pending();
         self.activity.render = None;
@@ -1948,7 +1945,7 @@ impl Editor {
         self.status.text = status;
         self.event(
             "crop_draft_failed",
-            json!({"reapply": reapply, "error_code": error_code, "detail": detail, "generation": generation}),
+            || json!({"reapply": reapply, "error_code": error_code, "detail": detail, "generation": generation}),
         );
         self.settle_step(Settle::Draft);
     }
@@ -1994,7 +1991,7 @@ impl Editor {
                 // Nothing to hand over: the frame on screen is a full-resolution render with no
                 // proxy beside it. One preview job produces the display-size frame this zoom wants,
                 // and it is the only render any view change asks for.
-                self.event("preview_proxy_requested", json!({ "zoom": zoom }));
+                self.event("preview_proxy_requested", || json!({ "zoom": zoom }));
                 self.await_requested_frame();
                 self.request_current_preview()
             }
@@ -2093,7 +2090,7 @@ impl Editor {
                 Ok(with_overlay) => job = with_overlay,
                 Err(error) => self.event(
                     "mask_overlay_refused",
-                    json!({"detail": error.detail.clone()}),
+                    || json!({"detail": error.detail.clone()}),
                 ),
             }
         }
@@ -2148,7 +2145,7 @@ impl Editor {
         self.presentation.refit_pending = true;
         self.event(
             "preview_proxy_requested",
-            json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
+            || json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
         self.await_requested_frame();
         self.request_current_preview()
@@ -2279,7 +2276,7 @@ impl Editor {
         let raster = frame.raster();
         self.event(
             "preview_displayed",
-            json!({
+            || json!({
                 "entry_id":entry,
                 "snapshot_id":raster.snapshot_id.to_string(),
                 // The status bar no longer shows the source hash, so the log is where a frame is
@@ -2340,7 +2337,7 @@ impl Editor {
                 self.activity.phase = "ready";
                 self.event(
                     "render_ready",
-                    json!({"displayed_generation":self.activity.displayed}),
+                    || json!({"displayed_generation":self.activity.displayed}),
                 );
                 self.outcome_ready(false);
             }
@@ -2360,7 +2357,7 @@ impl Editor {
         };
         self.event(
             "analysis_adopted",
-            json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"draft_revision":analysis.identity.draft.as_ref().map(|draft| draft.draft_revision),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
+            || json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"draft_revision":analysis.identity.draft.as_ref().map(|draft| draft.draft_revision),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
         );
         self.owner
             .submit_analysis(analysis.identity.clone(), analysis.report.clone());

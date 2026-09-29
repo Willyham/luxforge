@@ -299,7 +299,7 @@ impl Editor {
             self.status.text = "Brush put down".into();
             self.event(
                 "mask_brush_put_down",
-                json!({"summary": armed.mask.shape.summary()}),
+                || json!({"summary": armed.mask.shape.summary()}),
             );
         }
     }
@@ -331,7 +331,7 @@ impl Editor {
             self.armed = None;
             self.event(
                 "mask_brush_put_down",
-                json!({"summary": summary, "reason": "gone"}),
+                || json!({"summary": summary, "reason": "gone"}),
             );
             return Task::none();
         }
@@ -412,7 +412,7 @@ impl Editor {
         };
         self.event(
             "mask_command",
-            json!({"method":method,"params":request.clone()}),
+            || json!({"method":method,"params":request.clone()}),
         );
         self.mask_panel.last_request = Some((method.to_owned(), request.clone()));
         let sent = self.command(method, request);
@@ -1100,7 +1100,7 @@ impl Editor {
             } else {
                 "mask_draft_begin"
             },
-            json!({"method":method,"summary":shape.summary()}),
+            || json!({"method":method,"summary":shape.summary()}),
         );
         self.status.text = self.mask_gesture_line(&shape);
         // The mode follows the gesture however it was started, so the strip shows Mask selected.
@@ -1251,7 +1251,7 @@ impl Editor {
         }
         self.event(
             "mask_draft_begin",
-            json!({"method":stroke.shape.method(),"summary":stroke.shape.summary()}),
+            || json!({"method":stroke.shape.method(),"summary":stroke.shape.summary()}),
         );
         let fields = stroke.fields();
         let begin = self.open_core(armed.id, Kind::Mask(stroke), Some(fields));
@@ -1457,7 +1457,7 @@ impl Editor {
         let (width, height) = (grid.cells_w, grid.cells_h);
         self.event(
             "mask_overlay",
-            json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
+            || json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
         let shown = match self
             .presentation
@@ -1479,7 +1479,7 @@ impl Editor {
             self.status.text = "Mask overlay unavailable: the grid could not be shown".into();
             self.event(
                 "mask_overlay_failed",
-                json!({"generation":generation,"cells":[width,height]}),
+                || json!({"generation":generation,"cells":[width,height]}),
             );
         }
         // Released either way: a refused overlay is visible in the evidence rather than leaving the
@@ -1509,7 +1509,7 @@ impl Editor {
         let forced = self.mask_overlay_forced();
         self.event(
             "mask_overlay_absent",
-            json!({"generation":generation,"detail":reason,"forced":forced}),
+            || json!({"generation":generation,"detail":reason,"forced":forced}),
         );
         // A tint the gesture showed of its own accord, over a setting of `off`, is not something
         // the person or the script asked for, so its refusal fails nothing: the frame is captured

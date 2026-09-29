@@ -527,10 +527,9 @@ impl Editor {
             EvidenceMessage::Info(info) => {
                 self.activity.backend =
                     Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
-                self.event(
-                    "backend",
-                    self.activity.backend.clone().unwrap_or(Value::Null),
-                );
+                self.event("backend", || {
+                    self.activity.backend.clone().unwrap_or(Value::Null)
+                });
             }
             EvidenceMessage::Tick => {
                 if self
@@ -653,7 +652,7 @@ impl Editor {
                 }
                 self.event(
                     "frame_captured",
-                    json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
+                    || json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
                 );
                 // The state as it stood when the screenshot was asked for, which is the state the
                 // frame it reads back was built from.
@@ -769,7 +768,7 @@ impl Editor {
             evidence.current = Some(record.clone());
             record
         };
-        self.event("script_step", record);
+        self.event("script_step", || record);
         match step {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
@@ -1809,7 +1808,7 @@ impl Editor {
         })));
         self.event(
             "double_click_first",
-            json!({"action":step.action,"parameter":step.parameter,"value":step.value}),
+            || json!({"action":step.action,"parameter":step.parameter,"value":step.value}),
         );
         if let Some(evidence) = &mut self.evidence {
             evidence.awaiting = None;
@@ -1832,12 +1831,11 @@ impl Editor {
         else {
             return Task::none();
         };
-        self.event(
-            "double_click_second",
+        self.event("double_click_second", || {
             json!({"action":second.action,"parameter":second.parameter,
                 "revision":self.document.state.as_ref().map(|state| state.revision),
-                "gesture_open":self.slider_gesture().is_some()}),
-        );
+                "gesture_open":self.slider_gesture().is_some()})
+        });
         self.await_step(Settle::Quiet);
         self.update(Message::Control(ControlMessage::ResetField {
             action: second.action,
@@ -1892,10 +1890,13 @@ impl Editor {
         if done && let Some(evidence) = &mut self.evidence {
             evidence.paced_slider = None;
         }
-        self.event("slider_step_value", json!({"value": value, "index": index}));
+        self.event(
+            "slider_step_value",
+            || json!({"value": value, "index": index}),
+        );
         let mut tasks = self.slide(&action, &parameter, [fraction]);
         if let Some([x, y]) = pan {
-            self.event("slider_step_pan", json!({"index":index,"x":x,"y":y}));
+            self.event("slider_step_pan", || json!({"index":index,"x":x,"y":y}));
             tasks.push(iced::widget::operation::snap_to(
                 crate::app::crop::SURFACE_ID,
                 iced::widget::scrollable::RelativeOffset { x, y },
@@ -1965,7 +1966,7 @@ impl Editor {
         }
         self.event(
             "mask_stroke_position",
-            json!({"index": index, "x": x, "y": y}),
+            || json!({"index": index, "x": x, "y": y}),
         );
         let pointer = if index == 0 {
             MaskPointer::PaintBegin { x, y }
@@ -2534,7 +2535,7 @@ impl Editor {
             "drawn_stale_photo":gpu.drawn_stale_photo,
             "drawn_fallback_content":gpu.drawn_fallback_content,
         });
-        self.event("view_idle_check", detail.clone());
+        self.event("view_idle_check", || detail.clone());
         self.note_step(json!({"view_idle_check":detail}));
         if let Some(evidence) = &mut self.evidence {
             evidence.view_idle = None;
@@ -3024,7 +3025,7 @@ impl Editor {
         {
             return;
         }
-        self.event("script_step_failed", json!({"reason":reason}));
+        self.event("script_step_failed", || json!({"reason":reason}));
         self.note_step(json!({"status":"failed","reason":reason}));
         if let Some(evidence) = &mut self.evidence {
             evidence.had_errors = true;
@@ -3082,7 +3083,7 @@ impl Editor {
     pub(crate) fn fail_step(&mut self, reason: impl Into<String>) -> Task<Message> {
         let reason = reason.into();
         self.status.text = reason.clone();
-        self.event("script_step_failed", json!({"reason":reason}));
+        self.event("script_step_failed", || json!({"reason":reason}));
         self.note_step(json!({"status":"failed","reason":reason}));
         if let Some(evidence) = &mut self.evidence {
             evidence.had_errors = true;
@@ -3092,7 +3093,7 @@ impl Editor {
     }
 
     pub(crate) fn finish_evidence(&mut self) -> Task<Message> {
-        self.event("shutdown", json!({}));
+        self.event("shutdown", || json!({}));
         let evidence = self.evidence.as_mut().expect("evidence mode");
         let dir = evidence.dir.clone();
         let frames = std::mem::take(&mut evidence.frames);
