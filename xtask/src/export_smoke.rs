@@ -13,7 +13,7 @@
 //! The stripped file still has no APP1 and its reported length after the refused export, so the
 //! refusal replaced nothing, and the fixture's hash is the one the run recorded before launching.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
 };
 use luxforge_evidence as script;
@@ -56,10 +56,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("stripped", script::Step::export(STRIPPED, false)).commits(0),
         Step::new("kept", script::Step::export(KEPT, true)).commits(0),
         // Keep metadata to the stripped file's name: were anything replaced, that file would
-        // gain an APP1.
+        // gain an APP1. The status bar says why nothing was written.
         Step::new("refused", script::Step::export(STRIPPED, true))
             .commits(0)
-            .refused("conflict"),
+            .refused("conflict")
+            .status(format!(
+                "Not exported: {STRIPPED} already exists; Luxforge never replaces a file"
+            )),
     ])
 }
 
@@ -220,14 +223,10 @@ fn band_change(before: &Frame, after: &Frame) -> Result<f64> {
     Ok(total / count.max(1.0))
 }
 
-fn status_of(frame: &Frame) -> &str {
-    frame["state"]["status"].as_str().unwrap_or_default()
-}
-
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let root = run.root().to_owned();
-    let mut checks = Vec::new();
+    let mut checks = Checks::new();
 
     // The two edits: a brighter photograph whose output is 16:9 in the rotated orientation.
     let cropped = launch.at("cropped")?;
@@ -244,12 +243,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         menu["state"]["export"]["menu_open"] == json!(true),
         format!("The Export menu is not open: {}", menu["state"]["export"]),
     )?;
-    let change = band_change(cropped, menu)?;
-    ensure(
-        change > MENU_CHANGE,
-        format!("Nothing was drawn under the title bar for the menu: {change:.2}"),
+    checks.compare(
+        menu,
+        "the band under the title bar with the Export menu open, against the frame before it",
+        band_change(cropped, menu)?,
+        0.0,
+        Tolerance::Above(MENU_CHANGE),
     )?;
-    checks.push(json!({"frame":menu["file"],"shows":"the Export menu open under the title bar's Export button","band_change":change}));
 
     // The original, decoded here, for the brightness comparison; its mean ignores orientation.
     let source = image::open(root.join(FIXTURE))?.to_rgb8();
@@ -297,7 +297,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             format!("{file} is {} bytes, the job reported {bytes}", read.bytes),
         )?;
         ensure(read.icc, format!("{file} embeds no ICC profile"))?;
-        let status = status_of(frame);
+        let status = frame.status()?;
         let prefix = format!("Exported {file} \u{b7} {width} \u{d7} {height} \u{b7} ");
         ensure(
             status.starts_with(&prefix) && (status.ends_with(" MB") || status.ends_with(" KB")),
@@ -321,60 +321,52 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 format!("{file} carries {} APP1 segments", read.app1.len()),
             )?;
         }
-        let brightness = mean_luminance(read.mean);
-        ensure(
-            brightness > original + BRIGHTER,
-            format!(
-                "{file} is not brighter than the original: {brightness:.1} against {original:.1}"
-            ),
+        checks.compare(
+            frame,
+            &format!("{file}'s mean luminance against the original's"),
+            mean_luminance(read.mean),
+            original,
+            Tolerance::Above(BRIGHTER),
         )?;
-        checks.push(
-            json!({"frame":frame["file"],"file":file,"keep_metadata":keep,"status":status,
-            "decoded":[read.size.0,read.size.1],"bytes":read.bytes,"app1":read.app1.len(),
-            "icc":read.icc,"mean_luminance":brightness,"original_luminance":original,
-            "metadata":result["metadata"]}),
+        checks.note(
+            frame,
+            "an export written and read back",
+            json!({"file":file,"keep_metadata":keep,"decoded":[read.size.0,read.size.1],
+            "bytes":read.bytes,"app1":read.app1.len(),"icc":read.icc,"metadata":result["metadata"]}),
         );
         written.push(read);
     }
-    let difference = (0..3)
-        .map(|c| (written[0].mean[c] - written[1].mean[c]).abs())
-        .fold(0.0, f64::max);
-    ensure(
-        difference <= SAME,
-        format!("The stripped and kept exports differ in pixels: {difference:.3}"),
+    checks.compare(
+        launch.at("kept")?,
+        "the stripped and kept exports' largest mean channel difference",
+        (0..3)
+            .map(|c| (written[0].mean[c] - written[1].mean[c]).abs())
+            .fold(0.0, f64::max),
+        0.0,
+        Tolerance::Within(SAME),
     )?;
 
-    // The refusal: its reason, and the stripped file exactly as the first export left it.
-    let refused = launch.at("refused")?;
-    let status = status_of(refused);
-    ensure(
-        status
-            == format!("Not exported: {STRIPPED} already exists; Luxforge never replaces a file"),
-        format!("The refused export's status reads {status:?}"),
-    )?;
+    // The refusal, whose reason the plan holds, and the stripped file exactly as the first export
+    // left it.
     let after = read_export(&launch.evidence.join(STRIPPED))?;
     ensure(
         after.app1.is_empty() && after.bytes == written[0].bytes,
         "The refused export changed the stripped file",
     )?;
-    checks.push(json!({"frame":refused["file"],"status":status,"stripped_bytes":after.bytes}));
 
     // The original was only read.
     run.sources_unchanged()?;
-    let fixture_hash = hash(&root.join(FIXTURE))?;
-    checks.push(json!({"fixture":FIXTURE,"sha256":fixture_hash,"unchanged":true}));
-
-    write_json(
-        &launch.evidence.join("export-checks.json"),
-        &json!({
-            "checks": checks,
+    checks.write(
+        &launch.evidence,
+        "export",
+        json!({
+            "fixture": {"path": FIXTURE, "sha256": hash(&root.join(FIXTURE))?, "unchanged": true},
             "output_stage": [output.0, output.1],
             "same_tolerance": SAME,
             "brighter_margin": BRIGHTER,
             "scope": "Each written JPEG decoded with the image crate and its segments read here: dimensions, byte length, ICC profile, APP1 and EXIF orientation, and mean colour against the original and each other. Not a colorimetric claim",
         }),
-    )?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]
