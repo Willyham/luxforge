@@ -45,12 +45,11 @@ use byte::{Byte, check_source, rasterize};
 use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_pixel, color_runs};
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
-pub use context::{RenderContext, ScratchBudget, SpatialBudget};
-pub use entry::{
-    ProxyRegionPlan, RegionFrame, RegionRenderOutcome, Render, RenderOptions, RenderPhase,
-    RenderSource, render,
-};
+pub use context::{RenderContext, ScratchBudget};
+#[cfg(test)]
+pub(crate) use entry::ProxyRegionPlan;
 pub(crate) use entry::{ProxyStage, layer_input};
+pub use entry::{RegionFrame, RegionRenderOutcome, Render, RenderOptions, RenderSource, render};
 use geometry::{bilinear, nearest_index, resample_frame};
 pub use linear::{LinearSettings, WhiteBalanceApproximation};
 pub use locate::{ContentPoint, Sample, StageSize, StageTransform, stage_transform};
@@ -61,4 +60,3 @@ pub use raster::Raster;
 #[cfg(test)]
 pub(crate) use raster::frame_writes;
 pub(crate) use raster::{frame_mut, zeroed_frame};
-pub use window::RegionFallback;

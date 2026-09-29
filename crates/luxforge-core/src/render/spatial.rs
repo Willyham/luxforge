@@ -1288,7 +1288,7 @@ mod tests {
         modules::ESTIMATE_STORE_ENTRIES,
         modules::{
             ActionInput, ActionPlan, Availability, EffectDescriptor, EffectStage, ModuleDescriptor,
-            Processing, SPATIAL_TILE, SpatialUnit, StageContext, ToolModule,
+            Processing, SpatialUnit, StageContext, ToolModule,
         },
         render::{
             testing::{
@@ -1298,6 +1298,7 @@ mod tests {
             tests::{CropReference, crop_layer, fitted_crop, geometry_registry, gradient, turn},
         },
     };
+    use luxforge_raw::SPATIAL_TILE;
     use luxforge_reference::srgb;
     use luxforge_testbase::{Distribution, Gate};
     use serde_json::{Map, Value, json};

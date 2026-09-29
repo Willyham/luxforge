@@ -15,8 +15,8 @@
 //! reported count is compared with a second implementation.
 use crate::*;
 use luxforge_core::{
-    BASIC_EFFECT, ClientId, JobStatus, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe,
-    SnapshotId, SourceImage, render as core_render,
+    BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe, SnapshotId,
+    SourceImage, jobs::JobStatus, render as core_render,
 };
 use luxforge_reference as reference;
 use luxforge_testkit::client::{self, analyse, as_str, call};

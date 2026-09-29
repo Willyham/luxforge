@@ -19,13 +19,16 @@ mod library_tests;
 #[cfg(test)]
 mod tests;
 
-pub use library::{
-    IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS, PresetRecord, PresetSummary,
-    PresetUpdate, USER_PRESET_GROUP,
-};
-pub use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
-pub use report::{ImportReport, MappedSetting, ReportCounts, ReportedSetting};
-pub use xmp::{MAX_XMP_ATTRIBUTE_PAIRS, MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
+#[cfg(test)]
+pub(crate) use library::{IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS, PresetRecord};
+pub use library::{PresetSummary, USER_PRESET_GROUP};
+#[cfg(test)]
+pub(crate) use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
+pub use report::{ImportReport, ReportCounts};
+#[cfg(test)]
+pub(crate) use report::{MappedSetting, ReportedSetting};
+#[cfg(test)]
+pub(crate) use xmp::{MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
 
 #[cfg(test)]
 use crate::ErrorKind;

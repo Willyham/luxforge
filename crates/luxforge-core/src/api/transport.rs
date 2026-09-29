@@ -122,15 +122,6 @@ fn write_session_file(path: &Path, info: &LocalSessionInfo) -> Result<(), Error>
         .map_err(|error| Error::protocol(error.to_string()))
 }
 
-/// Serve one edit client over JSON lines, such as `luxforge-json` on its standard streams.
-pub fn serve_json_lines(
-    reader: impl Read,
-    writer: impl Write,
-    owner: &OwnerHandle,
-) -> Result<(), Error> {
-    serve_json_lines_with(reader, writer, owner, ClientAuthority::Edit)
-}
-
 /// Serve one client over JSON lines with the authority its process was started with. Only a local
 /// process the person started explicitly for setup, such as `luxforge-json
 /// --permission-authority`, passes anything but `Edit`; the loopback listener never does.
@@ -289,7 +280,13 @@ mod tests {
         ]
         .concat();
         output.clear();
-        serve_json_lines(Cursor::new(input), &mut output, &owner).unwrap();
+        serve_json_lines_with(
+            Cursor::new(input),
+            &mut output,
+            &owner,
+            ClientAuthority::Edit,
+        )
+        .unwrap();
         let responses: Vec<ApiResponse> = output
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
