@@ -754,7 +754,7 @@
     {
       "id": "TASK-011",
       "description": "Give scenarios a checks recorder and richer plan expectations (masks, notices, status, mode, zoom) so a scenario is its plan plus its pixel claims, and replace the eleven ways scenarios locate the photograph with one locator built from recorded geometry.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
