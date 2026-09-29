@@ -197,7 +197,7 @@ fn a_refused_begin_opens_nothing_and_says_why() {
     );
     assert!(editor.crop().is_none() && editor.gesture.is_none());
     assert_eq!(editor.status, refusal);
-    assert_eq!(editor.mode_sync, None);
+    assert_eq!(editor.sync.mode, None);
     assert_eq!(editor.session.workspace.mode, mode);
     // The next start opens as usual.
     let _ = editor.update(Message::Crop(CropMessage::Start));
@@ -266,7 +266,7 @@ fn a_sample_answer_behind_a_request_in_flight_is_refused_with_its_reason() {
     answer.insert(declared.parameters[0].name.clone(), json!(-12.0));
     let log = attach_log(&mut editor);
     editor.busy = true;
-    let sequence = editor.api_sequence;
+    let sequence = editor.sync.sequence;
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
         action,
@@ -274,7 +274,7 @@ fn a_sample_answer_behind_a_request_in_flight_is_refused_with_its_reason() {
         result: Ok(Value::Object(answer)),
     }));
     assert_eq!(editor.status, IN_FLIGHT);
-    assert_eq!(editor.api_sequence, sequence, "nothing was sent");
+    assert_eq!(editor.sync.sequence, sequence, "nothing was sent");
     assert!(
         logged(&mut editor, &log)
             .iter()

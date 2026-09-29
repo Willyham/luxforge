@@ -9,6 +9,7 @@ use super::{
         sync_task,
     },
 };
+use crate::coalesce::Coalesce;
 use crate::state::{
     self,
     fields::{self, Fields},
@@ -23,6 +24,30 @@ use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 /// holds the requests made since that last happened; one that falls out is read back like another
 /// client's change, which costs a refresh the other client's event needs anyway.
 pub(super) const OWN_REQUESTS: usize = 64;
+
+/// The event sync's own state: its one poll, the cursor it reads events from, this desktop's own
+/// requests it skips, and the canvas mode a draft's start or end still has to tell the session.
+#[derive(Debug, Default)]
+pub(crate) struct EventSync {
+    /// One poll in flight. A wake while one is out waits for it: the owner said another client
+    /// changed something, or an answer of this desktop's own left it unknown whether its change
+    /// landed, and the poll starts once nothing is in flight.
+    pub(crate) poll: Coalesce<()>,
+    /// The cursor: the newest event sequence a poll has read up to. Only a poll moves it, and never
+    /// backwards; the sequence any other answer carries counts events of other clients' that no
+    /// poll has read yet.
+    pub(crate) sequence: u64,
+    /// This desktop's own requests whose answers read their changes back and reached the screen,
+    /// oldest first and at most [`OWN_REQUESTS`]. A poll reads their events and skips them; one
+    /// that falls out of the bound is read back like another client's, which costs a refresh and
+    /// loses nothing.
+    pub(crate) own_requests: std::collections::VecDeque<String>,
+    /// Set when a draft just started or ended by a route that does not already ask the session
+    /// itself: the next `update` call folds in one `workspace.set` for this mode, unless the
+    /// session already reports it, so the mode strip shows Crop selected during every draft
+    /// however it was opened, and pointer again however it ended.
+    pub(crate) mode: Option<String>,
+}
 
 /// Module identity for correlated evidence; descriptors carry no source paths.
 pub(super) fn module_summary(modules: &[ModuleDescriptor]) -> Value {
@@ -167,9 +192,11 @@ impl Editor {
                 }
             },
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
-            SyncMessage::Changed => self.sync_wanted = true,
+            SyncMessage::Changed => {
+                self.sync.poll.offer(());
+            }
             SyncMessage::Synced(result) => {
-                self.syncing = false;
+                self.sync.poll.answered();
                 match result {
                     Ok(sync) => {
                         // Another client's preset change reaches the library in the same poll that
@@ -191,11 +218,12 @@ impl Editor {
                         if superseded {
                             // Nothing wakes the sync on a timer, so it reads those events again
                             // itself, once what overtook it has landed.
-                            self.sync_wanted = true;
+                            self.sync.poll.offer(());
                         } else {
-                            self.api_sequence = self.api_sequence.max(sync.sequence);
+                            self.sync.sequence = self.sync.sequence.max(sync.sequence);
                             // Read past, so never asked about again.
-                            self.own_requests
+                            self.sync
+                                .own_requests
                                 .retain(|request| !sync.own.contains(request));
                         }
                         if sync.capabilities {
@@ -333,7 +361,7 @@ impl Editor {
     /// nothing wanted it does nothing: the sync costs nothing until the owner wakes it. An evidence
     /// run has no event sync, so what it records is what its script did.
     pub(crate) fn sync_when_wanted(&mut self) -> Task<Message> {
-        if !self.sync_wanted || self.syncing || self.busy || self.evidence.is_some() {
+        if self.busy || self.evidence.is_some() {
             return Task::none();
         }
         let Some(held) = self
@@ -344,15 +372,16 @@ impl Editor {
         else {
             return Task::none();
         };
-        self.sync_wanted = false;
-        self.syncing = true;
+        if self.sync.poll.start().is_none() {
+            return Task::none();
+        }
         let proxy = self.proxy_bounds();
         sync_task(
             self.owner.clone(),
             self.client,
             held,
-            self.api_sequence,
-            self.own_requests.iter().cloned().collect(),
+            self.sync.sequence,
+            self.sync.own_requests.iter().cloned().collect(),
             proxy,
         )
     }
@@ -361,16 +390,16 @@ impl Editor {
     /// change may have landed without being read back. The owner wakes no client for its own
     /// events, so the sync is asked for once: the poll reads that event like another client's.
     pub(crate) fn resync(&mut self) {
-        self.sync_wanted = true;
+        self.sync.poll.offer(());
     }
 
     /// This desktop's own request has read its change back onto the screen: the next poll reads
     /// its event and skips it.
     pub(crate) fn read_back(&mut self, request: String) {
-        if self.own_requests.len() == OWN_REQUESTS {
-            self.own_requests.pop_front();
+        if self.sync.own_requests.len() == OWN_REQUESTS {
+            self.sync.own_requests.pop_front();
         }
-        self.own_requests.push_back(request);
+        self.sync.own_requests.push_back(request);
     }
 
     pub(crate) fn accept(&mut self, refresh: Refresh) {
@@ -378,7 +407,7 @@ impl Editor {
             return;
         }
         self.controls_ui.clear_curve_samples();
-        self.curve_sample_requested_source.clear();
+        self.curve_sampling.requested_source.clear();
         // What happened is read against the state and the history rows held before this one: a
         // current entry the rows already held is a redo rather than a new entry.
         let known = self

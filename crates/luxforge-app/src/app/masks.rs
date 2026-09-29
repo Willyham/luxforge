@@ -1102,7 +1102,7 @@ impl Editor {
         self.status = self.mask_gesture_line(&shape);
         // The mode follows the gesture however it was started, so the strip shows Mask selected.
         if !self.mask_mode_active() {
-            self.mode_sync = Some(MASK_MODE.to_owned());
+            self.sync.mode = Some(MASK_MODE.to_owned());
         }
         let gesture = self.next_gesture();
         let mask = MaskGesture { shape, map: None };

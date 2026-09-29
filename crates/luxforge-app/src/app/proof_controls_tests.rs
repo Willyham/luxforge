@@ -397,7 +397,8 @@ fn proof_curve_query_samples_the_active_channel_through_the_json_method_table() 
     );
     let sequence = proof
         .editor
-        .curve_sample_requested
+        .curve_sampling
+        .requested
         .get(&(ACTION.into(), "master".into()))
         .copied()
         .expect("initial visible query");

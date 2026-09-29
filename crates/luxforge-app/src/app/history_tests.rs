@@ -258,7 +258,7 @@ fn history_navigation_is_refused_while_a_slider_draft_is_open() {
 fn history_navigation_is_refused_while_a_request_is_in_flight() {
     let (mut editor, catalog, _, original) = navigable();
     editor.busy = true;
-    let sequence = editor.api_sequence;
+    let sequence = editor.sync.sequence;
     for message in [
         HistoryMessage::Undo,
         HistoryMessage::Redo,
@@ -270,7 +270,7 @@ fn history_navigation_is_refused_while_a_request_is_in_flight() {
         assert_eq!(task.units(), 0, "{message:?}: nothing is sent");
         assert_eq!(editor.status, crate::state::IN_FLIGHT, "{message:?}");
     }
-    assert_eq!(editor.api_sequence, sequence);
+    assert_eq!(editor.sync.sequence, sequence);
 
     editor.busy = false;
     let _ = editor.update(Message::History(HistoryMessage::Restore));

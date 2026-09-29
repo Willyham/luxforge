@@ -553,8 +553,7 @@ impl Editor {
                     || self.activity.backend.is_none()
                     || !self.modules_ready
                     || !self.presets.ready()
-                    || self.curve_sample_in_flight
-                    || self.curve_sample_pending.is_some()
+                    || !self.curve_sampling.slot.idle()
                     || !rows_shown
                     || (!proxy_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)

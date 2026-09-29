@@ -468,7 +468,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         &library.owner(),
         library.editor.client,
         library.held(),
-        library.editor.api_sequence,
+        library.editor.sync.sequence,
         &[],
         None,
     )
@@ -480,7 +480,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         &library.owner(),
         library.editor.client,
         library.held(),
-        library.editor.api_sequence,
+        library.editor.sync.sequence,
         &[],
         None,
     )
@@ -502,7 +502,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         &library.owner(),
         library.editor.client,
         library.held(),
-        library.editor.api_sequence,
+        library.editor.sync.sequence,
         &[],
         None,
     )
@@ -531,7 +531,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         &library.owner(),
         library.editor.client,
         library.held(),
-        library.editor.api_sequence,
+        library.editor.sync.sequence,
         &[],
         None,
     )
@@ -556,7 +556,7 @@ fn a_preset_file_over_one_mebibyte_is_refused_before_it_is_read() {
     let error = tasks::read_preset_file(&binary).unwrap_err();
     assert!(error.starts_with("unsupported-input: "), "{error}");
     // Through the section, the refusal reaches the status bar and the owner never hears of it.
-    let before = library.editor.api_sequence;
+    let before = library.editor.sync.sequence;
     let (events, _) = call(
         &library.owner(),
         library.agent,
@@ -585,7 +585,7 @@ fn a_preset_file_over_one_mebibyte_is_refused_before_it_is_read() {
     )
     .unwrap();
     assert_eq!(events["events"], after["events"], "nothing was sent");
-    assert_eq!(library.editor.api_sequence, before);
+    assert_eq!(library.editor.sync.sequence, before);
     std::fs::remove_file(large).unwrap();
     std::fs::remove_file(binary).unwrap();
     library.finish();

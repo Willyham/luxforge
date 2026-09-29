@@ -1127,11 +1127,11 @@ fn a_slider_drag_changes_the_field_and_sends_no_request() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let (action, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
     let (action, x) = (action.to_owned(), x.to_owned());
-    let sequence = editor.api_sequence;
+    let sequence = editor.sync.sequence;
     let _ = testing::slide(&mut editor, &action, &x, 12.0);
     assert_eq!(editor.fields.get(&action, &x), Some("12"));
     assert_eq!(editor.dragging, Some((action.clone(), x.clone())));
-    assert_eq!(editor.api_sequence, sequence, "a drag calls nothing");
+    assert_eq!(editor.sync.sequence, sequence, "a drag calls nothing");
     let _ = testing::let_go(&mut editor, &action, &x);
     assert!(editor.dragging.is_none(), "release ends the drag");
     finish(editor, catalog);
@@ -1162,10 +1162,10 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
 
     // A second release while the first request is still in flight sends nothing further, and the
     // status bar says why.
-    let sequence = editor.api_sequence;
+    let sequence = editor.sync.sequence;
     let _ = testing::let_go(&mut editor, &action, &x);
     assert_eq!(
-        editor.api_sequence, sequence,
+        editor.sync.sequence, sequence,
         "already busy: no second request"
     );
     assert_eq!(editor.status, crate::state::IN_FLIGHT);

@@ -134,7 +134,7 @@ impl Editor {
                 let opens_draft = tools::crop_frame(&self.modules)
                     .is_some_and(|frame| frame.module.id == mode)
                     && self.crop_gesture().is_none();
-                self.mode_sync = None;
+                self.sync.mode = None;
                 if opens_draft {
                     // The crop mode is the draft's: a start asks the session to enter it, through
                     // `sync_mode`, only once the draft has started, so a refused start sends
@@ -232,7 +232,7 @@ impl Editor {
     /// route opened or closed it. `ViewMessage::SetMode` already asks the session itself and clears
     /// this before returning, so it is never doubled.
     pub(super) fn sync_mode(&mut self, task: Task<Message>) -> Task<Message> {
-        let Some(target) = self.mode_sync.take() else {
+        let Some(target) = self.sync.mode.take() else {
             return task;
         };
         if target == self.session.workspace.mode {

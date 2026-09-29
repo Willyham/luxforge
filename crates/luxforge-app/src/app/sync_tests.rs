@@ -106,7 +106,10 @@ fn refresh_replaces_or_merges_history_and_marks_abandoned_branches() {
     );
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(full)))));
     assert!(!editor.busy);
-    assert_eq!(editor.api_sequence, 0, "only a poll moves the event cursor");
+    assert_eq!(
+        editor.sync.sequence, 0,
+        "only a poll moves the event cursor"
+    );
     assert_eq!(editor.document.history.entries.len(), 4);
     assert_eq!(editor.document.display_entry, Some(c.id.clone()));
     fn branch(editor: &Editor, id: &luxforge_core::EntryId) -> Option<bool> {
@@ -229,7 +232,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
         editor.document.display_entry.clone(),
         editor.presentation.preview_generation,
         editor.session.clone(),
-        editor.api_sequence,
+        editor.sync.sequence,
     );
     let unchanged = |editor: &Editor, case: &str| {
         assert_eq!(
@@ -237,7 +240,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
                 editor.document.display_entry.clone(),
                 editor.presentation.preview_generation,
                 editor.session.clone(),
-                editor.api_sequence,
+                editor.sync.sequence,
             ),
             held,
             "{case}"
@@ -322,34 +325,40 @@ fn nothing_new() -> tasks::SyncResult {
 #[test]
 fn the_event_sync_polls_only_when_woken_and_never_across_a_request_in_flight() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
-    assert!(!editor.syncing && !editor.sync_wanted);
+    assert!(!editor.sync.poll.in_flight() && editor.sync.poll.pending().is_none());
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-    assert!(!editor.syncing, "a message that is no wake starts no poll");
+    assert!(
+        !editor.sync.poll.in_flight(),
+        "a message that is no wake starts no poll"
+    );
 
     editor.busy = true;
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
     assert!(
-        !editor.syncing && editor.sync_wanted,
+        !editor.sync.poll.in_flight() && editor.sync.poll.pending().is_some(),
         "a wake waits for the request in flight"
     );
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Err(
         "conflict: stale revision".into(),
     ))));
     assert!(
-        editor.syncing && !editor.sync_wanted,
+        editor.sync.poll.in_flight() && editor.sync.poll.pending().is_none(),
         "the poll starts as the request is answered"
     );
 
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
-    assert!(editor.syncing && editor.sync_wanted, "one poll at a time");
+    assert!(
+        editor.sync.poll.in_flight() && editor.sync.poll.pending().is_some(),
+        "one poll at a time"
+    );
     let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(nothing_new()))));
     assert!(
-        editor.syncing && !editor.sync_wanted,
+        editor.sync.poll.in_flight() && editor.sync.poll.pending().is_none(),
         "the wake that landed during the poll is read right after it"
     );
     let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(nothing_new()))));
     assert!(
-        !editor.syncing && !editor.sync_wanted,
+        !editor.sync.poll.in_flight() && editor.sync.poll.pending().is_none(),
         "and then nothing runs"
     );
     finish(editor, catalog);

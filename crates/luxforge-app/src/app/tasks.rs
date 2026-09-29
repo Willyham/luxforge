@@ -2174,10 +2174,10 @@ mod tests {
         .expect("the import opens");
         let asset = opened.state.asset.id.clone();
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(opened)))));
-        assert_eq!(editor.api_sequence, 0, "an open reads no event");
-        let mut cursor = editor.api_sequence;
+        assert_eq!(editor.sync.sequence, 0, "an open reads no event");
+        let mut cursor = editor.sync.sequence;
         let mut poll = |editor: &mut Editor| {
-            let own = editor.own_requests.iter().cloned().collect::<Vec<_>>();
+            let own = editor.sync.own_requests.iter().cloned().collect::<Vec<_>>();
             let revision = editor
                 .document
                 .state
@@ -2188,15 +2188,15 @@ mod tests {
                 &owner,
                 client,
                 (asset.clone(), revision),
-                editor.api_sequence,
+                editor.sync.sequence,
                 &own,
                 None,
             )
             .expect("the poll answers");
             let result = (polled.refresh.is_some(), polled.own.len());
             let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(polled))));
-            assert!(editor.api_sequence >= cursor, "never backwards");
-            cursor = editor.api_sequence;
+            assert!(editor.sync.sequence >= cursor, "never backwards");
+            cursor = editor.sync.sequence;
             result
         };
         assert_eq!(
@@ -2204,7 +2204,7 @@ mod tests {
             (false, 1),
             "the desktop's own import is read and costs nothing"
         );
-        let caught_up = editor.api_sequence;
+        let caught_up = editor.sync.sequence;
 
         let command = |editor: &mut Editor, transform: &str| {
             let revision = editor.document.state.as_ref().unwrap().revision;
@@ -2231,7 +2231,7 @@ mod tests {
         .unwrap();
         command(&mut editor, "rotate-right");
         assert_eq!(
-            editor.api_sequence, caught_up,
+            editor.sync.sequence, caught_up,
             "the commits' answers, which count the agent's event, move no cursor"
         );
         assert!(
@@ -2254,9 +2254,9 @@ mod tests {
             ["Keep"],
             "the version named between the two commits reached the screen"
         );
-        assert_eq!(editor.api_sequence, caught_up + 3);
+        assert_eq!(editor.sync.sequence, caught_up + 3);
         assert!(
-            editor.own_requests.is_empty(),
+            editor.sync.own_requests.is_empty(),
             "every skipped event is forgotten"
         );
         assert_eq!(
@@ -2274,7 +2274,7 @@ mod tests {
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));
-        assert_eq!(editor.api_sequence, caught_up + 3);
+        assert_eq!(editor.sync.sequence, caught_up + 3);
         testing::finish(editor, catalog);
     }
 
