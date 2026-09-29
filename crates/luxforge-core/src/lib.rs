@@ -9,8 +9,6 @@ pub mod capabilities;
 /// One home for the sRGB transfer function, Rec. 709 luminance, the Oklab conversion, small 3×3
 /// linear algebra and the Planckian locus, shared by every renderer and colour module.
 pub mod colour;
-#[cfg(test)]
-mod command_contracts;
 mod draft;
 mod editor;
 mod error;
