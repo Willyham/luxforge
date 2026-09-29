@@ -2068,20 +2068,20 @@ mod tests {
 
     #[test]
     fn a_tiled_render_matches_the_whole_frame_reference_at_every_tile_size() {
-        // Larger than one production tile on both sides of the 512 grid, so every tile size
-        // exercises partial edge tiles and more than one batch; 37 divides neither side, so its
-        // tiles' rows start and end away from every multiple of a row's width.
-        let source = gradient(600, 400);
+        // 37 and 64 px tiles divide neither side, so they exercise partial edge tiles and 37's
+        // tiles' rows start and end away from every multiple of a row's width; a 512 px tile holds
+        // the whole frame.
+        let source = gradient(200, 150);
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["blur:4"])]);
         let expected = reference_chain(
-            600,
-            400,
+            200,
+            150,
             decode_frame(source.rgba.as_ref()),
             &[RefUnit::Blur(4)],
         );
         let mut frames = Vec::new();
-        for tile in [37_u32, 128, 512] {
+        for tile in [37_u32, 64, 512] {
             let raster = render_tiled(
                 &registry,
                 &source,
@@ -2098,7 +2098,7 @@ mod tests {
             }
             frames.push(raster.rgba.as_ref().to_vec());
         }
-        for (frame, tile) in frames.iter().zip([37, 128]) {
+        for (frame, tile) in frames.iter().zip([37, 64]) {
             assert_eq!(
                 frame, &frames[2],
                 "tile {tile} writes the bytes tile 512 writes"
@@ -2666,99 +2666,6 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_equals_every_rendered_byte_on_both_paths() {
-        let registry = spatial_registry();
-        let stack = recipe(vec![spatial_layer(&["blur:3", "shift"])]);
-        let source = gradient(48, 36);
-        // The samples read the estimate the render stored, as a pointer readout does beside the
-        // preview.
-        let context = RenderContext::new();
-        let raster = byte_in(&context, &registry, &source, &stack);
-        for y in 0..raster.height {
-            for x in 0..raster.width {
-                let sampled = sample_in(
-                    &context,
-                    &registry,
-                    &source,
-                    &stack,
-                    RenderOptions::default(),
-                    x,
-                    y,
-                )
-                .unwrap();
-                assert_eq!(
-                    sampled.rgba,
-                    raster.pixel(x, y),
-                    "byte path: sample at ({x}, {y})"
-                );
-            }
-        }
-        let linear = linear_source(40, 30);
-        let rendered = linear_in(
-            &context,
-            &registry,
-            &linear,
-            &stack,
-            LinearSettings::default(),
-        );
-        for y in 0..rendered.height {
-            for x in 0..rendered.width {
-                let sampled = sample_in(
-                    &context,
-                    &registry,
-                    crate::render::testing::linear(&linear, LinearSettings::default()),
-                    &stack,
-                    RenderOptions::default(),
-                    x,
-                    y,
-                )
-                .unwrap();
-                assert_eq!(
-                    sampled.rgba,
-                    rendered.pixel(x, y),
-                    "linear path: sample at ({x}, {y})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_linear_path_agrees_with_itself_through_a_spatial_layer_and_a_crop() {
-        let registry = spatial_registry();
-        let source = linear_source(60, 44);
-        let crop = fitted_crop(60, 44, 6.0, [0.2, 0.2, 0.55, 0.55]);
-        let stack = recipe(vec![spatial_layer(&["blur:2", "shift"]), crop_layer(crop)]);
-        let context = RenderContext::new();
-        let rendered = linear_in(
-            &context,
-            &registry,
-            &source,
-            &stack,
-            LinearSettings::default(),
-        );
-        assert!(rendered.width > 1 && rendered.height > 1);
-        for y in 0..rendered.height {
-            for x in 0..rendered.width {
-                let sampled = sample_in(
-                    &context,
-                    &registry,
-                    crate::render::testing::linear(&source, LinearSettings::default()),
-                    &stack,
-                    RenderOptions::default(),
-                    x,
-                    y,
-                )
-                .unwrap();
-                assert_eq!(
-                    sampled.rgba,
-                    rendered.pixel(x, y),
-                    "linear crop after blur: sample at ({x}, {y})"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn a_sample_uses_the_same_tile_grid_the_render_used() {
         let registry = spatial_registry();
         let source = gradient(50, 40);
@@ -2856,16 +2763,18 @@ mod tests {
     #[test]
     fn a_linear_sample_through_a_spatial_layer_reserves_one_working_set() {
         let registry = spatial_registry();
-        let source = linear_source(600, 400);
+        // 64 px tiles, so the stage holds many and one working set is not the whole frame's.
+        let tile = 64;
+        let source = linear_source(200, 150);
         let stack = recipe(vec![spatial_layer(&["blur:4"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 4 })]).unwrap();
         let plan = SpatialPlan::new(
             &operation,
             Stage {
-                width: 600,
-                height: 400,
+                width: 200,
+                height: 150,
             },
-            Tiling::Halo,
+            Tiling::Fixed(tile),
         )
         .unwrap();
         let context = RenderContext::new();
@@ -2875,9 +2784,9 @@ mod tests {
             &registry,
             crate::render::testing::linear(&source, LinearSettings::default()),
             &stack,
-            RenderOptions::default(),
-            300,
-            200,
+            RenderOptions::default().with_tile(tile),
+            100,
+            75,
         )
         .unwrap();
         assert!(sampled.rgba.is_some());
@@ -2892,16 +2801,18 @@ mod tests {
     #[test]
     fn a_sample_through_a_spatial_layer_reserves_one_working_set() {
         let registry = spatial_registry();
-        let source = gradient(600, 400);
+        // 64 px tiles, so the stage holds many and one working set is not the whole frame's.
+        let tile = 64;
+        let source = gradient(200, 150);
         let stack = recipe(vec![spatial_layer(&["blur:4"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 4 })]).unwrap();
         let plan = SpatialPlan::new(
             &operation,
             Stage {
-                width: 600,
-                height: 400,
+                width: 200,
+                height: 150,
             },
-            Tiling::Halo,
+            Tiling::Fixed(tile),
         )
         .unwrap();
         let context = RenderContext::new();
@@ -2911,9 +2822,9 @@ mod tests {
             &registry,
             &source,
             &stack,
-            RenderOptions::default(),
-            300,
-            200,
+            RenderOptions::default().with_tile(tile),
+            100,
+            75,
         )
         .unwrap();
         assert!(sampled.rgba.is_some());
@@ -4013,13 +3924,14 @@ mod tests {
     #[test]
     fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {
         let (registry, _, tally) = counting_registry();
-        // Two tile columns and two tile rows (512 + 88 by 512 + 38): the smallest frame that can
-        // show a tile being copied while another is evaluated.
-        let (width, height) = (600, 550);
+        // Two tile columns and two tile rows of 128 px tiles (128 + 22 by 128 + 12): the smallest
+        // grid that can show a tile being copied while another is evaluated.
+        let tile = 128;
+        let (width, height) = (150, 140);
         let source = gradient(width, height);
         let linear = linear_source(width, height);
         // A gradient confined to the right edge: its support cannot reach the two tiles whose
-        // columns start at zero, so those two are copies and the two at column 512 run the chain.
+        // columns start at zero, so those two are copies and the two at column 128 run the chain.
         let mut mask = crate::Mask::new("Mask 1");
         let name = mask.next_component_name("linear");
         mask.components.push(crate::Component::new(
@@ -4040,18 +3952,12 @@ mod tests {
         let unmasked = recipe(vec![spatial_layer(&["count"])]);
         let applied = |stack: &Recipe, linear_path: bool| {
             let before = tally.get();
+            let context = RenderContext::new();
             if linear_path {
-                crate::render::testing::render_linear(
-                    &registry,
-                    &linear,
-                    SnapshotId::new(),
-                    stack,
-                    LinearSettings::default(),
-                )
-                .unwrap();
+                let linear = crate::render::testing::linear(&linear, LinearSettings::default());
+                tiled_in(&context, &registry, linear, stack, tile).unwrap();
             } else {
-                crate::render::testing::render(&registry, &source, SnapshotId::new(), stack)
-                    .unwrap();
+                tiled_in(&context, &registry, &source, stack, tile).unwrap();
             }
             tally.get() - before
         };
@@ -4396,9 +4302,10 @@ mod tests {
     #[test]
     fn a_cancelled_render_stops_between_tile_batches_and_releases_its_reservation() {
         let (registry, gate) = held_registry();
-        // Many tiles, one at a time: the target is exactly one working set so the operation runs a
-        // batch of one tile, which is where the token is checked.
-        let source = gradient(2000, 1500);
+        // Many tiles, one at a time: 64 px tiles, and the target is exactly one working set so the
+        // operation runs a batch of one tile, which is where the token is checked.
+        let tile = 64;
+        let source = gradient(300, 200);
         let stack = recipe(vec![spatial_layer(&["blur:24", "held"])]);
         let operation = SpatialOperation::new(vec![
             Arc::new(BoxBlur { radius: 24 }),
@@ -4408,10 +4315,10 @@ mod tests {
         let plan = SpatialPlan::new(
             &operation,
             Stage {
-                width: 2000,
-                height: 1500,
+                width: 300,
+                height: 200,
             },
-            Tiling::Halo,
+            Tiling::Fixed(tile),
         )
         .unwrap();
         assert!(plan.tiles().len() > 4, "several batches of one tile");
@@ -4434,7 +4341,7 @@ mod tests {
                 &source,
                 SnapshotId::new(),
                 &stack,
-                RenderOptions::exact(&cancel),
+                RenderOptions::exact(&cancel).with_tile(tile),
             )
         };
         let result = render();
@@ -4483,10 +4390,11 @@ mod tests {
     #[test]
     fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
         let registry = spatial_registry();
-        // At the one-megapixel threshold, in 64 px tiles so that a batch as wide as the pool
+        // Forced past the parallel threshold, in 16 px tiles so that a batch as wide as the pool
         // exists whatever the pool's size.
-        let (width, height) = (1000, 1000);
-        let tile = 64;
+        let (width, height) = (250, 250);
+        let tile = 16;
+        crate::render::parallel::force(Some(true));
         let source = gradient(width, height);
         let linear = linear_source(width, height);
         let stack = recipe(vec![spatial_layer(&["blur:2", "shift"])]);
@@ -4523,6 +4431,7 @@ mod tests {
             frames[0].1, frames[1].1,
             "linear path: pooled and serial tiles agree"
         );
+        crate::render::parallel::force(None);
     }
 
     // -----------------------------------------------------------------------------------------

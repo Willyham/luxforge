@@ -75,22 +75,6 @@ pub(crate) fn render_tiled(
     frame(registry, source, snapshot_id, recipe, options)
 }
 
-pub(crate) fn render_cancellable(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    cancel: &Cancel,
-) -> Result<Raster, Error> {
-    frame(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        RenderOptions::exact(cancel),
-    )
-}
-
 pub(crate) fn render(
     registry: &ModuleRegistry,
     source: &SourceImage,
@@ -252,6 +236,61 @@ pub(crate) fn linear_evaluation<'a>(
         &Cancel::never(),
         context,
     )
+}
+
+/// Every output byte of `recipe` over `source` from the point evaluator in `mode`, row by row,
+/// with the output stage's dimensions: the reference a rendered frame is compared with. It
+/// resolves the segment, the replacement that wins and the view for every pixel and applies the
+/// colour runs to that pixel alone, never through the rows a frame is written from; in
+/// [`SpatialMode::Point`] it is the evaluation a sample reads, with one tile cache for every pixel.
+pub(crate) fn point_evaluated<'a>(
+    context: &'a RenderContext,
+    registry: &ModuleRegistry,
+    source: impl Into<RenderSource<'a>>,
+    recipe: &Recipe,
+    mode: SpatialMode,
+) -> Result<(u32, u32, Vec<u8>), Error> {
+    fn every_pixel<D: super::PixelDomain>(
+        evaluation: Evaluation<'_, D>,
+    ) -> Result<(u32, u32, Vec<u8>), Error> {
+        let crate::modules::Stage { width, height } = evaluation.stage();
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                let pixel = evaluation
+                    .terminal(x, y)?
+                    .ok_or_else(|| Error::internal("a reference pixel outside the stage"))?;
+                rgba.extend(pixel);
+            }
+        }
+        Ok((width, height, rgba))
+    }
+    let source: RenderSource<'a> = source.into();
+    let (width, height) = source.dimensions();
+    let compiled = Cow::Owned(registry.compile(width, height, recipe)?);
+    let tiling = super::spatial::Tiling::Halo;
+    let never = Cancel::never();
+    match source {
+        RenderSource::Byte(image) => {
+            super::check_source(image)?;
+            every_pixel(Evaluation::new(
+                Byte(image),
+                compiled,
+                tiling,
+                mode,
+                &never,
+                context,
+            )?)
+        }
+        RenderSource::Linear { image, settings } => every_pixel(Evaluation::new(
+            Linear::new(image, settings)?,
+            compiled,
+            tiling,
+            mode,
+            &never,
+            context,
+        )?),
+    }
 }
 
 /// The unit tests' own reading of a preview source: each method is one call to the entry point

@@ -1,12 +1,12 @@
 //! Cooperative cancellation of a render.
 
-use super::testing::{frame_in, render_cancellable};
+use super::testing::{frame_in, linear};
 use super::tests::*;
 use crate::{
-    Cancel, EFFECT_FORMAT, ErrorKind, Layer, LayerId, Recipe, RenderContext, RenderOptions,
-    SnapshotId, SourceImage, Transform,
+    Cancel, EFFECT_FORMAT, ErrorKind, Layer, LayerId, LinearSettings, Recipe, RenderContext,
+    RenderOptions, RenderSource, SnapshotId, SourceImage, Transform,
     modules::{HELD_EFFECT, HeldModule, ModuleRegistry},
-    render::parallel,
+    render::{frame_writes, parallel},
 };
 use luxforge_testbase::Gate;
 use serde_json::json;
@@ -54,30 +54,53 @@ fn cancellation_stack(width: u32, height: u32) -> Recipe {
     }
 }
 
+/// On both pixel domains, a token cancelled before the render refuses it before any pass is
+/// handed a frame.
 #[test]
 fn a_pre_cancelled_token_stops_a_render_before_it_allocates_a_frame() {
     let registry = ModuleRegistry::builtin();
-    let source = cancellation_source(512, 384);
-    let recipe = cancellation_stack(512, 384);
+    let (width, height) = (64, 48);
+    let source = cancellation_source(width, height);
+    let planes = varied(width, height);
+    let recipe = cancellation_stack(width, height);
     let cancel = Cancel::new();
     cancel.cancel();
     assert!(cancel.is_cancelled());
-    let error = render_cancellable(&registry, &source, SnapshotId::new(), &recipe, &cancel)
-        .expect_err("a cancelled token refuses the render");
-    assert_eq!(error.kind, ErrorKind::Cancelled);
-    assert_eq!(error.kind.code(), "cancelled");
+    for (domain, input) in [
+        ("byte", RenderSource::Byte(&source)),
+        ("linear", linear(&planes, LinearSettings::default())),
+    ] {
+        let (outcome, written) = frame_writes::record(|| {
+            frame_in(
+                &RenderContext::new(),
+                &registry,
+                input,
+                SnapshotId::new(),
+                &recipe,
+                RenderOptions::exact(&cancel),
+            )
+        });
+        let error = outcome.expect_err("a cancelled token refuses the render");
+        assert_eq!(error.kind, ErrorKind::Cancelled, "{domain}");
+        assert_eq!(error.kind.code(), "cancelled", "{domain}");
+        assert!(written.is_empty(), "{domain}: no pass was handed a frame");
+    }
 }
 
 /// A colour pass cancelled while a chunk holds its scratch yields the cancelled kind, no frame,
-/// and no reservation left behind, serially and on the pool. The held layer stops the render in
+/// and no reservation left behind, on both pixel domains, serially and on the pool. The held
+/// layer stops the render in
 /// its colour pass, inside a chunk that has reserved its scratch, so where the cancel lands is
-/// decided by the gate and not by how fast this host renders. The turned stage is 40 colour chunks
-/// tall, more than the pool runs at once, so a chunk not yet started sees the cancel on both
-/// paths. The photo-sized stop latency is the release timing in `tests/cancellation.rs`.
+/// decided by the gate and not by how fast this host renders. The turned stage is 150 colour
+/// chunks tall and the cropped output over a hundred (the linear domain reads the colour through
+/// the resample's rows), far more than the pool runs at once, so a chunk not yet started sees the
+/// cancel on both paths. The photo-sized stop latency is the release timing in
+/// `tests/cancellation.rs`.
 #[test]
 fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservation() {
-    let (width, height) = (640, 64);
+    let (width, height) = (2400, 64);
     let source = cancellation_source(width, height);
+    let planes = varied(width, height);
     let mut recipe = cancellation_stack(width, height);
     recipe.layers.insert(
         2,
@@ -90,7 +113,14 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
             artifacts: Vec::new(),
         },
     );
-    for pooled in [false, true] {
+    for (domain, input, pooled) in [
+        RenderSource::Byte(&source),
+        linear(&planes, LinearSettings::default()),
+    ]
+    .into_iter()
+    .zip(["byte", "linear"])
+    .flat_map(|(input, domain)| [false, true].map(|pooled| (domain, input, pooled)))
+    {
         let gate = Arc::new(Gate::new());
         let mut registry = ModuleRegistry::builtin();
         registry
@@ -106,7 +136,7 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
                 frame_in(
                     &context,
                     &registry,
-                    &source,
+                    input,
                     SnapshotId::new(),
                     &recipe,
                     RenderOptions::exact(&cancel),
@@ -116,18 +146,22 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
             assert_ne!(
                 budget.in_use(),
                 0,
-                "pooled {pooled}: the held chunk holds its scratch"
+                "{domain}, pooled {pooled}: the held chunk holds its scratch"
             );
             cancel.cancel();
             gate.open();
             render.join().expect("the render thread does not panic")
         });
         let error = outcome.expect_err("a cancelled render yields no frame, partial or otherwise");
-        assert_eq!(error.kind, ErrorKind::Cancelled, "pooled {pooled}");
+        assert_eq!(
+            error.kind,
+            ErrorKind::Cancelled,
+            "{domain}, pooled {pooled}"
+        );
         assert_eq!(
             budget.in_use(),
             0,
-            "pooled {pooled}: a cancelled colour pass releases every reservation"
+            "{domain}, pooled {pooled}: a cancelled colour pass releases every reservation"
         );
     }
 }

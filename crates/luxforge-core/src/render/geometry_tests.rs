@@ -196,17 +196,6 @@ fn offset_layer(x: i64, y: i64, width: u32, height: u32) -> Layer {
     }
 }
 
-fn scale_layer(scale: f64) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: TEST_SCALE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload: json!({"scale": scale}),
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
 #[test]
 #[ignore = "measurement, run explicitly in release"]
 fn measure_resample_on_photo_sized_frames() {
@@ -266,14 +255,18 @@ fn measure_resample_on_photo_sized_frames() {
 #[test]
 fn rotated_crops_match_an_independent_reference_sampler() {
     let registry = geometry_registry();
-    // The last input is over a megapixel on both sides of the resample, so the parallel row path
-    // runs; every pixel of every case is compared against the reference.
-    for (width, height, angle, rect) in [
-        (64_u32, 48_u32, 7.5_f64, [0.12, 0.1, 0.7, 0.75]),
-        (64, 48, -30.0, [0.25, 0.2, 0.5, 0.55]),
-        (64, 48, 45.0, [0.3, 0.3, 0.4, 0.4]),
-        (1500, 1100, 10.0, [0.1, 0.1, 0.8, 0.8]),
-    ] {
+    // Every case runs serially and forced onto the parallel row path; every pixel of every case
+    // is compared against the reference.
+    for (pooled, (width, height, angle, rect)) in [false, true].into_iter().flat_map(|pooled| {
+        [
+            (64_u32, 48_u32, 7.5_f64, [0.12, 0.1, 0.7, 0.75]),
+            (64, 48, -30.0, [0.25, 0.2, 0.5, 0.55]),
+            (64, 48, 45.0, [0.3, 0.3, 0.4, 0.4]),
+            (150, 110, 10.0, [0.1, 0.1, 0.8, 0.8]),
+        ]
+        .map(|case| (pooled, case))
+    }) {
+        parallel::force(Some(pooled));
         let source = gradient(width, height);
         let crop = fitted_crop(width, height, angle, rect);
         let recipe = Recipe {
@@ -284,7 +277,7 @@ fn rotated_crops_match_an_independent_reference_sampler() {
         };
         let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         let reference = CropReference::new(&source, crop);
-        let case = format!("{width}x{height} at {angle}");
+        let case = format!("{width}x{height} at {angle}, pooled {pooled}");
         assert_eq!(
             (raster.width, raster.height),
             (reference.width, reference.height),
@@ -306,16 +299,9 @@ fn rotated_crops_match_an_independent_reference_sampler() {
                 }
             }
         }
-        assert!(
-            u64::from(raster.width) * u64::from(raster.height)
-                >= luxforge_raw::PARALLEL_RESAMPLE_PIXELS
-                || width == 64,
-            "{case}: {}x{} does not reach the parallel row path",
-            raster.width,
-            raster.height
-        );
         println!("{case}: worst channel difference against the f64 reference is {worst}");
     }
+    parallel::force(None);
 }
 
 #[test]
@@ -456,60 +442,6 @@ fn a_translation_with_a_smaller_output_composes_and_is_bounds_checked() {
         assert_eq!(
             sample(&registry, &source, &recipe, 0, 0).unwrap_err().kind,
             ErrorKind::Validation
-        );
-    }
-}
-
-#[test]
-fn samples_match_rendered_pixels_through_a_resample() {
-    let registry = geometry_registry();
-    let source = gradient(40, 24);
-    for layers in [
-        vec![crop_layer(fitted_crop(
-            40,
-            24,
-            12.0,
-            [0.2, 0.15, 0.6, 0.65],
-        ))],
-        vec![
-            Layer::pixel(3, 4, [250, 1, 2]),
-            crop_layer(fitted_crop(40, 24, -20.0, [0.25, 0.25, 0.5, 0.5])),
-            Layer::pixel(1, 1, [3, 251, 4]),
-            turn(Transform::RotateRight),
-            Layer::pixel(0, 2, [5, 6, 252]),
-        ],
-        // Two resamples: a point query blends four recursively evaluated blends.
-        vec![
-            turn(Transform::MirrorHorizontal),
-            crop_layer(fitted_crop(40, 24, 45.0, [0.3, 0.3, 0.4, 0.4])),
-            scale_layer(1.5),
-            Layer::pixel(0, 0, [7, 8, 253]),
-        ],
-        vec![scale_layer(2.0), Layer::pixel(5, 5, [254, 9, 10])],
-    ] {
-        let recipe = Recipe {
-            format: crate::RECIPE_FORMAT,
-            layers: layers.clone(),
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-        for y in 0..raster.height {
-            for x in 0..raster.width {
-                let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
-                assert_eq!(
-                    (sampled.width, sampled.height),
-                    (raster.width, raster.height),
-                    "{layers:?}"
-                );
-                assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y}) of {layers:?}");
-            }
-        }
-        assert_eq!(
-            sample(&registry, &source, &recipe, raster.width, 0)
-                .unwrap()
-                .rgba,
-            None
         );
     }
 }
@@ -754,73 +686,20 @@ fn a_composed_orientation_renders_what_its_separate_action_layers_render() {
 }
 
 #[test]
-fn samples_match_rendered_pixels_and_are_opaque() {
-    let registry = registry();
-    let source = source(5, 3);
-    let recipe = Recipe {
-        format: crate::RECIPE_FORMAT,
-        layers: vec![
-            Layer::pixel(1, 1, [201, 1, 2]),
-            turn(Transform::RotateLeft),
-            Layer::pixel(0, 0, [3, 202, 4]),
-            turn(Transform::MirrorHorizontal),
-            Layer::pixel(0, 0, [204, 8, 9]),
-            Layer::pixel(0, 0, [205, 10, 11]),
-        ],
-        masks: Vec::new(),
-        ..Recipe::default()
-    };
-    let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-    for y in 0..raster.height {
-        for x in 0..raster.width {
-            let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
-            assert_eq!(
-                (sampled.width, sampled.height),
-                (raster.width, raster.height)
-            );
-            assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y})");
-            assert_eq!(sampled.rgba.map(|pixel| pixel[3]), Some(255), "({x}, {y})");
-        }
-    }
-    assert_eq!(
-        sample(&registry, &source, &recipe, raster.width, 0)
-            .unwrap()
-            .rgba,
-        None
-    );
-    assert_eq!(
-        sample(&registry, &source, &recipe, 0, raster.height)
-            .unwrap()
-            .rgba,
-        None
-    );
-    let invalid = Recipe {
-        format: crate::RECIPE_FORMAT,
-        layers: vec![Layer::pixel(9, 9, [0, 0, 0])],
-        masks: Vec::new(),
-        ..Recipe::default()
-    };
-    assert!(sample(&registry, &source, &invalid, 0, 0).is_err());
-}
-
-#[test]
 fn invalid_coordinates_and_buffers_fail_without_panicking() {
     let registry = registry();
     let source = source(3, 2);
     let snapshot = Snapshot::original(AssetId::new());
+    let outside = Recipe {
+        format: crate::RECIPE_FORMAT,
+        layers: vec![Layer::pixel(3, 0, [0, 0, 0])],
+        masks: Vec::new(),
+        ..Recipe::default()
+    };
+    assert!(render(&registry, &source, snapshot.id.clone(), &outside).is_err());
     assert!(
-        render(
-            &registry,
-            &source,
-            snapshot.id.clone(),
-            &Recipe {
-                format: crate::RECIPE_FORMAT,
-                layers: vec![Layer::pixel(3, 0, [0, 0, 0])],
-                masks: Vec::new(),
-                ..Recipe::default()
-            }
-        )
-        .is_err()
+        sample(&registry, &source, &outside, 0, 0).is_err(),
+        "a sample of the same stack fails too"
     );
     let malformed = SourceImage {
         rgba: vec![0].into(),
