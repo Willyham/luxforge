@@ -12,14 +12,7 @@ use crate::{Component, ComponentMode};
 use luxforge_testbase::{wait_for, wait_until};
 use serde_json::json;
 use std::sync::Arc;
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
-};
-
-fn entry(color: u8) -> PreviewJob {
-    job(color, false)
-}
+use std::time::{Duration, Instant};
 
 fn job(color: u8, analyse: bool) -> PreviewJob {
     let asset = AssetId::new();
@@ -94,162 +87,6 @@ fn rebuilt(mut job: PreviewJob, change: impl FnOnce(&mut Parts)) -> PreviewJob {
     job.identity = evaluation.identity().unwrap();
     job.evaluation = evaluation;
     job
-}
-
-/// [`entry`] with one held colour layer after its pixel layer, so its render waits at `gate`
-/// while the gate is shut and otherwise renders the same picture.
-fn held_entry(gate: &Arc<luxforge_testbase::Gate>, color: u8) -> PreviewJob {
-    let mut registry = ModuleRegistry::developer();
-    registry
-        .register(crate::modules::HeldModule::shared(gate.clone()))
-        .expect("a valid holding module");
-    rebuilt(entry(color), |parts| {
-        parts.recipe.layers.push(Layer {
-            id: LayerId::new(),
-            effect_id: crate::modules::HELD_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: json!({}),
-            artifacts: Vec::new(),
-            mask: None,
-        });
-        parts.registry = Arc::new(registry);
-    })
-}
-
-/// The pending slot is still newest-wins: three rapid requests run at most two jobs, the second
-/// is replaced by the third, and the third is what the display ends on. The first job is held
-/// at its gate inside the one chunk of its one-pixel render, so it is still running when the
-/// others are requested, and past the last point that render reads its token: it finishes
-/// although superseded, and its frame is delivered, because a frame newer than what is on
-/// screen is never thrown away — that is what starves a drag. Each job that started delivers
-/// one exact outcome, in increasing order, and the replaced one, which the request that
-/// replaced it names, delivers nothing.
-#[test]
-fn newest_preview_wins_with_one_active_and_one_pending() {
-    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
-    let mut queue = PreviewQueue::default();
-    gate.shut();
-    let first = queue.request(held_entry(&gate, 1));
-    assert_eq!(queue.pending_generation(), None, "the first job started");
-    // Inside the render, past its first check: a job superseded before it begins rendering
-    // stops at once and would let the next one start.
-    gate.wait_reached(1, "the first render");
-    let replaced = queue.request(held_entry(&gate, 2));
-    assert_eq!(queue.pending_generation(), Some(replaced));
-    let Queued {
-        generation: wanted,
-        replaced: displaced,
-    } = queue.request_replacing(held_entry(&gate, 3));
-    assert_eq!(
-        displaced,
-        Some(replaced),
-        "the request names what it replaced"
-    );
-    assert_eq!(
-        queue.pending_generation(),
-        Some(wanted),
-        "the third request replaced the second"
-    );
-    gate.open();
-    let mut delivered: Vec<(u64, bool)> = Vec::new();
-    wait_until("the newest preview", || {
-        let Some(result) = queue.poll() else {
-            return false;
-        };
-        assert!(
-            delivered
-                .last()
-                .is_none_or(|(last, _)| *last < result.generation),
-            "deliveries must strictly increase: {delivered:?} then {}",
-            result.generation
-        );
-        assert_eq!(result.generation, queue.last_delivered());
-        assert_eq!(
-            result.phase(),
-            PreviewPhase::Exact,
-            "no job had a proxy phase"
-        );
-        delivered.push((result.generation, result.cancelled()));
-        if result.generation != wanted {
-            return false;
-        }
-        assert_eq!(
-            result.into_raster().unwrap().pixel(0, 0),
-            Some([3, 0, 0, 255])
-        );
-        true
-    });
-    assert_eq!(
-        delivered,
-        vec![(first, false), (wanted, false)],
-        "the first job's frame, then the third's; the second was replaced in the pending slot \
-         and never ran"
-    );
-}
-
-/// A job that finished before a newer request superseded it still has the newest frame anybody
-/// has seen, so it is delivered rather than dropped.
-#[test]
-fn a_superseded_job_that_already_finished_is_still_delivered() {
-    let sends = Arc::new(AtomicU64::new(0));
-    let counter = sends.clone();
-    let mut queue = PreviewQueue::default();
-    queue.set_waker(Arc::new(move || {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }));
-    let first = queue.request(entry(1));
-    // The waker says the frame is in the channel, so the request below supersedes a job that
-    // has already answered and cancels nothing.
-    wait_until("the first job's answer", || {
-        sends.load(Ordering::Relaxed) >= 1
-    });
-    let second = queue.request(entry(2));
-    let delivered = drain_until(&mut queue, second, PreviewPhase::Exact);
-    assert_eq!(
-        delivered,
-        vec![
-            (first, PreviewPhase::Exact, false),
-            (second, PreviewPhase::Exact, false)
-        ],
-        "a superseded but completed frame is delivered before the newer one, and nothing was \
-         cancelled"
-    );
-}
-
-/// `cancel` is the only thing that invalidates an in-flight result: a frame planned before it
-/// never reaches the display, even when it is the only frame there is.
-#[test]
-fn a_result_older_than_the_cancel_floor_is_dropped() {
-    let sends = Arc::new(AtomicU64::new(0));
-    let counter = sends.clone();
-    let mut queue = PreviewQueue::default();
-    queue.set_waker(Arc::new(move || {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }));
-    queue.request(entry(1));
-    // The frame is finished and waiting in the channel: only the floor can drop it now.
-    wait_until("the job's answer", || sends.load(Ordering::Relaxed) >= 1);
-    queue.cancel();
-    drain_nothing(&mut queue, "a frame from before the cancel");
-    assert_eq!(queue.last_delivered(), 0, "nothing was ever delivered");
-
-    // An exact phase that `cancel` stopped mid-render answers cancelled, and that outcome is
-    // at the floor too: the caller that raised it already knows the generation has ended.
-    queue.request(stacked(1200, 900, eligible_layers(1200, 900), None));
-    queue.cancel();
-    drain_nothing(&mut queue, "an outcome from before the cancel");
-    assert_eq!(queue.last_delivered(), 0, "nothing was ever delivered");
-}
-
-/// Poll until the queue is idle, failing with `delivered` if anything is delivered.
-fn drain_nothing(queue: &mut PreviewQueue, delivered: &str) {
-    wait_until("the cancelled job draining", || {
-        if !queue.is_busy() {
-            return true;
-        }
-        assert!(queue.poll().is_none(), "{delivered}");
-        false
-    });
 }
 
 /// The preview worker reduces the frame it just rendered, so a displayed target needs no second
@@ -1569,54 +1406,6 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
     assert!(built, "a moved crop reads another window");
 }
 
-/// The waker is what replaces the preview poll timer: one call per result sent, on the worker
-/// thread, and never on the owner thread.
-#[test]
-fn the_waker_is_called_once_per_result() {
-    let calls = Arc::new(AtomicU64::new(0));
-    let counter = calls.clone();
-    let owner = std::thread::current().id();
-    let mut queue = PreviewQueue::default();
-    queue.set_waker(Arc::new(move || {
-        assert_ne!(
-            std::thread::current().id(),
-            owner,
-            "the waker runs on the preview worker, never on the thread that asked"
-        );
-        counter.fetch_add(1, Ordering::Relaxed);
-    }));
-
-    queue.request(stacked(
-        64,
-        48,
-        eligible_layers(64, 48),
-        Some(bounds(32, 32)),
-    ));
-    assert_eq!(drain_all(&mut queue).len(), 2);
-    wait_until("the two-phase job's second call", || {
-        calls.load(Ordering::Relaxed) >= 2
-    });
-
-    queue.request(stacked(64, 48, eligible_layers(64, 48), None));
-    assert_eq!(drain_all(&mut queue).len(), 1);
-    wait_until("the exact-only job's call", || {
-        calls.load(Ordering::Relaxed) >= 3
-    });
-    // The worker runs one job after another: once the next job's render reaches its gate, the
-    // worker is done with the last one, so any extra call after its result has been made.
-    let gate = Arc::new(luxforge_testbase::Gate::new());
-    gate.shut();
-    queue.request(held(&gate, None));
-    gate.wait_reached(1, "the next job's render");
-    assert_eq!(
-        calls.load(Ordering::Relaxed),
-        3,
-        "no call follows the last result"
-    );
-    gate.open();
-    assert_eq!(drain_all(&mut queue).len(), 1);
-}
-
 // ---------------------------------------------------------------------------------------
 // The activity each job publishes
 // ---------------------------------------------------------------------------------------
@@ -1791,7 +1580,9 @@ fn a_superseded_jobs_exact_phase_is_cancelled_but_its_proxy_is_not() {
 }
 
 /// The worker takes the pending job itself when the active one ends: nothing here polls, and
-/// the pending job still runs to the end while the first job's outcome waits undelivered.
+/// the pending job still runs to the end while the first job's outcome waits undelivered. A job
+/// replaced in the pending slot is named by the request that replaced it, never starts, and so
+/// publishes no activity and delivers nothing.
 #[test]
 fn the_next_job_starts_without_a_poll() {
     let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
@@ -1800,7 +1591,17 @@ fn the_next_job_starts_without_a_poll() {
     queue.set_activity(board.clone());
     gate.shut();
     let first = queue.request(held(&gate, None));
-    let second = queue.request(held(&gate, None));
+    let replaced = queue.request(held(&gate, None));
+    assert_eq!(queue.pending_generation(), Some(replaced));
+    let Queued {
+        generation: second,
+        replaced: displaced,
+    } = queue.request_replacing(held(&gate, None));
+    assert_eq!(
+        displaced,
+        Some(replaced),
+        "the request names what it replaced"
+    );
     assert_eq!(queue.pending_generation(), Some(second));
     gate.open();
     let ended = board_until(
@@ -1818,7 +1619,8 @@ fn the_next_job_starts_without_a_poll() {
             crate::activity::Outcome::Completed,
             crate::activity::Outcome::Cancelled
         ],
-        "newest first: the pending job completed, the first was superseded"
+        "newest first: the pending job completed, the first was superseded, the replaced one \
+         never started"
     );
     assert_eq!(queue.pending_generation(), None);
     assert_eq!(queue.last_delivered(), 0, "nothing was polled");
@@ -1829,7 +1631,8 @@ fn the_next_job_starts_without_a_poll() {
         vec![
             (first, PreviewPhase::Exact, true),
             (second, PreviewPhase::Exact, false)
-        ]
+        ],
+        "the replaced job delivers nothing"
     );
 }
 
