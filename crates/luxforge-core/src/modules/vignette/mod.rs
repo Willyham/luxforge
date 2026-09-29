@@ -240,25 +240,6 @@ mod tests {
     // ------------------------------------------------------------------------------------------
 
     #[test]
-    fn compile_of_a_zero_amount_payload_is_the_neutral_colour_operation() {
-        let module = VignetteModule::new();
-        let processing = module
-            .compile(
-                VIGNETTE_EFFECT,
-                EFFECT_FORMAT,
-                &json!({"midpoint": 80.0, "roundness": -50.0, "feather": 90.0}),
-                STAGE,
-            )
-            .expect("compiles");
-        match processing {
-            Processing::Color(operation) => {
-                assert!(operation.is_empty(), "amount=0 must compile to no units");
-            }
-            other => panic!("expected Processing::Color, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn compile_of_a_non_zero_amount_payload_produces_exactly_one_unit() {
         let module = VignetteModule::new();
         let processing = module

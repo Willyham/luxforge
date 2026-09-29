@@ -237,9 +237,8 @@ interior population alone.
 Items 2, 3 and 4 are demonstrated, display-independently, by two chapters of `cargo xtask
 editor-acceptance`, both driven through the JSON method table. The Basic and histogram chapter
 checks against the independent f64 reference: whole-raster agreement within the frozen one output
-code for exposure, the nine-field patch and the frozen unit order; `render.sample` byte-identical to
-the rendered raster; `analysis.request/read` on current, historical and drafted targets equal to an
-independent reduction; mixed stacks against a stepwise quantize-then-bilinear reference, around a
+code for exposure, the nine-field patch and the frozen unit order; `analysis.request/read` on
+current, historical and drafted targets equal to an independent reduction; mixed stacks against a stepwise quantize-then-bilinear reference, around a
 point replacement on both sides and under an orientation layer; a historical selection and its
 analysis staying attached to their entry through another client's commit; and one client's cancel
 leaving another's shared job intact. The [field-patch conformance

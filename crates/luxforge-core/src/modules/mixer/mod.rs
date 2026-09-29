@@ -256,14 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn compile_is_neutral_for_the_empty_payload_and_a_unit_otherwise() {
+    fn a_moved_field_compiles_to_the_one_colour_unit() {
         let module = MixerModule::new();
-        let neutral = module.compile(MIXER_EFFECT, 1, &json!({}), STAGE).unwrap();
-        assert_eq!(
-            neutral,
-            Processing::Color(super::super::ColorOperation::neutral())
-        );
-
         let coloured = module
             .compile(MIXER_EFFECT, 1, &json!({"red-hue": 20.0}), STAGE)
             .unwrap();

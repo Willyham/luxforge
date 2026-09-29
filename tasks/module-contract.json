@@ -832,7 +832,7 @@
     {
       "id": "TASK-011",
       "description": "Delete the per-module copies of sample-equals-render, the host-journey re-run, neutral-compiles-to-nothing and compile-refusal checks that the shape-driven conformance suite now proves generically, naming each deleted assertion's keeper.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
