@@ -5,6 +5,14 @@ use crate::state::{Inputs, tools::palette_entries};
 use luxforge_core::{MASK_MODE, POINTER_MODE};
 use serde_json::{Map, Value};
 
+/// The command palette's own state: whether it is open, the query typed and the entry selected.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Palette {
+    pub(crate) open: bool,
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+}
+
 /// One of the two collapsible side panels, toggled from the title bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Panel {
@@ -69,7 +77,7 @@ pub(crate) struct PaletteModel {
 /// The palette for these inputs. Closed, it is empty: only the open palette's field, rows and keys
 /// read it, so a closed palette costs a message nothing.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
-    if !inputs.palette_open {
+    if !inputs.palette.open {
         return PaletteModel::default();
     }
     let applicable: Vec<_> = inputs
@@ -86,7 +94,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
     );
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
-    let entries: Vec<PaletteEntry> = filter(raw, inputs.palette_query)
+    let entries: Vec<PaletteEntry> = filter(raw, &inputs.palette.query)
         .into_iter()
         .map(|(label, detail, action)| PaletteEntry {
             label,
@@ -95,9 +103,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
         })
         .collect();
     PaletteModel {
-        open: inputs.palette_open,
-        query: inputs.palette_query.to_owned(),
-        selected: inputs.palette_selected.min(entries.len().saturating_sub(1)),
+        open: inputs.palette.open,
+        query: inputs.palette.query.clone(),
+        selected: inputs.palette.selected.min(entries.len().saturating_sub(1)),
         entries,
     }
 }

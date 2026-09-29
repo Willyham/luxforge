@@ -89,7 +89,11 @@ impl Masking {
     /// wraps, exactly as the runtime's executor would.
     fn enter_mask_mode(&mut self) {
         self.set_mode(MASK_MODE);
-        assert!(self.editor.mask_mode_active(), "{}", self.editor.status);
+        assert!(
+            self.editor.mask_mode_active(),
+            "{}",
+            self.editor.status.text
+        );
     }
 
     fn set_mode(&mut self, mode: &str) {
@@ -97,8 +101,8 @@ impl Masking {
             .editor
             .update(Message::View(ViewMessage::SetMode(mode.to_owned())));
         // A refused mode change sends no request, so the session is only asked when one was sent.
-        if self.editor.status.starts_with("Apply or Cancel")
-            || self.editor.status.starts_with("Finish or discard")
+        if self.editor.status.text.starts_with("Apply or Cancel")
+            || self.editor.status.text.starts_with("Finish or discard")
         {
             return;
         }
@@ -564,9 +568,9 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
     masking.open_gesture();
     masking.set_mode(POINTER_MODE);
     assert!(
-        masking.editor.status.starts_with("Apply or Cancel"),
+        masking.editor.status.text.starts_with("Apply or Cancel"),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
     assert!(
         masking.editor.mask_shape().is_some(),
@@ -577,9 +581,9 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
         .editor
         .update(Message::History(HistoryMessage::CompareBegin));
     assert!(
-        masking.editor.status.contains("mask gesture"),
+        masking.editor.status.text.contains("mask gesture"),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
     assert!(masking.editor.mask_shape().is_some());
     // Cancel ends it, and then the mode can be left.
@@ -811,7 +815,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
     let draft = masking.editor.session.draft.clone().unwrap_or_else(|| {
         panic!(
             "a maskable action drafts through a mask: {}",
-            masking.editor.status
+            masking.editor.status.text
         )
     });
     assert_eq!(
@@ -833,7 +837,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
     assert!(
         masking.editor.gesture.is_none(),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
     assert_eq!(
         masking.editor.document.history.entries.len(),
@@ -1114,7 +1118,7 @@ fn a_generated_mask_control_copies_the_request_it_sends() {
             &masking.editor.modules,
             action,
             Some(parameter),
-            &masking.editor.fields,
+            &masking.editor.controls.fields,
         )
         .unwrap_or_else(|error| panic!("{action} refused its own field: {error}"));
         masking.editor.mask_panel.last_request = None;
@@ -1573,7 +1577,7 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
         .session
         .draft
         .clone()
-        .unwrap_or_else(|| panic!("the thumb drafts: {}", masking.editor.status));
+        .unwrap_or_else(|| panic!("the thumb drafts: {}", masking.editor.status.text));
     assert_eq!(draft.action, BAND);
     assert_eq!(
         Value::Object(draft.fields.clone()),
@@ -1613,7 +1617,7 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
     assert!(
         masking.editor.gesture.is_none(),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
     assert_eq!(
         masking.editor.document.history.entries.len(),
@@ -1828,6 +1832,7 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
         let stored = &listed.components[0].payload[name];
         let shown = masking
             .editor
+            .controls
             .fields
             .get("mask.set-radial", name)
             .unwrap_or_else(|| panic!("{name} is a field"));
@@ -1879,7 +1884,7 @@ fn the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit()
         masking.editor.mask_shape().is_none(),
         "a gesture opened anyway"
     );
-    assert_eq!(masking.editor.status, reason);
+    assert_eq!(masking.editor.status.text, reason);
     // Setting it back to add clears the refusal, so nothing is permanently blocked.
     masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
         ComponentMode::Add,
@@ -2668,7 +2673,7 @@ fn a_mask_gesture_whose_begin_is_refused_opens_nothing() {
     masking.editor.stand_in = None;
     assert_eq!(task.units(), 0, "no transform is asked for");
     assert!(masking.editor.gesture.is_none());
-    assert_eq!(masking.editor.status, refusal);
+    assert_eq!(masking.editor.status.text, refusal);
     let (session, _) = call(
         &masking.owner(),
         masking.editor.client,
@@ -2682,7 +2687,7 @@ fn a_mask_gesture_whose_begin_is_refused_opens_nothing() {
     assert!(
         masking.editor.mask_shape().is_some(),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
 }
 
@@ -2714,7 +2719,7 @@ fn every_other_start_goes_ahead_with_the_brush_in_hand() {
     assert!(
         masking.editor.slider_gesture().is_some(),
         "the slider gesture opened: {}",
-        masking.editor.status
+        masking.editor.status.text
     );
     assert_eq!(
         masking
@@ -2734,7 +2739,7 @@ fn every_other_start_goes_ahead_with_the_brush_in_hand() {
         y: 0.6,
     }));
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Finish or discard the slider draft before editing a mask"
     );
     assert!(masking.editor.slider_gesture().is_some() && masking.editor.armed_brush());
@@ -2789,9 +2794,10 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
         masking
             .editor
             .status
+            .text
             .contains("Apply or Cancel the mask gesture"),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
     assert_eq!(
         masking.editor.mask_shape().cloned(),
@@ -2848,7 +2854,7 @@ fn race_c_discard_during_a_commit_sends_no_racing_cancel() {
             && !events.iter().any(|event| event == "mask_draft_cancelled"),
         "Discard sent a draft.cancel racing the commit: {events:?}"
     );
-    assert_eq!(masking.editor.status, "Mask committed");
+    assert_eq!(masking.editor.status.text, "Mask committed");
     assert_eq!(masking.listing().masks.len(), 1);
 }
 
@@ -2932,28 +2938,28 @@ fn every_start_answers_to_the_one_refusal() {
         .editor
         .control_moved("set-basic".to_owned(), "exposure".to_owned(), json!(0.2));
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Apply or Cancel the mask gesture before editing a slider"
     );
     let _ = masking
         .editor
         .update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Apply or Cancel the mask gesture before comparing with the original"
     );
     let _ = masking.editor.update(Message::View(ViewMessage::SetMode(
         luxforge_core::POINTER_MODE.to_owned(),
     )));
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Apply or Cancel the new mask gesture before leaving Mask mode"
     );
     let _ = masking
         .editor
         .update(Message::Crop(crate::app::message::crop::CropMessage::Start));
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Apply or Cancel the mask gesture before cropping"
     );
     assert_eq!(
@@ -3098,7 +3104,7 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     );
     assert!(!masking.editor.busy);
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Apply or Cancel the mask gesture before editing a mask"
     );
     assert_eq!(masking.editor.mask_shape().cloned(), before);
@@ -3110,7 +3116,7 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     assert!(
         masking.editor.mask_panel.last_request.is_some(),
         "without a gesture the submit goes out: {}",
-        masking.editor.status
+        masking.editor.status.text
     );
 }
 
@@ -3145,9 +3151,9 @@ fn a_commit_elsewhere_while_the_brush_is_in_hand_conflicts_nothing() {
         "no Changed elsewhere card"
     );
     assert!(
-        !masking.editor.status.starts_with("Changed elsewhere"),
+        !masking.editor.status.text.starts_with("Changed elsewhere"),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
     // The displayed entry moved, so the map a press is placed by is asked for again, under a new
     // identity, and none is used until it answers.
@@ -3277,7 +3283,7 @@ fn the_brush_in_hand_is_put_down_by_done_and_when_its_component_is_gone() {
     assert!(masking.editor.armed_brush());
     masking.draft(DraftMessage::Commit);
     assert!(!masking.editor.armed_brush() && masking.editor.gesture.is_none());
-    assert_eq!(masking.editor.status, "Brush put down");
+    assert_eq!(masking.editor.status.text, "Brush put down");
 }
 
 /// A brush that has painted holds a stroke of its own, so a commit elsewhere during it shows the
@@ -3302,7 +3308,7 @@ fn a_painted_brush_changed_elsewhere_shows_the_notice() {
     agent_commits(&mut masking);
     assert!(masking.editor.gesture_conflicted());
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Changed elsewhere: discard the mask gesture or reapply it"
     );
     assert!(
@@ -3464,7 +3470,7 @@ fn a_mask_gestures_status_line_names_it_and_the_strip_keeps_mask_selected() {
 
     masking.message(MaskMessage::Add(RADIAL.to_owned()));
     let line = "Mask mode · Mask 1 · Radial draft · Apply or Enter commits one entry";
-    assert_eq!(masking.editor.status, line);
+    assert_eq!(masking.editor.status.text, line);
     masking.open_gesture();
     masking.sweep((0.3, 0.3), (0.6, 0.6));
     assert_eq!(
@@ -3481,7 +3487,7 @@ fn a_mask_gestures_status_line_names_it_and_the_strip_keeps_mask_selected() {
     // between strokes the frames are committed strokes, which say what they committed.
     masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
     assert_eq!(
-        masking.editor.status,
+        masking.editor.status.text,
         "Mask mode · Mask 1 · Brush · press to paint · each stroke is one entry"
     );
     masking.open_gesture();
@@ -3876,9 +3882,9 @@ fn a_drag_reorders_with_one_request_and_states_a_refusal() {
     masking.message(MaskMessage::Drag(DragEdit::End));
     assert!(masking.editor.mask_panel.last_request.is_none());
     assert!(
-        masking.editor.status.contains("always add"),
+        masking.editor.status.text.contains("always add"),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
 }
 
@@ -3908,9 +3914,9 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
     );
     assert!(masking.editor.mask_panel.last_request.is_none());
     assert!(
-        masking.editor.status.contains("delete the mask"),
+        masking.editor.status.text.contains("delete the mask"),
         "{}",
-        masking.editor.status
+        masking.editor.status.text
     );
 
     // `X` inverts the selected component.

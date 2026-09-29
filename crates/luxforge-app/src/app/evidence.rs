@@ -515,7 +515,7 @@ impl Editor {
                     } else {
                         EVIDENCE_DEADLINE
                     };
-                    self.started.elapsed() > deadline
+                    self.log.started.elapsed() > deadline
                 });
                 if expired {
                     eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
@@ -552,7 +552,7 @@ impl Editor {
                     || !evidence.sync.current()
                     || self.activity.backend.is_none()
                     || !self.modules_ready
-                    || !self.presets.ready()
+                    || !self.presets.library.ready()
                     || !self.curve_sampling.slot.idle()
                     || !rows_shown
                     || (!proxy_ready && !evidence.allow_unready_capture)
@@ -798,7 +798,8 @@ impl Editor {
                 self.await_step(Settle::Export);
                 let task = self.export_start(file.keep_metadata, Some(dir.join(&file.name)));
                 if !self.export.active() {
-                    return self.fail_step(format!("the export was not started: {}", self.status));
+                    return self
+                        .fail_step(format!("the export was not started: {}", self.status.text));
                 }
                 task
             }
@@ -1273,7 +1274,7 @@ impl Editor {
                 let task = self.mask_message(MaskMessage::Paint(target));
                 self.note_step(json!({"masks": self.workspace.masks.summary()}));
                 if self.armed.is_none() {
-                    let reason = self.status.clone();
+                    let reason = self.status.text.clone();
                     return Task::batch([task, self.fail_step(reason)]);
                 }
                 self.capture_next_frame();
@@ -1508,7 +1509,7 @@ impl Editor {
             return task;
         }
         // The refusal's own reason is the evidence, captured on the frame that is on screen.
-        let reason = self.status.clone();
+        let reason = self.status.text.clone();
         Task::batch([task, self.fail_step(reason)])
     }
 
@@ -1538,7 +1539,7 @@ impl Editor {
                     self.crop_stage(),
                     Some(crate::app::crop::StageView::Rendering { .. })
                 ) {
-                    let reason = format!("the draft could not be prepared: {}", self.status);
+                    let reason = format!("the draft could not be prepared: {}", self.status.text);
                     return Task::batch([task, self.fail_step(reason)]);
                 }
                 return task;
@@ -1768,7 +1769,7 @@ impl Editor {
         if self.slider_gesture().is_none() {
             return self.fail_step(format!(
                 "the first press opened no gesture: {}",
-                self.status
+                self.status.text
             ));
         }
         tasks.push(self.update(Message::Control(ControlMessage::Released {
@@ -1823,7 +1824,7 @@ impl Editor {
         if waiting
             && self.slider_gesture().is_none()
             && !self.busy
-            && self.pending_reset.is_none()
+            && self.controls.pending_reset.is_none()
             && !self.presentation.queue.is_busy()
             && self.presentation.held_by_proxy.is_none()
             && self.presentation.presented_generation == self.presentation.preview_generation
@@ -1986,7 +1987,8 @@ impl Editor {
                     value,
                 }));
                 if !self.busy {
-                    return self.fail_step(format!("the control did not submit: {}", self.status));
+                    return self
+                        .fail_step(format!("the control did not submit: {}", self.status.text));
                 }
                 task
             }
@@ -1998,7 +2000,7 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         let key = (step.action.clone(), step.parameter.clone());
-        let current_open = self.controls_ui.color(&key).is_some_and(|local| local.open);
+        let current_open = self.controls.ui.color(&key).is_some_and(|local| local.open);
         let mut tasks = Vec::new();
         if current_open != step.open.unwrap_or(true) {
             tasks.push(self.update(Message::Control(ControlMessage::TogglePicker {
@@ -2063,8 +2065,10 @@ impl Editor {
                     event: CurveEditorEvent::Add(point),
                 }));
                 if !self.busy {
-                    return self
-                        .fail_step(format!("the curve point was not added: {}", self.status));
+                    return self.fail_step(format!(
+                        "the curve point was not added: {}",
+                        self.status.text
+                    ));
                 }
                 task
             }
@@ -2076,8 +2080,10 @@ impl Editor {
                     event: CurveEditorEvent::Remove(index),
                 }));
                 if !self.busy {
-                    return self
-                        .fail_step(format!("the curve point was not removed: {}", self.status));
+                    return self.fail_step(format!(
+                        "the curve point was not removed: {}",
+                        self.status.text
+                    ));
                 }
                 task
             }
@@ -2112,7 +2118,7 @@ impl Editor {
         {
             return self.fail_step(format!(
                 "the {action} draft could not be opened: {}",
-                self.status
+                self.status.text
             ));
         }
         match finish {
@@ -2177,7 +2183,8 @@ impl Editor {
         }
         let key = crate::state::tools::group_key(&step.module, &step.path);
         let expanded = self
-            .controls_ui
+            .controls
+            .ui
             .group_expanded
             .get(&key)
             .copied()
@@ -2337,7 +2344,7 @@ impl Editor {
             parameter: Some(step.parameter),
         })));
         if !self.busy {
-            return self.fail_step(format!("the field was not submitted: {}", self.status));
+            return self.fail_step(format!("the field was not submitted: {}", self.status.text));
         }
         Task::batch(tasks)
     }
@@ -2366,7 +2373,7 @@ impl Editor {
         self.begin_request();
         let task = self.update(message);
         if !self.busy {
-            return self.fail_step(format!("the reset did not run: {}", self.status));
+            return self.fail_step(format!("the reset did not run: {}", self.status.text));
         }
         task
     }
@@ -2820,7 +2827,7 @@ impl Editor {
             preset,
         }));
         if !self.busy {
-            return self.fail_step(format!("the preset was not applied: {}", self.status));
+            return self.fail_step(format!("the preset was not applied: {}", self.status.text));
         }
         task
     }
@@ -2838,7 +2845,7 @@ impl Editor {
             return self.fail_step(format!("no create-form group is labelled {unknown}"));
         }
         let mut tasks = Vec::new();
-        if !self.preset_form.open {
+        if !self.presets.form.open {
             tasks.push(self.update(Message::Preset(PresetMessage::ToggleForm)));
         }
         tasks.push(self.update(Message::Preset(PresetMessage::Name(step.name))));
@@ -2914,7 +2921,7 @@ impl Editor {
                 if let Some(presets) = answer.presets {
                     self.adopt_presets(presets, answer.sequence);
                 }
-                self.status = format!("{} answered", answer.method);
+                self.status.text = format!("{} answered", answer.method);
                 self.note_step(json!({"result":answer.result}));
                 if let Some(read) = self.capability_host_answered() {
                     return read;
@@ -2922,7 +2929,7 @@ impl Editor {
             }
             Err(error) => {
                 self.refuse_step(&error);
-                self.status = error;
+                self.status.text = error;
                 if let Some(evidence) = &mut self.evidence {
                     evidence.capability_wait = None;
                 }
@@ -3043,7 +3050,7 @@ impl Editor {
     /// refused step is visible in the evidence rather than missing from it.
     pub(crate) fn fail_step(&mut self, reason: impl Into<String>) -> Task<Message> {
         let reason = reason.into();
-        self.status = reason.clone();
+        self.status.text = reason.clone();
         self.event("script_step_failed", json!({"reason":reason}));
         self.note_step(json!({"status":"failed","reason":reason}));
         if let Some(evidence) = &mut self.evidence {
@@ -3060,9 +3067,9 @@ impl Editor {
         let frames = std::mem::take(&mut evidence.frames);
         let script = std::mem::take(&mut evidence.steps);
         let had_errors = evidence.had_errors;
-        let result = json!({"run_id":self.run_id,"status":"captured","had_input_errors":had_errors,"frames":frames,"script":script,"elapsed_ms":self.started.elapsed().as_secs_f64()*1000.,"build_version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH});
+        let result = json!({"run_id":self.log.run_id,"status":"captured","had_input_errors":had_errors,"frames":frames,"script":script,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"build_version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH});
         let state = self.snapshot();
-        let log = self.diagnostics.take();
+        let log = self.log.diagnostics.take();
         self.live_server.take();
         self.owner.disconnect(self.client);
         self.owner.stop();
@@ -3620,7 +3627,10 @@ mod tests {
         let _ = editor.next_step();
         // Nothing is sent yet: the step only queued its values for the timer, so the field still
         // shows the neutral default rather than any of them.
-        assert_eq!(editor.fields.get("set-basic", "exposure"), Some("0.00"));
+        assert_eq!(
+            editor.controls.fields.get("set-basic", "exposure"),
+            Some("0.00")
+        );
         assert_eq!(
             evidence(&editor)
                 .paced_slider
@@ -3632,7 +3642,7 @@ mod tests {
 
         let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
         assert_eq!(
-            editor.fields.get("set-basic", "exposure"),
+            editor.controls.fields.get("set-basic", "exposure"),
             Some("0.10"),
             "one tick sends the first value"
         );
@@ -3649,7 +3659,10 @@ mod tests {
         );
 
         let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
-        assert_eq!(editor.fields.get("set-basic", "exposure"), Some("0.20"));
+        assert_eq!(
+            editor.controls.fields.get("set-basic", "exposure"),
+            Some("0.20")
+        );
         assert_eq!(
             evidence(&editor)
                 .paced_slider
@@ -3660,7 +3673,7 @@ mod tests {
 
         let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
         assert_eq!(
-            editor.fields.get("set-basic", "exposure"),
+            editor.controls.fields.get("set-basic", "exposure"),
             Some("0.30"),
             "the last tick sends the last value"
         );
@@ -3692,9 +3705,9 @@ mod tests {
         assert!(evidence(&editor).had_errors);
         assert!(evidence(&editor).capture_pending);
         assert!(
-            editor.status.contains("declares no pick"),
+            editor.status.text.contains("declares no pick"),
             "{}",
-            editor.status
+            editor.status.text
         );
         crate::app::testing::finish(editor, catalog);
     }
@@ -4001,7 +4014,7 @@ mod tests {
         let (mut editor, catalog, _, _) = scripted(r#"[{"preview":"current"}]"#);
         let _ = editor.next_step();
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Preview));
-        assert_eq!(editor.status, "Returning to current state…");
+        assert_eq!(editor.status.text, "Returning to current state…");
         finish(editor, catalog);
     }
 
@@ -4009,8 +4022,8 @@ mod tests {
     fn a_scripted_palette_step_opens_and_queries_or_runs_the_first_match() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"palette":{"query":"crop"}}]"#);
         let _ = editor.next_step();
-        assert!(editor.palette_open);
-        assert_eq!(editor.palette_query, "crop");
+        assert!(editor.palette.open);
+        assert_eq!(editor.palette.query, "crop");
         assert!(!editor.workspace.palette.entries.is_empty());
         assert!(evidence(&editor).capture_pending);
         finish(editor, catalog);
@@ -4019,8 +4032,8 @@ mod tests {
         let (mut editor, catalog, _, _) = scripted(r#"[{"palette":{"run":"reset crop"}}]"#);
         let requested = editor.activity.requested;
         let _ = editor.next_step();
-        assert!(!editor.palette_open, "running an entry closes the palette");
-        assert!(editor.busy, "{}", editor.status);
+        assert!(!editor.palette.open, "running an entry closes the palette");
+        assert!(editor.busy, "{}", editor.status.text);
         assert!(
             editor.activity.requested > requested,
             "a mutation is tracked as evidence tracks any other open request"
@@ -4088,7 +4101,7 @@ mod tests {
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["status"], json!("sent"));
         assert_eq!(record["result"], json!({"presets":[]}));
-        assert_eq!(editor.presets.presets, Some(listing));
+        assert_eq!(editor.presets.library.presets, Some(listing));
         finish(editor, catalog);
     }
 
@@ -4129,7 +4142,7 @@ mod tests {
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["status"], json!("sent"), "{record}");
         assert_eq!(record["preset_id"], json!(b.id.as_str()));
-        assert!(editor.busy, "{}", editor.status);
+        assert!(editor.busy, "{}", editor.status.text);
         assert_eq!(editor.activity.requested, requested + 1);
         finish(editor, catalog);
     }
@@ -4147,27 +4160,28 @@ mod tests {
         // Filled and left open: the frame shows the form.
         let _ = editor.next_step();
         assert!(evidence(&editor).capture_pending);
-        assert!(editor.preset_form.open);
-        assert_eq!(editor.preset_form.name, "Tone only");
+        assert!(editor.presets.form.open);
+        assert_eq!(editor.presets.form.name, "Tone only");
         let checked: Vec<_> = editor
-            .preset_form
+            .presets
+            .form
             .checked
             .iter()
             .filter(|(_, on)| **on)
             .map(|(label, _)| label.as_str())
             .collect();
         assert_eq!(checked, ["Basic \u{00b7} Tone"]);
-        assert!(!editor.presets.pending);
+        assert!(!editor.presets.library.pending);
         // Submitted: Create runs and the step waits for the library's answer.
         let _ = editor.next_step();
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
-        assert!(editor.presets.pending, "{}", editor.status);
+        assert!(editor.presets.library.pending, "{}", editor.status.text);
         // A label no group has fails the step before anything is sent.
-        editor.presets.pending = false;
+        editor.presets.library.pending = false;
         let _ = editor.next_step();
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["status"], json!("failed"));
-        assert!(!editor.presets.pending);
+        assert!(!editor.presets.library.pending);
         finish(editor, catalog);
 
         let (mut editor, catalog) = with_library(
@@ -4176,13 +4190,16 @@ mod tests {
         );
         let _ = editor.next_step();
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
-        assert!(editor.presets.pending && editor.view_state.menu.is_none());
+        assert!(editor.presets.library.pending && editor.view_state.menu.is_none());
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["preset_id"], json!(warm.id.as_str()));
-        editor.presets.pending = false;
+        editor.presets.library.pending = false;
         let _ = editor.next_step();
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
-        assert!(editor.presets.pending, "the import task was started");
+        assert!(
+            editor.presets.library.pending,
+            "the import task was started"
+        );
         // Its refusal is recorded on the step and captured.
         let _ = editor.update(Message::Preset(PresetMessage::Imported(Err(
             "read-error: cannot read missing.xmp".into(),

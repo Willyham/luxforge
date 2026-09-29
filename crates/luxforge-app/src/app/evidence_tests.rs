@@ -66,9 +66,9 @@ fn failed_discovery_is_reported_and_never_blocks_evidence() {
     assert!(editor.modules_ready);
     assert!(editor.modules.is_empty());
     assert!(
-        editor.status.contains("Tool discovery failed"),
+        editor.status.text.contains("Tool discovery failed"),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -244,7 +244,7 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     let photo_version = editor.presentation.presenter.photo_version();
     editor.session.workspace.clip_highlights = true;
     let generation = editor.presentation.presented_generation;
-    editor.overlay_request = Some(overlay::OverlayRequest {
+    editor.overlays.request = Some(overlay::OverlayRequest {
         generation,
         cells_w: 1,
         cells_h: 1,

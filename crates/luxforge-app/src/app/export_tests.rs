@@ -34,7 +34,7 @@ fn chosen(editor: &mut Editor, name: &str) {
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
         choice,
     ))))));
-    assert_eq!(editor.status, format!("Exporting {name}\u{2026}"));
+    assert_eq!(editor.status.text, format!("Exporting {name}\u{2026}"));
     assert!(!editor.view_state.picker_open);
 }
 
@@ -44,7 +44,7 @@ fn with_no_photograph_export_is_disabled_and_refused() {
     assert!(!editor.workspace.title.can_export);
     start(&mut editor, false);
     assert!(editor.export.run.is_none());
-    assert_eq!(editor.status, "Open a photograph to export it");
+    assert_eq!(editor.status.text, "Open a photograph to export it");
     assert!(editor.export_poll_subscription().is_none());
     finish(editor, catalog);
 }
@@ -71,7 +71,7 @@ fn export_refusal_and_the_menu_agree() {
         editor.gesture_refusal(gesture::Starting::Export)
     );
     start(&mut editor, false);
-    assert_eq!(editor.status, crate::state::IN_FLIGHT);
+    assert_eq!(editor.status.text, crate::state::IN_FLIGHT);
     assert!(editor.export.run.is_none(), "nothing starts");
 
     editor.busy = false;
@@ -80,7 +80,7 @@ fn export_refusal_and_the_menu_agree() {
     assert!(editor.slider_gesture().is_some());
     assert!(agree(&mut editor, "a draft is open"));
     start(&mut editor, false);
-    assert!(editor.export.run.is_some(), "{}", editor.status);
+    assert!(editor.export.run.is_some(), "{}", editor.status.text);
     finish(editor, catalog);
 }
 
@@ -107,7 +107,7 @@ fn the_button_opens_its_menu_and_an_item_starts_one_export_at_a_time() {
 
     // A second press while the first runs is refused and changes nothing.
     start(&mut editor, false);
-    assert_eq!(editor.status, "An export is already running");
+    assert_eq!(editor.status.text, "An export is already running");
     assert_eq!(
         editor.export.run.as_ref().map(|run| run.keep_metadata),
         Some(true)
@@ -115,7 +115,7 @@ fn the_button_opens_its_menu_and_an_item_starts_one_export_at_a_time() {
 
     // Cancelling the dialog ends it.
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(None))));
-    assert_eq!(editor.status, "Export cancelled");
+    assert_eq!(editor.status.text, "Export cancelled");
     assert!(editor.export.run.is_none());
     assert!(!editor.view_state.picker_open);
     assert!(editor.workspace.title.can_export);
@@ -154,7 +154,7 @@ fn a_queued_job_is_read_on_a_timer_until_it_ends_and_says_what_was_written() {
             "result":{"path":"/tmp/photo-edited.jpg","bytes":8_412_345,"width":6000,"height":4000,"metadata":[]}})),
     }));
     assert_eq!(
-        editor.status,
+        editor.status.text,
         exported_text("photo-edited.jpg", 6000, 4000, 8_412_345)
     );
     assert!(editor.export.run.is_none());
@@ -178,7 +178,7 @@ fn a_destination_that_exists_is_refused_in_the_status_bar() {
         data: None,
         job_id: None,
     }))));
-    assert_eq!(editor.status, refused_text("photo-edited.jpg"));
+    assert_eq!(editor.status.text, refused_text("photo-edited.jpg"));
     assert!(editor.export.run.is_none());
 
     start(&mut editor, false);
@@ -190,7 +190,7 @@ fn a_destination_that_exists_is_refused_in_the_status_bar() {
         job_id: None,
     }))));
     assert_eq!(
-        editor.status,
+        editor.status.text,
         "Export failed: the destination must end in .jpg or .jpeg"
     );
     finish(editor, catalog);
@@ -259,7 +259,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
 
     let export_once = |editor: &mut Editor| {
         let _ = editor.export_start(true, Some(destination.clone()));
-        assert!(editor.export.active(), "{}", editor.status);
+        assert!(editor.export.active(), "{}", editor.status.text);
         let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
         assert_eq!(plan["entry_id"], json!(entry));
         let choice = ExportChoice {
@@ -300,11 +300,15 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
         decoded.width(),
         decoded.height()
     );
-    assert!(editor.status.starts_with(&expected), "{}", editor.status);
+    assert!(
+        editor.status.text.starts_with(&expected),
+        "{}",
+        editor.status.text
+    );
 
     // The same file again is refused, and the file is exactly as it was.
     export_once(&mut editor);
-    assert_eq!(editor.status, refused_text("photo-edited.jpg"));
+    assert_eq!(editor.status.text, refused_text("photo-edited.jpg"));
     assert_eq!(std::fs::read(&destination).unwrap(), written);
     assert!(editor.export.run.is_none());
 

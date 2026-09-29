@@ -32,20 +32,20 @@ impl Editor {
                             .then(|| "Release Compare before opening Components".to_owned())
                     })
                 {
-                    self.status = reason;
+                    self.status.text = reason;
                     return Task::none();
                 }
                 // The page is this desktop's own view state, so opening, turning and closing the
                 // board is local and immediate: nothing is sent to the owner.
-                self.palette_open = false;
+                self.palette.open = false;
                 self.view_state.menu = None;
                 self.view_state.gallery = page;
             }
             ViewMessage::CopyStatus => {
                 // While the status still reads an import's summary, Copy copies its whole report.
-                let text = match &self.status_copy {
-                    Some((line, detail)) if *line == self.status => detail.clone(),
-                    _ => self.status.clone(),
+                let text = match &self.status.copy {
+                    Some((line, detail)) if *line == self.status.text => detail.clone(),
+                    _ => self.status.text.clone(),
                 };
                 return iced::clipboard::write(text);
             }
@@ -54,9 +54,9 @@ impl Editor {
                 match result {
                     Ok(session) => {
                         self.adopt(session);
-                        self.status = "View updated".into();
+                        self.status.text = "View updated".into();
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.status.text = error,
                 }
                 self.settle_step(Settle::Session);
             }
@@ -68,10 +68,10 @@ impl Editor {
                         // whichever route entered it: the strip, its letter, the palette or a
                         // script all arrive here through the same `workspace.set`.
                         if let Some(hint) = self.canvas_mode_hint() {
-                            self.status = hint;
+                            self.status.text = hint;
                         }
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.status.text = error,
                 }
                 self.settle_step(Settle::Session);
             }
@@ -79,7 +79,7 @@ impl Editor {
                 self.view_state.pan.answered();
                 match result {
                     Ok(session) => self.adopt(session),
-                    Err(error) => self.status = error,
+                    Err(error) => self.status.text = error,
                 }
                 if let Some(&(x, y)) = self.view_state.pan.pending() {
                     return self.pan(x, y);
@@ -123,7 +123,7 @@ impl Editor {
                 if mode != self.session.workspace.mode
                     && let Some(reason) = self.gesture_refusal(Starting::Mode)
                 {
-                    self.status = reason;
+                    self.status.text = reason;
                     return Task::none();
                 }
                 // A module pick entered while the sections are bound to a mask stays bound to it,
@@ -172,7 +172,7 @@ impl Editor {
             }
             ViewMessage::ApplyZoom => {
                 let Ok(value) = self.view_state.zoom.parse::<f32>() else {
-                    self.status = "Zoom must be Fit or a percentage from 10 to 1600".into();
+                    self.status.text = "Zoom must be Fit or a percentage from 10 to 1600".into();
                     return Task::none();
                 };
                 self.view_state.zoom_editing = false;
@@ -224,7 +224,7 @@ impl Editor {
             return Task::none();
         }
         self.busy = true;
-        self.status = format!("Running {method}…");
+        self.status.text = format!("Running {method}…");
         session_task(self.owner.clone(), self.client, method, params)
     }
 

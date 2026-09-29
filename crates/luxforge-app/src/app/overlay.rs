@@ -129,6 +129,16 @@ fn derive((raster, request): OverlayJob) -> OverlayResult {
     }
 }
 
+/// The clipping overlays' own state: the worker, and the request the overlay on the presenter was
+/// derived for, so an unchanged view re-derives nothing and a stale overlay is never drawn over a
+/// newer photograph.
+#[derive(Default)]
+pub(crate) struct Overlays {
+    /// One active and one replaceable pending overlay derivation, off the UI thread.
+    pub(crate) queue: OverlayQueue,
+    pub(crate) request: Option<OverlayRequest>,
+}
+
 /// The overlay worker. Its generations count requests, not previews: they are what decides which
 /// result is still wanted, and only the newest request's is.
 pub(crate) struct OverlayQueue {
@@ -209,14 +219,14 @@ impl Editor {
     /// never a second histogram.
     pub(super) fn refresh_overlay(&mut self) {
         let wanted = self.overlay_wanted();
-        if wanted == self.overlay_request {
+        if wanted == self.overlays.request {
             return;
         }
-        let previous = self.overlay_request.take();
+        let previous = self.overlays.request.take();
         let source = self.overlay_source().map(|(_, raster, _)| raster.clone());
         let Some((request, raster)) = wanted.clone().zip(source) else {
             // Both overlays are off, or there is nothing to derive one from.
-            self.overlay_queue.cancel();
+            self.overlays.queue.cancel();
             self.presentation.presenter.clear_clipping();
             return;
         };
@@ -225,8 +235,8 @@ impl Editor {
         if previous.map(|request| request.generation) != Some(request.generation) {
             self.presentation.presenter.clear_clipping();
         }
-        self.overlay_request = wanted;
-        self.overlay_queue.request(raster, request);
+        self.overlays.request = wanted;
+        self.overlays.queue.request(raster, request);
     }
 
     /// One derived overlay: lay its bounded buffer over the photograph, or report why there is none.
@@ -234,7 +244,7 @@ impl Editor {
     /// clipped.
     pub(super) fn overlay_ready(&mut self, done: OverlayResult) {
         let generation = done.request.generation;
-        if self.overlay_request.as_ref() != Some(&done.request) {
+        if self.overlays.request.as_ref() != Some(&done.request) {
             // The view has asked for another overlay since, or none at all: this one describes a
             // grid, a flag or a frame that is no longer on screen.
             return;
@@ -264,14 +274,14 @@ impl Editor {
                         json!({"generation":generation,"cells":[width,height],"approximate":approximate}),
                     );
                 } else {
-                    self.status = "Could not show the clipping overlay".into();
-                    failure = Some(self.status.clone());
+                    self.status.text = "Could not show the clipping overlay".into();
+                    failure = Some(self.status.text.clone());
                 }
             }
             Err(error) => {
                 self.presentation.presenter.clear_clipping();
-                self.status = format!("Clipping overlay unavailable: {error}");
-                failure = Some(self.status.clone());
+                self.status.text = format!("Clipping overlay unavailable: {error}");
+                failure = Some(self.status.text.clone());
                 self.event(
                     "clipping_overlay_failed",
                     json!({"generation":generation,"error_code":error.kind.code(),"approximate":approximate}),
@@ -404,7 +414,7 @@ impl Editor {
     /// The clipping overlay to draw over the photograph: the one on the presenter, when it was
     /// derived for the request in force and belongs to the frame that is on screen.
     pub(crate) fn overlay_surface(&self) -> Option<&luxforge_ui::Frame> {
-        self.presentation.clipping(self.overlay_request.as_ref())
+        self.presentation.clipping(self.overlays.request.as_ref())
     }
 }
 

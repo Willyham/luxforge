@@ -107,7 +107,7 @@ impl Editor {
                 }
                 // An open is what happened even when it is the photograph already on screen.
                 if let Some(state) = &self.document.state {
-                    self.happened = Some(state::status::Happened::opened(state));
+                    self.status.happened = Some(state::status::Happened::opened(state));
                 }
                 return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
             }
@@ -146,7 +146,7 @@ impl Editor {
                         }
                     }
                     Err(error) => {
-                        self.status = error.clone();
+                        self.status.text = error.clone();
                         // The command may have landed before its read-back failed, and the owner
                         // wakes no client for its own changes: read the log once to find out.
                         self.resync();
@@ -188,7 +188,7 @@ impl Editor {
                 }
                 Err(error) => {
                     self.document.recipe_failed = true;
-                    self.status = format!("Recipe unavailable: {error}");
+                    self.status.text = format!("Recipe unavailable: {error}");
                 }
             },
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
@@ -230,14 +230,14 @@ impl Editor {
                             return self.reload_capabilities();
                         }
                     }
-                    Err(error) => self.status = format!("Live refresh failed: {error}"),
+                    Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }
             }
             SyncMessage::ModulesLoaded(result) => {
                 self.modules_ready = true;
                 match result {
                     Ok(modules) => {
-                        self.fields = Fields::seeded(&modules);
+                        self.controls.fields = Fields::seeded(&modules);
                         self.event("modules_loaded", module_summary(&modules));
                         self.modules = modules;
                         // A photograph that opened before discovery answered already has its
@@ -245,8 +245,8 @@ impl Editor {
                         self.seed_values();
                     }
                     Err(error) => {
-                        self.status = format!("Tool discovery failed: {error}");
-                        self.event("modules_failed", json!({ "message": self.status }));
+                        self.status.text = format!("Tool discovery failed: {error}");
+                        self.event("modules_failed", json!({ "message": self.status.text }));
                     }
                 }
             }
@@ -284,7 +284,7 @@ impl Editor {
         // the image for this newer open request.
         self.presentation.preview_generation = self.cancel_preview_queue();
         self.busy = true;
-        self.status = "Importing photograph…".into();
+        self.status.text = "Importing photograph…".into();
         let file = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -406,7 +406,7 @@ impl Editor {
         if self.superseded(&refresh) {
             return;
         }
-        self.controls_ui.clear_curve_samples();
+        self.controls.ui.clear_curve_samples();
         self.curve_sampling.requested_source.clear();
         // What happened is read against the state and the history rows held before this one: a
         // current entry the rows already held is a redo rather than a new entry.
@@ -420,13 +420,13 @@ impl Editor {
             state::status::Happened::between(self.document.state.as_ref(), &refresh.state, known);
         // A composite that skipped settings says so beside what it did, and one that applied
         // nothing at all says that, since no entry moved to say anything else.
-        self.skipped = (!refresh.skipped.is_empty()).then(|| {
+        self.status.skipped = (!refresh.skipped.is_empty()).then(|| {
             state::status::skipped(refresh.skipped.len(), refresh.state.asset.source.tag())
         });
         if let Some(happened) = happened {
-            self.happened = Some(happened);
-        } else if self.skipped.is_some() {
-            self.happened = Some(state::status::Happened::NothingApplied);
+            self.status.happened = Some(happened);
+        } else if self.status.skipped.is_some() {
+            self.status.happened = Some(state::status::Happened::NothingApplied);
         }
         if let Some(request) = refresh.request {
             self.read_back(request);
@@ -485,7 +485,7 @@ impl Editor {
         self.presentation
             .expect_entry(refresh.job.evaluation.entry());
         self.presentation.preview_generation = self.request_preview(refresh.job);
-        self.status = "Rendering selected history state…".into();
+        self.status.text = "Rendering selected history state…".into();
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
         // or historical value of the module's one layer. This reads the values already fetched with
         // the recipe: no extra request, no render.
@@ -527,10 +527,12 @@ impl Editor {
             for action in &module.actions {
                 for parameter in &action.parameters {
                     let key = (action.id.clone(), parameter.name.clone());
-                    if self.fields.get(&key.0, &key.1).is_none() {
+                    if self.controls.fields.get(&key.0, &key.1).is_none() {
                         continue;
                     }
-                    if self.editing.as_ref() == Some(&key) || self.dragging.as_ref() == Some(&key) {
+                    if self.controls.editing.as_ref() == Some(&key)
+                        || self.controls.dragging.as_ref() == Some(&key)
+                    {
                         continue;
                     }
                     let reported = values
@@ -538,9 +540,10 @@ impl Editor {
                         .and_then(|value| fields::value_text(parameter, value).ok());
 
                     match reported {
-                        Some(text) => self.fields.set(&key.0, &key.1, text),
+                        Some(text) => self.controls.fields.set(&key.0, &key.1, text),
                         None if action.patch => {
-                            self.fields
+                            self.controls
+                                .fields
                                 .set(&key.0, &key.1, fields::seed_text(parameter));
                         }
                         None => {}
@@ -564,7 +567,7 @@ impl Editor {
         let method = method.into();
         let asset = state.asset.id.clone();
         self.busy = true;
-        self.status = format!("Running {method}…");
+        self.status.text = format!("Running {method}…");
         let proxy = self.proxy_bounds();
         state_task(
             self.owner.clone(),

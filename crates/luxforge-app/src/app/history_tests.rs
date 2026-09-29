@@ -70,12 +70,15 @@ fn compare_is_refused_while_a_crop_draft_is_open() {
     assert!(
         editor.document.compare_return.is_none(),
         "no compare hold was taken: {}",
-        editor.status
+        editor.status.text
     );
     assert!(
-        editor.status.contains("Apply or Cancel the crop draft"),
+        editor
+            .status
+            .text
+            .contains("Apply or Cancel the crop draft"),
         "{}",
-        editor.status
+        editor.status.text
     );
     assert!(editor.crop().is_some(), "the draft is untouched");
     assert_eq!(editor.session.preview.selection, selection);
@@ -105,9 +108,9 @@ fn selecting_the_current_entry_returns_to_current_instead_of_previewing() {
     let _ = editor.update(Message::History(HistoryMessage::Select(entry_id)));
     assert!(editor.busy);
     assert!(
-        editor.status.starts_with("Returning to current"),
+        editor.status.text.starts_with("Returning to current"),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -207,11 +210,11 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
         if name == "restore" {
             editor.session.preview.selection = HistorySelection::Entry(entry.clone());
         }
-        editor.status.clear();
+        editor.status.text.clear();
         assert!(!editor.busy, "{name}: nothing in flight before it");
         let _ = editor.update(Message::History(message));
         assert!(!editor.busy, "{name}: nothing was sent");
-        assert_eq!(editor.status, reason, "{name}");
+        assert_eq!(editor.status.text, reason, "{name}");
         assert_eq!(
             editor.gesture.clone().map(|gesture| format!("{gesture:?}")),
             held,
@@ -246,7 +249,7 @@ fn history_navigation_is_refused_while_a_slider_draft_is_open() {
     assert!(
         editor.busy,
         "with no draft Undo goes out: {}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -265,10 +268,10 @@ fn history_navigation_is_refused_while_a_request_is_in_flight() {
         HistoryMessage::Restore,
     ] {
         editor.session.preview.selection = HistorySelection::Entry(original.clone());
-        editor.status.clear();
+        editor.status.text.clear();
         let task = editor.update(Message::History(message.clone()));
         assert_eq!(task.units(), 0, "{message:?}: nothing is sent");
-        assert_eq!(editor.status, crate::state::IN_FLIGHT, "{message:?}");
+        assert_eq!(editor.status.text, crate::state::IN_FLIGHT, "{message:?}");
     }
     assert_eq!(editor.sync.sequence, sequence);
 
@@ -277,7 +280,7 @@ fn history_navigation_is_refused_while_a_request_is_in_flight() {
     assert!(
         editor.busy,
         "Restore runs from the previewed entry: {}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -300,7 +303,7 @@ fn history_navigation_is_refused_while_a_crop_draft_is_open() {
     assert!(
         editor.busy,
         "with no draft Redo goes out: {}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }

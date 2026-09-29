@@ -746,20 +746,20 @@ fn zooming_and_panning_ask_for_no_preview_and_no_analysis() {
         editor.presentation.analysis, before.2,
         "the report is untouched"
     );
-    assert!(editor.overlay_request.is_none(), "nothing to derive");
+    assert!(editor.overlays.request.is_none(), "nothing to derive");
 
     // With an overlay on, the same view changes re-derive only the bounded overlay, from the
     // retained raster: still no preview, no request and no second reduction.
     editor.session.workspace.clip_shadows = true;
     editor.session.preview.view.zoom = Zoom::Fit;
     let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
-    let fitted = editor.overlay_request.clone().expect("a fitted overlay");
+    let fitted = editor.overlays.request.clone().expect("a fitted overlay");
     assert!(fitted.shadows && !fitted.highlights);
     // The photograph is 2x2 and drawn far larger than itself, so the grid is the source.
     assert_eq!((fitted.cells_w, fitted.cells_h), (2, 2));
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.update(Message::View(ViewMessage::ApplyZoom));
-    let hundred = editor.overlay_request.clone().expect("a 100% overlay");
+    let hundred = editor.overlays.request.clone().expect("a 100% overlay");
     assert_eq!(
         (hundred.cells_w, hundred.cells_h),
         (2, 2),
@@ -775,9 +775,12 @@ fn zooming_and_panning_ask_for_no_preview_and_no_analysis() {
         "the histogram is not reduced again"
     );
     // An unchanged view derives nothing a second time.
-    let repeated = editor.overlay_request.clone();
+    let repeated = editor.overlays.request.clone();
     let _ = editor.update(Message::View(ViewMessage::Panned(10.0, 10.0)));
-    assert_eq!(editor.overlay_request, repeated, "a pan re-derives nothing");
+    assert_eq!(
+        editor.overlays.request, repeated,
+        "a pan re-derives nothing"
+    );
     finish(editor, catalog);
 }
 

@@ -100,7 +100,7 @@ impl Library {
                 .gesture_refusal(crate::app::gesture::Starting::Action),
             None,
             "{}",
-            library.editor.status
+            library.editor.status.text
         );
         library
     }
@@ -146,7 +146,10 @@ impl Library {
             .update(Message::Preset(PresetMessage::ImportPicked(Some(
                 path.clone(),
             ))));
-        assert!(self.editor.presets.pending, "the import task was started");
+        assert!(
+            self.editor.presets.library.pending,
+            "the import task was started"
+        );
         let result = tasks::preset_import_now(&self.owner(), self.editor.client, &path);
         let _ = self.editor.update(Message::Preset(PresetMessage::Imported(
             result.clone().map(Box::new),
@@ -209,6 +212,7 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
     let settings = library
         .editor
         .presets
+        .library
         .find(&row.id)
         .expect("the listed preset")
         .settings
@@ -261,7 +265,7 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         preset: fields,
     }));
     assert!(library.editor.busy, "the command was sent");
-    assert_eq!(library.editor.status, "Running edit.apply-preset…");
+    assert_eq!(library.editor.status.text, "Running edit.apply-preset…");
     // The same request, sent as the task sends it, commits one entry labelled by the preset.
     let (outcome, _) = call(
         &library.owner(),
@@ -320,11 +324,11 @@ fn a_preset_that_skips_settings_says_so_in_the_status_bar() {
         "Both kinds",
     );
     assert_eq!(
-        library.editor.skipped.as_deref(),
+        library.editor.status.skipped.as_deref(),
         Some("1 setting does not apply to a JPEG photo")
     );
     assert!(matches!(
-        library.editor.happened,
+        library.editor.status.happened,
         Some(crate::state::status::Happened::Applied { .. })
     ));
     // Nothing applies: no entry, and the status says so rather than repeating the last one.
@@ -335,16 +339,16 @@ fn a_preset_that_skips_settings_says_so_in_the_status_bar() {
         "RAW only",
     );
     assert_eq!(
-        library.editor.happened,
+        library.editor.status.happened,
         Some(crate::state::status::Happened::NothingApplied)
     );
     assert_eq!(
-        library.editor.skipped.as_deref(),
+        library.editor.status.skipped.as_deref(),
         Some("1 setting does not apply to a JPEG photo")
     );
     // Any other change reads back no skip.
     library.refresh();
-    assert_eq!(library.editor.skipped, None);
+    assert_eq!(library.editor.status.skipped, None);
     library.finish();
 }
 
@@ -406,7 +410,7 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Create));
-    assert!(library.editor.presets.pending);
+    assert!(library.editor.presets.library.pending);
     let created = tasks::preset_create_now(
         &library.owner(),
         library.editor.client,
@@ -418,9 +422,9 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
         .update(Message::Preset(PresetMessage::Created(
             created.map(Box::new),
         )));
-    assert!(!library.editor.presets.pending);
+    assert!(!library.editor.presets.library.pending);
     assert_eq!(
-        library.editor.status,
+        library.editor.status.text,
         "Saved preset \u{201c}Tone only\u{201d} in User presets"
     );
     assert!(
@@ -434,6 +438,7 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     let stored = library
         .editor
         .presets
+        .library
         .find(&library.row("Tone only").id)
         .unwrap()
         .settings
@@ -456,7 +461,7 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
         )));
     let error = library.presets().form.error.clone().expect("the refusal");
     assert!(error.starts_with("conflict: "), "{error}");
-    assert_eq!(library.editor.status, error);
+    assert_eq!(library.editor.status.text, error);
     library.finish();
 }
 
@@ -575,8 +580,8 @@ fn a_preset_file_over_one_mebibyte_is_refused_before_it_is_read() {
         .update(Message::Preset(PresetMessage::Imported(
             refused.map(Box::new),
         )));
-    assert!(library.editor.status.starts_with("resource-limit: "));
-    assert!(!library.editor.presets.pending);
+    assert!(library.editor.status.text.starts_with("resource-limit: "));
+    assert!(!library.editor.presets.library.pending);
     let (after, _) = call(
         &library.owner(),
         library.agent,
@@ -598,7 +603,7 @@ fn an_import_reports_its_counts_and_copy_takes_the_whole_report() {
     let report = &change.result["report"];
     let count = |list: &str| report[list].as_array().map(Vec::len).unwrap();
     assert_eq!(
-        library.editor.status,
+        library.editor.status.text,
         format!(
             "Imported \u{201c}Soft Film\u{201d}: {} mapped, {} unsupported, {} refused",
             count("mapped"),
@@ -608,11 +613,12 @@ fn an_import_reports_its_counts_and_copy_takes_the_whole_report() {
     );
     let (line, copied) = library
         .editor
-        .status_copy
+        .status
+        .copy
         .clone()
         .expect("a report to copy");
     assert_eq!(
-        line, library.editor.status,
+        line, library.editor.status.text,
         "Copy follows the line on screen"
     );
     assert_eq!(
@@ -626,7 +632,7 @@ fn an_import_reports_its_counts_and_copy_takes_the_whole_report() {
     // A second import of the same name and group is refused by the library, and shown as it is.
     let error = library.import("fixtures/presets/develop.xmp").unwrap_err();
     assert!(error.starts_with("conflict: "), "{error}");
-    assert_eq!(library.editor.status, error);
+    assert_eq!(library.editor.status.text, error);
     library.finish();
 }
 
@@ -650,14 +656,14 @@ fn delete_from_a_rows_menu_lists_the_library_again() {
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Delete(id.clone())));
-    assert!(library.editor.view_state.menu.is_none() && library.editor.presets.pending);
+    assert!(library.editor.view_state.menu.is_none() && library.editor.presets.library.pending);
     let deleted = tasks::preset_delete_now(&library.owner(), library.editor.client, &id);
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Deleted(
             deleted.map(Box::new),
         )));
-    assert_eq!(library.editor.status, "Deleted the preset");
+    assert_eq!(library.editor.status.text, "Deleted the preset");
     assert_eq!(
         library.names(),
         [("Soft Film".to_owned(), "Synthetic Looks".to_owned())]

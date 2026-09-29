@@ -21,7 +21,7 @@ impl Editor {
             HistoryMessage::Undo | HistoryMessage::Redo | HistoryMessage::Restore
         ) && let Some(reason) = self.gesture_refusal(Starting::History)
         {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         match message {
@@ -37,10 +37,10 @@ impl Editor {
                     Ok((versions, request)) => {
                         self.document.versions = versions;
                         self.read_back(request);
-                        self.version_name.clear();
-                        self.status = "Versions updated".into();
+                        self.version_form.name.clear();
+                        self.status.text = "Versions updated".into();
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.status.text = error,
                 }
             }
             HistoryMessage::OlderLoaded(result) => {
@@ -49,9 +49,9 @@ impl Editor {
                     Ok(page) => {
                         self.document.history.entries.extend(page.entries);
                         self.document.history.next_before_sequence = page.next_before_sequence;
-                        self.status = "Loaded older history".into();
+                        self.status.text = "Loaded older history".into();
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.status.text = error,
                 }
             }
             HistoryMessage::CompareBegin => return self.compare_begin(true),
@@ -87,8 +87,8 @@ impl Editor {
                     ),
                 };
             }
-            HistoryMessage::VersionName(value) => self.version_name = value,
-            HistoryMessage::ToggleVersionForm => self.version_form_open = !self.version_form_open,
+            HistoryMessage::VersionName(value) => self.version_form.name = value,
+            HistoryMessage::ToggleVersionForm => self.version_form.open = !self.version_form.open,
             HistoryMessage::Undo | HistoryMessage::Redo => {
                 let undo = matches!(message, HistoryMessage::Undo);
                 let Some(state) = &self.document.state else {
@@ -113,7 +113,7 @@ impl Editor {
                 let params = json!({"asset_id":state.asset.id,"entry_id":entry_id});
                 let asset = state.asset.id.clone();
                 self.busy = true;
-                self.status = "Selecting history state…".into();
+                self.status.text = "Selecting history state…".into();
                 let proxy = self.proxy_bounds();
                 return preview_task(
                     self.owner.clone(),
@@ -135,12 +135,12 @@ impl Editor {
                 }
                 let asset = state.asset.id.clone();
                 // Said once the current entry's frame is back on screen.
-                self.happened = Some(crate::state::status::Happened::Returned {
+                self.status.happened = Some(crate::state::status::Happened::Returned {
                     label: state.current_entry.label.clone(),
                     sequence: state.current_entry.sequence,
                 });
                 self.busy = true;
-                self.status = "Returning to current state…".into();
+                self.status.text = "Returning to current state…".into();
                 let proxy = self.proxy_bounds();
                 return preview_task(
                     self.owner.clone(),
@@ -168,13 +168,13 @@ impl Editor {
                 else {
                     return Task::none();
                 };
-                let name = self.version_name.trim().to_string();
+                let name = self.version_form.name.trim().to_string();
                 if name.is_empty() {
-                    self.status = "Enter a version name first".into();
+                    self.status.text = "Enter a version name first".into();
                     return Task::none();
                 }
                 let params = json!({"asset_id":state.asset.id,"name":name,"mutation":tasks::request(),"entry_id":entry_id});
-                self.version_form_open = false;
+                self.version_form.open = false;
                 return self.version_command("version.create", params);
             }
             HistoryMessage::DeleteVersion(name) => {
@@ -212,7 +212,7 @@ impl Editor {
         }
         let asset = state.asset.id.clone();
         self.busy = true;
-        self.status = format!("Running {method}…");
+        self.status.text = format!("Running {method}…");
         versions_task(self.owner.clone(), self.client, asset, method, params)
     }
 }
@@ -227,7 +227,7 @@ impl Editor {
         // be resumed on release, and the design keeps one draft and one preview selection at a
         // time. Refuse it and say so rather than pausing silently.
         if let Some(reason) = self.gesture_refusal(Starting::Compare) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let (Some(state), Some(original)) =
@@ -240,7 +240,7 @@ impl Editor {
         }
         self.document.compare_return = Some(self.session.preview.selection.clone());
         let asset = state.asset.id.clone();
-        self.status = "Comparing with the original…".into();
+        self.status.text = "Comparing with the original…".into();
         let proxy = self.proxy_bounds();
         preview_task(
             self.owner.clone(),

@@ -64,14 +64,14 @@ impl Editor {
         value: Value,
     ) -> Task<Message> {
         if let Some(reason) = self.control_refusal(&action, &parameter, true) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let fields = json!({ parameter.clone(): value.clone() });
         if self.drafting_control().is_some() {
             self.set_control_field_value(&action, &parameter, &value);
-            self.editing = None;
-            self.dragging = Some((action, parameter));
+            self.controls.editing = None;
+            self.controls.dragging = Some((action, parameter));
             // Sent now when the previous round trip has answered; recorded otherwise, and the
             // answer to that round trip sends the newest value. No timer stands between the input
             // and the request it produces.
@@ -84,9 +84,9 @@ impl Editor {
         let label = tools::control_label(&self.modules, &action, &parameter)
             .unwrap_or_else(|| parameter.clone());
         self.set_control_field_value(&action, &parameter, &value);
-        self.editing = None;
-        self.dragging = Some((action.clone(), parameter.clone()));
-        self.status = format!("Drafting {label}…");
+        self.controls.editing = None;
+        self.controls.dragging = Some((action.clone(), parameter.clone()));
+        self.status.text = format!("Drafting {label}…");
         // The host-owned target this gesture drafts through. For a module action it is the mask the
         // panel's sections are bound to, which is what makes a masked slider follow the drag the way
         // a global one does; for a `mask.*` control it is the mask and component the panel has open,
@@ -116,11 +116,12 @@ impl Editor {
     /// press arrives.
     pub(crate) fn release_without_draft(&mut self, action: &str, parameter: &str) -> Task<Message> {
         if self
+            .controls
             .dragging
             .as_ref()
             .is_some_and(|(dragged, field)| dragged == action && field == parameter)
         {
-            self.dragging = None;
+            self.controls.dragging = None;
         }
         Task::none()
     }
@@ -141,7 +142,7 @@ impl Editor {
         let Some(declared) =
             tools::declared_action(&self.modules, &action).and_then(|d| d.parameter(&parameter))
         else {
-            self.status = fields::undeclared_label(&action, &parameter);
+            self.status.text = fields::undeclared_label(&action, &parameter);
             return Task::none();
         };
         let default = fields::seed_text(declared);
@@ -160,7 +161,7 @@ impl Editor {
                 json!({"action":action,"parameter":parameter,"revision":revision,
                     "gesture_open":gesture_open,"busy":self.busy}),
             );
-            self.pending_reset = Some(PendingReset {
+            self.controls.pending_reset = Some(PendingReset {
                 action,
                 parameter,
                 asset,
@@ -172,16 +173,16 @@ impl Editor {
         if let Some((reset, _)) = &reset
             && let Some(reason) = self.action_refusal(reset)
         {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
-        self.editing = None;
+        self.controls.editing = None;
         if declared_reset {
             // What the declared action leaves is known only from its answer, so until then the
             // field shows the authoritative value again rather than a default nothing will set.
             self.seed_values();
         } else {
-            self.fields.set(&action, &parameter, default);
+            self.controls.fields.set(&action, &parameter, default);
         }
         match reset {
             Some((reset, preset)) => self.send_reset((action, parameter), reset, preset),
@@ -194,10 +195,10 @@ impl Editor {
     /// whose photograph is no longer open, or that would now land on a historical preview, is
     /// dropped with its reason rather than run somewhere it was not asked for.
     pub(crate) fn run_pending_reset(&mut self) -> Task<Message> {
-        if self.pending_reset.is_none() || self.slider_gesture().is_some() || self.busy {
+        if self.controls.pending_reset.is_none() || self.slider_gesture().is_some() || self.busy {
             return Task::none();
         }
-        let Some(reset) = self.pending_reset.take() else {
+        let Some(reset) = self.controls.pending_reset.take() else {
             return Task::none();
         };
         let label = tools::control_label(&self.modules, &reset.action, &reset.parameter)
@@ -215,7 +216,7 @@ impl Editor {
             None
         };
         if let Some(reason) = reason {
-            self.status = format!("{label} was not reset: {reason}");
+            self.status.text = format!("{label} was not reset: {reason}");
             self.event(
                 "field_reset_dropped",
                 json!({"action":reset.action,"parameter":reset.parameter,"reason":reason}),

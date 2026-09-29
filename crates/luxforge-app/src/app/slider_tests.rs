@@ -12,9 +12,10 @@ use super::{
     },
     *,
 };
-use crate::state::fields;
+use crate::state::{fields, tools};
 use luxforge_core::{AssetId, RawPayload, WhiteBalanceMode};
 use serde_json::Map;
+use std::collections::BTreeMap;
 
 #[test]
 fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
@@ -68,15 +69,18 @@ fn a_drag_sends_one_draft_set_per_new_value_from_the_press_on() {
         let _ = testing::slide(&mut editor, &action, &parameter, value);
     }
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some("75"),
         "the field follows the pointer"
     );
-    assert_eq!(editor.dragging, Some((action.clone(), parameter.clone())));
+    assert_eq!(
+        editor.controls.dragging,
+        Some((action.clone(), parameter.clone()))
+    );
     assert!(
-        editor.status.starts_with("Drafting "),
+        editor.status.text.starts_with("Drafting "),
         "the status bar names the gesture: {}",
-        editor.status
+        editor.status.text
     );
     // A move to the value already accepted sends nothing again.
     let _ = testing::slide(&mut editor, &action, &parameter, 75.0);
@@ -156,7 +160,7 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
     assert!(
         editor.slider_gesture().is_some(),
         "the gesture opened a draft: {}",
-        editor.status
+        editor.status.text
     );
     let _ = testing::slide(&mut editor, &action, &parameter, 0.75);
     let _ = testing::let_go(&mut editor, &action, &parameter);
@@ -217,7 +221,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
     }
     assert!(editor.slider_gesture().is_none(), "no draft was opened");
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some("7"),
         "the field still follows the pointer"
     );
@@ -228,7 +232,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
 
     let _ = testing::let_go(&mut editor, &action, &parameter);
     assert_eq!(
-        editor.status,
+        editor.status.text,
         format!("Running edit.{action}…"),
         "release submits the whole action once"
     );
@@ -323,7 +327,7 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
             "{action}: nothing is sent against the revision the commit is replacing"
         );
         assert!(!editor.busy, "{action}: no request was started");
-        assert!(editor.pending_reset.is_some());
+        assert!(editor.controls.pending_reset.is_some());
 
         // The commit answers with the next revision; the reset goes out in the same update.
         let log = attach_log(&mut editor);
@@ -343,8 +347,8 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
             sent[0]["field"],
             json!({"action": action, "parameter": parameter})
         );
-        assert_eq!(editor.status, format!("Running edit.{reset}…"));
-        assert!(editor.busy && editor.pending_reset.is_none());
+        assert_eq!(editor.status.text, format!("Running edit.{reset}…"));
+        assert!(editor.busy && editor.controls.pending_reset.is_none());
         finish(editor, catalog);
     }
 }
@@ -380,7 +384,11 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
             raw_refresh(&asset, &current),
         )))));
-        let committed = editor.fields.get(action, parameter).map(str::to_owned);
+        let committed = editor
+            .controls
+            .fields
+            .get(action, parameter)
+            .map(str::to_owned);
         assert_eq!(
             committed.as_deref(),
             Some(if parameter == "temperature" {
@@ -430,8 +438,8 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
         );
 
         // Typed but not committed, then double-clicked.
-        editor.fields.set(action, parameter, "7777".into());
-        editor.editing = Some((action.into(), parameter.into()));
+        editor.controls.fields.set(action, parameter, "7777".into());
+        editor.controls.editing = Some((action.into(), parameter.into()));
         let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: action.into(),
             parameter: parameter.into(),
@@ -441,10 +449,14 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
         assert_eq!(sent.len(), 1, "{parameter}: {records:?}");
         assert_eq!(sent[0]["action"], as_shot["action"]);
         assert_eq!(sent[0]["preset"], as_shot["preset"]);
-        assert_eq!(editor.status, "Running edit.set-raw…");
-        assert!(editor.editing.is_none());
+        assert_eq!(editor.status.text, "Running edit.set-raw…");
+        assert!(editor.controls.editing.is_none());
         assert_eq!(
-            editor.fields.get(action, parameter).map(str::to_owned),
+            editor
+                .controls
+                .fields
+                .get(action, parameter)
+                .map(str::to_owned),
             committed,
             "{parameter}: the field shows the committed value until the answer, not a default"
         );
@@ -455,7 +467,7 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
             raw_refresh(&asset, &answered),
         )))));
         assert_eq!(
-            editor.fields.get(action, parameter),
+            editor.controls.fields.get(action, parameter),
             Some(if parameter == "temperature" {
                 "4861"
             } else {
@@ -504,7 +516,10 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
         action: action.clone(),
         parameter: parameter.clone(),
     }));
-    assert!(editor.pending_reset.is_some(), "it waits for the request");
+    assert!(
+        editor.controls.pending_reset.is_some(),
+        "it waits for the request"
+    );
     let next = entry(&asset, current.sequence + 1, Some(&current.id));
     let refresh = refresh_for(&asset, &next, Vec::new(), &[&next], false);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
@@ -521,7 +536,7 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
         action: action.clone(),
         parameter: parameter.clone(),
     }));
-    assert!(editor.pending_reset.is_some());
+    assert!(editor.controls.pending_reset.is_some());
     editor.session.preview.selection = luxforge_core::HistorySelection::Entry(current.id.clone());
     editor.busy = false;
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
@@ -529,11 +544,12 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
     let dropped = draft_events(&records, "field_reset_dropped");
     assert_eq!(dropped.len(), 1, "{records:?}");
     assert_eq!(dropped[0]["reason"], json!("a historical entry is shown"));
-    assert!(editor.pending_reset.is_none());
+    assert!(editor.controls.pending_reset.is_none());
     assert!(draft_events(&records, "field_reset_sent").is_empty());
     assert!(
         editor
             .status
+            .text
             .ends_with("was not reset: a historical entry is shown")
     );
     finish(editor, catalog);
@@ -562,7 +578,7 @@ fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
         .push_back("preparation-required: source-job-7".to_owned());
     let _ = testing::slide(&mut editor, "set-raw", "temperature", 5000.0);
     assert_eq!(
-        editor.status,
+        editor.status.text,
         "Temperature cannot be previewed until the RAW development is ready; it shows on release"
     );
     assert!(
@@ -602,9 +618,9 @@ fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
             None
         );
         assert!(
-            !editor.status.starts_with("Running"),
+            !editor.status.text.starts_with("Running"),
             "{action}: {}",
-            editor.status
+            editor.status.text
         );
         assert!(draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty());
         finish(editor, catalog);
@@ -632,13 +648,16 @@ fn the_double_click_reset_of_a_single_parameter_action_sends_its_declared_defaul
         "the request is the declared default, not an invented one"
     );
 
-    editor.fields.set(&action, &parameter, "1.25".to_owned());
+    editor
+        .controls
+        .fields
+        .set(&action, &parameter, "1.25".to_owned());
     let _ = editor.update(Message::Control(ControlMessage::ResetField {
         action: action.clone(),
         parameter: parameter.clone(),
     }));
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some(fields::seed_text(
             tools::declared_action(&editor.modules, &action)
                 .and_then(|declared| declared.parameter(&parameter))
@@ -648,7 +667,7 @@ fn the_double_click_reset_of_a_single_parameter_action_sends_its_declared_defaul
         "the field returns to its default"
     );
     assert_eq!(
-        editor.status,
+        editor.status.text,
         format!("Running edit.{action}…"),
         "and the reset runs once as that action"
     );
@@ -674,7 +693,7 @@ fn a_slider_released_while_another_request_is_in_flight_commits() {
         Some(crate::app::draft::Round::Commit),
         "the release committed"
     );
-    assert!(editor.dragging.is_none(), "release ends the drag");
+    assert!(editor.controls.dragging.is_none(), "release ends the drag");
     let records = logged(&mut editor, &log);
     assert_eq!(draft_events(&records, "slider_draft_commit").len(), 1);
     testing::answer_commit(&mut editor, Ok(None));
@@ -703,7 +722,7 @@ fn release_commits_once_and_a_return_to_start_commits_nothing() {
         json!(4),
         "the commit names the revision the draft was based on"
     );
-    assert!(editor.dragging.is_none(), "release ends the drag");
+    assert!(editor.controls.dragging.is_none(), "release ends the drag");
 
     // The gesture returned to its start: a no-op outcome, no entry, no history refresh.
     testing::answer_commit(&mut editor, Ok(None));
@@ -724,6 +743,7 @@ fn release_commits_once_and_a_return_to_start_commits_nothing() {
 fn escape_cancels_the_gesture_and_commits_nothing() {
     let (mut editor, catalog, log, _, action, parameter) = drafting();
     let default = editor
+        .controls
         .fields
         .get(&action, &parameter)
         .expect("a seeded field")
@@ -767,7 +787,7 @@ fn escape_cancels_the_gesture_and_commits_nothing() {
     );
     assert!(editor.slider_gesture().is_none());
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some(default.as_str()),
         "the field returns to the authoritative value"
     );
@@ -790,7 +810,7 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     let draft = &editor.core_gesture().expect("the draft is kept").draft;
     assert!(draft.conflicted);
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some("15"),
         "the drafted value stays on the slider"
     );
@@ -885,9 +905,12 @@ fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
         parameter: Some(parameter.clone()),
     }));
     assert!(
-        editor.status.starts_with(&format!("Running edit.{action}")),
+        editor
+            .status
+            .text
+            .starts_with(&format!("Running edit.{action}")),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -934,7 +957,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         assert!(
             editor.slider_gesture().is_some(),
             "{parameter} did not open a draft: {}",
-            editor.status
+            editor.status.text
         );
         let records = logged(&mut editor, &log);
         let sets = draft_events(&records, "slider_draft_set");
@@ -949,7 +972,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             .map(|spec| spec.format(*value))
             .expect("the declared parameter");
         assert_eq!(
-            editor.fields.get(&action, parameter),
+            editor.controls.fields.get(&action, parameter),
             Some(shown.as_str()),
             "{parameter} shows the drafted value, with its declared decimals"
         );
@@ -1104,8 +1127,12 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     let _ = editor.update(Message::Crop(CropMessage::Start));
     crate::app::testing::open_crop(&mut editor);
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    assert!(editor.slider_gesture().is_none(), "{}", editor.status);
-    assert!(editor.status.contains("crop draft"), "{}", editor.status);
+    assert!(editor.slider_gesture().is_none(), "{}", editor.status.text);
+    assert!(
+        editor.status.text.contains("crop draft"),
+        "{}",
+        editor.status.text
+    );
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
 
     // The crop mode and Compare while a gesture is open.
@@ -1114,11 +1141,19 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     assert!(editor.slider_gesture().is_some());
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop)));
     assert!(editor.crop_gesture().is_none());
-    assert!(editor.status.contains("slider draft"), "{}", editor.status);
+    assert!(
+        editor.status.text.contains("slider draft"),
+        "{}",
+        editor.status.text
+    );
     editor.document.original_entry = Some(entry(&asset, 0, None).id);
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert!(editor.document.compare_return.is_none());
-    assert!(editor.status.contains("slider draft"), "{}", editor.status);
+    assert!(
+        editor.status.text.contains("slider draft"),
+        "{}",
+        editor.status.text
+    );
     finish(editor, catalog);
 }
 
@@ -1129,11 +1164,11 @@ fn a_slider_drag_changes_the_field_and_sends_no_request() {
     let (action, x) = (action.to_owned(), x.to_owned());
     let sequence = editor.sync.sequence;
     let _ = testing::slide(&mut editor, &action, &x, 12.0);
-    assert_eq!(editor.fields.get(&action, &x), Some("12"));
-    assert_eq!(editor.dragging, Some((action.clone(), x.clone())));
+    assert_eq!(editor.controls.fields.get(&action, &x), Some("12"));
+    assert_eq!(editor.controls.dragging, Some((action.clone(), x.clone())));
     assert_eq!(editor.sync.sequence, sequence, "a drag calls nothing");
     let _ = testing::let_go(&mut editor, &action, &x);
-    assert!(editor.dragging.is_none(), "release ends the drag");
+    assert!(editor.controls.dragging.is_none(), "release ends the drag");
     finish(editor, catalog);
 }
 
@@ -1147,17 +1182,20 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
         let _ = testing::slide(&mut editor, &action, &x, f64::from(step));
         assert!(!editor.busy, "a drag never starts a request");
         assert!(
-            !editor.status.starts_with("Running edit."),
+            !editor.status.text.starts_with("Running edit."),
             "a drag never runs the action: {}",
-            editor.status
+            editor.status.text
         );
     }
     let _ = testing::let_go(&mut editor, &action, &x);
     assert!(editor.busy, "release submits exactly one request");
     assert!(
-        editor.status.starts_with(&format!("Running edit.{action}")),
+        editor
+            .status
+            .text
+            .starts_with(&format!("Running edit.{action}")),
         "{}",
-        editor.status
+        editor.status.text
     );
 
     // A second release while the first request is still in flight sends nothing further, and the
@@ -1168,6 +1206,6 @@ fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
         editor.sync.sequence, sequence,
         "already busy: no second request"
     );
-    assert_eq!(editor.status, crate::state::IN_FLIGHT);
+    assert_eq!(editor.status.text, crate::state::IN_FLIGHT);
     finish(editor, catalog);
 }

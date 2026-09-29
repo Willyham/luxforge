@@ -81,7 +81,7 @@ impl Proof {
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].id, MODULE);
         assert!(modules[0].developer);
-        editor.expanded.insert(MODULE.into(), true);
+        editor.controls.expanded.insert(MODULE.into(), true);
         let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
         let refreshed = tasks::refresh(
             &owner,
@@ -161,7 +161,7 @@ impl Proof {
                 preset: None,
             }));
         assert_eq!(
-            self.editor.status,
+            self.editor.status.text,
             format!("Copied the edit.{ACTION} request")
         );
         let copied = self.editor.request_for(ACTION, Some(parameter)).unwrap();
@@ -197,9 +197,10 @@ impl Proof {
             independent,
         );
         self.editor.gesture = None; // The ignored Iced task did not open a real draft.
-        self.editor.dragging = None;
-        self.editor.editing = None;
+        self.editor.controls.dragging = None;
+        self.editor.controls.editing = None;
         self.editor
+            .controls
             .fields
             .set(ACTION, parameter, "stale-local-value".into());
         let refreshed = tasks::refresh(
@@ -237,7 +238,7 @@ impl Proof {
                 preset: Some(preset.clone()),
             }));
         assert_eq!(
-            self.editor.status,
+            self.editor.status.text,
             format!("Copied the edit.{ACTION} request")
         );
         let copied = self
@@ -260,8 +261,8 @@ impl Proof {
             &format!("edit.{ACTION}"),
             independent,
         );
-        self.editor.dragging = None;
-        self.editor.editing = None;
+        self.editor.controls.dragging = None;
+        self.editor.controls.editing = None;
         let refreshed = tasks::refresh(
             &self.editor.owner,
             self.editor.client,
@@ -507,6 +508,7 @@ fn every_proof_value_control_matches_independent_json_and_authoritative_ui() {
 
     let original = proof
         .editor
+        .controls
         .fields
         .get(ACTION, "rgb-fields")
         .unwrap()
@@ -646,7 +648,7 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
             preset: Some(reset.preset.clone()),
         }));
     assert_eq!(
-        proof.editor.status,
+        proof.editor.status.text,
         "Copied the edit.reset-controls request"
     );
     let copied = proof

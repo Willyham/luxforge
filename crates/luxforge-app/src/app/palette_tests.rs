@@ -36,17 +36,17 @@ fn a_palette_entry_for_transform_runs_the_same_request_as_its_button() {
         !editor.workspace.palette.open,
         "running an entry closes the palette"
     );
-    assert!(editor.busy, "{}", editor.status);
+    assert!(editor.busy, "{}", editor.status.text);
     assert!(
-        editor.status.starts_with("Running edit.transform"),
+        editor.status.text.starts_with("Running edit.transform"),
         "{}",
-        editor.status
+        editor.status.text
     );
-    let palette_status = editor.status.clone();
+    let palette_status = editor.status.text.clone();
 
     // The exact message the generated button's own click raises produces the identical request.
     editor.busy = false;
     let _ = editor.update(Message::Action(ActionMessage::Run { action, preset }));
-    assert_eq!(editor.status, palette_status);
+    assert_eq!(editor.status.text, palette_status);
     finish(editor, catalog);
 }

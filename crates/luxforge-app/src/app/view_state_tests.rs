@@ -48,13 +48,16 @@ fn gallery_is_desktop_view_state_without_a_photo_and_respects_developer_mode() {
     let _ = editor.update(Message::View(ViewMessage::Gallery(Some(0))));
     assert_eq!(editor.session, before);
     // The gallery's one refusal is written as it is, not replaced by a generic line.
-    assert_eq!(editor.status, crate::state::IN_FLIGHT);
+    assert_eq!(editor.status.text, crate::state::IN_FLIGHT);
     editor.busy = false;
     editor.document.compare_return = Some(luxforge_core::HistorySelection::Current);
     editor.rederive();
     assert!(!editor.workspace.title.can_open_gallery);
     let _ = editor.update(Message::View(ViewMessage::Gallery(Some(0))));
-    assert_eq!(editor.status, "Release Compare before opening Components");
+    assert_eq!(
+        editor.status.text,
+        "Release Compare before opening Components"
+    );
     editor.document.compare_return = None;
     finish(editor, catalog);
 }
@@ -140,31 +143,34 @@ fn pan_keeps_one_request_in_flight_and_only_the_newest_pending_position() {
 fn a_section_toggle_is_local_and_a_mode_change_is_session_state() {
     let crop = crop_descriptor();
     let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
-    assert!(editor.expanded.is_empty(), "defaults need no stored flag");
+    assert!(
+        editor.controls.expanded.is_empty(),
+        "defaults need no stored flag"
+    );
     let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
         crop.id.clone(),
     )));
-    assert_eq!(editor.expanded.get(&crop.id), Some(&false));
+    assert_eq!(editor.controls.expanded.get(&crop.id), Some(&false));
     assert_eq!(editor.snapshot()["expanded"][&crop.id], json!(false));
     let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
         crop.id.clone(),
     )));
-    assert_eq!(editor.expanded.get(&crop.id), Some(&true));
+    assert_eq!(editor.controls.expanded.get(&crop.id), Some(&true));
 
     // Entering the crop module's mode opens its draft; leaving it with a draft open is refused.
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop.id.clone())));
     assert!(
         editor.crop().is_some(),
         "the mode opens the draft: {}",
-        editor.status
+        editor.status.text
     );
     editor.session.workspace.mode = crop.id.clone();
     let _ = editor.update(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
     assert!(editor.crop().is_some(), "the draft is never discarded");
     assert!(
-        editor.status.contains("Apply or Cancel"),
+        editor.status.text.contains("Apply or Cancel"),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -173,7 +179,7 @@ fn a_section_toggle_is_local_and_a_mode_change_is_session_state() {
 #[test]
 fn a_status_line_reaches_the_status_bar() {
     let (mut editor, catalog) = boot();
-    editor.status = "Something happened".into();
+    editor.status.text = "Something happened".into();
     editor.rederive();
     assert_eq!(editor.workspace.status.message, "Something happened");
     finish(editor, catalog);

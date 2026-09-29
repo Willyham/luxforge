@@ -407,7 +407,7 @@ fn a_settings_conflict_reads_the_settings_again_and_says_so_on_one_status_line()
         line.starts_with("Changed elsewhere, so the settings were read again: "),
         "{line}"
     );
-    assert_eq!(proof.editor.status, line);
+    assert_eq!(proof.editor.status.text, line);
     assert_eq!(
         proof.editor.snapshot()["capabilities"][MODULE]["status_line"],
         line.as_str()
@@ -570,8 +570,8 @@ fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws
         module_id: MODULE.into(),
         task: TASK.into(),
     });
-    assert!(proof.editor.busy, "{}", proof.editor.status);
-    assert_eq!(proof.editor.status, "Running edit.apply-proof-tint…");
+    assert!(proof.editor.busy, "{}", proof.editor.status.text);
+    assert_eq!(proof.editor.status.text, "Running edit.apply-proof-tint…");
     // Once the commit is read back, the control says the result is applied and offers no Apply.
     let (applied, _) = call(
         &proof.editor.owner,
@@ -630,7 +630,7 @@ fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws
     assert_eq!(block.permissions, "0 permissions · 2 revoked");
     assert!(!block.revoke_all, "nothing is left to revoke");
     assert_eq!(
-        proof.editor.status,
+        proof.editor.status.text,
         "Revoked 2 permission(s) of luxforge.capabilities"
     );
     let listed = proof.api("module.permission.list", json!({"module_id": MODULE}));
@@ -838,9 +838,13 @@ fn a_scripted_step_that_sends_nothing_is_recorded_and_captured() {
     assert!(evidence.had_errors && evidence.capture_pending);
     assert!(evidence.capability_wait.is_none());
     assert!(
-        proof.editor.status.contains("no consent notice is open"),
+        proof
+            .editor
+            .status
+            .text
+            .contains("no consent notice is open"),
         "{}",
-        proof.editor.status
+        proof.editor.status.text
     );
     proof.stop();
 }

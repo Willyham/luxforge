@@ -23,7 +23,7 @@ fn failed_clipping_derivation_marks_the_evidence_step_and_releases_capture() {
         approximate: false,
         region: None,
     };
-    editor.overlay_request = Some(request.clone());
+    editor.overlays.request = Some(request.clone());
     editor.overlay_ready(overlay::OverlayResult {
         request,
         width: 1,
@@ -77,7 +77,7 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
     editor.presentation.incoming = testing::incoming(committed, raster);
     editor.adopt_analysis(4);
     let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
-    let derived = editor.overlay_request.clone().expect("an overlay");
+    let derived = editor.overlays.request.clone().expect("an overlay");
     assert_eq!(derived.generation, 4);
     assert!(derived.highlights && !derived.shadows);
 
@@ -86,7 +86,7 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
     editor.presentation.preview_generation = 5;
     editor.refresh_overlay();
     assert_eq!(
-        editor.overlay_request.as_ref(),
+        editor.overlays.request.as_ref(),
         Some(&derived),
         "an in-flight render re-derived the overlay from the frame it replaces"
     );
@@ -109,7 +109,7 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
         retained.raster.rgba[0], 255,
         "the drafted pixels are retained"
     );
-    let drafted_overlay = editor.overlay_request.as_ref().expect("a drafted overlay");
+    let drafted_overlay = editor.overlays.request.as_ref().expect("a drafted overlay");
     assert_eq!(
         drafted_overlay.generation, 5,
         "the overlay still describes the frame the gesture replaced"
@@ -136,11 +136,11 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
     editor.presentation.incoming = testing::incoming(committed, raster);
     editor.adopt_analysis(4);
     let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
-    let request = editor.overlay_request.clone().expect("an overlay");
+    let request = editor.overlays.request.clone().expect("an overlay");
     let log = testing::attach_log(&mut editor);
-    let done = luxforge_testbase::wait_for("the derived overlay", || editor.overlay_queue.poll());
+    let done = luxforge_testbase::wait_for("the derived overlay", || editor.overlays.queue.poll());
     // The same result, as though the view had since asked for another grid: it is not drawn.
-    editor.overlay_request = Some(overlay::OverlayRequest {
+    editor.overlays.request = Some(overlay::OverlayRequest {
         cells_w: request.cells_w + 1,
         ..request.clone()
     });
@@ -155,7 +155,7 @@ fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up(
         editor.presentation.presenter.clipping(4).is_none(),
         "a stale grid was drawn"
     );
-    editor.overlay_request = Some(request.clone());
+    editor.overlays.request = Some(request.clone());
 
     editor.overlay_ready(done);
     let drawn = editor

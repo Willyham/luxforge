@@ -141,6 +141,13 @@ impl Default for CropSection {
     }
 }
 
+/// The version chip row's naming form: the name typed, and whether the "+" chip has revealed it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct VersionForm {
+    pub(crate) name: String,
+    pub(crate) open: bool,
+}
+
 /// This desktop's own view state: the window, the zoom and the local pan, the open menu, the
 /// developer gallery page and whether a native file dialog is up. No other client sees any of it
 /// but the zoom and the pan, which the owner's session holds and this follows.
@@ -262,9 +269,10 @@ pub(crate) struct Inputs<'a> {
     pub(crate) view_state: &'a ViewState,
     /// The pixel under the pointer and what `render.sample` last answered for it.
     pub(crate) hover: &'a Hover,
-    pub(crate) version_name: &'a str,
-    /// The "+" chip has revealed the version-naming field.
-    pub(crate) version_form_open: bool,
+    /// The command palette.
+    pub(crate) palette: &'a palette::Palette,
+    /// The version chip row's naming form.
+    pub(crate) version_form: &'a VersionForm,
     pub(crate) dimensions: Option<(u32, u32)>,
     /// A preview is on the GPU.
     pub(crate) photo: bool,
@@ -282,9 +290,6 @@ pub(crate) struct Inputs<'a> {
     pub(crate) analysis: Option<&'a histogram::Analysis>,
     /// A newer generation is in flight, so the report above is one frame behind.
     pub(crate) analysis_updating: bool,
-    pub(crate) palette_open: bool,
-    pub(crate) palette_query: &'a str,
-    pub(crate) palette_selected: usize,
     /// The preset library as `preset.list` last answered it.
     pub(crate) presets: &'a presets::PresetLibrary,
     /// The Presets section's create form.
@@ -501,7 +506,8 @@ mod tests {
         capabilities: capabilities::CapabilityStore,
         performance_expanded: bool,
         performance: performance::PerformanceHistory,
-        palette_open: bool,
+        palette: palette::Palette,
+        version_form: VersionForm,
     }
 
     impl Scene {
@@ -540,7 +546,8 @@ mod tests {
                 capabilities: capabilities::CapabilityStore::default(),
                 performance_expanded: false,
                 performance: performance::PerformanceHistory::default(),
-                palette_open: false,
+                palette: palette::Palette::default(),
+                version_form: VersionForm::default(),
             }
         }
 
@@ -630,8 +637,8 @@ mod tests {
                 compare_held: false,
                 view_state: &self.view_state,
                 hover: &self.hover,
-                version_name: "",
-                version_form_open: false,
+                palette: &self.palette,
+                version_form: &self.version_form,
                 dimensions: Some((480, 320)),
                 photo: true,
                 clients: Some(1),
@@ -644,9 +651,6 @@ mod tests {
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),
                 analysis_updating: self.analysis_updating,
-                palette_open: self.palette_open,
-                palette_query: "",
-                palette_selected: 0,
                 presets: &self.presets,
                 preset_form: &self.preset_form,
                 capabilities: &self.capabilities,
@@ -3017,7 +3021,7 @@ mod tests {
     #[test]
     fn the_palette_offers_each_applicable_preset_with_its_rows_own_message() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
-        scene.palette_open = true;
+        scene.palette.open = true;
         let mut legacy = listed("Legacy", "Imported", Some(counts(0, 0)));
         legacy.unavailable = vec!["set-curve".into()];
         scene
@@ -3142,7 +3146,7 @@ mod tests {
             let label = kind.label();
             let mut scene = Scene::new(modules.clone()).opened(Vec::new());
             scene.developer = true;
-            scene.palette_open = true;
+            scene.palette.open = true;
             if kind == SourceTag::Raw {
                 scene
                     .document

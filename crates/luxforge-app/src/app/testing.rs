@@ -166,7 +166,7 @@ pub(crate) fn real_photo_at(
         editor.gesture_refusal(crate::app::gesture::Starting::Action),
         None,
         "{}",
-        editor.status
+        editor.status.text
     );
     (editor, asset, agent)
 }
@@ -318,7 +318,7 @@ pub(crate) fn opened(
         editor.gesture_refusal(crate::app::gesture::Starting::Action),
         None,
         "{}",
-        editor.status
+        editor.status.text
     );
     (editor, catalog, asset, entry_id)
 }
@@ -426,14 +426,20 @@ pub(crate) fn attach_log(editor: &mut Editor) -> PathBuf {
         std::process::id(),
         REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
     ));
-    editor.diagnostics = Some(crate::diagnostics::Diagnostics::start(&path).expect("a fresh log"));
+    editor.log.diagnostics =
+        Some(crate::diagnostics::Diagnostics::start(&path).expect("a fresh log"));
     path
 }
 
 /// Close the attached log and return the records the harness would read.
 pub(crate) fn logged(editor: &mut Editor, path: &PathBuf) -> Vec<Value> {
     assert!(
-        editor.diagnostics.take().expect("an attached log").finish(),
+        editor
+            .log
+            .diagnostics
+            .take()
+            .expect("an attached log")
+            .finish(),
         "the log flushed"
     );
     let text = std::fs::read_to_string(path).expect("the log file");
@@ -761,7 +767,7 @@ pub(crate) fn opened_with_modules(
         editor.gesture_refusal(crate::app::gesture::Starting::Action),
         None,
         "{}",
-        editor.status
+        editor.status.text
     );
     (editor, catalog)
 }

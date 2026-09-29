@@ -190,7 +190,8 @@ impl Editor {
             TypingTarget::RenameMask(mask) => {
                 let name = text.trim().to_owned();
                 if name.is_empty() {
-                    self.status = "A mask's name needs at least one printable character".into();
+                    self.status.text =
+                        "A mask's name needs at least one printable character".into();
                     return Task::none();
                 }
                 self.mask_panel.typing = None;
@@ -208,7 +209,7 @@ impl Editor {
             TypingTarget::RenameComponent(component) => {
                 let name = text.trim().to_owned();
                 if name.is_empty() {
-                    self.status =
+                    self.status.text =
                         "A component's name needs at least one printable character".into();
                     return Task::none();
                 }
@@ -241,7 +242,7 @@ impl Editor {
                         self.mask_message(MaskMessage::Field { name, value })
                     }
                     (_, reason) => {
-                        self.status = reason.unwrap_or_else(|| "Type a number".into());
+                        self.status.text = reason.unwrap_or_else(|| "Type a number".into());
                         Task::none()
                     }
                 }
@@ -261,7 +262,7 @@ impl Editor {
                         self.mask_message(MaskMessage::Brush(BrushEdit::Set { name, value }))
                     }
                     (_, reason) => {
-                        self.status = reason.unwrap_or_else(|| "Type a number".into());
+                        self.status.text = reason.unwrap_or_else(|| "Type a number".into());
                         Task::none()
                     }
                 }
@@ -312,7 +313,7 @@ impl Editor {
             return Task::none();
         }
         if let Err(error) = rules::position(to as u64, listing.masks.len(), "masks") {
-            self.status = error.detail;
+            self.status.text = error.detail;
             return Task::none();
         }
         self.mask_message(MaskMessage::Row(RowEdit::MoveMask { mask, index: to }))
@@ -335,7 +336,7 @@ impl Editor {
         }
         let modes: Vec<_> = report.components.iter().map(|known| known.mode).collect();
         if let Err(error) = rules::reorder_component(&report.name, &modes, from, to as u64) {
-            self.status = error.detail;
+            self.status.text = error.detail;
             return Task::none();
         }
         self.mask_message(MaskMessage::Row(RowEdit::MoveComponent {
@@ -377,12 +378,12 @@ impl Editor {
                 }))
             }
             (MaskKey::Invert, None) => {
-                self.status = "Select a component to invert it".into();
+                self.status.text = "Select a component to invert it".into();
                 Task::none()
             }
             (MaskKey::Delete, Some(index)) => {
                 if let Err(error) = rules::delete_component(&report.name, report.components.len()) {
-                    self.status = error.detail;
+                    self.status.text = error.detail;
                     return Task::none();
                 }
                 let component = report.components[index].id.as_str().to_owned();
@@ -410,7 +411,7 @@ impl Editor {
             }
             (MaskKey::Move(step), Some(index)) => {
                 let Some(to) = step_index(index, step, report.components.len()) else {
-                    self.status = move_refusal(&report.components[index].name, step);
+                    self.status.text = move_refusal(&report.components[index].name, step);
                     return Task::none();
                 };
                 let component = report.components[index].id.as_str().to_owned();
@@ -423,7 +424,7 @@ impl Editor {
                     .as_ref()
                     .map_or(0, |listing| listing.masks.len());
                 let Some(to) = step_index(report.index, step, len) else {
-                    self.status = move_refusal(&report.name, step);
+                    self.status.text = move_refusal(&report.name, step);
                     return Task::none();
                 };
                 self.move_mask_to(report.id.as_str().to_owned(), to)

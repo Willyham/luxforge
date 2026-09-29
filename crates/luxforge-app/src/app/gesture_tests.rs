@@ -144,11 +144,11 @@ fn a_refused_crop_start_says_why() {
         } else {
             HistorySelection::Current
         };
-        editor.status.clear();
+        editor.status.text.clear();
         let task = editor.update(Message::Crop(CropMessage::Start));
         assert_eq!(task.units(), 0, "{case}: nothing is sent");
         assert!(editor.crop().is_none(), "{case}");
-        assert_eq!(editor.status, reason, "{case}");
+        assert_eq!(editor.status.text, reason, "{case}");
     }
     finish(editor, catalog);
 }
@@ -171,8 +171,8 @@ fn a_refused_begin_opens_nothing_and_says_why() {
     .expect_err("the owner does not hold the photograph");
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     assert!(editor.gesture.is_none(), "nothing opened");
-    assert_eq!(editor.status, refusal, "the refusal is the answer");
-    assert_eq!(editor.dragging, None, "the drag ends with it");
+    assert_eq!(editor.status.text, refusal, "the refusal is the answer");
+    assert_eq!(editor.controls.dragging, None, "the drag ends with it");
     assert!(editor.session.draft.is_none());
     let records = logged(&mut editor, &log);
     assert_eq!(
@@ -196,12 +196,12 @@ fn a_refused_begin_opens_nothing_and_says_why() {
         "no input stage and no mode change are asked for"
     );
     assert!(editor.crop().is_none() && editor.gesture.is_none());
-    assert_eq!(editor.status, refusal);
+    assert_eq!(editor.status.text, refusal);
     assert_eq!(editor.sync.mode, None);
     assert_eq!(editor.session.workspace.mode, mode);
     // The next start opens as usual.
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    assert!(editor.crop().is_some(), "{}", editor.status);
+    assert!(editor.crop().is_some(), "{}", editor.status.text);
     finish(editor, catalog);
 }
 
@@ -220,7 +220,7 @@ fn a_refused_reapply_keeps_the_draft_conflicted_and_says_why() {
         .reapplies
         .push_back(refusal.into());
     let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
-    assert_eq!(editor.status, refusal);
+    assert_eq!(editor.status.text, refusal);
     let draft = &editor.core_gesture().expect("the draft is kept").draft;
     assert!(draft.conflicted && draft.base_revision == newer - 1);
     assert!(editor.gesture_conflicted(), "the notice stays up");
@@ -246,7 +246,7 @@ fn a_refused_pick_uses_the_one_wording() {
     editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
     let task = editor.update(Message::Pointer(PointerMessage::Picked { x: 3, y: 4 }));
     assert_eq!(task.units(), 0);
-    assert_eq!(editor.status, NOT_CURRENT);
+    assert_eq!(editor.status.text, NOT_CURRENT);
     finish(editor, catalog);
 }
 
@@ -273,7 +273,7 @@ fn a_sample_answer_behind_a_request_in_flight_is_refused_with_its_reason() {
         point: (100, 42),
         result: Ok(Value::Object(answer)),
     }));
-    assert_eq!(editor.status, IN_FLIGHT);
+    assert_eq!(editor.status.text, IN_FLIGHT);
     assert_eq!(editor.sync.sequence, sequence, "nothing was sent");
     assert!(
         logged(&mut editor, &log)

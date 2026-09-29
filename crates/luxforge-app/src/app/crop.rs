@@ -372,12 +372,12 @@ impl Editor {
                     self.set_draft_generation(None);
                     let generation = self.request_preview(*job);
                     self.set_draft_generation(Some(generation));
-                    self.status = "Rendering the crop's input stage…".into();
+                    self.status.text = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
                     if matches!(self.crop_stage(), Some(StageView::Rendering { .. })) {
                         self.crop_stage_lost();
-                        self.status = error;
+                        self.status.text = error;
                         self.settle_step(Settle::Draft);
                     }
                 }
@@ -449,7 +449,7 @@ impl Editor {
         }
         // One draft per client, the current state and no request in flight, in one refusal.
         if let Some(reason) = self.gesture_refusal(Starting::Crop) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let Some((module_id, action)) = crop_frame(&self.modules)
@@ -460,7 +460,7 @@ impl Editor {
         let frame = match self.crop_row().and_then(|row| self.crop_opening(row)) {
             Ok(frame) => frame,
             Err(reason) => {
-                self.status = reason;
+                self.status.text = reason;
                 return Task::none();
             }
         };
@@ -498,7 +498,7 @@ impl Editor {
             layer_index,
             StagePlan::Open,
         );
-        self.status = "Preparing the crop's input stage…".into();
+        self.status.text = "Preparing the crop's input stage…".into();
         Task::batch([begin, fields, stage])
     }
 
@@ -514,7 +514,7 @@ impl Editor {
         let row = match self.crop_row() {
             Ok(row) => row,
             Err(reason) => {
-                self.status = reason;
+                self.status.text = reason;
                 return Task::none();
             }
         };
@@ -544,7 +544,7 @@ impl Editor {
         if rendering.is_some() {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
-        self.status = "Preparing the crop's input stage…".into();
+        self.status.text = "Preparing the crop's input stage…".into();
         // The rebased frame's fields are offered first, and held while the draft is conflicted, so
         // the synchronous rebase sends them rather than the fields the frame was rebased away from.
         // A refused rebase says why in place of the line above.
@@ -585,7 +585,7 @@ impl Editor {
         }
         crop.stage = StageView::Shown;
         let input = crop.frame.stage;
-        self.status = format!(
+        self.status.text = format!(
             "Crop draft on the layer's {} × {} input stage",
             input.width, input.height
         );
@@ -648,7 +648,7 @@ impl Editor {
         crop.frames.shown = Some(shown);
         if !self.presentation.presenter.show_stage(raster) {
             self.crop_stage_lost();
-            self.status = "Could not show the crop's input stage".into();
+            self.status.text = "Could not show the crop's input stage".into();
             self.settle_step(Settle::Draft);
             return (true, Task::none());
         }
@@ -732,7 +732,7 @@ impl Editor {
         };
         crop.frames.shown = Some(shown);
         if !self.presentation.presenter.show_stage(&raster) {
-            self.status = "Could not show the crop's input stage".into();
+            self.status.text = "Could not show the crop's input stage".into();
         }
         false
     }
@@ -767,7 +767,7 @@ impl Editor {
         });
         crop.frames.replanning = false;
         if let Err(error) = current {
-            self.status = error;
+            self.status.text = error;
             self.settle_step(Settle::Draft);
             return false;
         }
@@ -872,16 +872,16 @@ impl Editor {
                 parameter,
                 text,
             } => {
-                self.fields.set(&action, &parameter, text);
-                self.editing = Some((action, parameter));
+                self.controls.fields.set(&action, &parameter, text);
+                self.controls.editing = Some((action, parameter));
                 return Task::none();
             }
             // The box opens on the angle the section shows, whatever the text last held.
             ControlMessage::EditValue { action, parameter } => {
                 let text = spec.format(self.shown_angle());
-                self.fields.set(&action, &parameter, text);
+                self.controls.fields.set(&action, &parameter, text);
                 let id = field_id(&action, &parameter, None);
-                self.editing = Some((action, parameter));
+                self.controls.editing = Some((action, parameter));
                 return operation::focus(iced::widget::Id::from(id));
             }
             ControlMessage::Submit { .. } => match self.typed_angle() {
@@ -950,15 +950,15 @@ impl Editor {
     fn typed_angle(&mut self) -> Option<f64> {
         let frame = crop_frame(&self.modules)?;
         let declared = fields::declared(&self.modules, frame.action, frame.angle)?;
-        match self.fields.get_value(frame.action, declared) {
+        match self.controls.fields.get_value(frame.action, declared) {
             Ok(value) => {
                 if self.editing_angle() {
-                    self.editing = None;
+                    self.controls.editing = None;
                 }
                 value.as_f64()
             }
             Err(reason) => {
-                self.status = reason;
+                self.status.text = reason;
                 None
             }
         }
@@ -991,7 +991,7 @@ impl Editor {
         };
         let (action, parameter) = (frame.action.to_owned(), frame.angle.to_owned());
         let text = spec.format(draft.stage.angle);
-        self.fields.set(&action, &parameter, text);
+        self.controls.fields.set(&action, &parameter, text);
     }
 
     /// One draft change reached its end: the angle's text follows the frame, the new state is
@@ -1015,9 +1015,12 @@ impl Editor {
     /// The crop angle's box is open for typing.
     fn editing_angle(&self) -> bool {
         crop_frame(&self.modules).is_some_and(|frame| {
-            self.editing.as_ref().is_some_and(|(action, parameter)| {
-                action == frame.action && parameter == frame.angle
-            })
+            self.controls
+                .editing
+                .as_ref()
+                .is_some_and(|(action, parameter)| {
+                    action == frame.action && parameter == frame.angle
+                })
         })
     }
 
@@ -1034,7 +1037,7 @@ impl Editor {
         }
         self.crop_section.guide = false;
         if self.editing_angle() {
-            self.editing = None;
+            self.controls.editing = None;
         }
         self.sync.mode = Some(POINTER_MODE.into());
     }
@@ -1045,7 +1048,7 @@ impl Editor {
         self.end_crop_view(crop.generation);
         if crop.stage != StageView::Abandoned {
             self.event("crop_draft_discarded", crop.summary(draft));
-            self.status = "Crop draft discarded".into();
+            self.status.text = "Crop draft discarded".into();
         }
     }
 
@@ -1066,7 +1069,7 @@ impl Editor {
         let summary = crop.summary(draft);
         self.end_crop_view(crop.generation);
         let Some(refresh) = outcome else {
-            self.status = "Crop unchanged; nothing was committed".into();
+            self.status.text = "Crop unchanged; nothing was committed".into();
             self.event("crop_draft_noop", summary);
             return match self.reseed_committed() {
                 Some(task) => task,
@@ -1087,7 +1090,7 @@ impl Editor {
             "crop_draft_applied",
             json!({"request_id":request_id,"entry_id":entry.as_str(),"revision":revision,"draft":summary}),
         );
-        self.status = format!("Crop applied \u{b7} entry {sequence}");
+        self.status.text = format!("Crop applied \u{b7} entry {sequence}");
         Task::none()
     }
 
@@ -1431,7 +1434,7 @@ mod tests {
             angle_control(&editor).invalid.as_deref(),
             Some("angle must be a number from -45 to 45")
         );
-        assert_eq!(editor.status, "angle must be a number from -45 to 45");
+        assert_eq!(editor.status.text, "angle must be a number from -45 to 45");
         submit_angle(&mut editor, "46");
         assert!(editor.editing_angle(), "an angle out of range stays open");
         assert_eq!(editor.crop().expect("a draft").stage.angle, 0.0);
@@ -1474,9 +1477,9 @@ mod tests {
         );
         assert_eq!(editor.sync.mode, None, "the mode did not change");
         assert!(
-            editor.status.contains("cannot be read"),
+            editor.status.text.contains("cannot be read"),
             "{}",
-            editor.status
+            editor.status.text
         );
         finish(editor, catalog);
     }
@@ -1528,9 +1531,9 @@ mod tests {
         submit_angle(&mut editor, "sideways");
         assert!((editor.crop().expect("a draft").stage.angle - 5.95).abs() < 1e-9);
         assert!(
-            editor.status.contains("angle must be a number"),
+            editor.status.text.contains("angle must be a number"),
             "{}",
-            editor.status
+            editor.status.text
         );
         submit_angle(&mut editor, "0");
 
@@ -1994,7 +1997,11 @@ mod tests {
         assert!(editor.crop().is_none() && editor.gesture.is_none());
         assert!(editor.session.draft.is_none());
         assert!(editor.presentation.presenter.stage().is_none());
-        assert!(editor.status.contains("Crop applied"), "{}", editor.status);
+        assert!(
+            editor.status.text.contains("Crop applied"),
+            "{}",
+            editor.status.text
+        );
         finish(editor, catalog);
     }
 
@@ -2099,7 +2106,7 @@ mod tests {
         // Nothing can be applied or started while previewing history.
         draft_message(&mut editor, DraftMessage::Commit);
         assert!(editor.crop().is_some());
-        assert_eq!(editor.status, "Return to the current state to apply");
+        assert_eq!(editor.status.text, "Return to the current state to apply");
         assert_eq!(
             core_draft(&editor).and_then(CoreDraft::in_flight),
             None,
@@ -2292,7 +2299,7 @@ mod tests {
         assert!(editor.gesture.is_none(), "and its core draft with it");
         assert_eq!(editor.draft_generation(), None);
         assert_eq!(editor.sync.mode.as_deref(), Some(POINTER_MODE));
-        assert_eq!(editor.status, "Crop draft discarded");
+        assert_eq!(editor.status.text, "Crop draft discarded");
         assert_eq!(editor.document.state.as_ref().expect("a state").revision, 2);
         finish(editor, catalog);
     }
@@ -2307,13 +2314,13 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
         let frame = crop_frame(&editor.modules).expect("a crop frame");
         let key = (frame.action.to_owned(), frame.angle.to_owned());
-        editor.fields.set(&key.0, &key.1, "31".into());
+        editor.controls.fields.set(&key.0, &key.1, "31".into());
         let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: key.0.clone(),
             parameter: key.1.clone(),
         }));
         assert_eq!(
-            editor.fields.get(&key.0, &key.1),
+            editor.controls.fields.get(&key.0, &key.1),
             Some("0.0"),
             "the idle box opens at the committed angle"
         );
@@ -2329,9 +2336,9 @@ mod tests {
         submit_angle(&mut editor, "level");
         assert!(editor.gesture.is_none() && editor.editing_angle());
         assert!(
-            editor.status.contains("angle must be a number"),
+            editor.status.text.contains("angle must be a number"),
             "{}",
-            editor.status
+            editor.status.text
         );
         // A release with no drag, and a double-click reset of an angle already at its default of
         // 0, change nothing, so nothing opens: the reset needs no case of its own.
@@ -2347,7 +2354,11 @@ mod tests {
         crate::app::testing::hold_slider(&mut editor, "set-basic", "exposure");
         let _ = editor.update(Message::Crop(CropMessage::Lock));
         assert!(editor.crop().is_none());
-        assert!(editor.status.contains("slider draft"), "{}", editor.status);
+        assert!(
+            editor.status.text.contains("slider draft"),
+            "{}",
+            editor.status.text
+        );
         editor.gesture = None;
 
         // A start whose input stage cannot be prepared ends, taking the change it made with it.
@@ -2358,7 +2369,7 @@ mod tests {
             Err("the source is gone".into()),
         )));
         assert!(editor.crop().is_none(), "nothing is left open");
-        assert_eq!(editor.status, "the source is gone");
+        assert_eq!(editor.status.text, "the source is gone");
         assert!(
             editor.gesture.is_none(),
             "its core draft is cancelled in the same update"
@@ -2589,7 +2600,7 @@ mod tests {
         assert_eq!(editor.draft_generation(), None, "nothing is rendered");
         assert!(!editor.crop_gesture().expect("a draft").frames.replanning);
         assert_eq!(
-            editor.status,
+            editor.status.text,
             "The crop's input stage planned again is not the one on screen"
         );
 

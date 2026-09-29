@@ -21,13 +21,21 @@ use crate::{
     },
     state::{
         IN_FLIGHT,
-        presets::{PresetForm, capture_fields, import_status, presettable_groups},
+        presets::{PresetForm, PresetLibrary, capture_fields, import_status, presettable_groups},
     },
 };
 use iced::Task;
 use luxforge_core::{PresetSummary, ReportCounts};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+/// The Presets section's own state: the library as `preset.list` last answered it, and the
+/// section's create form.
+#[derive(Default)]
+pub(crate) struct Presets {
+    pub(crate) library: PresetLibrary,
+    pub(crate) form: PresetForm,
+}
 
 impl Editor {
     /// Every Presets-section change goes through here.
@@ -36,56 +44,60 @@ impl Editor {
             PresetMessage::Listed(result) => match result {
                 Ok((presets, sequence)) => self.adopt_presets(presets, sequence),
                 Err(error) => {
-                    self.status = format!("Presets unavailable: {error}");
-                    self.presets.failed(error);
+                    self.status.text = format!("Presets unavailable: {error}");
+                    self.presets.library.failed(error);
                 }
             },
             PresetMessage::ToggleForm => {
-                self.preset_form.open = !self.preset_form.open;
-                self.preset_form.error = None;
+                self.presets.form.open = !self.presets.form.open;
+                self.presets.form.error = None;
             }
-            PresetMessage::Name(name) => self.preset_form.name = name,
-            PresetMessage::Group(group) => self.preset_form.group = group,
+            PresetMessage::Name(name) => self.presets.form.name = name,
+            PresetMessage::Group(group) => self.presets.form.group = group,
             PresetMessage::Check { label, checked } => {
-                self.preset_form.checked.insert(label, checked);
+                self.presets.form.checked.insert(label, checked);
             }
-            PresetMessage::Cancel => self.preset_form = PresetForm::default(),
+            PresetMessage::Cancel => self.presets.form = PresetForm::default(),
             PresetMessage::Create => {
-                if self.presets.pending {
+                if self.presets.library.pending {
                     return self.preset_refused("Waiting for the last preset request".into());
                 }
                 let (capture, create) = match self.preset_create_requests() {
                     Ok(requests) => requests,
                     Err(error) => {
-                        self.preset_form.error = Some(error.clone());
+                        self.presets.form.error = Some(error.clone());
                         return self.preset_refused(error);
                     }
                 };
-                self.preset_form.error = None;
-                self.presets.pending = true;
-                self.status = "Saving the preset…".into();
+                self.presets.form.error = None;
+                self.presets.library.pending = true;
+                self.status.text = "Saving the preset…".into();
                 return preset_create_task(self.owner.clone(), self.client, capture, create);
             }
             PresetMessage::Created(result) => {
-                self.presets.pending = false;
+                self.presets.library.pending = false;
                 match result {
                     Ok(change) => {
                         let (name, group) = named(&change.result["preset"]);
                         self.adopt_change(*change);
-                        self.status = format!("Saved preset \u{201c}{name}\u{201d} in {group}");
-                        self.preset_form = PresetForm::default();
+                        self.status.text =
+                            format!("Saved preset \u{201c}{name}\u{201d} in {group}");
+                        self.presets.form = PresetForm::default();
                     }
                     Err(error) => {
                         // A duplicate name is the core's `conflict`, shown as it is, in the form
                         // where the name can be changed and in the status bar.
-                        self.preset_form.error = Some(error.clone());
+                        self.presets.form.error = Some(error.clone());
                         self.preset_failed(error);
                     }
                 }
                 self.settle_step(Settle::Presets);
             }
             PresetMessage::Import => {
-                if self.view_state.picker_open || self.presets.pending || self.evidence.is_some() {
+                if self.view_state.picker_open
+                    || self.presets.library.pending
+                    || self.evidence.is_some()
+                {
                     return Task::none();
                 }
                 self.view_state.picker_open = true;
@@ -107,20 +119,20 @@ impl Editor {
                 }
             }
             PresetMessage::Imported(result) => {
-                self.presets.pending = false;
+                self.presets.library.pending = false;
                 match result {
                     Ok(change) => {
                         let (name, _) = named(&change.result["preset"]);
                         let report = change.result["report"].clone();
                         let counts = report_counts(&report);
                         self.adopt_change(*change);
-                        self.status = match counts {
+                        self.status.text = match counts {
                             Some(counts) => import_status(&name, &counts),
                             None => format!("Imported \u{201c}{name}\u{201d}"),
                         };
                         // Copy in the status bar copies the whole report while this line stands.
-                        self.status_copy = Some((
-                            self.status.clone(),
+                        self.status.copy = Some((
+                            self.status.text.clone(),
                             serde_json::to_string_pretty(&report).unwrap_or_default(),
                         ));
                     }
@@ -130,18 +142,18 @@ impl Editor {
             }
             PresetMessage::Delete(id) => {
                 self.view_state.menu = None;
-                if self.presets.pending {
+                if self.presets.library.pending {
                     return self.preset_refused("Waiting for the last preset request".into());
                 }
-                self.presets.pending = true;
-                self.status = "Deleting the preset…".into();
+                self.presets.library.pending = true;
+                self.status.text = "Deleting the preset…".into();
                 return preset_delete_task(self.owner.clone(), self.client, id);
             }
             PresetMessage::Deleted(result) => {
-                self.presets.pending = false;
+                self.presets.library.pending = false;
                 match result {
                     Ok(change) => {
-                        self.status = if change.result["deleted"] == json!(true) {
+                        self.status.text = if change.result["deleted"] == json!(true) {
                             "Deleted the preset".into()
                         } else {
                             "The preset was already gone".into()
@@ -158,10 +170,10 @@ impl Editor {
             }
             PresetMessage::ReportRead(result) => match result {
                 Ok(report) => {
-                    self.status = "Copied the import report".into();
+                    self.status.text = "Copied the import report".into();
                     return iced::clipboard::write(report);
                 }
-                Err(error) => self.status = error,
+                Err(error) => self.status.text = error,
             },
             PresetMessage::Export(id) => {
                 self.view_state.menu = None;
@@ -171,7 +183,7 @@ impl Editor {
                 return preset_export_task(self.owner.clone(), self.client, id);
             }
             PresetMessage::Exported(result) => {
-                self.status = match result {
+                self.status.text = match result {
                     Ok(Some(file)) => format!("Exported {file}"),
                     Ok(None) => "Export cancelled".into(),
                     Err(error) => error,
@@ -184,11 +196,11 @@ impl Editor {
     /// Import one file, chosen in the dialog or named by an evidence script: the same task either
     /// way, which reads the file off the update loop and refuses it there when it is too large.
     pub(crate) fn preset_import(&mut self, path: PathBuf) -> Task<Message> {
-        if self.presets.pending {
+        if self.presets.library.pending {
             return self.preset_refused("Waiting for the last preset request".into());
         }
-        self.presets.pending = true;
-        self.status = "Importing the preset…".into();
+        self.presets.library.pending = true;
+        self.status.text = "Importing the preset…".into();
         preset_import_task(self.owner.clone(), self.client, path)
     }
 
@@ -207,7 +219,7 @@ impl Editor {
         if self.busy {
             return Err(IN_FLIGHT.into());
         }
-        let form = &self.preset_form;
+        let form = &self.presets.form;
         if form.name.trim().is_empty() {
             return Err("Name the preset before creating it".into());
         }
@@ -226,9 +238,9 @@ impl Editor {
 
     /// Adopt a listing, and close a row menu whose preset it no longer holds.
     pub(crate) fn adopt_presets(&mut self, presets: Vec<PresetSummary>, sequence: u64) {
-        self.presets.adopt(presets, sequence);
+        self.presets.library.adopt(presets, sequence);
         if let Some(MenuTarget::Preset(id)) = &self.view_state.menu
-            && self.presets.find(id).is_none()
+            && self.presets.library.find(id).is_none()
         {
             self.view_state.menu = None;
         }
@@ -250,7 +262,7 @@ impl Editor {
     /// sent it is recorded as failed.
     fn preset_failed(&mut self, error: String) {
         self.refuse_step(&error);
-        self.status = error;
+        self.status.text = error;
     }
 }
 
