@@ -409,9 +409,9 @@ impl Editor {
                 let mut summary = crop.summary(draft);
                 if let Some(object) = summary.as_object_mut() {
                     object.insert("drafting".into(), Value::from(true));
-                    object.insert("guide".into(), Value::from(self.crop_guide));
-                    object.insert("option".into(), Value::from(self.crop_option));
-                    object.insert("space".into(), Value::from(self.crop_space));
+                    object.insert("guide".into(), Value::from(self.crop_section.guide));
+                    object.insert("option".into(), Value::from(self.crop_section.option));
+                    object.insert("space".into(), Value::from(self.crop_section.space));
                     object.insert(
                         "paused".into(),
                         Value::from(!self.session.preview.can_edit()),

@@ -299,13 +299,8 @@ pub(crate) struct Editor {
     pub(crate) version_name: String,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
-    /// The preview generation that belongs to the draft rather than to the displayed state.
-    pub(crate) draft_generation: Option<u64>,
-    /// The two extents the `custom` ratio preset reads.
-    pub(crate) crop_custom: (String, String),
-    pub(crate) crop_guide: bool,
-    pub(crate) crop_option: bool,
-    pub(crate) crop_space: bool,
+    /// The crop section's own options: the custom ratio's extents and the held modifiers.
+    pub(crate) crop_section: state::CropSection,
     /// Set when a draft just started or ended by a route that does not already ask the session
     /// itself: the next `update` call folds in one `workspace.set` for this mode, unless the
     /// session already reports it, so the mode strip shows Crop selected during every draft
@@ -481,11 +476,7 @@ impl Editor {
             zoom_editing: false,
             version_name: String::new(),
             version_form_open: false,
-            draft_generation: None,
-            crop_custom: ("5".into(), "4".into()),
-            crop_guide: false,
-            crop_option: false,
-            crop_space: false,
+            crop_section: Default::default(),
             mode_sync: None,
             masks: Default::default(),
             mask_panel: Default::default(),
@@ -705,10 +696,7 @@ impl Editor {
             // control in front of it would edit.
             target: self.section_target(),
             drafting: self.drafting(),
-            crop_custom: (&self.crop_custom.0, &self.crop_custom.1),
-            crop_guide: self.crop_guide,
-            crop_option: self.crop_option,
-            crop_space: self.crop_space,
+            crop_section: &self.crop_section,
             session: &self.session,
             status: &self.status,
             busy: self.busy,

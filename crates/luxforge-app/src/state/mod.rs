@@ -118,6 +118,31 @@ pub(crate) fn edit_refusal(
         .map(str::to_owned)
 }
 
+/// The crop section's own options, which this desktop holds and sends only as the draft they
+/// shape: the two extents the `custom` ratio preset reads, and the Straighten guide, Option and
+/// Space modifiers.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CropSection {
+    pub(crate) custom: (String, String),
+    /// The Straighten guide: a drag on the image draws a levelling line instead.
+    pub(crate) guide: bool,
+    /// Option (Alt) is held, so a handle scales uniformly about the centre.
+    pub(crate) option: bool,
+    /// Space is held, so a drag pans instead of touching the draft.
+    pub(crate) space: bool,
+}
+
+impl Default for CropSection {
+    fn default() -> Self {
+        Self {
+            custom: ("5".into(), "4".into()),
+            guide: false,
+            option: false,
+            space: false,
+        }
+    }
+}
+
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
     pub(crate) state: Option<&'a EditorState>,
@@ -178,10 +203,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) target: Option<&'a MaskId>,
     /// The draft's own input stage is on the GPU and the current state is shown.
     pub(crate) drafting: bool,
-    pub(crate) crop_custom: (&'a str, &'a str),
-    pub(crate) crop_guide: bool,
-    pub(crate) crop_option: bool,
-    pub(crate) crop_space: bool,
+    /// The crop section's own options.
+    pub(crate) crop_section: &'a CropSection,
     pub(crate) session: &'a ClientSession,
     pub(crate) status: &'a str,
     pub(crate) busy: bool,
@@ -431,6 +454,7 @@ mod tests {
         apply_refusal: Option<String>,
         masks: Option<MaskListing>,
         mask_panel: masks::MaskPanel,
+        crop_section: CropSection,
         mask_draft: Option<MaskDraft>,
         session: ClientSession,
         status: String,
@@ -477,6 +501,7 @@ mod tests {
                 apply_refusal: None,
                 masks: None,
                 mask_panel: masks::MaskPanel::default(),
+                crop_section: CropSection::default(),
                 mask_draft: None,
                 session: ClientSession::default(),
                 status: "ready".into(),
@@ -580,10 +605,7 @@ mod tests {
                     .as_ref()
                     .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
                 drafting: self.draft.is_some(),
-                crop_custom: ("5", "4"),
-                crop_guide: false,
-                crop_option: false,
-                crop_space: false,
+                crop_section: &self.crop_section,
                 session: &self.session,
                 status: &self.status,
                 busy: self.busy,

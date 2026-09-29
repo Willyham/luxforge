@@ -41,6 +41,9 @@ pub(crate) struct CropGesture {
     pub(crate) stage: StageView,
     /// The frames the input stage's phases have delivered, and which stack it was planned from.
     pub(crate) frames: StageFrames,
+    /// The preview generation of the input stage's job on its way, which belongs to the draft
+    /// rather than to the displayed state.
+    pub(crate) generation: Option<u64>,
 }
 
 /// The crop layer's input stage as the draft holds it, by the one rule the photograph follows
@@ -192,6 +195,18 @@ impl Editor {
         }
     }
 
+    /// The preview generation of the open crop draft's input stage job still on its way.
+    pub(crate) fn draft_generation(&self) -> Option<u64> {
+        self.crop_gesture().and_then(|crop| crop.generation)
+    }
+
+    /// Note which preview generation is the open crop draft's input stage, or that none is.
+    pub(crate) fn set_draft_generation(&mut self, generation: Option<u64>) {
+        if let Some(crop) = self.crop_gesture_mut() {
+            crop.generation = generation;
+        }
+    }
+
     /// The open crop frame. A start whose stage will not arrive has none: it is ending.
     pub(crate) fn crop(&self) -> Option<&CropDraft> {
         self.crop_gesture()
@@ -284,7 +299,7 @@ impl Editor {
     /// draft; a start leaves the canvas at once and its core draft is discarded once the update is
     /// over ([`Self::close_abandoned_crop`]). Returns whether it was a reapply.
     pub(crate) fn crop_stage_lost(&mut self) -> bool {
-        self.draft_generation = None;
+        self.set_draft_generation(None);
         let Some(crop) = self.crop_gesture_mut() else {
             return false;
         };
@@ -297,7 +312,7 @@ impl Editor {
             StageView::Abandoned
         };
         if !reapply {
-            self.end_crop_view();
+            self.end_crop_view(None);
         }
         reapply
     }
@@ -319,9 +334,9 @@ impl Editor {
             return self.idle_change(message);
         }
         match message {
-            CropMessage::Option(option) => self.crop_option = option,
-            CropMessage::Space(space) => self.crop_space = space,
-            CropMessage::Guide(guide) => self.crop_guide = guide && self.crop().is_some(),
+            CropMessage::Option(option) => self.crop_section.option = option,
+            CropMessage::Space(space) => self.crop_section.space = space,
+            CropMessage::Guide(guide) => self.crop_section.guide = guide && self.crop().is_some(),
             CropMessage::Start => return self.crop_start(),
             // The job goes straight to the preview worker, as a start's does, or is dropped: this
             // module names no planned job, so none is kept here (`desktop-keeps-no-preview-job`).
@@ -330,7 +345,8 @@ impl Editor {
                 if self.crop_stage_replanned(&entry, planned)
                     && let Ok(job) = result
                 {
-                    self.draft_generation = Some(self.request_preview(*job));
+                    let generation = self.request_preview(*job);
+                    self.set_draft_generation(Some(generation));
                 }
             }
             CropMessage::PreviewReady(StagePlan::Open, result) => match result {
@@ -348,8 +364,9 @@ impl Editor {
                     }
                     // A job an earlier start asked for is no longer the draft's once this one is
                     // requested, so this request superseding it ends nothing.
-                    self.draft_generation = None;
-                    self.draft_generation = Some(self.request_preview(*job));
+                    self.set_draft_generation(None);
+                    let generation = self.request_preview(*job);
+                    self.set_draft_generation(Some(generation));
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
@@ -390,8 +407,8 @@ impl Editor {
                 }
                 return self.crop_changed("crop_draft_changed");
             }
-            CropMessage::CustomWidth(text) => self.crop_custom.0 = text,
-            CropMessage::CustomHeight(text) => self.crop_custom.1 = text,
+            CropMessage::CustomWidth(text) => self.crop_section.custom.0 = text,
+            CropMessage::CustomHeight(text) => self.crop_section.custom.1 = text,
             CropMessage::Swap => {
                 if let Some(draft) = self.crop_mut() {
                     draft.swap();
@@ -459,6 +476,7 @@ impl Editor {
                 base_revision,
             },
             frames: StageFrames::default(),
+            generation: None,
         };
         let gesture = self.next_gesture();
         let begin = self.open_core(gesture, Kind::Crop(crop), None);
@@ -513,11 +531,12 @@ impl Editor {
             base_revision,
         };
         crop.frames = StageFrames::default();
+        let rendering = crop.generation.take();
         // The stage on screen is the one the frame was rebased away from, and one still rendering
         // for it is stopped and held below the delivery floor, so neither is drawn under the
         // rebased frame nor taken up as the photograph.
         self.presentation.presenter.end_stage();
-        if self.draft_generation.take().is_some() {
+        if rendering.is_some() {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
         self.status = "Preparing the crop's input stage…".into();
@@ -601,7 +620,7 @@ impl Editor {
         last: bool,
     ) -> (bool, Task<Message>) {
         if last {
-            self.draft_generation = None;
+            self.set_draft_generation(None);
         }
         let wants_bounded = self.crop_stage_bounds().is_some();
         let Some(crop) = self.crop_gesture_mut() else {
@@ -645,7 +664,7 @@ impl Editor {
             return Task::none();
         }
         self.await_frame(Settle::Draft);
-        let in_flight = self.draft_generation.is_some();
+        let in_flight = self.draft_generation().is_some();
         let Some(crop) = self.crop_gesture_mut() else {
             return Task::none();
         };
@@ -747,7 +766,7 @@ impl Editor {
             self.settle_step(Settle::Draft);
             return false;
         }
-        if self.draft_generation.is_some() || !self.show_held_crop_stage() {
+        if self.draft_generation().is_some() || !self.show_held_crop_stage() {
             self.settle_step(Settle::Draft);
             return false;
         }
@@ -998,16 +1017,17 @@ impl Editor {
     }
 
     /// Put the canvas back as it was before the draft: drop the input stage it displayed, and a
-    /// stage still on its way, and return the session to pointer. Every way a crop draft ends —
-    /// Apply, Cancel, a scripted cancel or apply, a start that failed — comes through here.
-    pub(crate) fn end_crop_view(&mut self) {
+    /// stage still on its way (`rendering`, the ended gesture's generation), and return the session
+    /// to pointer. Every way a crop draft ends — Apply, Cancel, a scripted cancel or apply, a start
+    /// that failed — comes through here.
+    pub(crate) fn end_crop_view(&mut self, rendering: Option<u64>) {
         self.presentation.presenter.end_stage();
         // A stage still rendering is stopped and held below the delivery floor, so it can never be
         // taken up as the photograph once nothing marks it as the draft's.
-        if self.draft_generation.take().is_some() {
+        if rendering.is_some() {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
-        self.crop_guide = false;
+        self.crop_section.guide = false;
         if self.editing_angle() {
             self.editing = None;
         }
@@ -1017,7 +1037,7 @@ impl Editor {
     /// The crop gesture was discarded: the frame leaves the screen and says so, unless it is a
     /// start whose stage never arrived, which already said why it ended.
     pub(crate) fn crop_discarded(&mut self, crop: &CropGesture, draft: &CoreDraft) {
-        self.end_crop_view();
+        self.end_crop_view(crop.generation);
         if crop.stage != StageView::Abandoned {
             self.event("crop_draft_discarded", crop.summary(draft));
             self.status = "Crop draft discarded".into();
@@ -1026,7 +1046,7 @@ impl Editor {
 
     /// The crop gesture ended without a draft: its `draft.begin` was refused.
     pub(crate) fn crop_ended(&mut self) {
-        self.end_crop_view();
+        self.end_crop_view(None);
         self.settle_step(Settle::Draft);
     }
 
@@ -1039,7 +1059,7 @@ impl Editor {
         outcome: Option<Refresh>,
     ) -> Task<Message> {
         let summary = crop.summary(draft);
-        self.end_crop_view();
+        self.end_crop_view(crop.generation);
         let Some(refresh) = outcome else {
             self.status = "Crop unchanged; nothing was committed".into();
             self.event("crop_draft_noop", summary);
@@ -1068,8 +1088,8 @@ impl Editor {
 
     /// The `custom` preset's two extents as typed, or `None` when either is not a positive number.
     fn custom_ratio(&self) -> Option<(f64, f64)> {
-        let width: f64 = self.crop_custom.0.trim().parse().ok()?;
-        let height: f64 = self.crop_custom.1.trim().parse().ok()?;
+        let width: f64 = self.crop_section.custom.0.trim().parse().ok()?;
+        let height: f64 = self.crop_section.custom.1.trim().parse().ok()?;
         (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
             .then_some((width, height))
     }
@@ -1526,18 +1546,21 @@ mod tests {
             (CropMessage::Option(false), false),
         ] {
             let _ = editor.update(Message::Crop(message));
-            assert_eq!(editor.crop_option, read);
+            assert_eq!(editor.crop_section.option, read);
         }
         let _ = editor.update(Message::Crop(CropMessage::Space(true)));
-        assert!(editor.crop_space);
+        assert!(editor.crop_section.space);
         let _ = editor.update(Message::Crop(CropMessage::Guide(true)));
-        assert!(editor.crop_guide);
+        assert!(editor.crop_section.guide);
 
         // Cancel is the one draft lifecycle's, as it is for every gesture.
         draft_message(&mut editor, DraftMessage::Cancel);
         assert!(editor.crop().is_none());
         assert!(editor.presentation.presenter.stage().is_none());
-        assert!(!editor.crop_guide, "cancelling leaves no guide mode on");
+        assert!(
+            !editor.crop_section.guide,
+            "cancelling leaves no guide mode on"
+        );
         let summary = editor.snapshot()["crop"].clone();
         assert_eq!(summary["drafting"], json!(false));
         // The idle section is back, reading the stack the draft never committed to.
@@ -2238,7 +2261,7 @@ mod tests {
         let _ = editor.dispatch(Message::Draft(DraftMessage::Cancel));
         assert!(editor.crop().is_none(), "the frame left at once");
         assert!(editor.gesture.is_none(), "and its core draft with it");
-        assert_eq!(editor.draft_generation, None);
+        assert_eq!(editor.draft_generation(), None);
         assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
         assert_eq!(editor.status, "Crop draft discarded");
         assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
@@ -2375,19 +2398,23 @@ mod tests {
         );
         assert!(width <= bounds.width && height <= bounds.height);
         assert_eq!(fit["held_exact"], json!(false), "no exact phase at Fit");
-        assert_eq!(editor.draft_generation, None, "nothing more is on its way");
+        assert_eq!(
+            editor.draft_generation(),
+            None,
+            "nothing more is on its way"
+        );
 
         editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
         let plan = editor.zoom_changed(&Zoom::Fit);
         assert_eq!(plan.units(), 1, "the stage is planned again");
         let _ = editor.update(stage_replanned(&editor, &asset, count).0);
         assert!(
-            editor.draft_generation.is_some(),
+            editor.draft_generation().is_some(),
             "the exact stage is asked for"
         );
         let exact = shown(&mut editor, "exact");
         assert_eq!(exact["size"], json!([input.width, input.height]));
-        assert_eq!(editor.draft_generation, None);
+        assert_eq!(editor.draft_generation(), None);
 
         editor.session.preview.view.zoom = Zoom::Fit;
         let plan = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
@@ -2395,7 +2422,7 @@ mod tests {
         let back = editor.snapshot()["crop"]["input_stage_frame"].clone();
         assert_eq!(back["phase"], json!("proxy"), "the held proxy, at once");
         assert_eq!(back["size"], fit["size"]);
-        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert_eq!(editor.draft_generation(), None, "nothing is rendered");
         finish(editor, catalog);
     }
 
@@ -2489,7 +2516,7 @@ mod tests {
         editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
         let again = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
         assert_eq!(again.units(), 0, "a plan is already on its way");
-        assert_eq!(editor.draft_generation, None);
+        assert_eq!(editor.draft_generation(), None);
 
         // The zoom moved back to Fit before the answer: the held proxy serves, and the answer is
         // dropped without a render.
@@ -2500,7 +2527,7 @@ mod tests {
         );
         let (answer, pixels) = stage_replanned(&editor, &asset, count);
         let _ = editor.update(answer);
-        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert_eq!(editor.draft_generation(), None, "nothing is rendered");
         assert!(!editor.crop_gesture().expect("a draft").frames.replanning);
         assert_eq!(phase(&editor), json!("proxy"));
         assert_eq!(pixels.strong_count(), 0, "a dropped answer is not kept");
@@ -2530,7 +2557,7 @@ mod tests {
             StagePlan::Zoom(entry),
             Ok(Box::new(other)),
         )));
-        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert_eq!(editor.draft_generation(), None, "nothing is rendered");
         assert!(!editor.crop_gesture().expect("a draft").frames.replanning);
         assert_eq!(
             editor.status,
@@ -2546,7 +2573,7 @@ mod tests {
         let (answer, pixels) = stage_replanned(&editor, &asset, count);
         let _ = editor.update(answer);
         assert!(
-            editor.draft_generation.is_some(),
+            editor.draft_generation().is_some(),
             "the exact stage is asked for"
         );
         settled(&mut editor, "exact");
@@ -2573,7 +2600,7 @@ mod tests {
         assert!(editor.crop_gesture().is_none());
         assert_eq!(pixels.strong_count(), 0, "the frames end with the draft");
         let _ = editor.update(answer);
-        assert_eq!(editor.draft_generation, None, "nothing is rendered");
+        assert_eq!(editor.draft_generation(), None, "nothing is rendered");
         assert!(editor.presentation.presenter.stage().is_none());
         assert_eq!(dropped.strong_count(), 0, "a dropped answer is not kept");
         finish(editor, catalog);

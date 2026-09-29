@@ -560,9 +560,9 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
             base_revision: 4,
         },
     );
-    editor.draft_generation = Some(99);
+    editor.set_draft_generation(Some(99));
     editor.draft_preview_failed(&error);
-    assert_eq!(editor.draft_generation, None);
+    assert_eq!(editor.draft_generation(), None);
     assert!(editor.crop().is_none(), "the start's frame left at once");
     assert_eq!(editor.crop_stage(), Some(StageView::Abandoned));
     assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
@@ -597,14 +597,14 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
             base_revision: 5,
         },
     );
-    editor.draft_generation = Some(100);
+    editor.set_draft_generation(Some(100));
     editor.draft_preview_failed(&error);
     assert!(
         editor.crop().is_some(),
         "a failed reapply discarded the draft"
     );
     assert_eq!(editor.crop_stage(), Some(StageView::Missing));
-    assert_eq!(editor.draft_generation, None);
+    assert_eq!(editor.draft_generation(), None);
     finish(editor, catalog);
 }
 
@@ -722,7 +722,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         Ok(Box::new(job)),
     )));
     let draft = editor
-        .draft_generation
+        .draft_generation()
         .expect("the draft's job was requested");
     assert_eq!(editor.status, "Rendering the crop's input stage…");
     assert_eq!(
@@ -744,7 +744,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     dispatch_polls_until(&mut editor, "the draft's end", |editor| {
         editor.crop().is_none()
     });
-    assert_eq!(editor.draft_generation, None);
+    assert_eq!(editor.draft_generation(), None);
     assert!(editor.crop().is_none() && editor.presentation.presenter.stage().is_none());
     assert_eq!(
         editor.mode_sync.as_deref(),
@@ -804,7 +804,7 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
         Ok(Box::new(job)),
     )));
     let draft = editor
-        .draft_generation
+        .draft_generation()
         .expect("the draft's job was requested");
     stage.reached(&editor, "the draft's input stage");
 
@@ -817,7 +817,11 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
     });
     assert!(editor.presentation.presenter.stage().is_some());
     assert!(core_draft(&editor).expect("the draft is kept").conflicted);
-    assert_eq!(editor.draft_generation, None, "nothing more is on its way");
+    assert_eq!(
+        editor.draft_generation(),
+        None,
+        "nothing more is on its way"
+    );
 
     frame.open();
     poll_until(&mut editor, "the new entry's frame", |editor| {
@@ -864,7 +868,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         Ok(Box::new(job)),
     )));
     let reapply = editor
-        .draft_generation
+        .draft_generation()
         .expect("the reapply's job was requested");
     assert_eq!(
         editor.presentation.queue.pending_generation(),
@@ -874,7 +878,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
 
     let next = committed_elsewhere(&mut editor, &asset, 6, None);
     assert!(
-        editor.crop_stage() == Some(StageView::Missing) && editor.draft_generation.is_none(),
+        editor.crop_stage() == Some(StageView::Missing) && editor.draft_generation().is_none(),
         "the replaced reapply is still waiting"
     );
     assert!(editor.crop().is_some(), "the reapply kept its draft");
@@ -931,7 +935,8 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
         Ok(Box::new(job)),
     )));
     assert_eq!(
-        editor.draft_generation, None,
+        editor.draft_generation(),
+        None,
         "the stale stage was not requested"
     );
     assert!(editor.crop().is_none());
@@ -964,7 +969,7 @@ fn a_draft_shows_its_input_stage_in_the_update_that_takes_it_up() {
         crate::app::crop::StagePlan::Open,
         Ok(Box::new(job)),
     )));
-    let draft = editor.draft_generation.expect("the draft's job");
+    let draft = editor.draft_generation().expect("the draft's job");
     // Nothing is taken up until the stage is ready, so one `Poll` takes it up.
     deliver_until(
         &mut editor,

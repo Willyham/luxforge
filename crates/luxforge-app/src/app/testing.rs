@@ -724,6 +724,7 @@ pub(crate) fn hold_crop(
             frame,
             stage,
             frames: Default::default(),
+            generation: None,
         }),
     }));
 }
