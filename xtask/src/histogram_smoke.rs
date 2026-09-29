@@ -17,7 +17,7 @@
 //! before it pixel for pixel: the tools panel is identical, and the status bar changes only inside
 //! the readout's own slot.
 use crate::{
-    scenario::{Checked, Fixture, Frame, Plan, Run, Step, pixels, plan::only},
+    scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
     *,
 };
 use luxforge_core::{
@@ -67,7 +67,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     let view = |name: &str, script: script::Step| Step::new(name, script).commits(0);
     Plan::new(vec![
         // The default screen: the fixture's own counts, both overlays off.
-        Step::opened("opened"),
+        Step::opened("opened")
+            .workspace("clip_shadows", json!(false))
+            .workspace("clip_highlights", json!(false)),
         // One both-endpoint pixel, committed through the ordinary edit path.
         Step::new(
             "pixel",
@@ -88,16 +90,20 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         view(
             "shadows",
             script::Step::Workspace(WorkspaceStep::default().clip_shadows(true)),
-        ),
+        )
+        .workspace("clip_shadows", json!(true))
+        .workspace("clip_highlights", json!(false)),
         // Both overlays, which is where magenta appears.
         view(
             "both",
             script::Step::Workspace(WorkspaceStep::default().clip_highlights(true)),
-        ),
+        )
+        .workspace("clip_shadows", json!(true))
+        .workspace("clip_highlights", json!(true)),
         // 100%, one overlay cell per source pixel.
-        view("percent", script::Step::View(ViewStep::Percent(100.0))),
+        view("percent", script::Step::View(ViewStep::Percent(100.0))).percent(100.0),
         // Back to Fit.
-        view("fit", script::Step::View(ViewStep::Fit)),
+        view("fit", script::Step::View(ViewStep::Fit)).fit(),
         // Both overlays off again; the photograph is untouched underneath.
         view(
             "overlays-off",
@@ -106,7 +112,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                     .clip_shadows(false)
                     .clip_highlights(false),
             ),
-        ),
+        )
+        .workspace("clip_shadows", json!(false))
+        .workspace("clip_highlights", json!(false)),
         // The Original entry, whose counts are the fixture's own again.
         view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
@@ -368,34 +376,12 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
     Ok(json!({"counters":expected,"plotted_max":max,"identity":state["identity"]}))
 }
 
-/// The photograph's exact rectangle in a capture: every pixel of the photo surface that carries one
-/// of the fixture's four quadrant colours. The scan is exhaustive rather than stepped, because the
-/// overlay checks below map single source pixels into it and a four-pixel error would miss them.
+/// The photograph's exact rectangle in a capture: the one the editor records drawing it in, with its
+/// edges where the drawn pixels end. The overlay checks below map single source pixels into it, so
+/// it must be exact to the pixel.
 fn photo_rect(frame: &Frame) -> Result<([u32; 4], &image::RgbImage)> {
-    let image = frame.image()?;
-    let (width, height) = image.dimensions();
-    let [left_edge, right_edge] = frame.columns()?.unwrap_or([0, width]);
-    let quadrant = |pixel: &[u8; 3]| {
-        fixtures::COLORS
-            .iter()
-            .any(|colour| pixel.iter().zip(colour).all(|(a, b)| a.abs_diff(*b) <= 8))
-    };
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
-    for y in 0..height {
-        for x in left_edge..right_edge.min(width) {
-            if quadrant(&image.get_pixel(x, y).0) {
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 1);
-                bottom = bottom.max(y + 1);
-            }
-        }
-    }
-    ensure(
-        right > left && bottom > top,
-        "No fixture colours in the photo surface",
-    )?;
-    Ok(([left, top, right, bottom], image))
+    let rect = frame.photo_edges(|pixel| pixel != pixels::CANVAS)?;
+    Ok((rect, frame.image()?))
 }
 
 /// Where one source pixel's centre lands in a capture whose photograph occupies `rect`.
@@ -609,10 +595,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let current = launch.at("current")?;
     let drag = launch.at("drag")?;
     let release = launch.at("release")?;
-    let mut checks = Vec::new();
-    let mut record = |frame: &Value, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
-    };
+    let mut checks = Checks::new();
 
     // The two recipes the run displays, rendered and reduced independently in this process.
     let plain = reference(root, &Recipe::default())?;
@@ -646,12 +629,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         opened["state"]["histogram"]["overlay"] == Value::Null,
         "An overlay was derived before either flag was set",
     )?;
-    ensure(
-        opened["state"]["workspace"]["clip_shadows"] == json!(false)
-            && opened["state"]["workspace"]["clip_highlights"] == json!(false),
-        "The clipping flags do not start off",
-    )?;
-    record(
+    checks.note(
         opened,
         "the default screen with the histogram ready, counts equal to an independent reduction",
         json!({"histogram":opened_counts,"pixels":opened.fixture(Fixture::fit(1))?}),
@@ -664,7 +642,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "edit.set-pixel did not commit revision 1",
     )?;
     let after = expect_counts(pixel, &edited, "after edit.set-pixel")?;
-    record(
+    checks.note(
         pixel,
         "one both-endpoint pixel committed; the plot follows the new stack",
         after,
@@ -729,7 +707,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(hover) == counters(pixel),
         "Hovering changed the histogram",
     )?;
-    record(
+    checks.note(
         hover,
         "the pointer readout over the pixel that was just set, in the status bar; the tools panel is pixel-identical to the frame before and the status bar changed only inside the readout slot",
         json!({"readout": readout, "status_bar": hover["state"]["status_bar"], "chrome": chrome}),
@@ -741,15 +719,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let (bare_rect, bare) = photo_rect(hover)?;
     let bare_radius = radius(bare_rect);
 
-    // The shadow overlay alone. Blue over the black dashes, and nothing red anywhere.
-    ensure(
-        shadows["state"]["workspace"]["clip_shadows"] == json!(true)
-            && shadows["state"]["workspace"]["clip_highlights"] == json!(false),
-        format!(
-            "The shadow step's flags are {}",
-            shadows["state"]["workspace"]
-        ),
-    )?;
+    // The shadow overlay alone, which the plan holds to its flags. Blue over the black dashes,
+    // and nothing red anywhere.
     let overlay = &shadows["state"]["histogram"]["overlay"];
     ensure(
         overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
@@ -797,7 +768,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         shadows["state"]["stack"] == pixel["state"]["stack"],
         "Switching an overlay on changed the committed stack",
     )?;
-    record(
+    checks.note(
         shadows,
         "the shadow overlay: blue over the pixels with a channel at 0, nothing over the 255 line",
         json!({"overlay":overlay,"photo_rect":shadows_rect,"window_radius":bare_radius}),
@@ -806,11 +777,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // Both overlays. Blue over the dashes, red over the white line, magenta where both hold at
     // once. The fixture has no pixel at both endpoints of its own, so the magenta comes from the
     // one pixel the scenario set; that is the isolated-pixel case a Fit overlay must keep.
-    ensure(
-        both["state"]["workspace"]["clip_shadows"] == json!(true)
-            && both["state"]["workspace"]["clip_highlights"] == json!(true),
-        format!("Both overlays' flags are {}", both["state"]["workspace"]),
-    )?;
     let (both_rect, both_image) = photo_rect(both)?;
     same_rect(both_rect, bare_rect, "both overlays")?;
     ensure(
@@ -850,7 +816,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         bare_radius,
         "an overlay reached an unclipped quadrant",
     )?;
-    record(
+    checks.note(
         both,
         "both overlays: blue at code 0, red at code 255, magenta on the one pixel at both",
         json!({
@@ -922,7 +888,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(percent) == counters(pixel),
         "Zooming changed the histogram",
     )?;
-    record(
+    checks.note(
         percent,
         "100% with both overlays on: one cell per physical pixel, still aligned",
         json!({"photo_rect":percent_rect,"physical_width":hundred_width,"overlay":percent["state"]["histogram"]["overlay"]}),
@@ -933,7 +899,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(fit) == counters(pixel),
         "Returning to Fit changed the histogram",
     )?;
-    record(
+    checks.note(
         fit,
         "back at Fit with both overlays on",
         counters(fit).clone(),
@@ -941,11 +907,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     // Both overlays off. The photograph underneath is byte for byte the frame from before either
     // flag was set, at every point the masks had covered.
-    ensure(
-        off["state"]["workspace"]["clip_shadows"] == json!(false)
-            && off["state"]["workspace"]["clip_highlights"] == json!(false),
-        "The overlays did not switch off",
-    )?;
     ensure(
         off["state"]["histogram"]["overlay"] == Value::Null,
         "An overlay is still derived with both flags off",
@@ -966,7 +927,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(off) == counters(pixel),
         "Switching the overlays off changed the histogram",
     )?;
-    record(
+    checks.note(
         off,
         "both overlays off: the photograph is the fixture again and the counts are unchanged",
         json!({"photo_rect":off_rect,"points_compared":covered}),
@@ -992,7 +953,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             original["state"]["readout"]
         ),
     )?;
-    record(
+    checks.note(
         original,
         "previewing the Original: the plot follows the displayed entry, not the newest one",
         original_counts,
@@ -1004,7 +965,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(current) == counters(pixel),
         "Returning to current did not restore the edited stack's counts",
     )?;
-    record(
+    checks.note(
         current,
         "back to current before the gesture",
         counters(current).clone(),
@@ -1040,7 +1001,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(drag) != counters(current),
         "The drafted exposure left the counts identical to the committed frame's",
     )?;
-    record(
+    checks.note(
         drag,
         "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
         json!({"draft": drafted, "histogram": drafted_detail}),
@@ -1055,7 +1016,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         counters(release) != counters(current),
         "The committed exposure left the counts unchanged",
     )?;
-    record(
+    checks.note(
         release,
         "the gesture released: one commit, and the counts equal an independent reduction of the composed pixel-and-exposure stack",
         released_detail,
@@ -1064,13 +1025,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // Every frame the run presented reports its own render time, and each captured status bar
     // states one of them rather than the time since the open.
     let render_times = crate::smoke::expect_render_times(&launch.events, &launch.frames)?;
-    checks.push(json!({"shows":"the render time of every presented frame","detail":render_times}));
-
-    write_json(
-        &launch.evidence.join("histogram-checks.json"),
-        &json!(checks),
-    )?;
-    Ok(())
+    checks.write(
+        &launch.evidence,
+        "histogram",
+        json!({"render_times": render_times}),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1080,89 +1039,79 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 /// The ratio the two crop frames commit.
 const CROP_RATIO: f64 = 16.0 / 9.0;
 
-/// The photograph's bounding box in a capture, found by brightness rather than by the fixture's
-/// own quadrant colours: a Basic edit moves those colours, so matching them would be matching the
-/// edit rather than the placement. The threshold is well above the canvas surface (`#19191b`) and
-/// the bars over it (`#232326`), and well below every quadrant of this fixture at any exposure this
-/// scenario uses.
+/// How bright the photograph's own pixels read at its edges, as a mean of their channels, which
+/// ties its recorded rectangle to what was drawn: well above the canvas surface (`#19191b`) and the
+/// bars over it (`#232326`), and well below every quadrant of this fixture at any exposure this
+/// scenario uses. Brightness rather than the fixture's quadrant colours, because a Basic edit moves
+/// those colours.
 const BRIGHT: u32 = 70;
 
 /// The displayed ratio and centring of a captured photograph, against the ratio its committed crop
 /// payload declares.
-fn expect_placement(frame: &Frame, ratio: f64, what: &str) -> Result<Value> {
-    let [left, top, right, bottom] = pixels::band_bounds(frame, BRIGHT)?;
-    let image = frame.image()?;
-    let [surface_left, surface_right] = frame.columns()?.unwrap_or([0, image.width()]);
-    let measured = f64::from(right - left) / f64::from(bottom - top);
-    ensure(
-        (measured - ratio).abs() < 0.02,
-        format!("{what}: the displayed ratio is {measured:.4}, the payload declares {ratio:.4}"),
+fn expect_placement(checks: &mut Checks, frame: &Frame, ratio: f64, what: &str) -> Result {
+    let [left, top, right, bottom] = frame
+        .photo_edges(|p| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 >= BRIGHT)?;
+    let [surface_left, surface_right] = frame
+        .columns()?
+        .ok_or("The frame records no photo surface")?;
+    checks.compare(
+        frame,
+        &format!("{what}: the displayed ratio against the payload's"),
+        f64::from(right - left) / f64::from(bottom - top),
+        ratio,
+        Tolerance::Under(0.02),
     )?;
-    ensure(
-        (f64::from(left + right) / 2.0 - f64::from(surface_left + surface_right) / 2.0).abs()
-            <= 6.0,
-        format!("{what}: the photograph is not centred in the photo surface"),
+    checks.compare(
+        frame,
+        &format!("{what}: the photograph's centre against the photo surface's"),
+        f64::from(left + right) / 2.0,
+        f64::from(surface_left + surface_right) / 2.0,
+        Tolerance::Within(6.0),
     )?;
-    ensure(
-        f64::from(right - left) > f64::from(surface_right - surface_left) * 0.4,
-        format!("{what}: the photograph does not fill the surface at Fit"),
-    )?;
-    Ok(json!({
-        "image_bounds": [left, top, right, bottom],
-        "surface_columns": [surface_left, surface_right],
-        "measured_ratio": measured,
-        "expected_ratio": ratio,
-        "ratio_tolerance": 0.02,
-        "scope": "Displayed placement read back from the renderer; not monitor calibration",
-    }))
-}
-
-/// What each `basic-crop` step's frame shows, for its checks record.
-fn crop_shows(step: &str) -> Result<&'static str> {
-    Ok(match step {
-        "opened" => "the opened fixture",
-        "exposure" => "one Basic commit",
-        "fit" => "a 16:9 fit at angle zero over the Basic layer",
-        "straightened" => "the same ratio straightened by 7 degrees",
-        other => return Err(format!("No description for the basic-crop step {other:?}").into()),
-    })
+    checks.compare(
+        frame,
+        &format!("{what}: the photograph's width against 40% of the photo surface's"),
+        f64::from(right - left),
+        f64::from(surface_right - surface_left) * 0.4,
+        Tolerance::Above(0.0),
+    )
 }
 
 /// What the histogram and the placement show at each `basic-crop` step, once the plan has held.
 pub fn verify_crop(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let root = run.root();
+    let mut checks = Checks::new();
 
     // Every frame's counts are an independent render and reduction of exactly the layers that
     // frame says it displays, so the plot is proved against the composition rather than itself.
-    let mut details = Vec::new();
     for (step, frame) in launch.names().iter().zip(&launch.frames) {
-        let shows = crop_shows(step)?;
         let recipe = displayed_recipe(frame)?;
         let report = reduction(root, &recipe)?;
-        let counts = expect_counts(frame, &report, &format!("step {step:?}, {shows}"))?;
-        details.push(json!({
-            "frame": frame["file"],
-            "shows": shows,
-            "stack": recipe.layers.iter().map(|layer| layer.effect_id.clone()).collect::<Vec<_>>(),
-            "output": [report.width, report.height],
-            "counts": counts,
-        }));
+        let counts = expect_counts(frame, &report, &format!("step {step:?}"))?;
+        checks.note(
+            frame,
+            "the counts of an independent reduction of the displayed stack",
+            json!({
+                "stack": recipe.layers.iter().map(|layer| layer.effect_id.clone()).collect::<Vec<_>>(),
+                "output": [report.width, report.height],
+                "counts": counts,
+            }),
+        );
     }
 
     // The Basic commit is one entry, and it changes the population. The plan holds that each step
     // commits once and that the straighten keeps the crop layer; this holds which revision the
     // first commit is, a fresh catalog's first, so with the plan the straighten is revision 3.
-    let opened = launch.at("opened")?;
     let exposure = launch.at("exposure")?;
     let fit = launch.at("fit")?;
     let straightened = launch.at("straightened")?;
     ensure(
-        exposure["state"]["stack"]["revision"] == json!(1),
+        exposure.revision()? == 1,
         "edit.set-basic did not commit revision 1",
     )?;
     ensure(
-        counters(exposure) != counters(opened),
+        counters(exposure) != counters(launch.at("opened")?),
         "The exposure left the population unchanged",
     )?;
     // The counts follow the crop: a 16:9 rectangle of this stage holds fewer pixels than the
@@ -1180,29 +1129,28 @@ pub fn verify_crop(run: &mut Run, launches: &[Checked]) -> Result {
         "A crop did not reduce the analysed output stage",
     )?;
 
-    // Placement: each crop frame shows a 16:9 photograph, centred in the photo surface.
-    let mut placements = Vec::new();
+    // Placement: each frame shows the photograph at the ratio its stack declares, centred in the
+    // photo surface.
     for (step, ratio) in [
         ("opened", 3.0 / 2.0),
         ("exposure", 3.0 / 2.0),
         ("fit", CROP_RATIO),
         ("straightened", CROP_RATIO),
     ] {
-        placements.push(expect_placement(
+        expect_placement(
+            &mut checks,
             launch.at(step)?,
             ratio,
             &format!("step {step:?}"),
-        )?);
+        )?;
     }
 
-    write_json(
-        &launch.evidence.join("basic-crop-checks.json"),
-        &json!({
-            "frames": details,
-            "placement": placements,
+    checks.write(
+        &launch.evidence,
+        "basic-crop",
+        json!({
             "crop_layer": straightened.layer_id(CROP_EFFECT).ok_or("The frame holds no crop layer")?,
-            "scope": "Counts against an independent core render and reduction of the displayed stack; placement read back from the renderer",
+            "scope": "Counts against an independent core render and reduction of the displayed stack; placement of the rectangle the editor records drawing, its edges checked against the pixels read back from the renderer",
         }),
-    )?;
-    Ok(())
+    )
 }
