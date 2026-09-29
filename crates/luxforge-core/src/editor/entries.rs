@@ -477,7 +477,10 @@ mod tests {
                 .unwrap();
             // The readout's samples, of the entry and of the draft.
             service.sample_entry(&asset, &painted.id, 3, 4).unwrap();
-            service.sample_draft(&asset, &draft, 3, 4).unwrap();
+            service
+                .point_draft(&asset, &draft, 3, 4)
+                .and_then(|plan| plan.evaluate())
+                .unwrap();
             service.describe_entry(&asset, None).unwrap();
         }
         assert_eq!(read_counts::take(), (0, 0), "reads after the first");

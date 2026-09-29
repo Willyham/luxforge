@@ -229,7 +229,7 @@ pub fn coverage_grid(
 /// Sample the same uncut mask and geometry over a visible output-stage rectangle. The region
 /// changes only which output pixel each cell addresses; the mask and its value-based input remain
 /// compiled against the complete stage, so a pan cannot recenter or reinterpret them.
-pub fn coverage_grid_region(
+pub(crate) fn coverage_grid_region(
     mask: &CompiledMask,
     transform: &StageTransform,
     region: Region,

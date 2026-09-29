@@ -61,7 +61,7 @@ pub struct ReportCounts {
 }
 
 impl ImportReport {
-    pub fn counts(&self) -> ReportCounts {
+    pub(crate) fn counts(&self) -> ReportCounts {
         ReportCounts {
             mapped: self.mapped.len(),
             neutral: self.neutral.len(),
@@ -71,7 +71,8 @@ impl ImportReport {
     }
 
     /// Whether some effect of the file is not reproduced: anything unsupported or refused.
-    pub fn partial(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn partial(&self) -> bool {
         !self.unsupported.is_empty() || !self.refused.is_empty()
     }
 }

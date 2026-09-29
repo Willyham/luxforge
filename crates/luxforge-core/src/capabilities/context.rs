@@ -38,14 +38,14 @@ use zeroize::Zeroize;
 
 /// The most artifacts one task may publish. Each is held ready in memory until the owner records
 /// it, so the count and [`MAX_TASK_ARTIFACT_BYTES`] bound what a task keeps alive.
-pub const MAX_TASK_ARTIFACTS: usize = 16;
+pub(crate) const MAX_TASK_ARTIFACTS: usize = 16;
 /// The most bytes the artifacts of one task may hold together: one artifact's limit.
-pub const MAX_TASK_ARTIFACT_BYTES: u64 = MAX_ARTIFACT_BYTES;
+pub(crate) const MAX_TASK_ARTIFACT_BYTES: u64 = MAX_ARTIFACT_BYTES;
 
 /// One provider profile as a task sees it: its identity, the adapter it names and its non-secret
 /// values. An endpoint is not among them: the host sends to it, the module never does.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProfileView {
+pub(crate) struct ProfileView {
     pub id: String,
     pub adapter: String,
     pub values: Map<String, Value>,
@@ -186,29 +186,20 @@ impl ModuleContext {
         self
     }
 
-    pub fn module_id(&self) -> &str {
+    #[cfg(test)]
+    pub(crate) fn module_id(&self) -> &str {
         &self.module_id
     }
 
-    /// Every valid, non-secret module-level value, defaults included. An endpoint is a profile
-    /// field, not a value a module reads: `send` uses it.
-    pub fn values(&self) -> &Map<String, Value> {
-        &self.values
-    }
-
     /// One module-level value, when it is set or has a default and is valid.
-    pub fn value(&self, setting_id: &str) -> Option<&Value> {
+    pub(crate) fn value(&self, setting_id: &str) -> Option<&Value> {
         self.values.get(setting_id)
-    }
-
-    pub fn profile(&self) -> Option<&ProfileView> {
-        self.profile.as_ref()
     }
 
     /// Read one secret the module or the job's profile declares. Any other name is a `validation`
     /// error without asking the store; a secret that is not set is `not-ready`. The value is read
     /// here, on the worker, and nowhere else.
-    pub fn secret(&self, setting_id: &str) -> Result<SecretValue, Error> {
+    pub(crate) fn secret(&self, setting_id: &str) -> Result<SecretValue, Error> {
         let key = if self.secret_fields.iter().any(|field| field == setting_id) {
             SecretKey::new(&self.module_id, None, setting_id)
         } else if let Some(profile) = self.profile.as_ref().filter(|_| {
@@ -230,7 +221,7 @@ impl ModuleContext {
 
     /// Where an installed resource the job was given lives. Its bytes were checked against the
     /// pinned hash when it was installed.
-    pub fn resource_path(&self, resource_id: &str) -> Result<&Path, Error> {
+    pub(crate) fn resource_path(&self, resource_id: &str) -> Result<&Path, Error> {
         self.resources
             .get(resource_id)
             .map(PathBuf::as_path)
@@ -257,7 +248,7 @@ impl ModuleContext {
     /// with the profile's credential when the adapter authenticates; the credential is read here and
     /// never logged. A status outside 2xx is a `read-error` naming the adapter and the status. The
     /// module never supplies a URL or a body.
-    pub fn send(&self, capability_id: &str) -> Result<Vec<u8>, Error> {
+    pub(crate) fn send(&self, capability_id: &str) -> Result<Vec<u8>, Error> {
         self.checkpoint()?;
         let granted = self
             .sends
@@ -320,7 +311,7 @@ impl ModuleContext {
     }
 
     /// The origin a granted `remote-image-request` capability sends to, as its grant names it.
-    pub fn origin(&self, capability_id: &str) -> Result<String, Error> {
+    pub(crate) fn origin(&self, capability_id: &str) -> Result<String, Error> {
         self.sends
             .get(capability_id)
             .map(|granted| granted.endpoint.origin())
@@ -332,7 +323,11 @@ impl ModuleContext {
     /// the artifact when the task succeeds, before its job reads succeeded, and never when it fails
     /// or is cancelled. Publishing the same bytes twice yields the same artifact. A task publishes
     /// at most [`MAX_TASK_ARTIFACTS`] artifacts of [`MAX_TASK_ARTIFACT_BYTES`] together.
-    pub fn publish_artifact(&self, bytes: &[u8], meta: ArtifactMeta) -> Result<ArtifactId, Error> {
+    pub(crate) fn publish_artifact(
+        &self,
+        bytes: &[u8],
+        meta: ArtifactMeta,
+    ) -> Result<ArtifactId, Error> {
         self.checkpoint()?;
         let writer = self.writer.as_ref().ok_or_else(|| {
             Error::validation(format!(
@@ -361,17 +356,18 @@ impl ModuleContext {
     }
 
     /// Report progress: a fraction of 0 to 1 when the extent is known, and a short message.
-    pub fn progress(&self, fraction: Option<f64>, message: &str) {
+    pub(crate) fn progress(&self, fraction: Option<f64>, message: &str) {
         self.control.set_progress(fraction, message);
     }
 
     /// `Err(cancelled)` once the job has been cancelled; the module returns it and releases what
     /// it held. Call it between units of work.
-    pub fn checkpoint(&self) -> Result<(), Error> {
+    pub(crate) fn checkpoint(&self) -> Result<(), Error> {
         self.control.checkpoint()
     }
 
-    pub fn is_cancelled(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.control.is_cancelled()
     }
 }

@@ -22,16 +22,16 @@ use url::Url;
 
 /// Module-level and profile fields are each at most this many, so a settings panel and a read
 /// result stay bounded whatever a module declares.
-pub const MAX_SETTING_FIELDS: usize = 32;
+pub(crate) const MAX_SETTING_FIELDS: usize = 32;
 /// The most provider profiles one module may hold.
-pub const MAX_PROFILES: u8 = 16;
+pub(crate) const MAX_PROFILES: u8 = 16;
 /// The largest resource a module may pin, which is also the most a download may stream to disk.
-pub const MAX_RESOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub(crate) const MAX_RESOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// The largest request body or response an adapter may declare. It is the artifact limit, since a
 /// response becomes at most one artifact, and it bounds the buffer the transport holds.
-pub const MAX_ADAPTER_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_ADAPTER_BYTES: u64 = 256 * 1024 * 1024;
 /// The longest whole-request deadline an adapter may declare.
-pub const MAX_ADAPTER_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+pub(crate) const MAX_ADAPTER_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// A resource version names a directory under the resource root, so it is a short, plain name.
 const MAX_VERSION_LENGTH: usize = 64;
 
@@ -68,7 +68,7 @@ pub struct SettingDescriptor {
 }
 
 impl SettingDescriptor {
-    pub fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
+    pub(crate) fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
         Self {
             parameter,
             label: label.into(),
@@ -84,7 +84,7 @@ impl SettingDescriptor {
         &self.parameter.kind
     }
 
-    pub fn is_secret(&self) -> bool {
+    pub(crate) fn is_secret(&self) -> bool {
         matches!(self.parameter.kind, ParameterKind::Secret { .. })
     }
 
@@ -106,11 +106,11 @@ pub struct ProfilesDescriptor {
 }
 
 impl ProfilesDescriptor {
-    pub fn adapter(&self, id: &str) -> Option<&AdapterDescriptor> {
+    pub(crate) fn adapter(&self, id: &str) -> Option<&AdapterDescriptor> {
         self.adapters.iter().find(|adapter| adapter.id == id)
     }
 
-    pub fn field(&self, id: &str) -> Option<&SettingDescriptor> {
+    pub(crate) fn field(&self, id: &str) -> Option<&SettingDescriptor> {
         self.fields.iter().find(|field| field.id() == id)
     }
 }
@@ -154,17 +154,17 @@ pub enum DataClass {
 }
 
 /// The side of the `sample-grid-8` grid.
-pub const SAMPLE_GRID_SIDE: u32 = 8;
+pub(crate) const SAMPLE_GRID_SIDE: u32 = 8;
 
 impl DataClass {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::SampleGrid8 => "sample-grid-8",
         }
     }
 
     /// What the body carries, in the words a consent notice uses.
-    pub fn describe(self) -> &'static str {
+    pub(crate) fn describe(self) -> &'static str {
         match self {
             Self::SampleGrid8 => "an 8 × 8 grid of rendered colour samples of this photo",
         }
@@ -172,14 +172,14 @@ impl DataClass {
 
     /// The exact size of the body the host sends for this class, which the consent notice
     /// discloses.
-    pub fn request_bytes(self) -> u64 {
+    pub(crate) fn request_bytes(self) -> u64 {
         match self {
             Self::SampleGrid8 => super::data::SAMPLE_GRID_BYTES as u64,
         }
     }
 
     /// The media type of the body the host sends for this class.
-    pub fn content_type(self) -> &'static str {
+    pub(crate) fn content_type(self) -> &'static str {
         match self {
             Self::SampleGrid8 => "application/json",
         }
@@ -259,14 +259,6 @@ pub struct TaskDescriptor {
     /// The action a client may offer to apply the task's artifact with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply: Option<TaskApply>,
-}
-
-impl TaskDescriptor {
-    pub fn parameter(&self, name: &str) -> Option<&ParameterDescriptor> {
-        self.parameters
-            .iter()
-            .find(|parameter| parameter.name == name)
-    }
 }
 
 /// Apply names a declared action and its `artifact` parameter, which receives the task's result.

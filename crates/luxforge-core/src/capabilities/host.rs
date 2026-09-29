@@ -44,9 +44,9 @@ pub use tasks::TASK_PREFIX;
 pub const STATUS: &str = "module.status";
 
 /// Why grants are revoked when something they depend on changes.
-pub const ENDPOINT_CHANGED: &str = "endpoint changed";
-pub const PROFILE_REMOVED: &str = "profile removed";
-pub const SETTINGS_RESET: &str = "settings reset";
+pub(crate) const ENDPOINT_CHANGED: &str = "endpoint changed";
+pub(crate) const PROFILE_REMOVED: &str = "profile removed";
+pub(crate) const SETTINGS_RESET: &str = "settings reset";
 
 /// Where the host keeps what it owns for modules, and the secure store and network transport it
 /// uses. The desktop and `luxforge-json` give it `luxforge-net`'s Keychain store and transport.
@@ -221,7 +221,7 @@ impl<'de> Deserialize<'de> for SecretParam {
 /// What an unmet requirement of a task names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RequirementKind {
+pub(crate) enum RequirementKind {
     /// A managed resource the task reads is not installed.
     Resource,
     /// The profile the task sends through is not ready.
@@ -229,7 +229,7 @@ pub enum RequirementKind {
 }
 
 impl RequirementKind {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Resource => "resource",
             Self::Profile => "profile",
@@ -239,7 +239,7 @@ impl RequirementKind {
 
 /// One unmet requirement of a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Requirement {
+pub(crate) struct Requirement {
     pub kind: RequirementKind,
     /// The resource or profile identity.
     pub id: String,
@@ -750,7 +750,7 @@ mod tests {
         },
         jobs::{JOB_CANCEL, JOB_READ},
         modules::TestModule,
-        redact_request,
+        redact_params,
     };
     use serde_json::json;
     use std::{
@@ -1398,7 +1398,8 @@ mod tests {
             token: None,
         };
         assert!(serde_json::to_string(&request).unwrap().contains(&sentinel));
-        let redacted = serde_json::to_string(&redact_request(&request)).unwrap();
+        let redacted =
+            serde_json::to_string(&redact_params(&request.method, &request.params)).unwrap();
         assert!(!redacted.contains(&sentinel), "{redacted}");
         assert!(redacted.contains("<redacted>"));
     }

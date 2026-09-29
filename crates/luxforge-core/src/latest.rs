@@ -61,10 +61,10 @@ use std::{
 /// How many results may wait for the consumer before a job with another to hand over waits for
 /// room. Two is one preview job's two phases, so a worker one job ahead of its consumer never
 /// waits.
-pub const WAITING_RESULTS: usize = 2;
+pub(crate) const WAITING_RESULTS: usize = 2;
 
 /// Called on the worker thread once per delivered result. It must do nothing but post a signal.
-pub type Wake = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// One persistent worker, one running job and one replaceable waiting job, results tagged with a
 /// generation. See the [module documentation](self).
@@ -176,7 +176,7 @@ impl<J, R> Shared<J, R> {
 
 impl<J, R> Running<'_, J, R> {
     /// The generation this job was requested under.
-    pub fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 
@@ -187,7 +187,7 @@ impl<J, R> Running<'_, J, R> {
 
     /// Raised by [`Latest::cancel`], by [`Latest::withdraw`] of this job and when the worker is
     /// dropped.
-    pub fn abandoned(&self) -> &Cancel {
+    pub(crate) fn abandoned(&self) -> &Cancel {
         &self.abandoned
     }
 
@@ -196,7 +196,7 @@ impl<J, R> Running<'_, J, R> {
     /// Waits while [`WAITING_RESULTS`] results are already waiting. `false` means the result will
     /// never be delivered, because a cancel has made this job's results stale or the worker is
     /// stopping; the job has nothing more to do.
-    pub fn send(&self, result: R) -> bool {
+    pub(crate) fn send(&self, result: R) -> bool {
         let state = self.shared.lock();
         let (state, stale) = self.shared.hand_over(state, self.generation, result);
         let waker = if stale.is_none() {
@@ -300,7 +300,7 @@ impl<J, R> Latest<J, R> {
     /// Abandon one job: drop it from the waiting slot, or abandon it when it is the running one.
     /// A running job's results are still delivered, so the consumer learns how it ended; one that
     /// had not started yet never starts. `false` when no job of this generation is held.
-    pub fn withdraw(&mut self, generation: u64) -> bool {
+    pub(crate) fn withdraw(&mut self, generation: u64) -> bool {
         let mut state = self.shared.lock();
         if state
             .pending
@@ -345,7 +345,7 @@ impl<J, R> Latest<J, R> {
 
     /// The generation of the job in the waiting slot. It becomes the running job by itself when
     /// the running one returns.
-    pub fn pending_generation(&self) -> Option<u64> {
+    pub(crate) fn pending_generation(&self) -> Option<u64> {
         self.shared
             .lock()
             .pending
@@ -354,7 +354,7 @@ impl<J, R> Latest<J, R> {
     }
 
     /// The generation of the job handed to the worker.
-    pub fn active_generation(&self) -> Option<u64> {
+    pub(crate) fn active_generation(&self) -> Option<u64> {
         self.shared
             .lock()
             .active
@@ -363,7 +363,8 @@ impl<J, R> Latest<J, R> {
     }
 
     /// The generation of the last result [`Self::poll`] delivered; `0` before any.
-    pub fn last_delivered(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn last_delivered(&self) -> u64 {
         self.last_delivered
     }
 }

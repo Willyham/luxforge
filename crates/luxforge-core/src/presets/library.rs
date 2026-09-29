@@ -23,13 +23,13 @@ use std::collections::HashSet;
 
 /// The most presets one library holds; creating or importing one more is a `resource-limit`
 /// error.
-pub const MAX_PRESETS: usize = 1_000;
+pub(super) const MAX_PRESETS: usize = 1_000;
 /// The longest group name, in characters.
-pub const MAX_PRESET_GROUP: usize = 64;
+pub(super) const MAX_PRESET_GROUP: usize = 64;
 /// The group a preset created in Luxforge takes when the request names none.
 pub const USER_PRESET_GROUP: &str = "User presets";
 /// The group an import takes when neither the request nor the file names one.
-pub const IMPORTED_PRESET_GROUP: &str = "Imported";
+pub(super) const IMPORTED_PRESET_GROUP: &str = "Imported";
 
 /// The longest actor, in bytes, as for versions and mutations.
 const MAX_ACTOR: usize = 128;
@@ -65,7 +65,7 @@ pub type PresetSummary = PresetRecord<ReportCounts>;
 
 impl PresetRecord {
     /// The listing form of this record.
-    pub fn summary(self) -> PresetSummary {
+    pub(crate) fn summary(self) -> PresetSummary {
         PresetRecord {
             id: self.id,
             name: self.name,
@@ -84,7 +84,7 @@ impl PresetRecord {
 /// What `preset.update` did, with the record as it now stands.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PresetUpdate {
+pub(crate) struct PresetUpdate {
     pub outcome: MutationOutcome,
     pub preset: PresetRecord,
 }
@@ -267,7 +267,7 @@ fn ensure_unique(
 impl EditorService {
     /// Every library preset, sorted by group and then by name, ignoring case. Each report is
     /// reduced to its counts and no imported text is read.
-    pub fn presets(&self) -> Result<Vec<PresetSummary>, Error> {
+    pub(crate) fn presets(&self) -> Result<Vec<PresetSummary>, Error> {
         let mut statement = self
             .connection
             .prepare(&format!("SELECT {RECORD_COLUMNS} FROM presets"))?;
@@ -283,7 +283,10 @@ impl EditorService {
 
     /// One library preset with its full report, and the imported file's text as it was sent, or
     /// `None` for a preset created in Luxforge.
-    pub fn preset(&self, preset_id: &PresetId) -> Result<(PresetRecord, Option<String>), Error> {
+    pub(crate) fn preset(
+        &self,
+        preset_id: &PresetId,
+    ) -> Result<(PresetRecord, Option<String>), Error> {
         let (columns, source_text) = self
             .connection
             .query_row(
@@ -299,7 +302,7 @@ impl EditorService {
     /// Store a settings set as a Luxforge preset, in `group` or [`USER_PRESET_GROUP`]. Every
     /// action and field is checked against the registry; a duplicate (group, name) pair is a
     /// `conflict` and a full library a `resource-limit` error, and neither writes anything.
-    pub fn create_preset(
+    pub(crate) fn create_preset(
         &mut self,
         name: &str,
         group: Option<&str>,
@@ -331,7 +334,7 @@ impl EditorService {
     /// nothing and keeps `updated_ms`; a change records `actor` and the time. A rename onto
     /// another preset's (group, name) pair is a `conflict`. The origin and the import report stay
     /// what they were: they describe where the preset came from.
-    pub fn update_preset(
+    pub(crate) fn update_preset(
         &mut self,
         preset_id: &PresetId,
         actor: &str,
@@ -389,7 +392,7 @@ impl EditorService {
 
     /// Remove a preset: `Applied` when it existed and `NoOp` when it is absent. History entries
     /// that applied it keep their settings, because an entry stores what was applied.
-    pub fn delete_preset(&mut self, preset_id: &PresetId) -> Result<MutationOutcome, Error> {
+    pub(crate) fn delete_preset(&mut self, preset_id: &PresetId) -> Result<MutationOutcome, Error> {
         let removed = write(&mut self.connection, |tx| {
             Ok(tx.execute("DELETE FROM presets WHERE id=?1", [preset_id.as_str()])?)
         })?;
@@ -402,7 +405,7 @@ impl EditorService {
 
     /// The preset as a Luxforge preset document, which [`EditorService::import_preset`] reads
     /// back to the same name, group and settings.
-    pub fn export_preset(&self, preset_id: &PresetId) -> Result<PresetExport, Error> {
+    pub(crate) fn export_preset(&self, preset_id: &PresetId) -> Result<PresetExport, Error> {
         let preset = load(&self.connection, self.registry(), preset_id)?;
         Ok(export_document(
             &preset.name,
@@ -417,7 +420,11 @@ impl EditorService {
     /// file that maps nothing still returns its report, with empty settings. The name and group
     /// are the file's, before any request override and the library's name rules, which only an
     /// import applies.
-    pub fn inspect_import(&self, content: &str, file_name: Option<&str>) -> Result<Value, Error> {
+    pub(crate) fn inspect_import(
+        &self,
+        content: &str,
+        file_name: Option<&str>,
+    ) -> Result<Value, Error> {
         let imported = inspect_preset(content, file_name, self.registry())?;
         let group = imported
             .group
@@ -444,7 +451,7 @@ impl EditorService {
     /// the file's; the group falls back to [`IMPORTED_PRESET_GROUP`]. The text is kept verbatim so
     /// a later importer can map what this one could not. A parse error, a file that maps nothing,
     /// a duplicate or a full library stores nothing.
-    pub fn import_preset(
+    pub(crate) fn import_preset(
         &mut self,
         content: &str,
         file_name: Option<&str>,
@@ -522,7 +529,7 @@ impl EditorService {
     ///
     /// This reads stored payloads only, `O(layers × actions + controls)`: no source is opened and
     /// nothing is sampled or rendered, so a JPEG and a RAW entry cost the same.
-    pub fn capture_preset(
+    pub(crate) fn capture_preset(
         &self,
         asset_id: &AssetId,
         entry_id: &EntryId,

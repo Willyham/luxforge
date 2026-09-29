@@ -371,7 +371,7 @@ impl EditorService {
     }
 
     /// Walk undo parents from `from` (default: current) towards Original, newest first.
-    pub fn lineage(
+    pub(crate) fn lineage(
         &self,
         asset_id: &AssetId,
         from: Option<&EntryId>,
@@ -421,7 +421,7 @@ impl EditorService {
     }
 
     /// Saved versions of one asset in creation order.
-    pub fn versions(&self, asset_id: &AssetId) -> Result<Vec<Version>, Error> {
+    pub(crate) fn versions(&self, asset_id: &AssetId) -> Result<Vec<Version>, Error> {
         let mut statement = self.connection.prepare(
             "SELECT v.name,v.entry_id,e.sequence,v.actor,v.created_ms FROM versions v
              JOIN entries e ON e.id = v.entry_id
@@ -454,7 +454,7 @@ impl EditorService {
 
     /// Name a retained entry (default: current). Re-creating the same name on the same entry is a no-op;
     /// on a different entry it is a conflict. Names are unique per asset ignoring case.
-    pub fn create_version(
+    pub(crate) fn create_version(
         &mut self,
         asset_id: &AssetId,
         name: &str,
@@ -513,7 +513,7 @@ impl EditorService {
     }
 
     /// Remove a version name. The entry it named is retained history and stays reachable.
-    pub fn delete_version(
+    pub(crate) fn delete_version(
         &mut self,
         asset_id: &AssetId,
         name: &str,

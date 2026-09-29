@@ -46,7 +46,7 @@ pub(crate) fn number(value: f64) -> Value {
 
 /// How a field is drawn on its group's section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldControl {
+pub(crate) enum FieldControl {
     /// A number control in this style, for a number or integer field.
     Number(NumberStyle),
     /// A toggle, for a boolean field.
@@ -100,7 +100,7 @@ impl FieldControl {
 
 /// One field: its declared parameter — the payload key, its kind, its default and its display
 /// hints — the control that sets it and the words a history label uses for it.
-pub struct Field {
+pub(crate) struct Field {
     /// The `set-<name>` parameter: its name is the payload key and its default is what a missing
     /// key means and what a reset writes.
     pub parameter: ParameterDescriptor,
@@ -125,7 +125,7 @@ impl Field {
     /// A field of `parameter`, drawn by the control its kind implies — a slider, a toggle, an
     /// automatic choice, colour fields or a curve channel — with `label` as its control's label and
     /// its history word, no rail and no variants.
-    pub fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
+    pub(crate) fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
         let label = label.into();
         Self {
             control: FieldControl::of(&parameter.kind),
@@ -139,7 +139,11 @@ impl Field {
 
     /// A number field in the -100..100 slider range with step 1 and no decimals, the range most
     /// fields share, defaulting to 0 with no unit, rail or zero hint.
-    pub fn slider(name: &'static str, label: impl Into<String>, notes: impl Into<String>) -> Self {
+    pub(crate) fn slider(
+        name: &'static str,
+        label: impl Into<String>,
+        notes: impl Into<String>,
+    ) -> Self {
         Self::new(
             ParameterDescriptor::number(name, -100.0, 100.0)
                 .default(0.0)
@@ -151,60 +155,60 @@ impl Field {
     }
 
     /// A number field's closed range; a no-op on any other kind.
-    pub fn range(mut self, min: f64, max: f64) -> Self {
+    pub(crate) fn range(mut self, min: f64, max: f64) -> Self {
         if let ParameterKind::Number { .. } = self.parameter.kind {
             self.parameter.kind = ParameterKind::Number { min, max };
         }
         self
     }
 
-    pub fn default(mut self, value: impl Into<Value>) -> Self {
+    pub(crate) fn default(mut self, value: impl Into<Value>) -> Self {
         self.parameter = self.parameter.default(value);
         self
     }
 
-    pub fn step(mut self, step: f64) -> Self {
+    pub(crate) fn step(mut self, step: f64) -> Self {
         self.parameter = self.parameter.step(step);
         self
     }
 
-    pub fn precision(mut self, precision: u8) -> Self {
+    pub(crate) fn precision(mut self, precision: u8) -> Self {
         self.parameter = self.parameter.precision(precision);
         self
     }
 
-    pub fn unit(mut self, unit: &str) -> Self {
+    pub(crate) fn unit(mut self, unit: &str) -> Self {
         self.parameter = self.parameter.unit(unit);
         self
     }
 
-    pub fn zero(mut self, zero: f64) -> Self {
+    pub(crate) fn zero(mut self, zero: f64) -> Self {
         self.parameter = self.parameter.zero(zero);
         self
     }
 
-    pub fn history(mut self, history: impl Into<String>) -> Self {
+    pub(crate) fn history(mut self, history: impl Into<String>) -> Self {
         self.history = history.into();
         self
     }
 
-    pub fn control(mut self, control: FieldControl) -> Self {
+    pub(crate) fn control(mut self, control: FieldControl) -> Self {
         self.control = control;
         self
     }
 
-    pub fn rail(mut self, rail: RailDecoration) -> Self {
+    pub(crate) fn rail(mut self, rail: RailDecoration) -> Self {
         self.rail = Some(rail);
         self
     }
 
-    pub fn variant(mut self, variant: ControlVariant) -> Self {
+    pub(crate) fn variant(mut self, variant: ControlVariant) -> Self {
         self.variants.push(variant);
         self
     }
 
     /// The payload key and the `set-<name>` parameter.
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.parameter.name
     }
 
@@ -359,7 +363,7 @@ impl Field {
 /// A group of controls on the module's section. Its reset sets exactly its fields to their
 /// defaults, and a patch that does so is labelled `Reset <label>` however it was sent. Every field
 /// of the table belongs to exactly one group, which [`Spec`]'s build checks.
-pub struct Group {
+pub(crate) struct Group {
     label: &'static str,
     fields: Vec<&'static str>,
     collapsed: bool,
@@ -373,7 +377,7 @@ pub struct Group {
 
 impl Group {
     /// An expanded group of these fields, by name, with no extra controls or reset variants.
-    pub fn new(label: &'static str, fields: impl IntoIterator<Item = &'static str>) -> Self {
+    pub(crate) fn new(label: &'static str, fields: impl IntoIterator<Item = &'static str>) -> Self {
         Self {
             label,
             fields: fields.into_iter().collect(),
@@ -384,20 +388,20 @@ impl Group {
     }
 
     /// The group starts collapsed.
-    pub fn collapsed(mut self) -> Self {
+    pub(crate) fn collapsed(mut self) -> Self {
         self.collapsed = true;
         self
     }
 
     /// A control drawn after the group's own field controls.
-    pub fn extra(mut self, control: impl Into<Control>) -> Self {
+    pub(crate) fn extra(mut self, control: impl Into<Control>) -> Self {
         self.extra.push(control.into());
         self
     }
 
     /// The reset another module provides in this group reset's place on a photo of one source
     /// kind.
-    pub fn reset_variant(mut self, variant: ControlVariant) -> Self {
+    pub(crate) fn reset_variant(mut self, variant: ControlVariant) -> Self {
         self.reset_variants.push(variant);
         self
     }
@@ -446,7 +450,7 @@ impl Spec {
     /// the notes every field-patch module's action shares until the module says more. The effect
     /// takes order 0, is not maskable, and holds the forced fields; the module adds its fields,
     /// groups and everything else through the methods below.
-    pub fn new(
+    pub(crate) fn new(
         id: &'static str,
         title: &'static str,
         hint: &'static str,
@@ -492,66 +496,66 @@ impl Spec {
     }
 
     /// The order the effect takes among layers of its stage.
-    pub fn order(mut self, order: u16) -> Self {
+    pub(crate) fn order(mut self, order: u16) -> Self {
         self.effect.order = order;
         self
     }
 
     /// The effect may be bound to a mask, so the module's actions take a mask target.
-    pub fn maskable(mut self) -> Self {
+    pub(crate) fn maskable(mut self) -> Self {
         self.effect.maskable = true;
         self
     }
 
     /// The field patch's notes, where the module says more than the shared sentence, such as
     /// where the host places its layer.
-    pub fn set_notes(mut self, notes: impl Into<String>) -> Self {
+    pub(crate) fn set_notes(mut self, notes: impl Into<String>) -> Self {
         self.set.notes = notes.into();
         self
     }
 
     /// The module reset's notes, where the module says more than the shared sentence.
-    pub fn reset_notes(mut self, notes: impl Into<String>) -> Self {
+    pub(crate) fn reset_notes(mut self, notes: impl Into<String>) -> Self {
         self.reset.notes = notes.into();
         self
     }
 
     /// Every field, in the payload's declared order.
-    pub fn fields(mut self, fields: impl IntoIterator<Item = Field>) -> Self {
+    pub(crate) fn fields(mut self, fields: impl IntoIterator<Item = Field>) -> Self {
         self.fields.extend(fields);
         self
     }
 
     /// The next group of the module's section.
-    pub fn group(mut self, group: Group) -> Self {
+    pub(crate) fn group(mut self, group: Group) -> Self {
         self.groups.push(group);
         self
     }
 
     /// A read-only query the module answers through [`FieldPatch::query`].
-    pub fn query(mut self, query: ActionDescriptor) -> Self {
+    pub(crate) fn query(mut self, query: ActionDescriptor) -> Self {
         self.queries.push(query);
         self
     }
 
-    pub fn canvas(mut self, canvas: CanvasInteraction) -> Self {
+    pub(crate) fn canvas(mut self, canvas: CanvasInteraction) -> Self {
         self.canvas = Some(canvas);
         self
     }
 
     /// The module's section starts collapsed.
-    pub fn collapsed(mut self) -> Self {
+    pub(crate) fn collapsed(mut self) -> Self {
         self.collapsed = true;
         self
     }
 
-    pub fn layout(mut self, layout: ModuleLayout) -> Self {
+    pub(crate) fn layout(mut self, layout: ModuleLayout) -> Self {
         self.layout = layout;
         self
     }
 
     /// The module is a developer proof, listed and registered only in developer mode.
-    pub fn developer(mut self) -> Self {
+    pub(crate) fn developer(mut self) -> Self {
         self.developer = true;
         self
     }
@@ -745,14 +749,14 @@ impl Values<'_> {
 
     /// One number field's value, by name: the finite f64 the stored payload holds, or the field's
     /// default.
-    pub fn number(&self, name: &str) -> f64 {
+    pub(crate) fn number(&self, name: &str) -> f64 {
         self.value(name)
             .as_f64()
             .expect("a module reads a number only from its own number fields")
     }
 
     /// Whether every field holds its default, by value.
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.fields
             .iter()
             .zip(&self.values)

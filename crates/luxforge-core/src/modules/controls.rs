@@ -14,8 +14,8 @@ use crate::Error;
 use serde_json::{Map, Value, json};
 
 pub const CONTROLS_EFFECT: &str = "luxforge.controls.identity";
-pub const SET_CONTROLS: &str = "set-controls";
-pub const SAMPLE_CONTROLS_CURVE: &str = "sample-controls-curve";
+pub(super) const SET_CONTROLS: &str = "set-controls";
+pub(super) const SAMPLE_CONTROLS_CURVE: &str = "sample-controls-curve";
 const SAMPLE_SEGMENTS: usize = 256;
 const NOTES: &str = "Developer control parity fixture; values never alter pixels";
 /// The two curve fields, which are the curve control's channels and the sample query's parameters.

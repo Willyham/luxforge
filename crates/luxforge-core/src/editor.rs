@@ -45,11 +45,12 @@ pub(crate) use test_support::recast_as_raw;
 pub(crate) use catalog::{decode, encode, now_ms, write};
 pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
-pub use masks::{MASK_FIELD, mask_target_parameter};
+pub use masks::MASK_FIELD;
+pub(crate) use masks::mask_target_parameter;
 pub(crate) use plan::prefix;
-pub use source::RawInterpretation;
 pub(crate) use source::{
-    Prepared, Preparing, SourceWork, source_signature, source_signature_for_handle,
+    Prepared, Preparing, RawInterpretation, SourceWork, source_signature,
+    source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,7 +301,7 @@ pub struct PixelInput {
 /// historical entry, the caller's own open draft, or one historical entry framed by another
 /// entry's geometry.
 #[derive(Clone, Copy, Debug)]
-pub enum AnalysisSelection<'a> {
+pub(crate) enum AnalysisSelection<'a> {
     Current,
     Entry(&'a EntryId),
     Draft(&'a Draft),
@@ -316,7 +317,7 @@ pub enum AnalysisSelection<'a> {
 
 impl<'a> AnalysisSelection<'a> {
     /// One saved entry, framed by `geometry`'s geometry when one is given.
-    pub fn framed(entry: &'a EntryId, geometry: Option<&'a EntryId>) -> Self {
+    pub(crate) fn framed(entry: &'a EntryId, geometry: Option<&'a EntryId>) -> Self {
         match geometry {
             Some(geometry) => Self::Framed { entry, geometry },
             None => Self::Entry(entry),
@@ -330,7 +331,7 @@ impl<'a> AnalysisSelection<'a> {
 /// failed and no worker is started. A stack without an output stage has nothing to render, so its
 /// original is never prepared for it.
 #[derive(Debug)]
-pub struct AnalysisPlan {
+pub(crate) struct AnalysisPlan {
     pub identity: AnalysisIdentity,
     pub evaluation: Result<Evaluation, Error>,
 }
@@ -442,7 +443,7 @@ pub struct LayerDescription {
     pub neutral: bool,
     /// The stage this layer receives: the source's extents for the first layer and the output of
     /// the layers before it for every later one, by the core's own stage fold
-    /// ([`crate::ModuleRegistry::stages`]). It is the stage the layer's payload addresses, so
+    /// (`crate::ModuleRegistry::stages`). It is the stage the layer's payload addresses, so
     /// a client reads a crop's pixel rectangle or its ratio from it without folding geometry itself.
     /// `null` for every layer after one whose output cannot be known: a missing or unavailable
     /// provider, or a payload its provider cannot compile.
@@ -487,7 +488,7 @@ pub struct Version {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VersionResult {
+pub(crate) struct VersionResult {
     pub outcome: MutationOutcome,
     pub version: Option<Version>,
 }

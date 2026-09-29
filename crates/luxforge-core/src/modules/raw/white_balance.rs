@@ -29,11 +29,11 @@ use crate::{
     },
 };
 
-pub const MIN_TEMPERATURE_K: f64 = 2_000.0;
-pub const MAX_TEMPERATURE_K: f64 = 12_000.0;
-pub const MIN_TINT: f64 = -100.0;
-pub const MAX_TINT: f64 = 100.0;
-pub const TINT_DUV_UNIT: f64 = 1.0e-4;
+pub(crate) const MIN_TEMPERATURE_K: f64 = 2_000.0;
+pub(crate) const MAX_TEMPERATURE_K: f64 = 12_000.0;
+pub(crate) const MIN_TINT: f64 = -100.0;
+pub(crate) const MAX_TINT: f64 = 100.0;
+pub(crate) const TINT_DUV_UNIT: f64 = 1.0e-4;
 
 const PLANCK_DAYLIGHT_BLEND_START_K: f64 = 3_800.0;
 const PLANCK_DAYLIGHT_BLEND_END_K: f64 = 4_500.0;
@@ -272,7 +272,7 @@ fn gains_f64(
 /// rounding; this bound matters only where the published locus polynomials do not quite join (a
 /// gap of `2.7e-5` at 4000 K, `2.8e-6` at 2222 K and `2.7e-7` at 7000 K), so the nearest
 /// temperature there is still an answer, and it stays below anything the controls can show.
-pub const INVERSE_TOLERANCE_UV: f64 = 0.5 * TINT_DUV_UNIT;
+pub(crate) const INVERSE_TOLERANCE_UV: f64 = 0.5 * TINT_DUV_UNIT;
 /// A bisection of one interval, or the search for the closest white in one, stops on its own once
 /// its bracket is one `f64` apart, after about 30 halvings of a scan step; this bounds it
 /// regardless.

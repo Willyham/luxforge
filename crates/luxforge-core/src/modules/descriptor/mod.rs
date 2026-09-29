@@ -23,16 +23,20 @@ mod values_tests;
 pub(crate) use labels::{label_value, not_applicable, title_case};
 pub use types::{
     ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
-    ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel, CurveControl,
-    EffectDescriptor, EffectStage, GroupControl, IdentityKind, ModuleDescriptor, ModuleLayout,
-    NumberControl, NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl,
-    RailDecoration, ResetAction, ResolvedControl, ResolvedReset, resolve_control,
-    resolve_group_reset,
+    ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
+    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
+    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
+    resolve_control, resolve_group_reset,
 };
 #[cfg(test)]
 pub(crate) use types::{ChoiceControl, ColorControl, RangeControl, ToggleControl};
+pub(crate) use types::{ControlVariant, IdentityKind};
 pub(crate) use types::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS};
-pub(crate) use validate::{check_declaration, check_parameter_declarations};
-pub use validate::{valid_identity, valid_name};
-pub use values::{MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, check_parameters, check_value};
-pub(crate) use values::{check_declared_values, check_settings, check_target, decode_parameters};
+pub(crate) use validate::{
+    check_declaration, check_parameter_declarations, valid_identity, valid_name,
+};
+pub(crate) use values::{
+    MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, check_declared_values, check_settings, check_target,
+    decode_parameters,
+};
+pub use values::{check_parameters, check_value};

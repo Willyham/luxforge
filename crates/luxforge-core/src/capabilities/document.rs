@@ -9,10 +9,7 @@
 use crate::{Error, atomic_file};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::{
-    marker::PhantomData,
-    path::{Path, PathBuf},
-};
+use std::{marker::PhantomData, path::PathBuf};
 
 /// The key every document keeps its format marker under, beside the fields of its shape.
 const FORMAT: &str = "format";
@@ -79,7 +76,8 @@ impl<T: Serialize + DeserializeOwned> JsonDocument<T> {
         Self { check, ..self }
     }
 
-    pub(crate) fn dir(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn dir(&self) -> &std::path::Path {
         &self.dir
     }
 

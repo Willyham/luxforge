@@ -20,11 +20,11 @@ use crate::Error;
 use crate::ErrorKind;
 use serde_json::{Map, Value};
 
-pub const APPLY_PRESET: &str = "apply-preset";
+pub(crate) const APPLY_PRESET: &str = "apply-preset";
 
 /// The longest preset name, in characters: the history label and the entry's provenance. The
 /// library holds its names to the same bound, so every library preset can be applied by name.
-pub const MAX_PRESET_NAME: usize = 128;
+pub(crate) const MAX_PRESET_NAME: usize = 128;
 
 /// The longest library identity a request may carry, in characters.
 const MAX_PRESET_ID_LENGTH: usize = 96;
@@ -37,7 +37,7 @@ fn no_effects(effect_id: &str) -> Error {
 }
 
 #[derive(Debug)]
-pub struct PresetsModule {
+pub(crate) struct PresetsModule {
     descriptor: ModuleDescriptor,
 }
 
@@ -48,7 +48,7 @@ impl Default for PresetsModule {
 }
 
 impl PresetsModule {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             descriptor: ModuleDescriptor {
                 id: "luxforge.presets".into(),

@@ -302,7 +302,7 @@ fn dng_uv_for_temperature_tint(temperature_kelvin: f64, tint: f64) -> Result<[f6
 /// answer would fall outside 2,000..=12,000 K or ±100 Luxforge tint. This is a value conversion:
 /// it does not attempt to reproduce Lightroom's rendering, because Luxforge turns its answer into
 /// sensor gains through LibRaw's camera matrix, never Adobe's.
-pub fn lightroom_to_luxforge(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
+pub(crate) fn lightroom_to_luxforge(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
     let uv = dng_uv_for_temperature_tint(temperature_kelvin, tint)?;
     temperature_tint_from_uv(uv, |miss| match miss {
         LocusMiss::BelowMinimum => {

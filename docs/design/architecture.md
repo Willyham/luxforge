@@ -48,6 +48,7 @@ Paths are under `crates/luxforge-core/src`.
 
 | Path | Holds |
 | --- | --- |
+| `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, and the modules they name items through (`activity`, `analysis`, `capabilities`, `colour`, `jobs`, `latest`, `mask`, `path` and `resources`). Every other item is `pub(crate)` or narrower, or `pub` only because a public signature carries it, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
 | `editor/catalog.rs` | The schema, the format marker, row mapping, and the entry, stroke and request rows |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |

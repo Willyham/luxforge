@@ -14,15 +14,15 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 /// The only grants file format this build reads or writes.
-pub const GRANTS_FORMAT: u32 = 1;
+pub(crate) const GRANTS_FORMAT: u32 = 1;
 /// Grants and denials together, revoked grants included. A new record beyond this prunes the
 /// oldest revoked grant or denial; when every record is a live grant, it evicts the oldest live
 /// remote-image grant, and when every record is a live download grant, it is refused.
-pub const MAX_GRANT_RECORDS: usize = 1024;
+pub(crate) const MAX_GRANT_RECORDS: usize = 1024;
 /// The largest grants file, read or written. A record is well under 1 KiB.
-pub const MAX_GRANTS_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_GRANTS_BYTES: u64 = 2 * 1024 * 1024;
 
-pub const GRANTS_FILE: &str = "grants.json";
+pub(crate) const GRANTS_FILE: &str = "grants.json";
 
 /// The permission methods.
 pub const GRANT: &str = "module.permission.grant";
@@ -31,7 +31,7 @@ pub const REVOKE: &str = "module.permission.revoke";
 pub const LIST: &str = "module.permission.list";
 
 /// The longest revocation reason a client may give, in characters.
-pub const MAX_REASON: usize = 256;
+pub(crate) const MAX_REASON: usize = 256;
 
 /// The capability kind a grant covers, which decides the shape of its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -42,14 +42,14 @@ pub enum GrantKind {
 }
 
 impl GrantKind {
-    pub fn of(kind: &CapabilityKind) -> Self {
+    pub(crate) fn of(kind: &CapabilityKind) -> Self {
         match kind {
             CapabilityKind::DownloadArtifact { .. } => Self::DownloadArtifact,
             CapabilityKind::RemoteImageRequest { .. } => Self::RemoteImageRequest,
         }
     }
 
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::DownloadArtifact => "download-artifact",
             Self::RemoteImageRequest => "remote-image-request",
@@ -88,7 +88,7 @@ pub enum GrantScope {
 }
 
 impl GrantScope {
-    pub fn kind(&self) -> GrantKind {
+    pub(crate) fn kind(&self) -> GrantKind {
         match self {
             Self::Download(_) => GrantKind::DownloadArtifact,
             Self::Remote(_) => GrantKind::RemoteImageRequest,
@@ -97,7 +97,7 @@ impl GrantScope {
 
     /// A client's scope, read strictly as the shape `kind` takes: an unknown or missing field is a
     /// `validation` error naming it.
-    pub fn parse(kind: GrantKind, value: &Value) -> Result<Self, Error> {
+    pub(crate) fn parse(kind: GrantKind, value: &Value) -> Result<Self, Error> {
         fn strict<T: DeserializeOwned>(kind: GrantKind, value: &Value) -> Result<T, Error> {
             serde_json::from_value(value.clone()).map_err(|error| {
                 Error::validation(format!("a {} scope is invalid: {error}", kind.name()))
@@ -274,7 +274,7 @@ impl Document {
 /// What a grant request did: a new grant, or the live grant that already covers the scope. A retry
 /// of the request never reaches the store: the owner's request table answers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct GrantOutcome {
+pub(crate) struct GrantOutcome {
     pub grant: Grant,
     /// `committed` when anything was written, `no-op` when the scope was already granted.
     pub outcome: super::settings::WriteOutcome,
@@ -292,13 +292,13 @@ pub(crate) struct NewGrant<'a> {
 /// The grants file of one user, in one directory. Holds no state of its own: every call reads the
 /// file again.
 #[derive(Clone, Debug)]
-pub struct GrantsStore {
+pub(crate) struct GrantsStore {
     document: JsonDocument<Document>,
 }
 
 impl GrantsStore {
     /// A store over `<dir>/grants.json`. Nothing is created until the first write.
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             document: JsonDocument::new(dir, GRANTS_FILE, MAX_GRANTS_BYTES, GRANTS_FORMAT)
                 .checked(Document::check),
@@ -310,7 +310,7 @@ impl GrantsStore {
     }
 
     /// Every grant and denial, optionally of one module.
-    pub fn list(&self, module_id: Option<&str>) -> Result<GrantList, Error> {
+    pub(crate) fn list(&self, module_id: Option<&str>) -> Result<GrantList, Error> {
         let document = self.load()?;
         let wanted = |id: &str| module_id.is_none_or(|module_id| module_id == id);
         Ok(GrantList {
@@ -328,7 +328,7 @@ impl GrantsStore {
     }
 
     /// How many of one module's grants are live and revoked, and how many denials it has.
-    pub fn counts(&self, module_id: &str) -> Result<PermissionCounts, Error> {
+    pub(crate) fn counts(&self, module_id: &str) -> Result<PermissionCounts, Error> {
         let document = self.load()?;
         let mut counts = PermissionCounts::default();
         for grant in document
@@ -351,7 +351,7 @@ impl GrantsStore {
     }
 
     /// The live grant covering exactly this scope, and whether a denial of it is recorded.
-    pub fn consent(
+    pub(crate) fn consent(
         &self,
         module_id: &str,
         capability: &str,

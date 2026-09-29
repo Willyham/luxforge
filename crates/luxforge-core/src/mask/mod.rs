@@ -61,14 +61,11 @@ mod range;
 /// why first.
 pub mod rules;
 
-pub use brush::{BrushStrokes, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
+pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
-pub use range::{
-    ColourRange, FEATHER_DEFAULT, LEVEL_MAX, LEVEL_MIN, LuminanceRange, MAX_SAMPLES, PLATEAU,
-    RADIUS_MAX, RADIUS_MIN, RANGE_FEATHER_MAX, RANGE_FEATHER_MIN, REFINE_DEFAULT, REFINE_MAX,
-    REFINE_MIN, SAMPLE_MAX, SAMPLE_MIN, SPAN, refine_radius,
-};
+pub use range::REFINE_DEFAULT;
+pub(crate) use range::{REFINE_MAX, REFINE_MIN};
 
 /// The payload field a sampling kind keeps its sampled colours in, the way
 /// [`crate::path::STROKES_FIELD`] is the field a drawn kind keeps its stroke addresses in.
@@ -346,7 +343,7 @@ pub fn component_kinds() -> impl Iterator<Item = &'static str> {
 /// and the panel generates their number fields from the same declarations — so what a client can
 /// *type* is what a control can edit. A kind whose geometry is drawn is evaluable without being
 /// generated over, and says so by declaring no parameters.
-pub fn declared_geometry_kinds() -> impl Iterator<Item = &'static str> {
+pub(crate) fn declared_geometry_kinds() -> impl Iterator<Item = &'static str> {
     COMPONENT_KINDS
         .iter()
         .filter(|entry| entry.parameters.is_some())
@@ -417,7 +414,7 @@ pub fn component_geometry_is_drawn(kind: &str) -> bool {
 ///
 /// `required` is false for a patch method, where every field is optional and the ones a request
 /// names are merged over the stored payload.
-pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterDescriptor>> {
+pub(crate) fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterDescriptor>> {
     COMPONENT_KINDS
         .iter()
         .find(|entry| entry.kind == kind)
@@ -427,7 +424,7 @@ pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterD
 
 /// The `range` control `kind` declares over its patch method `action`, when its geometry is a band
 /// on one axis; none for any other kind and for a kind this build does not know.
-pub fn component_band_control(kind: &str, action: &'static str) -> Option<Control> {
+pub(crate) fn component_band_control(kind: &str, action: &'static str) -> Option<Control> {
     COMPONENT_KINDS
         .iter()
         .find(|entry| entry.kind == kind)
@@ -455,7 +452,7 @@ pub fn component_sample_limit(kind: &str) -> Option<usize> {
 }
 
 /// What one sampled colour of `kind` declares, or none when the kind samples nothing.
-pub fn component_sample_parameters(kind: &str) -> Option<Vec<ParameterDescriptor>> {
+pub(crate) fn component_sample_parameters(kind: &str) -> Option<Vec<ParameterDescriptor>> {
     COMPONENT_KINDS
         .iter()
         .find(|entry| entry.kind == kind)
@@ -701,12 +698,12 @@ impl CompiledMask {
     }
 
     /// The stage this mask was compiled against.
-    pub fn stage(&self) -> Stage {
+    pub(crate) fn stage(&self) -> Stage {
         self.stage
     }
 
     /// How many components this mask composes, which is the whole of its per-pixel cost.
-    pub fn components(&self) -> usize {
+    pub(crate) fn components(&self) -> usize {
         self.components.len()
     }
 
@@ -779,7 +776,7 @@ fn kind_of(component: &Component) -> Result<&'static ComponentKind, Error> {
 /// Every component of one stored mask, checked by its kind's row without being bound to a stage.
 ///
 /// This is the stage-free half of [`CompiledMask::new`], for the mask-table check a recipe gets once
-/// when it enters the service ([`crate::Recipe::validate_mask_table`]), before any stage is known:
+/// when it enters the service (`crate::Recipe::validate_mask_table`), before any stage is known:
 /// it is what refuses to admit an unknown kind or a malformed payload in a mask no layer draws yet.
 /// A mask a layer draws is parsed again where it is compiled. Cost is `O(components)` and it reads
 /// no pixels.

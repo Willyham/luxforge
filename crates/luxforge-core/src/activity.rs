@@ -2,8 +2,8 @@
 //! recently.
 //!
 //! A worker whose work a person or an agent may be waiting on — preparing an original, developing a
-//! RAW, rendering a preview, measuring a histogram — calls [`ActivityBoard::begin`] and holds the
-//! [`Activity`] it gets back for as long as the work runs. A reader takes an [`ActivitySnapshot`],
+//! RAW, rendering a preview, measuring a histogram — calls `ActivityBoard::begin` and holds the
+//! `Activity` it gets back for as long as the work runs. A reader takes an [`ActivitySnapshot`],
 //! which is the `activity.list` answer. Publishers and readers share the board's schema and nothing
 //! else, so the panel that shows the work knows no worker and no worker knows the panel
 //! (`docs/design/performance-panel.md`).
@@ -14,7 +14,7 @@
 //! [`ActivitySnapshot::sequence`] changes whenever the contents change, so a poller can skip an
 //! unchanged snapshot.
 //!
-//! Everything here is bounded and cheap: at most [`MAX_ACTIVE`] active and [`MAX_RECENT`] recent
+//! Everything here is bounded and cheap: at most `MAX_ACTIVE` active and `MAX_RECENT` recent
 //! entries, both stored in lists sized once when the board is made, one uncontended mutex per call,
 //! and no timer, thread or queue.
 use crate::{AssetId, Error, ErrorKind};
@@ -28,20 +28,20 @@ use std::{
 
 /// The longest progress message any activity keeps; a longer one is cut. The one progress model
 /// every publisher shares, capability jobs included (`docs/design/module-capabilities.md`).
-pub const MAX_PROGRESS_MESSAGE: usize = 256;
+pub(crate) const MAX_PROGRESS_MESSAGE: usize = 256;
 
 /// How many entries can be active at once. A `begin` past this still runs its work; it records
 /// nothing and counts in [`ActivitySnapshot::untracked`] instead, so a burst of work can never grow
 /// the board.
-pub const MAX_ACTIVE: usize = 64;
+pub(crate) const MAX_ACTIVE: usize = 64;
 
 /// How many finished entries the board keeps, newest first.
-pub const MAX_RECENT: usize = 16;
+pub(crate) const MAX_RECENT: usize = 16;
 
 /// Only work that ran at least this long enters the recent list, so the preview churn of a drag,
 /// whose jobs finish in a few milliseconds each, never evicts a RAW redevelopment a reader still
 /// wants to see.
-pub const RECENT_THRESHOLD: Duration = Duration::from_millis(250);
+pub(crate) const RECENT_THRESHOLD: Duration = Duration::from_millis(250);
 
 /// How one piece of work ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ pub enum Outcome {
 impl Outcome {
     /// The outcome a worker's result records: [`ErrorKind::Cancelled`] is a cancel, any other error
     /// a failure.
-    pub fn of<T>(result: &Result<T, Error>) -> Self {
+    pub(crate) fn of<T>(result: &Result<T, Error>) -> Self {
         match result {
             Ok(_) => Self::Completed,
             Err(error) if error.kind == ErrorKind::Cancelled => Self::Cancelled,
@@ -68,7 +68,7 @@ impl Outcome {
 
 /// What a publisher says about the work it is beginning.
 #[derive(Clone, Debug)]
-pub struct ActivitySpec {
+pub(crate) struct ActivitySpec {
     /// A stable dotted identifier a client can switch on, such as `source.develop`.
     pub kind: &'static str,
     /// A short present-participle phrase for people, such as `Developing RAW`.
@@ -213,13 +213,13 @@ pub struct ActivityBoard {
 
 impl ActivityBoard {
     /// A board that keeps work of at least [`RECENT_THRESHOLD`] as recent.
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Self::with_recent_threshold(RECENT_THRESHOLD)
     }
 
     /// A board with another recent threshold. Tests lower it, usually to zero, so the short work
     /// of a small fixture is kept as recent.
-    pub fn with_recent_threshold(threshold: Duration) -> Arc<Self> {
+    pub(crate) fn with_recent_threshold(threshold: Duration) -> Arc<Self> {
         Arc::new(Self {
             board: Mutex::new(Board {
                 next_id: 1,
@@ -236,7 +236,7 @@ impl ActivityBoard {
     /// Record the beginning of one piece of work and return the guard that ends it. When
     /// [`MAX_ACTIVE`] entries are already running the guard is untracked: the work goes ahead, the
     /// board counts it in [`ActivitySnapshot::untracked`] and records nothing else about it.
-    pub fn begin(self: &Arc<Self>, spec: ActivitySpec) -> Activity {
+    pub(crate) fn begin(self: &Arc<Self>, spec: ActivitySpec) -> Activity {
         // The entry is built before the lock is taken; inside it the board only assigns an id and
         // moves the entry into space it already has.
         let mut entry = ActivityEntry {
@@ -271,7 +271,7 @@ impl ActivityBoard {
 
     /// The board now. It takes the lock once and copies at most [`MAX_ACTIVE`] and [`MAX_RECENT`]
     /// small entries; every time in it is measured against one clock reading taken under that lock.
-    pub fn snapshot(&self) -> ActivitySnapshot {
+    pub(crate) fn snapshot(&self) -> ActivitySnapshot {
         let board = self.lock();
         let now = Instant::now();
         ActivitySnapshot {
@@ -379,7 +379,7 @@ impl ActivityBoard {
 /// panicking, so an entry can never outlive the work it describes.
 #[must_use = "the activity ends as soon as its guard is dropped"]
 #[derive(Debug)]
-pub struct Activity {
+pub(crate) struct Activity {
     board: Arc<ActivityBoard>,
     /// `None` when the board was full and this work is untracked.
     id: Option<u64>,
@@ -387,7 +387,7 @@ pub struct Activity {
 
 impl Activity {
     /// Report the phase the work has reached. Reporting the phase it is already in changes nothing.
-    pub fn phase(&self, phase: &'static str) {
+    pub(crate) fn phase(&self, phase: &'static str) {
         if let Some(id) = self.id {
             self.board.set_phase(id, phase);
         }
@@ -395,7 +395,7 @@ impl Activity {
 
     /// Report progress: a fraction of 0 to 1 when the work knows a truthful extent, and a short
     /// message. Either may be omitted.
-    pub fn progress(&self, fraction: Option<f64>, message: &str) {
+    pub(crate) fn progress(&self, fraction: Option<f64>, message: &str) {
         if let Some(id) = self.id {
             self.board
                 .set_progress(id, ActivityProgress::new(fraction, message));
@@ -405,12 +405,12 @@ impl Activity {
     /// The progress this activity currently reports on the board, if it has any and the guard
     /// still tracks a live entry. A reader such as `job.read` uses this to answer with the
     /// same progress the board carries, rather than keeping its own copy.
-    pub fn progress_snapshot(&self) -> Option<ActivityProgress> {
+    pub(crate) fn progress_snapshot(&self) -> Option<ActivityProgress> {
         self.id.and_then(|id| self.board.progress_of(id))
     }
 
     /// End the work with this outcome.
-    pub fn finish(mut self, outcome: Outcome) {
+    pub(crate) fn finish(mut self, outcome: Outcome) {
         self.end(outcome);
     }
 

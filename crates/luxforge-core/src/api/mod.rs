@@ -17,7 +17,7 @@ use crate::{AssetId, Draft, DraftId, Error, PreviewSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL: &str = "luxforge-jsonl-1";
+pub(crate) const PROTOCOL: &str = "luxforge-jsonl-1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,7 +100,7 @@ pub struct ApiEvent {
 /// `events.since` sees, and the asset and revision it changed when it has them. A job carries the
 /// origin of the request that started it, and a change it causes later is announced under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Origin {
+pub(crate) struct Origin {
     pub method: String,
     pub request_id: String,
     pub asset_id: Option<AssetId>,
@@ -108,7 +108,7 @@ pub struct Origin {
 }
 
 impl Origin {
-    pub fn new(method: &str, request_id: &str) -> Self {
+    pub(crate) fn new(method: &str, request_id: &str) -> Self {
         Self {
             method: method.to_owned(),
             request_id: request_id.to_owned(),
@@ -174,7 +174,7 @@ impl MaskOverlayMode {
         }
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|mode| mode.as_str() == value)
     }
 }
@@ -203,7 +203,7 @@ impl MaskOverlayColour {
         }
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|colour| colour.as_str() == value)
@@ -275,16 +275,6 @@ pub enum ClientAuthority {
     #[default]
     Edit,
     Permissions,
-}
-
-impl ClientAuthority {
-    /// The label a grant or denial records as its actor.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Edit => "edit",
-            Self::Permissions => "permissions",
-        }
-    }
 }
 
 /// Per-client session state held by the owner. `revision` increases on every session change so a

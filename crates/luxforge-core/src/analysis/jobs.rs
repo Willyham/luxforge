@@ -91,7 +91,7 @@ impl AnalysisIdentity {
     /// The identity of the analysis of one evaluated stack. Pure and `O(layers)`: it serializes and
     /// hashes the recipe and reads nothing else. `stage` is the output stage the caller learned
     /// from compiling it; `None` records that the stack has no output stage at all.
-    pub fn of(
+    pub(crate) fn of(
         asset_id: &AssetId,
         source_fingerprint: &str,
         entry: &HistoryEntry,
@@ -119,7 +119,8 @@ impl AnalysisIdentity {
     }
 
     /// Whether this identity describes an evaluable output stage at all.
-    pub fn has_output_stage(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_output_stage(&self) -> bool {
         self.width != 0 && self.height != 0
     }
 }
@@ -128,7 +129,7 @@ impl AnalysisIdentity {
 /// buffer, the shared registry and the effective recipe, bound with the verified bytes of the
 /// artifacts it references, and its one compilation — which the job holds until the worker is done
 /// with it. The worker holds no catalog handle and no session, and compiles nothing.
-pub struct AnalysisJob {
+pub(crate) struct AnalysisJob {
     pub job_id: JobId,
     pub identity: AnalysisIdentity,
     pub evaluation: Evaluation,
@@ -152,7 +153,7 @@ struct AnalysisTask {
 /// How one analysis job ended, as [`AnalysisQueue::poll`] delivers it. A job withdrawn while it
 /// ran ends [`ErrorKind::Cancelled`].
 #[derive(Debug)]
-pub struct AnalysisOutcome {
+pub(crate) struct AnalysisOutcome {
     pub job_id: JobId,
     pub result: Result<Report, Error>,
 }
@@ -172,7 +173,7 @@ const HELD_JOBS: usize = WAITING_RESULTS + 2;
 /// A newer request does not interrupt the running job, because a client may still want it. Only
 /// [`Self::withdraw`] does: the render and the reduction read the job's abandoned token at chunk
 /// granularity, so a withdrawn analysis stops within a chunk and ends cancelled.
-pub struct AnalysisQueue {
+pub(crate) struct AnalysisQueue {
     worker: Latest<AnalysisTask, AnalysisOutcome>,
     activity: Option<Arc<ActivityBoard>>,
     /// The generation each recent job was requested under, oldest first, bounded by
@@ -182,7 +183,7 @@ pub struct AnalysisQueue {
 
 impl AnalysisQueue {
     /// `waker` tells the owner loop an outcome is ready. It is called from the worker thread.
-    pub fn new(waker: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub(crate) fn new(waker: Arc<dyn Fn() + Send + Sync>) -> Self {
         let worker = Latest::new("luxforge-analysis", analyse);
         worker.set_waker(waker);
         Self {
@@ -195,13 +196,13 @@ impl AnalysisQueue {
     /// Publish every job submitted from now on to `board` as an `analysis.histogram` activity, from
     /// the moment the worker starts it to the moment it has an outcome. A queue without a board
     /// publishes nothing.
-    pub fn set_activity(&mut self, board: Arc<ActivityBoard>) {
+    pub(crate) fn set_activity(&mut self, board: Arc<ActivityBoard>) {
         self.activity = Some(board);
     }
 
     /// Hand a job to the worker, or into the one pending slot. Returns the job id that was
     /// displaced from that slot, which the caller marks `superseded`.
-    pub fn submit(&mut self, job: AnalysisJob) -> Option<JobId> {
+    pub(crate) fn submit(&mut self, job: AnalysisJob) -> Option<JobId> {
         let job_id = job.job_id.clone();
         let requested = self.worker.request(AnalysisTask {
             job,
@@ -221,7 +222,7 @@ impl AnalysisQueue {
     /// Nobody is interested in this job any more: drop it when it waits in the pending slot, or
     /// abandon it when it runs, which stops its render within a chunk and delivers it cancelled.
     /// Returns whether the worker still held it.
-    pub fn withdraw(&mut self, job_id: &JobId) -> bool {
+    pub(crate) fn withdraw(&mut self, job_id: &JobId) -> bool {
         let Some(generation) = self.generation_of(job_id) else {
             return false;
         };
@@ -237,13 +238,13 @@ impl AnalysisQueue {
 
     /// Whether this job waits in the pending slot. A job submitted and not yet finished that does
     /// not wait there is the running one.
-    pub fn is_pending(&self, job_id: &JobId) -> bool {
+    pub(crate) fn is_pending(&self, job_id: &JobId) -> bool {
         self.generation_of(job_id)
             .is_some_and(|generation| self.worker.pending_generation() == Some(generation))
     }
 
     /// The oldest outcome the worker has delivered and the owner has not taken yet.
-    pub fn poll(&mut self) -> Option<AnalysisOutcome> {
+    pub(crate) fn poll(&mut self) -> Option<AnalysisOutcome> {
         let (generation, outcome) = self.worker.poll()?;
         // Outcomes arrive in generation order, so a job at or below this one that has not
         // delivered never will: it was displaced, or withdrawn before it started.

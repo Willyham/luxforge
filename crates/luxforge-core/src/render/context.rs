@@ -82,7 +82,7 @@ impl RenderContext {
     }
 
     /// The spatial budget: the working sets of spatial tiles.
-    pub fn spatial(&self) -> &SpatialBudget {
+    pub(crate) fn spatial(&self) -> &SpatialBudget {
         &self.0.spatial
     }
 
@@ -228,7 +228,7 @@ impl Drop for ScratchReservation<'_> {
 ///
 /// A reservation covers one batch and is taken before any of its tiles allocates, so the next
 /// batch sees whatever other evaluations released in the meantime.
-pub struct SpatialBudget {
+pub(crate) struct SpatialBudget {
     target: u64,
     used: AtomicU64,
     peak: AtomicU64,
@@ -243,11 +243,11 @@ impl SpatialBudget {
         }
     }
 
-    pub fn target(&self) -> u64 {
+    pub(crate) fn target(&self) -> u64 {
         self.target
     }
 
-    pub fn in_use(&self) -> u64 {
+    pub(crate) fn in_use(&self) -> u64 {
         self.used.load(Ordering::SeqCst)
     }
 
@@ -255,7 +255,7 @@ impl SpatialBudget {
     /// tiles are written, so `in_use` observed from outside a render is almost always zero; this is
     /// what makes the budget observable after the fact, including a peak above the target when
     /// evaluations overlapped or one tile needed more than all of it.
-    pub fn peak(&self) -> u64 {
+    pub(crate) fn peak(&self) -> u64 {
         self.peak.load(Ordering::Relaxed)
     }
 

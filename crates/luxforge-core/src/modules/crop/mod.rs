@@ -2,8 +2,8 @@
 //!
 //! The geometry is separated from the module so the host, the module and the desktop share exactly
 //! one implementation of the rotated box, coverage and fitting math.
-pub mod geometry;
+pub(super) mod geometry;
 mod module;
 
-pub(crate) use module::stored_payload;
-pub use module::{CROP_EFFECT, CropAspect, CropModule};
+pub use module::{CROP_EFFECT, CropAspect};
+pub(crate) use module::{CropModule, stored_payload};

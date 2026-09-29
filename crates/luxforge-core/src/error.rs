@@ -81,19 +81,20 @@ impl Error {
     /// One constructor per [`ErrorKind`], named after the kind, for every call site that knows its
     /// kind at compile time. `Error::new` stays for the few call sites where the kind is itself a
     /// variable.
-    pub fn unsupported_input(detail: impl Into<String>) -> Self {
+    pub(crate) fn unsupported_input(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::UnsupportedInput, detail)
     }
-    pub fn unsupported_color(detail: impl Into<String>) -> Self {
+    pub(crate) fn unsupported_color(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::UnsupportedColor, detail)
     }
-    pub fn unsupported_profile(detail: impl Into<String>) -> Self {
+    pub(crate) fn unsupported_profile(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::UnsupportedProfile, detail)
     }
     pub fn file_access(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::FileAccess, detail)
     }
-    pub fn decode(detail: impl Into<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn decode(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Decode, detail)
     }
     pub fn resource_limit(detail: impl Into<String>) -> Self {
@@ -102,37 +103,37 @@ impl Error {
     pub fn render(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Render, detail)
     }
-    pub fn cancelled(detail: impl Into<String>) -> Self {
+    pub(crate) fn cancelled(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Cancelled, detail)
     }
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Validation, detail)
     }
-    pub fn conflict(detail: impl Into<String>) -> Self {
+    pub(crate) fn conflict(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Conflict, detail)
     }
-    pub fn catalog(detail: impl Into<String>) -> Self {
+    pub(crate) fn catalog(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Catalog, detail)
     }
     pub fn incompatible(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Incompatible, detail)
     }
-    pub fn source_unavailable(detail: impl Into<String>) -> Self {
+    pub(crate) fn source_unavailable(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::SourceUnavailable, detail)
     }
     pub fn preparation_required(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::PreparationRequired, detail)
     }
-    pub fn consent_required(detail: impl Into<String>) -> Self {
+    pub(crate) fn consent_required(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::ConsentRequired, detail)
     }
-    pub fn forbidden(detail: impl Into<String>) -> Self {
+    pub(crate) fn forbidden(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Forbidden, detail)
     }
     pub fn not_ready(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::NotReady, detail)
     }
-    pub fn protocol(detail: impl Into<String>) -> Self {
+    pub(crate) fn protocol(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Protocol, detail)
     }
     pub fn internal(detail: impl Into<String>) -> Self {
@@ -189,7 +190,7 @@ impl Error {
     }
     /// What this refusal needs prepared, when the work that was refused named it and nothing has
     /// been queued for it yet.
-    pub fn needs(&self) -> Option<&PreparationNeeds> {
+    pub(crate) fn needs(&self) -> Option<&PreparationNeeds> {
         match self.preparation.as_deref() {
             Some(Preparation::Needs(needs)) => Some(needs),
             _ => None,

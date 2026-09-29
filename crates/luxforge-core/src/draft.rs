@@ -51,7 +51,7 @@ impl Draft {
 
     /// Validate every named field against the action's declared parameters before changing
     /// anything, so a rejected request leaves the draft exactly as it was.
-    pub fn checked_fields(
+    pub(crate) fn checked_fields(
         &self,
         parameters: &[ParameterDescriptor],
         fields: &Map<String, Value>,

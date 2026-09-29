@@ -10,11 +10,13 @@ mod jobs;
 mod mask_overlay;
 mod overlay;
 
-pub use jobs::{AnalysisDomain, AnalysisIdentity, AnalysisJob, AnalysisOutcome, AnalysisQueue};
+pub use jobs::{AnalysisDomain, AnalysisIdentity};
+pub(crate) use jobs::{AnalysisJob, AnalysisQueue};
 pub use mask_overlay::{
-    MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskInputPixel, MaskOverlay, MaskPixels, coverage_grid,
-    coverage_grid_region, quantize_coverage,
+    MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskOverlay, MaskPixels, coverage_grid,
+    quantize_coverage,
 };
+pub(crate) use mask_overlay::{MaskInputPixel, coverage_grid_region};
 pub(crate) use overlay::cell_pixel;
 pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,
@@ -33,7 +35,8 @@ pub(crate) const DOMAIN: &str = "srgb-8bit-output";
 
 /// A report is bounded to 16 KiB of counters/metadata before protocol encoding (the histogram and
 /// clipping contract, and "Resource and responsiveness constraints").
-pub const REPORT_BOUND_BYTES: usize = 16 * 1024;
+#[cfg(test)]
+pub(crate) const REPORT_BOUND_BYTES: usize = 16 * 1024;
 
 pub(crate) fn deserialize_domain<'de, D>(deserializer: D) -> Result<&'static str, D::Error>
 where
@@ -56,14 +59,14 @@ where
 mod bins {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S>(value: &[u64; 256], serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(value: &[u64; 256], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         value.as_slice().serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u64; 256], D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<[u64; 256], D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -128,7 +131,7 @@ impl Report {
 /// API share, so every consumer of "is this pixel clipped" agrees byte for byte. Alpha is never
 /// consulted: the supported JPEG path is opaque, and clipping describes color channels only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Clip {
+pub(crate) enum Clip {
     /// At least one channel is code 0, none is code 255.
     Shadow,
     /// At least one channel is code 255, none is code 0.
@@ -140,7 +143,7 @@ pub enum Clip {
 
 /// The shared clipping predicate: `None` when no channel of `rgba` sits at an output endpoint,
 /// otherwise which endpoint(s) it has. Alpha (`rgba[3]`) is ignored.
-pub fn clip_class(rgba: [u8; 4]) -> Option<Clip> {
+pub(crate) fn clip_class(rgba: [u8; 4]) -> Option<Clip> {
     let shadow = rgba[0] == 0 || rgba[1] == 0 || rgba[2] == 0;
     let highlight = rgba[0] == 255 || rgba[1] == 255 || rgba[2] == 255;
     match (shadow, highlight) {

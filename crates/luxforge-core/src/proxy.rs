@@ -34,11 +34,11 @@ pub struct ProxyBounds {
 }
 
 impl ProxyBounds {
-    pub const MAX_SIDE: u32 = 4096;
-    pub const MAX_PIXELS: u64 = 8_000_000;
+    pub(crate) const MAX_SIDE: u32 = 4096;
+    pub(crate) const MAX_PIXELS: u64 = 8_000_000;
 
-    /// Clamp each side to [`Self::MAX_SIDE`] and scale both down uniformly until the product is
-    /// within [`Self::MAX_PIXELS`]. A zero side becomes one, so the result always describes a
+    /// Clamp each side to `Self::MAX_SIDE` and scale both down uniformly until the product is
+    /// within `Self::MAX_PIXELS`. A zero side becomes one, so the result always describes a
     /// buildable rectangle and no caller has to handle a refusal.
     pub fn clamped(self) -> Self {
         let mut width = self.width.clamp(1, Self::MAX_SIDE);
@@ -152,7 +152,7 @@ pub struct ProxyWindow {
 
 impl ProxyPlan {
     /// The dimensions of the proxy source this plan builds: the window's, or the whole stage's.
-    pub fn source_dimensions(&self) -> (u32, u32) {
+    pub(crate) fn source_dimensions(&self) -> (u32, u32) {
         self.window.map_or((self.width, self.height), |window| {
             (window.width, window.height)
         })
@@ -160,7 +160,7 @@ impl ProxyPlan {
 
     /// The same plan over the whole proxy stage, with no window: the exact downscale a windowed
     /// proxy is a part of, which the proofs render against.
-    pub fn whole(self) -> Self {
+    pub(crate) fn whole(self) -> Self {
         Self {
             window: None,
             ..self
@@ -184,7 +184,7 @@ pub enum ProxyIdentity {
     },
     Raw {
         fingerprint: String,
-        /// The development the planes belong to ([`LinearImage::development`]): a process-unique
+        /// The development the planes belong to (`LinearImage::development`): a process-unique
         /// number, so a redevelopment misses even when its planes reuse the old allocation's
         /// address.
         development: u64,
@@ -202,7 +202,7 @@ impl ProxyPlan {
     /// crop's output — not the source rectangle it was cut from — is what gets fitted into the
     /// bounds. Pure arithmetic: the stage comes from the compilation the caller already holds
     /// ([`crate::Render::proxy_plan`]).
-    pub fn fit(source: (u32, u32), stage: (u32, u32), bounds: ProxyBounds) -> Option<Self> {
+    pub(crate) fn fit(source: (u32, u32), stage: (u32, u32), bounds: ProxyBounds) -> Option<Self> {
         let bounds = bounds.clamped();
         let (source_width, source_height) = source;
         let (stage_width, stage_height) = stage;
@@ -233,7 +233,7 @@ impl ProxyPlan {
 
 /// One cached proxy source's identity: the pixels it came from and the plan it was built to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProxyKey {
+pub(crate) struct ProxyKey {
     pub identity: ProxyIdentity,
     pub plan: ProxyPlan,
 }
@@ -241,7 +241,7 @@ pub struct ProxyKey {
 /// One cached proxy source. Bounded by construction: at most one entry, so the memory a cache can
 /// hold is one proxy and a new plan replaces the old one rather than accumulating beside it.
 #[derive(Default)]
-pub struct ProxyCache {
+pub(crate) struct ProxyCache {
     entry: Option<(ProxyKey, PreviewSource)>,
 }
 
@@ -252,7 +252,7 @@ impl ProxyCache {
     /// so a replacement never sits beside the proxy it replaces at the build's peak. A build that
     /// fails or is cancelled leaves the cache empty, which the next job reads as a miss and
     /// rebuilds; nothing but the preview worker that owns the cache ever reads it.
-    pub fn source_for(
+    pub(crate) fn source_for(
         &mut self,
         key: &ProxyKey,
         job: &PreviewSource,
@@ -297,7 +297,7 @@ impl PreviewSource {
     /// (the exposure a RAW development layer asks for) belong to the recipe being rendered, so a
     /// cache hit takes the pixels from the cache and the settings from the job that is rendering.
     /// A JPEG carries no settings and is returned as it is.
-    pub fn with_settings_of(&self, job: &PreviewSource) -> PreviewSource {
+    pub(crate) fn with_settings_of(&self, job: &PreviewSource) -> PreviewSource {
         match (self, job) {
             (Self::Raw { image, .. }, Self::Raw { settings, .. }) => Self::Raw {
                 image: image.clone(),
@@ -321,7 +321,7 @@ impl PreviewSource {
 
     /// The same bounded proxy build, with a checkpoint in every horizontal and vertical row.
     /// Interactive viewport jobs pass their `abandoned` token here, including cache misses.
-    pub fn proxy_cancellable(
+    pub(crate) fn proxy_cancellable(
         &self,
         plan: ProxyPlan,
         cancel: &Cancel,

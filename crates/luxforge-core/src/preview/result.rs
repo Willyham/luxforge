@@ -44,7 +44,7 @@ pub struct PreviewResult {
     pub outcome: PhaseOutcome,
     /// Whether this frame approximates a RAW white balance the developed planes do not hold — a
     /// drafted temperature or tint, previewed during its gesture before the release redevelops the
-    /// mosaic ([`PreviewSource::approximate_white_balance`]). Set on **both** phases of such a job:
+    /// mosaic (`PreviewSource::approximate_white_balance`). Set on **both** phases of such a job:
     /// the matrix is linear and the proxy's box filter is linear, so it applies to the proxy
     /// exactly as it does to the full frame, and neither phase is the exact picture. Such a job
     /// never carries a [`ExactOutcome::report`], even when it asked for one.
@@ -188,7 +188,8 @@ impl PreviewResult {
     }
 
     /// This phase's frame, taken out of the result.
-    pub fn into_raster(self) -> Result<Raster, Error> {
+    #[cfg(test)]
+    pub(crate) fn into_raster(self) -> Result<Raster, Error> {
         match self.outcome {
             PhaseOutcome::Proxy(proxy) => Ok(proxy.raster),
             PhaseOutcome::Region(region) => Ok(region.frame.raster),
@@ -205,7 +206,8 @@ impl PreviewResult {
         }
     }
 
-    pub fn region(&self) -> Option<&RegionOutcome> {
+    #[cfg(test)]
+    pub(crate) fn region(&self) -> Option<&RegionOutcome> {
         match &self.outcome {
             PhaseOutcome::Region(region) => Some(region),
             _ => None,
@@ -223,7 +225,8 @@ impl PreviewResult {
     /// The coverage grid this phase carries, or the reason it has none. Read from whichever phase
     /// arrives: a job's grid is on exactly one of them — the overlay phase after a proxy frame, and
     /// otherwise the frame it describes — and a proxy frame carries none.
-    pub fn mask_overlay(&self) -> &MaskOverlayOutcome {
+    #[cfg(test)]
+    pub(crate) fn mask_overlay(&self) -> &MaskOverlayOutcome {
         static NONE: MaskOverlayOutcome = MaskOverlayOutcome {
             grid: None,
             absent: None,
@@ -239,7 +242,8 @@ impl PreviewResult {
     /// Whether this frame is a proxy approximation of the exact render at all. The one word a
     /// client reads; [`ProxyOutcome::approximation`] says which of the two made it so. Never on the
     /// exact phase, which is the frame every number comes from.
-    pub fn proxy_approximate(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn proxy_approximate(&self) -> bool {
         self.proxy()
             .is_some_and(|proxy| proxy.approximation.is_approximate())
             || self

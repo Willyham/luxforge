@@ -102,8 +102,8 @@ fn oklab_ab(rgb: [f64; 3]) -> (f64, f64) {
 
 /// The ends of the band's own axis, which is the encoded axis times 100: one slider unit is `2.55`
 /// output codes, so the conversion from a slider number to a code is exact and one line.
-pub const LEVEL_MIN: f64 = 0.0;
-pub const LEVEL_MAX: f64 = 100.0;
+pub(super) const LEVEL_MIN: f64 = 0.0;
+pub(super) const LEVEL_MAX: f64 = 100.0;
 
 /// The smallest legal **non-zero** shoulder width, in slider units. A feather of exactly `0` is the
 /// explicit hard-edge branch; anything between is refused, because the shoulder's slope is
@@ -111,10 +111,10 @@ pub const LEVEL_MAX: f64 = 100.0;
 /// the arithmetic cannot bound. The floor bounds every reciprocal the band takes by `100`, which is
 /// what makes the study's tolerance derivable, and it excludes nothing a gesture can ask for: one
 /// unit is the smallest non-zero step a `0..100` slider offers.
-pub const RANGE_FEATHER_MIN: f64 = 1.0;
+pub(super) const RANGE_FEATHER_MIN: f64 = 1.0;
 
 /// The largest legal shoulder width, in slider units: the whole axis.
-pub const RANGE_FEATHER_MAX: f64 = 100.0;
+pub(super) const RANGE_FEATHER_MAX: f64 = 100.0;
 
 /// The shoulder a new band starts with.
 ///
@@ -125,12 +125,12 @@ pub const RANGE_FEATHER_MAX: f64 = 100.0;
 /// neighbouring pixels on an ordinary noisy shadow: a starting value that speckles would read as a
 /// fault in the tool. Five units is 13 output codes, comfortably wider than that noise, and is the
 /// narrowest shoulder the study measures as clean.
-pub const FEATHER_DEFAULT: f64 = 5.0;
+pub(super) const FEATHER_DEFAULT: f64 = 5.0;
 
 /// A luminance-range component's stored payload, all four numbers on the slider's `0..100` axis.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LuminanceRange {
+pub(super) struct LuminanceRange {
     pub low: f64,
     pub low_feather: f64,
     pub high: f64,
@@ -345,28 +345,28 @@ impl ComponentField for CompiledLuminance {
 /// The largest number of sampled colours one colour-range component holds. A product bound — the
 /// panel shows five swatches — and not a numerical one: the fold is `min`, which is exact and
 /// associative, so nothing in the mathematics changes if it is raised.
-pub const MAX_SAMPLES: usize = 5;
+pub(super) const MAX_SAMPLES: usize = 5;
 
 /// The loosest selection radius, in Oklab `(a, b)` units, at `refine = 0`: 41% of the largest
 /// chromaticity distance between two in-gamut sRGB colours, so the loosest setting takes a broad
 /// family and still leaves the opposite side of the wheel out.
-pub const RADIUS_MAX: f64 = 0.25;
+pub(super) const RADIUS_MAX: f64 = 0.25;
 
 /// The tightest selection radius, at `refine = 100`: below the measured chromaticity spread of a
 /// single surface under half a stop of shading, so the tightest setting selects one flat patch and
 /// little else. It bounds the per-pixel reciprocal by `200`.
-pub const RADIUS_MIN: f64 = 0.005;
+pub(super) const RADIUS_MIN: f64 = 0.005;
 
 /// The fraction of the radius that is fully selected. Sized so that at the default refine the
 /// plateau covers an ordinary surface's own chromaticity spread across a stop of shading.
-pub const PLATEAU: f64 = 0.5;
+pub(super) const PLATEAU: f64 = 0.5;
 
 /// The falloff span, `1 - PLATEAU`. Exactly `0.5`, so dividing by it is exact.
-pub const SPAN: f64 = 1.0 - PLATEAU;
+pub(super) const SPAN: f64 = 1.0 - PLATEAU;
 
 /// The refine slider's ends.
-pub const REFINE_MIN: f64 = 0.0;
-pub const REFINE_MAX: f64 = 100.0;
+pub(crate) const REFINE_MIN: f64 = 0.0;
+pub(crate) const REFINE_MAX: f64 = 100.0;
 
 /// The refine a new colour range starts at, and the one a double-click returns it to. It is a
 /// measured position and not a midpoint: the refine at which a surface stops being held whole across
@@ -379,8 +379,8 @@ pub const REFINE_DEFAULT: f64 = 50.0;
 /// operation's own input, which an earlier unit may legitimately have pushed outside `[0, 1]`, so the
 /// rule is generous — four stops above white and as far below black — and exists to keep a stored
 /// payload finite and bounded rather than to describe a gamut.
-pub const SAMPLE_MIN: f64 = -16.0;
-pub const SAMPLE_MAX: f64 = 16.0;
+pub(super) const SAMPLE_MIN: f64 = -16.0;
+pub(super) const SAMPLE_MAX: f64 = 16.0;
 
 /// A colour-range component's stored payload: up to [`MAX_SAMPLES`] sampled colours as linear sRGB
 /// triples in the domain of the operation the mask modulates, and one refine slider in `0..100`.
@@ -391,7 +391,7 @@ pub const SAMPLE_MAX: f64 = 16.0;
 /// empty mask does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ColourRange {
+pub(super) struct ColourRange {
     #[serde(default)]
     pub samples: Vec<[f64; 3]>,
     pub refine: f64,
@@ -495,7 +495,7 @@ pub(super) fn parse_colour(component: &Component) -> Result<ColourRange, Error> 
 /// Geometric rather than linear because what a person judges is the *ratio* between the radius and
 /// the distance to the colours they do not want: a linear map spends three quarters of its travel
 /// above every useful radius. Evaluated once per compiled component, never per pixel.
-pub fn refine_radius(refine: f64) -> f64 {
+pub(super) fn refine_radius(refine: f64) -> f64 {
     RADIUS_MAX * (RADIUS_MIN / RADIUS_MAX).powf(refine / 100.0)
 }
 

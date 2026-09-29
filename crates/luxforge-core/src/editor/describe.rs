@@ -33,13 +33,13 @@ impl EditorService {
     /// The id of the asset's current entry, and nothing else: what a caller that only names or
     /// compares the current entry reads, instead of [`Self::state`], which copies the whole entry.
     /// It copies the cached head and never touches an entry, cached or not.
-    pub fn current_entry_id(&self, asset_id: &AssetId) -> Result<EntryId, Error> {
+    pub(crate) fn current_entry_id(&self, asset_id: &AssetId) -> Result<EntryId, Error> {
         Ok(self.head(asset_id)?.current)
     }
 
     /// The asset's current revision, which is all a draft's conflict check compares. It decodes
     /// nothing, whether or not the asset's head is cached.
-    pub fn revision(&self, asset_id: &AssetId) -> Result<u64, Error> {
+    pub(crate) fn revision(&self, asset_id: &AssetId) -> Result<u64, Error> {
         match self.entries.borrow().revision(asset_id) {
             Some(revision) => Ok(revision),
             None => stored_revision(&self.connection, asset_id),
@@ -65,7 +65,7 @@ impl EditorService {
     /// Describe one entry's stored layers for the recipe panel against the asset's recorded
     /// extents ([`ModuleRegistry::describe_recipe`]). A layer whose provider is missing or
     /// unavailable is listed with the reason, never omitted.
-    pub fn describe_entry(
+    pub(crate) fn describe_entry(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
@@ -87,7 +87,7 @@ impl ModuleRegistry {
     /// Describe one entry's stored layers, for a source of these extents: `O(layers)` registry
     /// lookups, payload reads and payload compiles, with no decode, no render and no source access.
     /// Each row carries the stage its layer receives, folded once over the stack
-    /// ([`Self::stages`]), and the orientation the orientation layers before it composed; the
+    /// (`Self::stages`), and the orientation the orientation layers before it composed; the
     /// description ends with the stack's own output stage and orientation, which a layer appended
     /// to it would receive. A layer whose provider is missing or unavailable is listed with the
     /// reason, never omitted.

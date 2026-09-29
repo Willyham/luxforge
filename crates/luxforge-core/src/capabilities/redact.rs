@@ -2,7 +2,6 @@
 //! Responses, events, errors, reads and descriptors never carry a secret by construction, so a
 //! client that logs, captures or copies requests passes them through here first. See
 //! `docs/design/module-capabilities.md#secrets-and-redaction`.
-use crate::ApiRequest;
 use serde_json::Value;
 use std::borrow::Cow;
 
@@ -28,16 +27,6 @@ pub(crate) fn redacted<'a>(method: &str, params: &'a Value) -> Cow<'a, Value> {
     Cow::Owned(params)
 }
 
-/// A copy of one request that is safe to log, capture as evidence or copy as JSON. The live-session
-/// token is dropped too: it authenticates a loopback client, so a copied request must not carry it.
-pub fn redact_request(request: &ApiRequest) -> ApiRequest {
-    ApiRequest {
-        params: redact_params(&request.method, &request.params),
-        token: None,
-        ..request.clone()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,23 +34,11 @@ mod tests {
 
     #[test]
     fn only_the_value_of_a_set_secret_request_is_redacted() {
-        let request = ApiRequest {
-            id: "one".into(),
-            method: SET_SECRET.into(),
-            params: json!({"module_id": "test.module", "setting": "api-key", "value": "s3cret"}),
-            token: Some("live-session-token".into()),
-        };
-        let redacted = redact_request(&request);
+        let params = json!({"module_id": "test.module", "setting": "api-key", "value": "s3cret"});
         assert_eq!(
-            redacted.params,
+            redact_params(SET_SECRET, &params),
             json!({"module_id": "test.module", "setting": "api-key", "value": "<redacted>"})
         );
-        assert_eq!(
-            redacted.token, None,
-            "the live-session token is never copied"
-        );
-        assert_eq!(redacted.id, "one");
-        assert_eq!(redacted.method, SET_SECRET);
         assert_eq!(
             redact_params(SET_SECRET, &json!({"value": {"nested": "s3cret"}})),
             json!({"value": "<redacted>"}),

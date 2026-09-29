@@ -280,7 +280,7 @@ fn a_control_resolves_to_its_variant_only_on_the_global_target_of_its_kind() {
         ] {
             assert_eq!(resolve_control(&basic.id, control, kind, target), base);
         }
-        let raw = registry.resolve_control(basic, control, Some(SourceTag::Raw), None);
+        let raw = resolve_control(&basic.id, control, Some(SourceTag::Raw), None);
         assert!(raw.variant);
         assert_eq!(raw.module, "luxforge.raw");
         assert_eq!(raw.control.kind_name(), control.kind_name());
@@ -322,9 +322,7 @@ fn a_control_resolves_to_its_variant_only_on_the_global_target_of_its_kind() {
         (Some(SourceTag::Raw), Some(&mask)),
         (None, None),
     ] {
-        let base = registry
-            .resolve_group_reset(basic, group, kind, target)
-            .unwrap();
+        let base = resolve_group_reset(&basic.id, group, kind, target).unwrap();
         assert_eq!(base.module, "luxforge.basic");
         assert_eq!(base.reset.action, "set-basic");
         assert!(!base.variant);

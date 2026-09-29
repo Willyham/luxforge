@@ -59,7 +59,7 @@ impl Disclosure {
 
 /// `download-artifact`: the pinned URL, the resource and its version, its size, where it is
 /// installed and its licence. Resources are free to download.
-pub fn download_disclosure(
+pub(crate) fn download_disclosure(
     module: &ModuleDescriptor,
     capability: &CapabilityDescriptor,
     resource: &ResourceDescriptor,
@@ -80,7 +80,7 @@ pub fn download_disclosure(
 
 /// `remote-image-request`: the endpoint origin, the data class in words, the exact size of the
 /// body the host sends, and the adapter's retention note and cost.
-pub fn remote_disclosure(
+pub(crate) fn remote_disclosure(
     module: &ModuleDescriptor,
     capability: &CapabilityDescriptor,
     adapter: &AdapterDescriptor,
@@ -99,7 +99,7 @@ pub fn remote_disclosure(
 /// with `data.consent: {module_id, capability, kind, scope, disclosure, denied}`. `denied` is true
 /// when a denial of exactly this scope is recorded, so a client can tell a first request from one
 /// the person already declined.
-pub fn consent_required(
+pub(crate) fn consent_required(
     module: &ModuleDescriptor,
     capability: &CapabilityDescriptor,
     scope: &GrantScope,

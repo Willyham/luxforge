@@ -163,7 +163,7 @@ fn object_holds(path: &Path, bytes: &[u8]) -> Result<bool, Error> {
 /// [`crate::EditorService::register_artifact`] when the task completes. Obtained from
 /// [`crate::EditorService::artifact_writer`]; cloning it is cheap.
 #[derive(Clone, Debug)]
-pub struct ArtifactWriter {
+pub(crate) struct ArtifactWriter {
     root: PathBuf,
     catalog_id: String,
     live: LiveArtifacts,
@@ -178,11 +178,6 @@ impl ArtifactWriter {
         }
     }
 
-    /// The directory this writer publishes into.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Publish `bytes` as one immutable artifact and return its record, which the catalog does not
     /// know yet, and its verified bytes.
     ///
@@ -195,7 +190,7 @@ impl ArtifactWriter {
     /// `resource-limit`. The artifact is live while the service that made this writer is open, so
     /// no collection removes it before the catalog has recorded it. One bounded copy of the bytes
     /// is made for the returned [`PreparedArtifact`].
-    pub fn write(
+    pub(crate) fn write(
         &self,
         bytes: &[u8],
         meta: ArtifactMeta,

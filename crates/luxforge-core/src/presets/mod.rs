@@ -20,15 +20,16 @@ mod library_tests;
 mod tests;
 
 #[cfg(test)]
-pub(crate) use library::{IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS, PresetRecord};
+use library::{IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS, PresetRecord};
 pub use library::{PresetSummary, USER_PRESET_GROUP};
 #[cfg(test)]
-pub(crate) use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
-pub use report::{ImportReport, ReportCounts};
+use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
+pub(crate) use report::ImportReport;
+pub use report::ReportCounts;
 #[cfg(test)]
-pub(crate) use report::{MappedSetting, ReportedSetting};
+use report::{MappedSetting, ReportedSetting};
 #[cfg(test)]
-pub(crate) use xmp::{MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
+use xmp::{MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
 
 #[cfg(test)]
 use crate::ErrorKind;
@@ -42,11 +43,11 @@ use serde_json::{Map, Value};
 /// The largest preset text accepted, in bytes: the desktop's file limit and the request bound.
 pub const MAX_PRESET_BYTES: usize = 1024 * 1024;
 /// The `format` marker of a Luxforge preset document.
-pub const PRESET_DOCUMENT_FORMAT: &str = "luxforge.preset";
+pub(crate) const PRESET_DOCUMENT_FORMAT: &str = "luxforge.preset";
 /// The only preset document version this build reads and writes.
-pub const PRESET_DOCUMENT_VERSION: u64 = 1;
+pub(crate) const PRESET_DOCUMENT_VERSION: u64 = 1;
 /// The name an import takes when neither the file nor its file name gives one.
-pub const IMPORTED_PRESET_NAME: &str = "Imported preset";
+pub(crate) const IMPORTED_PRESET_NAME: &str = "Imported preset";
 
 const FORMAT_LUXFORGE: &str = "luxforge";
 const FORMAT_XMP: &str = "lightroom-xmp";
@@ -101,7 +102,7 @@ pub enum PresetOrigin {
 
 /// A Luxforge preset document ready to save, as `preset.export` returns it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct PresetExport {
+pub(crate) struct PresetExport {
     /// `<name>.lfpreset`, with characters no common file system allows replaced by `_`.
     pub file_name: String,
     pub content: String,
@@ -156,9 +157,9 @@ fn is_template(text: &str) -> bool {
 /// settings. Every error is structured: `unsupported-input` for an unrecognized format, a
 /// Lightroom profile, a template that is not a Develop preset, malformed syntax (a template names
 /// the byte offset, XML the line and column) or a setting written twice; `resource-limit` for
-/// text over [`MAX_PRESET_BYTES`], nesting past [`MAX_XMP_DEPTH`] or [`MAX_TEMPLATE_DEPTH`], more
-/// than [`MAX_XMP_NODES`] XML nodes or [`MAX_TEMPLATE_VALUES`] template values; and the
-/// [`validate_settings`] errors for a Luxforge document whose settings this registry refuses.
+/// text over [`MAX_PRESET_BYTES`], nesting past `MAX_XMP_DEPTH` or `MAX_TEMPLATE_DEPTH`, more
+/// than `MAX_XMP_NODES` XML nodes or `MAX_TEMPLATE_VALUES` template values; and the
+/// `validate_settings` errors for a Luxforge document whose settings this registry refuses.
 pub fn inspect_preset(
     content: &str,
     file_name: Option<&str>,
@@ -220,7 +221,7 @@ pub fn inspect_preset(
 
 /// Detect, read and map a preset for import: [`inspect_preset`], refusing a file that maps
 /// nothing with `unsupported-input` and the four report counts.
-pub fn parse_preset(
+pub(crate) fn parse_preset(
     content: &str,
     file_name: Option<&str>,
     registry: &ModuleRegistry,
@@ -240,7 +241,7 @@ pub fn parse_preset(
 /// passing that action's parameter check. The library runs this when a set is created, updated,
 /// imported or captured; the host checks again when one is applied, through the same shape check
 /// and resolver.
-pub fn validate_settings(
+pub(crate) fn validate_settings(
     registry: &ModuleRegistry,
     settings: &Map<String, Value>,
 ) -> Result<(), Error> {
@@ -310,7 +311,7 @@ fn export_file_name(name: &str) -> String {
 
 /// A Luxforge preset document for these settings, pretty-printed, and its file name. The
 /// document reads back through [`parse_preset`] to the same name, group and settings.
-pub fn export_document(
+pub(crate) fn export_document(
     name: &str,
     group: Option<&str>,
     settings: &Map<String, Value>,

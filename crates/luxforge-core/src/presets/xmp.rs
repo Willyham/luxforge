@@ -16,19 +16,19 @@ const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 
 /// The most XML nodes one preset may hold. A 1 MiB document of empty elements would otherwise
 /// hold about 260,000.
-pub const MAX_XMP_NODES: u32 = 200_000;
+pub(super) const MAX_XMP_NODES: u32 = 200_000;
 /// The deepest element nesting accepted. Lightroom's deepest structures, masks inside mask groups,
 /// stay well under twenty levels. The XML parser descends recursively, so this is checked by a
 /// scan before it runs.
-pub const MAX_XMP_DEPTH: usize = 64;
+pub(super) const MAX_XMP_DEPTH: usize = 64;
 /// The most attribute comparisons the parser's duplicate check may make, summed over elements.
 /// That check compares each attribute with every earlier one on its element, so its cost grows
 /// with the square of an element's attribute count: one element may hold about 2,000 attributes,
 /// where Lightroom writes a few hundred at most.
-pub const MAX_XMP_ATTRIBUTE_PAIRS: u64 = 2_000_000;
+pub(super) const MAX_XMP_ATTRIBUTE_PAIRS: u64 = 2_000_000;
 /// The most namespace declarations one document may make. The parser resolves every element and
 /// attribute prefix by scanning the declarations in scope; a sidecar declares about twenty.
-pub const MAX_XMP_NAMESPACES: usize = 128;
+pub(super) const MAX_XMP_NAMESPACES: usize = 128;
 
 fn is(node: Node<'_, '_>, namespace: &str, name: &str) -> bool {
     node.is_element()

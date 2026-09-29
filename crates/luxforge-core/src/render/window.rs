@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// A reason a requested output rectangle cannot use a cut compilation. The caller can still
 /// render the existing whole-frame path and report why it did so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RegionFallback {
+pub(crate) enum RegionFallback {
     Empty,
     TooLarge,
     PointReplacement,
@@ -70,7 +70,7 @@ pub enum RegionFallback {
 }
 
 impl RegionFallback {
-    pub fn reason(self) -> &'static str {
+    pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::Empty => "the requested viewport lies outside the output stage",
             Self::TooLarge => "the viewport exceeds the 32 MiB region frame bound",

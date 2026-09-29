@@ -218,7 +218,7 @@ macro_rules! rec709 {
 /// Rec. 709 / sRGB luma coefficients on linear sRGB, and the weighted sum they define. Written as
 /// `f64` and narrowed once, so the `f32` per-pixel units and the `f64` value-based mask components
 /// share one definition of luminance.
-pub mod luma {
+pub(crate) mod luma {
     pub(crate) const LUMA_R_F64: f64 = 0.2126;
     pub(crate) const LUMA_G_F64: f64 = 0.7152;
     pub(crate) const LUMA_B_F64: f64 = 0.0722;
@@ -254,7 +254,7 @@ pub mod luma {
 /// matrices, reproduced with every published digit as `f64` and narrowed once to the `f32` values
 /// the per-pixel path multiplies by, plus `to_oklab`/`from_oklab` and the two colourfulness
 /// readouts `chroma`/`hue_degrees` every colour-adjusting module shares.
-pub mod oklab {
+pub(crate) mod oklab {
     use super::mat3::{matvec_f32, matvec_f64, signed_cbrt_f32, signed_cbrt_f64};
 
     /// Linear sRGB (D65) to LMS.
@@ -363,7 +363,7 @@ pub mod oklab {
 
 /// Small 3×3 linear algebra: the matrix-vector product and the signed cube root at both working
 /// precisions, the matrix product, and the adjugate inverse and determinant.
-pub mod mat3 {
+pub(crate) mod mat3 {
     use crate::Error;
 
     type Mat3 = [[f64; 3]; 3];
@@ -491,7 +491,7 @@ pub mod mat3 {
 
 /// Correlated colour temperature: the Planckian locus and the CIE 1931 `xy` / CIE 1960 `uv`
 /// projection white balance measures temperature and tint in.
-pub mod cct {
+pub(crate) mod cct {
     /// The Kang, Moon, Hong, Lee, Cho, and Kim (2002) Planckian-locus approximation ("Design of
     /// Advanced Color Temperature Control System for HDTV Applications", Journal of the Korean
     /// Physical Society 41(6), 865-871), valid 1667 K to 25000 K: x(T) split at 4000 K and the

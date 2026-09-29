@@ -13,9 +13,9 @@ use crate::ErrorKind;
 use std::collections::HashSet;
 
 /// The deepest table nesting accepted, counting the outer `s = { … }` table as the first level.
-pub const MAX_TEMPLATE_DEPTH: usize = 16;
+pub(super) const MAX_TEMPLATE_DEPTH: usize = 16;
 /// The most values one template may hold, counting every scalar and every table.
-pub const MAX_TEMPLATE_VALUES: usize = 100_000;
+pub(super) const MAX_TEMPLATE_VALUES: usize = 100_000;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Lua {
