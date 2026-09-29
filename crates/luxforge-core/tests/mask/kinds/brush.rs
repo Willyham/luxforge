@@ -3,7 +3,7 @@
 //! stroke limits.
 
 use super::*;
-use luxforge_core::path::Stroke;
+use luxforge_core::mask::Stroke;
 use luxforge_reference::mask::{Brush as RefBrush, brush_coverage};
 
 pub(super) struct Brush;

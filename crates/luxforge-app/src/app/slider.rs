@@ -92,7 +92,7 @@ impl Editor {
         // panel's sections are bound to, which is what makes a masked slider follow the drag the way
         // a global one does; for a `mask.*` control it is the mask and component the panel has open,
         // because no declared parameter kind can carry an identity.
-        let target = self.draft_target(&action);
+        let target = self.draft_target(&action).identities();
         self.event(
             "slider_draft_begin",
             || json!({"action":action,"revision":base_revision,"target":target}),

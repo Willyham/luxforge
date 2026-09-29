@@ -39,16 +39,19 @@
 //! Compiling uses the **stored position** spelling of mask space (`u = x · W/H`, `v = y`); the
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
-use super::{Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, range, smooth};
+use super::{
+    Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, SIZE_MAX, SIZE_MIN, Stroke, range,
+    size_is_legal, size_range, smooth,
+};
 use crate::{
     Component, Error,
     modules::{Region, Stage},
-    path::{self, Stroke, StrokeId, StrokeTable},
+    path::{StrokeId, StrokeTable},
 };
 
 // The one legal stroke radius is a stored distance, so it lies inside the study's own distance rule
 // and every divisor a stroke's falloff takes stays one the study allows.
-const _: () = assert!(path::SIZE_MIN >= DISTANCE_MIN && path::SIZE_MAX <= DISTANCE_MAX);
+const _: () = assert!(SIZE_MIN >= DISTANCE_MIN && SIZE_MAX <= DISTANCE_MAX);
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -458,7 +461,7 @@ impl Compiled {
     ///
     /// Every refusal names what it refused: a reference the store cannot answer is the store's own
     /// `incompatible` error unchanged, and a stroke whose radius is outside the one legal stroke
-    /// radius ([`path::size_range`]) is `validation` naming the component, the stroke and the range. Both happen here, **before any pixel is
+    /// radius ([`size_range`]) is `validation` naming the component, the stroke and the range. Both happen here, **before any pixel is
     /// read**. Occupancy is not refused here: it is checked where each stroke is painted
     /// ([`densest_cell`]), so a component that committed is already within the cap, and a layer that
     /// first draws a mask long after its strokes were painted compiles it without a second check.
@@ -477,7 +480,7 @@ impl Compiled {
             // The refusal reads exactly as admission's does for the same reference, because it is
             // the same fact reached from the other side: admission refuses to write it, and
             // compiling refuses to draw it.
-            let stroke = strokes.resolve(id).map_err(|error| {
+            let stroke = strokes.resolve::<Stroke>(id).map_err(|error| {
                 Error::new(
                     error.kind,
                     format!(
@@ -487,10 +490,10 @@ impl Compiled {
                 )
             })?;
             let r = stroke.size();
-            if !path::size_is_legal(r) {
+            if !size_is_legal(r) {
                 return Err(Error::validation(format!(
                     "component {component} stroke {id} size must be a number within {}",
-                    path::size_range()
+                    size_range()
                 )));
             }
             let band = r * (stroke.feather() / 100.0);
