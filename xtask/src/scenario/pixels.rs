@@ -166,8 +166,7 @@ impl Frame {
     /// measured.
     pub fn photo(&self) -> Result<[u32; 4]> {
         let rect = self.photo_rect()?;
-        let image = self.image()?;
-        let (width, height) = image.dimensions();
+        let (width, height) = self.image()?.dimensions();
         let [left, top, right, bottom] = rect;
         ensure(
             0 <= left
@@ -180,7 +179,33 @@ impl Frame {
                 "The photograph's rectangle {rect:?} is not inside the {width} × {height} capture"
             ),
         )?;
-        let bounds = rect.map(|edge| edge as u32);
+        self.drawn(rect.map(|edge| edge as u32))
+    }
+
+    /// The part of the photograph on screen: [`Frame::photo_rect`] clipped to the canvas region the
+    /// frame records (`canvas_rect`), which a percentage zoom can carry the photograph past, holding
+    /// a drawn picture as [`Frame::photo`] requires.
+    pub fn visible_photo(&self) -> Result<[u32; 4]> {
+        let rect = self.photo_rect()?;
+        let canvas: [u32; 4] = serde_json::from_value(self["canvas_rect"].clone())
+            .map_err(|_| "The frame records no canvas rectangle")?;
+        let [left, top, right, bottom] = [
+            rect[0].max(i64::from(canvas[0])),
+            rect[1].max(i64::from(canvas[1])),
+            rect[2].min(i64::from(canvas[2])),
+            rect[3].min(i64::from(canvas[3])),
+        ];
+        ensure(
+            left < right && top < bottom,
+            format!("The photograph's rectangle {rect:?} is off the canvas {canvas:?}"),
+        )?;
+        self.drawn([left, top, right, bottom].map(|edge| edge as u32))
+    }
+
+    /// `bounds`, once at least a quarter of an 8 × 8 grid of samples over it reads something other
+    /// than the canvas surface.
+    fn drawn(&self, bounds: [u32; 4]) -> Result<[u32; 4]> {
+        let image = self.image()?;
         let drawn = (0..8)
             .flat_map(|row| (0..8).map(move |column| (column, row)))
             .filter(|(column, row)| {
@@ -197,9 +222,42 @@ impl Frame {
             .count();
         ensure(
             drawn >= 16,
-            format!("No photograph drawn in {rect:?}: blank or wrong render"),
+            format!("No photograph drawn in {bounds:?}: blank or wrong render"),
         )?;
         Ok(bounds)
+    }
+
+    /// The photograph's recorded edges are where its drawn pixels end: at the middle of each edge,
+    /// the pixel just inside is `lit` and the one just outside is the canvas surface. For a frame
+    /// with nothing drawn over the photograph's edges, which is what makes a placement claim about
+    /// the rectangle a claim about the pixels too.
+    pub fn photo_edges(&self, lit: impl Fn([u8; 3]) -> bool) -> Result<[u32; 4]> {
+        let [left, top, right, bottom] = self.photo()?;
+        let image = self.image()?;
+        let (mid_x, mid_y) = ((left + right) / 2, (top + bottom) / 2);
+        for (name, inside, outside) in [
+            (
+                "left",
+                (left, mid_y),
+                left.checked_sub(1).map(|x| (x, mid_y)),
+            ),
+            ("right", (right - 1, mid_y), Some((right, mid_y))),
+            ("top", (mid_x, top), top.checked_sub(1).map(|y| (mid_x, y))),
+            ("bottom", (mid_x, bottom - 1), Some((mid_x, bottom))),
+        ] {
+            let pixel = |(x, y): (u32, u32)| image.get_pixel(x, y).0;
+            let background = outside
+                .filter(|(x, y)| *x < image.width() && *y < image.height())
+                .map(pixel);
+            ensure(
+                lit(pixel(inside)) && background.is_some_and(|p| p == CANVAS),
+                format!(
+                    "The photograph's {name} edge is not where its pixels end: {:?} inside, {background:?} outside",
+                    pixel(inside)
+                ),
+            )?;
+        }
+        Ok([left, top, right, bottom])
     }
 
     /// The capture position at fractions `fraction` of the located photograph.
@@ -436,55 +494,58 @@ pub fn grey_range(image: &RgbImage, centre: (f64, f64), half: i64) -> (f64, f64)
     (lo, hi)
 }
 
-/// The centred window of the photo surface: 40% of its width and 30% of the capture's height about
-/// its centre, which lies inside a fitted photograph at either orientation and touches neither the
-/// notice cards at the top of the canvas nor the mode strip at its bottom.
-fn surface_window(frame: &Frame) -> Result<(&RgbImage, [u32; 4])> {
-    let image = frame.image()?;
-    let (width, height) = image.dimensions();
-    let [left, right] = frame.columns()?.unwrap_or([0, width]);
-    ensure(left < right && right <= width, "Invalid surface columns")?;
-    let surface = right - left;
-    let (cx, cy) = ((left + right) / 2, height / 2);
-    let (half_w, half_h) = (surface / 5, height * 3 / 20);
-    ensure(
-        half_w > 10 && half_h > 10 && cx > half_w && cy > half_h,
-        "Photo surface too small to sample",
-    )?;
-    Ok((image, [cx - half_w, cy - half_h, cx + half_w, cy + half_h]))
-}
-
-/// Mean Rec. 709 luminance of the photo surface's centred window.
-pub fn window_luminance(frame: &Frame) -> Result<f64> {
-    let (image, [x0, y0, x1, y1]) = surface_window(frame)?;
-    let mut total = 0.0;
-    let mut count = 0u32;
-    for y in y0..y1 {
-        for x in x0..x1 {
-            total += luminance(image.get_pixel(x, y).0);
-            count += 1;
-        }
+impl Frame {
+    /// The central window of the photograph on screen: the middle 40% of its width and half its
+    /// height, inside the photograph at every zoom and clear of its edges.
+    fn window(&self) -> Result<[u32; 4]> {
+        let [left, top, right, bottom] = self.visible_photo()?;
+        let (width, height) = (right - left, bottom - top);
+        let window = [
+            left + width * 3 / 10,
+            top + height / 4,
+            right - width * 3 / 10,
+            bottom - height / 4,
+        ];
+        ensure(
+            window[0] < window[2] && window[1] < window[3],
+            format!(
+                "The photograph {:?} is too small to sample",
+                [left, top, right, bottom]
+            ),
+        )?;
+        Ok(window)
     }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(total / f64::from(count))
-}
 
-/// Mean per-channel value of the same window.
-pub fn window_rgb(frame: &Frame) -> Result<[f64; 3]> {
-    let (image, [x0, y0, x1, y1]) = surface_window(frame)?;
-    let mut totals = [0.0; 3];
-    let mut count = 0u32;
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let p = image.get_pixel(x, y).0;
-            for channel in 0..3 {
-                totals[channel] += f64::from(p[channel]);
+    /// Mean Rec. 709 luminance of the photograph's central window.
+    pub fn window_luminance(&self) -> Result<f64> {
+        let (image, [x0, y0, x1, y1]) = (self.image()?, self.window()?);
+        let mut total = 0.0;
+        let mut count = 0u32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                total += luminance(image.get_pixel(x, y).0);
+                count += 1;
             }
-            count += 1;
         }
+        Ok(total / f64::from(count))
     }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(totals.map(|total| total / f64::from(count)))
+
+    /// Mean per-channel value of the same window.
+    pub fn window_rgb(&self) -> Result<[f64; 3]> {
+        let (image, [x0, y0, x1, y1]) = (self.image()?, self.window()?);
+        let mut totals = [0.0; 3];
+        let mut count = 0u32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = image.get_pixel(x, y).0;
+                for channel in 0..3 {
+                    totals[channel] += f64::from(p[channel]);
+                }
+                count += 1;
+            }
+        }
+        Ok(totals.map(|total| total / f64::from(count)))
+    }
 }
 
 #[cfg(test)]
