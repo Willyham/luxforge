@@ -23,11 +23,11 @@
 //! stored stroke holds.
 //!
 //! Each launch is a [`Plan`]: every frame it captures, named, with what its step commits, the label
-//! of the entry it leaves and the layers in the stack. [`verify`] reads the frames by those names
-//! and checks what a plan cannot say: the mask's own structure, the brush the panel holds and, above
-//! all, the coverage the overlay shows.
+//! of the entry it leaves, the layers in the stack, the mask's components, the canvas mode, the
+//! overlay and the zoom. [`verify`] reads the frames by those names and checks what a plan cannot
+//! say: the strokes, the brush the panel holds and, above all, the coverage the overlay shows.
 use crate::{
-    scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, Tolerance, pixels},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance},
     *,
 };
 use luxforge_core::PRESENCE_EFFECT;
@@ -139,16 +139,16 @@ const PROBE_NAMES: [&str; 9] = [
 /// Half the side of a measured patch, in capture pixels. Every probe above is at least two patches
 /// clear of the nearest coverage boundary, except the two band readings, which are the measurement.
 const PATCH_HALF: i64 = 5;
-/// How bright a `mask-on-black` patch must read before this scenario calls it covered, and how dark
-/// before it calls it uncovered. The overlay paints coverage straight into all three channels, so
-/// full coverage is 255 and none is 0; these are margins, not tuned thresholds.
-const COVERED: f64 = 200.0;
+/// How close to full coverage's 255 a `mask-on-black` patch must read before this scenario calls it
+/// covered (200 or brighter), and how close to no coverage's 0 before it calls it uncovered (40 or
+/// darker). The overlay paints coverage straight into all three channels; these are margins, not
+/// tuned thresholds.
+const COVERED_WITHIN: f64 = 55.0;
 const UNCOVERED: f64 = 40.0;
-/// What a reading inside a feather band must stay between to count as partial: clear of both
-/// endpoints, by the same margins. A hard stroke read at the same offset is `COVERED`, which is the
-/// comparison the two settings are proved by.
-const PARTIAL_LOW: f64 = 60.0;
-const PARTIAL_HIGH: f64 = 195.0;
+/// How close to 127.5 a reading inside a feather band must stay to count as partial: 60 to 195,
+/// clear of both endpoints by the same margins. A hard stroke read at the same offset is covered,
+/// which is the comparison the two settings are proved by.
+const PARTIAL_WITHIN: f64 = 67.5;
 /// How far the hard strokes' band must read above the feathered stroke's, at the same offset from
 /// the centre line, before this scenario calls the two feather settings different.
 const BANDS_APART: f64 = 50.0;
@@ -162,6 +162,28 @@ const PRESENCE_UNTOUCHED: f64 = 1.0;
 /// before.
 fn uncommitted(name: &str, script: script::Step) -> Step {
     Step::new(name, script).commits(0)
+}
+
+/// The composed mask launch 2 leaves: the brush launch 1 painted, the radial beside it and the
+/// subtracting brush.
+const COMPOSED: [&str; 3] = ["add brush", "add radial", "subtract brush"];
+
+/// The coverage overlay on, which is what every coverage reading is taken from, or off.
+fn overlay(name: &str, setting: &str) -> Step {
+    uncommitted(
+        name,
+        script::Step::Workspace(WorkspaceStep::default().mask_overlay(setting)),
+    )
+    .workspace("mask_overlay", json!(setting))
+}
+
+/// Mask mode, through the same `workspace.set` the mode strip sends.
+fn mask_mode() -> Step {
+    uncommitted(
+        "mask-mode",
+        script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+    )
+    .mode("mask")
 }
 
 /// A stroke painted and released with the brush the panel holds: one entry, labelled `label`.
@@ -188,12 +210,9 @@ fn stroke(name: &str, points: [[f64; 2]; 2], label: &str) -> Step {
 pub fn plan1(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The fixture as launched, with no mask in the recipe.
-        Step::opened("opened"),
-        // 1: Mask mode, through the same `workspace.set` the mode strip sends.
-        uncommitted(
-            "mask-mode",
-            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
-        ),
+        Step::opened("opened").masks(0),
+        // 1: Mask mode.
+        mask_mode(),
         // 2: the brush the first strokes are drawn with: one size, and the hard edge.
         uncommitted(
             "hard-brush",
@@ -211,14 +230,14 @@ pub fn plan1(_: &[PathBuf]) -> Plan {
             script::Step::Mask(MaskStep::Paint(PaintStep::NewMask)),
         ),
         // 4: the first stroke: one mask, one component and one stroke, in one history entry.
-        stroke("stroke-a", A, "Add brush"),
+        stroke("stroke-a", A, "Add brush")
+            .masks(1)
+            .components(&COMPOSED[..1]),
         // 5: the second, on the same component, with no second gesture: the brush re-arms itself.
-        stroke("stroke-b", B, "Update Brush 1"),
+        // Several strokes in one mask are an ordinary list: still one row.
+        stroke("stroke-b", B, "Update Brush 1").components(&COMPOSED[..1]),
         // 6: the coverage itself on screen, which is what every reading below is taken from.
-        uncommitted(
-            "overlay",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
-        ),
+        overlay("overlay", "mask-on-black"),
         // 7-8: the same brush at the other end of its feather range, and a third stroke with it.
         uncommitted(
             "soft-brush",
@@ -270,20 +289,16 @@ pub fn plan1(_: &[PathBuf]) -> Plan {
 /// subtracting from it, an adjustment through the result, and an undo.
 pub fn plan2(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
-        // The catalog reopened in a new process: no gesture open and no Presence layer.
+        // The catalog reopened in a new process: its one mask, no gesture open and no Presence
+        // layer.
         Step::opened("reopened")
             .no_draft()
-            .no_layer(PRESENCE_EFFECT),
+            .no_layer(PRESENCE_EFFECT)
+            .masks(1),
         // 1-2: Mask mode and the coverage on screen, in a new process: what the first launch
         // painted is read back from the pixels before anything is added to it.
-        uncommitted(
-            "mask-mode",
-            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
-        ),
-        uncommitted(
-            "overlay",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
-        ),
+        mask_mode(),
+        overlay("overlay", "mask-on-black"),
         // 3-5: a radial gradient in the same mask, swept from its centre out to one radius. The Add
         // row is at Add, which is where a reopened panel starts.
         uncommitted(
@@ -299,7 +314,8 @@ pub fn plan2(_: &[PathBuf]) -> Plan {
         ),
         Step::new("apply-radial", MaskStep::Apply)
             .commits(1)
-            .label("Add radial"),
+            .label("Add radial")
+            .components(&COMPOSED[..2]),
         // 6-8: a second brush component, in subtract mode, painted inside that gradient. This is
         // the owner's own requirement, and it is one more row in the same list.
         uncommitted(
@@ -310,12 +326,9 @@ pub fn plan2(_: &[PathBuf]) -> Plan {
             "new-brush",
             script::Step::Mask(MaskStep::Paint(PaintStep::NewBrush)),
         ),
-        stroke("subtract-stroke", SUBTRACT, "Add subtract brush"),
+        stroke("subtract-stroke", SUBTRACT, "Add subtract brush").components(&COMPOSED),
         // 9: the overlay off, leaving the photograph.
-        uncommitted(
-            "overlay-off",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("off")),
-        ),
+        overlay("overlay-off", "off"),
         // 10: Presence through the finished mask, as the panel's own drag. The brush is still armed
         // from the stroke above and gives its draft up to this gesture, exactly as it gives it up to
         // every other one.
@@ -328,11 +341,12 @@ pub fn plan2(_: &[PathBuf]) -> Plan {
         .no_draft()
         .payload(PRESENCE_EFFECT, json!({ DEHAZE: DEHAZED })),
         // 11: and undone. An undo moves the revision on by one, to the entry before, which is the
-        // subtract stroke's.
+        // subtract stroke's, with every component where it was.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label("Add subtract brush")
-            .no_layer(PRESENCE_EFFECT),
+            .no_layer(PRESENCE_EFFECT)
+            .components(&COMPOSED),
     ])
 }
 
@@ -342,15 +356,10 @@ pub fn plan3(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The catalog reopened in a third process, holding no gesture.
         Step::opened("reopened").no_draft(),
-        // 1-2: Mask mode and the coverage, in a third process.
-        uncommitted(
-            "mask-mode",
-            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
-        ),
-        uncommitted(
-            "overlay",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
-        ),
+        // 1-2: Mask mode, where the panel lists the composed mask launch 2 left, and the coverage,
+        // in a third process.
+        mask_mode().components(&COMPOSED),
+        overlay("overlay", "mask-on-black"),
         // 3-4: the brush in hand again — a reopened editor holds no gesture — armed on the
         // component the first launch painted, by the name the panel gives it.
         uncommitted(
@@ -372,14 +381,11 @@ pub fn plan3(_: &[PathBuf]) -> Plan {
         stroke("edge-stroke", EDGE, "Update Brush 1"),
         // 6-8: painting at 100%, where the exact frame is what is on screen, and back to Fit, where
         // that stroke is where the content coordinates it was painted in put it.
-        uncommitted("zoom-100", script::Step::View(ViewStep::Percent(100.0))),
-        stroke("zoomed-stroke", ZOOMED, "Update Brush 1"),
-        uncommitted("fit", script::Step::View(ViewStep::Fit)),
-        // 9: the overlay off, so the cropped photograph below can be found in the capture at all.
-        uncommitted(
-            "overlay-off",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("off")),
-        ),
+        uncommitted("zoom-100", script::Step::View(ViewStep::Percent(100.0))).percent(100.0),
+        stroke("zoomed-stroke", ZOOMED, "Update Brush 1").percent(100.0),
+        uncommitted("fit", script::Step::View(ViewStep::Fit)).fit(),
+        // 9: the overlay off.
+        overlay("overlay-off", "off"),
         // 10: the geometry tail as one affine, before the crop: the map a gesture places a stroke
         // with, read through the same method the canvas reads it through.
         uncommitted("transform-before", script::Step::api("render.transform")),
@@ -394,17 +400,14 @@ pub fn plan3(_: &[PathBuf]) -> Plan {
         uncommitted("transform-after", script::Step::api("render.transform")),
         // 13-15: the coverage back on, the brush re-armed on that component after the crop, and one
         // more stroke painted in content coordinates under the rotated picture.
-        uncommitted(
-            "overlay-again",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
-        ),
+        overlay("overlay-again", "mask-on-black"),
         uncommitted(
             "rearm",
             script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::name(
                 "Brush 1",
             )))),
         ),
-        stroke("rotated-stroke", ROTATED, "Update Brush 1"),
+        stroke("rotated-stroke", ROTATED, "Update Brush 1").components(&COMPOSED),
     ])
 }
 
@@ -422,50 +425,32 @@ fn strokes(frame: &Frame, index: usize) -> Result<Vec<String>> {
 /// The brush the panel is holding, as the frame recorded it: the settings the next stroke is drawn
 /// with, read from the fields `mask.add-stroke` itself declares.
 fn brush(frame: &Frame, field: &str) -> Result<f64> {
-    let held = &frame["state"]["masks"]["brush"]["fields"][field];
+    let held = &frame.state()["masks"]["brush"]["fields"][field];
     held.as_f64()
         .or_else(|| held.as_str().and_then(|text| text.parse::<f64>().ok()))
         .ok_or_else(|| {
             format!(
                 "Frame records no brush {field}: {}",
-                frame["state"]["masks"]["brush"]
+                frame.state()["masks"]["brush"]
             )
             .into()
         })
 }
 
-/// The stack's one Presence layer, or `None` when the stack holds none.
-fn presence_layer(frame: &Frame) -> Option<&Value> {
-    frame.layer(PRESENCE_EFFECT)
-}
-
-/// Where the photograph is drawn inside the capture.
-///
-/// It is found on a frame the overlay has not painted — the opened fixture, or the frame after a
-/// crop — and reused for the frames beside it: the zoom and the panels do not move between them, and
-/// it cannot be found again from a frame painted mostly black. The vertical extent is taken first,
-/// for the reason [`Scan::Tallest`] records.
-const BOUNDS: Bright = Bright {
-    threshold: 32,
-    scan: Scan::Tallest { last_row: false },
-    least: Some((200, 100)),
-};
-
-/// Mean Rec. 709 luminance of one small patch of the displayed photograph.
-fn patch(frame: &Frame, bounds: [u32; 4], at: [f64; 2]) -> Result<f64> {
-    pixels::luminance_at(frame, bounds, at, PATCH_HALF)
-}
-
-/// All nine probes of one capture.
-fn probes(frame: &Frame, bounds: [u32; 4]) -> Result<[f64; 9]> {
+/// All nine probes of one capture: the mean Rec. 709 luminance of a small patch at each, in the
+/// photograph's recorded rectangle.
+fn probes(frame: &Frame) -> Result<[f64; 9]> {
     let mut out = [0.0; 9];
     for (slot, at) in out.iter_mut().zip(PROBES) {
-        *slot = patch(frame, bounds, at)?;
+        *slot = frame.luminance_at(at, PATCH_HALF)?;
     }
     Ok(out)
 }
 
-/// What one probe must read: full coverage, none, or somewhere strictly between the two.
+/// What one probe must read: full coverage, none, or somewhere strictly between the two. Each is a
+/// distance from a centre: full is 200 or brighter, within [`COVERED_WITHIN`] of the overlay's
+/// 255; none is 40 or darker, within [`UNCOVERED`] of its 0; partial is 60 to 195, within
+/// [`PARTIAL_WITHIN`] of 127.5.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reads {
     Full,
@@ -473,35 +458,39 @@ enum Reads {
     Partial,
 }
 
-fn reading_holds(value: f64, wanted: Reads) -> bool {
-    match wanted {
-        Reads::Full => value >= COVERED,
-        Reads::None => value <= UNCOVERED,
-        Reads::Partial => (PARTIAL_LOW..=PARTIAL_HIGH).contains(&value),
+impl Reads {
+    fn centre(self) -> (f64, f64, &'static str) {
+        match self {
+            Self::Full => (255.0, COVERED_WITHIN, "full coverage"),
+            Self::None => (0.0, UNCOVERED, "no coverage"),
+            Self::Partial => (127.5, PARTIAL_WITHIN, "partial coverage"),
+        }
     }
 }
 
-fn describe(wanted: Reads) -> &'static str {
-    match wanted {
-        Reads::Full => "full coverage",
-        Reads::None => "no coverage",
-        Reads::Partial => "partial coverage",
-    }
+/// One reading of `frame` at `at` against what it must read.
+fn reads(checks: &mut Checks, frame: &Frame, what: &str, value: f64, wanted: Reads) -> Result {
+    let (centre, within, name) = wanted.centre();
+    checks.compare(
+        frame,
+        &format!("{what}: {name}"),
+        value,
+        centre,
+        Tolerance::Within(within),
+    )
 }
 
 /// One coverage frame against what the composition and the accumulation rules say it must be, at
 /// each of the nine probes in turn.
-fn coverage(frame: &Frame, bounds: [u32; 4], what: &str, expected: [Reads; 9]) -> Result<[f64; 9]> {
-    let read = probes(frame, bounds)?;
+fn coverage(
+    checks: &mut Checks,
+    frame: &Frame,
+    what: &str,
+    expected: [Reads; 9],
+) -> Result<[f64; 9]> {
+    let read = probes(frame)?;
     for ((value, want), name) in read.iter().zip(expected).zip(PROBE_NAMES) {
-        ensure(
-            reading_holds(*value, want),
-            format!(
-                "{what}: {name} read {value:.1}, which is not {} (covered is >= {COVERED}, \
-                 uncovered <= {UNCOVERED}, partial {PARTIAL_LOW}..{PARTIAL_HIGH})",
-                describe(want)
-            ),
-        )?;
+        reads(checks, frame, &format!("{what}, {name}"), *value, want)?;
     }
     Ok(read)
 }
@@ -556,99 +545,47 @@ impl Tail {
 }
 
 /// The whole scenario's own checks, once each launch's plan has held: what the three launches show,
-/// checked in order, each against what the one before it recorded.
+/// checked in order, launch 2 against the mask and the pixels launch 1 left.
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let [launch1, launch2, launch3] = launches else {
         return Err(format!("Expected three launches, found {}", launches.len()).into());
     };
-    let checks = verify_launch1(launch1)?;
-    run.record("launch1", checks.clone());
-    let composed = verify_launch2(launch2, &checks)?;
-    run.record("launch2", composed.clone());
-    let carried = verify_launch3(launch3, &composed)?;
-    run.record("launch3", carried.clone());
-    write_json(
-        &run.out().join("mask-brush-checks.json"),
-        &json!({"launch1": checks, "launch2": composed, "launch3": carried}),
-    )?;
-    Ok(())
+    let mut checks = Checks::new();
+    let (mask, opened) = verify_launch1(launch1, &mut checks)?;
+    verify_launch2(launch2, &mask, opened, &mut checks)?;
+    verify_launch3(launch3, &mut checks)?;
+    checks.write(
+        run.out(),
+        SCENARIO,
+        json!({
+            "mask": mask,
+            "covered_within": COVERED_WITHIN,
+            "uncovered_within": UNCOVERED,
+            "partial_within": PARTIAL_WITHIN,
+            "scope": "Mean Rec. 709 luminance of patches of the photograph the editor records drawing, read back from the renderer; the coverage readings are of the mask-on-black overlay, which paints coverage straight into all three channels, and are not a colorimetric claim",
+        }),
+    )
 }
 
-/// Launch 1, step by step: the strokes, the two feather settings, the erase and the delete.
-fn verify_launch1(launch: &Checked) -> Result<Value> {
-    let opened = launch.at("opened")?;
-    let bounds = pixels::bright_bounds(opened, BOUNDS)?;
-    let mut shows = Vec::new();
-    let mut record = |frame: &Value, what: &str, detail: Value| {
-        shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
-    };
+use Reads::{Full, None as Clear, Partial};
 
-    // The fixture as launched, with no mask in the recipe.
-    ensure(
-        opened.masks()?.is_empty(),
-        "The fixture opened with a mask already in the recipe",
-    )?;
-    let opened_patches = probes(opened, bounds)?;
-    record(
-        opened,
-        "the fixture as launched, with no mask in the recipe",
-        json!({"patches":opened_patches,"bounds":bounds}),
-    );
-
-    // The first stroke. One mask, one brush component, one stroke, one entry.
-    let first = launch.at("stroke-a")?;
-    ensure(
-        first.kinds()? == ["add brush"],
-        format!("The first stroke made {:?}", first.kinds()?),
-    )?;
-    let mask = first.only_mask()?["id"]
+/// Launch 1, step by step: the strokes, the two feather settings, the erase and the delete. Returns
+/// the mask's identity and the opened photograph's probes.
+fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<(String, [f64; 9])> {
+    let opened = probes(launch.at("opened")?)?;
+    let mask = launch.at("stroke-a")?.only_mask()?["id"]
         .as_str()
         .ok_or("The listed mask has no identity")?
         .to_owned();
-    record(
-        first,
-        "one painted stroke: a mask, a brush component and the stroke, in one history entry",
-        json!({"label":first.label()?,"kinds":first.kinds()?,
-               "brush":{"size":brush(first,"size")?,"feather":brush(first,"feather")?}}),
-    );
-
-    // The second stroke, on the same component and with no second gesture. Several strokes in one
-    // mask are an ordinary list: two strokes, one row, two entries.
-    let second = launch.at("stroke-b")?;
-    ensure(
-        second.components()?.len() == 1,
-        format!("The second stroke made {:?}", second.kinds()?),
-    )?;
-    record(
-        second,
-        "a second stroke on the same brush: one more entry, still one component",
-        json!({"label":second.label()?,"components":second.components()?.len()}),
-    );
 
     // The coverage itself. Both strokes are covered, the band beside the hard one is covered too —
     // a hard edge is coverage 1 right up to the radius — and nothing else is.
-    let overlay = launch.at("overlay")?;
-    let two_strokes = coverage(
-        overlay,
-        bounds,
+    coverage(
+        checks,
+        launch.at("overlay")?,
         "two hard add strokes",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-        ],
+        [Full, Full, Full, Clear, Clear, Full, Clear, Clear, Clear],
     )?;
-    record(
-        overlay,
-        "the coverage of two add strokes on one brush component",
-        json!({"patches":two_strokes}),
-    );
 
     // The brush at the other feather, before it has painted anything: the brush the panel holds
     // says so, and the plan holds that nothing is committed.
@@ -657,82 +594,40 @@ fn verify_launch1(launch: &Checked) -> Result<Value> {
         (brush(soft, "feather")? - SOFT).abs() < 0.5,
         format!("The brush holds feather {}", brush(soft, "feather")?),
     )?;
-    record(
-        soft,
-        "the brush set to its widest feather, with nothing painted yet",
-        json!({"feather":brush(soft,"feather")?,"size":brush(soft,"size")?}),
-    );
 
     // The feathered stroke. Its centre line is full coverage and its band at half a radius is
     // strictly between the endpoints, where the hard strokes' band at the same offset is full. That
     // is the two feather settings, measured in the photograph rather than read off a payload.
     let third = launch.at("stroke-c")?;
     let feathered = coverage(
+        checks,
         third,
-        bounds,
         "a fully feathered third stroke",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::Partial,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-        ],
+        [Full, Full, Full, Full, Partial, Full, Clear, Clear, Clear],
     )?;
-    pixels::compare(
-        "The hard strokes' band against the feathered one's, at the same offset",
+    checks.compare(
+        third,
+        "the hard strokes' band against the feathered one's, at the same offset",
         feathered[1],
         feathered[4],
         Tolerance::Above(BANDS_APART),
     )?;
-    record(
-        third,
-        "a third stroke at full feather: its band reads partial coverage where the hard strokes' \
-         band at the same offset reads full",
-        json!({"hard_band":feathered[1],"soft_band":feathered[4],"patches":feathered}),
-    );
 
     // The erase stroke. It takes coverage out of the second stroke where it crosses it and leaves
     // the rest of that stroke exactly as it was.
-    let erase = launch.at("erase")?;
-    let erased = coverage(
-        erase,
-        bounds,
+    coverage(
+        checks,
+        launch.at("erase")?,
         "an erase stroke across the second add stroke",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::Partial,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-        ],
+        [Full, Full, Full, Full, Partial, Clear, Clear, Clear, Clear],
     )?;
-    record(
-        erase,
-        "an erase stroke: coverage removed where it crosses, the rest of that stroke untouched",
-        json!({"label":erase.label()?,"patches":erased}),
-    );
 
     // The row selected, which is what lists its strokes: four, in the order they compose.
-    let select = launch.at("select")?;
-    let listed = strokes(select, 0)?;
+    let listed = strokes(launch.at("select")?, 0)?;
     ensure(
         listed.len() == 4,
         format!("The brush row lists {} strokes", listed.len()),
     )?;
-    record(
-        select,
-        "the brush row with its four strokes listed, each with a delete of its own",
-        json!({"strokes":listed}),
-    );
 
     // One stroke deleted on its own. A forward edit: one entry appended, the feathered stroke gone
     // from the picture, every other stroke exactly where it was — including the erase, which is what
@@ -743,150 +638,56 @@ fn verify_launch1(launch: &Checked) -> Result<Value> {
         kept == [listed[0].clone(), listed[1].clone(), listed[3].clone()],
         format!("The delete left {kept:?} of {listed:?}"),
     )?;
-    let deleted = coverage(
+    coverage(
+        checks,
         delete,
-        bounds,
         "the feathered stroke deleted on its own",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-        ],
+        [Full, Full, Full, Clear, Clear, Clear, Clear, Clear, Clear],
     )?;
-    record(
-        delete,
-        "one stroke deleted on its own: the others keep their order and their coverage",
-        json!({"label":delete.label()?,"strokes":kept,"patches":deleted}),
-    );
-
-    Ok(json!({
-        "mask": mask,
-        "kinds": delete.kinds()?,
-        "strokes": kept,
-        "opened": opened_patches,
-        "revision": delete.revision()?,
-        "feather": {"hard_band": feathered[1], "soft_band": feathered[4]},
-        "covered_threshold": COVERED,
-        "uncovered_threshold": UNCOVERED,
-        "frames": shows,
-        "scope": "Mean Rec. 709 luminance of nine patches of the displayed photograph, read back from the renderer; the coverage readings are of the mask-on-black overlay, which paints coverage straight into all three channels, and are not a colorimetric claim",
-    }))
+    Ok((mask, opened))
 }
 
 /// Launch 2: the reopened catalog, a radial gradient beside the brush, a second brush subtracting
 /// from it, the masked adjustment and the undo.
-fn verify_launch2(launch: &Checked, launch1: &Value) -> Result<Value> {
-    let reopened = launch.at("reopened")?;
-    let bounds = pixels::bright_bounds(reopened, BOUNDS)?;
-    let mut shows = Vec::new();
-    let mut record = |frame: &Value, what: &str, detail: Value| {
-        shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
-    };
-
+fn verify_launch2(launch: &Checked, mask: &str, opened: [f64; 9], checks: &mut Checks) -> Result {
     // The reopened catalog. The mask, its component and its strokes are back, by the same
     // identities the first launch committed, with no mask gesture open; the plan holds that no
     // slider gesture is open and no Presence layer is in the stack.
+    let reopened = launch.at("reopened")?;
     ensure(
-        reopened.only_mask()?["id"] == launch1["mask"],
+        reopened.only_mask()?["id"] == json!(mask),
         format!("The reopened catalog holds {}", reopened.only_mask()?["id"]),
     )?;
     ensure(
-        reopened["state"]["mask_draft"] == Value::Null,
+        reopened.state()["mask_draft"] == Value::Null,
         "A reopened editor holds an open mask gesture",
     )?;
-    record(
-        reopened,
-        "the catalog reopened in a new process, with the painted mask in the recipe",
-        json!({"mask":reopened.only_mask()?["id"]}),
-    );
 
     // The coverage after the reopen, read at the same nine points the first launch ended on. The
     // strokes survived as pixels and not only as rows.
-    let overlay = launch.at("overlay")?;
-    let reopened_patches = coverage(
-        overlay,
-        bounds,
+    coverage(
+        checks,
+        launch.at("overlay")?,
         "the reopened mask",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-        ],
+        [Full, Full, Full, Clear, Clear, Clear, Clear, Clear, Clear],
     )?;
-    record(
-        overlay,
-        "the reopened mask's own coverage: every stroke back where it was painted",
-        json!({"patches":reopened_patches,"kinds":overlay.kinds()?}),
-    );
 
     // The radial gradient, committed into the same mask as a second component.
-    let radial = launch.at("apply-radial")?;
-    ensure(
-        radial.kinds()? == ["add brush", "add radial"],
-        format!("The mask holds {:?}", radial.kinds()?),
-    )?;
-    let with_radial = coverage(
-        radial,
-        bounds,
+    coverage(
+        checks,
+        launch.at("apply-radial")?,
         "a radial gradient beside the brush",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::Full,
-            Reads::Full,
-            Reads::None,
-        ],
+        [Full, Full, Full, Clear, Clear, Clear, Full, Full, Clear],
     )?;
-    record(
-        radial,
-        "a radial gradient added to the mask the brush drew",
-        json!({"kinds":radial.kinds()?,"label":radial.label()?,"patches":with_radial}),
-    );
 
     // The subtract brush inside that gradient. This is the requirement in one frame: a brush takes
     // a region out of a gradient, and it is one more row rather than a special gesture.
-    let subtract = launch.at("subtract-stroke")?;
-    ensure(
-        subtract.kinds()? == ["add brush", "add radial", "subtract brush"],
-        format!("The mask holds {:?}", subtract.kinds()?),
-    )?;
-    let subtracted = coverage(
-        subtract,
-        bounds,
+    coverage(
+        checks,
+        launch.at("subtract-stroke")?,
         "a brush subtracting from the radial",
-        [
-            Reads::Full,
-            Reads::Full,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-            Reads::None,
-            Reads::Full,
-            Reads::None,
-            Reads::None,
-        ],
+        [Full, Full, Full, Clear, Clear, Clear, Full, Clear, Clear],
     )?;
-    record(
-        subtract,
-        "a second brush, in subtract mode, taking a region out of the gradient",
-        json!({"kinds":subtract.kinds()?,"label":subtract.label()?,"patches":subtracted}),
-    );
 
     // The overlay off. No layer is bound to the mask yet, so the photograph is byte-unchanged from
     // the one the first launch opened: a mask on its own is a selection, not an edit.
@@ -895,175 +696,106 @@ fn verify_launch2(launch: &Checked, launch1: &Value) -> Result<Value> {
         off.only_mask()?["layers"] == json!([]),
         "A mask with no adjustment already has a layer bound to it",
     )?;
-    let bare = probes(off, bounds)?;
-    let opened: Vec<f64> = launch1["opened"]
-        .as_array()
-        .ok_or("Launch 1 recorded no opened patches")?
-        .iter()
-        .map(|value| value.as_f64().unwrap_or_default())
-        .collect();
+    let bare = probes(off)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
-        pixels::compare(
+        checks.compare(
+            off,
             &format!("{name} with the mask drawn and no layer bound to it"),
             bare[index],
             opened[index],
             Tolerance::Within(PRESENCE_UNTOUCHED),
         )?;
     }
-    record(
-        off,
-        "the overlay off: the painted mask is a selection and nothing else",
-        json!({"patches":bare}),
-    );
 
     // Presence through the painted mask. The plan holds the entry and the layer's payload; here the
     // layer names the mask, and the flat quadrant moves inside the mask and is left exactly as it
     // was outside it and where the subtract brush removed the gradient.
     let dehaze = launch.at("dehaze")?;
-    let layer = presence_layer(dehaze).ok_or("The masked gesture committed no Presence layer")?;
+    let layer = dehaze
+        .layer(PRESENCE_EFFECT)
+        .ok_or("The masked gesture committed no Presence layer")?;
     ensure(
-        layer["mask"] == launch1["mask"],
+        layer["mask"] == json!(mask),
         format!("The committed Presence layer names {}", layer["mask"]),
     )?;
-    let dehazed = probes(dehaze, bounds)?;
-    pixels::compare(
+    let dehazed = probes(dehaze)?;
+    checks.compare(
+        dehaze,
         "the covered patch under masked Presence",
         dehazed[6],
         bare[6],
         Tolerance::Apart(PRESENCE_MOVED),
     )?;
-    ensure(
-        dehazed[6] > 1.0 && dehazed[6] < 254.0,
-        format!(
-            "The covered patch read {:.2}, which is against the end of the range: a clipped \
-             reading is produced by a broken render as readily as by a correct one",
-            dehazed[6]
-        ),
+    // Strictly inside 1..254, which is strictly within 126.5 of 127.5: a clipped reading is
+    // produced by a broken render as readily as by a correct one.
+    checks.compare(
+        dehaze,
+        "the covered patch under masked Presence, clear of the ends of the range",
+        dehazed[6],
+        127.5,
+        Tolerance::Under(126.5),
     )?;
-    pixels::compare(
+    checks.compare(
+        dehaze,
         "the uncovered patch under masked Presence",
         dehazed[8],
         bare[8],
         Tolerance::Within(PRESENCE_UNTOUCHED),
     )?;
-    pixels::compare(
+    checks.compare(
+        dehaze,
         "the patch the subtract brush removed, under masked Presence",
         dehazed[7],
         bare[7],
         Tolerance::Within(PRESENCE_UNTOUCHED),
     )?;
-    record(
-        dehaze,
-        "Presence applied through the painted mask: the covered patch moved, the subtracted one and \
-         the outside one left alone",
-        json!({"layer":layer["id"],DEHAZE:DEHAZED,"label":dehaze.label()?,
-               "covered":dehazed[6],"subtracted":dehazed[7],"uncovered":dehazed[8]}),
-    );
 
-    // Undo. The plan holds that the layer is gone; every component is where it was, and the
+    // Undo. The plan holds that the layer is gone and every component is where it was; the
     // photograph is back to the one the mask alone left.
     let undo = launch.at("undo")?;
-    ensure(
-        undo.kinds()? == subtract.kinds()?,
-        "Undo changed the component list",
-    )?;
-    let undone = probes(undo, bounds)?;
+    let undone = probes(undo)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
-        pixels::compare(
+        checks.compare(
+            undo,
             &format!("{name} after undo"),
             undone[index],
             bare[index],
             Tolerance::Within(PRESENCE_UNTOUCHED),
         )?;
     }
-    record(
-        undo,
-        "the undone state: the composed mask, with nothing applied through it",
-        json!({"patches":undone,"label":undo.label()?}),
-    );
-
-    Ok(json!({
-        "mask": launch1["mask"],
-        "kinds": undo.kinds()?,
-        "reopened": reopened_patches,
-        "presence": {"covered": dehazed[6], "subtracted": dehazed[7], "uncovered": dehazed[8]},
-        "revision": undo.revision()?,
-        "frames": shows,
-        "scope": "Mean Rec. 709 luminance of nine patches of the displayed photograph, read back from the renderer; the coverage readings are of the mask-on-black overlay and are not a colorimetric claim",
-    }))
+    Ok(())
 }
 
 /// Launch 3: painting carried on over the picture's own edge, at 100%, and under a rotated crop.
-fn verify_launch3(launch: &Checked, launch2: &Value) -> Result<Value> {
-    let bounds = pixels::bright_bounds(launch.at("reopened")?, BOUNDS)?;
-    let mut shows = Vec::new();
-    let mut record = |frame: &Value, what: &str, detail: Value| {
-        shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
-    };
-
-    // The same catalog, a third process, the whole composed mask back in the recipe. The component
-    // list is the panel's own, so it is read in Mask mode; the reopened frame is the photograph as
-    // the process opened it, which is also where the drawn rectangle is measured.
-    let mask_mode = launch.at("mask-mode")?;
-    ensure(
-        mask_mode.kinds()?
-            == launch2["kinds"]
-                .as_array()
-                .ok_or("Launch 2 recorded no kinds")?
-                .iter()
-                .map(|kind| kind.as_str().unwrap_or_default().to_owned())
-                .collect::<Vec<_>>(),
-        format!("The reopened mask holds {:?}", mask_mode.kinds()?),
-    )?;
-    record(
-        mask_mode,
-        "the catalog reopened again, with the composed mask in the recipe",
-        json!({"kinds":mask_mode.kinds()?}),
-    );
-
+fn verify_launch3(launch: &Checked, checks: &mut Checks) -> Result {
     // A stroke that begins outside the picture. It is an ordinary stroke — stored positions run
     // from -1 to 2 — and the coverage reaches the picture's own left edge.
     let edge_stroke = launch.at("edge-stroke")?;
-    let edge = patch(edge_stroke, bounds, P_EDGE)?;
-    ensure(
-        edge >= COVERED,
-        format!("The picture's left edge read {edge:.1} after a stroke painted in over it"),
-    )?;
-    record(
+    let edge = edge_stroke.luminance_at(P_EDGE, PATCH_HALF)?;
+    reads(
+        checks,
         edge_stroke,
-        "a stroke begun outside the picture, painting in over its left edge",
-        json!({"label":edge_stroke.label()?,"edge":edge,"points":EDGE}),
-    );
-
-    // Painting at 100%, where the exact frame is what is on screen and no proxy stands in for it.
-    // One entry, and the stroke is stored in the content coordinates it was painted in.
-    let zoomed_stroke = launch.at("zoomed-stroke")?;
-    let zoomed_strokes = strokes(zoomed_stroke, 0)?;
-    record(
-        zoomed_stroke,
-        "one stroke painted at 100%, on the exact frame rather than a proxy",
-        json!({"label":zoomed_stroke.label()?,"strokes":zoomed_strokes.len(),
-               "zoom":zoomed_stroke["state"]["workspace"]["zoom"]}),
-    );
-
-    // Back at Fit, where the whole picture is on screen again, the stroke painted at 100% is where
-    // the content coordinates it was painted in say it is. A zoom is a view and a stroke is an
-    // edit; this is what keeps the two apart.
-    let fit = launch.at("fit")?;
-    let zoomed = patch(fit, bounds, P_ZOOMED)?;
-    ensure(
-        zoomed >= COVERED,
-        format!("The stroke painted at 100% read {zoomed:.1} at Fit"),
+        "the picture's left edge after a stroke painted in over it",
+        edge,
+        Full,
     )?;
-    record(
-        fit,
-        "back at Fit: the stroke painted at 100% is where its content coordinates put it",
-        json!({"read":zoomed,"at":P_ZOOMED}),
-    );
 
-    // The rotated crop, with the overlay off so the cropped photograph can be found in the capture
-    // at all. The mask is in content coordinates, so nothing about it moved; what changed is the
-    // affine between those coordinates and the frame.
+    // Painting at 100%, where the exact frame is what is on screen and no proxy stands in for it;
+    // the plan holds the zoom and the entry. Back at Fit, where the whole picture is on screen again,
+    // the stroke painted at 100% is where the content coordinates it was painted in say it is. A
+    // zoom is a view and a stroke is an edit; this is what keeps the two apart.
+    let fit = launch.at("fit")?;
+    let zoomed = fit.luminance_at(P_ZOOMED, PATCH_HALF)?;
+    reads(
+        checks,
+        fit,
+        "the stroke painted at 100%, read at Fit",
+        zoomed,
+        Full,
+    )?;
+
+    // The rotated crop, with the overlay off. The mask is in content coordinates, so nothing about
+    // it moved; what changed is the affine between those coordinates and the frame.
     let before = Tail::read(&launch.at("transform-before")?["step"])?;
     let after = Tail::read(&launch.at("transform-after")?["step"])?;
     ensure(
@@ -1073,47 +805,22 @@ fn verify_launch3(launch: &Checked, launch2: &Value) -> Result<Value> {
             after.output
         ),
     )?;
-    let crop = launch.at("crop")?;
-    let cropped_bounds = pixels::bright_bounds(crop, BOUNDS)?;
-    record(
-        crop,
-        "a straightened, fitted crop under the painted mask",
-        json!({"before":[before.output.0,before.output.1],
-               "after":[after.output.0,after.output.1],"forward":after.forward}),
-    );
 
     // One more stroke under the rotated picture. It is painted in content coordinates and read back
     // where the geometry tail's own affine says those coordinates land — which is the map the canvas
     // draws the brush cursor and the handles through.
     let rotated = launch.at("rotated-stroke")?;
     let placed = after.place(P_ROTATED);
-    let painted = patch(rotated, cropped_bounds, placed)?;
-    ensure(
-        painted >= COVERED,
-        format!(
-            "The stroke painted under the rotated crop read {painted:.1} at {placed:?}, where the \
-             geometry tail's affine places the content position {P_ROTATED:?}"
-        ),
-    )?;
-    ensure(
-        rotated.kinds()?.len() == mask_mode.kinds()?.len(),
-        format!("Painting under the crop made {:?}", rotated.kinds()?),
-    )?;
-    record(
+    let painted = rotated.luminance_at(placed, PATCH_HALF)?;
+    reads(
+        checks,
         rotated,
-        "a stroke painted under the rotated crop, landing on the content pixels the affine places \
-         it on",
-        json!({"label":rotated.label()?,"content":P_ROTATED,"placed":placed,"read":painted}),
-    );
-
-    Ok(json!({
-        "edge": edge,
-        "zoomed": {"at": P_ZOOMED, "read": zoomed, "strokes": zoomed_strokes},
-        "rotated": {"content": P_ROTATED, "placed": placed, "read": painted,
-                    "output": [after.output.0, after.output.1],
-                    "before": [before.output.0, before.output.1]},
-        "revision": rotated.revision()?,
-        "frames": shows,
-        "scope": "Mean Rec. 709 luminance of patches of the displayed photograph, read back from the renderer; the coverage readings are of the mask-on-black overlay and are not a colorimetric claim",
-    }))
+        &format!(
+            "the stroke painted under the rotated crop, at {placed:?}, where the geometry tail's \
+             affine places the content position {P_ROTATED:?}"
+        ),
+        painted,
+        Full,
+    )?;
+    Ok(())
 }
