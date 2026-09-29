@@ -49,7 +49,7 @@ pub use descriptor::{
     ResolvedReset, TaskControl, ToggleControl,
 };
 pub(crate) use descriptor::{
-    MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity, valid_name,
+    MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity, valid_name,
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,

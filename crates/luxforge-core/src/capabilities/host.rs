@@ -105,59 +105,59 @@ fn encode(value: impl serde::Serialize) -> Result<Value, Error> {
 host_params! {
     /// `module.settings.read`, `module.status` and `module.resource.list`.
     pub(crate) struct ModuleParams {
-        module_id: String,
+        module_id: String = name(),
     }
 }
 
 host_params! {
     pub(crate) struct SetParams {
-        module_id: String,
-        values: Map<String, Value>,
+        module_id: String = name(),
+        values: Map<String, Value> = json("{field: value}: the setting fields to set, each checked against its declaration"),
         mutation: Mutation,
-        profile_id: Option<String> = "the profile whose fields to set; default the module's own fields",
+        profile_id: Option<String> = name().notes("the profile whose fields to set; default the module's own fields"),
     }
 }
 
 host_params! {
     /// `set-secret`. Its value is read by [`SecretParam`], which never echoes it.
     pub(crate) struct SetSecretParams {
-        module_id: String,
-        setting: String,
-        value: SecretParam,
+        module_id: String = name(),
+        setting: String = name(),
+        value: SecretParam = secret(),
         mutation: Mutation,
-        profile_id: Option<String> = "the profile whose secret to set; default the module's own",
+        profile_id: Option<String> = name().notes("the profile whose secret to set; default the module's own"),
     }
 }
 
 host_params! {
     pub(crate) struct ClearSecretParams {
-        module_id: String,
-        setting: String,
+        module_id: String = name(),
+        setting: String = name(),
         mutation: Mutation,
-        profile_id: Option<String> = "the profile whose secret to clear; default the module's own",
+        profile_id: Option<String> = name().notes("the profile whose secret to clear; default the module's own"),
     }
 }
 
 host_params! {
     pub(crate) struct ResetParams {
-        module_id: String,
+        module_id: String = name(),
         mutation: Mutation,
     }
 }
 
 host_params! {
     pub(crate) struct CreateProfileParams {
-        module_id: String,
-        adapter: String,
-        label: String,
+        module_id: String = name(),
+        adapter: String = name(),
+        label: String = string(super::settings::MAX_PROFILE_LABEL).notes("non-empty after trimming"),
         mutation: Mutation,
     }
 }
 
 host_params! {
     pub(crate) struct RemoveProfileParams {
-        module_id: String,
-        profile_id: String,
+        module_id: String = name(),
+        profile_id: String = name(),
         mutation: Mutation,
     }
 }
