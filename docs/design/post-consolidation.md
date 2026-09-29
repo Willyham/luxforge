@@ -1,6 +1,6 @@
 # After the consolidation
 
-Status: **authorized by the owner on 2026-09-26**, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. The work is planned as one task plan per group, listed below. Waves 1 to 4 are complete; wave 5 is next. When every task in those plans is complete, or has moved into the plan of the milestone it prepares, delete this document; the outcome lives in the specs the tasks change.
+Status: **authorized by the owner on 2026-09-26**, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. The work is planned as one task plan per group, listed below. Waves 1 to 5 are complete. What remains is wave 6, the roadmap groundwork, whose tasks stay blocked until their milestones start. When every task in those plans is complete, or has moved into the plan of the milestone it prepares, delete this document; the outcome lives in the specs the tasks change.
 
 ## Why
 
