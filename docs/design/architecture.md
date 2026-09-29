@@ -178,6 +178,18 @@ The RAW linear path writes only its last segment's rows and pulls what lies befo
 
 The rectangle a resample reads is one rule, `Resample::reads`, for the colour band before a crop, a windowed proxy's cut and the RAW driver's tap blocks, and both drivers materialize a spatial operation through one helper that resolves or reuses its estimates; `cargo xtask check-repository` refuses a second copy of either.
 
+### Geometry beyond an exact orientation
+
+The geometry tail is the exact orientation, then the crop, whose straightening is the one resample. The `ToolModule::carry` hook ([module trait](modules-and-api.md#module-trait)) lets a transform reposition a later geometry layer through an exact quarter turn or reflection, and nothing more: it rewrites a stored payload, it does not change how the host evaluates a stage. A geometry effect that is not affine over the whole stage, such as a perspective or lens warp, is a new host primitive, not a use of the hook, and a module must not fake one through it. That primitive would have to be carried through every place that today knows only exact mappings and the resample:
+
+- `modules/processing.rs`, the `Processing` primitives a module compiles to;
+- the output stage the registry compiles (`output_stage` in `modules/registry/compile.rs`);
+- the point walk (`Evaluation::entry_pixel` in `render/pipeline.rs`);
+- the byte driver and locate in `render.rs`;
+- the linear driver (`render/linear.rs`) and the windowed proxy (`render/window.rs`).
+
+The places that hold these move with the `render.rs` split, so the list follows wherever it puts them.
+
 ### Point queries
 
 Point queries evaluate through a resample recursively and never allocate a frame. A point query through a spatial segment, on either path, evaluates the tile that contains its pixel, through the same tile function the render uses: the declared exception to point queries never rasterizing.
@@ -315,6 +327,6 @@ One typed service backs the desktop and external JSON sessions. While the GUI is
 
 ## Modules and extension path
 
-The nine built-in modules — presets, pixel, RAW, Basic, presence, mixer, transform, crop and vignette, in the order `ModuleRegistry::builtin()` registers them (see [modules and API](modules-and-api.md#registry)) — are linked modules; each declares its current effect identities, payloads and history actions. The crop module adds a `number` parameter kind and the `crop-frame` canvas interaction to the same descriptor shape, and updates its one crop layer in place through `ActionPlan::Update` rather than always appending; the transform module composes its four actions into one orientation layer ahead of the crop the same way, carrying the crop through a transform made after it in the same entry.
+The nine built-in modules — presets, pixel, RAW, Basic, presence, mixer, transform, crop and vignette, in the order `ModuleRegistry::builtin()` registers them (see [modules and API](modules-and-api.md#registry)) — are linked modules; each declares its current effect identities, payloads and history actions. The crop module adds a `number` parameter kind and the `crop-frame` canvas interaction to the same descriptor shape, and updates its one crop layer in place through `ActionPlan::Update` rather than always appending; the transform module composes its four actions into one orientation layer ahead of the crop the same way, carrying every geometry layer after it, the crop today, through the transform in the same entry by asking each module's `carry` hook.
 
 The host generates `edit.<action>` API methods and the desktop generates controls from the same descriptors, so a module capability cannot exist without an API. Unknown or unavailable effects stay in every snapshot and fail rendering explicitly. Linked built-ins with lazy resources are enough for M4. External loading comes later around a selected use case with measured costs; see [modules](modules-and-api.md).
