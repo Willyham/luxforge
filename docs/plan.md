@@ -95,7 +95,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Developer guide checked on Windows and Linux
 
 **Dependencies.**
-- Remove or re-review the ttf-parser (by 2026-10-19) and paste (by 2026-12-18) advisory exceptions ([plan](../tasks/dependency-advisories.json))
+- Remove or re-review the ttf-parser (by 2026-10-29) and paste (by 2026-12-18) advisory exceptions ([plan](../tasks/dependency-advisories.json))
 - Automated license, asset and advisory checks; the manual review stays deferred
 
 ## Not in scope

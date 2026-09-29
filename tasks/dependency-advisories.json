@@ -7,11 +7,11 @@
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Remove or re-review the temporary ttf-parser maintenance exception before 2026-10-19.",
+      "description": "Remove or re-review the temporary ttf-parser maintenance exception before 2026-10-29.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "RUSTSEC-2026-0192 on ttf-parser 0.25.1 via the Iced text stack, reviewed 2026-09-19 and expiring exclusively on 2026-10-19 (UTC), as `exceptions()` in xtask/src/policy.rs records. The audit wrapper enforces the expiry, the exact resolved version and registry source, a review window of at most 90 days and that this task stays open. Review sooner for new security information, distribution or font-input scope changes."
+        "RUSTSEC-2026-0192 on ttf-parser 0.25.1 via fontdb 0.23 in the Iced text stack (and ab_glyph in winit's Wayland decorations on Linux), last reviewed 2026-09-29 and expiring exclusively on 2026-10-29 (UTC), as `exceptions()` in xtask/src/policy.rs records. At that review fontdb 0.24.0 had dropped ttf-parser and cosmic-text main had adopted it, but no cosmic-text or Iced release used it, and the upstream denial-of-service report was still undisclosed and unfixed. The audit wrapper enforces the expiry, the exact resolved version and registry source, a review window of at most 90 days and that this task stays open. Review sooner for new security information, a cosmic-text or Iced release that adopts fontdb 0.24, distribution or font-input scope changes."
       ],
       "context_links": [
         {

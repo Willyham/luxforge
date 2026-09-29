@@ -14,9 +14,16 @@ cargo xtask audit
 | Advisory | Crate | Why it is tolerated | Expires (exclusive) | Task |
 | --- | --- | --- | --- | --- |
 | RUSTSEC-2024-0436 | paste 1.0.15 via metal and wgpu-hal | Build-time proc macro on dependency source, never on image data | 2026-12-18 | TASK-002 |
-| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via the Iced text stack | Parses installed system and bundled fonts only; Luxforge has no font import. Upstream mentions an undisclosed security report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-19 | TASK-001 |
+| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via fontdb 0.23 in the Iced text stack, and on Linux via ab_glyph in winit's Wayland decorations | Parses installed system fonts and the bundled Inter files only; Luxforge has no font import. Upstream has an undisclosed, unfixed denial-of-service report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-29 | TASK-001 |
 
-Both were investigated in September 2026: no released Iced, wgpu, cosmic-text, metal or fontdb line removes either crate, so bumping transitive versions alone is not a supported fix. Do not replace the GUI stack or carry a private fork to clear a maintenance advisory.
+Both were investigated in September 2026: no released Iced, wgpu, cosmic-text or metal line removes either crate, so bumping transitive versions alone is not a supported fix. Do not replace the GUI stack or carry a private fork to clear a maintenance advisory.
+
+The ttf-parser exception was re-reviewed on 2026-09-29:
+
+- **Path.** `iced` 0.14.0 → `iced_graphics` 0.14.0 and `cryoglyph` 0.1.0 → `cosmic-text` 0.15.0 → `fontdb` 0.23.0 → `ttf-parser` 0.25.1 on every target. On Linux, `winit` 0.30.13's `wayland` feature (enabled by Iced's `wayland` feature) also reaches it through `sctk-adwaita` 0.10.1 → `ab_glyph` 0.2.32 → `owned_ttf_parser` 0.25.1, which draws client-side window decorations with a system font.
+- **Upstream.** `fontdb` 0.24.0 no longer depends on ttf-parser, and `cosmic-text`'s main branch has moved to it, but the latest `cosmic-text` release (0.19.0) still requires `fontdb` 0.23, and Iced 0.14 requires `cosmic-text` 0.15, which has no later patch release. Iced's unreleased 0.15 line pins a `cosmic-text` fork by git revision. `winit` 0.30 requires `sctk-adwaita` 0.10; newer `sctk-adwaita` releases still use `ab_glyph` by default and need a newer `smithay-client-toolkit` than `winit` 0.30 uses (`winit` 0.31 is in beta). No lockfile-only or minor update removes the crate; the only route is a future Iced major release.
+- **Advisory.** The advisory is informational (unmaintained) with no patched version. The upstream issue behind it describes an algorithmic-complexity denial of service (excessive CPU on a crafted font); its details are still private and no fix has been released. Upstream now states a bug-fixes-only maintenance scope, and a 0.26.0 was prepared and then withdrawn.
+- **Exposure.** Fonts reach the parser only from the operating system's installed fonts and the two compiled-in Inter files; no command, recipe, catalog or import path accepts a font. A malicious installed font would already be a local compromise. The window stays at 30 days because the report is undisclosed; review sooner if its details are published, a `cosmic-text` or Iced release adopts `fontdb` 0.24, or distribution or font input is planned.
 
 ## Review status
 
