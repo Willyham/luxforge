@@ -239,9 +239,11 @@ editor-acceptance`, both driven through the JSON method table. The Basic and his
 checks against the independent f64 reference: whole-raster agreement within the frozen one output
 code for exposure, the nine-field patch and the frozen unit order; `analysis.request/read` on
 current, historical and drafted targets equal to an independent reduction; mixed stacks against a stepwise quantize-then-bilinear reference, around a
-point replacement on both sides and under an orientation layer; a historical selection and its
-analysis staying attached to their entry through another client's commit; and one client's cancel
-leaving another's shared job intact. The [field-patch conformance
+point replacement on both sides and under an orientation layer. A historical selection and its
+analysis staying attached to their entry through another client's commit, and one client's cancel
+leaving another's shared job intact, are the core's owner tests (`historical_preview_stays_selected_during_another_clients_commit`,
+`two_clients_share_one_job_and_keep_independent_current_and_historical_results` and
+`racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`). The [field-patch conformance
 chapter](../engineering/development.md#the-field-patch-conformance-chapter), which holds Basic to the
 same suite as every other field-patch module, checks the rest: an open draft's sample equal to its
 later commit, the draft lifecycle, the return-to-start no-op, retry deduplication, group and module

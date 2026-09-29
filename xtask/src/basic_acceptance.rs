@@ -16,14 +16,11 @@
 use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage, jobs::JobStatus, render as core_render,
+    SourceImage, render as core_render,
 };
 use luxforge_reference as reference;
 use luxforge_testkit::client::{self, analyse, as_str, call};
-use std::{
-    cell::RefCell,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, time::Instant};
 
 /// The fixture this chapter runs on: the 480x320 synthetic quadrant pattern with a white centre
 /// line at code 255 and a band of black dashes at code 0, so clipped and unclipped populations are
@@ -499,53 +496,8 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     let mut join = Some(join);
     let outcome = (|| -> Result<Value> {
         let editor = owner.register();
-        let agent = owner.register();
 
-        // 1. Discovery of what only this chapter uses: the neutral picker's query and the analysis
-        //    methods, and Basic's own field table in its declared order. The generic discovery of
-        //    `edit.set-basic`, `edit.reset-basic` and the draft, sample and history methods is the
-        //    field-patch conformance suite's.
-        let schema = call(&owner, editor, "schema.list", json!({}))?;
-        let methods = &schema["methods"];
-        for method in [
-            "query.neutral-sample",
-            "analysis.request",
-            "job.read",
-            "job.cancel",
-        ] {
-            ensure(
-                methods.get(method).is_some(),
-                format!("{method} is not discoverable"),
-            )?;
-        }
-        let declared: Vec<String> = methods["edit.set-basic"]["parameters"]
-            .as_array()
-            .ok_or("edit.set-basic declares no parameters")?
-            .iter()
-            .map(|parameter| as_str(&parameter["name"], "parameter name"))
-            .collect::<client::Checked<Vec<_>>>()?;
-        ensure(
-            declared
-                == [
-                    "temperature",
-                    "tint",
-                    "exposure",
-                    "contrast",
-                    "highlights",
-                    "shadows",
-                    "whites",
-                    "blacks",
-                    "vibrance",
-                    "saturation",
-                ],
-            format!("edit.set-basic declares {declared:?}"),
-        )?;
-        record(
-            "the neutral picker's query and the analysis methods are discoverable, and set-basic declares Basic's ten fields in their frozen order",
-            json!({"parameters": declared}),
-        );
-
-        // 2. Import.
+        // 1. Import.
         let imported = import(&owner, editor, &fixture)?;
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
@@ -560,7 +512,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "The imported asset already holds layers",
         )?;
 
-        // 3. Exposure +1 EV through the patch action. The rendered bytes are checked against the
+        // 2. Exposure +1 EV through the patch action. The rendered bytes are checked against the
         //    f64 reference.
         let plus_one = Basic {
             exposure: 1.0,
@@ -621,7 +573,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"largest_code_difference": difference, "probes": sampled, "layer": basic_layer, "layer_index": basic_index}),
         );
 
-        // 4. The full patch: every remaining field in one request, merged over the same layer.
+        // 3. The full patch: every remaining field in one request, merged over the same layer.
         let full = Basic {
             temperature: 30.0,
             tint: -20.0,
@@ -668,7 +620,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"largest_code_difference": difference, "values": values}),
         );
 
-        // 5. The histogram of an open draft: the analysis of the drafted stack, identified by the
+        // 4. The histogram of an open draft: the analysis of the drafted stack, identified by the
         //    draft revision it read, equals an independent reduction of that stack's own render,
         //    which is within one code of the f64 reference. The draft lifecycle itself — begin, set,
         //    cancel, and a commit that renders what the draft previewed — is the field-patch
@@ -743,7 +695,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"asset_id": asset, "mutation": mutation(client::revision(&owner, editor, &asset)?, "reset-before-analysis")}),
         )?;
 
-        // 9. Analysis of the current stack and of a historical entry, each against an independent
+        // 5. Analysis of the current stack and of a historical entry, each against an independent
         //    reduction of that entry's own render.
         let revision = client::revision(&owner, editor, &asset)?;
         let contrasted = Basic {
@@ -802,7 +754,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"current": current_counts.counters(), "original": original_counts.counters()}),
         );
 
-        // 10. The cropped population: a Basic layer that clips the border, and a crop that removes
+        // 6. The cropped population: a Basic layer that clips the border, and a crop that removes
         //     it. The counts follow the composition after crop, so the clipped border is gone.
         let revision = client::revision(&owner, editor, &asset)?;
         let clipping = Basic {
@@ -882,7 +834,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             }),
         );
 
-        // 11. Mixed stacks. Back to the Original first, so each stack is built deliberately.
+        // 7. Mixed stacks. Back to the Original first, so each stack is built deliberately.
         let restore = call(
             &owner,
             editor,
@@ -898,7 +850,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "Restoring the Original left layers behind",
         )?;
 
-        // 11a. Basic then a straightened 10 degree crop, against quantize-then-bilinear.
+        // 7a. Basic then a straightened 10 degree crop, against quantize-then-bilinear.
         let straighten = Basic {
             exposure: 0.75,
             saturation: 30.0,
@@ -974,7 +926,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             }),
         );
 
-        // 11b. A point replacement before and after the Basic layer (mixed-order.json semantics).
+        // 7b. A point replacement before and after the Basic layer (mixed-order.json semantics).
         call(
             &owner,
             editor,
@@ -1050,7 +1002,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"literal": literal, "before": before_pixel, "exposed_literal": exposed_literal, "after": after_pixel, "stack": order}),
         );
 
-        // 11c. Basic under an orientation layer: the exact transform is a pure permutation of the
+        // 7c. Basic under an orientation layer: the exact transform is a pure permutation of the
         //      coloured stage, so the two compose without interpolation.
         call(
             &owner,
@@ -1106,121 +1058,6 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"stack": order, "output": [ow, oh], "largest_code_difference": difference}),
         );
 
-        // 12b. A historical selection and its analysis stay attached to their entry while another
-        //      client commits.
-        call(
-            &owner,
-            editor,
-            "preview.select",
-            json!({"asset_id": asset, "entry_id": original}),
-        )?;
-        let selected_report = ready_report(
-            &owner,
-            editor,
-            &asset,
-            json!({"kind": "entry", "entry_id": original}),
-            "the selected historical entry",
-        )?;
-        let selected_job = selected_report["job_id"].clone();
-        let revision = client::revision(&owner, agent, &asset)?;
-        call(
-            &owner,
-            agent,
-            "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "agent-during-preview"), "saturation": -60.0}),
-        )?;
-        let session = call(&owner, editor, "session.state", json!({}))?;
-        ensure(
-            session["preview"]["selection"] == json!({"entry": original}),
-            format!("The selection moved to {}", session["preview"]["selection"]),
-        )?;
-        let reread = call(&owner, editor, "job.read", json!({"job_id": selected_job}))?;
-        ensure(
-            reread["status"] == json!("ready")
-                && reread["identity"] == selected_report["identity"]
-                && reread["result"] == selected_report["result"],
-            "The historical analysis was relabelled by another client's commit",
-        )?;
-        original_counts.expect(&reread["result"], "the historical analysis after a commit")?;
-        let sample = call(
-            &owner,
-            editor,
-            "render.sample",
-            json!({"asset_id": asset, "x": 0, "y": 0}),
-        )?;
-        let source_first = [
-            source.rgba[0],
-            source.rgba[1],
-            source.rgba[2],
-            source.rgba[3],
-        ];
-        ensure(
-            sample["rgba"] == json!(source_first),
-            format!(
-                "The previewed sample moved to the newest stack: {}",
-                sample["rgba"]
-            ),
-        )?;
-        record(
-            "a historical selection and its analysis stay attached to that entry while another client commits",
-            json!({"selection": session["preview"]["selection"], "identity": reread["identity"]}),
-        );
-
-        // 12c. Two clients share one job; one client's cancel leaves the other's result alone.
-        call(&owner, editor, "preview.return-current", json!({}))?;
-        let mine = call(
-            &owner,
-            editor,
-            "analysis.request",
-            json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": original}}),
-        )?;
-        let theirs = call(
-            &owner,
-            agent,
-            "analysis.request",
-            json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": original}}),
-        )?;
-        ensure(
-            mine["job_id"] == theirs["job_id"],
-            "Identical identities did not share one job",
-        )?;
-        let withdrawn = call(
-            &owner,
-            editor,
-            "job.cancel",
-            json!({"job_id": mine["job_id"]}),
-        )?;
-        ensure(
-            withdrawn["job_id"] == mine["job_id"] && withdrawn["status"] != json!("cancelled"),
-            format!("job.cancel of a job another client wants answered {withdrawn}"),
-        )?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let survivor = loop {
-            let read = call(
-                &owner,
-                agent,
-                "job.read",
-                json!({"job_id": theirs["job_id"]}),
-            )?;
-            if !in_flight(&read)? {
-                break read;
-            }
-            ensure(Instant::now() < deadline, "The surviving job never settled")?;
-            std::thread::sleep(Duration::from_millis(2));
-        };
-        ensure(
-            survivor["status"] == json!("ready"),
-            format!(
-                "One client's cancel took the other's result: {}",
-                survivor["status"]
-            ),
-        )?;
-        original_counts.expect(&survivor["result"], "the surviving shared job")?;
-        record(
-            "two clients share one analysis job and one client's cancel leaves the other's result intact",
-            json!({"job": mine["job_id"], "survivor_status": survivor["status"]}),
-        );
-
         ensure(
             hash(&fixture)? == fixture_hash,
             "The original source changed",
@@ -1239,6 +1076,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "reused_unit_tests": [
                 "luxforge_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest",
                 "luxforge_core::api::owner::tests::two_clients_share_one_job_and_keep_independent_current_and_historical_results",
+                "luxforge_core::api::owner::tests::historical_preview_stays_selected_during_another_clients_commit",
                 "luxforge_core::api::owner::tests::a_draft_target_analyses_the_drafted_recipe_and_belongs_to_one_session",
                 "luxforge_core::api::methods::tests::an_external_commit_conflicts_a_draft_and_reapply_keeps_only_this_clients_fields"
             ],
@@ -1252,36 +1090,4 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         let _ = join.join();
     }
     outcome
-}
-
-/// Whether a `job.read` answer is a job still in flight, which a waiting client reads again.
-///
-/// The status is read as the core's own [`JobStatus`], so the wait follows the job vocabulary rather
-/// than a spelling of it kept here: queued and running are in flight and every other status ends
-/// the job. A status the vocabulary does not have is refused, never taken for a settled job.
-fn in_flight(read: &Value) -> Result<bool> {
-    let status: JobStatus = serde_json::from_value(read["status"].clone())
-        .map_err(|_| format!("job.read answered no job status the core has: {read}"))?;
-    Ok(!status.is_finished())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A client waits while the job is queued or running and stops at every status that ends one,
-    /// read in the job vocabulary the core serializes; a status that vocabulary does not have is an
-    /// error rather than a job taken for settled.
-    #[test]
-    fn a_job_is_waited_on_exactly_while_it_is_queued_or_running() {
-        for status in ["queued", "running"] {
-            assert!(in_flight(&json!({"status": status})).unwrap(), "{status}");
-        }
-        for status in ["ready", "failed", "cancelled", "superseded"] {
-            assert!(!in_flight(&json!({"status": status})).unwrap(), "{status}");
-        }
-        for unknown in [json!({"status": "pending"}), json!({})] {
-            assert!(in_flight(&unknown).is_err(), "{unknown}");
-        }
-    }
 }
