@@ -294,7 +294,7 @@ impl Stroke {
 
 /// The mask brush's strokes in the host's store.
 impl StrokeKind for Stroke {
-    const KIND: &'static str = "mask brush";
+    const NAME: &'static str = "mask brush";
 
     /// Its compact JSON in declared field order, with every position an integer, so one stroke has
     /// one spelling and a reparse of the stored bytes hashes back to the same address.

@@ -588,7 +588,7 @@ impl RepairStroke {
 }
 
 impl StrokeKind for RepairStroke {
-    const KIND: &'static str = "test repair";
+    const NAME: &'static str = "test repair";
 
     fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a repair stroke is serializable")
