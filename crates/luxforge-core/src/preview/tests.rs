@@ -1545,6 +1545,18 @@ fn the_next_job_starts_without_a_poll() {
     queue.set_activity(board.clone());
     gate.shut();
     let first = queue.request(held(&gate, None));
+    // The worker has taken the first job before the next is asked for, so that one waits in the
+    // pending slot for the replacing request to displace.
+    board_until(
+        &board,
+        |snapshot| {
+            snapshot
+                .active
+                .first()
+                .is_some_and(|active| active.entry.phase.as_deref() == Some("exact"))
+        },
+        "the first job never started",
+    );
     let replaced = queue.request(held(&gate, None));
     assert_eq!(queue.pending_generation(), Some(replaced));
     let Queued {
