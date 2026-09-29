@@ -1128,6 +1128,24 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "luxforge-testbase may depend on no workspace crate and no path, so the core's \
                  and the widget crate's tests can use it without building the core twice",
     },
+    // The core names no crate that depends on it, in any table: a dev-dependency on one (the
+    // typed test kit above all) builds the core a second time for its own tests. Its integration
+    // tests compile the kit's typed helpers in through `#[path]` instead.
+    DependencyRule {
+        name: "core-builds-once",
+        refuses: Depends::Any(&[
+            "luxforge-testkit",
+            "luxforge-net",
+            "luxforge-cli",
+            "luxforge-app",
+            "xtask",
+        ]),
+        manifests: &["crates/luxforge-core"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-core may not name a crate that depends on it (luxforge-testkit, \
+                 luxforge-net, luxforge-cli, luxforge-app or xtask), so its tests build it once",
+    },
     // The headless binary builds without the GUI stack: no window, renderer or dialog crate, and
     // not the widget crate or the desktop that bring them.
     DependencyRule {
@@ -4004,6 +4022,42 @@ mod tests {
             assert!(
                 error.contains("luxforge-testbase/Cargo.toml:")
                     && error.contains("no workspace crate")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_core_names_no_crate_that_depends_on_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-core/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-core\"\n\n[dependencies]\n\
+                     luxforge-raw = { path = \"../luxforge-raw\" }\n\n[dev-dependencies]\n\
+                     luxforge-testbase = { path = \"../luxforge-testbase\" }\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["core-builds-once"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            (
+                "the typed test kit",
+                "luxforge-testkit = { path = \"../luxforge-testkit\" }\n",
+            ),
+            (
+                "the transport",
+                "luxforge-net = { path = \"../luxforge-net\" }\n",
+            ),
+            (
+                "the desktop",
+                "luxforge-app = { path = \"../luxforge-app\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-core/Cargo.toml:")
+                    && error.contains("build it once")
                     && error.contains("DEPENDENCY_RULES"),
                 "{what}: {error}"
             );
