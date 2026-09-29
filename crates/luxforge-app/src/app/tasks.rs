@@ -10,9 +10,9 @@ use crate::{
         crop::StagePlan,
         draft::GestureId,
         message::{
-            DraftMessage, EvidenceMessage, HistoryMessage, MaskMessage, Message,
-            PerformanceMessage, PointerMessage, PresetMessage, PreviewMessage, SyncMessage,
-            ViewMessage,
+            Message, draft::DraftMessage, evidence::EvidenceMessage, history::HistoryMessage,
+            mask::MaskMessage, performance::PerformanceMessage, pointer::PointerMessage,
+            preset::PresetMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage,
         },
     },
     state::histogram::Readout,
@@ -915,7 +915,7 @@ pub(crate) fn crop_preview_task(
     owner_task(
         move || crop_preview(&owner, client, asset_id, entry, layer_count),
         |result| {
-            Message::Crop(crate::app::message::CropMessage::PreviewReady(
+            Message::Crop(crate::app::message::crop::CropMessage::PreviewReady(
                 plan,
                 result.map(Box::new),
             ))

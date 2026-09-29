@@ -3,7 +3,7 @@
 use super::{
     Boot, Editor,
     controls::CurveSampleIdentity,
-    message::{ActionMessage, ControlMessage, Message, SyncMessage},
+    message::{Message, action::ActionMessage, control::ControlMessage, sync::SyncMessage},
     tasks,
 };
 use crate::Config;

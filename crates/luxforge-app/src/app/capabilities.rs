@@ -14,7 +14,7 @@ use crate::{
     app::{
         Editor,
         evidence::{CapabilityAction, CapabilityStep, Reference, Settle},
-        message::{ActionMessage, CapabilityMessage, Message},
+        message::{Message, action::ActionMessage, capability::CapabilityMessage},
         tasks::{self, mutation, owner_task, request},
     },
     state::{

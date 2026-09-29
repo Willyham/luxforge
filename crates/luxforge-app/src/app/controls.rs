@@ -2,7 +2,7 @@
 
 use crate::app::{
     Editor,
-    message::{ActionMessage, ControlMessage, Message},
+    message::{Message, action::ActionMessage, control::ControlMessage},
     tasks::call,
 };
 use crate::state::{

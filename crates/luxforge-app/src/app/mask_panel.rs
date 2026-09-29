@@ -11,8 +11,8 @@ use crate::{
     app::{
         Editor,
         message::{
-            BrushEdit, DragEdit, KindMenu, MaskKey, MaskMessage, Message, PaintTarget, RowEdit,
-            TypingEdit,
+            Message, mask::BrushEdit, mask::DragEdit, mask::KindMenu, mask::MaskKey,
+            mask::MaskMessage, mask::PaintTarget, mask::RowEdit, mask::TypingEdit,
         },
     },
     state::{

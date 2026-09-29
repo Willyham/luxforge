@@ -2,10 +2,12 @@
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
 use crate::app::message::{
-    BrushEdit, CropMessage, DraftMessage, ExportMessage, HistoryMessage, KindMenu, MaskKey,
-    MaskMessage, Message, OverlayMessage, PaletteMessage, Panel, SyncMessage, TypingEdit,
-    ViewMessage,
+    Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
+    history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
+    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, sync::SyncMessage,
+    view::ViewMessage,
 };
+use crate::state::palette::Panel;
 use iced::{
     Event,
     event::Status,
@@ -361,7 +363,7 @@ pub(super) fn drag_release(
         ))
     )
     .then_some(Message::Mask(MaskMessage::Drag(
-        crate::app::message::DragEdit::End,
+        crate::app::message::mask::DragEdit::End,
     )))
 }
 

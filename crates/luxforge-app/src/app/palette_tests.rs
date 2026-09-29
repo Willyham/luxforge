@@ -1,9 +1,10 @@
 //! The command palette runs exactly what the panels run.
 use super::{
-    message::{ActionMessage, PaletteAction, PaletteMessage},
+    message::{action::ActionMessage, palette::PaletteMessage},
     testing::{descriptors, finish, opened_with_modules},
     *,
 };
+use crate::state::palette::PaletteAction;
 
 /// The palette runs an entry through the exact message a click on its control raises, so a
 /// palette hit for `edit.transform` and the generated button produce the identical request.

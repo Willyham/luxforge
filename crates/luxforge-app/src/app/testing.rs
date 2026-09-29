@@ -7,7 +7,7 @@ use crate::{
         draft::{CoreDraft, Round},
         evidence::{Evidence, parse_script},
         gesture::{CoreGesture, Kind},
-        message::{ControlMessage, DraftMessage, Message, SyncMessage},
+        message::{Message, control::ControlMessage, draft::DraftMessage, sync::SyncMessage},
         tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
     state::histogram::Analysis,

@@ -4,7 +4,7 @@
 //! them.
 //!
 //! This file holds the [`Editor`] state and the Iced entry points only. [`Message`] has one variant
-//! per seam, each carrying that seam's own message enum (declared together in `message.rs`), and
+//! per seam, each carrying that seam's own message enum (declared in `message/<variant>.rs`), and
 //! `update` routes it to the seam's own update function: owner answers and sync (`sync.rs`),
 //! preview presentation (`preview.rs`), the overlays (`overlay.rs`), history and versions
 //! (`history.rs`), per-client view state (`view_state.rs`), the palette (`palette.rs`), generated
@@ -84,6 +84,7 @@ pub(crate) mod waker;
 
 pub(crate) use lifecycle::{Boot, run};
 
+use crate::state::MenuTarget;
 use crate::{
     diagnostics::Diagnostics,
     state::{
@@ -104,7 +105,8 @@ use luxforge_core::{
     LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, RecipeDescription, Version,
 };
 use message::{
-    EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, ViewMessage,
+    Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
+    view::ViewMessage,
 };
 use overlay::{OverlayQueue, OverlayRequest};
 use serde_json::{Value, json};

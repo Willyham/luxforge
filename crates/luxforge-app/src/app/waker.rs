@@ -23,7 +23,7 @@
 //! worker still holds a finished result, and one `events.since` reads every event since the last,
 //! so coalescing loses nothing. A waker only posts the signal: the preview one runs on a worker
 //! thread, and the events one on the catalog owner thread, which waits for it.
-use crate::app::message::{Message, PreviewMessage, SyncMessage};
+use crate::app::message::{Message, preview::PreviewMessage, sync::SyncMessage};
 use iced::futures::{
     Stream,
     channel::mpsc::{Receiver, Sender, channel},

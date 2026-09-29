@@ -17,7 +17,7 @@
 use super::{
     Editor,
     evidence::Settle,
-    message::{ClipEndpoint, Message, OverlayMessage},
+    message::{Message, overlay::ClipEndpoint, overlay::OverlayMessage},
     tasks::workspace_task,
 };
 use crate::state;

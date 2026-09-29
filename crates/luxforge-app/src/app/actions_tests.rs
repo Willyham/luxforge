@@ -1,6 +1,6 @@
 //! Copy as JSON request copies exactly the request a control or the open crop draft would send.
 use super::{
-    message::{ActionMessage, CropMessage},
+    message::{action::ActionMessage, crop::CropMessage},
     testing::{finish, opened},
     *,
 };

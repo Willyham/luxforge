@@ -16,7 +16,10 @@ use super::{
     Editor,
     crop::StageView,
     evidence::Settle,
-    message::{CropMessage, DraftMessage, Message, PointerMessage, PreviewMessage, SyncMessage},
+    message::{
+        Message, crop::CropMessage, draft::DraftMessage, pointer::PointerMessage,
+        preview::PreviewMessage, sync::SyncMessage,
+    },
     preview::ProxyFrame,
     tasks::SyncResult,
     testing::{

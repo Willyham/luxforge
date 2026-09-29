@@ -1,7 +1,10 @@
 //! The slider gesture of a generated control, driven through the one core draft: what a drag, a
 //! release, a double-click reset and Escape send, and every race a draft closes.
 use super::{
-    message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
+    message::{
+        control::ControlMessage, crop::CropMessage, draft::DraftMessage, history::HistoryMessage,
+        sync::SyncMessage,
+    },
     tasks::mutation,
     testing::{
         Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, descriptors, draft_events, drafting, entry, finish,
@@ -724,7 +727,10 @@ fn escape_cancels_the_gesture_and_commits_nothing() {
         &context,
     );
     assert!(
-        matches!(escape, Some(Message::Draft(message::DraftMessage::Cancel))),
+        matches!(
+            escape,
+            Some(Message::Draft(message::draft::DraftMessage::Cancel))
+        ),
         "Escape discards an open slider gesture: {escape:?}"
     );
     let _ = editor.update(escape.expect("the mapped message"));
@@ -779,7 +785,7 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
         "the conflict is recorded once, with the revision that caused it"
     );
     let log2 = attach_log(&mut editor);
-    let _ = editor.update(Message::Draft(message::DraftMessage::Commit));
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Commit));
     assert!(
         draft_events(&logged(&mut editor, &log2), "slider_draft_commit").is_empty(),
         "a conflicted gesture refuses to commit"
@@ -789,7 +795,7 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     // Reapply rebases it on the new revision and re-sends the value this client set, in the
     // update of the press.
     let log3 = attach_log(&mut editor);
-    let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
     let draft = &editor.core_gesture().expect("the rebased draft").draft;
     assert!(!draft.conflicted);
     assert_eq!(draft.base_revision, 9);
@@ -820,7 +826,7 @@ fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
             .cloned()
             .expect("one draft.set")
     };
-    let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
 
     // The same value typed into the field and submitted with Enter.
     editor.busy = false;
@@ -943,7 +949,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         editor.busy = false;
         let log = attach_log(&mut editor);
         let _ = testing::slide(&mut editor, &action, parameter, *value);
-        let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
+        let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
         let records = logged(&mut editor, &log);
         assert!(
             draft_events(&records, "slider_draft_commit").is_empty(),
@@ -977,7 +983,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             "{parameter} was not marked conflicted"
         );
         let log = attach_log(&mut editor);
-        let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+        let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
         let rebased = &editor.core_gesture().expect("the rebased draft").draft;
         assert!(!rebased.conflicted, "{parameter} stayed conflicted");
         assert_eq!(
@@ -994,7 +1000,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             1,
             "{parameter}: the reapply re-sent it once"
         );
-        let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
+        let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
         assert!(editor.gesture.is_none());
     }
     finish(editor, catalog);

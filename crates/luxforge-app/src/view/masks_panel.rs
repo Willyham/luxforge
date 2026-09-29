@@ -9,12 +9,16 @@
 //! row's menu and its keys as well as from a drag; every refusal the command family makes is a
 //! disabled item or a tooltip on the control it would refuse; and every number a handle can be
 //! dragged to is also a field.
+use crate::state::MenuTarget;
+use crate::state::masks::DragItem;
+use crate::state::masks::TypingTarget;
 use crate::{
     app::{
         mask_panel::{brush_field_id, draft_field_id},
         message::{
-            BrushEdit, ControlMessage, DragEdit, DragItem, KindMenu, MaskMessage, MenuTarget,
-            Message, PaintTarget, RowEdit, TypingEdit, TypingTarget, ViewMessage,
+            Message, control::ControlMessage, mask::BrushEdit, mask::DragEdit, mask::KindMenu,
+            mask::MaskMessage, mask::PaintTarget, mask::RowEdit, mask::TypingEdit,
+            view::ViewMessage,
         },
     },
     state::{

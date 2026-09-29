@@ -5,11 +5,13 @@
 use super::{
     Boot, Editor,
     message::{
-        ActionMessage, MenuTarget, Message, PaletteAction, PaletteMessage, PresetMessage,
-        SyncMessage, ViewMessage,
+        Message, action::ActionMessage, palette::PaletteMessage, preset::PresetMessage,
+        sync::SyncMessage, view::ViewMessage,
     },
     tasks::{self, call},
 };
+use crate::state::MenuTarget;
+use crate::state::palette::PaletteAction;
 use crate::{
     Config,
     app::testing::descriptors,

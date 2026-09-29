@@ -2,7 +2,7 @@
 //! widget states only; there is no second set of mock widgets or panels that could drift away from
 //! the generated controls.
 
-use crate::app::message::{Message, ViewMessage};
+use crate::app::message::{Message, view::ViewMessage};
 use iced::{
     Element, Length,
     widget::{button, column, container, row, scrollable, text},

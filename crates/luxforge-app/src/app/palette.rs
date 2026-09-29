@@ -3,10 +3,11 @@
 use super::{
     Editor,
     message::{
-        ActionMessage, ExportMessage, HistoryMessage, Message, PaletteAction, PaletteMessage,
-        PerformanceMessage, ViewMessage,
+        Message, action::ActionMessage, export::ExportMessage, history::HistoryMessage,
+        palette::PaletteMessage, performance::PerformanceMessage, view::ViewMessage,
     },
 };
+use crate::state::palette::PaletteAction;
 use crate::view;
 use iced::{Task, widget::operation};
 

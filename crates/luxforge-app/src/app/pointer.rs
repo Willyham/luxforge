@@ -4,7 +4,7 @@ use super::{
     Editor,
     evidence::Settle,
     gesture::Starting,
-    message::{Message, PointerMessage, ViewMessage},
+    message::{Message, pointer::PointerMessage, view::ViewMessage},
     tasks::{locate_task, query_task, sample_task},
 };
 use crate::state::tools;

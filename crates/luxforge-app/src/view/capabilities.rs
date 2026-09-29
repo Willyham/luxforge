@@ -2,8 +2,9 @@
 //! [`TaskControl`]. The view knows no module and no setting: it lays out what the model says, with
 //! the widget library's control kinds, and publishes the one [`CapabilityMessage`] each control
 //! stands for.
+use crate::state::MenuTarget;
 use crate::{
-    app::message::{CapabilityMessage, MenuTarget, Message, ViewMessage},
+    app::message::{Message, capability::CapabilityMessage, view::ViewMessage},
     state::capabilities::{
         CapabilityModel, FieldKindModel, FieldModel, ResourceAction, ResourceRowModel, TaskControl,
         TaskControlState,

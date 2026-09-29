@@ -12,7 +12,7 @@ use super::{
     Editor,
     evidence::Settle,
     gesture::Starting,
-    message::{Message, PreviewMessage},
+    message::{Message, preview::PreviewMessage},
     overlay::OverlayRequest,
     presenter::Presenter,
     tasks::{self, recipe_task},

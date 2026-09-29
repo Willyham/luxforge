@@ -1,6 +1,6 @@
 //! The crop gesture. A crop draft is a core draft ([`crate::app::gesture::Kind::Crop`]), driven by
 //! the one draft driver like a slider's or a mask's: it commits, cancels and reapplies through the
-//! shared [`crate::app::message::DraftMessage`]s, `session.state` reports it and only Apply commits
+//! shared [`crate::app::message::draft::DraftMessage`]s, `session.state` reports it and only Apply commits
 //! it. Its frame opens at once, from the current entry's `recipe.describe` rows — the crop layer's
 //! values, the stage it receives and the orientation ahead of it — and is drawn and dragged over
 //! that stage once its pixels have rendered. Every change goes through `crop_update`, so the
@@ -12,7 +12,7 @@ use crate::{
         draft::{CoreDraft, Event},
         evidence::Settle,
         gesture::{Kind, Starting},
-        message::{ControlMessage, CropMessage, CropPointer, Message},
+        message::{Message, control::ControlMessage, crop::CropMessage, crop::CropPointer},
         tasks::{Refresh, crop_preview_task, mutation},
     },
     crop_draft::{CropDraft, Modifiers as DraftModifiers},
@@ -1104,7 +1104,8 @@ mod tests {
     use crate::app::{
         draft::Round,
         message::{
-            ControlMessage, DraftMessage, Message, PointerMessage, SyncMessage, ViewMessage,
+            Message, control::ControlMessage, draft::DraftMessage, pointer::PointerMessage,
+            sync::SyncMessage, view::ViewMessage,
         },
         tasks::SyncResult,
         testing::{
@@ -2351,7 +2352,9 @@ mod tests {
         )));
         let shown = |editor: &mut Editor, phase: &str| -> Value {
             luxforge_testbase::wait_until(&format!("the {phase} stage"), || {
-                let _ = editor.update(Message::Preview(crate::app::message::PreviewMessage::Poll));
+                let _ = editor.update(Message::Preview(
+                    crate::app::message::preview::PreviewMessage::Poll,
+                ));
                 editor.snapshot()["crop"]["input_stage_frame"]["phase"] == json!(phase)
             });
             editor.snapshot()["crop"]["input_stage_frame"].clone()
@@ -2439,7 +2442,7 @@ mod tests {
     /// answer to no plan the draft is waiting for is dropped.
     #[test]
     fn an_open_crop_draft_keeps_no_stack_once_its_stage_is_delivered() {
-        use crate::app::message::PreviewMessage;
+        use crate::app::message::preview::PreviewMessage;
         use luxforge_core::Zoom;
         let catalog = std::env::temp_dir().join(format!(
             "luxforge-crop-stage-stack-{}-{}.sqlite",
@@ -2588,7 +2591,7 @@ mod tests {
     #[ignore = "requires a private RAW fixture: set LUXFORGE_RAW_FIXTURE"]
     fn a_raw_develops_again_while_a_crop_draft_is_open() {
         use crate::app::{
-            message::PreviewMessage,
+            message::preview::PreviewMessage,
             tasks::{self, Scope},
         };
         use luxforge_core::Zoom;

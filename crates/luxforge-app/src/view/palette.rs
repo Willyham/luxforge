@@ -1,7 +1,7 @@
 //! The command palette overlay: a query field and up to twelve matching entries, centred near the
 //! top of the window over a dimmed backdrop that closes it on click.
 use crate::{
-    app::message::{Message, PaletteMessage},
+    app::message::{Message, palette::PaletteMessage},
     state::palette::PaletteModel,
 };
 use iced::{

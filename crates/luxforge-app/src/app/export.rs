@@ -14,9 +14,10 @@ use crate::app::{
     Editor,
     evidence::Settle,
     gesture::Starting,
-    message::{ExportMessage, MenuTarget, Message},
+    message::{Message, export::ExportMessage},
     tasks::{CallError, call, call_detailed, owner_task, owner_work, request, wait_source_job},
 };
+use crate::state::MenuTarget;
 use iced::{Subscription, Task};
 use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle, jobs::JOB_READ};
 use serde_json::{Value, json};
