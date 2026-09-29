@@ -15,7 +15,7 @@
 //! quadrant reads a colour a preset moves without the white labels, the centre line or the dash
 //! band in it.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
 };
 use luxforge_evidence::{self as script, PresetCreateStep, PresetPick};
@@ -77,8 +77,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(0)
         .expanded(PRESETS_MODULE),
-        // 3-4: two imports through the section's own task; an import commits no edit.
-        Step::new("xmp", script::Step::preset_import(XMP)).commits(0),
+        // 3-4: two imports through the section's own task; an import commits no edit, and says
+        // what it imported.
+        Step::new("xmp", script::Step::preset_import(XMP))
+            .commits(0)
+            .status_starts("Imported \u{201c}Soft Film\u{201d}: "),
         Step::new("document", script::Step::preset_import(DOCUMENT)).commits(0),
         // 5: the document's preset, whose name differs from the XMP's only in case: one entry.
         Step::new(
@@ -306,13 +309,11 @@ fn fixture_settings(root: &Path, path: &str) -> Result<serde_json::Map<String, V
         .map_err(|error| format!("{path}: {error}").into())
 }
 
-/// The mean RGB of one patch per quadrant of the photograph, found the way `vignette` finds it.
+/// The mean RGB of one patch per quadrant of the photograph.
 fn patches(frame: &Frame) -> Result<Vec<[f64; 3]>> {
-    let bounds = pixels::bright_bounds(frame, vignette_smoke::BOUNDS)?;
-    let image = frame.image()?;
     PATCHES
         .iter()
-        .map(|(_, fx, fy)| pixels::mean_rgb(image, pixels::at(bounds, [*fx, *fy]), PATCH_HALF))
+        .map(|(_, fx, fy)| frame.rgb_at([*fx, *fy], PATCH_HALF))
         .collect()
 }
 
@@ -334,21 +335,6 @@ fn change(a: &[[f64; 3]], b: &[[f64; 3]]) -> f64 {
     total / (a.len() * 3) as f64
 }
 
-fn patch_record(patches: &[[f64; 3]]) -> Value {
-    Value::Object(
-        PATCHES
-            .iter()
-            .zip(patches)
-            .map(|((name, ..), rgb)| {
-                (
-                    (*name).to_owned(),
-                    json!({"rgb":rgb.map(|v| (v * 10.0).round() / 10.0),"luminance":(luminance(*rgb) * 10.0).round() / 10.0}),
-                )
-            })
-            .collect(),
-    )
-}
-
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let root = run.root().to_owned();
@@ -358,17 +344,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             format!("Step {name:?} records no photo surface"),
         )?;
     }
-    let patches_of = |step: &str| -> Result<Vec<[f64; 3]>> { patches(launch.at(step)?) };
+    let at = |step: &str| launch.at(step);
+    let patches_of = |step: &str| -> Result<Vec<[f64; 3]>> { patches(at(step)?) };
     let registry = Patches::load()?;
     let document = fixture_settings(&root, DOCUMENT)?;
     let xmp = fixture_settings(&root, XMP)?;
-    let mut checks = Vec::new();
-    let mut record = |frame: &Frame, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
-    };
+    let mut checks = Checks::new();
 
     // The photograph opens with the library listed and empty, the section collapsed.
-    let opened = launch.at("opened")?;
+    let opened = at("opened")?;
     ensure(
         presets(opened)["expanded"] == json!(false)
             && presets(opened)["empty"] == json!(true)
@@ -383,90 +367,62 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "The opened stack already holds a layer",
     )?;
     let original = patches_of("opened")?;
-    record(
-        opened,
-        "the opened photograph, the Presets section collapsed and empty",
-        json!({"revision":opened.revision()?,"patches":patch_record(&original)}),
-    );
 
     // Presets expanded, with its empty-state line.
-    let expanded = launch.at("presets-expanded")?;
     ensure(
-        presets(expanded)["expanded"] == json!(true),
+        presets(at("presets-expanded")?)["expanded"] == json!(true),
         "The Presets section did not expand",
     )?;
-    expect_rows(expanded, "The expanded section", &[])?;
-    record(
-        expanded,
-        "the Presets section expanded with its empty-state line",
-        json!({"presets":presets(expanded)}),
-    );
+    expect_rows(at("presets-expanded")?, "The expanded section", &[])?;
 
-    // The XMP imports as a partial preset in its own group.
-    let imported = launch.at("xmp")?;
+    // The XMP imports as a partial preset in its own group, and its status line (whose lead the
+    // plan holds) counts what it mapped, left unsupported and refused.
+    let imported = at("xmp")?;
     expect_rows(
         imported,
         "The XMP import",
         &[("Soft Film", "Synthetic Looks", true)],
     )?;
-    let status = imported["state"]["status"].as_str().unwrap_or_default();
+    let status = imported.status()?;
     ensure(
-        status.starts_with("Imported \u{201c}Soft Film\u{201d}: ")
-            && status.contains(" mapped, ")
+        status.contains(" mapped, ")
             && status.contains(" unsupported, ")
             && status.ends_with(" refused"),
         format!("The XMP import's status line reads {status:?}"),
     )?;
-    record(
-        imported,
-        "the XMP imported: one Partial row in Synthetic Looks and the import status line",
-        json!({"status":status,"rows":presets(imported)["rows"]}),
-    );
 
     // The document imports into its own group, complete, listed before the XMP's group.
     let both = [
         ("Soft film", "Synthetic", false),
         ("Soft Film", "Synthetic Looks", true),
     ];
-    let document_frame = launch.at("document")?;
-    expect_rows(document_frame, "The document import", &both)?;
+    expect_rows(at("document")?, "The document import", &both)?;
     let before_apply = patches_of("document")?;
-    record(
-        document_frame,
-        "the document imported: two groups, only the XMP row Partial",
-        json!({"status":document_frame["state"]["status"],"rows":presets(document_frame)["rows"]}),
-    );
 
     // The document's preset applied from its row: exactly its settings, a brighter photograph.
-    let soft_frame = launch.at("soft-film")?;
+    let soft_frame = at("soft-film")?;
     let soft = registry.applied(&BTreeMap::new(), &document)?;
     expect_layers(soft_frame, "Soft film applied", &soft)?;
     let soft_patches = patches_of("soft-film")?;
-    ensure(
-        mean_luminance(&soft_patches) > mean_luminance(&before_apply) + BRIGHTER,
-        format!(
-            "Soft film's +0.35 EV did not brighten the quadrants: {:.1} against {:.1}",
-            mean_luminance(&soft_patches),
-            mean_luminance(&before_apply)
-        ),
-    )?;
-    record(
+    checks.compare(
         soft_frame,
-        "Soft film applied from its row: one entry \"Preset: Soft film\", its settings exactly, and a brighter photograph",
-        json!({"revision":soft_frame.revision()?,"label":soft_frame.label()?,"layers":layers(soft_frame)?,"patches":patch_record(&soft_patches)}),
-    );
+        "Soft film's +0.35 EV brightens the quadrants",
+        mean_luminance(&soft_patches),
+        mean_luminance(&before_apply),
+        Tolerance::Above(BRIGHTER),
+    )?;
 
     // The XMP's preset over it: its fields merged over the stack.
-    let merged_frame = launch.at("soft-film-xmp")?;
+    let merged_frame = at("soft-film-xmp")?;
     let merged = registry.applied(&soft, &xmp)?;
     expect_layers(merged_frame, "Soft Film applied over it", &merged)?;
     let merged_patches = patches_of("soft-film-xmp")?;
-    ensure(
-        change(&merged_patches, &soft_patches) > CHANGED,
-        format!(
-            "Soft Film over Soft film did not change the photograph: {:.2} mean change",
-            change(&merged_patches, &soft_patches)
-        ),
+    checks.compare(
+        merged_frame,
+        "Soft Film over Soft film changes the photograph (mean change)",
+        change(&merged_patches, &soft_patches),
+        0.0,
+        Tolerance::Above(CHANGED),
     )?;
     // Two of the XMP's own mixer fields move one quadrant each in a known direction: the green
     // range's luminance falls, and red's hue turns toward orange, which adds green to red.
@@ -476,50 +432,39 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && mixer["red-hue"].as_f64().is_some_and(|v| v > 0.0),
         format!("The XMP fixture no longer lowers green luminance and turns red's hue: {mixer}"),
     )?;
-    let (green_before, green_after) = (luminance(soft_patches[1]), luminance(merged_patches[1]));
-    ensure(
-        green_after < green_before - BRIGHTER,
-        format!(
-            "Soft Film did not darken the green quadrant: {green_after:.1} against {green_before:.1}"
-        ),
-    )?;
-    let (red_before, red_after) = (soft_patches[0][1], merged_patches[0][1]);
-    ensure(
-        red_after > red_before + BRIGHTER,
-        format!(
-            "Soft Film did not turn the red quadrant toward orange: green channel {red_after:.1} against {red_before:.1}"
-        ),
-    )?;
-    record(
+    checks.compare(
         merged_frame,
-        "Soft Film applied over it: one more entry, the XMP's fields merged over the stack, the green quadrant darker and the red one turned toward orange",
-        json!({"revision":merged_frame.revision()?,"label":merged_frame.label()?,"layers":layers(merged_frame)?,"patches":patch_record(&merged_patches),"change":change(&merged_patches, &soft_patches)}),
-    );
+        "Soft Film darkens the green quadrant (luminance before, after)",
+        luminance(soft_patches[1]),
+        luminance(merged_patches[1]),
+        Tolerance::Above(BRIGHTER),
+    )?;
+    checks.compare(
+        merged_frame,
+        "Soft Film turns the red quadrant toward orange (green channel after, before)",
+        merged_patches[0][1],
+        soft_patches[0][1],
+        Tolerance::Above(BRIGHTER),
+    )?;
 
     // Undo returns to the document's preset: its entry, its stack and its pixels.
-    let undo = launch.at("undo")?;
+    let undo = at("undo")?;
     ensure(
         undo.entry()? == soft_frame.entry()?,
         "Undo did not return to the Soft film entry",
     )?;
     expect_layers(undo, "Undo", &soft)?;
-    let undone = patches_of("undo")?;
-    ensure(
-        change(&undone, &soft_patches) < SAME,
-        format!(
-            "The undone photograph differs from Soft film's: {:.2}",
-            change(&undone, &soft_patches)
-        ),
-    )?;
-    record(
+    checks.compare(
         undo,
-        "undo: the Soft film entry, its stack and its pixels again",
-        json!({"entry":undo.entry()?,"patches":patch_record(&undone)}),
-    );
+        "the undone photograph against Soft film's (mean change)",
+        change(&patches_of("undo")?, &soft_patches),
+        0.0,
+        Tolerance::Under(SAME),
+    )?;
 
     // The create form filled but not submitted: the name, the default group and the Tone
     // checkbox alone, with Create enabled. Nothing is stored yet.
-    let form_frame = launch.at("form")?;
+    let form_frame = at("form")?;
     let form = &presets(form_frame)["form"];
     ensure(
         form["open"] == json!(true)
@@ -530,14 +475,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("The create form is not filled as scripted: {form}"),
     )?;
     expect_rows(form_frame, "The open form", &both)?;
-    record(
-        form_frame,
-        "the create form open and filled: the name, User presets and the Tone group alone",
-        json!({"form":form}),
-    );
 
     // The native preset, the Basic Tone group only, in User presets.
-    let created = launch.at("created")?;
+    let created = at("created")?;
     expect_rows(
         created,
         "The created preset",
@@ -551,35 +491,25 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         presets(created)["form"]["open"] == json!(false),
         "The create form is still open after a successful create",
     )?;
-    record(
-        created,
-        "a native preset of the Tone group alone, listed in User presets",
-        json!({"status":created["state"]["status"],"rows":presets(created)["rows"]}),
-    );
 
     // Undo to the Original: an empty stack and the opened pixels.
-    let at_original_frame = launch.at("undo-original")?;
+    let at_original_frame = at("undo-original")?;
     ensure(
         layers(at_original_frame)?.is_empty(),
         "Undo did not return to the Original's empty stack",
     )?;
     let at_original = patches_of("undo-original")?;
-    ensure(
-        change(&at_original, &original) < SAME,
-        format!(
-            "The Original reads differently from the opened photograph: {:.2}",
-            change(&at_original, &original)
-        ),
-    )?;
-    record(
+    checks.compare(
         at_original_frame,
-        "undo to the Original: an empty stack and the opened pixels",
-        json!({"label":at_original_frame.label()?,"patches":patch_record(&at_original)}),
-    );
+        "the Original against the opened photograph (mean change)",
+        change(&at_original, &original),
+        0.0,
+        Tolerance::Under(SAME),
+    )?;
 
     // The native preset on the Original: a Basic layer holding exactly the Tone fields the Soft
     // film entry held, and nothing else.
-    let native_frame = launch.at("native")?;
+    let native_frame = at("native")?;
     let basic = luxforge_core::BASIC_EFFECT.to_owned();
     let captured: serde_json::Map<String, Value> = soft
         .get(&basic)
@@ -598,55 +528,36 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let native = BTreeMap::from([(basic, Value::Object(captured))]);
     expect_layers(native_frame, "The native preset applied", &native)?;
-    let native_patches = patches_of("native")?;
-    ensure(
-        mean_luminance(&native_patches) > mean_luminance(&at_original) + BRIGHTER,
-        format!(
-            "The Tone preset did not brighten the Original: {:.1} against {:.1}",
-            mean_luminance(&native_patches),
-            mean_luminance(&at_original)
-        ),
-    )?;
-    record(
+    checks.compare(
         native_frame,
-        "the native preset on the Original: one entry, exactly the captured Tone fields, a brighter photograph",
-        json!({"label":native_frame.label()?,"layers":layers(native_frame)?,"patches":patch_record(&native_patches)}),
-    );
+        "the Tone preset brightens the Original",
+        mean_luminance(&patches_of("native")?),
+        mean_luminance(&at_original),
+        Tolerance::Above(BRIGHTER),
+    )?;
 
     // `preset.list` through the generic api step answers with the whole library.
-    let list = launch.at("list")?;
-    let listed = list["step"]["result"]["presets"]
+    let listed = at("list")?["step"]["result"]["presets"]
         .as_array()
-        .ok_or("The preset.list step recorded no listing")?;
+        .ok_or("The preset.list step recorded no listing")?
+        .len();
     ensure(
-        listed.len() == 3,
-        format!("preset.list answered {} presets", listed.len()),
+        listed == 3,
+        format!("preset.list answered {listed} presets"),
     )?;
-    record(
-        list,
-        "preset.list through the api step: three presets, nothing committed",
-        json!({"listed":listed.len()}),
-    );
 
     // The native preset deleted through its row menu; history keeps the entry that applied it.
-    let deleted = launch.at("deleted")?;
-    expect_rows(deleted, "The deleted preset", &both)?;
-    record(
-        deleted,
-        "the native preset deleted from its row menu; the entry that applied it remains",
-        json!({"status":deleted["state"]["status"],"rows":presets(deleted)["rows"]}),
-    );
+    expect_rows(at("deleted")?, "The deleted preset", &both)?;
 
-    write_json(
-        &launch.evidence.join("presets-checks.json"),
-        &json!({
-            "checks": checks,
+    checks.write(
+        &launch.evidence,
+        "presets",
+        json!({
             "brighter_margin": BRIGHTER,
             "same_tolerance": SAME,
             "changed_threshold": CHANGED,
             "patches": PATCHES.iter().map(|(name, x, y)| json!({"quadrant":name,"x":x,"y":y})).collect::<Vec<_>>(),
-            "scope": "Stored payloads against a stepwise merge of the fixtures' imported settings; mean RGB of one patch per quadrant, read back from the renderer. A direction and correlation check, not a colorimetric claim",
+            "scope": "Stored payloads against a stepwise merge of the fixtures' imported settings; mean RGB of one patch per quadrant of the photograph the editor records drawing, read back from the renderer. A direction and correlation check, not a colorimetric claim",
         }),
-    )?;
-    Ok(())
+    )
 }

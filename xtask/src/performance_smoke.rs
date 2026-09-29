@@ -48,11 +48,6 @@ const ASLEEP_WAIT_MS: u64 = 2_500;
 /// The straighten under the heavy edit, whose interpolation the heavy edit's exact phase then
 /// renders through.
 const ANGLE: f64 = 3.0;
-/// The heavy edit: all three Presence fields at full strength, spatial operations over the whole
-/// frame at its exact phase. Clarity alone at 60 MP over the straighten now renders in about
-/// 0.35 s on the owner's M4, under the section's 0.5 s threshold, and so does a RAW photograph's
-/// Clarity with Texture; all three render for over a second at 60 MP.
-const PRESENCE: [(&str, f64); 3] = [("clarity", 100.0), ("texture", 100.0), ("dehaze", 100.0)];
 /// The section's own display rules, restated here so the runner does not borrow them.
 const LONG_JOB_MS: u64 = 500;
 const RECENT_JOB_MS: u64 = 10_000;
@@ -73,20 +68,16 @@ const BRACKET_MS: u64 = 1_000;
 /// 16 KiB, covers small movements of that kind; `performance-checks.json` records the differences.
 const MEMORY_SLACK: u64 = 8 << 20;
 
-/// The heavy step: every Presence field at once, on a JPEG and a RAW alike.
-fn heavy_step() -> script::Step {
-    let fields: serde_json::Map<String, Value> = PRESENCE
-        .iter()
-        .map(|(field, amount)| ((*field).to_owned(), json!(amount)))
-        .collect();
-    script::Step::call("edit.set-presence", Value::Object(fields))
-}
-
 /// Every frame, in order, over the source the run opens. What each step commits is planned here:
 /// nothing but the two edits commits anything. What the section shows, `verify` checks.
 pub fn plan(_sources: &[PathBuf]) -> Plan {
     // The heavy commit is labelled by the Presence module: every field at once by its title alone.
-    let heavy = Step::new("heavy", heavy_step())
+    // The heavy edit: all three Presence fields at full strength, spatial operations over the
+    // whole frame at its exact phase, on a JPEG and a RAW alike. Clarity alone at 60 MP over the
+    // straighten renders in about 0.35 s on the owner's M4, under the section's 0.5 s threshold,
+    // and so does a RAW photograph's Clarity with Texture; all three render for over a second at
+    // 60 MP.
+    let heavy = Step::new("heavy", crate::scenario::recipe::full_presence())
         .commits(1)
         .label("Presence".to_owned());
     Plan::new(vec![

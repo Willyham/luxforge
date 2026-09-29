@@ -960,7 +960,7 @@ fn gesture_script(
         steps.push(basic_precondition());
     }
     if options.presence {
-        steps.push(presence_precondition());
+        steps.push(crate::scenario::recipe::full_presence());
     }
     if options.control == Control::Curve {
         steps.extend(curve_view_steps());
@@ -1963,15 +1963,6 @@ fn paint(run: &mut Run, options: &Options) -> Result {
 /// screen.
 const CROP_START_HOLD_MS: u64 = 1500;
 
-/// The Presence layer `--presence` commits: every field at full strength, so the stack holds all
-/// three of its neighbourhood operations.
-fn presence_precondition() -> script::Step {
-    script::Step::call(
-        "edit.set-presence",
-        json!({"texture":100.0,"clarity":100.0,"dehaze":100.0}),
-    )
-}
-
 /// The crop-start run's script and the step numbers of its Starts: the recipe, the Performance
 /// section opened and a settled baseline, then per sample a Start held open, its Cancel and a
 /// settle.
@@ -1981,7 +1972,7 @@ fn crop_start_script(options: &Options) -> (Vec<script::Step>, Vec<usize>) {
         steps.push(basic_precondition());
     }
     if options.presence {
-        steps.push(presence_precondition());
+        steps.push(crate::scenario::recipe::full_presence());
     }
     steps.push(script::Step::performance(true));
     steps.push(script::Step::wait(CROP_START_HOLD_MS));

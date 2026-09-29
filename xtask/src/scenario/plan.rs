@@ -27,6 +27,29 @@ pub enum Draft {
     },
 }
 
+/// A line of text a frame shows: exactly this, or leading with it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Text {
+    Is(String),
+    Starts(String),
+}
+
+impl Text {
+    fn holds(&self, shown: &str) -> bool {
+        match self {
+            Self::Is(text) => shown == text,
+            Self::Starts(text) => shown.starts_with(text.as_str()),
+        }
+    }
+
+    fn record(&self) -> Value {
+        match self {
+            Self::Is(text) => json!({"is": text}),
+            Self::Starts(text) => json!({"starts": text}),
+        }
+    }
+}
+
 /// What one step's frame must show, beyond the invariants every frame keeps. A field left at its
 /// default is not checked.
 #[derive(Clone, Debug, Default)]
@@ -49,6 +72,21 @@ pub struct Expect {
     /// The refusal the step ends in: a scripted step recorded `failed` with a reason that leads with
     /// this, or an open whose outcome is this error code.
     pub refused: Option<String>,
+    /// How many masks the Masks panel lists.
+    pub masks: Option<usize>,
+    /// The open mask's components, each as its mode and kind (`add linear`), in list order.
+    pub components: Option<Vec<String>>,
+    /// Notices the canvas shows, by title; others may be shown beside them.
+    pub notices: Vec<String>,
+    /// The canvas shows no notice at all.
+    pub no_notices: bool,
+    /// The status bar's text.
+    pub status: Option<Text>,
+    /// Fields of the client's workspace, each exactly: the canvas mode, the panels and the
+    /// overlays.
+    pub workspace: Vec<(String, Value)>,
+    /// The session's zoom as it records it: `{"mode":"fit"}` or `{"mode":"percent","value":v}`.
+    pub zoom: Option<Value>,
 }
 
 impl Expect {
@@ -124,6 +162,30 @@ impl Expect {
         }
         if let Some(reason) = &self.refused {
             record.insert("refused".into(), json!(reason));
+        }
+        if let Some(masks) = self.masks {
+            record.insert("masks".into(), json!(masks));
+        }
+        if let Some(components) = &self.components {
+            record.insert("components".into(), json!(components));
+        }
+        if !self.notices.is_empty() {
+            record.insert("notices".into(), json!(self.notices));
+        }
+        if self.no_notices {
+            record.insert("no_notices".into(), json!(true));
+        }
+        if let Some(status) = &self.status {
+            record.insert("status".into(), status.record());
+        }
+        if !self.workspace.is_empty() {
+            record.insert(
+                "workspace".into(),
+                Value::Object(self.workspace.iter().cloned().collect()),
+            );
+        }
+        if let Some(zoom) = &self.zoom {
+            record.insert("zoom".into(), zoom.clone());
         }
         Value::Object(record)
     }
@@ -260,6 +322,64 @@ impl Step {
     /// `reason`, and an open ends in the error code `reason`.
     pub fn refused(mut self, reason: impl Into<String>) -> Self {
         self.expect.refused = Some(reason.into());
+        self
+    }
+
+    /// The Masks panel lists exactly `n` masks.
+    pub fn masks(mut self, n: usize) -> Self {
+        self.expect.masks = Some(n);
+        self
+    }
+
+    /// The open mask holds exactly these components, each named by its mode and kind.
+    pub fn components(mut self, components: &[&str]) -> Self {
+        self.expect.components = Some(components.iter().map(|c| (*c).to_owned()).collect());
+        self
+    }
+
+    /// The canvas shows a notice titled `title`.
+    pub fn notice(mut self, title: impl Into<String>) -> Self {
+        self.expect.notices.push(title.into());
+        self
+    }
+
+    pub fn no_notices(mut self) -> Self {
+        self.expect.no_notices = true;
+        self
+    }
+
+    /// The status bar reads exactly `text`.
+    pub fn status(mut self, text: impl Into<String>) -> Self {
+        self.expect.status = Some(Text::Is(text.into()));
+        self
+    }
+
+    /// The status bar's text leads with `text`.
+    pub fn status_starts(mut self, text: impl Into<String>) -> Self {
+        self.expect.status = Some(Text::Starts(text.into()));
+        self
+    }
+
+    /// The workspace's canvas mode is `mode`.
+    pub fn mode(self, mode: &str) -> Self {
+        self.workspace("mode", json!(mode))
+    }
+
+    /// The workspace's `field` is exactly `value`.
+    pub fn workspace(mut self, field: &str, value: Value) -> Self {
+        self.expect.workspace.push((field.into(), value));
+        self
+    }
+
+    /// The session's view is at Fit.
+    pub fn fit(mut self) -> Self {
+        self.expect.zoom = Some(json!({"mode": "fit"}));
+        self
+    }
+
+    /// The session's view is at `value` percent.
+    pub fn percent(mut self, value: f64) -> Self {
+        self.expect.zoom = Some(json!({"mode": "percent", "value": value}));
         self
     }
 }
@@ -645,6 +765,60 @@ impl Plan {
                 ),
             )?;
         }
+        if let Some(n) = expect.masks {
+            let masks = frame.masks()?;
+            ensure(
+                masks.len() == n,
+                format!(
+                    "the Masks panel lists {}, expected {n} mask(s)",
+                    json!(masks)
+                ),
+            )?;
+        }
+        if let Some(components) = &expect.components {
+            let kinds = frame.kinds()?;
+            ensure(
+                &kinds == components,
+                format!("the open mask holds {kinds:?}, expected {components:?}"),
+            )?;
+        }
+        let notices = frame.notices();
+        for title in &expect.notices {
+            ensure(
+                notices.contains(title),
+                format!("the canvas shows the notices {notices:?}, none titled {title:?}"),
+            )?;
+        }
+        if expect.no_notices {
+            ensure(
+                frame.state()["notices"] == json!([]),
+                format!("the canvas shows the notices {}", frame.state()["notices"]),
+            )?;
+        }
+        if let Some(status) = &expect.status {
+            let shown = frame.status()?;
+            ensure(
+                status.holds(shown),
+                format!(
+                    "the status bar reads {shown:?}, expected {}",
+                    status.record()
+                ),
+            )?;
+        }
+        for (field, value) in &expect.workspace {
+            let recorded = &frame.state()["workspace"][field];
+            ensure(
+                recorded == value,
+                format!("the workspace's {field} is {recorded}, expected {value}"),
+            )?;
+        }
+        if let Some(zoom) = &expect.zoom {
+            let recorded = &frame.state()["surface"]["view"]["zoom"];
+            ensure(
+                request_matches(recorded, zoom) && request_matches(zoom, recorded),
+                format!("the view's zoom is {recorded}, expected {zoom}"),
+            )?;
+        }
         Ok(())
     }
 }
@@ -887,6 +1061,52 @@ mod tests {
             error.contains("Step \"b\" is not a valid script step"),
             "{error}"
         );
+    }
+
+    /// Masks, notices, the status bar, the workspace and the zoom are each read from the frame's
+    /// own state, and each names what it found when it does not hold.
+    #[test]
+    fn the_richer_expectations_read_the_frame() {
+        let frame = Frame::state_only(&json!({"state":{
+            "masks":{"masks":[{"id":"m1"}],"components":[{"mode":"add","kind":"linear"}]},
+            "notices":["Changed elsewhere"],
+            "status":"Previewing entry 1 of 3",
+            "workspace":{"mode":"mask","mask_overlay":"tint"},
+            "surface":{"view":{"zoom":{"mode":"percent","value":100.0}}}
+        }}));
+        let check = |step: Step| {
+            Plan::new(vec![step])
+                .expect(0, std::slice::from_ref(&frame))
+                .map_err(|error| error.to_string())
+        };
+        let holding = Step::opened("a")
+            .masks(1)
+            .components(&["add linear"])
+            .notice("Changed elsewhere")
+            .status_starts("Previewing entry 1")
+            .mode("mask")
+            .workspace("mask_overlay", json!("tint"))
+            .percent(100.0);
+        assert_eq!(check(holding), Ok(()));
+        for (step, names) in [
+            (Step::opened("a").masks(0), "lists"),
+            (Step::opened("a").components(&["add radial"]), "add linear"),
+            (
+                Step::opened("a").notice("Preview is stale"),
+                "Preview is stale",
+            ),
+            (Step::opened("a").no_notices(), "Changed elsewhere"),
+            (
+                Step::opened("a").status("Previewing"),
+                "Previewing entry 1 of 3",
+            ),
+            (Step::opened("a").mode("pointer"), "mode is \"mask\""),
+            (Step::opened("a").fit(), "\"fit\""),
+            (Step::opened("a").percent(50.0), "percent"),
+        ] {
+            let error = check(step).unwrap_err();
+            assert!(error.contains(names), "{error}");
+        }
     }
 
     /// A three-frame launch written the way the editor writes one, for the checks below.

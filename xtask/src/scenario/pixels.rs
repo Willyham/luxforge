@@ -135,11 +135,92 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
     )
 }
 
+/// The canvas surface's own colour, `#19191b`, which is all the canvas shows where no photograph is
+/// drawn.
+const CANVAS: [u8; 3] = [0x19, 0x19, 0x1b];
+
 impl Frame {
     /// [`fixture`] over this frame's capture, inside the photo surface it records.
     pub fn fixture(&self, expect: Fixture) -> Result<Value> {
         let columns = self.columns()?;
         fixture(self.image()?, &Fixture { columns, ..expect })
+    }
+
+    /// Where the editor drew the photograph in this frame, `[left, top, right, bottom]` physical
+    /// pixels with the right and bottom edges exclusive, as it records it per frame (`photo_rect`):
+    /// the rectangle the photo surface lays the photograph out in, snapped as it draws it. A
+    /// percentage zoom can carry it past the capture's edges.
+    pub fn photo_rect(&self) -> Result<[i64; 4]> {
+        serde_json::from_value(self["photo_rect"].clone()).map_err(|_| {
+            format!(
+                "The frame records no photograph rectangle: {}",
+                self["photo_rect"]
+            )
+            .into()
+        })
+    }
+
+    /// The one photo locator: [`Frame::photo_rect`], which must lie inside the capture and hold a
+    /// drawn picture — at least a quarter of an 8 × 8 grid of samples over it must read something
+    /// other than the canvas surface, so a blank or missing render fails here rather than being
+    /// measured.
+    pub fn photo(&self) -> Result<[u32; 4]> {
+        let rect = self.photo_rect()?;
+        let image = self.image()?;
+        let (width, height) = image.dimensions();
+        let [left, top, right, bottom] = rect;
+        ensure(
+            0 <= left
+                && left < right
+                && right <= i64::from(width)
+                && 0 <= top
+                && top < bottom
+                && bottom <= i64::from(height),
+            format!(
+                "The photograph's rectangle {rect:?} is not inside the {width} × {height} capture"
+            ),
+        )?;
+        let bounds = rect.map(|edge| edge as u32);
+        let drawn = (0..8)
+            .flat_map(|row| (0..8).map(move |column| (column, row)))
+            .filter(|(column, row)| {
+                let (x, y) = at(
+                    bounds,
+                    [
+                        (f64::from(*column) + 0.5) / 8.0,
+                        (f64::from(*row) + 0.5) / 8.0,
+                    ],
+                );
+                let pixel = image.get_pixel(x as u32, y as u32).0;
+                pixel.iter().zip(CANVAS).any(|(a, b)| a.abs_diff(b) > 3)
+            })
+            .count();
+        ensure(
+            drawn >= 16,
+            format!("No photograph drawn in {rect:?}: blank or wrong render"),
+        )?;
+        Ok(bounds)
+    }
+
+    /// The capture position at fractions `fraction` of the located photograph.
+    pub fn photo_at(&self, fraction: [f64; 2]) -> Result<(f64, f64)> {
+        Ok(at(self.photo()?, fraction))
+    }
+
+    /// Mean Rec. 709 luminance of the patch `half` pixels either side of fractions `fraction` of
+    /// the located photograph.
+    pub fn luminance_at(&self, fraction: [f64; 2], half: i64) -> Result<f64> {
+        mean_luminance(self.image()?, self.photo_at(fraction)?, half)
+    }
+
+    /// Mean 8-bit RGB of that patch.
+    pub fn rgb_at(&self, fraction: [f64; 2], half: i64) -> Result<[f64; 3]> {
+        mean_rgb(self.image()?, self.photo_at(fraction)?, half)
+    }
+
+    /// The darkest Rec. 709 luminance in that patch.
+    pub fn darkest_at(&self, fraction: [f64; 2], half: i64) -> Result<f64> {
+        darkest_luminance(self.image()?, self.photo_at(fraction)?, half)
     }
 }
 
@@ -415,8 +496,12 @@ pub fn band_bounds(frame: &Frame, threshold: u32) -> Result<[u32; 4]> {
 pub enum Tolerance {
     /// Within this much of each other, inclusive: the same picture, or a patch left where it was.
     Within(f64),
+    /// Less than this apart, strictly.
+    Under(f64),
     /// At least this far apart, either way: a patch that moved.
     Apart(f64),
+    /// More than this far apart, either way, strictly: the negation of `Within`.
+    Beyond(f64),
     /// The first above the second by more than this: brighter, lifted.
     Above(f64),
 }
@@ -429,9 +514,17 @@ pub fn compare(what: &str, a: f64, b: f64, tolerance: Tolerance) -> Result {
             (a - b).abs() <= most,
             format!("{what}: {a:.2} and {b:.2} differ by more than {most}"),
         ),
+        Tolerance::Under(most) => ensure(
+            (a - b).abs() < most,
+            format!("{what}: {a:.2} and {b:.2} differ by {most} or more"),
+        ),
         Tolerance::Apart(least) => ensure(
             (a - b).abs() >= least,
             format!("{what}: {a:.2} and {b:.2} differ by less than {least}"),
+        ),
+        Tolerance::Beyond(least) => ensure(
+            (a - b).abs() > least,
+            format!("{what}: {a:.2} and {b:.2} differ by {least} or less"),
         ),
         Tolerance::Above(margin) => ensure(
             a > b + margin,
@@ -608,6 +701,11 @@ mod tests {
         // Above is strict, and one-sided.
         assert!(compare("lifted", 22.0, 10.0, Tolerance::Above(12.0)).is_err());
         assert!(compare("lifted", 10.0, 23.0, Tolerance::Above(12.0)).is_err());
+        // Under and Beyond are the strict forms of Within and Apart.
+        assert!(compare("same", 10.0, 10.5, Tolerance::Under(1.0)).is_ok());
+        assert!(compare("same", 10.0, 11.0, Tolerance::Under(1.0)).is_err());
+        assert!(compare("moved", 10.0, 11.5, Tolerance::Beyond(1.0)).is_ok());
+        assert!(compare("moved", 10.0, 11.0, Tolerance::Beyond(1.0)).is_err());
         let error = compare("the drag", 5.0, 7.25, Tolerance::Within(1.5))
             .unwrap_err()
             .to_string();
