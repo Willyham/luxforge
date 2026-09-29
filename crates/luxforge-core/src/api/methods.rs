@@ -763,6 +763,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::events_since,
         "gap=true requires an asset.state refresh"
     ),
+    owner!(
+        "events.wait",
+        owner::EventsWait,
+        owner::events_wait,
+        "a long poll that answers as events.since does, {events, current_sequence, gap}, as soon as the log holds an event after `after` (one naming asset_id when it is given) or gap is true, and otherwise, when timeout_ms (0 to 30000, default 10000) passes, with no events; 0 answers at once; the owner holds the wait without blocking, at most one per client, so a second events.wait from a client answers its earlier one at once with what it has, and a disconnect drops it; a JSON connection serves one request at a time, so a client that waits on it uses a second connection for anything else"
+    ),
     // The analysis methods are answered by the catalog owner, because the job store, the worker
     // slots and every client's draft live there. They mutate nothing and emit no event.
     owner!(
