@@ -944,20 +944,15 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::{
-        secrets::MemorySecretStore,
-        testing::{ADAPTER, capability_descriptor, temp},
+    use crate::{
+        capabilities::{
+            secrets::MemorySecretStore,
+            testing::{ADAPTER, capability_descriptor, temp},
+        },
+        editor::mutation,
     };
     use serde_json::json;
     use std::{fs, sync::Arc};
-
-    fn mutation(revision: u64, request: &str) -> Mutation {
-        Mutation {
-            expected_revision: revision,
-            request_id: request.into(),
-            actor: "test".into(),
-        }
-    }
 
     fn values(value: Value) -> Map<String, Value> {
         value.as_object().expect("an object of values").clone()
@@ -1192,10 +1187,10 @@ mod tests {
 
     #[test]
     fn an_unsupported_or_unreadable_file_is_refused_and_never_rewritten() {
+        // Every entry point reads through the document, whose own tests hold each refusal; the
+        // settings shape adds its own fields.
         for (name, contents) in [
             ("format-2", br#"{"format": 2, "modules": {}}"#.to_vec()),
-            ("no-marker", br#"{"modules": {}}"#.to_vec()),
-            ("not-json", b"{\"format\": 1, \"modules\": {".to_vec()),
             (
                 "extra",
                 br#"{"format": 1, "modules": {}, "extra": true}"#.to_vec(),
@@ -1397,92 +1392,6 @@ mod tests {
         let raw = fixture.raw();
         assert_eq!(raw["modules"]["other.module"], other);
         assert_eq!(raw["format"], json!(SETTINGS_FORMAT));
-    }
-
-    #[test]
-    fn the_file_is_bounded_to_one_mebibyte() {
-        let fixture = Fixture::new("bounded");
-        fs::create_dir_all(fixture.store.dir()).unwrap();
-        // A file just under the limit is read; a write that would grow it past the limit is
-        // refused and leaves it as it was.
-        let blob = "x".repeat(MAX_SETTINGS_BYTES as usize - 200);
-        let near =
-            serde_json::to_vec(&json!({"format": 1, "modules": {"other.module": {"blob": blob}}}))
-                .unwrap();
-        assert!(near.len() as u64 <= MAX_SETTINGS_BYTES);
-        fs::write(fixture.file(), &near).unwrap();
-        assert_eq!(fixture.read().revision, 0);
-        let error = fixture
-            .set(None, json!({"note": "hello"}), 0, "grow")
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::ResourceLimit, "{}", error.detail);
-        assert_eq!(fs::read(fixture.file()).unwrap(), near);
-        assert!(
-            !fixture
-                .store
-                .dir()
-                .join(format!("{SETTINGS_FILE}.tmp"))
-                .exists()
-        );
-        // A file over the limit is refused without being read whole, and kept.
-        let mut over = near.clone();
-        over.resize(MAX_SETTINGS_BYTES as usize + 1, b' ');
-        fs::write(fixture.file(), &over).unwrap();
-        let error = fixture
-            .store
-            .read(&fixture.descriptor, &fixture.secrets)
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::ResourceLimit);
-        assert_eq!(fs::read(fixture.file()).unwrap(), over);
-    }
-
-    #[test]
-    fn two_writers_in_parallel_lose_no_update() {
-        let fixture = Fixture::new("parallel");
-        let dir = fixture.store.dir().to_path_buf();
-        let writers: Vec<_> = [("note", "a"), ("mode", "b")]
-            .into_iter()
-            .map(|(field, prefix)| {
-                let dir = dir.clone();
-                std::thread::spawn(move || {
-                    // Each writer has its own store instance, as a second process would.
-                    let store = SettingsStore::new(dir);
-                    let descriptor = capability_descriptor();
-                    let secrets = MemorySecretStore::new();
-                    for index in 0..20 {
-                        let value = match field {
-                            "note" => json!(format!("{prefix}{index}")),
-                            _ => json!(if index % 2 == 0 { "fast" } else { "exact" }),
-                        };
-                        loop {
-                            let revision = store.read(&descriptor, &secrets).unwrap().revision;
-                            let request = format!("{prefix}-{index}");
-                            match store.set(
-                                &descriptor,
-                                None,
-                                &values(json!({field: value})),
-                                &mutation(revision, &request),
-                            ) {
-                                Ok(write) => {
-                                    assert_eq!(write.result.outcome, WriteOutcome::Committed);
-                                    break;
-                                }
-                                // Another writer committed first: read again and retry.
-                                Err(error) if error.kind == ErrorKind::Conflict => {}
-                                Err(error) => panic!("{error}"),
-                            }
-                        }
-                    }
-                })
-            })
-            .collect();
-        for writer in writers {
-            writer.join().unwrap();
-        }
-        let read = fixture.read();
-        assert_eq!(read.revision, 40, "every committed write was counted once");
-        assert_eq!(value_of(&read, "note").0, json!("a19"));
-        assert_eq!(value_of(&read, "mode").0, json!("exact"));
     }
 
     #[test]

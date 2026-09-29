@@ -824,13 +824,13 @@ mod tests {
     fn another_format_or_shape_is_refused_and_kept_unchanged() {
         let fixture = Fixture::new("grants-format");
         fs::create_dir_all(fixture.root.join("modules")).unwrap();
+        // Each call reads through the document, whose own tests hold each refusal; the grants shape
+        // and its check add their own.
         for (name, contents) in [
             (
                 "format",
                 json!({"format": 2, "grants": [], "denials": []}).to_string(),
             ),
-            ("marker", json!({"grants": []}).to_string()),
-            ("json", "{not json".to_owned()),
             (
                 "shape",
                 json!({"format": 1, "grants": [], "denials": [], "extra": true}).to_string(),
