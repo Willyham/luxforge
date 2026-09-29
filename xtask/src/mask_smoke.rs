@@ -10,7 +10,7 @@
 //! it recorded: the gradient runs down the picture, so the top of the frame sits at coverage 0 and
 //! must stay where it was while the bottom is lifted.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, Tolerance, pixels},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance},
     *,
 };
 use luxforge_core::BASIC_EFFECT;
@@ -60,14 +60,21 @@ fn swept() -> Value {
 /// and records; `verify` below checks the gesture, the mask and what the photograph shows.
 pub fn launch1(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
-        // The fixture as launched: no Basic layer and nothing drafted.
-        Step::opened("opened").no_layer(BASIC_EFFECT).no_draft(),
+        // The fixture as launched: no mask, no Basic layer and nothing drafted.
+        Step::opened("opened")
+            .no_layer(BASIC_EFFECT)
+            .no_draft()
+            .masks(0),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends. A canvas mode
         // commits nothing.
-        Step::new("mask-mode", WorkspaceStep::default().mode("mask")).commits(0),
+        Step::new("mask-mode", WorkspaceStep::default().mode("mask"))
+            .commits(0)
+            .mode("mask"),
         // 2: a new mask whose first component is a linear gradient: the gesture opens and drafts,
         // and nothing is committed.
-        Step::new("new", MaskStep::New("linear".into())).commits(0),
+        Step::new("new", MaskStep::New("linear".into()))
+            .commits(0)
+            .masks(0),
         // 3: the drag itself, one sweep from the untouched side towards the affected one, with the
         // pointer still down: the frame is the picture mid-gesture, the gradient drafted exactly
         // where the sweep drew it and still uncommitted.
@@ -79,17 +86,21 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
             },
         )
         .commits(0)
-        .draft(LINEAR_METHOD, swept()),
+        .draft(LINEAR_METHOD, swept())
+        .masks(0),
         // 4: the pointer lifted. The gradient stays; nothing is committed by a release.
         Step::new("release", MaskStep::Release)
             .commits(0)
-            .draft(LINEAR_METHOD, swept()),
-        // 5: Apply: one history entry, one mask, no layer bound to it yet.
+            .draft(LINEAR_METHOD, swept())
+            .masks(0),
+        // 5: Apply: one history entry, one mask of one linear component, no layer bound to it yet.
         Step::new("apply", MaskStep::Apply)
             .commits(1)
             .label("Add linear")
             .no_draft()
-            .no_layer(BASIC_EFFECT),
+            .no_layer(BASIC_EFFECT)
+            .masks(1)
+            .components(&["add linear"]),
         // 6: the masked Exposure gesture. The sections below the list are bound to the mask the
         // commit opened, so this is the panel's own drag on the masked layer.
         Step::new(
@@ -114,9 +125,13 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         .payload(BASIC_EFFECT, json!({ EXPOSURE: RETYPED }))
         .same_layer(BASIC_EFFECT, "drag"),
         // 8: the coverage overlay on, which commits nothing.
-        Step::new("overlay-on", WorkspaceStep::default().mask_overlay("tint")).commits(0),
+        Step::new("overlay-on", WorkspaceStep::default().mask_overlay("tint"))
+            .commits(0)
+            .workspace("mask_overlay", json!("tint")),
         // 9: and off again.
-        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off")).commits(0),
+        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off"))
+            .commits(0)
+            .workspace("mask_overlay", json!("off")),
         // 10: undo, back to the exposure the drag committed, on the same layer.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
@@ -133,9 +148,13 @@ pub fn launch2(_: &[PathBuf]) -> Plan {
         Step::opened("reopened")
             .label(DRAGGED_LABEL)
             .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED }))
-            .no_draft(),
-        // 1: Mask mode again, so the reopened masks are shown as well as stored.
-        Step::new("mask-mode", WorkspaceStep::default().mode("mask")).commits(0),
+            .no_draft()
+            .masks(1),
+        // 1: Mask mode again, so the reopened masks are shown as well as stored, with their
+        // components derived.
+        Step::new("mask-mode", WorkspaceStep::default().mode("mask"))
+            .commits(0)
+            .components(&["add linear"]),
         // 2: the entry the gradient was committed in, selected from the history.
         Step::new("mask-entry", PreviewStep::Sequence(1)).commits(0),
         // 3: back to the current state.
@@ -151,23 +170,58 @@ fn mask_id(frame: &Frame) -> Result<&str> {
         .ok_or_else(|| "The listed mask has no identity".into())
 }
 
-/// The stack's one Basic layer, or `None` when the stack holds none.
-fn basic_layer(frame: &Frame) -> Option<&Value> {
-    frame.layer(BASIC_EFFECT)
+/// How many layers the one mask lists as bound to it.
+fn bound(frame: &Frame) -> Result<usize> {
+    frame.only_mask()?["layers"]
+        .as_array()
+        .map(Vec::len)
+        .ok_or_else(|| "The listed mask names no bound layers".into())
 }
 
 /// Both measured patches of one capture, above the gradient and below it: the mean Rec. 709
-/// luminance of each, in the photograph's own drawn rectangle. The two top quadrant colours are
-/// what the mask never touches — the gradient reaches coverage 0 above `Y0` — so the rectangle is
-/// found from those alone: a bounds search over all four colours would lose the bottom of the
-/// picture the moment the masked layer lifted it.
+/// luminance of each, in the photograph's own drawn rectangle.
 fn patches(frame: &Frame) -> Result<[f64; 2]> {
-    let bounds = pixels::top_quadrant_bounds(frame)?;
-    let image = frame.image()?;
     Ok([
-        pixels::mean_luminance(image, pixels::at(bounds, UNCOVERED), PATCH_HALF)?,
-        pixels::mean_luminance(image, pixels::at(bounds, COVERED), PATCH_HALF)?,
+        frame.luminance_at(UNCOVERED, PATCH_HALF)?,
+        frame.luminance_at(COVERED, PATCH_HALF)?,
     ])
+}
+
+/// Both patches of `frame` against `reference`'s, each under its own tolerance.
+fn compare_both(
+    checks: &mut Checks,
+    frame: &Frame,
+    what: &str,
+    reference: [f64; 2],
+    [above, below]: [Tolerance; 2],
+) -> Result<[f64; 2]> {
+    let read = patches(frame)?;
+    checks.compare(
+        frame,
+        &format!("{what}, above the gradient"),
+        read[0],
+        reference[0],
+        above,
+    )?;
+    checks.compare(
+        frame,
+        &format!("{what}, below the gradient"),
+        read[1],
+        reference[1],
+        below,
+    )?;
+    Ok(read)
+}
+
+/// What launch 1 leaves for launch 2 to be checked against.
+struct Left {
+    revision: u64,
+    mask: String,
+    name: String,
+    component: String,
+    layer: String,
+    opened: [f64; 2],
+    undone: [f64; 2],
 }
 
 /// Both launches, once each has held its plan: launch 1's gesture, mask and pixels, then launch 2
@@ -180,271 +234,140 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )
         .into());
     };
-    let checks = verify_launch1(launch1)?;
-    run.record("launch1", checks.clone());
-    let reopened = verify_launch2(launch2, &checks)?;
-    run.record("launch2", reopened.clone());
-    write_json(
-        &run.out().join("mask-linear-checks.json"),
-        &json!({"launch1": checks, "launch2": reopened}),
-    )?;
-    Ok(())
+    let mut checks = Checks::new();
+    let left = verify_launch1(launch1, &mut checks)?;
+    verify_launch2(launch2, &left, &mut checks)?;
+    checks.write(
+        run.out(),
+        SCENARIO,
+        json!({
+            "mask": left.mask,
+            "component": left.component,
+            "layer": left.layer,
+            "lifted_margin": LIFTED,
+            "untouched_tolerance": UNTOUCHED,
+            "scope": "Mean Rec. 709 luminance of two patches of the photograph the editor records drawing, read back from the renderer; not a colorimetric claim",
+        }),
+    )
 }
 
 /// Launch 1, step by step. Returns the identities and measurements launch 2 is checked against.
-fn verify_launch1(launch: &Checked) -> Result<Value> {
-    let mut shows = Vec::new();
-    let mut record = |frame: &Value, what: &str, detail: Value| {
-        shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
-    };
+fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Left> {
+    let same = Tolerance::Within(UNTOUCHED);
+    let lifted = Tolerance::Above(LIFTED);
+    let opened = patches(launch.at("opened")?)?;
 
-    // The fixture as launched: no mask in the recipe (the plan holds it to no Basic layer).
-    let opened_frame = launch.at("opened")?;
-    ensure(
-        opened_frame.masks()?.is_empty(),
-        "The fixture opened with a mask already in the recipe",
-    )?;
-    let opened = patches(opened_frame)?;
-    record(
-        opened_frame,
-        "the fixture as launched, with no mask in the recipe",
-        json!({"patches":opened}),
-    );
-
-    // Mask mode.
-    let mode = launch.at("mask-mode")?;
-    ensure(
-        mode["state"]["workspace"]["mode"] == json!("mask"),
-        format!(
-            "The workspace step did not enter Mask mode: {}",
-            mode["state"]["workspace"]
-        ),
-    )?;
-    record(
-        mode,
-        "Mask mode with an empty Masks panel",
-        json!({"caption":mode["state"]["masks"]["caption"]}),
-    );
-
-    // The gesture is open and drafting, and no mask is committed.
-    let new = launch.at("new")?;
-    let opened_draft = &new["state"]["mask_draft"];
+    // The gesture is open and drafting a create.
+    let opened_draft = &launch.at("new")?.state()["mask_draft"];
     ensure(
         opened_draft["kind"] == json!("linear") && opened_draft["mask"] == Value::Null,
         format!("The new step holds no open create gesture: {opened_draft}"),
     )?;
-    ensure(
-        new.masks()?.is_empty(),
-        "Opening the gesture committed a mask",
-    )?;
-    record(
-        new,
-        "an open linear-gradient gesture on the canvas, drafted and uncommitted",
-        json!({"draft":opened_draft}),
-    );
-
-    // The sweep put the gradient exactly where the script drew it, pointer down, still
-    // uncommitted.
-    let sweep = launch.at("sweep")?;
-    let swept_draft = &sweep["state"]["mask_draft"];
-    ensure(
-        swept_draft["shape"] == swept() && swept_draft["dragging"] == json!(true),
-        format!("The sweep's gesture holds {swept_draft}"),
-    )?;
-    ensure(sweep.masks()?.is_empty(), "The sweep committed a mask")?;
-    record(
-        sweep,
-        "the gradient swept from the untouched side to the affected one, still a draft",
-        json!({"draft":swept_draft}),
-    );
-
-    // The pointer lifted. The gradient the sweep drew is still exactly where it was and the
-    // gesture is still open, because a release commits nothing on its own.
-    let release = launch.at("release")?;
-    let released = &release["state"]["mask_draft"];
-    ensure(
-        released["shape"] == swept() && released["dragging"] == json!(false),
-        format!("The release's gesture holds {released}"),
-    )?;
-    ensure(release.masks()?.is_empty(), "The release committed a mask")?;
-    record(
-        release,
-        "the drawn gradient with the pointer lifted, still uncommitted",
-        json!({"draft":released}),
-    );
+    // The sweep put the gradient exactly where the script drew it, pointer down; the release
+    // leaves it there with the gesture still open, because a release commits nothing on its own.
+    for (step, dragging) in [("sweep", true), ("release", false)] {
+        let draft = &launch.at(step)?.state()["mask_draft"];
+        ensure(
+            draft["shape"] == swept() && draft["dragging"] == json!(dragging),
+            format!("The {step}'s gesture holds {draft}"),
+        )?;
+    }
 
     // Apply. One mask, one linear component, no layer bound to it — so the photograph is
     // byte-unchanged: a mask on its own is a selection, not an edit.
     let apply = launch.at("apply")?;
     ensure(
-        apply["state"]["mask_draft"] == Value::Null,
+        apply.state()["mask_draft"] == Value::Null,
         "The gesture is still open after Apply",
     )?;
     let mask = mask_id(apply)?.to_owned();
-    let mask_name = apply.only_mask()?["name"]
+    let name = apply.only_mask()?["name"]
         .as_str()
         .ok_or("The listed mask has no name")?
         .to_owned();
-    let component = {
-        let listed = apply.components()?;
-        ensure(
-            listed.len() == 1 && listed[0]["kind"] == json!("linear"),
-            format!("The committed mask holds {}", json!(listed)),
-        )?;
-        listed[0]["id"]
-            .as_str()
-            .ok_or("The component has no identity")?
-            .to_owned()
-    };
+    let component = apply.component(0)?["id"]
+        .as_str()
+        .ok_or("The component has no identity")?
+        .to_owned();
     ensure(
-        apply.only_mask()?["layers"] == json!([]),
+        bound(apply)? == 0,
         "A freshly drawn mask already has a layer bound to it",
     )?;
-    let applied = patches(apply)?;
-    pixels::compare(
-        "a mask with no layer, above the gradient",
-        applied[0],
-        opened[0],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    pixels::compare(
-        "a mask with no layer, below the gradient",
-        applied[1],
-        opened[1],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    record(
-        apply,
-        "the committed mask in the panel and the photograph unchanged by it",
-        json!({"mask":mask,"name":mask_name,"component":component,"label":apply.label()?,"patches":applied}),
-    );
+    compare_both(checks, apply, "a mask with no layer", opened, [same, same])?;
 
     // The masked Exposure gesture, released. The picture is lifted below the gradient and
     // untouched above it, and the layer the panel committed names the mask.
     let drag = launch.at("drag")?;
-    let layer = basic_layer(drag).ok_or("The masked gesture committed no Basic layer")?;
+    let layer = drag
+        .layer(BASIC_EFFECT)
+        .ok_or("The masked gesture committed no Basic layer")?;
     ensure(
         layer["mask"] == json!(mask),
         format!("The committed Basic layer names {}", layer["mask"]),
     )?;
-    let layer_id = layer["id"]
+    let layer = layer["id"]
         .as_str()
         .ok_or("The masked layer has no identity")?
         .to_owned();
     ensure(
-        drag.only_mask()?["layers"]
-            .as_array()
-            .is_some_and(|layers| layers.len() == 1),
+        bound(drag)? == 1,
         format!(
             "The mask lists {} bound layers",
             drag.only_mask()?["layers"]
         ),
     )?;
-    let dragged = patches(drag)?;
-    pixels::compare(
-        "above the gradient after the masked drag",
-        dragged[0],
-        opened[0],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    pixels::compare(
-        "below the gradient after the masked drag",
-        dragged[1],
-        opened[1],
-        Tolerance::Above(LIFTED),
-    )?;
-    record(
+    let dragged = compare_both(
+        checks,
         drag,
-        "one part of the photograph lifted through the mask and the other left alone",
-        json!({"layer":layer_id,"exposure":DRAGGED,"patches":dragged,"label":drag.label()?}),
-    );
+        "after the masked drag",
+        opened,
+        [same, lifted],
+    )?;
 
     // The same layer again from JSON, naming the mask by name. The step's own record must show
     // the identity the name resolved to, which is what makes the request reproducible.
     let edit = launch.at("json-edit")?;
-    let step = &edit["step"];
     ensure(
-        step["resolved"]["mask"] == json!(mask),
+        edit["step"]["resolved"]["mask"] == json!(mask),
         format!(
             "The JSON step resolved {} rather than the mask",
-            step["resolved"]
+            edit["step"]["resolved"]
         ),
     )?;
     let retyped = patches(edit)?;
-    pixels::compare(
-        "above the gradient after the JSON edit",
+    checks.compare(
+        edit,
+        "after the JSON edit, above the gradient",
         retyped[0],
         opened[0],
-        Tolerance::Within(UNTOUCHED),
+        same,
     )?;
-    pixels::compare(
-        "below the gradient after the JSON edit",
+    checks.compare(
+        edit,
+        "after the JSON edit, below the gradient",
         retyped[1],
         dragged[1],
-        Tolerance::Above(LIFTED),
+        lifted,
     )?;
-    record(
-        edit,
-        "the same masked layer raised again from JSON, by the mask's name",
-        json!({"resolved":step["resolved"],"exposure":RETYPED,"patches":retyped}),
-    );
 
     // The coverage overlay. It is drawn over the covered part of the picture only, so the
-    // uncovered patch is exactly where it was and the covered one is not.
+    // uncovered patch is exactly where it was and the covered one is not; switched off, the
+    // photograph is back to what it was under it.
     let overlay = launch.at("overlay-on")?;
-    ensure(
-        overlay["state"]["workspace"]["mask_overlay"] == json!("tint"),
-        format!(
-            "The overlay step left the workspace at {}",
-            overlay["state"]["workspace"]["mask_overlay"]
-        ),
-    )?;
-    let tinted = patches(overlay)?;
-    pixels::compare(
-        "above the gradient with the overlay on",
-        tinted[0],
-        retyped[0],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    // Strictly more than the untouched tolerance: the negation of `Within(UNTOUCHED)`, which
-    // `Tolerance::Apart`, being inclusive, is not.
-    ensure(
-        (tinted[1] - retyped[1]).abs() > UNTOUCHED,
-        format!(
-            "The overlay drew nothing over the covered part: {:.2} against {:.2}",
-            tinted[1], retyped[1]
-        ),
-    )?;
-    record(
+    compare_both(
+        checks,
         overlay,
-        "the coverage overlay tinting exactly the covered part of the photograph",
-        json!({"patches":tinted,"colour":overlay["state"]["workspace"]["mask_overlay_colour"]}),
-    );
-
-    // The overlay off again, and the photograph back to what it was under it.
-    let cleared_frame = launch.at("overlay-off")?;
-    ensure(
-        cleared_frame["state"]["workspace"]["mask_overlay"] == json!("off"),
-        "The overlay did not switch off",
+        "with the overlay on",
+        retyped,
+        [same, Tolerance::Beyond(UNTOUCHED)],
     )?;
-    let cleared = patches(cleared_frame)?;
-    pixels::compare(
-        "above the gradient with the overlay off",
-        cleared[0],
-        retyped[0],
-        Tolerance::Within(UNTOUCHED),
+    compare_both(
+        checks,
+        launch.at("overlay-off")?,
+        "with the overlay off",
+        retyped,
+        [same, same],
     )?;
-    pixels::compare(
-        "below the gradient with the overlay off",
-        cleared[1],
-        retyped[1],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    record(
-        cleared_frame,
-        "the overlay switched off, leaving the edited photograph",
-        json!({"patches":cleared}),
-    );
 
     // Undo. One entry back: the masked layer holds what the drag committed again, the mask and
     // its component keep their identities, and the picture follows.
@@ -454,160 +377,117 @@ fn verify_launch1(launch: &Checked) -> Result<Value> {
         "Undo changed the mask or component identity",
     )?;
     let undone = patches(undo)?;
-    pixels::compare(
-        "above the gradient after undo",
+    checks.compare(
+        undo,
+        "after undo, above the gradient",
         undone[0],
         opened[0],
-        Tolerance::Within(UNTOUCHED),
+        same,
     )?;
-    pixels::compare(
-        "below the gradient after undo",
+    checks.compare(
+        undo,
+        "after undo, below the gradient",
         undone[1],
         dragged[1],
-        Tolerance::Within(UNTOUCHED),
+        same,
     )?;
-    record(
-        undo,
-        "the undone state: the drag's exposure again, through the same mask",
-        json!({"patches":undone,"label":undo.label()?}),
-    );
 
-    Ok(json!({
-        "mask": mask,
-        "mask_name": mask_name,
-        "component": component,
-        "layer": layer_id,
-        "revision": undo.revision()?,
-        "label": undo.label()?,
-        "exposure": DRAGGED,
-        "patches": {"opened": opened, "dragged": dragged, "undone": undone},
-        "lifted_margin": LIFTED,
-        "untouched_tolerance": UNTOUCHED,
-        "frames": shows,
-        "scope": "Mean Rec. 709 luminance of two patches of the displayed photograph, read back from the renderer; not a colorimetric claim",
-    }))
+    Ok(Left {
+        revision: undo.revision()?,
+        mask,
+        name,
+        component,
+        layer,
+        opened,
+        undone,
+    })
 }
 
 /// Launch 2: the same catalog in a new process. Identities, bindings and history navigation, each
 /// against what launch 1 left.
-fn verify_launch2(launch: &Checked, launch1: &Value) -> Result<Value> {
+fn verify_launch2(launch: &Checked, left: &Left, checks: &mut Checks) -> Result {
+    let same = Tolerance::Within(UNTOUCHED);
     // The reopen itself. Revision, mask, component and bound layer all come back with the
     // identities launch 1 wrote; the plan holds its label and stored exposure to the ones launch 1
     // ended on.
     let reopened = launch.at("reopened")?;
     ensure(
-        json!(reopened.revision()?) == launch1["revision"],
+        reopened.revision()? == left.revision,
         format!(
             "Launch 2 reopened at revision {} rather than {}",
             reopened.revision()?,
-            launch1["revision"]
+            left.revision
         ),
     )?;
     ensure(
-        json!(mask_id(reopened)?) == launch1["mask"]
-            && reopened.only_mask()?["name"] == launch1["mask_name"],
+        mask_id(reopened)? == left.mask && reopened.only_mask()?["name"] == json!(left.name),
         format!("Launch 2 reopened the mask as {}", reopened.only_mask()?),
     )?;
-    let layer = basic_layer(reopened).ok_or("Launch 2 reopened without the masked layer")?;
+    let layer = reopened
+        .layer(BASIC_EFFECT)
+        .ok_or("Launch 2 reopened without the masked layer")?;
     ensure(
-        layer["id"] == launch1["layer"] && layer["mask"] == launch1["mask"],
+        layer["id"] == json!(left.layer) && layer["mask"] == json!(left.mask),
         format!("Launch 2's masked layer is {layer}"),
     )?;
 
     // Mask mode, where the components are derived. The component keeps its identity too, and the
     // panel names the layer bound to the mask.
     let mode = launch.at("mask-mode")?;
-    let listed = mode.components()?;
     ensure(
-        listed.len() == 1 && listed[0]["id"] == launch1["component"],
-        format!("Launch 2 reopened the components as {}", json!(listed)),
+        mode.component(0)?["id"] == json!(left.component),
+        format!(
+            "Launch 2 reopened the components as {}",
+            json!(mode.components()?)
+        ),
     )?;
     ensure(
-        mode.only_mask()?["layers"]
-            .as_array()
-            .is_some_and(|layers| layers.len() == 1),
+        bound(mode)? == 1,
         format!(
             "The reopened mask lists {} bound layers",
             mode.only_mask()?["layers"]
         ),
     )?;
-    let reopened_patches = patches(mode)?;
-    let undone: [f64; 2] = serde_json::from_value(launch1["patches"]["undone"].clone())?;
-    pixels::compare(
-        "above the gradient after the reopen",
-        reopened_patches[0],
-        undone[0],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    pixels::compare(
-        "below the gradient after the reopen",
-        reopened_patches[1],
-        undone[1],
-        Tolerance::Within(UNTOUCHED),
-    )?;
+    compare_both(checks, mode, "after the reopen", left.undone, [same, same])?;
 
     // The entry the gradient was committed in, selected from the reopened history. The mask exists
     // there, no layer is bound to it yet, and the photograph is the unedited one.
     let historical = launch.at("mask-entry")?;
     ensure(
-        historical["state"]["selection"] != Value::Null,
+        historical.state()["selection"] != Value::Null,
         format!(
             "Launch 2 did not select a history entry: {}",
-            historical["state"]["selection"]
+            historical.state()["selection"]
         ),
     )?;
-    let displayed = &historical["state"]["stack"]["displayed"]["layers"];
+    let displayed = &historical.state()["stack"]["displayed"]["layers"];
     ensure(
         displayed
             .as_array()
             .is_some_and(|layers| layers.iter().all(|layer| layer["mask"] == Value::Null)),
         format!("The mask-create entry already renders a masked layer: {displayed}"),
     )?;
-    let historical_patches = patches(historical)?;
-    let opened: [f64; 2] = serde_json::from_value(launch1["patches"]["opened"].clone())?;
-    pixels::compare(
-        "above the gradient at the mask-create entry",
-        historical_patches[0],
-        opened[0],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-    pixels::compare(
-        "below the gradient at the mask-create entry",
-        historical_patches[1],
-        opened[1],
-        Tolerance::Within(UNTOUCHED),
+    compare_both(
+        checks,
+        historical,
+        "at the mask-create entry",
+        left.opened,
+        [same, same],
     )?;
 
     // Back to the current state, which is the reopened one again; the plan holds its exposure to
     // the drag's.
     let current = launch.at("current")?;
     ensure(
-        json!(current.revision()?) == launch1["revision"],
+        current.revision()? == left.revision,
         format!("Returning to current left revision {}", current.revision()?),
     )?;
-    let current_patches = patches(current)?;
-    pixels::compare(
-        "above the gradient back at current",
-        current_patches[0],
-        undone[0],
-        Tolerance::Within(UNTOUCHED),
+    compare_both(
+        checks,
+        current,
+        "back at current",
+        left.undone,
+        [same, same],
     )?;
-    pixels::compare(
-        "below the gradient back at current",
-        current_patches[1],
-        undone[1],
-        Tolerance::Within(UNTOUCHED),
-    )?;
-
-    Ok(json!({
-        "mask": launch1["mask"],
-        "component": launch1["component"],
-        "layer": launch1["layer"],
-        "revision": reopened.revision()?,
-        "patches": {
-            "reopened": reopened_patches,
-            "mask_create_entry": historical_patches,
-            "back_at_current": current_patches,
-        },
-    }))
+    Ok(())
 }
