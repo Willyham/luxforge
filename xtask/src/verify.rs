@@ -1879,7 +1879,7 @@ mod tests {
             "editor-latency/run/latency.json",
             json!({"rows":[
                 stats::row("input_to_presented_frame", "ms", (1..=20).map(f64::from)),
-                stats::row("gpu_upload", "ms", Vec::new()),
+                stats::row("press_to_first_draft_set", "ms", Vec::new()),
             ]}),
         );
         write(
@@ -1908,7 +1908,7 @@ mod tests {
             [
                 "import",
                 "input_to_presented_frame",
-                "gpu_upload",
+                "press_to_first_draft_set",
                 "photo_upload_bytes"
             ]
         );
@@ -2016,16 +2016,39 @@ mod tests {
                 .contains("must be new")
         );
     }
-    /// A block of "scenarios" that are nothing but sleeps, so the pool's ordering and placement can
-    /// be tested without launching an editor. The first one outlasts all the others, so completion
-    /// order cannot be list order.
-    fn sleeps(seconds: &[&str]) -> Vec<Spec> {
-        seconds
-            .iter()
+    /// The ignored tests a pooled "scenario" runs in place of an editor: this test binary, told to
+    /// run one of them, so the pool tests need no program of the host's own (`/bin/sleep` is not on
+    /// Windows). The long one outlasts the short ones, so completion order cannot be list order.
+    #[test]
+    #[ignore]
+    fn nap_long() {
+        std::thread::sleep(Duration::from_millis(800));
+    }
+
+    #[test]
+    #[ignore]
+    fn nap_short() {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    #[ignore]
+    fn nap_medium() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    /// A block of "scenarios" that are nothing but naps, so the pool's ordering and placement can
+    /// be tested without launching an editor.
+    fn sleeps(naps: &[&str]) -> Vec<Spec> {
+        naps.iter()
             .enumerate()
-            .map(|(index, duration)| Spec {
+            .map(|(index, nap)| Spec {
                 output: false,
-                ..spec(&format!("smoke-{index}"), "rendered", &[duration])
+                ..spec(
+                    &format!("smoke-{index}"),
+                    "rendered",
+                    &["--ignored", "--exact", &format!("verify::tests::{nap}")],
+                )
             })
             .collect()
     }
@@ -2035,7 +2058,7 @@ mod tests {
         let ctx = Ctx {
             root: out,
             out,
-            xtask: "/bin/sleep".into(),
+            xtask: std::env::current_exe().unwrap(),
             bin: PathBuf::new(),
             manifest: None,
             started,
@@ -2069,7 +2092,14 @@ mod tests {
 
     #[test]
     fn the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index() {
-        let specs = sleeps(&["0.8", "0.1", "0.1", "0.1", "0.1", "0.1"]);
+        let specs = sleeps(&[
+            "nap_long",
+            "nap_short",
+            "nap_short",
+            "nap_short",
+            "nap_short",
+            "nap_short",
+        ]);
         let tmp = tempfile::tempdir().unwrap();
         let entries = pooled(&specs, 3, tmp.path());
 
@@ -2116,7 +2146,7 @@ mod tests {
 
     #[test]
     fn one_job_is_the_serial_run_through_the_same_path() {
-        let specs = sleeps(&["0.2", "0.2", "0.2"]);
+        let specs = sleeps(&["nap_medium", "nap_medium", "nap_medium"]);
         let tmp = tempfile::tempdir().unwrap();
         let entries = pooled(&specs, 1, tmp.path());
         assert!(entries.iter().all(|e| e.status == Status::Passed));
