@@ -1056,7 +1056,7 @@
     {
       "id": "TASK-015",
       "description": "Prove each rendering property once: one render-equals-sample table over every stack shape and both pixel domains, preview tests that stop re-proving the latest-job worker, injectable thresholds instead of multi-megapixel unit-test frames, and no stale diagnostics.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-014"
