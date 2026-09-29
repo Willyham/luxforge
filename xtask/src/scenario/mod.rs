@@ -18,5 +18,5 @@ pub mod recipe;
 pub use checks::Checks;
 pub use frame::{Frame, columns, events, preamble};
 pub use launch::{Launch, Launched, Run};
-pub use pixels::{Bright, Fixture, Scan, Tolerance};
+pub use pixels::{Fixture, Tolerance};
 pub use plan::{Checked, Plan, Step};

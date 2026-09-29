@@ -71,11 +71,6 @@ impl Checks {
             .push(json!({"frame": named(frame), "shows": shows, "detail": detail}));
     }
 
-    /// Everything recorded, in order.
-    pub fn records(&self) -> &[Value] {
-        &self.records
-    }
-
     /// Write `dir/<name>-checks.json`: every record under `checks`, and each of `extra`'s fields
     /// (the scenario's thresholds, sample geometry and scope) beside it.
     pub fn write(self, dir: &Path, name: &str, extra: Value) -> Result {
