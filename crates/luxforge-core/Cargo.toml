@@ -29,7 +29,6 @@ winapi-util = "=0.1.11"
 # An independent JPEG decoder and encoder for the tests, and PNG for their diagnostic images.
 image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
-luxforge-raw = { path = "../luxforge-raw", features = ["performance-diagnostics"] }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }

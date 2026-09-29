@@ -159,23 +159,6 @@ pub(crate) fn render_linear(
     )
 }
 
-pub(crate) fn render_linear_proxy_cancellable(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    cancel: &Cancel,
-) -> Result<Raster, Error> {
-    frame(
-        registry,
-        linear(source, settings),
-        snapshot_id,
-        recipe,
-        RenderOptions::proxy(cancel),
-    )
-}
-
 pub(crate) fn sample(
     registry: &ModuleRegistry,
     source: &SourceImage,
