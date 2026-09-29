@@ -172,8 +172,8 @@ mod tests {
     #[test]
     fn no_samples_is_a_row_without_a_distribution() {
         assert_eq!(
-            row("gpu_upload", "ms", Vec::new()),
-            json!({"metric":"gpu_upload","unit":"ms","distribution":null})
+            row("frame_gap_ms", "ms", Vec::new()),
+            json!({"metric":"frame_gap_ms","unit":"ms","distribution":null})
         );
         assert_eq!(
             scalar("presented_fps", "fps", None)["distribution"],
