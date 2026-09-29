@@ -1793,7 +1793,7 @@
     {
       "id": "TASK-022",
       "description": "Prove each desktop behaviour once: one import-and-wait fixture on the blocking source wait, testkit's catalog helpers, one events helper, the per-field loop trimmed, and the preset CLI test cut to its transport.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
