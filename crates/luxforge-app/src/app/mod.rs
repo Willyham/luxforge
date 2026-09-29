@@ -20,7 +20,9 @@
 //! in [`AFTER_MESSAGE`] (or its `after_derive` in [`AFTER_DERIVE`], when it reads the screen just
 //! derived), and what it listens to is its `subscription`, listed once in [`SUBSCRIPTIONS`]. A new
 //! panel adds its seam file and message file, one [`Message`] variant, one dispatch arm and its
-//! entries in those lists.
+//! entries in those lists. What happened in a seam that a script step may wait for — a frame on
+//! the surface, an answer, a refusal — it reports as a typed [`outcome::Outcome`] through
+//! [`Editor::outcome`]; only evidence mode reads it, and a seam never names what a step waits for.
 mod actions;
 #[cfg(test)]
 mod actions_tests;
@@ -53,6 +55,7 @@ pub(crate) mod masks;
 #[cfg(test)]
 mod masks_tests;
 pub(crate) mod message;
+pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
 mod overlay_tests;

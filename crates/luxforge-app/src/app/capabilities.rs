@@ -13,7 +13,7 @@
 use crate::{
     app::{
         Editor,
-        evidence::{CapabilityAction, CapabilityStep, Reference, Settle},
+        evidence::{CapabilityAction, CapabilityStep, Reference},
         message::{Message, action::ActionMessage, capability::CapabilityMessage},
         tasks::{self, mutation, owner_task, request},
     },
@@ -34,7 +34,7 @@ use luxforge_core::{
         resources,
         settings::{self, SettingsRead},
     },
-    jobs::{JOB_CANCEL, JOB_READ, JobRecord, JobStatus},
+    jobs::{JOB_CANCEL, JOB_READ, JobRecord},
     redact_params,
 };
 use serde_json::{Map, Value, json};
@@ -475,12 +475,6 @@ impl Editor {
     }
 
     pub(crate) fn capability_update(&mut self, message: CapabilityMessage) -> Task<Message> {
-        let task = self.capability_message(message);
-        self.capability_settle();
-        task
-    }
-
-    fn capability_message(&mut self, message: CapabilityMessage) -> Task<Message> {
         match message {
             CapabilityMessage::FieldText {
                 module_id,
@@ -895,41 +889,6 @@ impl Editor {
 
     // ---- evidence -------------------------------------------------------------------------------
 
-    /// Capture the running capability step's frame once what it waits for has happened: its round
-    /// trips have answered and its module's jobs have finished or, for `"wait": false`, are
-    /// running and have reported how far they have come, so the frame shows real progress.
-    pub(crate) fn capability_settle(&mut self) {
-        let Some((module, wait)) = self
-            .evidence
-            .as_ref()
-            .filter(|evidence| evidence.awaiting == Some(Settle::Capability))
-            .and_then(|evidence| evidence.capability_wait.clone())
-        else {
-            return;
-        };
-        let state = self.capabilities.module(&module);
-        let settled = state.pending == 0
-            && state.jobs.iter().all(|job| {
-                job.status.is_finished()
-                    || (!wait
-                        && job.status == JobStatus::Running
-                        && job.progress.fraction.is_some())
-            });
-        if settled {
-            if let Some(evidence) = &mut self.evidence {
-                evidence.capability_wait = None;
-            }
-            self.settle_step(Settle::Capability);
-        }
-    }
-
-    fn arm_capability(&mut self, module: &str, wait: bool) {
-        self.await_step(Settle::Capability);
-        if let Some(evidence) = &mut self.evidence {
-            evidence.capability_wait = Some((module.to_owned(), wait));
-        }
-    }
-
     /// The envelope an `api` step's settings write carries: the settings revision the desktop
     /// holds for the module it names, as the block's own write would, so a stale one is a conflict.
     pub(crate) fn settings_envelope(
@@ -1002,9 +961,9 @@ impl Editor {
     /// The `api` step's capability method answered: read its module, and capture once that read
     /// has answered. `None` when the step called no capability method.
     pub(crate) fn capability_host_answered(&mut self) -> Option<Task<Message>> {
-        let (module, _) = self.evidence.as_ref()?.capability_wait.clone()?;
+        let (module, wait) = self.evidence.as_ref()?.capability_wait.clone()?;
         let task = self.capability_op(&module, Operation::Load);
-        self.await_step(Settle::Capability);
+        self.await_capability(&module, wait);
         Some(task)
     }
 
@@ -1019,8 +978,8 @@ impl Editor {
         let message = match self.step_message(&module, step.action) {
             Ok(Some(message)) => message,
             Ok(None) => {
-                self.arm_capability(&module, true);
-                self.capability_settle();
+                self.await_capability(&module, true);
+                self.settle_capability();
                 return Task::none();
             }
             Err(reason) => return self.fail_step(reason),
@@ -1034,8 +993,8 @@ impl Editor {
             }
             return task;
         }
-        self.arm_capability(&module, step.wait);
-        let task = self.capability_message(message);
+        self.await_capability(&module, step.wait);
+        let task = self.capability_update(message);
         // Nothing reached the owner: the step's frame is the refusal, with its reason.
         if self.capabilities.module(&module).pending == 0 {
             if let Some(evidence) = &mut self.evidence {

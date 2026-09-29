@@ -672,6 +672,30 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only the tools panel model (state/tools.rs) resolves a group's reset; read the \
                  one the section resolved through SectionModel::group_reset",
     },
+    // Seams report outcomes; only the evidence driver steers a script step. A seam says what
+    // happened through `Editor::outcome` (app/outcome.rs), and the evidence driver
+    // (app/evidence.rs) matches it to the running step's wait, arms that wait and records a
+    // refusal against the step. Tests may arm a wait directly.
+    SourceRule {
+        name: "evidence-outcomes",
+        tokens: &[
+            "Settle::",
+            "settle_step",
+            "await_step",
+            "refuse_step",
+            "capture_next_frame",
+        ],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/app/evidence.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "a desktop seam reports what happened through Editor::outcome \
+                 (crates/luxforge-app/src/app/outcome.rs); only the evidence driver \
+                 (crates/luxforge-app/src/app/evidence.rs) names a step's wait and settles, arms \
+                 or refuses it",
+    },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
     // luxforge-raw, not the reverse, so that module is the one home both crates can import from.
@@ -3414,6 +3438,56 @@ mod tests {
             read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
             (3, 0)
         );
+    }
+
+    #[test]
+    fn only_the_evidence_driver_steers_a_script_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("crates/luxforge-app/src/app");
+        fs::create_dir_all(&app).unwrap();
+        // The driver settles, arms and refuses; a seam reports an outcome; a test arms a wait; a
+        // preview's own settle intent and a capability step's `settle` action are other words.
+        for (file, text) in [
+            (
+                app.join("evidence.rs"),
+                "fn observe(&mut self) { self.settle_step(Settle::Preview, by); }\n\
+                 fn arm(&mut self) { self.await_step(Settle::Draft); self.capture_next_frame(); }\n",
+            ),
+            (
+                app.join("preview.rs"),
+                "self.outcome(Outcome::Presented(presented));\n\
+                 job.intent = PreviewIntent::Settle;\n",
+            ),
+            (
+                app.join("capabilities.rs"),
+                "CapabilityAction::Settle => return Ok(None),\n",
+            ),
+            (
+                app.join("overlay_tests.rs"),
+                "editor.await_step(evidence::Settle::Overlay);\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["evidence-outcomes"]).unwrap(), (2, 0));
+        // A seam naming a step's wait, or settling, arming or refusing it, is refused.
+        for text in [
+            "self.settle_step(Settle::Pick);\n",
+            "self.await_step(Settle::Preview);\n",
+            "use super::evidence::Settle; let s = Settle::Draft;\n",
+            "self.refuse_step(&reason);\n",
+            "self.capture_next_frame();\n",
+        ] {
+            let file = app.join("pointer.rs");
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["evidence-outcomes"], text);
+            assert!(
+                error.contains("pointer.rs:1") && error.contains("Editor::outcome"),
+                "{error}"
+            );
+            fs::remove_file(&file).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["evidence-outcomes"]).unwrap(), (2, 0));
     }
 
     #[test]

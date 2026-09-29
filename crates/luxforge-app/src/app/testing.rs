@@ -353,6 +353,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         capability_wait: None,
         wait_until: None,
         sync: crate::app::evidence::CaptureSync::default(),
+        recorded: Default::default(),
     }
 }
 

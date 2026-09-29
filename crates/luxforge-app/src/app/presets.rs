@@ -12,8 +12,8 @@ use crate::state::MenuTarget;
 use crate::{
     app::{
         Editor,
-        evidence::Settle,
         message::{Message, preset::PresetMessage},
+        outcome::Outcome,
         tasks::{
             PresetChange, preset_create_task, preset_delete_task, preset_export_task,
             preset_import_task, preset_report_task, request,
@@ -83,6 +83,7 @@ impl Editor {
                         self.status.text =
                             format!("Saved preset \u{201c}{name}\u{201d} in {group}");
                         self.presets.form = PresetForm::default();
+                        self.outcome(Outcome::PresetsAnswered { failure: None });
                     }
                     Err(error) => {
                         // A duplicate name is the core's `conflict`, shown as it is, in the form
@@ -91,7 +92,6 @@ impl Editor {
                         self.preset_failed(error);
                     }
                 }
-                self.settle_step(Settle::Presets);
             }
             PresetMessage::Import => {
                 if self.view_state.picker_open
@@ -135,10 +135,10 @@ impl Editor {
                             self.status.text.clone(),
                             serde_json::to_string_pretty(&report).unwrap_or_default(),
                         ));
+                        self.outcome(Outcome::PresetsAnswered { failure: None });
                     }
                     Err(error) => self.preset_failed(error),
                 }
-                self.settle_step(Settle::Presets);
             }
             PresetMessage::Delete(id) => {
                 self.view_state.menu = None;
@@ -159,10 +159,10 @@ impl Editor {
                             "The preset was already gone".into()
                         };
                         self.adopt_change(*change);
+                        self.outcome(Outcome::PresetsAnswered { failure: None });
                     }
                     Err(error) => self.preset_failed(error),
                 }
-                self.settle_step(Settle::Presets);
             }
             PresetMessage::CopyReport(id) => {
                 self.view_state.menu = None;
@@ -251,17 +251,18 @@ impl Editor {
         self.adopt_presets(change.presets, change.sequence);
     }
 
-    /// A library request that cannot be sent: say why, and let a waiting script step capture it.
+    /// A library request that cannot be sent: say why.
     fn preset_refused(&mut self, reason: String) -> Task<Message> {
         self.preset_failed(reason);
-        self.settle_step(Settle::Presets);
         Task::none()
     }
 
-    /// A library request failed: the status bar shows the core's own error, and a script step that
-    /// sent it is recorded as failed.
+    /// A library request failed or was refused: the status bar shows the core's own error, and the
+    /// failure is reported with it.
     fn preset_failed(&mut self, error: String) {
-        self.refuse_step(&error);
+        self.outcome(Outcome::PresetsAnswered {
+            failure: Some(&error),
+        });
         self.status.text = error;
     }
 }

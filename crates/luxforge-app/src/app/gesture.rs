@@ -17,8 +17,8 @@ use crate::{
         Editor,
         crop::CropGesture,
         draft::{CoreDraft, Event, GestureId, Round, Step},
-        evidence::Settle,
         message::{Message, draft::DraftMessage, preview::PreviewMessage},
+        outcome::Outcome,
         tasks::{self, PreviewPayload, Refresh, RoundTrip, mutation},
     },
     mask_draft::{ContentMap, MaskDraft},
@@ -480,7 +480,7 @@ impl Editor {
         if let Some(reason) = self.release_refusal() {
             self.status.text = reason;
             // The refused gesture's frame is the evidence of the refusal.
-            self.settle_step(Settle::SliderDraft);
+            self.outcome(Outcome::DraftRefused);
             return Task::none();
         }
         self.view_plan.quiet_since = None;
@@ -587,7 +587,7 @@ impl Editor {
             Kind::Crop(crop) => self.crop_discarded(crop, &gesture.draft),
         }
         if self.document.state.is_none() {
-            self.settle_step(Settle::Preview);
+            self.outcome(Outcome::NoNewFrame);
         }
         match self.cancel_draft(draft_id) {
             Some(reseed) => self.dispatch(Message::Preview(PreviewMessage::Loaded(reseed))),
@@ -639,11 +639,11 @@ impl Editor {
         }
     }
 
-    /// The open gesture's draft is conflicted: say so, and settle a step waiting for its frame,
-    /// which is the evidence of the conflict.
+    /// The open gesture's draft is conflicted: say so, and report it; the frame on screen, with this
+    /// line, is what happened.
     fn changed_elsewhere(&mut self, noun: &str) -> Task<Message> {
         self.status.text = format!("Changed elsewhere: discard the {noun} or reapply it");
-        self.settle_step(Settle::SliderDraft);
+        self.outcome(Outcome::DraftRefused);
         Task::none()
     }
 
@@ -713,7 +713,7 @@ impl Editor {
                 self.set_unpreviewed(&error);
                 let task = self.drive(Event::Set(Err(error)));
                 // A drained gesture whose newest value has no frame of its own is still drained:
-                // the frame on screen is the evidence of that, so a scripted step settles on it.
+                // the frame on screen shows that, so the refused value is reported.
                 if self
                     .core_gesture()
                     .is_some_and(|gesture| gesture.draft.drained())
@@ -721,7 +721,7 @@ impl Editor {
                         .slider_gesture()
                         .is_some_and(|slider| slider.unpreviewed)
                 {
-                    self.settle_step(Settle::SliderDraft);
+                    self.outcome(Outcome::DraftRefused);
                 }
                 task
             }
@@ -896,7 +896,7 @@ impl Editor {
                     || json!({ "reason": error }),
                 );
                 self.status.text = error.clone();
-                self.settle_step(Settle::SliderDraft);
+                self.outcome(Outcome::DraftRefused);
                 return self.drive(Event::Committed(Err(error)));
             }
         };
@@ -916,11 +916,11 @@ impl Editor {
                 self.status.text = format!("{} unchanged; nothing was committed", slider.label);
                 self.event("slider_draft_noop", || json!({ "label": slider.label }));
                 // The drafted pixels are still on screen and they are not the committed ones, so
-                // the step settles on the render that replaces them rather than on this message.
+                // what happened is the render that replaces them, or no new frame at all.
                 match self.reseed_committed() {
                     Some(task) => task,
                     None => {
-                        self.settle_step(Settle::Preview);
+                        self.outcome(Outcome::NoNewFrame);
                         Task::none()
                     }
                 }
@@ -975,7 +975,7 @@ impl Editor {
         let task = self.drive(Event::Reapplied(result));
         // A crop draft's Reapply is over once its draft is rebased and the rebased frame's stage
         // is on screen.
-        self.settle_crop();
+        self.report_crop_stage();
         task
     }
 }

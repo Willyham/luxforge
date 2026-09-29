@@ -6,13 +6,13 @@
 //! [`Presentation`] owns all of it: the one [`Presenter`] every frame goes to, the preview queue,
 //! and the bookkeeping that decides which frame is on screen — generations, content serials, the
 //! retained frames, the bounds each job was given and the entry and draft revision the frame on
-//! screen was rendered for. The editor's methods here decide what the view wants and what a frame
-//! settles; `Presentation` records what is shown.
+//! screen was rendered for. The editor's methods here decide what the view wants and report what
+//! reached the surface ([`Outcome::Presented`]); `Presentation` records what is shown.
 use super::{
     Editor,
-    evidence::Settle,
     gesture::Starting,
     message::{Message, preview::PreviewMessage},
+    outcome::{self, Outcome},
     overlay::OverlayRequest,
     presenter::Presenter,
     tasks::{self, recipe_task},
@@ -21,9 +21,8 @@ use crate::app::{Before, waker};
 use crate::{layout, state, state::histogram::Analysis, view};
 use iced::{Subscription, Task};
 use luxforge_core::{
-    DraftId, EntryId, ExactOutcome, HistoryEntry, MaskOverlayOutcome, PhaseOutcome, PreviewIntent,
-    PreviewJob, PreviewPhase, PreviewQueue, PreviewResult, ProxyBounds, Raster, Region,
-    RegionOutcome, Zoom,
+    DraftId, EntryId, ExactOutcome, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob,
+    PreviewPhase, PreviewQueue, PreviewResult, ProxyBounds, Raster, Region, RegionOutcome, Zoom,
     analysis::{AnalysisIdentity, MaskOverlay},
 };
 use serde_json::json;
@@ -284,11 +283,6 @@ pub(crate) struct Presentation {
     /// job is asked for; this moves only when that entry's frame is on screen, and is cleared when
     /// a failure withdraws the frame.
     pub(crate) presented_entry: Option<EntryId>,
-    /// The entry the newest refresh or history selection asked to render.
-    requested_render_entry: Option<Arc<HistoryEntry>>,
-    /// The requested entry once its frame is on screen, for the evidence stack summary: a shared
-    /// reference, so presenting a frame copies no entry.
-    pub(crate) rendered_entry: Option<Arc<HistoryEntry>>,
     /// The draft revision the displayed preview was rendered from, for correlation.
     pub(crate) displayed_draft_revision: Option<u64>,
     /// Revisions are ordered only within this draft; a new draft starts at zero.
@@ -398,13 +392,6 @@ impl Presentation {
         self.pending_bounds.remove(&generation);
         self.pending_content.remove(&generation);
         self.pending_intent.remove(&generation);
-    }
-
-    /// Record the entry a refresh or a history selection asked to render, so the evidence stack
-    /// summary can describe it once its frame is on screen. It is copied once per request and
-    /// shared by every frame of it after.
-    pub(crate) fn expect_entry(&mut self, entry: &HistoryEntry) {
-        self.requested_render_entry = Some(Arc::new(entry.clone()));
     }
 
     /// The intent a job of `generation` was requested with, while it is still known.
@@ -593,13 +580,6 @@ impl Presentation {
         self.refit_pending = false;
         self.presented_entry = Some(entry.clone());
         self.displayed_draft_revision = draft_revision;
-        if self
-            .requested_render_entry
-            .as_ref()
-            .is_some_and(|requested| requested.id == *entry)
-        {
-            self.rendered_entry = self.requested_render_entry.clone();
-        }
         // A frame on screen is the proof the last failure is over.
         self.render_error = None;
         content
@@ -681,7 +661,6 @@ impl Presentation {
         self.held_by_proxy = None;
         self.presented_proxy = false;
         self.presented_approximate_white_balance = false;
-        self.rendered_entry = None;
         self.displayed_draft_revision = None;
         self.displayed_draft_id = None;
         self.presented_entry.take()
@@ -791,13 +770,14 @@ impl Presentation {
 /// What a presented proxy frame holds back until its generation's exact phase lands.
 ///
 /// A proxy is the photograph, but every number a captured frame reports — the histogram, the
-/// clipping counters, the overlay it is checked against — comes from the exact render. So a
-/// scripted step's settle and an open request's outcome both wait for that phase rather than
+/// clipping counters, the overlay it is checked against — comes from the exact render. So what the
+/// proxy reports as presented and an open request's outcome both wait for that phase rather than
 /// releasing on the proxy alone, which is what keeps every existing assertion about a drafted or
 /// selected frame meaning what it meant before.
 pub(crate) struct HeldByProxy {
     pub(crate) generation: u64,
-    pub(crate) settle: Option<Settle>,
+    /// What the proxy reported as presented, as it stood when the proxy reached the surface.
+    pub(crate) presented: outcome::Presented,
     /// An open request was still pending when the proxy was presented, so it completes when the
     /// exact phase lands rather than on the proxy alone.
     pub(crate) ready: bool,
@@ -1023,8 +1003,7 @@ impl Editor {
                         self.controls.editing = None;
                         self.controls.dragging = None;
                         let entry = payload.job.evaluation.entry().id.clone();
-                        self.presentation
-                            .expect_entry(payload.job.evaluation.entry());
+                        self.outcome(Outcome::EntryRequested(payload.job.evaluation.entry()));
                         self.show_entry(entry.clone());
                         self.presentation.preview_generation = self.request_preview(payload.job);
                         self.status.text = "Rendering selected history state…".into();
@@ -1480,12 +1459,12 @@ impl Editor {
                 delivery.render_ms,
                 delivery.approximate_white_balance,
             );
-            self.settle_step(Settle::Preview);
+            self.outcome(Outcome::Presented(outcome::Presented::Exact));
             if self.activity.pending {
                 self.activity.pending = false;
                 self.activity.displayed = self.activity.requested;
                 self.activity.phase = "ready";
-                self.outcome_ready(false);
+                self.outcome(Outcome::RequestEnded { failed: false });
             }
             return (Task::none(), false);
         }
@@ -1702,28 +1681,22 @@ impl Editor {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
-            self.outcome_ready(false);
+            self.outcome(Outcome::RequestEnded { failed: false });
         }
         if intent == PreviewIntent::Interactive {
-            let settle = match self.core_gesture() {
-                Some(gesture)
-                    if !gesture.draft.drained()
-                        || generation < self.presentation.preview_generation =>
-                {
-                    None
-                }
-                Some(gesture) if gesture.slider().is_some() => Some(Settle::SliderDraft),
-                Some(_) => Some(Settle::Preview),
-                // History selection, Return to current and committed edits keep their Preview
-                // evidence step open until the whole-frame result updates the displayed stack
-                // and exact report. A region proves visible pixels, but cannot settle those
-                // correlated state fields; capturing here labelled current pixels as the old
-                // history entry until the following evidence tick.
-                None => None,
+            // A draft's region is its newest once the draft has drained and nothing newer was
+            // asked for. With no draft open the region is only the pixels in view: history
+            // selection, Return to current and committed edits are shown whole once the
+            // whole-frame result updates the displayed stack and exact report.
+            let presented = match self.core_gesture() {
+                Some(gesture) => outcome::Presented::Draft {
+                    slider: gesture.slider().is_some(),
+                    newest: gesture.draft.drained()
+                        && generation >= self.presentation.preview_generation,
+                },
+                None => outcome::Presented::Region,
             };
-            if let Some(settle) = settle {
-                self.settle_step(settle);
-            }
+            self.outcome(Outcome::Presented(presented));
             if self.core_gesture().is_none()
                 && (self.presentation.analysis_content != Some(content)
                     || self.presentation.exact_content() != Some(content))
@@ -1768,8 +1741,9 @@ impl Editor {
         self.release_held(generation);
     }
 
-    /// Release what the presented proxy of this generation was holding back: the scripted step it
-    /// settles and the open request it completes. Both describe the exact render, which has landed.
+    /// Release what the presented proxy of this generation was holding back: what it reports as
+    /// presented and the open request it completes. Both describe the exact render, which has
+    /// landed.
     pub(super) fn release_held(&mut self, generation: u64) {
         if self
             .presentation
@@ -1783,9 +1757,7 @@ impl Editor {
         let Some(held) = self.presentation.held_by_proxy.take() else {
             return;
         };
-        if let Some(settle) = held.settle {
-            self.settle_step(settle);
-        }
+        self.outcome(Outcome::Presented(held.presented));
         if held.ready && self.activity.pending {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
@@ -1794,7 +1766,7 @@ impl Editor {
                 "render_ready",
                 || json!({"displayed_generation":self.activity.displayed}),
             );
-            self.outcome_ready(false);
+            self.outcome(Outcome::RequestEnded { failed: false });
         }
     }
 
@@ -1839,11 +1811,9 @@ impl Editor {
         {
             self.withdraw_photo(generation, entry, error);
         }
-        // A scripted step waiting for the newest preview's pixels ends on its failure instead: the
-        // failure is that step's outcome, and its frame shows it.
-        if generation >= self.presentation.preview_generation {
-            self.settle_step(Settle::Preview);
-        }
+        self.outcome(Outcome::PreviewFailed {
+            newest: generation >= self.presentation.preview_generation,
+        });
         // A failed exact phase releases whatever its proxy was holding, so a scripted step ends on
         // the failure rather than waiting for a frame that will never arrive.
         if !proxy {
@@ -1854,7 +1824,7 @@ impl Editor {
             self.activity.phase = "error";
             self.activity.error_code = Some(error.kind.code().into());
             self.event("render_failed", || json!({"error_code":error.kind.code()}));
-            self.outcome_ready(true);
+            self.outcome(Outcome::RequestEnded { failed: true });
         }
     }
 
@@ -1868,6 +1838,7 @@ impl Editor {
         error: &luxforge_core::Error,
     ) {
         let shown = self.presentation.withdraw();
+        self.outcome(Outcome::Withdrawn);
         self.event("preview_withdrawn", || {
             json!({
                 "generation": generation,
@@ -1889,7 +1860,7 @@ impl Editor {
             // The stage on screen stays under the frame; only its other phase failed, and says so.
             self.set_draft_generation(None);
             self.status.text = format!("The crop's input stage could not be rendered: {error}");
-            self.settle_step(Settle::Draft);
+            self.outcome(Outcome::CropStage);
             return;
         }
         self.end_pending_draft(
@@ -1932,8 +1903,7 @@ impl Editor {
     /// A starting or reapplied draft whose input stage will not arrive ends its wait here,
     /// explicitly, rather than waiting for pixels: a start is discarded and returns to the pointer
     /// mode, a reapply keeps the draft it rebased. The photograph on screen is the current state
-    /// and stays. The reason reaches the status bar and the log, and a scripted step waiting for
-    /// the draft ends on it.
+    /// and stays. The reason reaches the status bar and the log, and the wait for the stage ends.
     pub(super) fn end_pending_draft(
         &mut self,
         status: String,
@@ -1947,7 +1917,7 @@ impl Editor {
             "crop_draft_failed",
             || json!({"reapply": reapply, "error_code": error_code, "detail": detail, "generation": generation}),
         );
-        self.settle_step(Settle::Draft);
+        self.outcome(Outcome::CropStage);
     }
 
     /// The zoom changed. This is the **one** place a view change can ask for a render, and it only
@@ -1992,7 +1962,7 @@ impl Editor {
                 // proxy beside it. One preview job produces the display-size frame this zoom wants,
                 // and it is the only render any view change asks for.
                 self.event("preview_proxy_requested", || json!({ "zoom": zoom }));
-                self.await_requested_frame();
+                self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
                 self.request_current_preview()
             }
             Zoomed::Missing => {
@@ -2147,7 +2117,7 @@ impl Editor {
             "preview_proxy_requested",
             || json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
-        self.await_requested_frame();
+        self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
         self.request_current_preview()
     }
 
@@ -2157,26 +2127,6 @@ impl Editor {
     /// or a history entry is previewed.
     pub(super) fn proxy_refit_deferred(&self) -> bool {
         self.gesture_refusal(Starting::Refit).is_some()
-    }
-
-    /// A view change has just asked for the frame it needs. A scripted step whose frame is still
-    /// to be captured — waiting on the session round trip, or already settled by it earlier in this
-    /// same update — waits for that frame instead, so the capture never shows the picture the view
-    /// has already replaced, such as a proxy of the previous bounds.
-    pub(super) fn await_requested_frame(&mut self) {
-        self.await_frame(Settle::Preview);
-    }
-
-    /// [`Self::await_requested_frame`] for a frame that settles `settle`: the crop draft's input
-    /// stage settles [`Settle::Draft`].
-    pub(super) fn await_frame(&mut self, settle: Settle) {
-        if let Some(evidence) = &mut self.evidence
-            && (evidence.awaiting == Some(Settle::Session)
-                || (evidence.awaiting.is_none() && evidence.capture_pending))
-        {
-            evidence.capture_pending = false;
-            evidence.awaiting = Some(settle);
-        }
     }
 
     /// Evidence of a displayed proxy waits for the current layout when a refit is permitted.
@@ -2254,6 +2204,7 @@ impl Editor {
         let proxy = frame.proxy();
         self.presentation
             .show(&frame, stage, &entry, draft_revision);
+        self.outcome(Outcome::EntryShown(&entry));
         // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
         // is waiting for stays the one picks, readouts and the next request are addressed to.
         if !zoom {
@@ -2296,24 +2247,20 @@ impl Editor {
                 "render_ms":frame.render_ms(),
             }),
         );
-        // A scripted preview selection settles on these same pixels, whether or not this frame also
-        // belongs to the one open request evidence tracks below. While a slider gesture is open the
-        // drafted previews replace one another, so a scripted gesture waits for the one whose
-        // settings are the newest.
-        // A mask shape gesture drains the same way: while another `draft.set` or the commit is still
-        // queued the frame on screen is not the one the step is evidence of, so the step waits for
-        // the geometry that settles, and for the newest frame asked for rather than an older one
-        // still arriving. A brush back in hand after its stroke committed holds no draft and asks
-        // for no frame of its own, so the committed frame settles its step.
-        let settle = match self.core_gesture() {
-            Some(gesture)
-                if gesture.draft.frame_pending()
-                    || generation < self.presentation.preview_generation =>
-            {
-                None
-            }
-            Some(gesture) if gesture.slider().is_some() => Some(Settle::SliderDraft),
-            _ => Some(Settle::Preview),
+        // These pixels are presented whether or not this frame also belongs to the one open
+        // request tracked below. While a slider gesture is open the drafted previews replace one
+        // another, so only the one whose settings are the newest is the draft's newest. A mask
+        // shape gesture drains the same way: while another `draft.set` or the commit is still
+        // queued, or a newer frame was asked for, the frame on screen is not the geometry that
+        // settles. A brush back in hand after its stroke committed holds no draft and asks for no
+        // frame of its own, so the committed frame is the photograph.
+        let presented = match self.core_gesture() {
+            Some(gesture) => outcome::Presented::Draft {
+                slider: gesture.slider().is_some(),
+                newest: !gesture.draft.frame_pending()
+                    && generation >= self.presentation.preview_generation,
+            },
+            None => outcome::Presented::Photo,
         };
         if proxy.is_some()
             && self.presentation.intent(generation) != Some(PreviewIntent::Interactive)
@@ -2323,14 +2270,12 @@ impl Editor {
             // exact render. So the step and the open request wait for this generation's exact phase.
             self.presentation.held_by_proxy = Some(HeldByProxy {
                 generation,
-                settle,
+                presented,
                 ready: self.activity.pending,
             });
         } else {
             self.presentation.held_by_proxy = None;
-            if let Some(settle) = settle {
-                self.settle_step(settle);
-            }
+            self.outcome(Outcome::Presented(presented));
             if self.activity.pending {
                 self.activity.pending = false;
                 self.activity.displayed = self.activity.requested;
@@ -2339,7 +2284,7 @@ impl Editor {
                     "render_ready",
                     || json!({"displayed_generation":self.activity.displayed}),
                 );
-                self.outcome_ready(false);
+                self.outcome(Outcome::RequestEnded { failed: false });
             }
         }
         self.status.text = self.displayed_status(&entry);

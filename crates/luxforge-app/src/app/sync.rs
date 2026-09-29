@@ -9,7 +9,7 @@ use super::{
         sync_task,
     },
 };
-use crate::app::{Before, waker};
+use crate::app::{Before, outcome::Outcome, waker};
 use crate::coalesce::Coalesce;
 use crate::state::{
     self,
@@ -156,7 +156,7 @@ impl Editor {
                         // the step with the frame that is on screen as its evidence. Without this
                         // a driven run waits out its whole deadline on a step already answered.
                         if mask_command {
-                            self.mask_command_failed(&error);
+                            self.outcome(Outcome::MaskCommandFailed(&error));
                         }
                         // Recorded, so a refused request is visible in the evidence log even when
                         // a later frame's status line has replaced it.
@@ -311,15 +311,7 @@ impl Editor {
             "open_failed",
             || json!({"error_code":error_code,"message":message}),
         );
-        self.outcome_ready(true);
-    }
-
-    /// An open request reached its outcome; evidence mode captures a frame for it.
-    pub(super) fn outcome_ready(&mut self, failed: bool) {
-        if let Some(evidence) = &mut self.evidence {
-            evidence.had_errors |= failed;
-            evidence.capture_pending = true;
-        }
+        self.outcome(Outcome::RequestEnded { failed: true });
     }
 
     /// Keep the newest session the owner has reported; responses may complete out of order.
@@ -483,8 +475,7 @@ impl Editor {
         }
         self.document.state = Some(refresh.state);
         self.show_entry(refresh.job.evaluation.entry().id.clone());
-        self.presentation
-            .expect_entry(refresh.job.evaluation.entry());
+        self.outcome(Outcome::EntryRequested(refresh.job.evaluation.entry()));
         self.presentation.preview_generation = self.request_preview(refresh.job);
         self.status.text = "Rendering selected history state…".into();
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
