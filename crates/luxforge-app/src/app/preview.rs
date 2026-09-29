@@ -2328,7 +2328,7 @@ impl Editor {
     /// state panel agree about which entry is on screen. It names no identity, snapshot or source
     /// hash; those stay with the API and the evidence state.
     pub(super) fn displayed_status(&self, entry: &EntryId) -> String {
-        if !self.session.preview.can_edit() {
+        if !self.at_current() {
             if self.document.compare_return.is_some() {
                 return state::status::COMPARING.to_owned();
             }
@@ -2362,9 +2362,7 @@ impl Editor {
     /// The crop draft is displayed instead of the plain preview only while its own input stage is on
     /// the presenter and the session shows the current state.
     pub(crate) fn drafting(&self) -> bool {
-        self.crop().is_some()
-            && self.presentation.presenter.stage().is_some()
-            && self.session.preview.can_edit()
+        self.crop().is_some() && self.presentation.presenter.stage().is_some() && self.at_current()
     }
 }
 

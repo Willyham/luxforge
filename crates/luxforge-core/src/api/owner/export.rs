@@ -36,19 +36,19 @@ pub(super) type Hold = Arc<dyn Fn(&'static str) + Send + Sync>;
 host_params! {
     /// `export.plan`.
     pub(in crate::api) struct ExportPlanParams {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "a saved entry of the asset; default its current entry",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
     }
 }
 
 host_params! {
     /// `export.jpeg`.
     pub(in crate::api) struct ExportJpeg {
-        asset_id: AssetId,
-        destination: PathBuf,
+        asset_id: AssetId = asset(),
+        destination: PathBuf = path().notes("an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists"),
         mutation: MutationRequest,
-        entry_id: Option<EntryId> = "a saved entry of the asset; default its current entry",
-        keep_metadata: Option<bool> = "write the original's supported EXIF fields; default false",
+        entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
+        keep_metadata: Option<bool> = boolean().default(false).notes("write the original's supported EXIF fields"),
     }
 }
 

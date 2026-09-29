@@ -19,8 +19,9 @@ mod library_tests;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use library::MAX_PRESET_GROUP;
 #[cfg(test)]
-use library::{IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS};
+use library::{IMPORTED_PRESET_GROUP, MAX_PRESETS};
 pub use library::{PresetRecord, PresetSummary, USER_PRESET_GROUP};
 #[cfg(test)]
 use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};

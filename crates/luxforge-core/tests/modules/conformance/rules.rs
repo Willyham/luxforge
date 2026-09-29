@@ -9,7 +9,7 @@ use super::{
     shape::{Field, FieldPatch, Label},
 };
 use luxforge_core::{
-    ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Provider, Stage,
+    ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Orientation, Provider, Stage,
     StageContext, StageQuestions, check_parameters,
 };
 use serde_json::{Map, Value, json};
@@ -162,6 +162,20 @@ fn stored_payloads(rules: &Rules<'_>) -> Checked<Value> {
             rules
                 .validate(effect.format, &payload)
                 .map_err(|error| format!("{payload} was refused: {error}"))?;
+            // A field patch addresses no coordinates of its input stage, so a turn leaves it as it
+            // is: the carry hook's default, which no geometry module's own answer is checked here.
+            let turned = Orientation {
+                turns: 1,
+                mirror: true,
+            };
+            let carried = rules
+                .provider
+                .carry(&effect.id, effect.format, &payload, rules.stage, turned)
+                .map_err(|error| format!("{payload} was refused a carry: {error}"))?;
+            ensure(
+                carried.is_none(),
+                format!("{payload} was rewritten by a turn: {carried:?}"),
+            )?;
             accepted.push(payload);
         }
         for (value, reason) in field.refused() {

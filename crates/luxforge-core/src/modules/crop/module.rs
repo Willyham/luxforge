@@ -7,7 +7,7 @@ use super::geometry::{BoxRect, CropPayload, CropStage, MAX_ANGLE, MIN_ANGLE};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    EFFECT_FORMAT, Error, Layer,
+    EFFECT_FORMAT, Error, Layer, Orientation,
     modules::{
         ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction,
         EffectDescriptor, EffectStage, ExactGeometry, LayerReport, LayerUpdate, ModuleDescriptor,
@@ -392,12 +392,6 @@ fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<CropPayload,
         .map_err(|error| Error::validation(format!("invalid crop payload: {error}")))
 }
 
-/// A stored crop layer's payload, checked against its effect and format exactly as the crop module
-/// checks its own, so another module that has to re-express the crop reads the same numbers.
-pub(crate) fn stored_payload(layer: &Layer) -> Result<CropPayload, Error> {
-    payload(&layer.effect_id, layer.effect_format, &layer.payload)
-}
-
 /// Validate coverage on the input stage and choose between updating the existing crop layer,
 /// appending one and reporting a no-op. The coverage error is the one the caller sees.
 fn commit(
@@ -564,6 +558,21 @@ impl ToolModule for CropModule {
         named.unwrap_or_else(|| action.title.clone())
     }
 
+    /// The frame selecting the same content in the turned stage ([`CropPayload::carried`]), or
+    /// `None` when that is the frame already, as a whole-image crop is.
+    fn carry(
+        &self,
+        effect_id: &str,
+        format: u32,
+        value: &Value,
+        input: Stage,
+        orientation: Orientation,
+    ) -> Result<Option<Value>, Error> {
+        let stored = payload(effect_id, format, value)?;
+        let carried = stored.carried((input.width, input.height), orientation)?;
+        Ok((carried != stored).then(|| crop_value(carried)))
+    }
+
     fn compile(
         &self,
         effect_id: &str,
@@ -599,7 +608,7 @@ impl ToolModule for CropModule {
 mod tests {
     use super::*;
     use crate::{
-        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT,
+        ORIENTATION_EFFECT, PIXEL_EFFECT,
         modules::{ParameterKind, check_parameters},
     };
     use serde_json::json;
@@ -1305,5 +1314,57 @@ mod tests {
         );
         // Effect identities the host uses to find the layers of a stack.
         assert_eq!(Layer::pixel(0, 0, [1, 2, 3]).effect_id, PIXEL_EFFECT);
+    }
+
+    /// The crop's answer to the carry hook is `CropPayload::carried`, stored as the layer's payload:
+    /// the frame that selects the same content in the turned stage, and no answer where that is the
+    /// frame already; a payload of another effect is refused, not carried.
+    #[test]
+    fn the_crop_carries_its_frame_through_an_orientation() {
+        let module = CropModule::new();
+        let stored = CropPayload {
+            angle: 0.0,
+            x: 0.25,
+            y: 0.125,
+            width: 0.5,
+            height: 0.5,
+        };
+        let turned = Orientation {
+            mirror: false,
+            turns: 1,
+        };
+        let carried = module
+            .carry(
+                CROP_EFFECT,
+                EFFECT_FORMAT,
+                &crop_value(stored),
+                INPUT,
+                turned,
+            )
+            .unwrap()
+            .expect("a framed crop moves with the turn");
+        assert_eq!(
+            carried,
+            crop_value(stored.carried((INPUT.width, INPUT.height), turned).unwrap())
+        );
+        assert_ne!(carried, crop_value(stored));
+        assert_eq!(
+            module
+                .carry(
+                    CROP_EFFECT,
+                    EFFECT_FORMAT,
+                    &crop_value(CropPayload::NEUTRAL),
+                    INPUT,
+                    turned,
+                )
+                .unwrap(),
+            None,
+            "a whole-image crop is orientation-invariant"
+        );
+        assert!(
+            module
+                .carry(PIXEL_EFFECT, EFFECT_FORMAT, &json!({}), INPUT, turned)
+                .is_err()
+        );
     }
 }

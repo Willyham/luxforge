@@ -92,7 +92,7 @@ impl Editor {
         // panel's sections are bound to, which is what makes a masked slider follow the drag the way
         // a global one does; for a `mask.*` control it is the mask and component the panel has open,
         // because no declared parameter kind can carry an identity.
-        let target = self.draft_target(&action);
+        let target = self.draft_target(&action).identities();
         self.event(
             "slider_draft_begin",
             || json!({"action":action,"revision":base_revision,"target":target}),
@@ -153,7 +153,7 @@ impl Editor {
         let gesture_open = self.slider_gesture().is_some();
         if reset.is_some()
             && (gesture_open || self.busy)
-            && self.session.preview.can_edit()
+            && self.at_current()
             && let Some(state) = &self.document.state
         {
             let (asset, revision) = (state.asset.id.clone(), state.revision);
@@ -210,7 +210,7 @@ impl Editor {
             .is_none_or(|state| state.asset.id != reset.asset)
         {
             Some("another photograph is open")
-        } else if !self.session.preview.can_edit() {
+        } else if !self.at_current() {
             Some("a historical entry is shown")
         } else {
             None

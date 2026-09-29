@@ -58,12 +58,15 @@ mod range;
 /// The mask family's structural rules, shared by the commands that refuse and the clients that say
 /// why first.
 pub mod rules;
+mod stroke;
 
 pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 pub use range::REFINE_DEFAULT;
 pub(crate) use range::{REFINE_MAX, REFINE_MIN};
+pub use stroke::{ColourLimit, Stroke};
+pub(crate) use stroke::{SIZE_MAX, SIZE_MIN, size_is_legal, size_range};
 
 /// The payload field a sampling kind keeps its sampled colours in, the way
 /// [`crate::path::STROKES_FIELD`] is the field a drawn kind keeps its stroke addresses in.

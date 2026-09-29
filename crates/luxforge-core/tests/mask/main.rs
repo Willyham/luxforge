@@ -136,7 +136,7 @@ fn one_component(kind: &str, payload: Value) -> Mask {
 /// The reference's view of a **stored** stroke, which is what production evaluates: the positions
 /// snapped to the path grid and decimated there, the radius quantized to the same grid, and the
 /// stored colour limit, so the two compare the same stroke.
-fn reference_stroke(stroke: &luxforge_core::path::Stroke) -> luxforge_reference::mask::BrushStroke {
+fn reference_stroke(stroke: &luxforge_core::mask::Stroke) -> luxforge_reference::mask::BrushStroke {
     luxforge_reference::mask::BrushStroke {
         points: stroke.points().collect(),
         size: stroke.size(),

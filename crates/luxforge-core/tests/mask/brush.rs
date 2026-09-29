@@ -15,8 +15,9 @@
 use super::*;
 use luxforge_core::{
     Component, ComponentMode, ErrorKind, Mask,
+    mask::Stroke,
     mask::{CompiledMask, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT},
-    path::{Stroke, StrokeTable},
+    path::StrokeTable,
 };
 use luxforge_reference::mask::{Brush, Stage as RefStage, brush_coverage};
 use serde_json::json;

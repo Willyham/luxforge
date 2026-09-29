@@ -25,7 +25,7 @@ use crate::{
     state::{self, IN_FLIGHT},
 };
 use iced::Task;
-use luxforge_core::{AssetId, Draft, DraftId, ErrorKind, PreviewJob, mask::commands::MaskTarget};
+use luxforge_core::{AssetId, Draft, DraftId, DraftTarget, ErrorKind, IdentityKind, PreviewJob};
 use serde_json::{Value, json};
 
 /// This client's one gesture and the core draft behind it.
@@ -52,8 +52,8 @@ pub(crate) struct SliderGesture {
     pub(crate) parameter: String,
     /// The control's label, for the status line.
     pub(crate) label: String,
-    /// The host-owned target the draft was begun with.
-    pub(crate) target: MaskTarget,
+    /// The host-owned target the draft was begun with: the identities it names, by parameter name.
+    pub(crate) target: DraftTarget,
     /// The last accepted value's preview job was refused, so no frame of its own is coming: the
     /// frame on screen is what that value shows until release.
     pub(crate) unpreviewed: bool,
@@ -178,15 +178,34 @@ impl Kind {
         }
     }
 
-    pub(crate) fn target(&self) -> MaskTarget {
+    /// The objects the core draft edits, by the identity parameters its action declares.
+    ///
+    /// A shape or stroke gesture names what its command declares: the command it commits through
+    /// is looked up by the method it drafts, and each identity that command declares is filled from
+    /// the mask and component the shape is on ([`luxforge_core::declared_target`]), so the brush's
+    /// `mask.add-stroke` and a gradient's `mask.set-linear` are one path and neither spells a
+    /// field. A slider carries the target it was begun with, and the crop frame edits no object.
+    pub(crate) fn target(&self) -> DraftTarget {
         match self {
             Self::Slider(slider) => slider.target.clone(),
-            Self::Mask(mask) => MaskTarget {
-                mask: mask.shape.mask.clone(),
-                component: mask.shape.component.clone(),
-                ..MaskTarget::default()
-            },
-            Self::Crop(_) => MaskTarget::default(),
+            Self::Mask(mask) => mask
+                .shape
+                .method()
+                .and_then(luxforge_core::mask::commands::find)
+                .map(|command| {
+                    luxforge_core::declared_target(&command.action, |kind| {
+                        match kind {
+                            IdentityKind::Mask => mask.shape.mask.as_ref().map(|id| id.as_str()),
+                            IdentityKind::Component => {
+                                mask.shape.component.as_ref().map(|id| id.as_str())
+                            }
+                            _ => None,
+                        }
+                        .map(str::to_owned)
+                    })
+                })
+                .unwrap_or_default(),
+            Self::Crop(_) => DraftTarget::new(),
         }
     }
 
@@ -381,13 +400,13 @@ impl Editor {
         &mut self,
         asset: AssetId,
         action: &str,
-        target: MaskTarget,
+        target: DraftTarget,
     ) -> Result<Draft, String> {
         #[cfg(test)]
         if let Some(stand_in) = &mut self.stand_in {
             return stand_in.begin(self.document.state.as_ref(), asset, action);
         }
-        tasks::draft_begin_now(&self.owner, self.client, asset, action, target)
+        tasks::draft_begin_now(&self.owner, self.client, asset, action, &target)
     }
 
     /// `draft.reapply`, synchronously ([`tasks::draft_reapply_now`]).
@@ -462,7 +481,7 @@ impl Editor {
             ));
         }
         match &gesture.kind {
-            Kind::Crop(_) if !self.session.preview.can_edit() => {
+            Kind::Crop(_) if !self.at_current() => {
                 Some("Return to the current state to apply".into())
             }
             Kind::Crop(_) if self.busy => Some(IN_FLIGHT.into()),

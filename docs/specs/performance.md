@@ -1273,8 +1273,9 @@ canvas pixel was covered. The focused Metal surface tests drive actual `write`, 
 single- and multi-tile readbacks match, stale overlays are suppressed,
 and a deferred photo becomes current after retirement without another user input. The final focused
 surface run passed 31 tests; its two ignored retirement timing diagnostics were run separately
-after functional work. The current full-photo bound permits a current and retiring allocation up to
-512 MiB each, plus two region sets up to 32 MiB each; the 1088 MiB temporary-overlap ceiling was provisionally accepted by the owner on 2026-09-27 for photo textures only. It is not a total editor or GPU product budget. Crop GPU textures and tiles, overlays and backend staging sit outside that photo accounting and are not fully measured or bounded; native accounting and bounds remain required before any total-memory guarantee.
+after functional work. The current full-photo bound permits each photo surface a current and retiring allocation up to
+512 MiB each, plus two region sets up to 32 MiB each, all surfaces together within the 1088 MiB
+ceiling; the 1088 MiB temporary-overlap ceiling was provisionally accepted by the owner on 2026-09-27 for photo textures only. It is not a total editor or GPU product budget. Crop GPU textures and tiles, overlays and backend staging sit outside that photo accounting and are not fully measured or bounded; native accounting and bounds remain required before any total-memory guarantee.
 
 The final 24/60 MP Fit exposure drags each had 30 inputs in one release launch. Input to presented
 adoption was 8.34 / 8.95 ms p50 / p95 at 24 MP and 8.57 / 8.80 ms at 60 MP. The runs started at

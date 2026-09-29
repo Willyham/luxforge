@@ -1467,6 +1467,11 @@ fn value_model(
             "identity parameter {parameter} of action {action} is supplied by the selection, not \
              a control"
         )),
+        // Registration refuses both on an action: only a host method declares one.
+        ParameterKind::Text { .. } | ParameterKind::Json => ControlModel::Unsupported(format!(
+            "{} parameter {parameter} of action {action} belongs to a host method, not a control",
+            declared.kind.name()
+        )),
     }
 }
 
@@ -1655,7 +1660,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
     let presets = frame.presets();
     let base = CropSectionModel {
         title: frame.title.to_owned(),
-        paused: !inputs.session.preview.can_edit(),
+        paused: !super::at_current(inputs.document.state.as_ref(), inputs.session),
         custom: (
             inputs.crop_section.custom.0.clone(),
             inputs.crop_section.custom.1.clone(),

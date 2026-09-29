@@ -25,7 +25,7 @@ use std::collections::HashSet;
 /// error.
 pub(super) const MAX_PRESETS: usize = 1_000;
 /// The longest group name, in characters.
-pub(super) const MAX_PRESET_GROUP: usize = 64;
+pub(crate) const MAX_PRESET_GROUP: usize = 64;
 /// The group a preset created in Luxforge takes when the request names none.
 pub const USER_PRESET_GROUP: &str = "User presets";
 /// The group an import takes when neither the request nor the file names one.

@@ -25,6 +25,8 @@ use point::{POINT_QUEUE_CAPACITY, PointWorker};
 use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(test)]
+use std::thread;
 use std::{
     collections::{HashMap, VecDeque},
     ops::ControlFlow,
@@ -33,15 +35,16 @@ use std::{
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
-#[cfg(test)]
-use std::{thread, time::Duration};
 
 #[cfg(test)]
 mod artifact_tests;
+#[cfg(test)]
+mod catalog_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -49,6 +52,9 @@ mod point;
 mod requests;
 
 const EVENT_CAPACITY: usize = 256;
+/// The longest an `events.wait` may be asked to wait, and what it waits when it names no time.
+const MAX_EVENT_WAIT_MS: i64 = 30_000;
+const DEFAULT_EVENT_WAIT_MS: u64 = 10_000;
 const SOURCE_QUEUE_CAPACITY: usize = 8;
 /// Pending developments may pin one sensor mosaic identity; the cache can retain one more.
 const MAX_QUEUED_MOSAICS: usize = 1;
@@ -123,6 +129,17 @@ enum OwnerMessage {
     /// Call this where the owner serves a message, or stop calling it.
     #[cfg(test)]
     Fault(Option<Fault>),
+    /// How many `events.wait` calls the owner holds unanswered.
+    #[cfg(test)]
+    EventWaits(SyncSender<usize>),
+    /// Relocate an asset as the Locate command will, which no method exposes yet ([`relocate`]).
+    #[cfg(test)]
+    Relocate {
+        origin: Origin,
+        asset_id: AssetId,
+        path: PathBuf,
+        reply: SyncSender<Result<crate::MutationOutcome, Error>>,
+    },
     /// Wake this client whenever another client's change lands in the event log.
     WatchEvents {
         client: ClientId,
@@ -154,6 +171,25 @@ struct SourceWaiter {
     client: ClientId,
     job: Option<JobId>,
     reply: SyncSender<()>,
+}
+
+/// What an `events.wait` that found nothing to report yet asks the owner to hold.
+struct PendingWait {
+    after: u64,
+    asset_id: Option<AssetId>,
+    deadline: Instant,
+}
+
+/// One `events.wait` call parked on the owner: the reply its caller is blocked on, answered when an
+/// event past `after` (naming `asset_id`, when one is given) reaches the log or `deadline` passes.
+struct EventWait {
+    client: ClientId,
+    id: String,
+    wait: PendingWait,
+    /// The newest event sequence this wait has already been checked against, so a wake rescans the
+    /// log only when it has moved.
+    seen: u64,
+    response: SyncSender<ApiResponse>,
 }
 
 /// Whom one message owes an answer, kept aside before the owner serves it, so that a panic while
@@ -690,7 +726,7 @@ fn source_worker(
 host_params! {
     /// `catalog.import`.
     pub(super) struct Import {
-        path: PathBuf,
+        path: PathBuf = path().notes("the photo to import"),
         mutation: MutationRequest,
     }
 }
@@ -698,30 +734,39 @@ host_params! {
 host_params! {
     /// `job.read`, `job.cancel` and `job.adopt`.
     pub(super) struct JobParams {
-        job_id: JobId,
+        job_id: JobId = job(),
     }
 }
 
 host_params! {
     /// `source.prepare`.
     pub(super) struct SourcePrepare {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "historical entry; default current",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("historical entry; default current"),
     }
 }
 
 host_params! {
     /// `events.since`.
     pub(super) struct EventsSince {
-        after: u64,
+        after: u64 = sequence().notes("the last event sequence the client has read; 0 for every retained event"),
+    }
+}
+
+host_params! {
+    /// `events.wait`.
+    pub(super) struct EventsWait {
+        after: u64 = sequence().notes("the last event sequence the client has read; 0 for every retained event"),
+        timeout_ms: Option<u64> = integer(0, MAX_EVENT_WAIT_MS).notes("how long to wait for a change, in milliseconds; default 10000, and 0 answers at once as events.since does"),
+        asset_id: Option<AssetId> = asset().notes("wake only for an event that names this asset"),
     }
 }
 
 host_params! {
     /// `analysis.request`.
     pub(super) struct AnalysisRequest {
-        asset_id: AssetId,
-        target: AnalysisTarget,
+        asset_id: AssetId = asset(),
+        target: AnalysisTarget = json("{kind: current}, {kind: entry, entry_id} or {kind: draft, draft_id}: the evaluated stack to analyse"),
     }
 }
 
@@ -932,12 +977,43 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
+    /// Relocate `asset_id` to `path` on the owner under `origin` ([`relocate`]), which no method
+    /// exposes yet.
+    #[cfg(test)]
+    pub(crate) fn relocate(
+        &self,
+        origin: Origin,
+        asset_id: AssetId,
+        path: PathBuf,
+    ) -> Result<crate::MutationOutcome, Error> {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::Relocate {
+                origin,
+                asset_id,
+                path,
+                reply,
+            })
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
+    }
+
     /// Have the owner call `fault` with what it is about to serve ([`Fault`]), or stop calling it.
     #[cfg(test)]
     pub(crate) fn fault(&self, fault: Option<Fault>) {
         self.sender
             .send(OwnerMessage::Fault(fault))
             .expect("the owner is running");
+    }
+
+    /// How many `events.wait` calls the owner holds unanswered.
+    #[cfg(test)]
+    pub(crate) fn event_waits(&self) -> usize {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::EventWaits(reply))
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
     }
 
     /// How many planned samples wait behind the one the point worker is evaluating.
@@ -1064,10 +1140,28 @@ fn owner_loop(
         watchers: HashMap::new(),
         notified: 0,
         source_waiters: Vec::new(),
+        event_waits: Vec::new(),
+        parking: None,
         #[cfg(test)]
         fault: None,
     };
-    while let Ok(message) = receiver.recv() {
+    loop {
+        // A wait past its deadline is answered before anything else is read, so a busy owner still
+        // answers it on time; with none held the owner sleeps on a plain receive.
+        owner.expire_event_waits();
+        let message = match owner.next_event_deadline() {
+            None => match receiver.recv() {
+                Ok(message) => message,
+                Err(_) => break,
+            },
+            Some(deadline) => {
+                match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(message) => message,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        };
         // The client whose request this message is: the events it records do not wake that client.
         let caller = match &message {
             OwnerMessage::Call(call) => Some(call.client),
@@ -1089,6 +1183,20 @@ fn owner_loop(
                 }
                 #[cfg(test)]
                 OwnerMessage::Fault(fault) => owner.fault = fault,
+                #[cfg(test)]
+                OwnerMessage::EventWaits(reply) => {
+                    let _ = reply.send(owner.event_waits.len());
+                }
+                #[cfg(test)]
+                OwnerMessage::Relocate {
+                    origin,
+                    asset_id,
+                    path,
+                    reply,
+                } => {
+                    let _ = reply.send(relocate(&mut owner, &origin, &asset_id, &path));
+                    owner.record_announced();
+                }
                 OwnerMessage::Preview { request, response } => {
                     let _ = response.send(owner.preview(request));
                 }
@@ -1148,6 +1256,7 @@ fn owner_loop(
             Err(_) => owner.contained(owed),
         }
         owner.notify_watchers(caller);
+        owner.wake_event_waits();
     }
     // The sample being evaluated finishes; the ones waiting are dropped with every other call.
     owner.points.stop();
@@ -1195,6 +1304,12 @@ impl EventLog {
     /// holds them, or `after` is past the newest sequence, which a cursor kept from an earlier
     /// owner process is, so none of this process's events can be told apart from ones it read.
     fn since(&self, after: u64) -> EventsResult {
+        self.since_naming(after, None)
+    }
+
+    /// [`EventLog::since`] keeping only the events that name `asset_id`, when one is given. A gap
+    /// is reported as it is for every event, since the missed ones may have named it.
+    fn since_naming(&self, after: u64, asset_id: Option<&AssetId>) -> EventsResult {
         let oldest = self
             .events
             .front()
@@ -1204,6 +1319,7 @@ impl EventLog {
                 .events
                 .iter()
                 .filter(|event| event.sequence > after)
+                .filter(|event| asset_id.is_none_or(|asset| event.asset_id.as_ref() == Some(asset)))
                 .cloned()
                 .collect(),
             current_sequence: self.sequence,
@@ -1266,6 +1382,11 @@ pub(super) struct Owner {
     notified: u64,
     /// Clients blocked until a source job ends ([`OwnerHandle::wait_source`]).
     source_waiters: Vec<SourceWaiter>,
+    /// The `events.wait` calls the owner holds unanswered, at most one per client.
+    event_waits: Vec<EventWait>,
+    /// Set by the `events.wait` handler when it cannot answer yet: the wait [`Owner::call`] parks
+    /// with the call's own reply channel, which the handler does not hold. Empty between calls.
+    parking: Option<PendingWait>,
     #[cfg(test)]
     fault: Option<Fault>,
 }
@@ -1291,6 +1412,13 @@ impl Owner {
         } = call;
         let result = self.answer(client, &request);
         self.record_announced();
+        // A wait the handler could not answer yet is held with this call's reply channel.
+        if let Some(wait) = self.parking.take()
+            && result.is_ok()
+        {
+            self.park_event_wait(client, request.id, wait, response);
+            return;
+        }
         let reply = point::Reply {
             id: request.id,
             sequence: self.log.sequence,
@@ -1416,6 +1544,91 @@ impl Owner {
         }
     }
 
+    /// Hold one `events.wait` until an event reaches it or its deadline passes. A client has at most
+    /// one held: a second answers the first now with what the log holds, which is nothing it was
+    /// waiting for, so a client cannot accumulate held state however it calls.
+    fn park_event_wait(
+        &mut self,
+        client: ClientId,
+        id: String,
+        wait: PendingWait,
+        response: SyncSender<ApiResponse>,
+    ) {
+        if let Some(earlier) = self
+            .event_waits
+            .iter()
+            .position(|held| held.client == client)
+        {
+            let earlier = self.event_waits.swap_remove(earlier);
+            self.answer_event_wait(earlier);
+        }
+        self.event_waits.push(EventWait {
+            client,
+            id,
+            wait,
+            seen: self.log.sequence,
+            response,
+        });
+    }
+
+    /// Answer one held wait with what `events.since` would answer now.
+    fn answer_event_wait(&self, held: EventWait) {
+        let since = self
+            .log
+            .since_naming(held.wait.after, held.wait.asset_id.as_ref());
+        let response = match methods::value(since) {
+            Ok(value) => ApiResponse::success(held.id, self.log.sequence, value),
+            Err(error) => ApiResponse::failure(held.id, self.log.sequence, error),
+        };
+        // A caller that has gone has nobody to answer.
+        let _ = held.response.send(response);
+    }
+
+    /// The soonest deadline among the held waits: how long the owner may sleep on its channel.
+    fn next_event_deadline(&self) -> Option<Instant> {
+        self.event_waits.iter().map(|held| held.wait.deadline).min()
+    }
+
+    /// Answer every held wait whose deadline has passed, with no events when none arrived.
+    fn expire_event_waits(&mut self) {
+        if self.event_waits.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let (due, held): (Vec<_>, Vec<_>) = std::mem::take(&mut self.event_waits)
+            .into_iter()
+            .partition(|held| held.wait.deadline <= now);
+        self.event_waits = held;
+        for held in due {
+            self.answer_event_wait(held);
+        }
+    }
+
+    /// Answer every held wait the log now answers: an event past its cursor that names its asset,
+    /// or a gap. Rescans the log only for a wait the log has moved past since it last looked.
+    fn wake_event_waits(&mut self) {
+        let sequence = self.log.sequence;
+        if self.event_waits.iter().all(|held| held.seen == sequence) {
+            return;
+        }
+        let log = &self.log;
+        let (ready, held): (Vec<_>, Vec<_>) = std::mem::take(&mut self.event_waits)
+            .into_iter()
+            .partition(|held| {
+                held.seen != sequence && {
+                    let since = log.since_naming(held.wait.after, held.wait.asset_id.as_ref());
+                    since.gap || !since.events.is_empty()
+                }
+            });
+        self.event_waits = held;
+        for held in &mut self.event_waits {
+            held.seen = sequence;
+        }
+        for held in ready {
+            self.answer_event_wait(held);
+        }
+    }
+
     /// Answer every wait `ended` says is over.
     fn release_waiters(&mut self, ended: impl Fn(&SourceWaiter) -> bool) {
         self.source_waiters.retain(|waiter| {
@@ -1471,7 +1684,7 @@ impl Owner {
             (Some(entry_id), None, None) => self
                 .sessions
                 .get(&request.client)
-                .and_then(|session| session.preview.framing_of(entry_id))
+                .and_then(|session| session.preview.framing_of(&request.asset_id, entry_id))
                 .cloned(),
             _ => None,
         };
@@ -1553,6 +1766,7 @@ impl Owner {
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
+        self.event_waits.retain(|held| held.client != client);
     }
 
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
@@ -1791,6 +2005,30 @@ pub(super) fn source_prepare(
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
+/// Point an asset at the file its original is now found at ([`EditorService::relocate`]) and
+/// announce the change under `origin`, naming the asset and no revision, since its history did not
+/// move — as naming a version is announced. A client watching the log reads the asset again to see
+/// its new locator. A relocation to where the asset already is announces nothing.
+///
+/// The owner's half of the internal write the Locate milestone's command will make; no method
+/// exposes it yet.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn relocate(
+    owner: &mut Owner,
+    origin: &Origin,
+    asset_id: &AssetId,
+    path: &Path,
+) -> Result<crate::MutationOutcome, Error> {
+    let outcome = owner.service.relocate(asset_id, path)?;
+    if outcome == crate::MutationOutcome::Applied {
+        announce_once(
+            &mut owner.announced,
+            &origin.clone().changed(asset_id.clone(), None),
+        );
+    }
+    Ok(outcome)
+}
+
 /// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
 /// source job that removes their files, orphan files and stale staged files. Should the queue be
 /// full, the removed rows' files are simply orphans the next collection removes. The collection is
@@ -1824,6 +2062,29 @@ pub(super) fn events_since(
     params: EventsSince,
 ) -> Result<Value, Error> {
     methods::value(owner.log.since(params.after))
+}
+
+/// `events.wait`: answers as `events.since` does when the log already has something to report for
+/// this cursor, and otherwise asks [`Owner::call`] to hold the reply until an event arrives or the
+/// timeout passes. A timeout of 0 never holds.
+pub(super) fn events_wait(
+    owner: &mut Owner,
+    _: &Call<'_>,
+    params: EventsWait,
+) -> Result<Value, Error> {
+    let since = owner
+        .log
+        .since_naming(params.after, params.asset_id.as_ref());
+    let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(DEFAULT_EVENT_WAIT_MS));
+    if since.gap || !since.events.is_empty() || timeout.is_zero() {
+        return methods::value(since);
+    }
+    owner.parking = Some(PendingWait {
+        after: params.after,
+        asset_id: params.asset_id,
+        deadline: Instant::now() + timeout,
+    });
+    Ok(Value::Null)
 }
 
 /// `analysis.request`. Everything the owner does here is bookkeeping and `O(layers)` planning: a
@@ -2532,11 +2793,216 @@ mod tests {
             .result
             .unwrap();
         assert_eq!(adopted["asset"]["asset"]["id"], expected);
-        assert_eq!(adopted["session"]["preview"]["selection"], "current");
+        assert_eq!(adopted["session"]["preview"]["selections"], json!({}));
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(older).unwrap();
         std::fs::remove_file(newer).unwrap();
+    }
+
+    /// One `events.wait` on its own thread, as a client blocked on a connection makes it: the
+    /// channel yields the response, or `None` when the owner dropped the call unanswered.
+    fn wait_on_thread(
+        owner: &OwnerHandle,
+        client: ClientId,
+        id: &str,
+        params: Value,
+    ) -> std::sync::mpsc::Receiver<Option<ApiResponse>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let owner = owner.clone();
+        let request = ApiRequest {
+            id: id.into(),
+            method: "events.wait".into(),
+            params,
+            token: None,
+        };
+        thread::spawn(move || {
+            let _ = sender.send(owner.call(client, request).ok());
+        });
+        receiver
+    }
+
+    /// A wait the log has nothing for is parked on the owner, which does not block: another client's
+    /// change past its cursor answers it with what `events.since` would, and one that names another
+    /// asset than its filter does not, so it answers empty at its timeout, with the sequence the
+    /// log had by then.
+    #[test]
+    fn a_parked_wait_wakes_on_the_next_event_past_its_cursor() {
+        let catalog = temp("event-wait-wake.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let waiter = owner.register();
+        let agent = owner.register();
+        let asset = import_asset(&owner, agent, &fixture())["asset"]["id"].clone();
+        let cursor =
+            ok(&owner, agent, "since", "events.since", json!({"after": 0}))["current_sequence"]
+                .as_u64()
+                .unwrap();
+        assert!(cursor > 0, "the import recorded an event");
+
+        // Parked: the owner answers other calls while it holds the wait.
+        let woken = wait_on_thread(
+            &owner,
+            waiter,
+            "wake",
+            json!({"after": cursor, "timeout_ms": 30_000, "asset_id": asset}),
+        );
+        luxforge_testbase::wait_until("the wait to be parked", || owner.event_waits() == 1);
+        assert!(woken.try_recv().is_err(), "nothing has happened yet");
+        let started = Instant::now();
+        let stranger = wait_on_thread(
+            &owner,
+            agent,
+            "stranger",
+            json!({"after": cursor, "timeout_ms": 400, "asset_id": AssetId::new()}),
+        );
+        luxforge_testbase::wait_until("both waits to be parked", || owner.event_waits() == 2);
+
+        ok(
+            &owner,
+            agent,
+            "version",
+            "version.create",
+            json!({"asset_id": asset, "name": "Woken", "mutation": envelope()}),
+        );
+        let response = woken
+            .recv_timeout(luxforge_testbase::HANG)
+            .expect("the wake answered")
+            .expect("an answer");
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.id, "wake");
+        let answer = response.result.unwrap();
+        assert_eq!(answer["gap"], json!(false));
+        assert_eq!(answer["current_sequence"], json!(cursor + 1));
+        assert_eq!(answer["events"].as_array().unwrap().len(), 1);
+        assert_eq!(answer["events"][0]["method"], json!("version.create"));
+        assert_eq!(answer["events"][0]["asset_id"], asset);
+        assert_eq!(owner.event_waits(), 1, "only the stranger's wait is left");
+
+        // The other asset's filter saw the same event and stayed parked until its deadline.
+        let response = stranger
+            .recv_timeout(luxforge_testbase::HANG)
+            .expect("the timeout answered")
+            .expect("an answer");
+        assert!(
+            started.elapsed() >= Duration::from_millis(400),
+            "answered before its deadline"
+        );
+        let answer = response.result.unwrap();
+        assert_eq!(answer["events"], json!([]));
+        assert_eq!(answer["current_sequence"], json!(cursor + 1));
+        assert_eq!(owner.event_waits(), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// With nothing to report a wait answers empty at its timeout; a zero timeout answers at once
+    /// as `events.since` does; a cursor the log is already past, or beyond, answers at once with
+    /// what `events.since` would; and a timeout above the limit is refused, not clamped.
+    #[test]
+    fn an_events_wait_answers_at_its_timeout_and_at_once_when_the_log_already_has_something() {
+        let catalog = temp("event-wait-timeout.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let wait = |params: Value| request(&owner, client, "events.wait", params);
+
+        let started = Instant::now();
+        let empty = wait(json!({"after": 0, "timeout_ms": 150})).result.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert_eq!(empty["events"], json!([]));
+        assert_eq!(empty["gap"], json!(false));
+        assert_eq!(owner.event_waits(), 0, "nothing stays parked");
+
+        let started = Instant::now();
+        let now = wait(json!({"after": 0, "timeout_ms": 0})).result.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(150));
+        assert_eq!(now, empty);
+
+        let refused = wait(json!({"after": 0, "timeout_ms": 30_001}))
+            .error
+            .unwrap();
+        assert_eq!(refused.code, "validation");
+        assert_eq!(
+            wait(json!({"after": 0, "timeout_ms": 30_000, "typo": 1}))
+                .error
+                .unwrap()
+                .code,
+            "validation"
+        );
+        assert_eq!(wait(json!({})).error.unwrap().code, "validation");
+
+        import_asset(&owner, client, &fixture());
+        // The log is already past 0, so there is nothing to wait for, whatever the timeout.
+        let started = Instant::now();
+        let ready = wait(json!({"after": 0, "timeout_ms": 30_000}))
+            .result
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let since = ok(&owner, client, "since", "events.since", json!({"after": 0}));
+        assert_eq!(ready, since);
+        assert_eq!(ready["events"].as_array().unwrap().len(), 1);
+        // A cursor beyond the log is a gap, answered at once as events.since answers it.
+        let ahead = wait(json!({"after": 99, "timeout_ms": 30_000}))
+            .result
+            .unwrap();
+        assert_eq!(ahead["gap"], json!(true));
+        assert_eq!(owner.event_waits(), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A client holds at most one wait: its next answers the earlier one at once with what it has,
+    /// and takes its place; other clients' waits are unaffected; and a disconnect drops the client's
+    /// wait unanswered while the owner keeps serving.
+    #[test]
+    fn a_client_holds_one_parked_wait_and_a_disconnect_drops_it() {
+        let catalog = temp("event-wait-bound.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let first = owner.register();
+        let second = owner.register();
+        let long = json!({"after": 0, "timeout_ms": 30_000});
+
+        let earlier = wait_on_thread(&owner, first, "earlier", long.clone());
+        luxforge_testbase::wait_until("the first wait", || owner.event_waits() == 1);
+        let other = wait_on_thread(&owner, second, "other", long.clone());
+        luxforge_testbase::wait_until("the second client's wait", || owner.event_waits() == 2);
+        let later = wait_on_thread(&owner, first, "later", long);
+        // The earlier wait answers at once, empty, and the later one takes its place.
+        let response = earlier
+            .recv_timeout(luxforge_testbase::HANG)
+            .expect("the earlier wait was answered")
+            .expect("an answer");
+        assert_eq!(response.id, "earlier");
+        assert_eq!(response.result.unwrap()["events"], json!([]));
+        luxforge_testbase::wait_until("the later wait to replace it", || owner.event_waits() == 2);
+        assert!(other.try_recv().is_err() && later.try_recv().is_err());
+
+        owner.disconnect(first);
+        assert_eq!(
+            later
+                .recv_timeout(luxforge_testbase::HANG)
+                .unwrap()
+                .map(|_| ()),
+            None,
+            "a disconnected client's wait is dropped unanswered"
+        );
+        assert_eq!(owner.event_waits(), 1, "the other client's wait stays");
+        owner.disconnect(second);
+        assert_eq!(
+            other
+                .recv_timeout(luxforge_testbase::HANG)
+                .unwrap()
+                .map(|_| ()),
+            None
+        );
+        assert_eq!(owner.event_waits(), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
     }
 
     /// A watcher is woken once for each change another client makes — a request of theirs that
@@ -2935,7 +3401,7 @@ mod tests {
             "preview.select",
             json!({"asset_id":asset,"entry_id":edited["current_entry_id"]}),
         );
-        assert_eq!(latest["session"]["preview"]["selection"], json!("current"));
+        assert_eq!(latest["session"]["preview"]["selections"], json!({}));
         assert!(latest["generation"].is_u64());
         let selected = call(
             viewer,
@@ -2945,8 +3411,8 @@ mod tests {
         );
         assert_eq!(selected["session"]["revision"], json!(2));
         assert_eq!(
-            selected["session"]["preview"]["selection"],
-            json!({"entry": original})
+            selected["session"]["preview"]["selections"][asset.as_str().unwrap()],
+            json!({"entry_id": original, "geometry_from": null})
         );
         // The other client's session is independent and unaffected.
         assert_eq!(
@@ -5078,12 +5544,58 @@ mod tests {
         std::fs::remove_file(photo).unwrap();
     }
 
+    /// A value a declared kind accepts, at the edge of its range where it has one, and one it
+    /// refuses, just outside it; `None` for a kind whose values the field's own type checks: `json`,
+    /// whose every value is in range, and a secret, which is never a plain value to the generic
+    /// check.
+    fn kind_samples(parameter: &crate::ParameterDescriptor) -> Option<(Value, Value)> {
+        use crate::{IdentityKind, ParameterKind};
+        Some(match &parameter.kind {
+            ParameterKind::Integer { min, max } => {
+                (json!(max), json!(max.checked_add(1).unwrap_or(min - 1)))
+            }
+            ParameterKind::Number { min: _, max } => (json!(max), json!(max + max.abs().max(1.0))),
+            ParameterKind::Enum { options } => (json!(options[0]), json!("not-an-option")),
+            ParameterKind::Boolean => (json!(true), json!("true")),
+            ParameterKind::String { max_length } => (
+                json!("x".repeat(*max_length)),
+                json!("x".repeat(max_length + 1)),
+            ),
+            // Text may hold a line break, which a string may not.
+            ParameterKind::Text { max_bytes } => {
+                (json!("a line\n"), json!("x".repeat(max_bytes + 1)))
+            }
+            ParameterKind::Identity { of } => {
+                let valid = match of {
+                    IdentityKind::Asset => crate::AssetId::new().to_string(),
+                    IdentityKind::Entry => crate::EntryId::new().to_string(),
+                    IdentityKind::Draft => crate::DraftId::new().to_string(),
+                    IdentityKind::Job => crate::JobId::new().to_string(),
+                    IdentityKind::Preset => crate::PresetId::new().to_string(),
+                    IdentityKind::Mask => crate::MaskId::new().to_string(),
+                    IdentityKind::Component => crate::ComponentId::new().to_string(),
+                    IdentityKind::Stroke => "0".repeat(32),
+                };
+                (json!(valid), json!("x"))
+            }
+            ParameterKind::Artifact => (json!(format!("artifact-{}", "0".repeat(64))), json!("x")),
+            ParameterKind::Settings => (json!({"set-basic": {"exposure": 0.5}}), json!({})),
+            ParameterKind::Json | ParameterKind::Secret { .. } => return None,
+            other => panic!("no host method declares a {} parameter", other.name()),
+        })
+    }
+
     /// Every method `schema.list` lists is answered through the one table, and its schema is its
     /// parser: each declared field is accepted by name, all of them together raise no
     /// unknown-field error, and one field nothing declares is a validation error — naming it, for a
     /// host method, whose parameters are declared once as the struct it parses. The owner answers,
     /// so the service and owner handlers are covered alike, and the proof module's task is listed
     /// too. Values are `null`: the point is which names each parser knows, not what it accepts.
+    ///
+    /// Then what it accepts: each host method's typed field is sent, alone, a value its declared
+    /// kind accepts at the edge of its range, which neither the kind check nor the field's type
+    /// refuses, and a value just outside it, which is refused where the request is parsed in the
+    /// generic check's words, naming the field. Every kind a host method declares is exercised.
     #[test]
     fn every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one() {
         let catalog = temp("declared.sqlite");
@@ -5161,10 +5673,55 @@ mod tests {
                 );
             }
         }
+        // Each typed field of each host method, in and just out of its declared range.
+        let mut exercised = std::collections::BTreeSet::new();
+        for spec in methods::METHODS {
+            let name = spec.name;
+            for parameter in (spec.params.parameters)() {
+                let field = parameter.name.as_str();
+                let Some((valid, outside)) = kind_samples(parameter) else {
+                    continue;
+                };
+                exercised.insert(parameter.kind.name());
+                let refused_here = format!("parameter {field} ");
+                let response = send(&owner, client, name, name, json!({field: valid}));
+                if let Some(error) = &response.error {
+                    let message = &error.message;
+                    assert!(
+                        !message.starts_with(&refused_here)
+                            && !message.contains("invalid type")
+                            && !message.contains("invalid value")
+                            && !message.contains("invalid length")
+                            && !message.starts_with("invalid "),
+                        "{name} refuses {field} = {valid}, which its kind accepts: {message}"
+                    );
+                }
+                let error = send(&owner, client, name, name, json!({field: outside}))
+                    .error
+                    .unwrap_or_else(|| panic!("{name} accepted {field} = {outside}"));
+                assert_eq!(
+                    error.code, "validation",
+                    "{name} {field}: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.starts_with(&refused_here),
+                    "{name} refuses {field} = {outside} by its declared kind: {}",
+                    error.message
+                );
+            }
+        }
+        assert_eq!(
+            exercised.into_iter().collect::<Vec<_>>(),
+            [
+                "artifact", "boolean", "enum", "identity", "integer", "number", "settings",
+                "string", "text"
+            ],
+            "every kind a host method declares, but json and secret, is exercised"
+        );
         // Methods that take nothing say so too.
         for name in [
             "schema.list",
-            "catalog.list",
             "preset.list",
             "session.state",
             "preview.return-current",

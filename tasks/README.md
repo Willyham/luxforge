@@ -2,20 +2,14 @@
 
 Each JSON file is an independent plan. IDs start at `TASK-001` inside every file, dependencies point only at earlier tasks in the same file, and execution waves are derived from those dependencies. Milestone order is expressed in the [roadmap](../docs/plan.md) by named outcome, never by cross-file task references.
 
-## Post-consolidation work
+## Engineering plans
 
-Authorized on 2026-09-26 and designed in [after the consolidation](../docs/design/post-consolidation.md), which holds the constraints, the six programme waves and the order across groups. There was one plan per group; completed tasks and plans are removed. Each task names its programme wave first in its context: 1 fix, 2 finish the consolidation, 3 speed, 4 structure, 5 tests, and 6 roadmap groundwork, which stays blocked until its milestone starts.
-
-| Plan | What remains |
+| Plan | Purpose |
 | --- | --- |
-| [Core service](core-service.json) | MCP and library groundwork: `events.wait`, typed host parameters, per-photo selection, a paged catalog and relocation |
-| [Module contract](module-contract.json) | The geometry carry hook |
-| [Rendering](rendering.json) | Stage-boundary methods for Corrections; the GPU resources outside the photo-texture ceiling, measured and bounded |
+| [Rendering](rendering.json) | Measure and bound the GPU resources outside the photo-texture ceiling |
 | [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
-| [Masking](masking.json) | Generic path primitives for Corrections |
-| [Desktop](desktop.json) | Surface ids for the library |
 
-Waves 1 to 5 are complete, and the capabilities and harness plans with them. What remains of the other group plans is wave 6, blocked until each milestone starts, and the RAW qualification milestone.
+The post-consolidation programme is complete and its plans are deleted; its outcome lives in the specs and [feature status](../docs/features.md).
 
 ## Other plans
 

@@ -34,6 +34,12 @@ macro_rules! identifier {
                     uuid::Uuid::new_v4().simple()
                 ))
             }
+            /// Whether `value` is an identity of this type, checked in place. A request never
+            /// names a layer or snapshot, so theirs goes unused.
+            #[allow(dead_code)]
+            pub(crate) fn is_valid(value: &str) -> bool {
+                valid_id(value, $prefix)
+            }
             pub fn parse(value: impl Into<String>) -> Result<Self, Error> {
                 let value = value.into();
                 if valid_id(&value, $prefix) {
@@ -539,24 +545,20 @@ impl Recipe {
         Ok(())
     }
 
-    /// Every stroke address this recipe's mask table carries, in stored order by mask and
-    /// component, with the component that carries each list named for a refusal.
+    /// Every stroke reference this recipe carries, in stored order, each with the stroke type its
+    /// consumer declared for it and the object that carries it named for a refusal.
     ///
-    /// Strokes are found from the mask table only: masks are the one consumer of the stroke store,
-    /// so no layer payload is read (decided by the owner on 2026-09-24; a second consumer would
-    /// declare where its strokes live). The host reads exactly [`crate::path::STROKES_FIELD`] of
-    /// each component payload and parses nothing else, because a payload belongs to the component
-    /// kind that provides it. Cost is `O(components)` and no store is touched: this answers what a
-    /// recipe references, not what it resolves to.
-    pub(crate) fn stroke_references(&self) -> Result<Vec<(String, crate::path::StrokeId)>, Error> {
+    /// Each part of the recipe that carries strokes declares its own references
+    /// ([`crate::path::StrokeCarrier`]), and this is the list of those parts. The masks are the one
+    /// today: their brush components are the one consumer of the stroke store, so no layer payload
+    /// is read (decided by the owner on 2026-09-24; a second consumer declares where its strokes
+    /// live by being listed here). Cost is `O(components)` and no store is touched: this answers
+    /// what a recipe references, not what it resolves to.
+    pub(crate) fn stroke_references(&self) -> Result<Vec<crate::path::StrokeReference>, Error> {
+        use crate::path::StrokeCarrier;
         let mut found = Vec::new();
         for mask in &self.masks {
-            for component in &mask.components {
-                let what = format!("component {} of mask {}", component.name, mask.name);
-                for id in crate::path::references(&component.payload, &what)? {
-                    found.push((what.clone(), id));
-                }
-            }
+            mask.stroke_references(&mut found)?;
         }
         Ok(found)
     }
@@ -594,9 +596,12 @@ impl Recipe {
         if references.is_empty() {
             return Ok(());
         }
-        for (what, id) in &references {
-            self.strokes.resolve(id).map_err(|error| {
-                Error::new(error.kind, format!("{} referenced by {what}", error.detail))
+        for reference in &references {
+            self.strokes.check_reference(reference).map_err(|error| {
+                Error::new(
+                    error.kind,
+                    format!("{} referenced by {}", error.detail, reference.what),
+                )
             })?;
         }
         for mask in &self.masks {
@@ -606,8 +611,8 @@ impl Recipe {
                 for id in crate::path::references(&component.payload, &what)? {
                     points += self
                         .strokes
-                        .get(&id)
-                        .map_or(0, crate::path::Stroke::point_count);
+                        .get::<crate::mask::Stroke>(&id)
+                        .map_or(0, crate::mask::Stroke::point_count);
                 }
             }
             if points > POINTS_PER_MASK {
@@ -1077,10 +1082,15 @@ mod tests {
         assert_eq!(
             found
                 .iter()
-                .map(|(what, id)| (what.as_str(), id.as_str()))
+                .map(|reference| (reference.what.as_str(), reference.id.as_str()))
                 .collect::<Vec<_>>(),
             [("component Brush 1 of mask Mask 1", held.as_str())],
             "the component's reference and nothing from the layer"
+        );
+        assert_eq!(
+            found[0].kind,
+            crate::path::StrokeType::of::<crate::mask::Stroke>(),
+            "a mask declares its references as brush strokes"
         );
         // A malformed field in a layer payload is not the host's to read either.
         let unread = Recipe {

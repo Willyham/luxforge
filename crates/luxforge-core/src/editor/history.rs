@@ -17,8 +17,8 @@ use crate::{
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
 
-const MAX_HISTORY_PAGE: usize = 100;
-const MAX_VERSION_NAME: usize = 64;
+pub(crate) const MAX_HISTORY_PAGE: usize = 100;
+pub(crate) const MAX_VERSION_NAME: usize = 64;
 
 impl EditorService {
     /// One page of the asset's history rows, newest first, before `before_sequence`. Each row is

@@ -1228,24 +1228,29 @@ fn the_overlay_view_state_round_trips_and_commits_nothing() {
     assert!(refused.message.contains("green"), "{refused:?}");
 }
 
-/// The overlay is discoverable: `schema.list` publishes both fields, so a JSON client needs no
-/// hand-written list and no GUI.
+/// The overlay is discoverable: `schema.list` publishes both fields as optional enumerations with
+/// their spellings, so a JSON client needs no hand-written list and no GUI.
 #[test]
 fn the_overlay_fields_are_discoverable_through_schema_list() {
     let f = Fixture::open("schema");
     let schema = f.call("schema", "schema.list", json!({}));
-    let workspace = &schema["methods"]["workspace.set"]["optional"];
-    let mode = workspace["mask_overlay"].as_str().expect("a description");
-    for spelling in ["off", "tint", "mask-on-black", "image-on-black"] {
-        assert!(mode.contains(spelling), "{mode} is missing {spelling}");
-    }
-    let colour = workspace["mask_overlay_colour"]
-        .as_str()
-        .expect("a description");
-    assert!(
-        colour.contains("green") && colour.contains("white"),
-        "{colour}"
+    let workspace = &schema["methods"]["workspace.set"];
+    let options = |field: &str| {
+        assert!(workspace["optional"].get(field).is_some(), "{field}");
+        let parameter = workspace["parameters"]
+            .as_array()
+            .expect("the typed parameters")
+            .iter()
+            .find(|parameter| parameter["name"] == field)
+            .unwrap_or_else(|| panic!("{field} is typed"));
+        assert_eq!(parameter["kind"], "enum", "{field}");
+        parameter["options"].clone()
+    };
+    assert_eq!(
+        options("mask_overlay"),
+        json!(["off", "tint", "mask-on-black", "image-on-black"])
     );
+    assert_eq!(options("mask_overlay_colour"), json!(["green", "white"]));
     assert_eq!(
         schema["methods"]["workspace.set"]["mutates"],
         json!(false),

@@ -2,79 +2,11 @@
   "schema_version": "1.0",
   "plan_id": "rendering",
   "title": "Rendering, preview and analysis",
-  "objective": "Give the compiled entry stage-boundary methods before Corrections adds a boundary, and measure and bound the GPU resources outside the provisional photo-texture ceiling before any total-memory guarantee.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction; one table test proves it over every stack shape and both domains. Limits have one home, frames are opaque, render.rs is split by concept and the byte-identical speedups are recorded in docs/specs/performance.md. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only (2026-09-27); crop GPU textures, overlays and backend staging remain outside it and are not measured or bounded, so no total-memory guarantee is made. The stage-boundary task is roadmap groundwork, blocked until Corrections starts. Decisions and constraints: docs/decisions.md and docs/design/post-consolidation.md.",
+  "objective": "Measure and bound the GPU resources outside the provisional photo-texture ceiling before any total-memory guarantee.",
+  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction; one table test proves it over every stack shape and both domains. Limits have one home, frames are opaque, render.rs is split by concept, the compiled entry answers every stage-boundary question through its own methods, and the byte-identical speedups are recorded in docs/specs/performance.md. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only (2026-09-27); crop GPU textures, overlays and backend staging remain outside it and are not measured or bounded, so no total-memory guarantee is made. Decisions: docs/decisions.md.",
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Give the compiled Entry a small set of methods for what its match arms ask today, so a new stage-boundary kind becomes one implementation instead of a new arm in about 30 places.",
-      "status": "blocked",
-      "dependencies": [],
-      "extra_context": [
-        "Wave 6, roadmap groundwork. Blocked: starts with the Corrections repair stage, the third kind of stage boundary; a trait is premature with only two kinds in the code today.",
-        "Entry (render.rs) is matched in about 30 places across six files: render.rs, render/pipeline.rs, render/window.rs, render/linear.rs, render/entry.rs and modules/registry/compile.rs (file names as today; the render.rs split moves some). The Corrections proposal's repair stage would add a case to each: the point walk (Evaluation::entry_pixel), the byte driver (rasterize), Evaluation::new and SpatialEntry::of, window planning, locate, the linear rows (LinearRows) and compilation. SpatialEntry (render/pipeline.rs) already gathers the spatial arm's own questions in one type, which is the shape these methods generalise.",
-        "A GPU colour stage would need a per-unit typed description; PointwiseColor (modules/processing.rs) exposes only apply_row, is_finite and describe, with no way to extract a unit's kind and coefficients. spatial::prefix_hash (render/spatial.rs) already gives an out-of-process AI patch the input-prefix hash its design needs, so that part does not wait on this.",
-        "Proposal, once the Corrections repair stage starts: give Entry methods for what the match arms currently ask by hand, an input-stage query, mapping a point back through the entry, the rectangle it reads, materialising it, and evaluating one point through it, so a new stage-boundary kind implements those methods once instead of adding an arm at each of the roughly 30 sites."
-      ],
-      "context_links": [
-        {
-          "kind": "file",
-          "label": "Post-consolidation design",
-          "target": "docs/design/post-consolidation.md",
-          "relevance": "Constraints, waves and the order across groups."
-        },
-        {
-          "kind": "file",
-          "label": "Entry",
-          "target": "crates/luxforge-core/src/render.rs",
-          "relevance": "The compiled IR type whose match arms this task turns into methods.",
-          "locator": "enum Entry"
-        },
-        {
-          "kind": "file",
-          "label": "Repair stage",
-          "target": "docs/design/corrections.md",
-          "relevance": "The third stage-boundary kind this task waits on.",
-          "locator": "repair stage"
-        },
-        {
-          "kind": "file",
-          "label": "PointwiseColor",
-          "target": "crates/luxforge-core/src/modules/processing.rs",
-          "relevance": "The opaque per-unit trait a GPU colour stage would need a typed description from.",
-          "locator": "PointwiseColor"
-        },
-        {
-          "kind": "file",
-          "label": "prefix_hash",
-          "target": "crates/luxforge-core/src/render/spatial.rs",
-          "relevance": "Already gives an out-of-process AI patch its input-prefix hash.",
-          "locator": "prefix_hash"
-        }
-      ],
-      "acceptance_criteria": [
-        "Adding a new stage-boundary kind touches one implementation of the new Entry methods, not a match arm at each of the current call sites.",
-        "Renders and samples stay byte-identical on both pixel domains: this is a refactor of dispatch, not of arithmetic, provable with the existing suites."
-      ],
-      "test_strategy": {
-        "approach": "unit",
-        "steps": [
-          "Once the Corrections repair stage starts, give Entry an input-stage query, a point-mapping method, a read-rectangle method, a materialise method and a point-evaluation method.",
-          "Re-point every existing match arm at the new methods and delete the arms.",
-          "Confirm renders and samples are unchanged."
-        ],
-        "commands": [
-          "cargo test -p luxforge-core render",
-          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
-        ],
-        "expected_results": [
-          "Every existing render, sample and window test passes unchanged.",
-          "The new stage-boundary kind's own tests pass through the same methods, not a new arm set."
-        ]
-      }
-    },
-    {
-      "id": "TASK-002",
       "description": "Measure and bound GPU resources excluded from the provisional 1088 MiB photo-texture ceiling before making a total-memory guarantee.",
       "status": "ready",
       "dependencies": [],
@@ -147,8 +79,7 @@
     {
       "wave": 1,
       "task_ids": [
-        "TASK-001",
-        "TASK-002"
+        "TASK-001"
       ]
     }
   ]

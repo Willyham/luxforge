@@ -35,6 +35,11 @@ use luxforge_ui::{
     draft_bar, mode_strip, notice_card, theme,
 };
 
+/// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
+/// input stage all draw on it, so the photograph's textures stay while a draft shows the stage, and
+/// the pipeline releases them only at the end of a frame that draws none of them.
+const DEVELOP_SURFACE: luxforge_ui::SurfaceId = luxforge_ui::SurfaceId::new(0);
+
 /// The surface the photograph is given around it at Fit, from the design's canvas rule: 20 pt at
 /// the top and sides, and at the bottom room for the mode strip, so at Fit no pixel of the
 /// photograph lies under it in either orientation. Every Fit rectangle — the photograph, its
@@ -353,6 +358,7 @@ fn plain<'a>(
             // Fit needs the available size to know where the toolkit draws the contained image.
             responsive(move |available| {
                 let photo: Element<'_, Message> = luxforge_ui::photo_surface(
+                    DEVELOP_SURFACE,
                     raster,
                     luxforge_ui::Placement::Contain,
                     Length::Fill,
@@ -428,6 +434,7 @@ fn plain<'a>(
                         // texture slot.
                         match raster {
                             Some(raster) => luxforge_ui::photo_surface(
+                                DEVELOP_SURFACE,
                                 raster,
                                 luxforge_ui::Placement::Fill,
                                 box_width,
@@ -440,6 +447,7 @@ fn plain<'a>(
                     } else {
                         let whole = surfaces.region.is_none();
                         luxforge_ui::viewport_surface(
+                            DEVELOP_SURFACE,
                             raster.zip(surfaces.photo_content),
                             surfaces.region,
                             surfaces.current_content,
@@ -510,6 +518,7 @@ fn crop_surface<'a>(
     let parts = move |view: CanvasView, width: Length, height: Length| {
         stack([
             luxforge_ui::stage_surface(
+                DEVELOP_SURFACE,
                 stage,
                 super::crop_canvas::stage_turn(draft, view),
                 width,
