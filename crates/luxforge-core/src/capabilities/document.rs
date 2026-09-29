@@ -172,3 +172,225 @@ impl<T: Serialize + DeserializeOwned + Default> JsonDocument<T> {
         Ok(answer)
     }
 }
+
+/// The document's own contract, once for its three callers: settings, grants and installed
+/// resources test only what each adds.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ErrorKind, capabilities::testing::temp};
+    use serde::Deserialize;
+    use serde_json::json;
+    use std::{fs, path::Path};
+
+    /// A small shape whose check refuses an empty note.
+    #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Notes {
+        notes: Vec<String>,
+    }
+
+    const FILE: &str = "notes.json";
+    const MAX: u64 = 256;
+
+    fn document(dir: &Path, max_bytes: u64) -> JsonDocument<Notes> {
+        JsonDocument::new(dir, FILE, max_bytes, 3).checked(|document| {
+            if document.notes.iter().any(String::is_empty) {
+                Err("an empty note".into())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn notes(items: &[&str]) -> Notes {
+        Notes {
+            notes: items.iter().map(|item| item.to_string()).collect(),
+        }
+    }
+
+    /// A directory of its own, removed at the end.
+    struct Dir(PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn an_absent_file_reads_as_none_and_a_write_reads_back_under_its_marker() {
+        let dir = Dir(temp("document-round-trip"));
+        let document = document(&dir.0, MAX);
+        assert_eq!(document.read().unwrap(), None);
+        assert!(!dir.0.exists(), "a read creates nothing");
+        // A direct write is its one writer's, which owns the directory.
+        fs::create_dir_all(&dir.0).unwrap();
+        document.write(&notes(&["a", "b"])).unwrap();
+        assert_eq!(document.read().unwrap(), Some(notes(&["a", "b"])));
+        let text = fs::read_to_string(document.path()).unwrap();
+        assert_eq!(
+            text.as_bytes(),
+            document.encode(&notes(&["a", "b"])).unwrap()
+        );
+        assert!(
+            text.find("\"format\"").unwrap() < text.find("\"notes\"").unwrap(),
+            "the marker comes first: {text}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({"format": 3, "notes": ["a", "b"]})
+        );
+    }
+
+    #[test]
+    fn a_file_of_another_format_shape_or_consistency_is_incompatible_and_kept() {
+        let dir = Dir(temp("document-refused"));
+        fs::create_dir_all(&dir.0).unwrap();
+        let document = document(&dir.0, MAX);
+        for (contents, reason) in [
+            (
+                json!({"format": 4, "notes": []}).to_string(),
+                "notes format 4 is not supported",
+            ),
+            (json!({"notes": []}).to_string(), "no notes format marker"),
+            ("{\"format\": 3, \"notes\": [".to_owned(), "not valid JSON"),
+            (
+                json!({"format": 3, "notes": [], "extra": true}).to_string(),
+                "not a notes file",
+            ),
+            (
+                json!({"format": 3, "notes": [""]}).to_string(),
+                "an empty note",
+            ),
+        ] {
+            fs::write(document.path(), &contents).unwrap();
+            let changed = document.transact(|document| {
+                document.notes.push("new".into());
+                Ok(())
+            });
+            for error in [document.read().unwrap_err(), changed.unwrap_err()] {
+                assert_eq!(error.kind, ErrorKind::Incompatible, "{contents}: {error}");
+                assert!(
+                    error.detail.contains(reason),
+                    "{contents}: {}",
+                    error.detail
+                );
+                assert!(
+                    error.detail.ends_with("; the file is kept unchanged"),
+                    "{}",
+                    error.detail
+                );
+            }
+            assert_eq!(fs::read_to_string(document.path()).unwrap(), contents);
+        }
+    }
+
+    #[test]
+    fn the_file_is_bounded_when_it_is_read_and_when_it_is_written() {
+        let dir = Dir(temp("document-bounded"));
+        fs::create_dir_all(&dir.0).unwrap();
+        let document = document(&dir.0, MAX);
+        document.write(&notes(&["kept"])).unwrap();
+        let kept = fs::read(document.path()).unwrap();
+        // A write that would pass the bound is refused and leaves the file, and no staged copy.
+        let long = "x".repeat(MAX as usize);
+        let grown = document.transact(|document| {
+            document.notes.push(long.clone());
+            Ok(())
+        });
+        for error in [
+            document.write(&notes(&[&long])).unwrap_err(),
+            grown.unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::ResourceLimit, "{error}");
+        }
+        assert_eq!(fs::read(document.path()).unwrap(), kept);
+        assert!(!dir.0.join(format!("{FILE}.tmp")).exists());
+        // A file at the bound is read; one past it is refused without being read whole, and kept.
+        let mut at = kept.clone();
+        at.resize(MAX as usize, b' ');
+        fs::write(document.path(), &at).unwrap();
+        assert_eq!(document.read().unwrap(), Some(notes(&["kept"])));
+        let mut over = at;
+        over.push(b' ');
+        fs::write(document.path(), &over).unwrap();
+        assert_eq!(document.read().unwrap_err().kind, ErrorKind::ResourceLimit);
+        assert_eq!(fs::read(document.path()).unwrap(), over);
+    }
+
+    #[test]
+    fn a_transaction_writes_only_a_change_and_nothing_when_it_is_refused() {
+        let dir = Dir(temp("document-transact"));
+        let document = document(&dir.0, MAX);
+        // An absent file is the empty document, and leaving it empty writes nothing.
+        let read = document.transact(|document| Ok(document.notes.len()));
+        assert_eq!(read.unwrap(), 0);
+        assert!(!document.path().exists());
+        // Written compactly by hand, so a rewrite would show: a transaction that ends where it
+        // began leaves these very bytes, and so does one that is refused.
+        let compact = json!({"format": 3, "notes": ["a"]}).to_string();
+        fs::write(document.path(), &compact).unwrap();
+        document
+            .transact(|document| {
+                document.notes.push("b".into());
+                document.notes.pop();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fs::read_to_string(document.path()).unwrap(), compact);
+        let refused = document.transact(|document| {
+            document.notes.clear();
+            Err::<(), _>(Error::validation("refused"))
+        });
+        assert_eq!(refused.unwrap_err().detail, "refused");
+        assert_eq!(fs::read_to_string(document.path()).unwrap(), compact);
+        document
+            .transact(|document| {
+                document.notes.push("b".into());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(document.read().unwrap(), Some(notes(&["a", "b"])));
+    }
+
+    /// Each writer has its own instance, as a second process would; the writers' lock makes each
+    /// read-modify-write whole, so no update is lost.
+    #[test]
+    fn two_writers_in_parallel_lose_no_update() {
+        let dir = Dir(temp("document-parallel"));
+        let writers: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|writer| {
+                let document = document(&dir.0, 1 << 16);
+                std::thread::spawn(move || {
+                    for index in 0..20 {
+                        document
+                            .transact(|document| {
+                                document.notes.push(format!("{writer}{index}"));
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let written = document(&dir.0, 1 << 16).read().unwrap().unwrap().notes;
+        assert_eq!(written.len(), 40, "every update was kept");
+        for writer in ["a", "b"] {
+            let own: Vec<&String> = written
+                .iter()
+                .filter(|note| note.starts_with(writer))
+                .collect();
+            let expected: Vec<String> = (0..20).map(|index| format!("{writer}{index}")).collect();
+            assert_eq!(
+                own,
+                expected.iter().collect::<Vec<_>>(),
+                "{writer} in order"
+            );
+        }
+    }
+}
