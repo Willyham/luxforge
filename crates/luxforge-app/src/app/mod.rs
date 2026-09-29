@@ -666,19 +666,48 @@ impl Editor {
         })
     }
 
+    /// What the canvas draws the photograph from: the presentation's frames, the open mask gesture
+    /// and the crop draft.
+    fn surfaces(&self) -> view::Surfaces<'_> {
+        view::Surfaces {
+            mask_draft: self.mask_shape(),
+            mask_map: self.held_mask().and_then(|mask| mask.map),
+            draft: self.crop(),
+            ..self.presentation.surfaces(self.overlays.request.as_ref())
+        }
+    }
+
+    /// Where the canvas draws the photograph in the window now, in logical pixels, through
+    /// [`view::canvas::drawn_photo`]: the canvas region the layout leaves beside the panels the
+    /// title bar shows open, the zoom and the scroll offset. `None` while a gallery page or no
+    /// photograph is drawn.
+    pub(crate) fn drawn_photo(&self) -> Option<iced::Rectangle> {
+        if self.gallery_page().is_some() {
+            return None;
+        }
+        let title = &self.workspace.title;
+        let [left, top, right, bottom] = crate::layout::canvas_logical(
+            self.view_state.window,
+            title.state_panel_open,
+            title.tools_panel_open,
+        );
+        let view = &self.session.preview.view;
+        view::canvas::drawn_photo(
+            &self.workspace.canvas,
+            &self.surfaces(),
+            iced::Rectangle::new(
+                iced::Point::new(left, top),
+                iced::Size::new(right - left, bottom - top),
+            ),
+            (view.pan_x, view.pan_y),
+        )
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let started = Instant::now();
         let element = match self.gallery_page() {
             Some(page) => view::gallery(page),
-            None => view::workspace(
-                &self.workspace,
-                view::Surfaces {
-                    mask_draft: self.mask_shape(),
-                    mask_map: self.held_mask().and_then(|mask| mask.map),
-                    draft: self.crop(),
-                    ..self.presentation.surfaces(self.overlays.request.as_ref())
-                },
-            ),
+            None => view::workspace(&self.workspace, self.surfaces()),
         };
         let mut timing = self.log.loop_timing.get();
         timing.views += 1;

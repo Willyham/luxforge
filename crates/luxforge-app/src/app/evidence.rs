@@ -179,9 +179,10 @@ pub(crate) struct CaptureSync {
     /// `updates` as it stood when the frame drawn last was built, stored by that frame's
     /// [`DrawnMarker`] as it is drawn; `u64::MAX` until the first frame is.
     pub(crate) drawn: Arc<AtomicU64>,
-    /// The state, requested generation and presented photo version recorded with the screenshot
-    /// being taken. A newer photo makes an in-flight readback stale.
-    pub(crate) state: Option<(Value, u64, u64)>,
+    /// The state, requested generation, presented photo version and where the canvas draws the
+    /// photograph (logical pixels), recorded with the screenshot being taken. A newer photo makes
+    /// an in-flight readback stale.
+    pub(crate) state: Option<(Value, u64, u64, Option<iced::Rectangle>)>,
     /// The clipping frame encoded with the photo when readback was requested. A newer overlay
     /// arriving during the asynchronous screenshot invalidates that request just as a newer photo
     /// does.
@@ -669,13 +670,14 @@ impl Editor {
                 };
                 evidence.capture_pending = false;
                 evidence.saving = true;
-                let recorded = (self.snapshot(), self.activity.requested);
+                let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {
                     evidence.sync.state = Some((
                         recorded.0,
                         recorded.1,
                         self.presentation.presenter.photo_version(),
+                        recorded.2,
                     ));
                     evidence.sync.clipping_version = clipping_version;
                 }
@@ -694,9 +696,13 @@ impl Editor {
                     .is_some_and(|evidence| evidence.allow_unready_capture)
                     && !self.capture_proxy_ready()
                     || self.evidence.as_ref().is_some_and(|evidence| {
-                        evidence.sync.state.as_ref().is_some_and(|(_, _, version)| {
-                            *version != self.presentation.presenter.photo_version()
-                        })
+                        evidence
+                            .sync
+                            .state
+                            .as_ref()
+                            .is_some_and(|(_, _, version, _)| {
+                                *version != self.presentation.presenter.photo_version()
+                            })
                     })
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence.sync.clipping_version
@@ -721,7 +727,7 @@ impl Editor {
                 );
                 // The state as it stood when the screenshot was asked for, which is the state the
                 // frame it reads back was built from.
-                let (state, generation, _) = self
+                let (state, generation, _, photo) = self
                     .evidence
                     .as_mut()
                     .and_then(|evidence| evidence.sync.state.take())
@@ -730,6 +736,7 @@ impl Editor {
                             self.snapshot(),
                             self.activity.requested,
                             self.presentation.presenter.photo_version(),
+                            self.drawn_photo(),
                         )
                     });
                 let scale = shot.scale_factor;
@@ -749,6 +756,9 @@ impl Editor {
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);
+                // Where the photograph itself is drawn, snapped as the photo surface snaps it: the
+                // one rectangle a scenario locates the photograph by.
+                let photo = photo.map(|rect| view::canvas::snapped(rect, scale));
                 let Some(evidence) = &self.evidence else {
                     return Task::none();
                 };
@@ -770,7 +780,7 @@ impl Editor {
                             ::image::ColorType::Rgba8,
                         )
                         .map_err(|e| e.to_string())?;
-                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas,"fit_rect":fit});
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas,"fit_rect":fit,"photo_rect":photo});
                         std::fs::write(
                             dir.join(format!("state-{number}.json")),
                             serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
