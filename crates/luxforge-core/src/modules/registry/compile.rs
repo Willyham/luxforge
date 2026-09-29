@@ -427,18 +427,14 @@ impl ModuleRegistry {
                     SpatialPlan::new(&operation, stage, Tiling::Halo)?;
                     let prefix_hash = prefix_hash(&layers[..index], masks, sampling)?;
                     segments.push(Segment::new(
-                        Some(Entry::Spatial {
-                            operation,
-                            prefix_hash,
-                            globals: None,
-                        }),
+                        Some(Entry::spatial(operation, prefix_hash)),
                         stage.width,
                         stage.height,
                     ));
                 }
                 Processing::Resample(resample) => {
                     segments.push(Segment::new(
-                        Some(Entry::Resample(resample)),
+                        Some(Entry::resample(resample)),
                         output.width,
                         output.height,
                     ));

@@ -3557,13 +3557,18 @@ mod tests {
             .segments
             .iter()
             .enumerate()
-            .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial { .. })))
+            .filter(|(_, segment)| {
+                segment
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.point_tiles().is_some())
+            })
             .map(|(index, _)| index)
             .collect();
         let last = *spatial.last().expect("a spatial segment");
         let resampled = compiled.segments[last + 1..]
             .iter()
-            .any(|segment| matches!(segment.entry, Some(Entry::Resample(_))));
+            .any(|segment| segment.entry.as_ref().is_some_and(Entry::blends));
         spatial
             .iter()
             .rev()
@@ -3574,9 +3579,11 @@ mod tests {
                     width: previous.width,
                     height: previous.height,
                 };
-                let Some(Entry::Spatial { operation, .. }) = &compiled.segments[index].entry else {
-                    unreachable!()
-                };
+                let operation = compiled.segments[index]
+                    .entry
+                    .as_ref()
+                    .and_then(Entry::point_tiles)
+                    .expect("a spatial segment");
                 assert!(operation.summed_halo(stage) <= POINT_TILE, "the premise");
                 let side = 2 * depth + if resampled { 2 } else { 1 };
                 let tiles = stage.width.div_ceil(POINT_TILE) * stage.height.div_ceil(POINT_TILE);

@@ -8,10 +8,7 @@ use crate::{
         ActionInput, ActionPlan, Availability, CapabilityModule, CropPayload, EffectStage,
         MAX_MASKED_SPATIAL_LAYERS, ModuleDescriptor, Processing, Stage, StageContext,
     },
-    render::{
-        Entry,
-        testing::{render, sample},
-    },
+    render::testing::{render, sample},
 };
 use serde_json::{Map, Value, json};
 
@@ -483,9 +480,7 @@ fn a_masked_spatial_layer_compiles_with_its_mask_attached() {
         .entry
         .as_ref()
         .expect("a spatial entry");
-    let Entry::Spatial { operation, .. } = entry else {
-        panic!("a spatial entry");
-    };
+    let operation = entry.point_tiles().expect("a spatial entry");
     let attached = operation.mask().expect("the mask is attached");
     // The mask is compiled against the stage the layer receives, which is the frame this
     // operation reads and writes: the tile loop needs no mapping at all.

@@ -1,7 +1,8 @@
 //! Rendering: a recipe compiled into segments and evaluated over one source, by concept.
 //!
 //! - [`entry`]: the one way in, [`render`], and the [`Render`] it returns.
-//! - [`compiled`]: the compiled IR, segments separated by stage boundaries.
+//! - [`compiled`]: the compiled IR, segments separated by stage boundaries, and [`Entry`], the
+//!   one dispatch over the boundary kinds.
 //! - [`geometry`]: exact geometry, a resample's mapping and read rectangle, and the byte
 //!   domain's bilinear pass.
 //! - [`colour_runs`]: colour runs and their masked blend.
@@ -45,6 +46,7 @@ pub(crate) mod tests;
 
 use byte::{Byte, check_source, rasterize};
 use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_pixel, color_runs};
+use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
 pub use context::{RenderContext, ScratchBudget};

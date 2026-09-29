@@ -30,7 +30,7 @@
 //! - **A spatial operation** runs over the previous segment's window as its own stage: the rectangle
 //!   the next segment reads, grown by the operation's summed halo and clamped to the stage, with its
 //!   origin moved down to the grid of the tiles the operation runs in
-//!   ([`Tiling::Halo`], 512 or 1024 px by its summed halo). Every unit is tile invariant over tiles
+//!   (`Tiling::Halo`, 512 or 1024 px by its summed halo). Every unit is tile invariant over tiles
 //!   anchored at the stage origin (the [`crate::modules::SpatialUnit`] contract), and a window whose origin is
 //!   on that grid holds exactly the stage's own tiles, so every pixel the next segment reads is the
 //!   value the whole stage gives it. Its radii are the ones it was compiled with, against the whole
@@ -47,10 +47,10 @@
 //! a spatial operation. With a spatial operation, its exact whole-stage estimate is retained. The tests below
 //! and in `preview::tests` prove these contracts.
 
-use super::{Compiled, Entry, Segment, spatial::Tiling};
+use super::{Compiled, Segment};
 use crate::{
     Error,
-    modules::{ExactGeometry, Global, Region, SpatialOperation, Stage},
+    modules::{ExactGeometry, Global, Region, Stage},
 };
 use std::sync::Arc;
 
@@ -99,25 +99,13 @@ pub(crate) struct WindowPlan {
     outputs: Vec<Region>,
 }
 
-/// The stage segment `index` reads: the source for the first, a resample's output stage, or the
-/// stage a spatial operation receives and writes.
+/// The stage segment `index` reads: the source for the first, or the whole stage the boundary
+/// entering it produces ([`super::Entry::stage`]).
 fn input_stage(segments: &[Segment], index: usize, source: Stage) -> Stage {
     match &segments[index].entry {
         None => source,
-        Some(Entry::Resample(resample)) => Stage {
-            width: resample.output_width,
-            height: resample.output_height,
-        },
-        Some(Entry::Spatial { .. }) => segments[index - 1].stage(),
+        Some(entry) => entry.stage(segments[index - 1].stage()),
     }
-}
-
-/// Whether any unit of `operation` prepares a global estimate from a reduction of its stage.
-fn prepares_estimates(operation: &SpatialOperation) -> bool {
-    operation
-        .units()
-        .iter()
-        .any(|unit| unit.estimate_key().is_some())
 }
 
 impl WindowPlan {
@@ -179,25 +167,12 @@ impl WindowPlan {
             }
             match &segment.entry {
                 None => read_source = Some(read),
-                Some(Entry::Spatial { operation, .. }) => {
-                    if prepares_estimates(operation) && compiled.spatial_before(index) {
-                        return Err(RegionFallback::EstimateAfterSpatial);
-                    }
-                    let grown = read.grown(operation.summed_halo(input), input);
-                    let tile = Tiling::Halo.tile(operation, input);
-                    let x0 = grown.x0 / tile * tile;
-                    let y0 = grown.y0 / tile * tile;
-                    needed = Region {
-                        x0,
-                        y0,
-                        width: grown.x1() - x0,
-                        height: grown.y1() - y0,
-                    };
-                }
-                Some(Entry::Resample(resample)) => {
-                    needed = resample
-                        .reads((0, 0), read, segments[index - 1].stage())
-                        .ok_or(RegionFallback::UnplannableGeometry)?;
+                Some(entry) => {
+                    needed = entry.plan_window(
+                        read,
+                        segments[index - 1].stage(),
+                        compiled.spatial_before(index),
+                    )?;
                 }
             }
         }
@@ -233,63 +208,25 @@ impl WindowPlan {
             .map(|index| input_stage(&compiled.segments, index, source))
             .collect();
         for (index, whole_input) in full_inputs.iter().copied().enumerate() {
-            // The stage this segment reads before and after the cut, and where the kept part of it
-            // lies in the whole stage.
-            // A resample's entry is itself a pixel-producing boundary. Keep only the part of its
-            // full output stage that this segment's exact geometry reads, before rebasing that
-            // geometry below. Otherwise a small viewport still materializes the whole crop.
-            let entry_window = matches!(compiled.segments[index].entry, Some(Entry::Resample(_)))
-                .then(|| {
-                    compiled.segments[index]
-                        .geometry
-                        .unmap_region(self.outputs[index])
-                });
-            let (window, input) = match &compiled.segments[index].entry {
-                None => (Some(self.source), self.source),
-                Some(Entry::Spatial { .. }) => {
-                    let window = self.outputs[index - 1];
-                    (Some(window), window)
-                }
-                Some(Entry::Resample(_)) => {
-                    let read = entry_window.expect("resample entry has a planned read");
-                    (Some(read), read)
+            // The window of the whole stage this segment reads: the source's, or the one its
+            // boundary's cut frame holds ([`super::Entry::cut`]), read from the geometry the
+            // segment composed before it is rebased below.
+            let segment = &mut compiled.segments[index];
+            let input = match &mut segment.entry {
+                None => self.source,
+                Some(entry) => {
+                    let read = segment.geometry.unmap_region(self.outputs[index]);
+                    entry.cut(read, self.outputs[index - 1], whole_input, || {
+                        globals(index)
+                    })?
                 }
             };
-            if index > 0 {
-                let previous = self.outputs[index - 1];
-                let segment = &mut compiled.segments[index];
-                match &mut segment.entry {
-                    Some(Entry::Resample(_)) => {
-                        segment.entry_origin = (previous.x0, previous.y0);
-                        segment.entry_window = entry_window;
-                    }
-                    Some(Entry::Spatial {
-                        operation,
-                        globals: handed,
-                        ..
-                    }) => {
-                        if previous != Region::whole(whole_input)
-                            && let Some(mask) = operation.mask()
-                        {
-                            let windowed = mask.windowed(previous);
-                            *operation = operation.clone().with_mask(windowed);
-                        }
-                        if prepares_estimates(operation) {
-                            *handed = Some(Arc::new(globals(index)?));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let segment = &mut compiled.segments[index];
-            if let Some(window) = window
-                && window != Region::whole(whole_input)
-            {
+            if input != Region::whole(whole_input) {
                 // Place the window at its origin in the whole stage, ahead of everything the
                 // segment composed: an integer translation, so the composition stays exact.
                 let place = ExactGeometry::crop(
-                    -i64::from(window.x0),
-                    -i64::from(window.y0),
+                    -i64::from(input.x0),
+                    -i64::from(input.y0),
                     whole_input.width,
                     whole_input.height,
                 );
@@ -330,7 +267,7 @@ mod tests {
         LinearImage, LinearSettings, Mask, ModuleRegistry, Orientation, PRESENCE_EFFECT,
         PreviewSource, ProxyBounds, ProxyPlan, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
         VIGNETTE_EFFECT,
-        render::{Render, RenderContext, RenderOptions, render},
+        render::{Entry, Render, RenderContext, RenderOptions, render, spatial::Tiling},
     };
     use serde_json::{Value, json};
 
@@ -511,8 +448,8 @@ mod tests {
             )
             .unwrap();
         for (index, segment) in compiled.segments.iter_mut().enumerate() {
-            if let Some(Entry::Spatial { globals, .. }) = &mut segment.entry {
-                *globals = Some(Arc::new(render.spatial_globals(index).unwrap()));
+            if let Some(Entry::Spatial(spatial)) = &mut segment.entry {
+                spatial.globals = Some(Arc::new(render.spatial_globals(index).unwrap()));
             }
         }
         Render::compiled(
@@ -831,8 +768,10 @@ mod tests {
                             unreachable!("this crop has no global estimates")
                         })
                         .unwrap();
-                    let resample = &cut.segments[1];
-                    let entry = resample.entry_window.expect("resample entry window");
+                    let Some(Entry::Resample(resample)) = &cut.segments[1].entry else {
+                        panic!("a rotated crop resamples");
+                    };
+                    let entry = resample.window.expect("resample entry window");
                     assert_eq!(entry.pixels(), rect.pixels());
                     assert!(entry.pixels() < virtual_pixels);
                     assert_eq!(
@@ -1082,11 +1021,9 @@ mod tests {
         let tile = compiled
             .segments
             .iter()
-            .find_map(|segment| match &segment.entry {
-                Some(Entry::Spatial { operation, .. }) => {
-                    Some(Tiling::Halo.tile(operation, Stage { width, height: 128 }))
-                }
-                _ => None,
+            .find_map(|segment| {
+                let operation = segment.entry.as_ref()?.point_tiles()?;
+                Some(Tiling::Halo.tile(operation, Stage { width, height: 128 }))
             })
             .expect("a spatial segment");
         assert_eq!(tile, expected, "{width} px: the operation's tile");
@@ -1684,8 +1621,8 @@ mod tests {
                     )
                     .unwrap();
                 for (segment, entry) in compiled.segments.iter_mut().enumerate() {
-                    if let Some(Entry::Spatial { globals, .. }) = &mut entry.entry {
-                        *globals = Some(Arc::new(exact.spatial_globals(segment).unwrap()));
+                    if let Some(Entry::Spatial(spatial)) = &mut entry.entry {
+                        spatial.globals = Some(Arc::new(exact.spatial_globals(segment).unwrap()));
                     }
                 }
                 let reference = Render::compiled(
