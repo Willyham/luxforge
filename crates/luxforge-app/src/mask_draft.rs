@@ -7,7 +7,7 @@
 //! [`POSITION_MIN`][luxforge_core::mask::POSITION_MIN]`..=`[`POSITION_MAX`][luxforge_core::mask::POSITION_MAX]
 //! — and that is the space this draft works in throughout. Mapping a pointer position into it is the
 //! canvas's job, through `render.transform`'s affine and the canvas view, and it is done locally per
-//! move rather than by asking the host ([performance rule 12](../../docs/engineering/performance-rules.md)).
+//! move rather than by asking the host ([performance rule 12](../../../docs/engineering/performance-rules.md)).
 //!
 //! The one number about the stage this draft does hold is its **aspect**, `W/H`, because mask space
 //! is defined in terms of it: a stored distance is in units of the content stage's height on both
@@ -29,7 +29,7 @@ use serde_json::{Map, Value, json};
 ///
 /// The host answers this once per gesture, because the geometry tail is exact transforms plus at
 /// most one crop and is therefore affine: asking per pointer move would put a runtime hop on the
-/// input path, which [performance rule 12](../../docs/engineering/performance-rules.md) forbids and
+/// input path, which [performance rule 12](../../../docs/engineering/performance-rules.md) forbids and
 /// which `render.locate` exists for instead, for picks.
 ///
 /// A mask stores **normalized** content positions — fractions of the content stage — and the affine

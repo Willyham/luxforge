@@ -8,7 +8,7 @@
 //! scrollable handles the offset. [`CanvasView`] is that mapping, in both directions, and the hit
 //! radius through it. It holds no editing state and answers no host question: a pointer is mapped
 //! here, locally, on every move, which is what keeps a runtime hop off the input path
-//! ([performance rule 12](../../docs/engineering/performance-rules.md)).
+//! ([performance rule 12](../../../../docs/engineering/performance-rules.md)).
 use iced::{Point, Rectangle, Size, Vector, widget::canvas::Path};
 
 /// Where a stage is drawn inside a canvas, in logical pixels.
