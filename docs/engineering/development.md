@@ -313,43 +313,7 @@ smoke run per manifest source and one RAW `performance` smoke run over the first
 
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
-Per-scenario elapsed time comes from each run's own `summary.json`. Back to back on the same shared
-host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), a 17-scenario workload (excluding the gallery and controls boards) cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
-Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
-whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
-therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor`
-and a `raw-panel` run per manifest source and one RAW `performance` run), which is already the tier's
-composition. `zoom`, which is not in that
-workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
-pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
-percentage zooms. `performance` is one launch with 8.6 s of waits — the sampler needs real seconds
-to fill its window and to prove itself asleep — and took 12.5 s on its own at a one-minute load
-average near 30; it stays in `rendered` as the only rendered check of the Performance section and of
-its sampler's gating.
-
-| Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
-| --- | --- | --- | --- |
-| `empty` | 1.03 s | 1.8 s | rendered |
-| `load` | 0.96 s | 1.2 s | rendered |
-| `replacement` | 1.02 s | 2.1 s | rendered |
-| `invalid` | 0.91 s | 1.6 s | rendered |
-| `repeated` | 1.56 s | 2.0 s | rendered |
-| `alternating` | 2.08 s | 2.3 s | rendered |
-| `large24` | 1.04 s | 1.2 s | rendered |
-| `large60` | 1.17 s | 1.1 s | rendered |
-| `crop` | 1.49 s | 1.7 s | rendered |
-| `crop-draft` | 1.24 s | 1.3 s | rendered |
-| `workspace` | 1.63 s | 1.6 s | rendered |
-| `basic` | 1.95 s | 2.3 s | rendered |
-| `basic-panel` | 1.70 s | 2.3 s | rendered |
-| `basic-crop` | 1.25 s | 1.5 s | rendered |
-| `basic-restart` | 1.87 s | 1.9 s | rendered |
-| `histogram` | 1.69 s | 2.0 s | rendered |
-| `unavailable` | 1.80 s | 2.3 s | rendered |
-
-Reproduce with `verify --tier rendered --output NEW_DIR` for the pool and `--jobs 1` for the serial
-figures. The summary records the load average for timing components only; the loads quoted above
-were read with `sysctl -n vm.loadavg` immediately before each run.
+Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. The summary records the load average for timing components only.
 
 ## Running the application
 
@@ -759,189 +723,7 @@ Each step is an object with exactly one key.
 A step that cannot be sent is recorded with `"status": "failed"` and its reason and still captures a
 frame, so a refused step is visible in the evidence instead of missing from it.
 
-The `crop` and `crop-draft` scenarios use this. `crop` commits a 16:9 `edit.crop-fit` and an
-off-centre 7° `edit.crop`, then drafts on that layer, straightens to 12°, cancels, drafts again,
-nudges and applies. `crop-draft` opens a neutral draft and exercises corner gestures, a declared ratio
-preset, a drag on the angle's rail to 2.4° (checked in state: the angle, the ratio kept, the
-release's one logged change and no commit), 100% and Fit, then applies the straightened square. The runner checks the committed stack in each frame's state (one
-crop layer keeping its identity, the payload that was sent, the revision each commit produced), that
-the displayed image has the ratio the committed payload declares, and, on draft frames, that the
-rectangle drawn at full opacity matches the captured draft rectangle, that all eight handles are
-present and that the stage outside the rectangle is dimmed toward the window background. Each run
-also writes `app/crop-checks.json` with the measured values and their tolerances.
-
-`basic-panel` opens `fixtures/s0/greyscale.jpg` at 1440 × 900 and drives a Temperature drag, a typed
-Vibrance, a preview of the Temperature entry and its return, the Colour group's reset, the neutral
-picker's mode, a pick on a neutral grey patch, a pick on a clipped one, a warm drag and As shot from the palette. Its opened frame is also
-the default screen the Module panels density is accepted on, with Basic expanded and every other
-section collapsed by its own descriptor. That fixture is used
-because the picker needs both a genuinely neutral patch and a clipped one, and it has each: uniform
-grey quadrants and a white cross at code 255. The runner checks, per frame, the revision, the history
-label, the stored Basic payload, the one Basic layer's identity across every edit and what each of
-the ten generated fields showed; that the White balance group draws Temperature, Tint, the Neutral picker and As shot, in that order, with As shot sending `set-basic`; that the previewed frame reports "Previewing entry 1" and shows that
-entry's own values rather than the current ones; that the picker frame reports the Basic module as
-the workspace mode; that the neutral pick committed temperature and tint of 0 once and left the picker's mode for the
-pointer;
-that the clipped pick's status leads with `clipped:` and committed nothing; and that As shot after the warm drag commits one entry labelled Reset White balance and returns the photograph to neutral. Alongside the state
-it reads the photograph's mean red-minus-blue balance over its central window — the measure a white
-balance moves on a neutral fixture, where luminance barely changes — and checks its placement and
-3:2 aspect on its recorded rectangle, whose edges must be where the fixture's own grey pixels end. Each run also writes `app/basic-panel-checks.json` with the measured values and tolerances.
-
-`presets` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives the Presets section over
-thirteen steps: Basic collapsed and Presets expanded, `fixtures/presets/develop.xmp` and
-`fixtures/presets/soft-film.lfpreset` imported (their names differ only in case), each applied from
-its row, `history.undo`, the create form filled with the Basic Tone group alone and then submitted,
-`history.undo` to the Original, the native preset applied there, `preset.list` through the `api` step
-and the native preset deleted through its row menu. The runner checks every frame's `state.presets`
-rows (name, group, Partial) against the expected library, the XMP's import status line, the create
-form's fields and checkboxes, and each frame's revision, current entry, history label and stored
-layer payloads. The expected payloads are computed stepwise: each fixture's settings as
-`luxforge_core::inspect_preset` reads them, merged over the stack the frame before held, with every
-field at its declared default omitted as the modules store it. It also reads one patch per quadrant
-of the photograph: each +0.35 EV preset brightens the four patches' mean luminance by more than 5
-codes, the XMP's own `green-luminance` and `red-hue` fields darken the green patch and add green to
-the red one by more than 5 codes, and each undo returns the patches of the stack it returns to within
-1.5 codes. It writes `app/presets-checks.json`. The scope is stored payloads and displayed direction,
-not a colorimetric claim, and not a claim that Luxforge renders what Lightroom renders.
-
-`performance` opens the generated `60mp.jpg` at 1440 × 900 and captures eight frames: the open, with
-the Performance section open and sampling as every launch starts it; a 3600 ms `wait`; a 16:9
-`edit.crop-fit` at 3°; `edit.set-presence` with Clarity 100 over it, whose exact render — about
-0.8 to 1 s on the owner's M4, where Clarity alone is about 0.6 s — is long enough for the section to
-list; a 2500 ms `wait`; the section collapsed; a 2500 ms `wait`; and the section opened again. Each frame's
-`state.performance` records the flag, the reads asked for, the samples held, the last two
-`resources.read` answers as the owner sent them with the wall-clock time of the newer one, the last
-`activity.list`, the process id, the heading caption and the rows and job rows as shown. The runner
-re-derives, without the editor's code, the memory figure from the recorded `memory.bytes`, the CPU
-and GPU figures from the rate between the two recorded reads, each series' length from the sample
-count, and the job rows, `+N more` and caption from the recorded `activity.list` under the section's
-display rules; it requires at least four samples after the first wait, the finished render listed
-after the second, `footprint` memory with GPU time and unified GPU allocations on the M4, GPU time
-never decreasing across frames, one revision per edit and nothing else, the collapsed frames'
-reads and samples unchanged across their wait, and the reopened frame holding one sample from one
-more read, a fresh window read at once. While the editor runs, the runner reads the same
-pid with `ps -o rss=` every 100 ms and `footprint -f bytes --noCategories` on every other poll,
-which needs no privileges for the same user; each expanded frame after the open (whose first reads can precede the runner's first reading) must have its recorded resident memory and footprint
-lie between the runner's last reading at or before the sample's wall-clock time and its first
-reading after it, within 8 MiB. While the editor idles the three agree to the byte. The readings are
-in `process-readings.json` beside `app/`, and `app/performance-checks.json` records every comparison
-and tolerance. The finished row must be the heavy commit's own render: its entry must have begun
-after every entry the frame before the commit recorded, so a long job from before it, such as the
-open's preparation, cannot stand in. With `--source RAW` the heavy commit is Clarity and Texture
-together, because a 24 to 40 MP RAW renders Clarity alone, and redevelops for a temperature
-commit, in under the section's 0.5 s; that run is not part of `rendered`.
-
-`zoom` is two launches, one over each of the generated `24mp.jpg` (6000 × 4000) and `60mp.jpg`
-(10000 × 6000), each writing its own `24mp/` or `60mp/` directory beside the scenario's `result.json`.
-Each opens the photograph at 1440 × 900 and runs thirteen frames: the open, a 500 ms `wait` that lets
-the refit to the display scale land, a 1000 ms `wait` at Fit, 50%, 100%, a 1000 ms `wait` at 100%,
-120%, 800%, 1600%, a `pan` to the centre, a 1000 ms `wait` there, a `pan` to the far corner and Fit
-again. Per frame the runner checks the session's zoom; that the surface holds the proxy — the stage
-scaled into the bounds the view asks for now — wherever the stage is drawn smaller than itself and
-the exact stage from 100% up, both in `state.proxy` and `state.surface` and in the version-th
-`preview_displayed`; and, at every percentage, that every sample on a 12 px grid over the canvas
-that lands at least 12 source pixels from any drawn feature shows the quadrant colour the zoom and
-the pan put under it, within 10 codes, mapped from the rectangle the frame records drawing the
-photograph in, which must be the zoomed box of the stage to the pixel. Where the white centre line or the middle boundary is in
-view, its measured position must be the one the geometry predicts, within one source pixel plus
-3 physical pixels; at 1600% on the 60 MP fixture the centre line is exactly where its two textures
-meet. Across frames, an unchanged raster version must mean an unchanged texture write count. Each
-`wait` frame must show no `preview_displayed`, `preview_proxy_requested` or `render_ready` since the
-frame before, the same version and write count, at least two view rebuilds, and a canvas identical
-byte for byte to the frame before. A `Validation Error`, `wgpu error` or panic in the editor's log
-fails the launch. Each launch writes `app/zoom-checks.json` with the measured values and
-tolerances.
-
-`workspace` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives a rotate, three panel and
-thirds changes, a historical preview and its return, a crop draft, an `agent` step's rotate during
-that draft (the conflict: another client's commit, read back by the event sync, marks the open draft
-conflicted) and the command palette, before cancelling the draft. The runner checks, per frame, that `state.workspace`
-matches the requested panels, mode and thirds and that the photograph stays centred in the recorded
-`surface_columns`; that the historical-preview frame's `state.status` starts with "Previewing entry
-0"; that the conflict frame's `state.notices` names "Changed elsewhere" and `state.crop.conflicted`
-is set; that the draft frames report the crop module as the workspace mode and the cancelled frame
-reports `pointer`; that the palette frame's `state.palette` records it open with its query; and that
-the thirds frame's fitted photograph reads brighter at its one-third column than beside it. It writes
-`app/workspace-checks.json`.
-
-`basic` opens the same fixture at 1440 × 900 and drives the whole Exposure gesture: a drag to
-+1.00 EV left open, the same gesture released, a second drag that returns to +1.00 and releases, a
-typed −0.50 with Enter, `history.undo`, the Tone group's reset, a drag to +2.00 EV, an `agent`
-step's rotate while that drag is open, and the notice's Reapply and Discard in turn. The runner
-checks, per frame, `state.draft` (its identity, the field it holds, both revisions and whether it is
-conflicted), the revision, the current entry's stored label, what the Exposure field shows, the one
-Basic layer's stored payload, and the photograph's own mean Rec. 709 luminance over its central
-window, the middle 40% of its width and half its height: +1.00 EV and +2.00 EV read brighter than neutral by at least 10 codes, −0.50 EV
-reads darker, the committed render matches the drafted one it replaced within 2 codes, and the
-reset and discarded frames match the committed stack within the same tolerance. It writes
-`app/basic-checks.json` with every measured mean and both tolerances. The scope is displayed
-brightness read back from the renderer, not a colorimetric claim.
-
-`histogram` opens the same fixture at 1440 × 900 and drives the inspector, both clipping overlays and
-the pointer readout over twelve frames, in a developer launch because the pixel proof is a test
-module: the default screen, one `edit.set-pixel` of `(0, 128, 255)`
-at content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%,
-Fit again, both overlays off, a preview of the Original, the return to current, an Exposure drag
-left open and the same gesture released. The fixture's clipped pixels are known from
-its generator rather than guessed — the quadrant colours reach neither endpoint, the white centre
-line and arrow are at code 255 in every channel and the dash band across the middle is at code 0 in
-every channel — and the set pixel is the only one in the run with a channel at each endpoint, which
-is both the magenta case and the isolated-clipped-pixel case a Fit overlay must survive. The runner
-checks every frame's eleven counters, the plot's shared maximum and the counts the triangles'
-tooltips state in words against `analysis::reduce` of an **independent** core render of the
-same fixture through the same recipe, exactly, and that the plot's tooltip names the domain and a
-frame with a report draws no notice over the plot; that the readout reports the codes of the pixel
-just set, is shown in the status bar and clears when the displayed entry changes; that across the
-hover the tools panel is pixel for pixel the frame before it and the status bar changed only inside
-one readout-slot-wide span short of its trailing facts, so the readout moved nothing; that the
-overlay's cell grid is one cell per source pixel at Fit and at 100%, where the photograph also
-measures 480 physical pixels wide; and, by differencing each overlay frame against the overlay-off
-frame of the same stack and zoom, that blue appears over the code-0 dashes, red over the code-255
-line, magenta on the one both-endpoint pixel, nothing over the unclipped quadrant interiors, and
-nothing at all once both flags are off. Differencing rather than classifying a colour is deliberate:
-the fixture's own red quadrant is as red as a highlight mask is, so only the change from the same
-frame without the mask identifies one. Each overlay frame's `state.stack` is compared with the frame
-before it, which is how the run proves a view flag commits nothing. Its last three frames return to
-current, drive an Exposure drag left open and then release it: the drafted frame must display the
-draft revision it names in `state.draft`, and its plot must name that revision and carry counts equal
-to an independent reduction of the drafted stack; the released frame must advance the revision by
-exactly one and carry counts equal to an independent reduction of the composed stack it says it
-displays. It writes `app/histogram-checks.json`. `unavailable`'s second launch checks that the
-histogram is unavailable and that its reason is the notice drawn inside the plot.
-
-`basic-crop` opens the same fixture at 1440 × 900 and commits `edit.set-basic` at +1.00 EV, then a
-16:9 `edit.crop-fit` at angle zero and the same ratio straightened by 7°. Every one of its four
-frames is checked against an independent core render and reduction of exactly the layers
-`state.stack.displayed` names, so the plot is proved against the composition of colour and geometry
-rather than against itself; the run also checks that the two crops update one crop layer in place,
-that the analysed output stage shrinks with the crop, and that the displayed photograph measures
-16:9 and stays centred in the photo surface. Its placement is the recorded rectangle, whose edges are
-checked against the capture by brightness rather than by the fixture's quadrant colours, because a
-Basic edit moves those colours.
-It writes `app/basic-crop-checks.json`.
-
-`basic-restart` is two launches, since a restart cannot be simulated inside one process. The first
-opens `fixtures/s0/orientation-1.jpg` and commits one `edit.set-basic` patch of exposure +1.5 EV and
-temperature +25. The second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and
-reopens the same file, which the catalog dedupes to the same asset. The runner checks that the
-second launch reports the same revision, entry, stored payload, Basic layer identity and history
-label, that the generated fields re-seed to `1.5` and `25`, and that the photograph's mean Rec. 709
-luminance matches the render the first launch committed and is above a neutral open. It writes
-`basic-restart-checks.json` beside its own two launch directories.
-
-`unavailable` is not one launch but two, since a module can only be disabled at startup. The first
-opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module registered. The
-second reuses the first launch's own catalog (`--catalog <dir1>/catalog.sqlite`) with
-`--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same
-asset by file identity, so its stack still names the now-unavailable crop layer. The runner checks
-that the second launch's frame reports `state.render_error.code` `incompatible` with `data.effect_id` the crop effect, `state.notices`
-naming "Preview is stale", the crop module listed unavailable in `state.modules`, no photograph
-rectangle recorded and no fixture colour drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
-`unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
-
-`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 99 named widget states across thirteen named pages in the real background editor at 1440×1000 logical points. The board holds widget states only; the composed panels are proven by their own smokes. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its tenth page, the tab row per selected tab, the labelled buttons in each tone, and band hints, an unavailable reason and history labels truncated to one line with an ellipsis; its two Masks pages show the Masks panel's widgets at the same width: mask and component rows in each state, coverage thumbnails, the mode and overlay controls, the New mask button and kind menu, the Add row, group rules, two-column fields, toggle rows with hints, a colour range's swatches and a brush's strokes; and its last page the range control and a brush gesture's draft bar with Done: a luminance band resting on its black-to-white rail with both shoulders open, the same band with its high edge dragging, a disabled band with no shoulders, and the draft bar. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure (on Basic's Colour group, since the proof's controls are its module's only group and draw no header) and the module reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
-
-`cargo xtask smoke --scenario capabilities --output NEW_DIR` starts the loopback `ProofEndpoint` (from `luxforge-testkit`, which no shipped binary compiles) in the runner's own process with a sentinel API key and a held palette download and generation, launches the editor with `--developer --proof-endpoint`, opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and scripts 21 steps: expand the section and read its block; through `api` steps set strength, create a profile, set its endpoint and key, grant the palette download and install it, capturing the download in progress and installed; then through the task control and the consent notice generate (the photo-data consent, Don't allow, the notice again with its denial, Allow, progress, success), Apply, replace the key with a wrong one through the API and generate again (the endpoint's 401). Its checks, written to `app/capabilities-checks.json`, compare each frame's capability summary with its step; require exactly one tint layer listing the task's artifact after Apply; compare the tinted photograph's mean colour over a centred window of its recorded rectangle with the pre-Apply frame, in the direction of the published gains, and with an independent core render of the same stack within 2 codes; confirm the endpoint saw one held download, one authorised generation and one refusal; and scan every text file the run wrote, the catalog and the module files included, for the sentinel key.
+Each scenario's plan and checks are documented in its own module (`xtask/src/*_smoke.rs`, with the table of rows in `xtask/src/smoke.rs`), and `cargo xtask smoke --list` names every scenario with what it proves, the launches and frames it makes, what it opens and its window. Most write the values they measured and their tolerances to a `*-checks.json` file in the run's output. A scenario's script is the steps above, so what a step does is specified here and what a scenario asks of it is in the scenario. The gallery board and the controls scenario's generated panel are different widths; both need visual review alongside their automated checks.
 
 `editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 
@@ -955,8 +737,8 @@ input's time, `slider_draft_preview` names the preview generation that `draft.se
 `preview_displayed` of that generation is when that raster became the photo surface's source.
 Presented therefore means that update, whose redraw draws the frame, not display scanout: the
 figures are an upper bound on the editor's own work and a lower bound on what an eye sees. The
-report's `gpu_upload` is null with a note for the same reason `preview_displayed` carries no
-`upload_ms`, and `render_and_upload` covers the render and the hand-over together. The measured window is
+report has no upload row for the same reason: the photo surface writes its texture in the frame
+that draws it, so `render_and_upload` covers the render and the hand-over together. The measured window is
 invisible, so nothing in these runs is composited or scanned out at all; the figures cover the
 editor's own path to the texture and say nothing about the cost of putting that texture on a
 screen. The last scripted value also
@@ -1086,4 +868,4 @@ Rules for any UI or image check:
 
 ## CI
 
-`.github/workflows/check.yml` runs `cargo xtask check`, an optimized build and packaging on macOS arm64, Windows x64 and Ubuntu x64 with seven-day artifact retention, plus separate fixture and dependency-policy jobs. Linux additionally runs every smoke scenario against the packaged binary under Xvfb with software Vulkan and records runtime imports. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
+`.github/workflows/check.yml` runs `cargo xtask verify --tier quick` (whose `check` includes the golden-fixture test), an optimized build and packaging on macOS arm64, Windows x64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).

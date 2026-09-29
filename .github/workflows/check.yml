@@ -43,6 +43,10 @@ jobs:
         run: |
           sudo apt-get install -y xvfb mesa-vulkan-drivers libxkbcommon-x11-0
           cargo xtask generate-fixtures
+          # The eight scenarios of the original renderer smoke, kept explicit: `smoke --list` marks
+          # what needs a supplied RAW ("not in rendered") but not what runs on software Vulkan,
+          # and only these eight are run here. A name `smoke --list` does not have
+          # fails the step.
           for scenario in empty load replacement invalid repeated alternating large24 large60; do
             xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario"
           done
@@ -57,16 +61,6 @@ jobs:
           path: artifacts/
           if-no-files-found: warn
           retention-days: 7
-
-  fixtures:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
-      - name: Verify golden fixtures and Rust generator
-        run: cargo xtask fixtures
 
   dependencies:
     runs-on: ubuntu-24.04

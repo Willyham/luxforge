@@ -1,4 +1,10 @@
 //! Rendered evidence for the opt-in control vocabulary and its identity photo layer.
+//!
+//! It enables the developer proof, scrolls its generated panel and drives slider, picker and curve
+//! drafts, cancellation, point add and remove, discrete controls, group disclosure (on Basic's
+//! Colour group, since the proof's controls are its module's only group and draw no header) and the
+//! module reset. Its checks correlate history revisions and values with captures and verify that
+//! the identity proof preserves the displayed photograph.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, pixels, plan::only},
     *,

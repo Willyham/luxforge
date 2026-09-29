@@ -1,4 +1,9 @@
 //! Thirteen renderer captures of the full 99-state widget gallery in the real desktop.
+//!
+//! The board holds widget states only, at 1440x1000 logical points; the composed panels are proven
+//! by their own scenarios, and each page has renderer readback, state metadata and a matching
+//! script event. Its width differs from the controls scenario's generated panel, and both need
+//! visual review alongside their automated checks.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, pixels, plan::only},
     *,
