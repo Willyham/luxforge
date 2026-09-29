@@ -19,7 +19,7 @@ pub(crate) mod testing;
 pub(crate) mod title;
 pub(crate) mod tools;
 
-use crate::{crop_draft::CropDraft, mask_draft::MaskDraft};
+use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
 use luxforge_core::{ClientSession, EditorState, MaskId, ModuleDescriptor};
 use serde_json::{Map, Value};
@@ -141,6 +141,65 @@ impl Default for CropSection {
     }
 }
 
+/// This desktop's own view state: the window, the zoom and the local pan, the open menu, the
+/// developer gallery page and whether a native file dialog is up. No other client sees any of it
+/// but the zoom and the pan, which the owner's session holds and this follows.
+#[derive(Clone, Debug)]
+pub(crate) struct ViewState {
+    /// The window's logical size, from the launch size and every resize event since, which with
+    /// the panels and the display scale decides what Fit comes to as a percentage.
+    pub(crate) window: (f32, f32),
+    /// The window fills the screen, so the title bar holds no traffic lights to leave room for.
+    pub(crate) fullscreen: bool,
+    pub(crate) scale_factor: f32,
+    /// The zoom field's text.
+    pub(crate) zoom: String,
+    /// The title bar's percentage segment has been opened for typing a zoom.
+    pub(crate) zoom_editing: bool,
+    pub(crate) menu: Option<MenuTarget>,
+    /// The developer components gallery page shown instead of the workspace, or `None` for the
+    /// editor. The owner does not hold it.
+    pub(crate) gallery: Option<usize>,
+    /// A native file dialog is open.
+    pub(crate) picker_open: bool,
+    /// The latest scrollable offset is local immediately; the session's pan can be one round trip
+    /// old.
+    pub(crate) local_pan: (f32, f32),
+    /// The session's pan: scroll events arrive faster than round trips complete, so one request is
+    /// in flight and only the newest position waits.
+    pub(crate) pan: Coalesce<(f32, f32)>,
+}
+
+impl ViewState {
+    /// The view state a window of this logical size opens with.
+    pub(crate) fn new(window: (f32, f32)) -> Self {
+        Self {
+            window,
+            fullscreen: false,
+            scale_factor: 1.0,
+            zoom: "100".into(),
+            zoom_editing: false,
+            menu: None,
+            gallery: None,
+            picker_open: false,
+            local_pan: (0.0, 0.0),
+            pan: Coalesce::default(),
+        }
+    }
+}
+
+/// The pixel under the pointer: where it is over the photograph and what `render.sample` last
+/// answered there. A pick commits nothing.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Hover {
+    /// The last pointer position over the photo in image pixels.
+    pub(crate) pointer: Option<(u32, u32)>,
+    /// The pixel `render.sample` last answered for the pointer's position.
+    pub(crate) readout: Option<histogram::Readout>,
+    /// One sample in flight at a time, with only the newest position waiting for it.
+    pub(crate) sample: Coalesce<(u32, u32)>,
+}
+
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
     /// The open photograph: its state, history, versions and lineage, the displayed entry's recipe
@@ -199,14 +258,10 @@ pub(crate) struct Inputs<'a> {
     /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
     pub(crate) compare_held: bool,
-    pub(crate) scale_factor: f32,
-    pub(crate) zoom: &'a str,
-    /// The zoom field is open for typing in the title bar's view control.
-    pub(crate) zoom_editing: bool,
-    /// The window's logical size, which with the panels and the display scale decides what Fit
-    /// comes to as a percentage.
-    pub(crate) window: (f32, f32),
-    pub(crate) fullscreen: bool,
+    /// This desktop's own view state: window, zoom, menu.
+    pub(crate) view_state: &'a ViewState,
+    /// The pixel under the pointer and what `render.sample` last answered for it.
+    pub(crate) hover: &'a Hover,
     pub(crate) version_name: &'a str,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
@@ -222,15 +277,11 @@ pub(crate) struct Inputs<'a> {
     pub(crate) render: Option<status::RenderTime>,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a luxforge_core::Error>,
-    pub(crate) pointer: Option<(u32, u32)>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
     /// identity and generation it arrived under. `None` before the first one arrives.
     pub(crate) analysis: Option<&'a histogram::Analysis>,
     /// A newer generation is in flight, so the report above is one frame behind.
     pub(crate) analysis_updating: bool,
-    /// The pixel `render.sample` last answered for the pointer's position.
-    pub(crate) readout: Option<&'a histogram::Readout>,
-    pub(crate) menu: Option<&'a MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: &'a str,
     pub(crate) palette_selected: usize,
@@ -441,7 +492,8 @@ mod tests {
         render_error: Option<luxforge_core::Error>,
         analysis: Option<histogram::Analysis>,
         analysis_updating: bool,
-        readout: Option<histogram::Readout>,
+        view_state: ViewState,
+        hover: Hover,
         presets: presets::PresetLibrary,
         preset_form: presets::PresetForm,
         /// An open slider gesture's (action, parameter, conflicted).
@@ -477,7 +529,11 @@ mod tests {
                 render_error: None,
                 analysis: None,
                 analysis_updating: false,
-                readout: None,
+                view_state: ViewState {
+                    scale_factor: 2.0,
+                    ..ViewState::new((1440.0, 900.0))
+                },
+                hover: Hover::default(),
                 presets: presets::PresetLibrary::default(),
                 preset_form: presets::PresetForm::default(),
                 slider_draft: None,
@@ -572,11 +628,8 @@ mod tests {
                 can_export: true,
                 developer: self.developer,
                 compare_held: false,
-                scale_factor: 2.0,
-                zoom: "100",
-                zoom_editing: false,
-                window: (1440.0, 900.0),
-                fullscreen: false,
+                view_state: &self.view_state,
+                hover: &self.hover,
                 version_name: "",
                 version_form_open: false,
                 dimensions: Some((480, 320)),
@@ -589,11 +642,8 @@ mod tests {
                     approximate: false,
                 }),
                 render_error: self.render_error.as_ref(),
-                pointer: None,
                 analysis: self.analysis.as_ref(),
                 analysis_updating: self.analysis_updating,
-                readout: self.readout.as_ref(),
-                menu: None,
                 palette_open: self.palette_open,
                 palette_query: "",
                 palette_selected: 0,
@@ -2424,7 +2474,7 @@ mod tests {
         let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
         let without = scene.derive();
         assert_eq!(without.status.readout, None);
-        scene.readout = Some(histogram::Readout {
+        scene.hover.readout = Some(histogram::Readout {
             x: 360,
             y: 240,
             rgba: [0, 128, 255, 255],

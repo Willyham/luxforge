@@ -643,11 +643,14 @@ fn delete_from_a_rows_menu_lists_the_library_again() {
         .update(Message::View(ViewMessage::OpenMenu(MenuTarget::Preset(
             id.clone(),
         ))));
-    assert_eq!(library.editor.menu, Some(MenuTarget::Preset(id.clone())));
+    assert_eq!(
+        library.editor.view_state.menu,
+        Some(MenuTarget::Preset(id.clone()))
+    );
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Delete(id.clone())));
-    assert!(library.editor.menu.is_none() && library.editor.presets.pending);
+    assert!(library.editor.view_state.menu.is_none() && library.editor.presets.pending);
     let deleted = tasks::preset_delete_now(&library.owner(), library.editor.client, &id);
     let _ = library
         .editor

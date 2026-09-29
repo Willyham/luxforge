@@ -43,12 +43,12 @@ fn clipping_readiness_applies_only_to_the_ordinary_photo() {
     );
     editor.gesture = None;
     editor.developer = true;
-    editor.gallery = Some(0);
+    editor.view_state.gallery = Some(0);
     assert!(
         editor.capture_clipping_ready(),
         "the gallery has its own surface"
     );
-    editor.gallery = None;
+    editor.view_state.gallery = None;
     editor.presentation.render_error = Some(luxforge_core::Error::render("failed"));
     assert!(
         editor.capture_clipping_ready(),
@@ -78,12 +78,12 @@ fn failed_discovery_is_reported_and_never_blocks_evidence() {
 #[test]
 fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 1.0;
+    editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_proxy = true;
     editor.presentation.presented_bounds = editor.proxy_bounds();
-    editor.scale_factor = 2.0;
+    editor.view_state.scale_factor = 2.0;
     editor.presentation.refit_pending = true;
     editor.outcome_ready(false);
     assert!(crate::app::testing::evidence(&editor).capture_pending);
@@ -123,9 +123,9 @@ fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
 #[test]
 fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 2.0;
+    editor.view_state.scale_factor = 2.0;
     editor.presentation.presented_proxy = true;
     editor.presentation.presented_generation = 7;
     editor.session.workspace.tools_panel = true;
@@ -180,9 +180,9 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
 #[test]
 fn evidence_retries_a_readback_superseded_by_new_pixels() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 2.0;
+    editor.view_state.scale_factor = 2.0;
     editor.presentation.presented_proxy = true;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     // Two photographs have reached the surface since the capture recorded the first.

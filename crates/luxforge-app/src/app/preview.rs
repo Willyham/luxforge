@@ -300,6 +300,27 @@ pub(crate) struct Presentation {
     pub(crate) overlay_awaited: Option<u64>,
 }
 
+/// The one desired view the owner admits through the shared gate, and the quiet policy that
+/// settles it: a view change marks it dirty, one plan is in flight at a time, and a view-only
+/// request's generation is remembered so only it may be replaced by the next.
+#[derive(Default)]
+pub(crate) struct ViewPlan {
+    /// The view on screen is not the one the zoom, pan and window ask for.
+    pub(crate) dirty: bool,
+    /// The generation of the standalone view request in the queue, which another view may replace.
+    pub(crate) request_generation: Option<u64>,
+    /// A `view` plan is on an owner task.
+    pub(crate) in_flight: bool,
+    /// Moves on every view motion; a plan carries the epoch it was asked under.
+    pub(crate) epoch: u64,
+    /// When the last view motion or drafted frame happened, while the 120 ms quiet policy runs.
+    pub(crate) quiet_since: Option<Instant>,
+    /// The quiet settle has been asked for, so its timer stops.
+    pub(crate) quiet_settle_requested: bool,
+    /// The core draft a release settled, whose drafted frames are no longer taken up.
+    pub(crate) released_draft: Option<DraftId>,
+}
+
 impl Presentation {
     /// Key a job's content before it is queued: the same evaluated image keeps its serial across
     /// pans and zooms, and anything else gets the next one. A region the surface cannot allocate
@@ -910,23 +931,23 @@ impl Editor {
     }
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
         let generation = self.presentation.cancel();
-        self.view_request_generation = None;
-        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
-        self.desired_view_dirty = true;
-        self.quiet_since = None;
+        self.view_plan.request_generation = None;
+        self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
+        self.view_plan.dirty = true;
+        self.view_plan.quiet_since = None;
         generation
     }
     pub(super) fn desired_view_for(&self, stage: (u32, u32)) -> Option<Region> {
         viewport_rect(
             stage,
             &self.session.preview.view.zoom,
-            self.scale_factor,
+            self.view_state.scale_factor,
             layout::photo_surface(
-                self.window,
+                self.view_state.window,
                 self.session.workspace.state_panel,
                 self.session.workspace.tools_panel,
             ),
-            self.local_pan,
+            self.view_state.local_pan,
         )
     }
     /// One message about taking up or presenting a preview frame.
@@ -937,9 +958,9 @@ impl Editor {
                 intent,
                 result,
             } => {
-                self.view_plan_in_flight = false;
-                if epoch != self.view_plan_epoch {
-                    self.desired_view_dirty = true;
+                self.view_plan.in_flight = false;
+                if epoch != self.view_plan.epoch {
+                    self.view_plan.dirty = true;
                     return Task::none();
                 }
                 match result {
@@ -961,17 +982,17 @@ impl Editor {
                                 .core_gesture()
                                 .is_some_and(|gesture| !gesture.draft.drained())
                             || self.presentation.queue.pending_generation().is_some_and(
-                                |generation| self.view_request_generation != Some(generation),
+                                |generation| self.view_plan.request_generation != Some(generation),
                             )
                         {
-                            self.desired_view_dirty = true;
+                            self.view_plan.dirty = true;
                             return Task::none();
                         }
                         job.intent = intent;
                         let generation = self.request_preview(job);
                         self.presentation.preview_generation = generation;
-                        self.view_request_generation = Some(generation);
-                        self.desired_view_dirty = false;
+                        self.view_plan.request_generation = Some(generation);
+                        self.view_plan.dirty = false;
                         self.event("preview_view_requested", json!({
                             "generation":generation,
                             "intent":if intent == PreviewIntent::Settle {"settle"} else {"interactive"},
@@ -979,8 +1000,8 @@ impl Editor {
                     }
                     Err(error) => {
                         self.status = error;
-                        self.desired_view_dirty = false;
-                        self.quiet_since = None;
+                        self.view_plan.dirty = false;
+                        self.view_plan.quiet_since = None;
                     }
                 }
             }
@@ -1039,10 +1060,10 @@ impl Editor {
     }
 
     pub(super) fn note_view_motion(&mut self) {
-        self.desired_view_dirty = true;
-        self.quiet_since = Some(Instant::now());
-        self.quiet_settle_requested = false;
-        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
+        self.view_plan.dirty = true;
+        self.view_plan.quiet_since = Some(Instant::now());
+        self.view_plan.quiet_settle_requested = false;
+        self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
         if let (Some(stage), Some(region)) = (
             self.presentation.dimensions,
             self.presentation.region_raster.as_ref(),
@@ -1066,14 +1087,14 @@ impl Editor {
             Some(_) => return Task::none(),
             None => None,
         };
-        self.view_plan_in_flight = true;
+        self.view_plan.in_flight = true;
         tasks::view_preview_task(
             self.owner.clone(),
             self.client,
             state.asset.id.clone(),
             self.displayed_entry(),
             draft,
-            self.view_plan_epoch,
+            self.view_plan.epoch,
             intent,
         )
     }
@@ -1081,14 +1102,14 @@ impl Editor {
     /// Admit a view-only pan only after gesture and crop-owned requests drain. The local scroll
     /// offset is already updated; a delayed owner pan reply never chooses the rectangle.
     pub(super) fn reconcile_view(&mut self) -> Task<Message> {
-        if !self.desired_view_dirty || self.view_plan_in_flight || self.crop_gesture().is_some() {
+        if !self.view_plan.dirty || self.view_plan.in_flight || self.crop_gesture().is_some() {
             return Task::none();
         }
         if self
             .presentation
             .queue
             .pending_generation()
-            .is_some_and(|generation| self.view_request_generation != Some(generation))
+            .is_some_and(|generation| self.view_plan.request_generation != Some(generation))
         {
             // Only another standalone view may be replaced. A draft.set or crop input stage owns
             // the single pending slot until its own frame or cancellation is delivered.
@@ -1098,9 +1119,9 @@ impl Editor {
             return Task::none();
         };
         let Some(wanted) = self.desired_view_for(stage) else {
-            self.desired_view_dirty = false;
+            self.view_plan.dirty = false;
             if self.core_gesture().is_none() {
-                self.quiet_since = None;
+                self.view_plan.quiet_since = None;
             }
             return Task::none();
         };
@@ -1110,9 +1131,9 @@ impl Editor {
                     && frame.content == Some(self.presentation.content_serial)
             })
         {
-            self.desired_view_dirty = false;
+            self.view_plan.dirty = false;
             if self.presentation.analysis_content == Some(self.presentation.content_serial) {
-                self.quiet_since = None;
+                self.view_plan.quiet_since = None;
             }
             return Task::none();
         }
@@ -1126,14 +1147,14 @@ impl Editor {
                     && contains_region(region.rect, wanted)
             })
         {
-            self.desired_view_dirty = false;
+            self.view_plan.dirty = false;
             return Task::none();
         }
         // A cancelled gesture or a returned history selection has no motion to debounce.
         // Its committed whole-frame settlement may already have been replaced by this view
         // retry, so the replacement must itself produce the exact report and retained raster.
         self.view_plan(
-            if self.core_gesture().is_none() && self.quiet_since.is_none() {
+            if self.core_gesture().is_none() && self.view_plan.quiet_since.is_none() {
                 PreviewIntent::Settle
             } else {
                 PreviewIntent::Interactive
@@ -1142,13 +1163,13 @@ impl Editor {
     }
 
     fn quiet_refine(&mut self) -> Task<Message> {
-        let Some(since) = self.quiet_since else {
+        let Some(since) = self.view_plan.quiet_since else {
             return Task::none();
         };
         if since.elapsed() < QUIET_INTERVAL
-            || self.quiet_settle_requested
-            || self.view_plan_in_flight
-            || self.desired_view_dirty
+            || self.view_plan.quiet_settle_requested
+            || self.view_plan.in_flight
+            || self.view_plan.dirty
             || self.presentation.queue.is_busy()
             || self.crop_gesture().is_some()
             || self
@@ -1160,10 +1181,10 @@ impl Editor {
         if self.presentation.analysis_content == Some(self.presentation.content_serial)
             && self.presentation.exact_content() == Some(self.presentation.content_serial)
         {
-            self.quiet_since = None;
+            self.view_plan.quiet_since = None;
             return Task::none();
         }
-        self.quiet_settle_requested = true;
+        self.view_plan.quiet_settle_requested = true;
         self.event(
             "preview_quiet_refine",
             json!({
@@ -1198,14 +1219,14 @@ impl Editor {
             Zoom::Fit => {
                 let workspace = &self.session.workspace;
                 let surface = layout::photo_surface(
-                    self.window,
+                    self.view_state.window,
                     workspace.state_panel,
                     workspace.tools_panel,
                 );
                 let inset = layout::FIT_INSET;
                 bounds_of((
-                    (surface.0 - inset.0).max(0.0) * self.scale_factor,
-                    (surface.1 - inset.1).max(0.0) * self.scale_factor,
+                    (surface.0 - inset.0).max(0.0) * self.view_state.scale_factor,
+                    (surface.1 - inset.1).max(0.0) * self.view_state.scale_factor,
                 ))
             }
             Zoom::Percent { .. } => {
@@ -1233,8 +1254,12 @@ impl Editor {
                 Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
             },
             stage,
-            layout::photo_surface(self.window, workspace.state_panel, workspace.tools_panel),
-            self.scale_factor,
+            layout::photo_surface(
+                self.view_state.window,
+                workspace.state_panel,
+                workspace.tools_panel,
+            ),
+            self.view_state.scale_factor,
             layout::FIT_INSET,
         )
     }
@@ -1253,9 +1278,9 @@ impl Editor {
             }
             let draft = Some(result.generation) == self.draft_generation();
             self.presentation.forget(result.generation);
-            if self.view_request_generation == Some(result.generation) {
-                self.view_request_generation = None;
-                self.desired_view_dirty = true;
+            if self.view_plan.request_generation == Some(result.generation) {
+                self.view_plan.request_generation = None;
+                self.view_plan.dirty = true;
             }
             self.event(
                 "preview_exact_cancelled",
@@ -1316,7 +1341,7 @@ impl Editor {
         // like any other frame.
         let for_draft = Some(result.generation) == self.draft_generation();
         if let Some(stamp) = &result.identity.draft
-            && (self.released_draft.as_ref() == Some(&stamp.draft_id)
+            && (self.view_plan.released_draft.as_ref() == Some(&stamp.draft_id)
                 || self.session.draft.as_ref().map(|draft| &draft.draft_id)
                     != Some(&stamp.draft_id))
         {
@@ -1608,7 +1633,7 @@ impl Editor {
             .desired_view_for(stage)
             .is_some_and(|wanted| contains_region(frame.full_rect, wanted));
         if stage != delivery.stage {
-            self.desired_view_dirty = true;
+            self.view_plan.dirty = true;
             return (Task::none(), false);
         }
         if delivery.draft.as_ref() == self.presentation.displayed_draft_id.as_ref()
@@ -1622,7 +1647,7 @@ impl Editor {
             .desired_view_for(stage)
             .is_some_and(|wanted| !intersects_region(frame.full_rect, wanted))
         {
-            self.desired_view_dirty = true;
+            self.view_plan.dirty = true;
             return (Task::none(), false);
         }
         if !luxforge_ui::region_texture_admissible((frame.raster.width, frame.raster.height), 8192)
@@ -1631,7 +1656,7 @@ impl Editor {
                 "generation":generation,"reason":"region texture exceeds the surface allocation limit"
             }));
             self.presentation.viewport_disabled_content = Some(content);
-            self.desired_view_dirty = true;
+            self.view_plan.dirty = true;
             return (Task::none(), false);
         }
         let quality = if frame.stage == frame.full_stage && !frame.approximation.is_approximate() {
@@ -1669,10 +1694,10 @@ impl Editor {
             "viewport_declined":delivery.viewport_declined,"render_ms":render_ms,
         }));
         if let Some(wanted) = self.desired_view_for(stage) {
-            self.desired_view_dirty = !contains_region(frame.full_rect, wanted);
+            self.view_plan.dirty = !contains_region(frame.full_rect, wanted);
         }
-        if self.view_request_generation == Some(generation) {
-            self.view_request_generation = None;
+        if self.view_plan.request_generation == Some(generation) {
+            self.view_plan.request_generation = None;
         }
         if intent == PreviewIntent::Interactive && self.activity.pending {
             self.activity.pending = false;
@@ -1707,8 +1732,8 @@ impl Editor {
                 // An interactive view can supersede a committed render, including after a
                 // cancelled draft. Leave a timer to replace it with a settled job when the view
                 // stops moving; otherwise the histogram can remain stale indefinitely.
-                self.quiet_since.get_or_insert_with(Instant::now);
-                self.quiet_settle_requested = false;
+                self.view_plan.quiet_since.get_or_insert_with(Instant::now);
+                self.view_plan.quiet_settle_requested = false;
             }
         }
         self.refresh_overlay();
@@ -1854,8 +1879,8 @@ impl Editor {
                 "error_code": error.kind.code(),
             }),
         );
-        self.readout = None;
-        self.pending_sample = None;
+        self.hover.readout = None;
+        self.hover.sample.drop_pending();
         self.activity.render = None;
     }
 
@@ -2084,9 +2109,9 @@ impl Editor {
             stage,
             at,
         } = self.presentation.request(job, content, timed);
-        if replaced.is_some() && replaced == self.view_request_generation {
-            self.view_request_generation = None;
-            self.desired_view_dirty = true;
+        if replaced.is_some() && replaced == self.view_plan.request_generation {
+            self.view_plan.request_generation = None;
+            self.view_plan.dirty = true;
         }
         if replaced.is_some() && replaced == self.draft_generation() {
             self.draft_preview_superseded(replaced);
@@ -2095,7 +2120,7 @@ impl Editor {
             self.desired_view_for(stage)
                 .is_some_and(|wanted| contains_region(rect, wanted))
         }) {
-            self.desired_view_dirty = false;
+            self.view_plan.dirty = false;
         }
         (generation, at)
     }
@@ -2339,7 +2364,7 @@ impl Editor {
         self.owner
             .submit_analysis(analysis.identity.clone(), analysis.report.clone());
         if self.presentation.analysis_content == Some(self.presentation.content_serial) {
-            self.quiet_since = None;
+            self.view_plan.quiet_since = None;
         }
     }
 
@@ -2348,8 +2373,8 @@ impl Editor {
     /// that belong to an image no longer shown.
     pub(super) fn show_entry(&mut self, entry: luxforge_core::EntryId) {
         if self.document.display_entry.as_ref() != Some(&entry) {
-            self.readout = None;
-            self.pending_sample = None;
+            self.hover.readout = None;
+            self.hover.sample.drop_pending();
         }
         self.document.display_entry = Some(entry);
     }

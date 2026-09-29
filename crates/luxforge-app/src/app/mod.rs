@@ -91,7 +91,6 @@ use crate::{
         self, Workspace,
         capabilities::CapabilityStore,
         fields::Fields,
-        histogram::Readout,
         presets::{PresetForm, PresetLibrary},
         tools,
     },
@@ -182,16 +181,12 @@ pub(crate) struct Editor {
     /// The overlay request the clipping overlay on the presenter was derived for, so an unchanged
     /// view re-derives nothing and a stale overlay is never drawn over a newer photograph.
     pub(crate) overlay_request: Option<OverlayRequest>,
-    /// The pixel under the pointer, as `render.sample` last answered it.
-    pub(crate) readout: Option<Readout>,
-    /// One sample is in flight at a time; the newest position waits for it. This is a throttle, not
-    /// a timer: nothing wakes up to check it.
-    pub(crate) sample_in_flight: bool,
-    pub(crate) pending_sample: Option<(u32, u32)>,
-    /// The window's logical size, from the launch size and every resize event since.
-    pub(crate) window: (f32, f32),
-    /// The window fills the screen, so the title bar holds no traffic lights to leave room for.
-    pub(crate) fullscreen: bool,
+    /// This desktop's own view state: window, zoom and pan, menu, gallery page and file dialog.
+    pub(crate) view_state: state::ViewState,
+    /// The pixel under the pointer and its one sample in flight.
+    pub(crate) hover: state::Hover,
+    /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
+    pub(crate) view_plan: preview::ViewPlan,
     /// Where the main thread's time goes, for the evidence events; never read by the view.
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     pub(crate) busy: bool,
@@ -200,18 +195,6 @@ pub(crate) struct Editor {
     /// The owner said another client changed something, or an answer of this desktop's own left
     /// it unknown whether its change landed: the event sync polls once nothing is in flight.
     pub(crate) sync_wanted: bool,
-    pub(crate) pan_in_flight: bool,
-    pub(crate) pending_pan: Option<(f32, f32)>,
-    /// The latest scrollable offset is local immediately; session pan can be one round trip old.
-    pub(crate) local_pan: (f32, f32),
-    pub(crate) desired_view_dirty: bool,
-    pub(crate) view_request_generation: Option<u64>,
-    pub(crate) view_plan_in_flight: bool,
-    pub(crate) view_plan_epoch: u64,
-    pub(crate) quiet_since: Option<Instant>,
-    pub(crate) quiet_settle_requested: bool,
-    pub(crate) released_draft: Option<luxforge_core::DraftId>,
-    pub(crate) picker_open: bool,
     pub(crate) status: String,
     /// What Copy in the status bar copies instead of the line itself, while the status still reads
     /// that line: an import's whole report behind its one-line summary.
@@ -231,17 +214,12 @@ pub(crate) struct Editor {
     /// that falls out of the bound is read back like another client's, which costs a refresh and
     /// loses nothing.
     pub(crate) own_requests: std::collections::VecDeque<String>,
-    pub(crate) scale_factor: f32,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
     pub(crate) modules: Vec<ModuleDescriptor>,
     /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
     pub(crate) modules_ready: bool,
     /// Proof and diagnostic modules are listed only when the run asked for them.
     pub(crate) developer: bool,
-    /// The developer components gallery page shown instead of the workspace, or `None` for the
-    /// editor. It is this desktop's own view state: no other client sees it and the owner does not
-    /// hold it.
-    pub(crate) gallery: Option<usize>,
     /// The text typed into each generated field, by (action id, parameter name).
     pub(crate) fields: Fields,
     /// Local presentation state of generated controls; authoritative values stay in the recipe.
@@ -271,15 +249,9 @@ pub(crate) struct Editor {
     pub(crate) pending_reset: Option<slider::PendingReset>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: BTreeMap<String, bool>,
-    pub(crate) menu: Option<MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
-    /// The last pointer position over the photo in image pixels; a pick commits nothing.
-    pub(crate) pointer: Option<(u32, u32)>,
-    pub(crate) zoom: String,
-    /// The title bar's percentage segment has been opened for typing a zoom.
-    pub(crate) zoom_editing: bool,
     pub(crate) version_name: String,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
@@ -389,36 +361,21 @@ impl Editor {
             presentation: preview::Presentation::default(),
             overlay_queue: OverlayQueue::default(),
             overlay_request: None,
-            readout: None,
-            sample_in_flight: false,
-            pending_sample: None,
-            window,
-            fullscreen: false,
+            view_state: state::ViewState::new(window),
+            hover: Default::default(),
+            view_plan: Default::default(),
             busy: false,
             syncing: false,
             sync_wanted: false,
-            pan_in_flight: false,
-            pending_pan: None,
-            local_pan: (0.0, 0.0),
-            desired_view_dirty: false,
-            view_request_generation: None,
-            view_plan_in_flight: false,
-            view_plan_epoch: 0,
-            quiet_since: None,
-            quiet_settle_requested: false,
-            released_draft: None,
-            picker_open: false,
             status: "Open a photo to begin".into(),
             status_copy: None,
             happened: None,
             skipped: None,
             api_sequence: 0,
             own_requests: std::collections::VecDeque::new(),
-            scale_factor: 1.0,
             modules: Default::default(),
             modules_ready: false,
             developer: config.developer,
-            gallery: None,
             fields: Default::default(),
             controls_ui: Default::default(),
             curve_sample_sequence: 0,
@@ -435,13 +392,9 @@ impl Editor {
             stand_in: None,
             pending_reset: None,
             expanded: Default::default(),
-            menu: Default::default(),
             palette_open: false,
             palette_query: String::new(),
             palette_selected: 0,
-            pointer: None,
-            zoom: "100".into(),
-            zoom_editing: false,
             version_name: String::new(),
             version_form_open: false,
             crop_section: Default::default(),
@@ -534,13 +487,13 @@ impl Editor {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
         let previous_geometry = (
-            self.window,
-            self.scale_factor,
+            self.view_state.window,
+            self.view_state.scale_factor,
             self.session.workspace.state_panel,
             self.session.workspace.tools_panel,
-            self.local_pan,
+            self.view_state.local_pan,
         );
-        let previous_view_epoch = self.view_plan_epoch;
+        let previous_view_epoch = self.view_plan.epoch;
         let busy = self.presentation.queue.is_busy()
             || self.overlay_queue.is_busy()
             || self.thumbnailer.queue.is_busy();
@@ -548,13 +501,13 @@ impl Editor {
         let task = self.dispatch(message);
         if (self.session.preview.view.zoom != zoom
             || (
-                self.window,
-                self.scale_factor,
+                self.view_state.window,
+                self.view_state.scale_factor,
                 self.session.workspace.state_panel,
                 self.session.workspace.tools_panel,
-                self.local_pan,
+                self.view_state.local_pan,
             ) != previous_geometry)
-            && self.view_plan_epoch == previous_view_epoch
+            && self.view_plan.epoch == previous_view_epoch
         {
             self.note_view_motion();
         }
@@ -573,7 +526,7 @@ impl Editor {
         let zoomed = self.zoom_changed(&zoom);
         // The typed field closes on any zoom change, so the segment shows the zoom it now holds.
         if self.session.preview.view.zoom != zoom {
-            self.zoom_editing = false;
+            self.view_state.zoom_editing = false;
         }
         let refit = self.refit_proxy();
         let view_request = self.reconcile_view();
@@ -667,11 +620,8 @@ impl Editor {
             can_export: self.can_export(),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
-            scale_factor: self.scale_factor,
-            zoom: &self.zoom,
-            zoom_editing: self.zoom_editing,
-            window: self.window,
-            fullscreen: self.fullscreen,
+            view_state: &self.view_state,
+            hover: &self.hover,
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
             dimensions: self.presentation.dimensions,
@@ -680,11 +630,8 @@ impl Editor {
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
             render_error: self.presentation.render_error.as_ref(),
-            pointer: self.pointer,
             analysis: self.presentation.analysis.as_ref(),
             analysis_updating: self.presentation.analysis_updating(),
-            readout: self.readout.as_ref(),
-            menu: self.menu.as_ref(),
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
             palette_selected: self.palette_selected,
@@ -794,7 +741,7 @@ impl Editor {
             slider_drafting: self.slider_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
-            export_menu_open: matches!(self.menu, Some(MenuTarget::Export)),
+            export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(
@@ -845,7 +792,7 @@ impl Editor {
         if self.preview_wake_needed() {
             subscriptions.push(waker::subscription());
         }
-        if self.quiet_since.is_some() && !self.quiet_settle_requested {
+        if self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested {
             subscriptions.push(
                 iced::time::every(Duration::from_millis(25))
                     .map(|_| Message::Preview(PreviewMessage::QuietTick)),

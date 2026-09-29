@@ -90,13 +90,16 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
         Zoom::Fit => {
             let source = inputs.dimensions?;
             let workspace = &inputs.session.workspace;
-            let surface =
-                layout::photo_surface(inputs.window, workspace.state_panel, workspace.tools_panel);
+            let surface = layout::photo_surface(
+                inputs.view_state.window,
+                workspace.state_panel,
+                workspace.tools_panel,
+            );
             let (width, _) = histogram::displayed_size(
                 ZoomView::Fit,
                 source,
                 surface,
-                inputs.scale_factor,
+                inputs.view_state.scale_factor,
                 layout::FIT_INSET,
             )?;
             Some(width / source.0 as f32 * 100.0)
@@ -137,8 +140,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
                 .map(|name| name.to_string_lossy().into_owned())
         }),
         identity: identity(inputs),
-        zoom_text: inputs.zoom.to_owned(),
-        zoom_editing: inputs.zoom_editing,
+        zoom_text: inputs.view_state.zoom.clone(),
+        zoom_editing: inputs.view_state.zoom_editing,
         zoom_percent: effective_percent(inputs)
             .map(percent_text)
             .unwrap_or_else(|| "%".to_owned()),
@@ -150,7 +153,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         can_view: inputs.document.state.is_some(),
         can_open: inputs.can_open,
         can_export: inputs.can_export,
-        export_menu_open: inputs.can_export && matches!(inputs.menu, Some(MenuTarget::Export)),
+        export_menu_open: inputs.can_export
+            && matches!(inputs.view_state.menu.as_ref(), Some(MenuTarget::Export)),
         // The core answers an undo with no parent entry, or a redo with nothing undone, as a no-op,
         // so neither is offered then.
         can_undo: navigable
@@ -170,7 +174,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         compare_held: inputs.compare_held,
         clipping_on: inputs.session.workspace.clip_shadows
             && inputs.session.workspace.clip_highlights,
-        fullscreen: inputs.fullscreen,
+        fullscreen: inputs.view_state.fullscreen,
     }
 }
 

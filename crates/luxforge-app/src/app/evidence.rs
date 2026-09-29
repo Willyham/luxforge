@@ -2425,7 +2425,7 @@ impl Editor {
         match step {
             ViewStep::Fit => self.update(Message::View(ViewMessage::Fit)),
             ViewStep::Percent(value) => {
-                self.zoom = number_text(f64::from(value));
+                self.view_state.zoom = number_text(f64::from(value));
                 self.update(Message::View(ViewMessage::ApplyZoom))
             }
         }
@@ -2456,7 +2456,7 @@ impl Editor {
         match step.view {
             ViewStep::Fit => self.update(Message::View(ViewMessage::Fit)),
             ViewStep::Percent(value) => {
-                self.zoom = number_text(f64::from(value));
+                self.view_state.zoom = number_text(f64::from(value));
                 self.update(Message::View(ViewMessage::ApplyZoom))
             }
         }
@@ -2658,14 +2658,14 @@ impl Editor {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
-        if self.pointer == Some((x, y)) {
+        if self.hover.pointer == Some((x, y)) {
             // The pointer is already there, so no sample would be asked for and nothing would
             // settle the step; clearing it first makes the move a real one.
             let _ = self.update(Message::Pointer(PointerMessage::Moved(None)));
         }
         self.await_step(Settle::Readout);
         let task = self.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
-        if !self.sample_in_flight {
+        if !self.hover.sample.in_flight() {
             return self.fail_step("the pointer readout could not be requested");
         }
         task
@@ -4177,7 +4177,7 @@ mod tests {
         );
         let _ = editor.next_step();
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
-        assert!(editor.presets.pending && editor.menu.is_none());
+        assert!(editor.presets.pending && editor.view_state.menu.is_none());
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["preset_id"], json!(warm.id.as_str()));
         editor.presets.pending = false;

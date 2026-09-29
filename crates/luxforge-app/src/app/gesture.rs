@@ -483,13 +483,13 @@ impl Editor {
             self.settle_step(Settle::SliderDraft);
             return Task::none();
         }
-        self.quiet_since = None;
-        self.quiet_settle_requested = true;
-        self.view_plan_epoch = self.view_plan_epoch.saturating_add(1);
-        self.released_draft = self
+        self.view_plan.quiet_since = None;
+        self.view_plan.quiet_settle_requested = true;
+        self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
+        self.view_plan.released_draft = self
             .core_gesture()
             .map(|gesture| gesture.draft.draft_id.clone());
-        if self.released_draft.is_some() {
+        if self.view_plan.released_draft.is_some() {
             self.presentation.displayed_draft_id = None;
             self.presentation.displayed_draft_revision = None;
         }
@@ -680,7 +680,7 @@ impl Editor {
             Ok((set, job, round_trip)) => {
                 self.session.draft = Some(set.clone());
                 if let Some(job) = job {
-                    if self.released_draft.as_ref() != Some(&set.draft_id) {
+                    if self.view_plan.released_draft.as_ref() != Some(&set.draft_id) {
                         self.note_view_motion();
                     }
                     let (generation, requested_at) =
@@ -862,7 +862,7 @@ impl Editor {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.released_draft = None;
+                self.view_plan.released_draft = None;
                 // The commit may have landed before its read-back failed: read the log once.
                 self.resync();
                 let prefix = self

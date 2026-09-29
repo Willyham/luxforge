@@ -2388,7 +2388,7 @@ mod tests {
         // A photo surface smaller than the 480 × 320 photograph, so Fit draws it smaller than it is.
         editor.session.workspace.state_panel = false;
         editor.session.workspace.tools_panel = false;
-        editor.window = (360.0, 300.0);
+        editor.view_state.window = (360.0, 300.0);
         let _ = editor.update(Message::Crop(CropMessage::Start));
         let count = editor.crop().expect("a frame").layer_index;
         let input = editor.crop().expect("a frame").stage;
@@ -2508,7 +2508,7 @@ mod tests {
         let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
         editor.session.workspace.state_panel = false;
         editor.session.workspace.tools_panel = false;
-        editor.window = (360.0, 300.0);
+        editor.view_state.window = (360.0, 300.0);
         let _ = editor.update(Message::Crop(CropMessage::Start));
         let count = editor.crop().expect("a frame").layer_index;
         let job = editor

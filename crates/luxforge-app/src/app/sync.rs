@@ -41,10 +41,10 @@ impl Editor {
     pub(super) fn sync_update(&mut self, message: SyncMessage) -> Task<Message> {
         match message {
             SyncMessage::Open => {
-                if self.picker_open || self.busy || self.evidence.is_some() {
+                if self.view_state.picker_open || self.busy || self.evidence.is_some() {
                     return Task::none();
                 }
-                self.picker_open = true;
+                self.view_state.picker_open = true;
                 return Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
@@ -63,7 +63,7 @@ impl Editor {
                 );
             }
             SyncMessage::Picked(path) => {
-                self.picker_open = false;
+                self.view_state.picker_open = false;
                 if let Some(path) = path {
                     return self.open(path);
                 }

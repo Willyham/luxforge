@@ -36,12 +36,12 @@ pub(crate) fn brush_field_id(name: &str) -> String {
 impl Editor {
     /// Whether one of the panel's own menus is open.
     pub(crate) fn mask_menu_open(&self) -> bool {
-        self.menu.as_ref().is_some_and(panel_menu)
+        self.view_state.menu.as_ref().is_some_and(panel_menu)
     }
 
     /// Which kind menu is open, if one is: the context in which a kind's letter starts that kind.
     pub(crate) fn kind_menu_open(&self) -> Option<KindMenu> {
-        match self.menu.as_ref() {
+        match self.view_state.menu.as_ref() {
             Some(MenuTarget::NewMask) => Some(KindMenu::New),
             Some(MenuTarget::AddComponent) => Some(KindMenu::Add),
             _ => None,
@@ -52,7 +52,7 @@ impl Editor {
     /// panel makes, puts the menu away as a native menu does.
     pub(crate) fn close_mask_menu(&mut self) {
         if self.mask_menu_open() {
-            self.menu = None;
+            self.view_state.menu = None;
         }
     }
 
