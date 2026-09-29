@@ -249,7 +249,7 @@ impl Editor {
     /// it arrives ([`Self::thumbnail_source_planned`]). Outside Mask mode nothing runs; with
     /// another photograph open, or none, the last one's thumbnails are dropped.
     pub(super) fn refresh_thumbnails(&mut self) -> Task<Message> {
-        let open = self.state.as_ref().map(|state| &state.asset.id);
+        let open = self.document.state.as_ref().map(|state| &state.asset.id);
         if self
             .thumbnailer
             .source
@@ -619,6 +619,7 @@ mod tests {
             crate::app::testing::opened_with_modules(crate::app::testing::descriptors(), 4);
         let (sky, face) = (linear(), radial());
         let asset = editor
+            .document
             .state
             .as_ref()
             .expect("an open asset")
@@ -641,7 +642,7 @@ mod tests {
             stack.recipe().clone(),
             None,
         );
-        editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+        editor.document.masks = Some(luxforge_core::mask::commands::MaskListing {
             entry_id: editor.displayed_entry().expect("a displayed entry"),
             masks: [&sky, &face]
                 .iter()
@@ -861,7 +862,12 @@ mod tests {
             });
         };
         let commit = |editor: &Editor, method: &str, params: Value| {
-            let revision = editor.state.as_ref().expect("an open photo").revision;
+            let revision = editor
+                .document
+                .state
+                .as_ref()
+                .expect("an open photo")
+                .revision;
             let mut params = params;
             params["asset_id"] = json!(asset);
             params["mutation"] = serde_json::to_value(tasks::mutation(revision)).unwrap();
@@ -936,12 +942,25 @@ mod tests {
                 1,
                 "the thumbnail follows"
             );
-            entries.push(editor.state.as_ref().unwrap().current_entry.id.clone());
+            entries.push(
+                editor
+                    .document
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .current_entry
+                    .id
+                    .clone(),
+            );
         }
         // History selections at other gains, as the history panel makes them: the Original at the
         // camera's gains, two earlier white balances neither development holds, and current again.
         // The Original holds no mask, so it has no thumbnail.
-        let original = editor.original_entry.clone().expect("the Original");
+        let original = editor
+            .document
+            .original_entry
+            .clone()
+            .expect("the Original");
         for (what, entry, thumbnails) in [
             ("the Original", Some(&original), 0),
             ("3500 K again", Some(&entries[0]), 1),

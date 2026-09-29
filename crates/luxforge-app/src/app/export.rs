@@ -110,7 +110,7 @@ impl Editor {
     /// ([`Starting::Export`]), with no one-draft rule, since an open draft does not change the
     /// displayed entry an export writes — and no file dialog is open.
     pub(crate) fn export_refusal(&self) -> Option<String> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return Some("Open a photograph to export it".into());
         }
         if self.export.active() {
@@ -145,7 +145,7 @@ impl Editor {
             self.status = "No history entry is displayed".into();
             return Task::none();
         };
-        let state = self.state.as_ref().expect("checked above");
+        let state = self.document.state.as_ref().expect("checked above");
         let asset = state.asset.id.clone();
         let original = state.asset.locator.clone();
         if destination.is_none() {

@@ -234,7 +234,7 @@ impl Editor {
         }
         let (Some(entry), Some(asset)) = (
             self.displayed_entry(),
-            self.state.as_ref().map(|state| &state.asset.id),
+            self.document.state.as_ref().map(|state| &state.asset.id),
         ) else {
             return Task::none();
         };
@@ -763,7 +763,7 @@ impl Editor {
         let Some((query, _, _)) = curve_query(&self.modules, action, parameter) else {
             return Task::none();
         };
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         let Some(entry) = self.displayed_entry() else {
@@ -839,6 +839,7 @@ impl Editor {
             .get(&(identity.action.clone(), identity.parameter.clone()))
             == Some(&identity.sequence)
             && self
+                .document
                 .state
                 .as_ref()
                 .is_some_and(|state| state.asset.id == identity.asset)

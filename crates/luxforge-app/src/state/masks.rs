@@ -778,8 +778,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
     let disabled_reason = inputs.edit_refusal.clone();
     let enabled = disabled_reason.is_none();
     let listing = inputs
+        .document
         .masks
-        .filter(|listing| Some(&listing.entry_id) == inputs.display_entry);
+        .as_ref()
+        .filter(|listing| Some(&listing.entry_id) == inputs.document.display_entry.as_ref());
     let reports: &[MaskReport] = listing
         .map(|listing| listing.masks.as_slice())
         .unwrap_or(&[]);
@@ -898,7 +900,7 @@ fn typed(inputs: &Inputs<'_>, target: &TypingTarget) -> Option<String> {
 }
 
 fn caption(inputs: &Inputs<'_>, listed: bool, empty: bool) -> Option<String> {
-    if inputs.state.is_none() {
+    if inputs.document.state.is_none() {
         return Some("No photograph is open".into());
     }
     if !listed {

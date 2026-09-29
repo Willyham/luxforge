@@ -234,8 +234,13 @@ impl Editor {
         let effect = frame
             .effect()
             .ok_or("The crop module declares no geometry effect")?;
-        let state = self.state.as_ref().ok_or("No photograph is open")?;
+        let state = self
+            .document
+            .state
+            .as_ref()
+            .ok_or("No photograph is open")?;
         let recipe = self
+            .document
             .current_recipe
             .as_ref()
             .filter(|recipe| recipe.entry_id == state.current_entry.id)
@@ -459,7 +464,7 @@ impl Editor {
                 return Task::none();
             }
         };
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.document.state.as_ref() else {
             return Task::none();
         };
         let (asset, base_revision) = (state.asset.id.clone(), state.revision);
@@ -513,7 +518,7 @@ impl Editor {
                 return Task::none();
             }
         };
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.document.state.as_ref() else {
             return Task::none();
         };
         let (asset, base_revision) = (state.asset.id.clone(), state.revision);
@@ -561,7 +566,7 @@ impl Editor {
     /// answer and the desktop already hold, so the job needs no currency request of its own.
     fn crop_stage_current(&self, entry: &luxforge_core::EntryId) -> bool {
         let (Some(state), Some(StageView::Rendering { base_revision, .. })) =
-            (self.state.as_ref(), self.crop_stage())
+            (self.document.state.as_ref(), self.crop_stage())
         else {
             return false;
         };
@@ -1100,7 +1105,11 @@ impl Editor {
     /// `None` means there is nothing to copy.
     pub(crate) fn crop_copy_request(&self) -> Option<Result<(String, Value), String>> {
         let frame = crop_frame(&self.modules)?;
-        let (gesture, draft, state) = (self.core_gesture()?, self.crop()?, self.state.as_ref()?);
+        let (gesture, draft, state) = (
+            self.core_gesture()?,
+            self.crop()?,
+            self.document.state.as_ref()?,
+        );
         if let Err(error) = draft.output() {
             return Some(Err(error.to_string()));
         }
@@ -1322,7 +1331,7 @@ mod tests {
         assert_eq!((control.spec.step, control.spec.fine_step), (0.5, 0.05));
         release_angle(&mut editor);
         assert_eq!(editor.crop().expect("still drafting").rect, rect);
-        assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
+        assert_eq!(editor.document.state.as_ref().expect("a state").revision, 2);
         let changes: Vec<Value> = crate::app::testing::logged(&mut editor, &log)
             .into_iter()
             .filter(|record| record["event"] == "crop_draft_changed")
@@ -1351,7 +1360,12 @@ mod tests {
                 .0["draft"]
                 .clone()
         };
-        let revision = editor.state.as_ref().expect("a photograph").revision;
+        let revision = editor
+            .document
+            .state
+            .as_ref()
+            .expect("a photograph")
+            .revision;
         let _ = editor.update(Message::Crop(CropMessage::Start));
         step_angle(&mut editor, 1);
         assert_eq!(editor.crop().expect("a frame").stage.angle, STEP);
@@ -1382,7 +1396,12 @@ mod tests {
         assert_eq!(changes.len(), 1, "one draft change");
         assert_eq!(changes[0]["detail"]["angle"], json!(0.0));
         assert_eq!(
-            editor.state.as_ref().expect("a photograph").revision,
+            editor
+                .document
+                .state
+                .as_ref()
+                .expect("a photograph")
+                .revision,
             revision,
             "nothing committed"
         );
@@ -1733,7 +1752,12 @@ mod tests {
                 .expect("a session")
                 .0
         };
-        let revision = editor.state.as_ref().expect("a photograph").revision;
+        let revision = editor
+            .document
+            .state
+            .as_ref()
+            .expect("a photograph")
+            .revision;
 
         let _ = editor.update(Message::Crop(CropMessage::Start));
         step_angle(&mut editor, 1);
@@ -1769,7 +1793,7 @@ mod tests {
         assert!(crate::app::testing::run_commit(&mut editor));
         assert!(editor.gesture.is_none() && editor.crop().is_none());
         assert_eq!(session(client)["draft"], Value::Null);
-        let state = editor.state.as_ref().expect("a photograph");
+        let state = editor.document.state.as_ref().expect("a photograph");
         assert_eq!(state.revision, revision + 1, "one entry");
         let layer = state
             .current_entry
@@ -1797,7 +1821,12 @@ mod tests {
         assert!(editor.gesture.is_none());
         assert_eq!(session(client)["draft"], Value::Null);
         assert_eq!(
-            editor.state.as_ref().expect("a photograph").revision,
+            editor
+                .document
+                .state
+                .as_ref()
+                .expect("a photograph")
+                .revision,
             revision + 1
         );
         finish(editor, catalog);
@@ -2194,7 +2223,7 @@ mod tests {
             "the canvas enters crop mode"
         );
         assert_eq!(
-            editor.state.as_ref().expect("a state").revision,
+            editor.document.state.as_ref().expect("a state").revision,
             5,
             "nothing commits until Apply"
         );
@@ -2237,7 +2266,7 @@ mod tests {
         );
         open_crop(&mut editor);
         assert_eq!(editor.crop().expect("an open frame").stage.angle, 2.4);
-        assert_eq!(editor.state.as_ref().expect("a state").revision, 5);
+        assert_eq!(editor.document.state.as_ref().expect("a state").revision, 5);
         let records = crate::app::testing::logged(&mut editor, &log);
         assert_eq!(
             events(&records, "crop_draft_changed").len(),
@@ -2264,7 +2293,7 @@ mod tests {
         assert_eq!(editor.draft_generation(), None);
         assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
         assert_eq!(editor.status, "Crop draft discarded");
-        assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
+        assert_eq!(editor.document.state.as_ref().expect("a state").revision, 2);
         finish(editor, catalog);
     }
 
@@ -2690,7 +2719,12 @@ mod tests {
 
         // Another client's white balance, read back as the desktop reads it: its refresh plans the
         // new entry's preview and waits for the development it needs.
-        let revision = editor.state.as_ref().expect("an open photo").revision;
+        let revision = editor
+            .document
+            .state
+            .as_ref()
+            .expect("an open photo")
+            .revision;
         tasks::call(
             &owner,
             other,

@@ -300,6 +300,7 @@ fn opened_and_shown() -> (Editor, PathBuf, AssetId, HistoryEntry) {
         editor.presentation.presented_entry.as_ref() == Some(&entry_id)
     });
     let current = editor
+        .document
         .state
         .as_ref()
         .expect("an open asset")
@@ -333,7 +334,13 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     let refresh = committed(&asset, &crop, &[&original], over_the_frame_limit());
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     assert_eq!(
-        editor.state.as_ref().expect("open").current_entry.id,
+        editor
+            .document
+            .state
+            .as_ref()
+            .expect("open")
+            .current_entry
+            .id,
         crop.id,
         "history names the crop"
     );
@@ -513,7 +520,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     editor.presentation.exact = Some(super::testing::exact(generation, raster(2), 5.0));
     // The next entry is committed and asked for; its frame has not arrived.
     let next: EntryId = cropped(&asset, &current, 5).id;
-    editor.display_entry = Some(next.clone());
+    editor.document.display_entry = Some(next.clone());
     let log = attach_log(&mut editor);
 
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
@@ -527,7 +534,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
         Some(&current.id)
     );
     assert_eq!(
-        editor.display_entry.as_ref(),
+        editor.document.display_entry.as_ref(),
         Some(&next),
         "the hand-over moved the requested entry back"
     );
@@ -651,7 +658,7 @@ fn basic() -> Layer {
 /// The job `crop_preview_task` hands back for the starting draft: the current stack truncated to
 /// the layers before the crop, over `source`.
 fn draft_job(editor: &Editor, source: SourceImage) -> PreviewJob {
-    let state = editor.state.as_ref().expect("an open asset");
+    let state = editor.document.state.as_ref().expect("an open asset");
     let current = &state.current_entry;
     let layer_index = editor.crop().expect("an open crop draft").layer_index;
     let mut job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
@@ -669,6 +676,7 @@ fn committed_elsewhere(
     hold: Option<&Hold>,
 ) -> HistoryEntry {
     let current = editor
+        .document
         .state
         .as_ref()
         .expect("an open asset")

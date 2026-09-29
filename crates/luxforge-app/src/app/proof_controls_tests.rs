@@ -171,13 +171,13 @@ impl Proof {
         assert_eq!(params[parameter], expected, "{parameter} desktop value");
         assert_eq!(
             params["mutation"]["expected_revision"],
-            self.editor.state.as_ref().unwrap().revision
+            self.editor.document.state.as_ref().unwrap().revision
         );
 
         // Construct the request independently, as a JSON client would; only the request identity
         // and actor differ from the desktop's copied envelope.
         let mutation = json!({
-            "expected_revision": self.editor.state.as_ref().unwrap().revision,
+            "expected_revision": self.editor.document.state.as_ref().unwrap().revision,
             "request_id": format!("proof-json-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
             "actor": "proof-json-client"
         });
@@ -378,7 +378,7 @@ fn proof_curve_query_samples_the_active_channel_through_the_json_method_table() 
     let mut proof = Proof::new();
     let points = proof.editor.control_field_value(ACTION, "master").unwrap();
     let entry = proof.editor.displayed_entry().unwrap();
-    let previous_revision = proof.editor.state.as_ref().unwrap().revision;
+    let previous_revision = proof.editor.document.state.as_ref().unwrap().revision;
     let (sampled, _) = call(
         &proof.editor.owner,
         proof.json_client,
@@ -391,7 +391,7 @@ fn proof_curve_query_samples_the_active_channel_through_the_json_method_table() 
     assert_eq!(samples.len(), 257);
     assert_eq!(samples[128], json!([0.5, 0.5]));
     assert_eq!(
-        proof.editor.state.as_ref().unwrap().revision,
+        proof.editor.document.state.as_ref().unwrap().revision,
         previous_revision,
         "a query changes no recipe"
     );

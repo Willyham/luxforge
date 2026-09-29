@@ -35,7 +35,7 @@ impl Editor {
                 self.busy = false;
                 match result {
                     Ok((versions, request)) => {
-                        self.versions = versions;
+                        self.document.versions = versions;
                         self.read_back(request);
                         self.version_name.clear();
                         self.status = "Versions updated".into();
@@ -47,8 +47,8 @@ impl Editor {
                 self.busy = false;
                 match result {
                     Ok(page) => {
-                        self.history.entries.extend(page.entries);
-                        self.history.next_before_sequence = page.next_before_sequence;
+                        self.document.history.entries.extend(page.entries);
+                        self.document.history.next_before_sequence = page.next_before_sequence;
                         self.status = "Loaded older history".into();
                     }
                     Err(error) => self.status = error,
@@ -57,7 +57,8 @@ impl Editor {
             HistoryMessage::CompareBegin => return self.compare_begin(true),
             HistoryMessage::CompareUncropped => return self.compare_begin(false),
             HistoryMessage::CompareEnd => {
-                let (Some(state), Some(previous)) = (&self.state, self.compare_return.take())
+                let (Some(state), Some(previous)) =
+                    (&self.document.state, self.document.compare_return.take())
                 else {
                     return Task::none();
                 };
@@ -90,7 +91,7 @@ impl Editor {
             HistoryMessage::ToggleVersionForm => self.version_form_open = !self.version_form_open,
             HistoryMessage::Undo | HistoryMessage::Redo => {
                 let undo = matches!(message, HistoryMessage::Undo);
-                let Some(state) = &self.state else {
+                let Some(state) = &self.document.state else {
                     return Task::none();
                 };
                 let method = if undo { "history.undo" } else { "history.redo" };
@@ -98,7 +99,7 @@ impl Editor {
                 return self.command(method, params);
             }
             HistoryMessage::Select(entry_id) => {
-                let Some(state) = &self.state else {
+                let Some(state) = &self.document.state else {
                     return Task::none();
                 };
                 if self.busy {
@@ -126,7 +127,7 @@ impl Editor {
                 );
             }
             HistoryMessage::ReturnCurrent => {
-                let Some(state) = &self.state else {
+                let Some(state) = &self.document.state else {
                     return Task::none();
                 };
                 if self.busy {
@@ -154,7 +155,7 @@ impl Editor {
             }
             HistoryMessage::Restore => {
                 let (Some(state), HistorySelection::Entry(entry_id)) =
-                    (&self.state, &self.session.preview.selection)
+                    (&self.document.state, &self.session.preview.selection)
                 else {
                     return Task::none();
                 };
@@ -162,7 +163,9 @@ impl Editor {
                 return self.command("history.restore", params);
             }
             HistoryMessage::SaveVersion => {
-                let (Some(state), Some(entry_id)) = (&self.state, &self.display_entry) else {
+                let (Some(state), Some(entry_id)) =
+                    (&self.document.state, &self.document.display_entry)
+                else {
                     return Task::none();
                 };
                 let name = self.version_name.trim().to_string();
@@ -175,7 +178,7 @@ impl Editor {
                 return self.version_command("version.create", params);
             }
             HistoryMessage::DeleteVersion(name) => {
-                let Some(state) = &self.state else {
+                let Some(state) = &self.document.state else {
                     return Task::none();
                 };
                 let params =
@@ -183,8 +186,10 @@ impl Editor {
                 return self.version_command("version.delete", params);
             }
             HistoryMessage::LoadOlder => {
-                let (Some(state), Some(before)) = (&self.state, self.history.next_before_sequence)
-                else {
+                let (Some(state), Some(before)) = (
+                    &self.document.state,
+                    self.document.history.next_before_sequence,
+                ) else {
                     return Task::none();
                 };
                 if self.busy {
@@ -199,7 +204,7 @@ impl Editor {
     }
 
     pub(super) fn version_command(&mut self, method: &'static str, params: Value) -> Task<Message> {
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         if self.busy {
@@ -225,13 +230,15 @@ impl Editor {
             self.status = reason;
             return Task::none();
         }
-        let (Some(state), Some(original)) = (&self.state, self.original_entry.clone()) else {
+        let (Some(state), Some(original)) =
+            (&self.document.state, self.document.original_entry.clone())
+        else {
             return Task::none();
         };
-        if self.compare_return.is_some() {
+        if self.document.compare_return.is_some() {
             return Task::none();
         }
-        self.compare_return = Some(self.session.preview.selection.clone());
+        self.document.compare_return = Some(self.session.preview.selection.clone());
         let asset = state.asset.id.clone();
         self.status = "Comparing with the original…".into();
         let proxy = self.proxy_bounds();

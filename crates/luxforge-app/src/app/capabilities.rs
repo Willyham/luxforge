@@ -663,7 +663,7 @@ impl Editor {
         let declared = module
             .task(task)
             .ok_or_else(|| format!("{} declares no task {task}", module.title))?;
-        let asset = match (declared.asset, &self.state) {
+        let asset = match (declared.asset, &self.document.state) {
             (true, Some(state)) => Some(state.asset.id.clone()),
             (true, None) => return Err("No photograph is open".into()),
             (false, _) => None,
@@ -690,7 +690,7 @@ impl Editor {
             .and_then(|module| module.task(task))
             .and_then(|task| task.apply.clone())
             .ok_or_else(|| format!("{task} declares nothing to apply"))?;
-        let asset = self.state.as_ref().map(|state| &state.asset.id);
+        let asset = self.document.state.as_ref().map(|state| &state.asset.id);
         let artifact = self
             .capabilities
             .module(module_id)

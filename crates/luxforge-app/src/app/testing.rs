@@ -549,7 +549,7 @@ pub(crate) fn stand_in(editor: &mut Editor) -> &mut StandIn {
 /// answered on the revision the desktop holds, as a test that is about something else needs one to
 /// be there.
 pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
-    let state = editor.state.as_ref().expect("a photograph");
+    let state = editor.document.state.as_ref().expect("a photograph");
     let (asset, revision) = (state.asset.id.clone(), state.revision);
     let gesture = editor.next_gesture();
     let (draft, _) = CoreDraft::open(gesture, Draft::new(action, asset.clone(), revision), None);
@@ -617,7 +617,11 @@ pub(crate) fn accepted_set(
     draft_id: &DraftId,
     fields: &Value,
 ) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
-    let state = editor.state.as_ref().ok_or("no photograph is open")?;
+    let state = editor
+        .document
+        .state
+        .as_ref()
+        .ok_or("no photograph is open")?;
     let gesture = editor.core_gesture().ok_or("no gesture is open")?;
     let action = gesture.kind.action().unwrap_or_default();
     let mut draft = editor
@@ -708,6 +712,7 @@ pub(crate) fn hold_crop(
     stage: crate::app::crop::StageView,
 ) {
     let asset = editor
+        .document
         .state
         .as_ref()
         .expect("a photograph")
@@ -788,7 +793,7 @@ pub(crate) fn analysed(
         luxforge_core::analysis::reduce(&rgba, width, height, &luxforge_core::Cancel::never())
             .expect("a reduction");
     let entry_id = editor.displayed_entry().expect("a displayed entry");
-    let state = editor.state.as_ref().expect("an open asset");
+    let state = editor.document.state.as_ref().expect("an open asset");
     let identity = luxforge_core::analysis::AnalysisIdentity {
         asset_id: state.asset.id.clone(),
         source_fingerprint: state.asset.fingerprint.clone(),

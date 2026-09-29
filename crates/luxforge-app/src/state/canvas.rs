@@ -241,7 +241,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         inputs
             .modules
             .iter()
-            .filter(|module| module.is_available() && applies(module, inputs.state))
+            .filter(|module| {
+                module.is_available() && applies(module, inputs.document.state.as_ref())
+            })
             .filter(|module| !module.developer || inputs.developer)
             .filter_map(|module| match module.canvas.as_ref() {
                 Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
@@ -277,7 +279,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             && canvas_pick(inputs.modules, &inputs.session.workspace.mode).is_some()
             && pick_reachable(
                 inputs.modules,
-                inputs.state,
+                inputs.document.state.as_ref(),
                 inputs.target,
                 &inputs.session.workspace.mode,
             ),
@@ -307,7 +309,7 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
     if inputs.photo && inputs.dimensions.is_some() {
         return PhotoView::Plain;
     }
-    if inputs.state.is_some()
+    if inputs.document.state.is_some()
         && let Some(error) = inputs.render_error
     {
         let reason = render_notice(inputs.modules, error)
@@ -363,7 +365,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
 /// kind's icon, then the kind's own readout. A painted gesture ends with Done, because each stroke
 /// already committed on release; its Apply refusal is not stated, because it offers no Apply.
 fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
-    let names = gesture_names(draft, inputs.masks);
+    let names = gesture_names(draft, inputs.document.masks.as_ref());
     let done = draft.paints();
     DraftBar {
         title: names.mask,
@@ -391,7 +393,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     if inputs.gesture_conflicted
         && let Some(gesture) = inputs.gesture
     {
-        let revision = inputs.state.map(|state| state.revision);
+        let revision = inputs.document.state.as_ref().map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,
             icon: NoticeIcon::Spark,

@@ -476,8 +476,8 @@ pub(crate) fn presets_model(
             fields: group.fields,
         })
         .collect();
-    let can_create = inputs.state.is_some()
-        && inputs.display_entry.is_some()
+    let can_create = inputs.document.state.is_some()
+        && inputs.document.display_entry.is_some()
         && !inputs.busy
         && !library.pending
         && !form.name.trim().is_empty()

@@ -130,10 +130,11 @@ impl Editor {
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
-                let Some(state) = &self.state else {
+                let Some(state) = &self.document.state else {
                     return Task::none();
                 };
                 let entry = self
+                    .document
                     .display_entry
                     .clone()
                     .unwrap_or_else(|| state.current_entry.id.clone());
@@ -234,7 +235,7 @@ impl Editor {
                         y: y_parameter,
                         action,
                     } => {
-                        let Some(state) = &self.state else {
+                        let Some(state) = &self.document.state else {
                             return Task::none();
                         };
                         let asset = state.asset.id.clone();
@@ -272,7 +273,7 @@ impl Editor {
                         y: y_parameter,
                         action,
                     } => {
-                        let Some(state) = &self.state else {
+                        let Some(state) = &self.document.state else {
                             return Task::none();
                         };
                         let asset = state.asset.id.clone();
@@ -431,7 +432,7 @@ impl Editor {
             self.pending_sample = Some((x, y));
             return Task::none();
         }
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         let Some(entry) = self.displayed_entry() else {

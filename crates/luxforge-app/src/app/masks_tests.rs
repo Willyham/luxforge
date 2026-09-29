@@ -192,7 +192,7 @@ impl Masking {
 
     /// One step back or forward through history, as the editor's own command does.
     fn walk(&mut self, method: &str) {
-        let revision = self.editor.state.as_ref().unwrap().revision;
+        let revision = self.editor.document.state.as_ref().unwrap().revision;
         call(
             &self.owner(),
             self.editor.client,
@@ -421,7 +421,7 @@ impl Masking {
     /// One more component on that mask, posted the way an independent client posts one. Used where
     /// a test needs a long list rather than a drawn one.
     fn add_component_through_the_api(&mut self, mask: &luxforge_core::MaskId) {
-        let revision = self.editor.state.as_ref().unwrap().revision;
+        let revision = self.editor.document.state.as_ref().unwrap().revision;
         call(
             &self.owner(),
             self.editor.client,
@@ -435,7 +435,7 @@ impl Masking {
 
     /// One more mask, posted the same way.
     fn create_mask_through_the_api(&mut self) {
-        let revision = self.editor.state.as_ref().unwrap().revision;
+        let revision = self.editor.document.state.as_ref().unwrap().revision;
         call(
             &self.owner(),
             self.editor.client,
@@ -594,7 +594,7 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
 fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
-    let before = masking.editor.history.entries.len();
+    let before = masking.editor.document.history.entries.len();
 
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
@@ -612,7 +612,7 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     masking.message(MaskMessage::Handle(MaskPointer::End));
     masking.assert_geometry_sent();
     assert_eq!(
-        masking.editor.history.entries.len(),
+        masking.editor.document.history.entries.len(),
         before,
         "a drag committed something before Apply"
     );
@@ -632,7 +632,7 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
 
     masking.apply();
     assert_eq!(
-        masking.editor.history.entries.len(),
+        masking.editor.document.history.entries.len(),
         before + 1,
         "the whole gesture is exactly one history entry"
     );
@@ -734,7 +734,7 @@ fn a_masked_control_sends_and_copies_the_request_an_independent_client_sends() {
         action: "set-basic".into(),
         preset: serde_json::Map::new(),
     }));
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     let (result, _) = call(
         &masking.owner(),
         masking.editor.client,
@@ -752,7 +752,12 @@ fn a_masked_control_sends_and_copies_the_request_an_independent_client_sends() {
         1,
         "the mask holds exactly the Basic layer it was edited through"
     );
-    let described = masking.editor.recipe.as_ref().expect("a described recipe");
+    let described = masking
+        .editor
+        .document
+        .recipe
+        .as_ref()
+        .expect("a described recipe");
     let masked: Vec<_> = described
         .layers
         .iter()
@@ -792,7 +797,7 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
     masking.enter_mask_mode();
     masking.draw_mask();
     let mask = masking.listing().masks[0].id.clone();
-    let before = masking.editor.history.entries.len();
+    let before = masking.editor.document.history.entries.len();
 
     // The first move opens the draft. Its target is the open mask, so the previewed stack is the
     // masked layer the release will commit rather than the global one.
@@ -831,11 +836,11 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
         masking.editor.status
     );
     assert_eq!(
-        masking.editor.history.entries.len(),
+        masking.editor.document.history.entries.len(),
         before + 1,
         "a masked slider gesture is one entry"
     );
-    let described = masking.editor.recipe.as_ref().expect("a recipe");
+    let described = masking.editor.document.recipe.as_ref().expect("a recipe");
     let masked: Vec<_> = described
         .layers
         .iter()
@@ -864,7 +869,7 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
     assert!(reason.contains("one component"), "{reason}");
     assert!(reason.contains("delete the mask"), "{reason}");
     // And the host agrees in the same words, because the panel's reason is the host's own rule.
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     let refused = call(
         &masking.owner(),
         masking.editor.client,
@@ -1030,7 +1035,7 @@ fn a_mask_controls_request_matches_json_and_a_drag_changes_one_section() {
     );
 
     // Sending exactly that request through the API changes the stack the same way.
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     let mut params = copied["params"].clone();
     params["mutation"] = json!(tasks::mutation(revision));
     let (result, _) = call(
@@ -1555,7 +1560,7 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
         .set_control_field_value(BAND, "high", &json!(100.0));
 
     // The high thumb dragged to 88: exactly the message a slider's rail publishes for that field.
-    let before = masking.editor.history.entries.len();
+    let before = masking.editor.document.history.entries.len();
     let _ = masking
         .editor
         .update(Message::Control(ControlMessage::Fraction {
@@ -1611,7 +1616,7 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
         masking.editor.status
     );
     assert_eq!(
-        masking.editor.history.entries.len(),
+        masking.editor.document.history.entries.len(),
         before + 1,
         "a thumb's gesture is one entry"
     );
@@ -1741,7 +1746,7 @@ fn the_add_row_chooses_the_mode_before_the_gesture() {
 fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
-    let before = masking.editor.history.entries.len();
+    let before = masking.editor.document.history.entries.len();
     masking.message(MaskMessage::New(RADIAL.to_owned()));
     masking.open_gesture();
     // The gesture knows the content stage's aspect from `render.transform`, which is the only thing
@@ -1794,7 +1799,7 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
         .collect();
     masking.apply();
     assert_eq!(
-        masking.editor.history.entries.len(),
+        masking.editor.document.history.entries.len(),
         before + 1,
         "a shape gesture is one history entry"
     );
@@ -1899,7 +1904,7 @@ fn the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit()
         "{add_reason}"
     );
     // And the host refuses one more, with a reason of the same shape.
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     let refused = call(
         &masking.owner(),
         masking.editor.client,
@@ -1972,7 +1977,7 @@ fn the_amount_slider_reads_the_amount_the_mask_holds() {
     // And after an amount this desktop did not choose: the control follows the stack, so a mask
     // another client turned down is read correctly here the moment the refresh lands.
     let mask = masking.listing().masks[0].id.clone();
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     call(
         &masking.owner(),
         masking.agent,
@@ -2103,7 +2108,7 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
 
     // One luminance-range component, through the generated command a person's own button sends, is
     // what makes this mask read pixels.
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     call(
         &masking.owner(),
         masking.editor.client,
@@ -3125,7 +3130,7 @@ fn a_commit_elsewhere_while_the_brush_is_in_hand_conflicts_nothing() {
     let asked = masking.editor.armed.as_ref().map(|armed| armed.id);
 
     agent_commits(&mut masking);
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     assert!(masking.editor.armed_brush(), "the brush stays in hand");
     assert!(masking.editor.gesture.is_none(), "no draft was opened");
     assert!(!masking.editor.gesture_conflicted(), "no notice");
@@ -3318,7 +3323,7 @@ fn a_painted_brush_changed_elsewhere_shows_the_notice() {
 
 /// An independent client commits an edit, and the desktop reads it back as its poll would.
 fn agent_commits(masking: &mut Masking) {
-    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
     call(
         &masking.owner(),
         masking.agent,
@@ -4123,7 +4128,7 @@ fn a_swatch_menu_removes_one_colour_with_the_request_it_copies() {
     .unwrap()
     .method;
     for red in [0.2, 0.6] {
-        let revision = masking.editor.state.as_ref().unwrap().revision;
+        let revision = masking.editor.document.state.as_ref().unwrap().revision;
         call(
             &masking.owner(),
             masking.editor.client,

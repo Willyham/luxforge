@@ -196,7 +196,11 @@ impl Editor {
     /// the displayed entry, and the `preset.create` those captured settings complete. The name and
     /// group go as typed; the library trims them and applies its own rules.
     pub(crate) fn preset_create_requests(&self) -> Result<(Value, Value), String> {
-        let state = self.state.as_ref().ok_or("No photograph is open")?;
+        let state = self
+            .document
+            .state
+            .as_ref()
+            .ok_or("No photograph is open")?;
         let entry = self
             .displayed_entry()
             .ok_or("No history entry is displayed")?;

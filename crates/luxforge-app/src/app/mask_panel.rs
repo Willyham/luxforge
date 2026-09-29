@@ -59,7 +59,7 @@ impl Editor {
     /// Drop view state that names a row the listing no longer holds: a rename or a drag of a mask or
     /// component that was undone away or deleted elsewhere.
     pub(crate) fn drop_stale_panel_state(&mut self) {
-        let listing = self.masks.as_ref();
+        let listing = self.document.masks.as_ref();
         let has_mask = |id: &str| {
             listing.is_some_and(|listing| listing.masks.iter().any(|mask| mask.id.as_str() == id))
         };
@@ -94,7 +94,8 @@ impl Editor {
     /// The open mask's report, when one is open and listed.
     fn panel_open_mask(&self) -> Option<&MaskReport> {
         let id = self.mask_panel.selected_mask.as_ref()?;
-        self.masks
+        self.document
+            .masks
             .as_ref()?
             .masks
             .iter()
@@ -194,6 +195,7 @@ impl Editor {
                 }
                 self.mask_panel.typing = None;
                 let unchanged = self
+                    .document
                     .masks
                     .as_ref()
                     .and_then(|listing| listing.masks.iter().find(|m| m.id.as_str() == mask))
@@ -300,7 +302,7 @@ impl Editor {
 
     /// Reorder one mask to `to`, as a drag's release or `⌥`-Up and `⌥`-Down do, or say why not.
     fn move_mask_to(&mut self, mask: String, to: usize) -> Task<Message> {
-        let Some(listing) = self.masks.as_ref() else {
+        let Some(listing) = self.document.masks.as_ref() else {
             return Task::none();
         };
         let Some(from) = listing.masks.iter().position(|m| m.id.as_str() == mask) else {
@@ -350,6 +352,7 @@ impl Editor {
             // With no mask open the only key that means anything is a move into the list.
             if let MaskKey::Select(_) = key
                 && let Some(first) = self
+                    .document
                     .masks
                     .as_ref()
                     .and_then(|listing| listing.masks.first())
@@ -396,7 +399,7 @@ impl Editor {
                 self.mask_message(MaskMessage::SelectComponent(id))
             }
             (MaskKey::Select(step), None) => {
-                let Some(listing) = self.masks.as_ref() else {
+                let Some(listing) = self.document.masks.as_ref() else {
                     return Task::none();
                 };
                 let Some(next) = step_index(report.index, step, listing.masks.len()) else {
@@ -414,7 +417,11 @@ impl Editor {
                 self.move_component_to(component, to)
             }
             (MaskKey::Move(step), None) => {
-                let len = self.masks.as_ref().map_or(0, |listing| listing.masks.len());
+                let len = self
+                    .document
+                    .masks
+                    .as_ref()
+                    .map_or(0, |listing| listing.masks.len());
                 let Some(to) = step_index(report.index, step, len) else {
                     self.status = move_refusal(&report.name, step);
                     return Task::none();

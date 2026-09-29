@@ -7,26 +7,26 @@ use super::{
     },
     *,
 };
-use luxforge_core::{AssetId, HistoryRow};
+use luxforge_core::{AssetId, HistoryRow, HistorySelection};
 
 #[test]
 fn compare_remembers_the_selection_it_replaced() {
     let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
     let original = luxforge_core::EntryId::new();
-    editor.original_entry = Some(original.clone());
+    editor.document.original_entry = Some(original.clone());
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
-        editor.compare_return,
+        editor.document.compare_return,
         Some(HistorySelection::Current),
         "the selection Compare replaced is remembered"
     );
     let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
-    assert!(editor.compare_return.is_none());
+    assert!(editor.document.compare_return.is_none());
     // From a historical preview Compare returns to that entry, not to current.
     editor.session.preview.selection = HistorySelection::Entry(entry_id.clone());
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
-        editor.compare_return,
+        editor.document.compare_return,
         Some(HistorySelection::Entry(entry_id))
     );
     let _ = std::hint::black_box(&asset);
@@ -38,18 +38,21 @@ fn compare_remembers_the_selection_it_replaced() {
 #[test]
 fn the_uncropped_compare_is_the_same_hold() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
-    editor.original_entry = Some(luxforge_core::EntryId::new());
+    editor.document.original_entry = Some(luxforge_core::EntryId::new());
     let _ = editor.update(Message::History(HistoryMessage::CompareUncropped));
-    assert_eq!(editor.compare_return, Some(HistorySelection::Current));
+    assert_eq!(
+        editor.document.compare_return,
+        Some(HistorySelection::Current)
+    );
     assert!(editor.workspace.title.compare_held);
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
-        editor.compare_return,
+        editor.document.compare_return,
         Some(HistorySelection::Current),
         "one hold at a time"
     );
     let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
-    assert!(editor.compare_return.is_none());
+    assert!(editor.document.compare_return.is_none());
     finish(editor, catalog);
 }
 
@@ -59,13 +62,13 @@ fn the_uncropped_compare_is_the_same_hold() {
 #[test]
 fn compare_is_refused_while_a_crop_draft_is_open() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
-    editor.original_entry = Some(luxforge_core::EntryId::new());
+    editor.document.original_entry = Some(luxforge_core::EntryId::new());
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let selection = editor.session.preview.selection.clone();
 
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert!(
-        editor.compare_return.is_none(),
+        editor.document.compare_return.is_none(),
         "no compare hold was taken: {}",
         editor.status
     );
@@ -80,14 +83,17 @@ fn compare_is_refused_while_a_crop_draft_is_open() {
 
     // The release of a refused hold changes nothing.
     let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
-    assert!(editor.compare_return.is_none());
+    assert!(editor.document.compare_return.is_none());
     assert_eq!(editor.session.preview.selection, selection);
     assert!(!editor.busy, "nothing was sent");
 
     // With the draft gone, Compare works as before and reaches the title bar model.
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
-    assert_eq!(editor.compare_return, Some(HistorySelection::Current));
+    assert_eq!(
+        editor.document.compare_return,
+        Some(HistorySelection::Current)
+    );
     assert!(editor.workspace.title.compare_held);
     assert_eq!(editor.snapshot()["compare"], json!(true));
     finish(editor, catalog);
@@ -112,7 +118,11 @@ fn selecting_the_current_entry_returns_to_current_instead_of_previewing() {
 fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
     let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 4);
     let older = entry(&asset, 2, None);
-    editor.history.entries.push(HistoryRow::from(&older));
+    editor
+        .document
+        .history
+        .entries
+        .push(HistoryRow::from(&older));
     // The current state says what last happened, in words: no entry, snapshot or source identity.
     let current = editor.displayed_status(&older.id);
     assert!(!current.starts_with("Previewing"), "{current}");
@@ -187,7 +197,7 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
         "the title bar offers neither Undo nor Redo during a draft"
     );
     let held = editor.gesture.clone().map(|gesture| format!("{gesture:?}"));
-    let revision = editor.state.as_ref().map(|state| state.revision);
+    let revision = editor.document.state.as_ref().map(|state| state.revision);
     let selection = editor.session.preview.selection.clone();
     for (name, message) in [
         ("undo", HistoryMessage::Undo),
@@ -207,7 +217,10 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
             held,
             "{name}: the draft is untouched"
         );
-        assert_eq!(editor.state.as_ref().map(|state| state.revision), revision);
+        assert_eq!(
+            editor.document.state.as_ref().map(|state| state.revision),
+            revision
+        );
     }
     editor.session.preview.selection = selection;
 }

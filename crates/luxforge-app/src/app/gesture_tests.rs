@@ -211,7 +211,7 @@ fn a_refused_begin_opens_nothing_and_says_why() {
 fn a_refused_reapply_keeps_the_draft_conflicted_and_says_why() {
     let (mut editor, catalog, _, _, action, parameter) = testing::drafting();
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
-    let state = editor.state.as_mut().expect("open");
+    let state = editor.document.state.as_mut().expect("open");
     state.revision += 1;
     let newer = state.revision;
     editor.gesture_revision(newer);
@@ -235,7 +235,14 @@ fn a_refused_reapply_keeps_the_draft_conflicted_and_says_why() {
 #[test]
 fn a_refused_pick_uses_the_one_wording() {
     let (mut editor, catalog, _) = picking();
-    let asset = editor.state.as_ref().expect("open").asset.id.clone();
+    let asset = editor
+        .document
+        .state
+        .as_ref()
+        .expect("open")
+        .asset
+        .id
+        .clone();
     editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
     let task = editor.update(Message::Pointer(PointerMessage::Picked { x: 3, y: 4 }));
     assert_eq!(task.units(), 0);

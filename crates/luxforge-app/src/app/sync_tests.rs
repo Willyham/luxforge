@@ -5,7 +5,7 @@ use super::{
     testing::{boot, entry, finish, opened, refresh_for},
     *,
 };
-use luxforge_core::{AssetId, HistoryRow, Zoom};
+use luxforge_core::{AssetId, HistoryRow, HistorySelection, Zoom};
 use std::{path::PathBuf, sync::atomic::Ordering};
 
 #[test]
@@ -29,7 +29,7 @@ fn initial_open_keeps_its_prequeue_clock_and_normal_generation() {
 #[test]
 fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
     let (mut editor, catalog, current_asset, _) = opened(Vec::new(), 2);
-    let displayed = editor.display_entry.clone();
+    let displayed = editor.document.display_entry.clone();
     let preview_generation = editor.presentation.preview_generation;
     let session = editor.session.clone();
     editor.activity.requested = 5;
@@ -47,8 +47,11 @@ fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
         4,
         Ok(Box::new(stale)),
     )));
-    assert_eq!(editor.state.as_ref().unwrap().asset.id, current_asset);
-    assert_eq!(editor.display_entry, displayed);
+    assert_eq!(
+        editor.document.state.as_ref().unwrap().asset.id,
+        current_asset
+    );
+    assert_eq!(editor.document.display_entry, displayed);
     assert_eq!(editor.presentation.preview_generation, preview_generation);
     assert_eq!(editor.session, session);
     finish(editor, catalog);
@@ -104,8 +107,8 @@ fn refresh_replaces_or_merges_history_and_marks_abandoned_branches() {
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(full)))));
     assert!(!editor.busy);
     assert_eq!(editor.api_sequence, 0, "only a poll moves the event cursor");
-    assert_eq!(editor.history.entries.len(), 4);
-    assert_eq!(editor.display_entry, Some(c.id.clone()));
+    assert_eq!(editor.document.history.entries.len(), 4);
+    assert_eq!(editor.document.display_entry, Some(c.id.clone()));
     fn branch(editor: &Editor, id: &luxforge_core::EntryId) -> Option<bool> {
         editor
             .workspace
@@ -125,8 +128,8 @@ fn refresh_replaces_or_merges_history_and_marks_abandoned_branches() {
     let d = entry(&asset, 4, Some(&c.id));
     let merged = refresh_for(&asset, &d, Vec::new(), &[&d, &c], true);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(merged)))));
-    assert_eq!(editor.history.entries.len(), 5);
-    assert_eq!(editor.history.entries[0].id, d.id);
+    assert_eq!(editor.document.history.entries.len(), 5);
+    assert_eq!(editor.document.history.entries[0].id, d.id);
     assert_eq!(branch(&editor, &d.id), Some(false));
     assert_eq!(
         branch(&editor, &b.id),
@@ -164,7 +167,7 @@ fn a_commit_merges_its_row_and_lineage_without_reading_them() {
     };
     opened.versions = Some(vec![version.clone()]);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(opened)))));
-    let floor = editor.lineage_floor;
+    let floor = editor.document.lineage_floor;
     assert_eq!(floor, Some(1));
 
     let d = entry(&asset, 4, Some(&c.id));
@@ -174,12 +177,12 @@ fn a_commit_merges_its_row_and_lineage_without_reading_them() {
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
         committed,
     )))));
-    assert_eq!(editor.history.entries[0], HistoryRow::from(&d));
-    assert_eq!(editor.history.entries.len(), 5);
-    assert!(editor.lineage.contains(&d.id) && editor.lineage.contains(&c.id));
-    assert!(!editor.lineage.contains(&b.id));
-    assert_eq!(editor.lineage_floor, floor);
-    assert_eq!(editor.versions, [version]);
+    assert_eq!(editor.document.history.entries[0], HistoryRow::from(&d));
+    assert_eq!(editor.document.history.entries.len(), 5);
+    assert!(editor.document.lineage.contains(&d.id) && editor.document.lineage.contains(&c.id));
+    assert!(!editor.document.lineage.contains(&b.id));
+    assert_eq!(editor.document.lineage_floor, floor);
+    assert_eq!(editor.document.versions, [version]);
     let branch = |id: &luxforge_core::EntryId| {
         editor
             .workspace
@@ -202,7 +205,13 @@ fn a_commit_merges_its_row_and_lineage_without_reading_them() {
 #[test]
 fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
-    let current = editor.state.as_ref().unwrap().current_entry.clone();
+    let current = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .clone();
     let older = entry(&asset, 2, None);
     let mut selected = editor.session.clone();
     selected
@@ -215,9 +224,9 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
             session: selected.clone(),
         },
     )))));
-    assert_eq!(editor.display_entry, Some(older.id.clone()));
+    assert_eq!(editor.document.display_entry, Some(older.id.clone()));
     let held = (
-        editor.display_entry.clone(),
+        editor.document.display_entry.clone(),
         editor.presentation.preview_generation,
         editor.session.clone(),
         editor.api_sequence,
@@ -225,7 +234,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
     let unchanged = |editor: &Editor, case: &str| {
         assert_eq!(
             (
-                editor.display_entry.clone(),
+                editor.document.display_entry.clone(),
                 editor.presentation.preview_generation,
                 editor.session.clone(),
                 editor.api_sequence,
@@ -234,7 +243,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
             "{case}"
         );
         assert_eq!(
-            editor.state.as_ref().unwrap().current_entry.id,
+            editor.document.state.as_ref().unwrap().current_entry.id,
             current.id,
             "{case}"
         );
@@ -292,7 +301,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
             session: returned,
         },
     )))));
-    assert_eq!(editor.display_entry, Some(current.id.clone()));
+    assert_eq!(editor.document.display_entry, Some(current.id.clone()));
     finish(editor, catalog);
 }
 

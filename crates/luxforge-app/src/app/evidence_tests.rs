@@ -10,7 +10,7 @@ use luxforge_core::{CropStage, Zoom};
 #[test]
 fn empty_editor_capture_needs_no_photo_texture() {
     let (mut editor, catalog) = boot();
-    editor.state = None;
+    editor.document.state = None;
     editor.session.workspace.clip_highlights = true;
     assert!(editor.capture_photo_ready());
     assert!(editor.capture_clipping_ready());

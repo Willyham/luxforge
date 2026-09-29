@@ -81,7 +81,7 @@ impl Editor {
                     return refreshed;
                 }
                 // An open is what happened even when it is the photograph already on screen.
-                if let Some(state) = &self.state {
+                if let Some(state) = &self.document.state {
                     self.happened = Some(state::status::Happened::opened(state));
                 }
                 return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
@@ -146,22 +146,23 @@ impl Editor {
             SyncMessage::RecipeDescribed(result) => match result {
                 Ok(read) => {
                     let read = *read;
-                    self.recipe_failed = false;
+                    self.document.recipe_failed = false;
                     // Rows of the current entry, read when a preview returns to it, are also the
                     // rows the section dot follows.
                     if self
+                        .document
                         .state
                         .as_ref()
                         .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
                     {
-                        self.current_recipe = Some(read.recipe.clone());
+                        self.document.current_recipe = Some(read.recipe.clone());
                     }
-                    self.recipe = Some(read.recipe);
-                    self.masks = Some(read.masks);
+                    self.document.recipe = Some(read.recipe);
+                    self.document.masks = Some(read.masks);
                     self.seed_values();
                 }
                 Err(error) => {
-                    self.recipe_failed = true;
+                    self.document.recipe_failed = true;
                     self.status = format!("Recipe unavailable: {error}");
                 }
             },
@@ -307,7 +308,7 @@ impl Editor {
     /// keeps any frame requested earlier from following a newer one on screen.
     pub(super) fn superseded(&self, refresh: &Refresh) -> bool {
         refresh.session.preview.generation < self.session.preview.generation
-            || self.state.as_ref().is_some_and(|held| {
+            || self.document.state.as_ref().is_some_and(|held| {
                 held.asset.id == refresh.state.asset.id && held.revision > refresh.state.revision
             })
     }
@@ -319,6 +320,7 @@ impl Editor {
         payload.session.preview.generation < self.session.preview.generation
             || (payload.session.preview.selection == HistorySelection::Current
                 && self
+                    .document
                     .state
                     .as_ref()
                     .is_some_and(|held| held.current_entry.id != payload.job.evaluation.entry().id))
@@ -335,6 +337,7 @@ impl Editor {
             return Task::none();
         }
         let Some(held) = self
+            .document
             .state
             .as_ref()
             .map(|state| (state.asset.id.clone(), state.revision))
@@ -379,11 +382,13 @@ impl Editor {
         // What happened is read against the state and the history rows held before this one: a
         // current entry the rows already held is a redo rather than a new entry.
         let known = self
+            .document
             .history
             .entries
             .iter()
             .any(|row| row.id == refresh.state.current_entry.id);
-        let happened = state::status::Happened::between(self.state.as_ref(), &refresh.state, known);
+        let happened =
+            state::status::Happened::between(self.document.state.as_ref(), &refresh.state, known);
         // A composite that skipped settings says so beside what it did, and one that applied
         // nothing at all says that, since no entry moved to say anything else.
         self.skipped = (!refresh.skipped.is_empty()).then(|| {
@@ -399,23 +404,23 @@ impl Editor {
         }
         self.adopt(refresh.session);
         match refresh.history {
-            Some(history) => self.history = history,
+            Some(history) => self.document.history = history,
             None => merge_current_entry(
-                &mut self.history,
+                &mut self.document.history,
                 HistoryRow::from(&refresh.state.current_entry),
             ),
         }
         if let Some(versions) = refresh.versions {
-            self.versions = versions;
+            self.document.versions = versions;
         }
         match refresh.lineage {
             Some(lineage) => {
-                self.lineage = lineage
+                self.document.lineage = lineage
                     .steps
                     .iter()
                     .map(|step| step.entry_id.clone())
                     .collect();
-                self.lineage_floor = lineage
+                self.document.lineage_floor = lineage
                     .next_entry_id
                     .as_ref()
                     .and_then(|_| lineage.steps.last().map(|step| step.sequence));
@@ -424,25 +429,29 @@ impl Editor {
             // which the loaded lineage already holds, so the chain gains exactly this entry and
             // the floor below a truncated walk stays where it was.
             None => {
-                self.lineage.insert(refresh.state.current_entry.id.clone());
+                self.document
+                    .lineage
+                    .insert(refresh.state.current_entry.id.clone());
             }
         }
         if refresh.original.is_some() {
-            self.original_entry = refresh.original;
+            self.document.original_entry = refresh.original;
         }
-        self.current_recipe = Some(
+        self.document.current_recipe = Some(
             refresh
                 .current_recipe
                 .unwrap_or_else(|| refresh.recipe.clone()),
         );
-        self.recipe = Some(refresh.recipe);
-        self.masks = Some(refresh.masks);
-        self.recipe_failed = false;
+        self.document.recipe = Some(refresh.recipe);
+        self.document.masks = Some(refresh.masks);
+        self.document.recipe_failed = false;
         let revision = refresh.state.revision;
-        if self.state.as_ref().map(|state| &state.asset.id) != Some(&refresh.state.asset.id) {
+        if self.document.state.as_ref().map(|state| &state.asset.id)
+            != Some(&refresh.state.asset.id)
+        {
             self.capabilities_asset_changed(&refresh.state.asset.id);
         }
-        self.state = Some(refresh.state);
+        self.document.state = Some(refresh.state);
         self.show_entry(refresh.job.evaluation.entry().id.clone());
         self.presentation
             .expect_entry(refresh.job.evaluation.entry());
@@ -464,7 +473,7 @@ impl Editor {
     /// inputs, not a mirror: they take a reported value when the layer offers one and are never
     /// reset by a refresh, so a typed coordinate survives somebody else's edit.
     pub(crate) fn seed_values(&mut self) {
-        let Some(recipe) = self.recipe.clone() else {
+        let Some(recipe) = self.document.recipe.clone() else {
             return;
         };
         // The target the generated sections are bound to. The global layer and each mask are
@@ -517,7 +526,7 @@ impl Editor {
     /// Every mutation, generated or not, takes the narrowest completion path: the command, one
     /// `asset.state` refresh and one preview job.
     pub(crate) fn command(&mut self, method: impl Into<String>, params: Value) -> Task<Message> {
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         if self.busy {

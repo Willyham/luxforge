@@ -111,7 +111,13 @@ impl Library {
 
     /// The photograph on screen and the revision the editor holds of it, as the event sync polls.
     fn held(&self) -> (AssetId, u64) {
-        let revision = self.editor.state.as_ref().expect("a photograph").revision;
+        let revision = self
+            .editor
+            .document
+            .state
+            .as_ref()
+            .expect("a photograph")
+            .revision;
         (self.asset.clone(), revision)
     }
 
@@ -207,7 +213,7 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         .expect("the listed preset")
         .settings
         .clone();
-    let revision = library.editor.state.as_ref().unwrap().revision;
+    let revision = library.editor.document.state.as_ref().unwrap().revision;
     let request = library
         .editor
         .request_for_preset(&action, None, Some(&fields))
@@ -346,7 +352,7 @@ fn a_preset_that_skips_settings_says_so_in_the_status_bar() {
 fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     let mut library = Library::opened();
     // An entry with a Basic layer to capture from.
-    let revision = library.editor.state.as_ref().unwrap().revision;
+    let revision = library.editor.document.state.as_ref().unwrap().revision;
     call(
         &library.owner(),
         library.agent,
@@ -512,7 +518,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         "the agent's preset appears without a restart"
     );
     // An edit by the agent is still an asset refresh, and not a listing.
-    let revision = library.editor.state.as_ref().unwrap().revision;
+    let revision = library.editor.document.state.as_ref().unwrap().revision;
     call(
         &library.owner(),
         library.agent,
