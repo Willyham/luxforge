@@ -47,7 +47,7 @@ pub use cancel::Cancel;
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
-pub use draft::Draft;
+pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
     ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, HistoryPage,
     LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome, MutationResult,

@@ -18,11 +18,12 @@ use super::*;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
     Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId,
+    mask::Stroke,
     mask::{
         CompiledMask,
         commands::{self, MaskTarget},
     },
-    path::{Stroke, StrokeTable},
+    path::StrokeTable,
 };
 use luxforge_core::{LinearImage, LinearSettings};
 use luxforge_reference::mask::{

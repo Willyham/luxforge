@@ -31,7 +31,6 @@ use crate::{
     },
     editor::{MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
     jobs::{JOB_CANCEL, JOB_READ},
-    mask::commands::MaskTarget,
     path,
     presets::MAX_PRESET_GROUP,
 };
@@ -1897,12 +1896,16 @@ fn draft_begin(
     // commit instead of committing blind. It is checked by the checks its commit runs, and a draft
     // its commit would refuse for what the photo is — a RAW development on a JPEG — is refused
     // here, in the commit's words, rather than at its first preview.
-    let target = MaskTarget {
-        mask: p.mask,
-        component: p.component,
-        name: None,
-        stroke: None,
-    };
+    let target = [
+        ("mask", p.mask.map(|mask| mask.as_str().to_owned())),
+        (
+            "component",
+            p.component.map(|component| component.as_str().to_owned()),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, identity)| identity.map(|identity| (name.to_owned(), identity)))
+    .collect();
     let target = service.draft_target(&p.asset_id, &p.action, target)?;
     let revision = service.revision(&p.asset_id)?;
     let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
@@ -1925,9 +1928,10 @@ fn draft_set(
     // photo's global target, whose one path is the source development's.
     let mask = draft
         .target
-        .as_ref()
-        .and_then(|target| target.mask.as_ref());
-    service.check_draft(&draft.asset_id, &draft.action, mask, &p.fields)?;
+        .get(crate::MASK_FIELD)
+        .map(|mask| MaskId::parse(mask.as_str()))
+        .transpose()?;
+    service.check_draft(&draft.asset_id, &draft.action, mask.as_ref(), &p.fields)?;
     let draft = session.draft.as_mut().expect("the draft was just found");
     draft.merge(p.fields);
     session.touch();

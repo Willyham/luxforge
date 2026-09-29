@@ -186,9 +186,10 @@ mod tests {
     };
     use crate::{
         Draft, Snapshot, SnapshotId,
+        mask::Stroke,
         mask::commands::{self, MaskTarget},
         modules::ActionInput,
-        path::{Stroke, StrokeId},
+        path::StrokeId,
     };
     use rusqlite::{Connection, params};
     use serde_json::{Map, Value, json};
@@ -206,13 +207,13 @@ mod tests {
     }
 
     /// The strokes an entry resolved, which the recipe's own equality leaves out.
-    fn strokes(entry: &HistoryEntry) -> Vec<(StrokeId, Stroke)> {
+    fn strokes(entry: &HistoryEntry) -> Vec<(StrokeId, Vec<u8>)> {
         entry
             .snapshot
             .recipe
             .strokes
             .strokes()
-            .map(|(id, stroke)| (id.clone(), stroke.clone()))
+            .map(|(id, stroke)| (id.clone(), stroke.stored_bytes()))
             .collect()
     }
 
@@ -639,7 +640,7 @@ mod tests {
                 .snapshot
                 .recipe
                 .strokes
-                .get(&drawn.id())
+                .get::<Stroke>(&drawn.id())
                 .is_none()
         );
         read_counts::take();

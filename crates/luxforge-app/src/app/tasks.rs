@@ -20,12 +20,12 @@ use crate::{
 use iced::Task;
 use luxforge_core::{
     ActionResult, ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId,
-    EditorState, EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow, HistorySelection,
-    JobId, Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest,
-    OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription,
-    StageTransform, Version,
+    DraftTarget, EditorState, EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow,
+    HistorySelection, JobId, Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation,
+    MutationOutcome, MutationRequest, OwnerHandle, PresetSummary, PreviewJob, PreviewRequest,
+    ProxyBounds, RecipeDescription, StageTransform, Version,
     jobs::{JOB_CANCEL, JOB_READ},
-    mask::commands::{MaskListing, MaskTarget},
+    mask::commands::MaskListing,
 };
 use serde_json::{Value, json};
 use std::{
@@ -945,16 +945,17 @@ pub(crate) fn crop_preview(
 /// `draft.set` goes in the same update as the press instead of a displayed frame later
 /// ([performance rule 12](../../../../docs/engineering/performance-rules.md#rules)).
 ///
-/// The target is the host's own envelope: for a module action it is the mask the panel's sections
-/// are bound to, so the drafted preview shows the masked layer the release will commit rather than
-/// the global one; for a `mask.*` command it is the mask and component the gesture edits, which no
-/// declared parameter kind could carry. A global gesture sends neither and drafts as it always has.
+/// The target is the identities the gesture edits, by the parameter names its action declares them
+/// under ([`DraftTarget`]): for a module action the host's `mask` field, the mask the panel's
+/// sections are bound to, so the drafted preview shows the masked layer the release will commit
+/// rather than the global one; for a `mask.*` command the mask and component the gesture edits. A
+/// global gesture sends none and drafts as it always has.
 pub(crate) fn draft_begin_now(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     action: &str,
-    target: MaskTarget,
+    target: &DraftTarget,
 ) -> Result<Draft, String> {
     let (draft, _) = call(
         owner,
@@ -967,9 +968,12 @@ pub(crate) fn draft_begin_now(
 
 /// The `draft.begin` request one action and target produce. One spelling for every gesture, so no
 /// two can disagree about where an identity goes.
-pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTarget) -> Value {
+pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: &DraftTarget) -> Value {
     let mut params = json!({"asset_id":asset_id,"action":action});
-    target.insert_into(params.as_object_mut().expect("the envelope is an object"));
+    let envelope = params.as_object_mut().expect("the envelope is an object");
+    for (name, identity) in target {
+        envelope.insert(name.clone(), json!(identity));
+    }
     params
 }
 

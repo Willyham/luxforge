@@ -52,7 +52,7 @@ pub(super) fn stored_entry_json(catalog: &Path, entry: &EntryId) -> String {
 /// Its brush is small enough to take decimation's two-step floor rather than a share of its radius,
 /// so each stroke keeps 67 to 78 of its 100 positions: the stroke the storage measurements in
 /// `docs/design/masking.md#stroke-storage` are recorded on.
-pub(super) fn stroke(index: usize) -> crate::path::Stroke {
+pub(super) fn stroke(index: usize) -> crate::mask::Stroke {
     let base = 0.05 + (index % 40) as f64 * 0.02;
     let points: Vec<[f64; 2]> = (0..100)
         .map(|step| {
@@ -63,7 +63,7 @@ pub(super) fn stroke(index: usize) -> crate::path::Stroke {
             ]
         })
         .collect();
-    crate::path::Stroke::capture(&points, 0.003, 50.0, 100.0, index.is_multiple_of(7))
+    crate::mask::Stroke::capture(&points, 0.003, 50.0, 100.0, index.is_multiple_of(7))
         .expect("a legal stroke")
 }
 
@@ -71,7 +71,7 @@ pub(super) fn stroke(index: usize) -> crate::path::Stroke {
 /// in the recipe's table. The component's kind is the one a brush will carry; this build has no
 /// provider for it, which is exactly the retention case, and nothing here needs one: the store
 /// is the host's and knows nothing about what references it.
-pub(super) fn brushed(recipe: &Recipe, strokes: &[crate::path::Stroke]) -> Recipe {
+pub(super) fn brushed(recipe: &Recipe, strokes: &[crate::mask::Stroke]) -> Recipe {
     let mut table = crate::path::StrokeTable::new("the test session");
     let addresses: Vec<String> = strokes
         .iter()

@@ -819,11 +819,8 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
         )
     });
     assert_eq!(
-        draft
-            .target
-            .as_ref()
-            .and_then(|target| target.mask.as_ref()),
-        Some(&mask)
+        draft.target.get("mask").map(String::as_str),
+        Some(mask.as_str())
     );
     assert_eq!(
         draft.fields.get("exposure"),
@@ -1584,9 +1581,15 @@ fn a_luminance_band_is_one_range_whose_thumb_drafts_and_commits_its_own_field() 
         json!({"high": 88.0}),
         "the drag drafts its one field and no other"
     );
-    let target = draft.target.as_ref().expect("the open component");
-    assert_eq!(target.mask.as_ref(), Some(&mask));
-    assert_eq!(target.component.as_ref(), Some(&component));
+    assert_eq!(
+        draft.target,
+        [
+            ("component".to_owned(), component.as_str().to_owned()),
+            ("mask".to_owned(), mask.as_str().to_owned()),
+        ]
+        .into(),
+        "the open component, by the identities the command declares"
+    );
     // What the drag commits is the typed edit's own request, field for field.
     let mut typed = copied["params"]
         .as_object()
@@ -2518,7 +2521,7 @@ fn a_release_commits_the_whole_path_the_pointer_drew() {
     assert_eq!(held.len(), 1, "one stroke");
     // A stroke is named by the hash of its contents, so asserting the address asserts the path.
     let expected =
-        luxforge_core::path::Stroke::capture(&drawn, brush.size, brush.feather, brush.flow, false)
+        luxforge_core::mask::Stroke::capture(&drawn, brush.size, brush.feather, brush.flow, false)
             .expect("a capturable stroke")
             .id();
     assert_eq!(

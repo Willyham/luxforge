@@ -6,8 +6,9 @@ use super::{
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
-    AssetId, Draft, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId, LinearImage,
-    LinearSettings, MaskId, ModuleRegistry, Mutation, Provider, Recipe, SkippedSetting, Transform,
+    AssetId, Draft, DraftTarget, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
+    LinearImage, LinearSettings, MaskId, ModuleRegistry, Mutation, Provider, Recipe,
+    SkippedSetting, Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
@@ -413,42 +414,56 @@ impl EditorService {
     /// it through the checks its commit runs, so it is refused in the commit's words before any
     /// field is drafted: the target is the request the commit will send with no field set yet.
     ///
-    /// A `mask.*` gesture's target is the identities its command addresses, checked as a patch is
-    /// ([`crate::modules::check_target`]): each must be one the command declares and every one the
-    /// command requires must be named, so a stroke deletion, whose stroke a draft does not take, is
-    /// refused here. A module action's target is the host's one `mask` field, taken by the one
-    /// target check a commit and a query take ([`take_mask_target`]); anything else, a component
+    /// The target is the action's declared identity parameters by name ([`DraftTarget`]), whichever
+    /// action it is. A host command's are checked as a patch is ([`crate::modules::check_target`]):
+    /// each must be one the command declares and every one the command requires must be named, so a
+    /// stroke deletion, whose stroke a draft does not take, is refused here. A module action takes
+    /// the host's one `mask` field first, by the one target check a commit and a query take
+    /// ([`take_mask_target`]), and the rest is checked the same way; anything else, a component
     /// included, is a field the action does not declare, since a module edits a layer through the
-    /// whole mask. Then the draft is refused for what the photo is, as [`Self::check_draft`]
-    /// refuses it. Reads the asset's head, usually cached, and plans nothing.
+    /// whole mask. A name the action declares as anything but an identity
+    /// ([`crate::ParameterKind::is_identity`]) is refused too: a draft's target names objects and
+    /// never sets a value. Then the draft is refused for what the photo is, as
+    /// [`Self::check_draft`] refuses it. Reads the asset's head, usually cached, and plans nothing.
     pub(crate) fn draft_target(
         &self,
         asset_id: &AssetId,
         action_id: &str,
-        target: MaskTarget,
-    ) -> Result<Option<MaskTarget>, Error> {
+        target: DraftTarget,
+    ) -> Result<DraftTarget, Error> {
         let action = self
             .registry
             .resolve_action(action_id)
             .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
-        let mut request = target.request(Value::Null);
-        let target = match action {
-            ActionRef::Host(command) => {
-                check_target(&command.action, &request)?;
-                Some(target)
-            }
-            ActionRef::Module(_, declared) => {
-                let mask =
-                    take_mask_target(&self.registry, Targeted::Action(action_id), &mut request)?;
-                check_target(declared, &request)?;
-                mask.map(|mask| MaskTarget {
-                    mask: Some(mask),
-                    ..MaskTarget::default()
-                })
-            }
+        let mut request = Value::Object(
+            target
+                .iter()
+                .map(|(name, identity)| (name.clone(), Value::String(identity.clone())))
+                .collect(),
+        );
+        let (declared, mask) = match action {
+            ActionRef::Host(command) => (&command.action, None),
+            ActionRef::Module(_, declared) => (
+                declared,
+                take_mask_target(&self.registry, Targeted::Action(action_id), &mut request)?,
+            ),
         };
-        let mask = target.as_ref().and_then(|target| target.mask.as_ref());
-        self.check_draft(asset_id, action_id, mask, &Map::new())?;
+        // A declared value is refused as what it is before the generic check reads it as one; an
+        // undeclared name, a malformed identity and a missing required one are that check's.
+        if let Some(name) = request.as_object().and_then(|named| {
+            named.keys().find(|name| {
+                declared
+                    .parameter(name)
+                    .is_some_and(|parameter| !parameter.kind.is_identity())
+            })
+        }) {
+            return Err(Error::validation(format!(
+                "parameter {name} of action {action_id} is not an identity; a draft's target \
+                 names only the objects its gesture edits"
+            )));
+        }
+        check_target(declared, &request)?;
+        self.check_draft(asset_id, action_id, mask.as_ref(), &Map::new())?;
         Ok(target)
     }
 

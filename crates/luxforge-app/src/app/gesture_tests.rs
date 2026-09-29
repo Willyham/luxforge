@@ -166,7 +166,7 @@ fn a_refused_begin_opens_nothing_and_says_why() {
         editor.client,
         asset,
         &action,
-        Default::default(),
+        &Default::default(),
     )
     .expect_err("the owner does not hold the photograph");
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
