@@ -1,6 +1,6 @@
 //! Rendered evidence for the opt-in control vocabulary and its identity photo layer.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
 use luxforge_evidence::{
@@ -286,7 +286,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "Controls import did not start with an empty recipe",
     )?;
 
-    let mut checks = Vec::new();
+    let mut checks = Checks::new();
     for (name, frame) in launch.names().iter().zip(&launch.frames) {
         let photo = pixels::identity_photo(frame)?;
         let image = frame.image()?;
@@ -294,9 +294,10 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             image.width() >= 1440 && image.height() >= 900,
             format!("Controls capture {name:?} is too small to inspect"),
         )?;
-        checks.push(
-            json!({"frame":frame["file"],"step":name,"revision":frame.revision()?,
-            "payload":payload(frame),"photo":photo}),
+        checks.note(
+            frame,
+            "the proof's edit, and the photograph it leaves exactly as it was",
+            json!({"step": name, "payload": payload(frame), "photo": photo}),
         );
     }
 
@@ -412,9 +413,5 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 .any(|event| event["event"] == "preview_displayed"),
         "Control drafts or their displayed frames are not correlated in the log",
     )?;
-    write_json(
-        &launch.evidence.join("controls-checks.json"),
-        &json!(checks),
-    )?;
-    Ok(())
+    checks.write(&launch.evidence, "controls", json!({}))
 }

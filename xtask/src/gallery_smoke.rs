@@ -1,6 +1,6 @@
 //! Thirteen renderer captures of the full 99-state widget gallery in the real desktop.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
 use luxforge_evidence::{self as script};
@@ -78,8 +78,12 @@ fn board_content(frame: &Frame) -> Result<Value> {
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let initial = launch.at("opened")?;
-    let original = pixels::identity_photo(initial)?;
-    let mut checks = vec![json!({"frame":initial["file"],"original_photo":original})];
+    let mut checks = Checks::new();
+    checks.note(
+        initial,
+        "the unedited photograph before the gallery",
+        pixels::identity_photo(initial)?,
+    );
     let mut states = 0usize;
     for page in 0..PAGES {
         let frame = launch.at(&page_step(page))?;
@@ -104,15 +108,22 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             format!("Gallery page {page} lacks named states"),
         )?;
         states += count;
-        let image = board_content(frame)?;
-        checks.push(json!({"frame":frame["file"],"page":info,"board":image}));
+        checks.note(
+            frame,
+            "a gallery page's board, drawn",
+            json!({"page": info, "board": board_content(frame)?}),
+        );
     }
     ensure(
         states == STATES,
         format!("Gallery pages contain {states} states, expected all {STATES}"),
     )?;
     let returned = launch.at("returned")?;
-    let returned_photo = pixels::identity_photo(returned)?;
+    checks.note(
+        returned,
+        "the unedited photograph after the gallery",
+        pixels::identity_photo(returned)?,
+    );
     ensure(
         returned["state"]["gallery"].is_null()
             && returned["state"]["workspace"] == initial["state"]["workspace"]
@@ -121,10 +132,5 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 == initial["state"]["displayed_generation"],
         "Returning from gallery changed the editor",
     )?;
-    checks.push(
-        json!({"frame":returned["file"],"returned_photo":returned_photo,
-        "editor_preserved":true}),
-    );
-    write_json(&launch.evidence.join("gallery-checks.json"), &json!(checks))?;
-    Ok(())
+    checks.write(&launch.evidence, "gallery", json!({}))
 }

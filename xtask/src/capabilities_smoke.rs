@@ -9,7 +9,7 @@
 //! the editor records those steps redacted too. Every file under the output directory is scanned
 //! for the sentinel afterwards.
 use crate::{
-    scenario::{Checked, Frame, Launch, Plan, Run, Step, pixels, plan::only},
+    scenario::{Checked, Checks, Frame, Launch, Plan, Run, Step, Tolerance, pixels, plan::only},
     smoke::Scenario,
     *,
 };
@@ -113,7 +113,7 @@ pub fn plan(base: &str, key: &str, wrong: &str) -> Plan {
         gesture("installed", CapabilityAction::Settle),
         // The photo-data consent, declined, then asked again and allowed; the running task, its
         // result, and Apply.
-        gesture("task-asked", task()),
+        gesture("task-asked", task()).notice("Allow Capabilities proof to send photo data?"),
         gesture("denied", CapabilityAction::Consent(false)),
         gesture("task-asked-again", task()),
         capability("running", step(CapabilityAction::Consent(true)).no_wait()),
@@ -288,7 +288,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .any(|event| event["event"] == "capability_answer"),
         "No capability round trip was logged",
     )?;
-    let mut per_frame = Vec::new();
+    let mut checks = Checks::new();
     for frame in &launch.frames {
         // A secret is only ever whether it is present, in every frame.
         for profile in capability(frame)["settings"]["profiles"]
@@ -302,11 +302,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 format!("The api-key field reads {secret}"),
             )?;
         }
-        per_frame.push(json!({
-            "frame": frame["file"],
-            "status_line": capability(frame)["status_line"],
-            "notices": frame.notices(),
-        }));
+        checks.note(
+            frame,
+            "the capability block's status line and the canvas's notices",
+            json!({"status_line": capability(frame)["status_line"], "notices": frame.notices()}),
+        );
     }
     let at = |step: &str| launch.at(step);
     let settings = |step: &str| -> Result<Value> { Ok(capability(at(step)?)["settings"].clone()) };
@@ -373,20 +373,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         capability(at("installed")?)["resources"][0]["state"] == "installed",
         "The palette was not installed",
     )?;
-    // The photo-data consent, declined, then asked again.
-    let task_frame = at("task-asked")?;
-    let asked = consent(task_frame, "remote-image-request")?;
+    // The photo-data consent, whose notice the plan holds, declined, then asked again.
+    let asked = consent(at("task-asked")?, "remote-image-request")?;
     ensure(
         asked["scope"]["data"] == "sample-grid-8"
             && asked["scope"]["adapter"] == "proof-echo"
             && asked["denied"] == false,
         format!("Wrong photo-data consent {asked}"),
-    )?;
-    ensure(
-        task_frame
-            .notices()
-            .contains(&"Allow Capabilities proof to send photo data?".into()),
-        "The photo-data consent notice is not shown",
     )?;
     let denied = capability(at("denied")?);
     ensure(
@@ -462,11 +455,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         tint_layers(refused).len() == 1,
         "A failed task changed the recipe",
     )?;
-    let render = render_checks(launch, &base)?;
-    write_json(
-        &launch.evidence.join("capabilities-checks.json"),
-        &json!({
-            "frames": per_frame,
+    let render = render_checks(&mut checks, launch, &base)?;
+    checks.write(
+        &launch.evidence,
+        "capabilities",
+        json!({
             "artifact": artifact,
             "gains": done["result"]["gains"],
             "failure": failed["error"],
@@ -474,8 +467,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "task_progress": running["progress"],
             "render": render,
         }),
-    )?;
-    Ok(())
+    )
 }
 
 /// What the endpoint itself saw: one held palette download, one authorized generation answered
@@ -543,17 +535,18 @@ fn window_mean(
 /// The tinted frame against the frame before Apply and against the core's own render of the
 /// committed stack: the centred window's mean moves the way the published gains say, and matches
 /// the independent render within [`MEAN_TOLERANCE`].
-fn render_checks(launch: &Checked, base: &str) -> Result<Value> {
+fn render_checks(checks: &mut Checks, launch: &Checked, base: &str) -> Result<Value> {
     const WINDOW_FRACTIONS: [f64; 2] = [0.25, 0.75];
     let before = launch.at("succeeded")?;
     let after = launch.at("applied")?;
-    // The untinted frame still shows the fixture's exact colours, which locate the photograph; a
-    // tint changes no geometry, so the tinted frame's photograph is in the same place.
+    // The untinted frame still shows the fixture's exact colours where the editor drew the
+    // photograph; a tint changes no geometry, so the tinted frame's photograph is in the same
+    // place.
     let placed = pixels::identity_photo(before)?;
     let bounds: [f64; 4] = serde_json::from_value(placed["bounds"].clone())?;
     ensure(
-        after.columns()? == before.columns()?,
-        "The photo surface moved between the frames",
+        after.columns()? == before.columns()? && after.photo()? == before.photo()?,
+        "The photograph moved between the frames",
     )?;
     let capture_mean = |frame: &Frame| -> Result<[f64; 3]> {
         let image = frame.image()?;
@@ -605,12 +598,12 @@ fn render_checks(launch: &Checked, base: &str) -> Result<Value> {
         WINDOW_FRACTIONS,
     )?;
     for channel in 0..3 {
-        ensure(
-            (tinted[channel] - rendered[channel]).abs() <= MEAN_TOLERANCE,
-            format!(
-                "Channel {channel} shows {:.2} where the core renders {:.2}",
-                tinted[channel], rendered[channel]
-            ),
+        checks.compare(
+            after,
+            &format!("channel {channel} of the tinted frame against the core's render"),
+            tinted[channel],
+            rendered[channel],
+            Tolerance::Within(MEAN_TOLERANCE),
         )?;
     }
     Ok(json!({

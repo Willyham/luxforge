@@ -282,34 +282,12 @@ impl Frame {
     }
 }
 
-/// The unedited golden fixture, found inside the photo surface alone: the control rail and picker
-/// can hold the quadrant colours in the sidebar. Four interior points must still show the
+/// The unedited golden fixture where the editor records drawing it, its edges where its pixels
+/// end: at least 120 × 80, at the fixture's 3:2, and with four interior points showing the
 /// orientation-1 image's own colours.
 pub fn identity_photo(frame: &Frame) -> Result<Value> {
-    let image = frame.image()?;
-    let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = frame.columns()?.unwrap_or([0, width]);
-    ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid photo surface",
-    )?;
-    let colours = fixtures::COLORS;
-    let matches =
-        |pixel: [u8; 3], colour: [u8; 3]| pixel.iter().zip(colour).all(|(a, b)| a.abs_diff(b) <= 8);
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
-    for y in (0..height).step_by(4) {
-        for x in (surface_left..surface_right).step_by(4) {
-            if colours
-                .iter()
-                .any(|colour| matches(image.get_pixel(x, y).0, *colour))
-            {
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 4);
-                bottom = bottom.max(y + 4);
-            }
-        }
-    }
+    let bounds = frame.photo_edges(|pixel| pixel != CANVAS)?;
+    let [left, top, right, bottom] = bounds;
     ensure(
         right > left + 120 && bottom > top + 80,
         "Identity photo is absent or too small",
@@ -319,17 +297,16 @@ pub fn identity_photo(frame: &Frame) -> Result<Value> {
         (aspect - 1.5).abs() < 0.02,
         format!("Identity photo aspect is {aspect}"),
     )?;
+    let image = frame.image()?;
+    let matches =
+        |pixel: [u8; 3], colour: [u8; 3]| pixel.iter().zip(colour).all(|(a, b)| a.abs_diff(b) <= 8);
     let mut samples = Vec::new();
-    for ((fx, fy), colour) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+    for (fraction, colour) in [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]
         .into_iter()
-        .zip(colours)
+        .zip(fixtures::COLORS)
     {
-        let x = (f64::from(left) + fx * f64::from(right - left)).round() as u32;
-        let y = (f64::from(top) + fy * f64::from(bottom - top)).round() as u32;
-        ensure(
-            x < width && y < height,
-            "Identity photo sample outside capture",
-        )?;
+        let (x, y) = at(bounds, fraction);
+        let (x, y) = (x.round() as u32, y.round() as u32);
         let pixel = image.get_pixel(x, y).0;
         ensure(
             matches(pixel, colour),
@@ -337,10 +314,8 @@ pub fn identity_photo(frame: &Frame) -> Result<Value> {
         )?;
         samples.push(pixel);
     }
-    Ok(
-        json!({"bounds":[left,top,right,bottom],"aspect":aspect,"corner_rgb":samples,
-        "tolerance_per_channel":8,"scope":"Displayed photo surface; control sidebar excluded"}),
-    )
+    Ok(json!({"bounds":bounds,"aspect":aspect,"corner_rgb":samples,
+        "tolerance_per_channel":8,"scope":"The photograph the editor records drawing, its edges checked against the capture"}))
 }
 
 /// How two readings of a capture must relate, with the threshold the scenario states for it.
