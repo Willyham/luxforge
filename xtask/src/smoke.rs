@@ -1412,6 +1412,12 @@ mod tests {
     fn mutations() {
         use crate::scenario::plan::mutation::{self, Mutation};
         let recorded = PathBuf::from(std::env::var("SMOKE_RECORDED").expect("SMOKE_RECORDED"));
+        // `cargo test` runs in the package directory, so a relative path would silently find no run.
+        assert!(
+            recorded.is_absolute() && recorded.is_dir(),
+            "SMOKE_RECORDED must be an absolute path to a verify or smoke output: {}",
+            recorded.display()
+        );
         let only = std::env::var("SMOKE_ONLY").unwrap_or_default();
         let root = root().unwrap();
         let mut lines = Vec::new();
@@ -1493,6 +1499,16 @@ mod tests {
         if let Ok(path) = std::env::var("SMOKE_MUTATIONS") {
             fs::write(path, lines.join("\n") + "\n").unwrap();
         }
+        assert!(
+            !lines.is_empty(),
+            "no recorded run of {} under {}",
+            if only.is_empty() {
+                "any scenario"
+            } else {
+                &only
+            },
+            recorded.display()
+        );
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
