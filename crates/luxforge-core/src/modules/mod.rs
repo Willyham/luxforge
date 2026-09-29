@@ -95,7 +95,7 @@ pub(crate) use transform::{TransformModule, stored_orientation};
 pub use vignette::VIGNETTE_EFFECT;
 pub(crate) use vignette::VignetteModule;
 
-use crate::{ArtifactId, Error, Layer, LayerId, MaskId, SourceTag};
+use crate::{ArtifactId, Error, Layer, LayerId, MaskId, Orientation, SourceTag};
 use serde_json::{Map, Value};
 
 /// A normalized action request: the durable history action identity and the parameter object
@@ -459,6 +459,29 @@ pub trait ToolModule: Send + Sync {
         payload: &Value,
         stage: Stage,
     ) -> Result<Processing, Error>;
+    /// This stored geometry layer re-expressed for its input stage turned or reflected by
+    /// `orientation`, so it selects the same content in the turned stage. `input` is the stage the
+    /// layer received before the orientation. The transform module asks it of every geometry layer
+    /// after the orientation when an action turns or reflects the photograph, and stores what
+    /// comes back through the layer's own update, so the orientation goes ahead of a module it
+    /// never names. `Ok(None)` says the payload is unchanged, the default: an effect whose payload
+    /// does not address its input stage's coordinates is orientation-invariant. It only reads the payload and never renders; an
+    /// effect that cannot be carried exactly refuses, and the whole action with it.
+    ///
+    /// Only an exact quarter-turn or reflection is carried. A geometry that is not affine over the
+    /// whole stage is not something this hook can fake; see the architecture design's "Geometry
+    /// beyond an exact orientation".
+    fn carry(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        input: Stage,
+        orientation: Orientation,
+    ) -> Result<Option<Value>, Error> {
+        let _ = (effect_id, format, payload, input, orientation);
+        Ok(None)
+    }
     /// The module's capability hooks, when it declares worker tasks, managed resources or an
     /// effect evaluated with derived artifacts: such a module implements
     /// `CapabilityModule` and returns itself here, and [`ModuleRegistry::register`] refuses one

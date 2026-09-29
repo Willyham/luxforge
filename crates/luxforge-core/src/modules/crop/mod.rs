@@ -5,5 +5,5 @@
 pub(super) mod geometry;
 mod module;
 
+pub(crate) use module::CropModule;
 pub use module::{CROP_EFFECT, CropAspect};
-pub(crate) use module::{CropModule, stored_payload};
