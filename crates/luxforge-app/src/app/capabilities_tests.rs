@@ -10,7 +10,7 @@ use super::{
     evidence::{Settle, Step, parse_script, record},
     message::{Message, capability::CapabilityMessage, control::ControlMessage, sync::SyncMessage},
     tasks::{ACTOR, HostAnswer, REQUEST_NUMBER, Scope, call, refresh, request},
-    testing::{attach_log, logged},
+    testing::{attach_log, import_and_adopt, logged},
 };
 use crate::{
     Config,
@@ -94,31 +94,7 @@ impl Proof {
             .canonicalize()
             .unwrap();
         let client = editor.client;
-        let (imported, _) = call(
-            &owner,
-            client,
-            "catalog.import",
-            json!({"path": fixture, "mutation": request()}),
-        )
-        .unwrap();
-        let asset: AssetId = wait_for("the import", || {
-            let (status, _) = call(
-                &owner,
-                client,
-                "job.read",
-                json!({"job_id": imported["job_id"]}),
-            )
-            .unwrap();
-            (status["status"] == "ready")
-                .then(|| serde_json::from_value(status["result"]["asset"]["id"].clone()).unwrap())
-        });
-        call(
-            &owner,
-            client,
-            "job.adopt",
-            json!({"job_id": imported["job_id"]}),
-        )
-        .unwrap();
+        let asset = import_and_adopt(&owner, client, &fixture);
         let shown = refresh(&owner, client, asset.clone(), Scope::Open, None).unwrap();
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(shown)))));
         Self {

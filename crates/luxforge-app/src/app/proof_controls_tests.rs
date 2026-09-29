@@ -5,6 +5,7 @@ use super::{
     controls::CurveSampleIdentity,
     message::{Message, action::ActionMessage, control::ControlMessage, sync::SyncMessage},
     tasks,
+    testing::import_and_adopt,
 };
 use crate::Config;
 use crate::state::fields;
@@ -12,6 +13,7 @@ use crate::state::tools::ControlModel;
 use luxforge_core::{
     ApiRequest, AssetId, ClientId, ControlsModule, ModuleDescriptor, ModuleRegistry, OwnerHandle,
 };
+use luxforge_testkit::fixtures::temp_catalog;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{
@@ -34,35 +36,16 @@ struct Proof {
 
 impl Proof {
     fn new() -> Self {
-        let catalog = std::env::temp_dir().join(format!(
-            "luxforge-controls-parity-{}-{}.sqlite",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let catalog = temp_catalog("desktop-controls-parity");
         let mut registry = ModuleRegistry::new();
         registry.register(Arc::new(ControlsModule::new())).unwrap();
         let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
         let json_client = owner.register();
-        let source =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
-        let queued = call(
+        let asset = import_and_adopt(
             &owner,
             json_client,
-            "catalog.import",
-            json!({"path":source,"mutation":crate::app::tasks::request()}),
-        )
-        .0;
-        let job_id = queued["job_id"].as_str().expect("source job");
-        luxforge_testbase::wait_until("source preparation", || {
-            let status = call(&owner, json_client, "job.read", json!({"job_id":job_id})).0;
-            match status["status"].as_str() {
-                Some("ready") => true,
-                Some("queued" | "running") => false,
-                other => panic!("source preparation failed {other:?}: {status}"),
-            }
-        });
-        let imported = call(&owner, json_client, "job.adopt", json!({"job_id":job_id})).0;
-        let asset = AssetId::parse(imported["asset"]["asset"]["id"].as_str().unwrap()).unwrap();
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg"),
+        );
         let (mut editor, _) = Editor::new(Boot {
             owner: owner.clone(),
             join,

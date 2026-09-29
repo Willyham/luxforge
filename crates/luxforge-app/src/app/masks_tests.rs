@@ -2811,13 +2811,6 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
 // of a `draft.begin`, `draft.reapply` or `draft.cancel` in flight have no test here: those requests
 // answer in the update that sends them, so nothing of theirs is left in flight to race.
 
-fn event_names(records: &[Value]) -> Vec<String> {
-    records
-        .iter()
-        .filter_map(|record| record["event"].as_str().map(str::to_owned))
-        .collect()
-}
-
 /// Wait for the preview queue to finish what it holds, taking each result up as the runtime does.
 fn drain_queue(masking: &mut Masking) {
     luxforge_testbase::wait_until("the preview queue drains", || {
@@ -2848,11 +2841,14 @@ fn race_c_discard_during_a_commit_sends_no_racing_cancel() {
     );
     masking.commit_open_draft();
     assert!(masking.editor.gesture.is_none());
-    let events = event_names(&logged(&mut masking.editor, &log));
+    let records = logged(&mut masking.editor, &log);
     assert!(
-        events.iter().any(|event| event == "mask_draft_commit")
-            && !events.iter().any(|event| event == "mask_draft_cancelled"),
-        "Discard sent a draft.cancel racing the commit: {events:?}"
+        !testing::events(&records, "mask_draft_commit").is_empty(),
+        "the commit was sent"
+    );
+    assert!(
+        testing::events(&records, "mask_draft_cancelled").is_empty(),
+        "Discard sent a draft.cancel racing the commit"
     );
     assert_eq!(masking.editor.status.text, "Mask committed");
     assert_eq!(masking.listing().masks.len(), 1);
@@ -3037,10 +3033,10 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
         json!(false),
         "and it shows the gesture released, still open for Apply"
     );
-    let events = event_names(&logged(&mut masking.editor, &log));
+    let records = logged(&mut masking.editor, &log);
     assert!(
-        !events.iter().any(|event| event == "mask_draft_set"),
-        "the release re-sent geometry the core draft already holds: {events:?}"
+        testing::events(&records, "mask_draft_set").is_empty(),
+        "the release re-sent geometry the core draft already holds"
     );
 }
 
@@ -3220,15 +3216,15 @@ fn a_brush_in_hand_holds_no_draft_until_its_press() {
         y: 0.3,
     }));
     // One update: the begin, then the set carrying the press's position, both answered.
-    let events = event_names(&logged(&mut masking.editor, &log));
-    let begin = events
+    let records = logged(&mut masking.editor, &log);
+    let begin = records
         .iter()
-        .position(|event| event == "mask_draft_begin")
+        .position(|record| record["event"] == "mask_draft_begin")
         .expect("the press began the stroke's draft");
     assert_eq!(
-        events.get(begin + 1).map(String::as_str),
-        Some("mask_draft_set"),
-        "the first draft.set follows the begin at once: {events:?}"
+        records.get(begin + 1).map(|record| &record["event"]),
+        Some(&json!("mask_draft_set")),
+        "the first draft.set follows the begin at once"
     );
     masking.assert_geometry_sent();
     let opened = owner_draft(&masking);

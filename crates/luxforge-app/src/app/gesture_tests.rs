@@ -175,11 +175,8 @@ fn a_refused_begin_opens_nothing_and_says_why() {
     assert_eq!(editor.controls.dragging, None, "the drag ends with it");
     assert!(editor.session.draft.is_none());
     let records = logged(&mut editor, &log);
-    assert_eq!(
-        testing::draft_events(&records, "slider_draft_begin").len(),
-        1
-    );
-    assert!(testing::draft_events(&records, "slider_draft_set").is_empty());
+    assert_eq!(testing::events(&records, "slider_draft_begin").len(), 1);
+    assert!(testing::events(&records, "slider_draft_set").is_empty());
     finish(editor, catalog);
 
     // The crop, whose start has already opened its frame and asked for its mode.
