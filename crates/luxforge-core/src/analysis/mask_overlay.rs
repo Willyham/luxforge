@@ -40,8 +40,8 @@ use rayon::prelude::*;
 pub const MASK_COVERAGE_NONE: u8 = 0;
 
 /// The pixel value handed to a field that does not read one. A mask that reads no pixel ignores it
-/// — which `a_geometric_component_ignores_the_pixel_it_is_handed` proves is exact and not an
-/// approximation — so the grid never pays for a read such a mask would discard.
+/// — which the kind-conformance suite's `reads_exactly_what_its_kind_says` proves is exact and not
+/// an approximation — so the grid never pays for a read such a mask would discard.
 const NO_PIXEL: [f64; 3] = [0.0, 0.0, 0.0];
 /// A cell the mask covers completely.
 pub const MASK_COVERAGE_FULL: u8 = 255;

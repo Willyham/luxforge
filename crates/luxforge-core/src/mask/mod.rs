@@ -182,7 +182,8 @@ struct ComponentKind {
     /// It is the *kind's* answer and not one component's: a brush is `false` here and still answers
     /// [`CompiledMask::reads_pixels`] in the affirmative when one of its strokes is held to a colour,
     /// because that is a property of the stroke and not of the kind.
-    /// `a_value_based_kind_is_exactly_one_that_reads_the_pixel` checks the two against each other.
+    /// The kind-conformance suite (`tests/mask/kinds`) checks the two against each other for every
+    /// kind.
     value_based: bool,
     /// What this kind does **not** select, in its own terms, for a client to show where a person
     /// would otherwise assume otherwise.
@@ -960,26 +961,6 @@ mod tests {
     /// function of position alone, so the value is arbitrary and the same at every call.
     const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 
-    #[test]
-    fn a_menu_names_each_kind_as_the_board_does_and_a_component_keeps_its_short_name() {
-        assert_eq!(
-            component_kinds().map(kind_menu_title).collect::<Vec<_>>(),
-            [
-                "Linear gradient",
-                "Radial gradient",
-                "Brush",
-                "Luminance range",
-                "Colour range"
-            ]
-        );
-        assert_eq!(kind_title(radial::KIND), "Radial");
-        assert_eq!(
-            kind_menu_title("cloud"),
-            "Cloud",
-            "an unknown kind keeps its title"
-        );
-    }
-
     fn stage(width: u32, height: u32) -> Stage {
         Stage { width, height }
     }
@@ -1128,88 +1109,6 @@ mod tests {
         }
     }
 
-    /// The kind table refuses a kind it does not claim by name, with the `incompatible` kind, and
-    /// reads nothing of the payload it could not understand.
-    #[test]
-    fn an_unknown_component_kind_is_refused_by_name() {
-        assert!(knows_component_kind("linear"));
-        assert!(knows_component_kind("radial"));
-        assert!(knows_component_kind("brush"));
-        assert!(knows_component_kind("luminance-range"));
-        assert!(knows_component_kind("colour-range"));
-        // Every kind the masking design names is delivered, so the kind this build does not claim
-        // is one no design names — which is exactly the case retention exists for.
-        assert!(!knows_component_kind("future-kind"));
-        let mask = mask_of(vec![component(
-            "Future 1",
-            ComponentMode::Add,
-            "future-kind",
-            json!({"nested": {"points": [[0.25, 0.5]]}, "flag": true}),
-        )]);
-        let error = CompiledMask::new(&mask, stage(64, 48), &crate::path::StrokeTable::default())
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert_eq!(
-            error.to_string(),
-            "incompatible: unknown mask component future-kind"
-        );
-        let table = validate_component_kinds(&mask).unwrap_err();
-        assert_eq!(
-            table.to_string(),
-            "incompatible: unknown mask component future-kind"
-        );
-        // The stored component is untouched by the refusal: the table parses, it does not rewrite.
-        assert_eq!(mask.components[0].kind, "future-kind");
-        assert_eq!(mask.components[0].payload["flag"], json!(true));
-    }
-
-    /// Every message a malformed or illegal linear payload produces, in full.
-    #[test]
-    fn linear_validation_errors_name_the_field() {
-        let cases = [
-            (
-                gradient(0.0, 0.0, 0.0, 0.0),
-                ErrorKind::Validation,
-                "validation: component Linear 1 linear axis length must be within 1e-4..=64 \
-                 mask-space units on a 400x400 stage",
-            ),
-            (
-                gradient(-1.5, 0.0, 0.5, 0.5),
-                ErrorKind::Validation,
-                "validation: component Linear 1 linear parameter x0 must be a number within -1..=2",
-            ),
-            (
-                gradient(0.0, 2.5, 0.5, 0.5),
-                ErrorKind::Validation,
-                "validation: component Linear 1 linear parameter y0 must be a number within -1..=2",
-            ),
-            (
-                json!({"x0": 0.0, "y0": 0.0, "x1": 1.0}),
-                ErrorKind::Validation,
-                "validation: component Linear 1 has an invalid linear payload: missing field `y1`",
-            ),
-            (
-                json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0, "angle": 4.0}),
-                ErrorKind::Validation,
-                "validation: component Linear 1 has an invalid linear payload: unknown field \
-                 `angle`, expected one of `x0`, `y0`, `x1`, `y1`",
-            ),
-        ];
-        for (payload, kind, message) in cases {
-            let mask = mask_of(vec![component(
-                "Linear 1",
-                ComponentMode::Add,
-                "linear",
-                payload,
-            )]);
-            let error =
-                CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
-                    .unwrap_err();
-            assert_eq!(error.kind, kind);
-            assert_eq!(error.to_string(), message);
-        }
-    }
-
     /// An axis so long that its mask-space length passes the ceiling is refused by the same rule
     /// that refuses a zero-length one, because the axis length is itself a stored distance.
     #[test]
@@ -1251,69 +1150,6 @@ mod tests {
             error.to_string(),
             "validation: mask Mask 1 cannot be compiled against an empty 0x48 stage"
         );
-    }
-
-    /// The minimum feature is the ramp width in pixels, and it is the number of rows the transition
-    /// actually occupies — counted, not argued. One mask-space unit is the stage's height on both
-    /// axes, so a diagonal axis measures its own length and not its projection.
-    #[test]
-    fn min_feature_px_is_the_measured_ramp_width() {
-        let stage = stage(600, 400);
-        let mask = mask_of(vec![component(
-            "Linear 1",
-            ComponentMode::Add,
-            "linear",
-            gradient(0.5, 0.25, 0.5, 0.75),
-        )]);
-        let compiled =
-            CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default()).unwrap();
-        // The axis is half the stage's height in mask-space units: 0.5 * 400 = 200 px.
-        assert_eq!(compiled.min_feature_px(stage), 200.0);
-        let partial = (0..stage.height)
-            .filter(|y| {
-                let c = compiled.coverage(300, *y, ANY_PIXEL);
-                c > 0.0 && c < 1.0
-            })
-            .count();
-        assert!(
-            (199..=200).contains(&partial),
-            "the ramp occupied {partial} rows against a stated 200"
-        );
-        // A diagonal axis across the same stage: du = 0.5 * 1.5, dv = 0.5, so the length is
-        // sqrt(0.5625 + 0.25) = 0.9013878... units, or 360.555 px — the axis's own length, not its
-        // projection, because one mask-space unit is the stage's height on both axes.
-        let diagonal = mask_of(vec![component(
-            "Linear 1",
-            ComponentMode::Add,
-            "linear",
-            gradient(0.25, 0.25, 0.75, 0.75),
-        )]);
-        let compiled =
-            CompiledMask::new(&diagonal, stage, &crate::path::StrokeTable::default()).unwrap();
-        let expected = ((0.5 * 1.5f64).powi(2) + 0.5f64.powi(2)).sqrt() * 400.0;
-        assert!(
-            (f64::from(compiled.min_feature_px(stage)) - expected).abs() < 1e-3,
-            "{} against {expected}",
-            compiled.min_feature_px(stage)
-        );
-        // The smallest feature of several components is the narrowest of them.
-        let mixed = mask_of(vec![
-            component(
-                "Linear 1",
-                ComponentMode::Add,
-                "linear",
-                gradient(0.5, 0.25, 0.5, 0.75),
-            ),
-            component(
-                "Linear 2",
-                ComponentMode::Add,
-                "linear",
-                gradient(0.5, 0.5, 0.5, 0.55),
-            ),
-        ]);
-        let compiled =
-            CompiledMask::new(&mixed, stage, &crate::path::StrokeTable::default()).unwrap();
-        assert!((f64::from(compiled.min_feature_px(stage)) - 20.0).abs() < 1e-9);
     }
 
     /// `bounds` is a rectangle of the compiled stage and it excludes what a half-plane excludes: a

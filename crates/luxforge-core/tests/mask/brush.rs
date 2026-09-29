@@ -6,10 +6,11 @@
 //! expressions in the study's order, so the two agree in their last bits or the transcription is
 //! wrong.
 //!
-//! Everything a person can do to a brush component is covered from the outside: randomized strokes
-//! at every size, feather, flow and erase flag; a one-point stroke and a doubled-back path; the
-//! accumulation properties the design claims; the conservative rectangle, exhaustively on small
-//! stages; the occupancy cap; and the measurement that the grid index is doing its job.
+//! What is the brush's alone, beside the checklist every kind passes (`mask::kinds`, where randomized
+//! strokes at every size, feather, flow and erase flag are held to the reference, the conservative
+//! rectangle is checked exhaustively and the ramp is measured): a one-point stroke and a doubled-back
+//! path; the accumulation properties the design claims; the occupancy cap and the stroke limits; and
+//! the measurements that the grid index is doing its job.
 
 use super::*;
 use luxforge_core::{
@@ -17,35 +18,12 @@ use luxforge_core::{
     mask::{CompiledMask, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT},
     path::{Stroke, StrokeTable},
 };
-use luxforge_reference::mask::{
-    Brush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage, brush_coverage,
-    brush_segments, stroke_coverage,
-};
+use luxforge_reference::mask::{Brush, Stage as RefStage, brush_coverage};
 use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// The reference's view of the **stored** stroke, which is what production evaluates: the positions
-/// snapped to the path grid and decimated there, and the radius quantized to the same grid. Feeding
-/// the reference anything else would compare two different strokes.
-fn as_reference(stroke: &Stroke) -> BrushStroke {
-    BrushStroke {
-        points: stroke.points().collect(),
-        size: stroke.size(),
-        feather: stroke.feather(),
-        flow: stroke.flow(),
-        erase: stroke.erase(),
-        // The stored limit travels to the reference exactly as every other stored setting does:
-        // production reads it from the stroke and so does the oracle, so the two compare the same
-        // stroke rather than one limited and one not.
-        colour: stroke.colour_limit().map(|limit| RefColourLimit {
-            seed: limit.seed(),
-            refine: limit.refine(),
-        }),
-    }
-}
 
 /// A mask holding one add brush component over these strokes, with the table they resolve through.
 fn brush_mask(strokes: &[Stroke]) -> (Mask, StrokeTable) {
@@ -65,71 +43,9 @@ fn brush_mask(strokes: &[Stroke]) -> (Mask, StrokeTable) {
     (mask, table)
 }
 
-/// A random stroke posted the way a client posts one, through the host's own capture, so every test
-/// here runs on strokes a gesture could actually have produced.
-fn random_stroke(rng: &mut SplitMix64, erase: bool) -> Stroke {
-    let count = 1 + rng.next_usize(8);
-    let mut points = Vec::with_capacity(count);
-    let mut x = rng.next_range(0.05, 0.95);
-    let mut y = rng.next_range(0.05, 0.95);
-    for _ in 0..count {
-        points.push([x, y]);
-        x = (x + rng.next_range(-0.25, 0.25)).clamp(-1.0, 2.0);
-        y = (y + rng.next_range(-0.25, 0.25)).clamp(-1.0, 2.0);
-    }
-    Stroke::capture(
-        &points,
-        rng.next_range(0.01, 0.2),
-        rng.next_range(0.0, 100.0),
-        rng.next_range(1.0, 100.0),
-        erase,
-    )
-    .expect("a legal stroke")
-}
-
 // ---------------------------------------------------------------------------
-// Bit-identity with the frozen reference
+// The shapes the design names
 // ---------------------------------------------------------------------------
-
-/// The production field is bit-identical to the reference across randomized strokes, sizes,
-/// feathers, flows and positions, on two stages and at every pixel of a small one.
-#[test]
-fn the_capsule_field_is_bit_identical_to_the_frozen_reference() {
-    let mut rng = SplitMix64(0x018B_171D);
-    let mut compared = 0usize;
-    for (width, height) in [(61u32, 47u32), (48, 64)] {
-        let reference_stage = RefStage::new(width, height);
-        for _ in 0..120 {
-            let count = 1 + rng.next_usize(4);
-            let strokes: Vec<Stroke> = (0..count)
-                .map(|_| {
-                    let erase = rng.next_bool();
-                    random_stroke(&mut rng, erase)
-                })
-                .collect();
-            let (mask, table) = brush_mask(&strokes);
-            let compiled = CompiledMask::new(&mask, stage(width, height), &table)
-                .expect("a legal brush compiles");
-            let expected = Brush {
-                strokes: strokes.iter().map(as_reference).collect(),
-            };
-            for y in 0..height {
-                for x in 0..width {
-                    let (u, v) = reference_stage.pixel_uv(x, y);
-                    let want = brush_coverage(&expected, &reference_stage, u, v, ANY_PIXEL);
-                    let got = compiled.coverage(x, y, ANY_PIXEL);
-                    assert_eq!(
-                        got.to_bits(),
-                        want.to_bits(),
-                        "at ({x}, {y}) on {width}x{height}: {got} against {want}"
-                    );
-                    compared += 1;
-                }
-            }
-        }
-    }
-    assert!(compared >= 600_000, "compared only {compared} pixels");
-}
 
 /// The two shapes the design names by hand: a one-point stroke, which is a disc, and a doubled-back
 /// path, which is one pass and not two. Both against the reference, bit for bit.
@@ -147,7 +63,7 @@ fn a_one_point_stroke_and_a_doubled_back_path_match_the_reference() {
             let (mask, table) = brush_mask(std::slice::from_ref(&stroke));
             let compiled = CompiledMask::new(&mask, stage(80, 60), &table).unwrap();
             let expected = Brush {
-                strokes: vec![as_reference(&stroke)],
+                strokes: vec![reference_stroke(&stroke)],
             };
             for y in 0..60 {
                 for x in 0..80 {
@@ -337,94 +253,6 @@ fn one_pass_is_one_density_and_a_second_pass_builds_up() {
 }
 
 // ---------------------------------------------------------------------------
-// Bounds
-// ---------------------------------------------------------------------------
-
-/// The conservative rectangle is correct, checked exhaustively on small stages: every pixel outside
-/// it has coverage exactly zero, and the rectangle is not the whole stage when it does not have to
-/// be.
-#[test]
-fn the_bounds_rectangle_is_conservative_and_correct_on_small_stages() {
-    let mut rng = SplitMix64(0x018B_011D);
-    let mut narrowed = 0usize;
-    for (width, height) in [(37u32, 29u32), (24, 32), (16, 16)] {
-        let size = stage(width, height);
-        for _ in 0..80 {
-            let count = 1 + rng.next_usize(3);
-            let strokes: Vec<Stroke> = (0..count)
-                .map(|index| random_stroke(&mut rng, index % 3 == 2))
-                .collect();
-            let (mask, table) = brush_mask(&strokes);
-            let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-            let bounds = compiled.bounds();
-            if bounds.width < width || bounds.height < height {
-                narrowed += 1;
-            }
-            for y in 0..height {
-                for x in 0..width {
-                    let inside =
-                        x >= bounds.x0 && x < bounds.x1() && y >= bounds.y0 && y < bounds.y1();
-                    if !inside {
-                        assert_eq!(
-                            compiled.coverage(x, y, ANY_PIXEL),
-                            0.0,
-                            "coverage outside the rectangle at ({x}, {y}) on {width}x{height}, \
-                             rectangle {bounds:?}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-    assert!(
-        narrowed > 100,
-        "the rectangle narrowed on only {narrowed} components, which is not a bounds test"
-    );
-}
-
-/// A component whose only strokes erase covers nothing, so its rectangle is empty and its field is
-/// exactly zero; and a component with a zero-flow stroke is the same.
-#[test]
-fn a_component_that_cannot_add_coverage_bounds_nothing() {
-    let size = stage(40, 30);
-    for stroke in [
-        Stroke::capture(&[[0.3, 0.5], [0.7, 0.5]], 0.1, 50.0, 100.0, true).unwrap(),
-        Stroke::capture(&[[0.3, 0.5], [0.7, 0.5]], 0.1, 50.0, 0.0, false).unwrap(),
-    ] {
-        let (mask, table) = brush_mask(std::slice::from_ref(&stroke));
-        let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-        assert!(compiled.bounds().is_empty(), "{stroke:?} bounded something");
-        for y in 0..size.height {
-            for x in 0..size.width {
-                assert_eq!(compiled.coverage(x, y, ANY_PIXEL), 0.0);
-            }
-        }
-    }
-    // An empty component list of strokes is the same answer, and it compiles.
-    let (mask, table) = brush_mask(&[]);
-    let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-    assert!(compiled.bounds().is_empty());
-    assert_eq!(compiled.coverage(20, 15, ANY_PIXEL), 0.0);
-    assert_eq!(compiled.min_feature_px(size), f32::INFINITY);
-}
-
-/// An inverted brush component is non-zero over almost the whole stage, so the honest conservative
-/// rectangle is the whole stage — the same answer an inverted radial gives.
-#[test]
-fn an_inverted_brush_bounds_the_whole_stage() {
-    let size = stage(40, 30);
-    let stroke = Stroke::capture(&[[0.5, 0.5]], 0.1, 50.0, 100.0, false).unwrap();
-    let (mut mask, table) = brush_mask(std::slice::from_ref(&stroke));
-    mask.components[0].invert = true;
-    let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-    assert_eq!(compiled.bounds().width, size.width);
-    assert_eq!(compiled.bounds().height, size.height);
-    // The corner is outside the capsule, so the component was exactly zero there and its inversion
-    // is exactly one.
-    assert_eq!(compiled.coverage(0, 0, ANY_PIXEL), 1.0);
-}
-
-// ---------------------------------------------------------------------------
 // Limits and refusals
 // ---------------------------------------------------------------------------
 
@@ -450,7 +278,7 @@ fn a_compiled_mask_reports_its_densest_cell_and_never_refuses_for_it() {
     );
     let reference_stage = RefStage::new(size.width, size.height);
     let expected = Brush {
-        strokes: strokes.iter().map(as_reference).collect(),
+        strokes: strokes.iter().map(reference_stroke).collect(),
     };
     let mut tested = 0usize;
     for y in 0..size.height {
@@ -785,64 +613,6 @@ fn a_component_over_the_stroke_limit_names_the_limit() {
     assert!(luxforge_core::mask::validate_component_kinds(&mask).is_err());
 }
 
-/// A payload that is not the reserved stroke list is refused by name, and a reference the store
-/// cannot answer is the store's own refusal — never an empty stroke.
-#[test]
-fn a_malformed_payload_or_an_unresolvable_reference_is_refused_by_name() {
-    let mut mask = Mask::new("Mask 1");
-    let name = mask.next_component_name("brush");
-    mask.components.push(Component::new(
-        name,
-        ComponentMode::Add,
-        "brush",
-        json!({"strokes": [], "size": 0.1}),
-    ));
-    let error = CompiledMask::new(&mask, stage(64, 48), &StrokeTable::default()).unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Validation);
-    assert!(
-        error
-            .detail
-            .starts_with("component Brush 1 has an invalid brush payload: unknown field `size`"),
-        "{}",
-        error.detail
-    );
-
-    // A well-formed payload whose address the table does not hold.
-    let stroke = Stroke::capture(&[[0.5, 0.5]], 0.1, 50.0, 100.0, false).unwrap();
-    let (held, _) = brush_mask(std::slice::from_ref(&stroke));
-    let error =
-        CompiledMask::new(&held, stage(64, 48), &StrokeTable::new("this entry")).unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Incompatible);
-    assert!(
-        error.detail.contains("is not in the stroke store"),
-        "{}",
-        error.detail
-    );
-}
-
-/// The smallest feature a brush draws is its narrowest ramp, in the stage's pixels; a hard-edged
-/// stroke has no ramp at all and says so, exactly as a hard-edged radial does.
-#[test]
-fn the_minimum_feature_is_the_narrowest_ramp() {
-    let size = stage(600, 400);
-    // A radius of 0.1 at feather 50 has a ramp of half the radius: 20 px on a 400 px stage, up to
-    // the radius's own quantization onto the stored path grid, which is what `size()` reports.
-    let soft = Stroke::capture(&[[0.3, 0.5], [0.7, 0.5]], 0.1, 50.0, 100.0, false).unwrap();
-    let expected = soft.size() * 0.5 * 400.0;
-    assert!((expected - 20.0).abs() < 0.01, "{expected}");
-    let (mask, table) = brush_mask(std::slice::from_ref(&soft));
-    let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-    assert!(
-        (f64::from(compiled.min_feature_px(size)) - expected).abs() < 1e-3,
-        "{} against {expected}",
-        compiled.min_feature_px(size)
-    );
-    let hard = Stroke::capture(&[[0.3, 0.5], [0.7, 0.5]], 0.1, 0.0, 100.0, false).unwrap();
-    let (mask, table) = brush_mask(std::slice::from_ref(&hard));
-    let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-    assert_eq!(compiled.min_feature_px(size), 0.0);
-}
-
 // ---------------------------------------------------------------------------
 // The grid index
 // ---------------------------------------------------------------------------
@@ -901,7 +671,7 @@ fn evaluation_cost_does_not_grow_with_stroke_count() {
         let per_pixel = elapsed.as_secs_f64() * 1e9 / f64::from(rounds * 50 * 50);
 
         let unindexed = Brush {
-            strokes: strokes.iter().map(as_reference).collect(),
+            strokes: strokes.iter().map(reference_stroke).collect(),
         };
         let reference_rounds = 20;
         let started = std::time::Instant::now();
@@ -1187,7 +957,7 @@ fn the_index_changes_no_answer_anywhere() {
             let (mask, table) = brush_mask(&strokes);
             let compiled = CompiledMask::new(&mask, stage(width, height), &table).unwrap();
             let expected = Brush {
-                strokes: strokes.iter().map(as_reference).collect(),
+                strokes: strokes.iter().map(reference_stroke).collect(),
             };
             for y in 0..height {
                 for x in 0..width {
@@ -1199,64 +969,6 @@ fn the_index_changes_no_answer_anywhere() {
                     );
                 }
             }
-        }
-    }
-}
-
-/// A brush combines with a gradient through the frozen component algebra like any other kind: the
-/// brush is one `c` in the fold and nothing about the composition knows it was drawn.
-#[test]
-fn a_brush_combines_with_a_gradient_through_the_frozen_algebra() {
-    let size = stage(80, 60);
-    let reference_stage = RefStage::new(80, 60);
-    let stroke = Stroke::capture(&[[0.3, 0.5], [0.7, 0.5]], 0.12, 60.0, 100.0, false).unwrap();
-    let (mut mask, table) = brush_mask(std::slice::from_ref(&stroke));
-    mask.components.push(Component::new(
-        "Linear 1",
-        ComponentMode::Intersect,
-        "linear",
-        json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.0}),
-    ));
-    let compiled = CompiledMask::new(&mask, size, &table).unwrap();
-    let brush = Brush {
-        strokes: vec![as_reference(&stroke)],
-    };
-    let linear = luxforge_reference::mask::Linear {
-        x0: 0.0,
-        y0: 0.0,
-        x1: 1.0,
-        y1: 0.0,
-    };
-    for y in 0..size.height {
-        for x in 0..size.width {
-            let (u, v) = reference_stage.pixel_uv(x, y);
-            let c = brush_coverage(&brush, &reference_stage, u, v, ANY_PIXEL);
-            let g = luxforge_reference::mask::linear_coverage(&linear, &reference_stage, u, v);
-            assert_eq!(
-                compiled.coverage(x, y, ANY_PIXEL).to_bits(),
-                c.min(g).to_bits()
-            );
-        }
-    }
-}
-
-/// One stroke on its own is the reference's `stroke_coverage`, which is what "the component is the
-/// accumulation and nothing more" means: a single add stroke over `c = 0` is `0 + (1 - 0)·s`.
-#[test]
-fn a_single_add_stroke_is_its_own_coverage() {
-    let reference_stage = RefStage::new(48, 36);
-    let stroke = Stroke::capture(&[[0.2, 0.4], [0.8, 0.6]], 0.07, 35.0, 75.0, false).unwrap();
-    let (mask, table) = brush_mask(std::slice::from_ref(&stroke));
-    let compiled = CompiledMask::new(&mask, stage(48, 36), &table).unwrap();
-    let held = as_reference(&stroke);
-    let segments = brush_segments(&held, &reference_stage);
-    for y in 0..36 {
-        for x in 0..48 {
-            let (u, v) = reference_stage.pixel_uv(x, y);
-            assert_eq!(
-                compiled.coverage(x, y, ANY_PIXEL).to_bits(),
-                stroke_coverage(&held, &segments, u, v, ANY_PIXEL).to_bits()
-            );
         }
     }
 }

@@ -33,8 +33,8 @@ use luxforge_core::{
     path::{ColourLimit, Stroke, StrokeTable},
 };
 use luxforge_reference::mask::{
-    Brush as RefBrush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage,
-    brush_coverage, colour_similarity,
+    Brush as RefBrush, ColourLimit as RefColourLimit, Stage as RefStage, brush_coverage,
+    colour_similarity,
 };
 use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::{render, sample};
@@ -71,23 +71,6 @@ fn limit_at(source: &SourceImage, x: u32, y: u32, refine: f64) -> ColourLimit {
 /// A limit on an arbitrary colour, for the sweeps that do not need a particular one.
 fn limit_of(seed: [u8; 3], refine: f64) -> ColourLimit {
     ColourLimit::sampled(seed, refine).expect("a legal refine")
-}
-
-/// The reference's view of the **stored** stroke, which is what production evaluates: the positions
-/// snapped to the path grid, the radius quantized there, and the stored limit carried through
-/// unchanged. Feeding the reference anything else would compare two different strokes.
-fn as_reference(stroke: &Stroke) -> BrushStroke {
-    BrushStroke {
-        points: stroke.points().collect(),
-        size: stroke.size(),
-        feather: stroke.feather(),
-        flow: stroke.flow(),
-        erase: stroke.erase(),
-        colour: stroke.colour_limit().map(|limit| RefColourLimit {
-            seed: limit.seed(),
-            refine: limit.refine(),
-        }),
-    }
 }
 
 /// A mask holding one add brush component over these strokes, with the table they resolve through.
@@ -191,7 +174,7 @@ fn a_limited_stroke_is_bit_identical_to_the_frozen_reference() {
             let (mask, table) = brush_mask(std::slice::from_ref(&stroke));
             let compiled = CompiledMask::new(&mask, stage, &table).expect("a compiled mask");
             let expected = RefBrush {
-                strokes: vec![as_reference(&stroke)],
+                strokes: vec![reference_stroke(&stroke)],
             };
             for y in (0..32).step_by(3) {
                 for x in (0..48).step_by(3) {
@@ -409,7 +392,7 @@ fn a_sampled_byte_equals_the_rendered_byte_through_a_limited_stroke() {
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a frame");
     let reference_stage = RefStage::new(WIDTH, HEIGHT);
     let expected = RefBrush {
-        strokes: vec![as_reference(&limited)],
+        strokes: vec![reference_stroke(&limited)],
     };
     let mut partial = 0usize;
     for y in 0..HEIGHT {
