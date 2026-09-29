@@ -1128,7 +1128,7 @@
         "Record at least 30 samples with exact host/build/decoder/configuration/fixture/cache/display/storage state for authentic 24 MP Z6 and 40 MP X100VI workloads.",
         "Separate read/hash/identify/unpack/normalize/demosaic/color/geometry/resize/upload/observed-frame time, owner responsiveness, cancellation and first/steady WB/exposure behavior.",
         "Measure process/helper RSS, native scratch, cache/live frame bytes and GPU allocations without double-counting unified memory; include worst old/new replacement liveness, a redevelopment beside the retained second development, and repeated switching.",
-        "Measure Fit/100%, mixed stack edits/history/reopen, idle CPU and current 24/60 MP JPEG before/after regressions; retain failures/tails.",
+        "Measure Fit/100% (including concurrent Fit proxies beside a pooled RCD development), mixed stack edits/history/reopen, idle CPU and current 24/60 MP JPEG before/after regressions; retain failures/tails.",
         "Resolve measured misses with a concrete optimization/scope/budget proposal, without changing appearance, relaxing accepted bounds silently or adding CI timing gates."
       ],
       "test_strategy": {
