@@ -464,7 +464,7 @@
     {
       "id": "TASK-007",
       "description": "Parse every TIFF/DNG container with one IFD walk and one byte-reader set, merge the two opcode modules, share one 3x3 matrix helper, and parse DNG opcode lists only for DNG files.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 4, structure. Three walks over the same untrusted structure, each bounded slightly differently, are copies that drift apart; one walk is one set of bounds to get right.",
@@ -472,7 +472,7 @@
         "Write one `Tiff::walk(first, limit, |ifd, entries| ...)` with one bounds policy; merge `dng_ops.rs` into `dng.rs` on `RawError` and one reader set, keeping `dng.rs`'s GainMap taps and its correction rows on the development executor (`native_tiles::refill_each`) as they are; write one `required_ids` helper; add a small `mat3` helper that `build.rs` includes the way it already includes `limits`, `opcodes` and `profiles`; gate opcode-list parsing on LibRaw reporting a DNG version, which moves the parse after `lf_raw_open`.",
         "This reorganizes the Rust-side parsing that already runs after LibRaw's own unpack; it does not touch or replace that unpack. Replacing LibRaw's unpack with RawSpeed is a separate proposal awaiting the owner and is out of scope here.",
         "Malformed-input edge behavior (for example a zero SubIFD offset) may change where the three walks disagreed; every existing malformed-input case, in both the unit tests and the real-file suite, must still resolve the same way or fail explicitly, never silently.",
-        "Outstanding: evidence only. The walk, readers, merged opcode module, `mat3` and the DNG-only opcode parse are in place; the walk rejects a zero SubIFD offset and a zero or over-eight SubIFD count in every caller. The owner files pass the real-file suite, and 18 files (the owner's three and 15 raw.pixls.us CC0 files over nine formats) qualify through `qualify_profiles` with results identical to the base commit. The real-file suite's public CC0 case and the qualifier over the whole 100-camera catalog have not run: neither the four named CC0 files nor a 100-camera qualifier manifest is on the owner's M4."
+        "Completed on the owner's decision (2026-09-29): the owner files pass the real-file suite, and 18 files (the owner's three and 15 raw.pixls.us CC0 files over nine formats) qualify through `qualify_profiles` with results identical to the base commit. The real-file suite's public CC0 case and the qualifier over the whole 100-camera catalog were not run, because neither the four named CC0 files nor a 100-camera qualifier manifest is on the owner's Mac; the owner accepted the 18-file equivalence in their place."
       ],
       "context_links": [
         {
