@@ -134,7 +134,7 @@ The owner asked on 2026-09-23 for presets, with native presets and Lightroom imp
 
 ## Architecture review
 
-Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. The consolidation is delivered and its outcome lives in the specs it changed; the work that follows it is planned in [after the consolidation](design/post-consolidation.md).
+Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. The consolidation is delivered and its outcome lives in the specs it changed; the post-consolidation programme that followed it completed on 2026-09-29.
 
 - Consolidate rather than rewrite. Each cross-cutting mechanism keeps one implementation that every feature extends, and the copies are deleted. That covers committing and planning an edit, method dispatch and parameters, jobs, latest-job workers, desktop drafts, the JPEG and RAW evaluators, field-patch modules, colour math, smoke scenarios and test support.
 - **Controls are the same for every source kind.** A JPEG and a RAW photo show one Exposure control and one White balance (temperature and tint) control set, as Lightroom does. Each control behaves as its source requires: on a RAW photo it sets the source development's white balance and exposure, and on a JPEG it sets Basic's relative adjustment. The RAW section's duplicate Exposure and white-balance controls merge into that one set. A module's applicability to a source kind is declared, not named by the desktop.
@@ -158,7 +158,7 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 
 ## Post-consolidation review
 
-Decided by the owner on 2026-09-26, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. The work is planned in [after the consolidation](design/post-consolidation.md), and each spec changes when its behaviour does.
+Decided by the owner on 2026-09-26, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. All six of its waves, the roadmap groundwork included, completed on 2026-09-29; each spec changed with its behaviour.
 
 - **Declared source kinds land now.** `EffectDescriptor.sources` and one applicability rule replace every check of the RAW module's name, ahead of the open questions in [source controls](design/source-controls.md), none of which they touch.
 - **The transport runs on `ureq`'s own agent** behind the unchanged address policy, after a one-day spike proves that cancelling a request by shutting its socket down works through rustls. If it cannot, this decision is amended to record that Luxforge owns its I/O loop.
