@@ -23,8 +23,8 @@ use std::sync::Arc;
 /// Everything the renderer asks of a boundary is one of the methods below, each a single dispatch
 /// over the kinds: the stage it produces and the rectangle of it a frame holds, the rectangle it
 /// reads, a windowed proxy's plan and cut of it, one point mapped back through it or evaluated
-/// through it, its forward map, its materialized frame in either driver, how the linear rows load
-/// it, and whether a point query evaluates it in tiles. A new kind of boundary is one more variant
+/// through it, its forward map, its materialized frame in either driver, its estimates, how the
+/// linear rows load it, and whether a point query evaluates it in tiles. A new kind of boundary is one more variant
 /// with one more arm in each of these methods; no caller matches on the kind.
 #[derive(Clone)]
 pub(crate) enum Entry {
