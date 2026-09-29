@@ -324,6 +324,15 @@ fn events<'a>(records: &'a [Value], name: &str) -> Vec<&'a Value> {
 fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenting_it() {
     let (mut editor, catalog, asset, original) = opened_and_shown();
     let log = attach_log(&mut editor);
+    // The evidence driver keeps the entry the frame on screen was rendered for, as an evidence run
+    // that opened this photograph would have.
+    let mut evidence = crate::app::testing::scripted_evidence("[]");
+    evidence.recorded.rendered_entry = Some(std::sync::Arc::new(original.clone()));
+    editor.evidence = Some(evidence);
+    assert_eq!(
+        editor.stack_summary()["displayed"]["entry"],
+        json!(original.id.as_str())
+    );
     let version = editor.presentation.presenter.photo_version();
     assert!(
         editor.presentation.presenter.photo().is_some(),

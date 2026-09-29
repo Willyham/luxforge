@@ -85,7 +85,7 @@ fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
     editor.presentation.presented_bounds = editor.proxy_bounds();
     editor.view_state.scale_factor = 2.0;
     editor.presentation.refit_pending = true;
-    editor.outcome_ready(false);
+    editor.outcome(crate::app::outcome::Outcome::RequestEnded { failed: false });
     assert!(crate::app::testing::evidence(&editor).capture_pending);
     assert!(
         !editor.capture_proxy_ready(),

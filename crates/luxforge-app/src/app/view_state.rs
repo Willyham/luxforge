@@ -3,9 +3,9 @@
 //! and window facts.
 use super::{
     Editor,
-    evidence::Settle,
     gesture::Starting,
     message::{Message, crop::CropMessage, view::ViewMessage},
+    outcome::Outcome,
     tasks::{pan_task, session_task, workspace_task},
 };
 use crate::app::Before;
@@ -59,7 +59,7 @@ impl Editor {
                     }
                     Err(error) => self.status.text = error,
                 }
-                self.settle_step(Settle::Session);
+                self.outcome(Outcome::SessionAnswered);
             }
             ViewMessage::WorkspaceUpdated(result) => {
                 match result {
@@ -74,7 +74,7 @@ impl Editor {
                     }
                     Err(error) => self.status.text = error,
                 }
-                self.settle_step(Settle::Session);
+                self.outcome(Outcome::SessionAnswered);
             }
             ViewMessage::PanSynced(result) => {
                 self.view_state.pan.answered();
@@ -85,7 +85,7 @@ impl Editor {
                 if let Some(&(x, y)) = self.view_state.pan.pending() {
                     return self.pan(x, y);
                 }
-                self.settle_step(Settle::Pan);
+                self.outcome(Outcome::PanAnswered);
             }
             ViewMessage::Resized(width, height) => {
                 self.view_state.window = (width, height);

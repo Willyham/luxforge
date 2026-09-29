@@ -2,11 +2,12 @@
 //! steps with a frame each, then exit. Every step goes through the same messages and owner calls the
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
+use crate::app::outcome::{Outcome, Presented, Requested};
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
     app::{
-        Editor,
+        Editor, export,
         gesture::Starting,
         message::{
             Message, action::ActionMessage, control::ControlMessage, crop::CropMessage,
@@ -16,7 +17,7 @@ use crate::{
             pointer::PointerMessage, preset::PresetMessage, view::ViewMessage,
         },
         performance,
-        tasks::{HostAnswer, host_task, mutation, request, workspace_task},
+        tasks::{HostAnswer, PerformanceRead, host_task, mutation, request, workspace_task},
     },
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
@@ -31,6 +32,7 @@ use crate::{
 };
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use iced::{Subscription, Task};
+use luxforge_core::HistoryEntry;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{
@@ -100,6 +102,30 @@ pub(crate) struct Evidence {
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
     pub(crate) sync: CaptureSync,
+    /// What only a captured frame's state reports, from the outcomes the seams report.
+    pub(crate) recorded: Recorded,
+}
+
+/// What only a captured frame's state reports, kept by the evidence driver from the outcomes the
+/// seams report ([`Outcome`]) rather than by the seams themselves, so an ordinary session copies
+/// and keeps none of it.
+#[derive(Default)]
+pub(crate) struct Recorded {
+    /// The entry the newest refresh or history selection asked to render. Shared, so a frame shown
+    /// for it copies no entry.
+    pub(crate) requested_entry: Option<Arc<HistoryEntry>>,
+    /// The requested entry once a frame rendered for it is the photograph, until a failure
+    /// withdraws it: the entry the stack summary reports as displayed.
+    pub(crate) rendered_entry: Option<Arc<HistoryEntry>>,
+    /// What `export.plan` and `export.jpeg` answered for the export in progress.
+    pub(crate) export_plan: Option<Value>,
+    pub(crate) export_queued: Option<Value>,
+    /// The Performance section's last two `resources.read` answers exactly as the owner sent them,
+    /// oldest first, each with the wall-clock moment it was read, so a runner can re-derive the
+    /// shown figures and the newest rate without trusting the model that derived them.
+    pub(crate) performance: VecDeque<(u64, Value)>,
+    /// The Performance section's last `activity.list` answer as the owner sent it.
+    pub(crate) activity: Option<Value>,
 }
 
 impl Evidence {
@@ -128,6 +154,7 @@ impl Evidence {
             capability_wait: None,
             wait_until: None,
             sync: CaptureSync::default(),
+            recorded: Recorded::default(),
         }
     }
 }
@@ -361,6 +388,44 @@ pub(crate) enum Settle {
     Capability,
     /// An export step's job has ended — written, failed or cancelled — or its request was refused.
     Export,
+}
+
+impl Settle {
+    /// The name the evidence log records a settled step's wait by.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Session => "session",
+            Self::Preview => "preview",
+            Self::SliderDraft => "slider_draft",
+            Self::Overlay => "overlay",
+            Self::MaskOverlay => "mask_overlay",
+            Self::Readout => "readout",
+            Self::Pick => "pick",
+            Self::Presets => "presets",
+            Self::Host => "host",
+            Self::Pan => "pan",
+            Self::Quiet => "quiet",
+            Self::Performance => "performance",
+            Self::Capability => "capability",
+            Self::Export => "export",
+        }
+    }
+
+    /// The wait a frame reaching the surface ends, if any. A frame with no draft open settles a
+    /// step waiting for the photograph; a visible region settles nothing on its own, because a
+    /// history selection, a Return to current or a commit is recorded with the whole-frame
+    /// histogram and stack its region cannot carry. A draft's frame settles its step only once it
+    /// is the draft's newest: a slider gesture's step waits for the drained slider, any other
+    /// draft's for the photograph.
+    fn presented(presented: Presented) -> Option<Self> {
+        match presented {
+            Presented::Photo | Presented::Exact => Some(Self::Preview),
+            Presented::Region | Presented::Draft { newest: false, .. } => None,
+            Presented::Draft { slider: true, .. } => Some(Self::SliderDraft),
+            Presented::Draft { slider: false, .. } => Some(Self::Preview),
+        }
+    }
 }
 
 /// The photograph the capture must actually read back. A render can be adopted before its texture
@@ -1858,7 +1923,7 @@ impl Editor {
             && self.presentation.held_by_proxy.is_none()
             && self.presentation.presented_generation == self.presentation.preview_generation
         {
-            self.settle_step(Settle::Quiet);
+            self.settle_step(Settle::Quiet, "quiet");
         }
     }
 
@@ -2167,7 +2232,7 @@ impl Editor {
                         .slider_gesture()
                         .is_some_and(|slider| slider.unpreviewed)
                 {
-                    self.settle_step(Settle::SliderDraft);
+                    self.settle_step(Settle::SliderDraft, "draft_refused");
                 }
             }
             // The committed pixels are the evidence, so this waits for the render the commit
@@ -2967,7 +3032,7 @@ impl Editor {
                 }
             }
         }
-        self.settle_step(Settle::Host);
+        self.settle_step(Settle::Host, "host_answered");
         Task::none()
     }
 
@@ -2980,7 +3045,7 @@ impl Editor {
     /// returned, so the arming condition cannot see it. It renders nothing, so the step is waiting
     /// for pixels that will never come; the refusal is what ends it, recorded on the step with the
     /// frame on screen as its evidence.
-    pub(crate) fn mask_command_failed(&mut self, error: &str) {
+    fn mask_command_failed(&mut self, error: &str) {
         if self
             .evidence
             .as_ref()
@@ -3003,7 +3068,7 @@ impl Editor {
     /// ([proposal P16](../../../../docs/design/range-study.md#proposals)), and before this the step
     /// ran to its deadline instead of recording that reason. Only a step waiting for the overlay is
     /// ended: the absence is nothing to any other step.
-    pub(crate) fn mask_overlay_refused_step(&mut self, reason: &str) {
+    fn mask_overlay_refused_step(&mut self, reason: &str) {
         if self
             .evidence
             .as_ref()
@@ -3039,16 +3104,236 @@ impl Editor {
         }
     }
 
-    /// Something the running step was waiting for happened: capture its frame.
-    pub(crate) fn settle_step(&mut self, settle: Settle) {
+    /// The running capability step waits for `module`'s round trips to answer and, with `wait`, for
+    /// its jobs to finish.
+    pub(crate) fn await_capability(&mut self, module: &str, wait: bool) {
+        self.await_step(Settle::Capability);
+        if let Some(evidence) = &mut self.evidence {
+            evidence.capability_wait = Some((module.to_owned(), wait));
+        }
+    }
+
+    /// Capture the running capability step's frame once what it waits for has happened: its round
+    /// trips have answered and its module's jobs have finished or, for `"wait": false`, are
+    /// running and have reported how far they have come, so the frame shows real progress. Read
+    /// from the capability store after every message, so the capability seam reports nothing.
+    pub(crate) fn settle_capability(&mut self) {
+        let Some((module, wait)) = self
+            .evidence
+            .as_ref()
+            .filter(|evidence| evidence.awaiting == Some(Settle::Capability))
+            .and_then(|evidence| evidence.capability_wait.clone())
+        else {
+            return;
+        };
+        let state = self.capabilities.module(&module);
+        let settled = state.pending == 0
+            && state.jobs.iter().all(|job| {
+                job.status.is_finished()
+                    || (!wait
+                        && job.status == luxforge_core::jobs::JobStatus::Running
+                        && job.progress.fraction.is_some())
+            });
+        if settled {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.capability_wait = None;
+            }
+            self.settle_step(Settle::Capability, "capability_settled");
+        }
+    }
+
+    /// Something the running step was waiting for happened, `by` naming it: capture its frame, and
+    /// log which outcome ended the step.
+    fn settle_step(&mut self, settle: Settle, by: &str) {
+        let Some(evidence) = &mut self.evidence else {
+            return;
+        };
+        if evidence.awaiting != Some(settle) {
+            return;
+        }
+        evidence.awaiting = None;
+        evidence.capture_pending = true;
+        // A step that waited for the overlay is captured with the overlay on screen, not merely
+        // after one arrived: see [`Evidence::capture_overlay`].
+        evidence.capture_overlay = settle == Settle::MaskOverlay;
+        let step = evidence.step;
+        self.event(
+            "script_step_settled",
+            || json!({"step":step,"waited_for":settle.name(),"by":by}),
+        );
+    }
+
+    /// A view change has just asked for a new frame. A scripted step whose frame is still to be
+    /// captured — waiting on the session round trip, or already settled by it earlier in this same
+    /// update — waits for that frame instead, so the capture never shows the picture the view has
+    /// already replaced, such as a proxy of the previous bounds.
+    fn await_frame(&mut self, settle: Settle) {
         if let Some(evidence) = &mut self.evidence
-            && evidence.awaiting == Some(settle)
+            && (evidence.awaiting == Some(Settle::Session)
+                || (evidence.awaiting.is_none() && evidence.capture_pending))
         {
-            evidence.awaiting = None;
-            evidence.capture_pending = true;
-            // A step that waited for the overlay is captured with the overlay on screen, not merely
-            // after one arrived: see [`Evidence::capture_overlay`].
-            evidence.capture_overlay = settle == Settle::MaskOverlay;
+            evidence.capture_pending = false;
+            evidence.awaiting = Some(settle);
+        }
+    }
+
+    /// Take up what a seam reported ([`Editor::outcome`]): keep what a captured frame reports, and
+    /// end the running step when the outcome is what it waits for.
+    pub(crate) fn observe(&mut self, outcome: Outcome<'_>) {
+        let by = outcome.name();
+        match outcome {
+            Outcome::Presented(presented) => {
+                if let Some(settle) = Settle::presented(presented) {
+                    self.settle_step(settle, by);
+                }
+            }
+            // The failure is that step's outcome, and its frame shows it.
+            Outcome::PreviewFailed { newest } => {
+                if newest {
+                    self.settle_step(Settle::Preview, by);
+                }
+            }
+            Outcome::NoNewFrame => self.settle_step(Settle::Preview, by),
+            Outcome::RequestEnded { failed } => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.had_errors |= failed;
+                    evidence.capture_pending = true;
+                }
+            }
+            Outcome::EntryRequested(entry) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.recorded.requested_entry = Some(Arc::new(entry.clone()));
+                }
+            }
+            Outcome::EntryShown(entry) => {
+                if let Some(recorded) = self
+                    .evidence
+                    .as_mut()
+                    .map(|evidence| &mut evidence.recorded)
+                    && recorded
+                        .requested_entry
+                        .as_ref()
+                        .is_some_and(|requested| requested.id == *entry)
+                {
+                    recorded.rendered_entry = recorded.requested_entry.clone();
+                }
+            }
+            Outcome::Withdrawn => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.recorded.rendered_entry = None;
+                }
+            }
+            Outcome::FrameRequested(Requested::Photo) => self.await_frame(Settle::Preview),
+            Outcome::FrameRequested(Requested::CropStage) => self.await_frame(Settle::Draft),
+            Outcome::DraftRefused => self.settle_step(Settle::SliderDraft, by),
+            Outcome::CropStage => self.settle_step(Settle::Draft, by),
+            Outcome::SessionAnswered => self.settle_step(Settle::Session, by),
+            Outcome::PanAnswered => self.settle_step(Settle::Pan, by),
+            Outcome::ReadoutAnswered => self.settle_step(Settle::Readout, by),
+            Outcome::PickEnded => self.settle_step(Settle::Pick, by),
+            // This pick commits, so its evidence is the render that follows rather than the status
+            // it leaves.
+            Outcome::PickCommitting => self.await_step(Settle::Preview),
+            Outcome::PresetsAnswered { failure } => {
+                if let Some(reason) = failure {
+                    self.refuse_step(reason);
+                }
+                self.settle_step(Settle::Presets, by);
+            }
+            // A step that switched an overlay on waits for exactly this, so its frame shows the
+            // mask rather than the photograph a moment before it. A refused overlay releases it
+            // too, so the refusal is visible in the evidence rather than leaving the run waiting
+            // for a frame nothing will arm.
+            Outcome::ClippingOverlay { failure } => match failure.filter(|_| {
+                self.evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.current.is_some())
+            }) {
+                Some(reason) => {
+                    self.refuse_step(reason);
+                    self.capture_next_frame();
+                }
+                None => self.settle_step(Settle::Overlay, by),
+            },
+            // Released either way: a refused grid is visible in the evidence rather than leaving
+            // the run waiting for a frame nothing will arm. With nothing drawn the capture is the
+            // frame as it is: waiting for the overlay of the frame on screen would wait for one
+            // that failed.
+            Outcome::MaskGrid { shown } => {
+                self.settle_step(Settle::MaskOverlay, by);
+                if !shown && let Some(evidence) = &mut self.evidence {
+                    evidence.capture_overlay = false;
+                }
+            }
+            // A tint the gesture showed of its own accord was refused: the step waiting for its
+            // texture is captured without it, and fails nothing.
+            Outcome::MaskGridAbsent { forced: true, .. } => {
+                self.settle_step(Settle::MaskOverlay, by);
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.capture_overlay = false;
+                }
+            }
+            Outcome::MaskGridAbsent {
+                forced: false,
+                reason,
+            } => self.mask_overlay_refused_step(reason),
+            Outcome::MaskCommandFailed(reason) => self.mask_command_failed(reason),
+            // The expanded frame is captured on the first answer, figures and all, rather than on
+            // the frame before it, which could only show dashes.
+            Outcome::PerformanceRead(read) => {
+                if let (Some(read), Some(evidence)) = (read, &mut self.evidence) {
+                    let PerformanceRead {
+                        resources,
+                        activity,
+                        wall_ms,
+                    } = *read;
+                    let recorded = &mut evidence.recorded;
+                    if recorded.performance.len() == 2 {
+                        recorded.performance.pop_front();
+                    }
+                    recorded.performance.push_back((wall_ms, resources));
+                    recorded.activity = Some(activity);
+                }
+                self.settle_step(Settle::Performance, by);
+            }
+            Outcome::PerformanceRestarted => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.recorded.performance.clear();
+                    evidence.recorded.activity = None;
+                }
+            }
+            Outcome::ExportPlanned(plan) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.recorded.export_plan = Some(plan.clone());
+                }
+            }
+            Outcome::ExportQueued(answer) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.recorded.export_queued = Some(answer.clone());
+                }
+            }
+            // A waiting export step captures its frame with what the plan, the queue and the job
+            // answered, and a failed one is recorded as failed.
+            Outcome::ExportEnded { record, failure } => {
+                let Some(evidence) = &mut self.evidence else {
+                    return;
+                };
+                let plan = evidence.recorded.export_plan.take();
+                let queued = evidence.recorded.export_queued.take();
+                if evidence.awaiting != Some(Settle::Export) {
+                    return;
+                }
+                self.note_step(json!({"export":{
+                    "plan": plan.as_ref().map(export::plan_record),
+                    "queued": queued,
+                    "record": record,
+                    "status": self.status.text,
+                }}));
+                if let Some(reason) = failure {
+                    self.refuse_step(reason);
+                }
+                self.settle_step(Settle::Export, by);
+            }
         }
     }
 
@@ -3388,9 +3673,11 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     Subscription::batch(subscriptions)
 }
 
-/// After every message: a step waiting for quiet settles once this client has nothing in flight.
+/// After every message: a step waiting for quiet settles once this client has nothing in flight,
+/// and a capability step once its module's round trips and jobs have.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
+    editor.settle_capability();
     Task::none()
 }
 
@@ -3708,6 +3995,7 @@ mod tests {
             capability_wait: None,
             wait_until: None,
             sync: CaptureSync::default(),
+            recorded: Recorded::default(),
         });
         editor.activity.requested = 1;
 
@@ -3776,6 +4064,69 @@ mod tests {
 
         // A tick with nothing left to send is harmless.
         let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
+        finish(editor, catalog);
+    }
+
+    /// A frame reaching the surface ends a step waiting for the photograph when no draft is open,
+    /// and a drafted step only on the draft's newest frame; a region alone ends nothing. A step
+    /// waiting for something else is not ended by a frame, and the one that is ended logs the
+    /// outcome that ended it.
+    #[test]
+    fn a_presented_frame_settles_only_the_wait_it_answers() {
+        use Presented::{Draft, Exact, Photo, Region};
+        for (presented, settles) in [
+            (Photo, Some(Settle::Preview)),
+            (Exact, Some(Settle::Preview)),
+            (Region, None),
+            (
+                Draft {
+                    slider: true,
+                    newest: true,
+                },
+                Some(Settle::SliderDraft),
+            ),
+            (
+                Draft {
+                    slider: false,
+                    newest: true,
+                },
+                Some(Settle::Preview),
+            ),
+            (
+                Draft {
+                    slider: true,
+                    newest: false,
+                },
+                None,
+            ),
+            (
+                Draft {
+                    slider: false,
+                    newest: false,
+                },
+                None,
+            ),
+        ] {
+            assert_eq!(Settle::presented(presented), settles, "{presented:?}");
+        }
+        let (mut editor, catalog) = crate::app::testing::boot();
+        let log = crate::app::testing::attach_log(&mut editor);
+        editor.evidence = Some(crate::app::testing::scripted_evidence("[]"));
+        editor.await_step(Settle::Session);
+        editor.outcome(Outcome::Presented(Photo));
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Session));
+        editor.outcome(Outcome::SessionAnswered);
+        assert!(evidence(&editor).awaiting.is_none() && evidence(&editor).capture_pending);
+        let records = crate::app::testing::logged(&mut editor, &log);
+        let settled: Vec<&Value> = records
+            .iter()
+            .filter(|record| record["event"] == "script_step_settled")
+            .map(|record| &record["detail"])
+            .collect();
+        assert_eq!(
+            settled,
+            [&json!({"step":0,"waited_for":"session","by":"session_answered"})]
+        );
         finish(editor, catalog);
     }
 

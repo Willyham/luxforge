@@ -11,9 +11,9 @@ use crate::{
     app::{
         Editor,
         draft::{CoreDraft, Event},
-        evidence::Settle,
         gesture::{Kind, Starting},
         message::{Message, control::ControlMessage, crop::CropMessage, crop::CropPointer},
+        outcome::{Outcome, Requested},
         tasks::{Refresh, crop_preview_task, mutation},
     },
     crop_draft::{CropDraft, Modifiers as DraftModifiers},
@@ -379,7 +379,7 @@ impl Editor {
                     if matches!(self.crop_stage(), Some(StageView::Rendering { .. })) {
                         self.crop_stage_lost();
                         self.status.text = error;
-                        self.settle_step(Settle::Draft);
+                        self.outcome(Outcome::CropStage);
                     }
                 }
             },
@@ -590,7 +590,7 @@ impl Editor {
             "Crop draft on the layer's {} × {} input stage",
             input.width, input.height
         );
-        self.settle_crop();
+        self.report_crop_stage();
     }
 
     /// The bounds the crop draft's input stage is rendered at for the view now: the photograph's
@@ -650,11 +650,11 @@ impl Editor {
         if !self.presentation.presenter.show_stage(raster) {
             self.crop_stage_lost();
             self.status.text = "Could not show the crop's input stage".into();
-            self.settle_step(Settle::Draft);
+            self.outcome(Outcome::CropStage);
             return (true, Task::none());
         }
         self.crop_stage_shown();
-        self.settle_crop();
+        self.report_crop_stage();
         (true, self.present_crop_stage())
     }
 
@@ -663,13 +663,13 @@ impl Editor {
     /// lands first and this runs again. Answers every zoom while the stage owns the view and every
     /// stage frame, so a zoom that changed while the stage rendered is picked up. The stage is
     /// planned again from the entry it was planned from, as a start plans it
-    /// ([`crop_preview_task`]), and its answer ([`Self::crop_stage_replanned`]) requests it. A
-    /// scripted step waits for the frame it asks for.
+    /// ([`crop_preview_task`]), and its answer ([`Self::crop_stage_replanned`]) requests it, and
+    /// the frame it asks for is reported.
     pub(crate) fn present_crop_stage(&mut self) -> Task<Message> {
         if !self.show_held_crop_stage() {
             return Task::none();
         }
-        self.await_frame(Settle::Draft);
+        self.outcome(Outcome::FrameRequested(Requested::CropStage));
         let in_flight = self.draft_generation().is_some();
         let Some(crop) = self.crop_gesture_mut() else {
             return Task::none();
@@ -769,11 +769,11 @@ impl Editor {
         crop.frames.replanning = false;
         if let Err(error) = current {
             self.status.text = error;
-            self.settle_step(Settle::Draft);
+            self.outcome(Outcome::CropStage);
             return false;
         }
         if self.draft_generation().is_some() || !self.show_held_crop_stage() {
-            self.settle_step(Settle::Draft);
+            self.outcome(Outcome::CropStage);
             return false;
         }
         let bounded = self.crop_stage_bounds().is_some();
@@ -795,17 +795,17 @@ impl Editor {
         })
     }
 
-    /// A scripted step waiting for the crop draft settles once the frame can be captured over its
-    /// stage: the stage is on screen. A Reapply's `draft.reapply` answers in the update that sends
-    /// it, so a captured frame never shows the frame rebased and the draft still conflicted.
-    pub(crate) fn settle_crop(&mut self) {
+    /// Report the crop draft's input stage once it is on screen, so the frame can be read over it.
+    /// A Reapply's `draft.reapply` answers in the update that sends it, so the stage it reports
+    /// never shows the frame rebased and the draft still conflicted.
+    pub(crate) fn report_crop_stage(&mut self) {
         let ready = self.core_gesture().is_some_and(|gesture| {
             gesture
                 .crop()
                 .is_some_and(|crop| crop.stage == StageView::Shown)
         });
         if ready {
-            self.settle_step(Settle::Draft);
+            self.outcome(Outcome::CropStage);
         }
     }
 
@@ -1059,7 +1059,7 @@ impl Editor {
     /// The crop gesture ended without a draft: its `draft.begin` was refused.
     pub(crate) fn crop_ended(&mut self) {
         self.end_crop_view(None);
-        self.settle_step(Settle::Draft);
+        self.outcome(Outcome::CropStage);
     }
 
     /// The crop draft's `draft.commit` answered with an entry, or with none because the frame is
@@ -1077,7 +1077,7 @@ impl Editor {
             return match self.reseed_committed() {
                 Some(task) => task,
                 None => {
-                    self.settle_step(Settle::Preview);
+                    self.outcome(Outcome::NoNewFrame);
                     Task::none()
                 }
             };

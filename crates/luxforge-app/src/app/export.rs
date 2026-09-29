@@ -12,9 +12,9 @@
 //! run's evidence directory, and the rest of the chain is the same.
 use crate::app::{
     Editor,
-    evidence::Settle,
     gesture::Starting,
     message::{Message, export::ExportMessage},
+    outcome::Outcome,
     tasks::{CallError, call, call_detailed, owner_task, owner_work, request, wait_source_job},
 };
 use crate::state::MenuTarget;
@@ -43,7 +43,7 @@ pub(crate) struct ExportChoice {
     pub(crate) entry_id: EntryId,
     pub(crate) destination: PathBuf,
     pub(crate) keep_metadata: bool,
-    /// `export.plan`'s answer, for the evidence record.
+    /// `export.plan`'s answer, reported when the choice is taken up.
     pub(crate) plan: Value,
 }
 
@@ -62,9 +62,6 @@ pub(crate) struct ExportRun {
     pub(crate) file_name: Option<String>,
     /// The core's job, once `export.jpeg` has queued it.
     pub(crate) job_id: Option<String>,
-    /// What the plan and `export.jpeg` answered, for the evidence record.
-    pub(crate) plan: Option<Value>,
-    pub(crate) queued: Option<Value>,
 }
 
 impl Exporting {
@@ -156,8 +153,6 @@ impl Editor {
             keep_metadata,
             file_name: None,
             job_id: None,
-            plan: None,
-            queued: None,
         });
         self.event(
             "export_started",
@@ -184,7 +179,7 @@ impl Editor {
                 self.status.text = format!("Exporting {file_name}\u{2026}");
                 if let Some(run) = &mut self.export.run {
                     run.file_name = Some(file_name);
-                    run.plan = Some(choice.plan.clone());
+                    self.outcome(Outcome::ExportPlanned(&choice.plan));
                 }
                 send_task(self.owner.clone(), self.client, *choice)
             }
@@ -215,7 +210,7 @@ impl Editor {
                 };
                 if let Some(run) = &mut self.export.run {
                     run.job_id = Some(job_id.clone());
-                    run.queued = Some(answer);
+                    self.outcome(Outcome::ExportQueued(&answer));
                 }
                 // Read it at once: a small photograph may already be written, and the poll's
                 // timer starts with the next subscription rebuild either way.
@@ -300,34 +295,20 @@ impl Editor {
         Task::none()
     }
 
-    /// The export ended, one way or another: say so, forget it, and let a waiting evidence step
-    /// capture its frame with what the plan, the queue and the job answered. `failure` marks a
-    /// step that was refused or failed.
+    /// The export ended, one way or another: say so, forget it, and report it with the job's last
+    /// record. `failure` marks an export that was refused or failed.
     fn export_finished(&mut self, status: String, failure: Option<&str>, record: Option<Value>) {
         self.status.text = status;
         self.export.reading = false;
-        let run = self.export.run.take();
+        self.export.run = None;
         self.event(
             "export_finished",
             || json!({"status":self.status.text,"record":record}),
         );
-        if self
-            .evidence
-            .as_ref()
-            .is_some_and(|evidence| evidence.awaiting == Some(Settle::Export))
-        {
-            let plan = run.as_ref().and_then(|run| run.plan.clone());
-            self.note_step(json!({"export":{
-                "plan": plan.map(|plan| plan_record(&plan)),
-                "queued": run.as_ref().and_then(|run| run.queued.clone()),
-                "record": record,
-                "status": self.status.text,
-            }}));
-            if let Some(reason) = failure {
-                self.refuse_step(reason);
-            }
-            self.settle_step(Settle::Export);
-        }
+        self.outcome(Outcome::ExportEnded {
+            record: record.as_ref(),
+            failure,
+        });
     }
 
     /// The running export's read timer, which exists only while its job is queued or running.
@@ -354,7 +335,7 @@ impl Editor {
 
 /// The plan as an evidence step records it: everything but the suggested path, whose directory is
 /// the original's, reduced to its file name.
-fn plan_record(plan: &Value) -> Value {
+pub(crate) fn plan_record(plan: &Value) -> Value {
     let mut record = plan.clone();
     if let Some(object) = record.as_object_mut()
         && let Some(suggested) = object.get("suggested").and_then(Value::as_str)

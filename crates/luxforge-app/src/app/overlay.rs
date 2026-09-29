@@ -16,8 +16,8 @@
 //! no upload to wait for.
 use super::{
     Editor,
-    evidence::Settle,
     message::{Message, overlay::ClipEndpoint, overlay::OverlayMessage},
+    outcome::Outcome,
     tasks::workspace_task,
 };
 use crate::app::Before;
@@ -289,21 +289,10 @@ impl Editor {
                 );
             }
         }
-        // A scripted step that switched an overlay on waits for exactly this, so its frame shows
-        // the mask rather than the photograph a moment before it. A refused overlay releases it
-        // too, so the refusal is visible in the evidence rather than leaving the run waiting for a
-        // frame nothing will arm.
-        if let Some(reason) = failure
-            && self
-                .evidence
-                .as_ref()
-                .is_some_and(|evidence| evidence.current.is_some())
-        {
-            self.refuse_step(&reason);
-            self.capture_next_frame();
-        } else {
-            self.settle_step(Settle::Overlay);
-        }
+        // Reported either way, a failure with its reason: the overlay on screen, or none.
+        self.outcome(Outcome::ClippingOverlay {
+            failure: failure.as_deref(),
+        });
     }
 
     /// The overlay the current session, zoom and surface ask for, or `None` when neither flag is on.

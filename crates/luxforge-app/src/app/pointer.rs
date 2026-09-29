@@ -2,9 +2,9 @@
 //! canvas picks, located through the core and answered by the mode on screen.
 use super::{
     Editor,
-    evidence::Settle,
     gesture::Starting,
     message::{Message, pointer::PointerMessage, view::ViewMessage},
+    outcome::Outcome,
     tasks::{locate_task, query_task, sample_task},
 };
 use crate::state::tools;
@@ -91,7 +91,7 @@ impl Editor {
                 self.hover.readout = (self.displayed_entry() == Some(entry))
                     .then_some(result)
                     .and_then(Result::ok);
-                self.settle_step(Settle::Readout);
+                self.outcome(Outcome::ReadoutAnswered);
                 if let Some(&(x, y)) = self.hover.sample.pending() {
                     return self.sample(x, y);
                 }
@@ -127,7 +127,7 @@ impl Editor {
                         || json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
                     );
                     self.status.text = reason;
-                    self.settle_step(Settle::Pick);
+                    self.outcome(Outcome::PickEnded);
                     return Task::none();
                 }
                 let Some(state) = &self.document.state else {
@@ -173,7 +173,7 @@ impl Editor {
                             || json!({"mode":mode,"view_x":view_x,"view_y":view_y,"error":error}),
                         );
                         self.status.text = error;
-                        self.settle_step(Settle::Pick);
+                        self.outcome(Outcome::PickEnded);
                         return Task::none();
                     }
                 };
@@ -196,7 +196,7 @@ impl Editor {
                             // the pick's one refusal again.
                             if let Some(reason) = self.gesture_refusal(Starting::Pick) {
                                 self.status.text = reason;
-                                self.settle_step(Settle::Pick);
+                                self.outcome(Outcome::PickEnded);
                                 return Task::none();
                             }
                             let fields = Map::from_iter([
@@ -207,13 +207,13 @@ impl Editor {
                                 Ok((method, request)) => {
                                     // This pick commits, so its evidence is the render that
                                     // follows rather than the status it leaves.
-                                    self.await_step(Settle::Preview);
+                                    self.outcome(Outcome::PickCommitting);
                                     let command = self.command(method, request);
                                     self.leave_pick(command)
                                 }
                                 Err(message) => {
                                     self.status.text = message;
-                                    self.settle_step(Settle::Pick);
+                                    self.outcome(Outcome::PickEnded);
                                     Task::none()
                                 }
                             };
@@ -228,7 +228,7 @@ impl Editor {
                             "Picked ({x}, {y}) from view ({view_x}, {view_y}) into {action}"
                         );
                         // A point pick commits nothing, so the filled fields are its outcome.
-                        self.settle_step(Settle::Pick);
+                        self.outcome(Outcome::PickEnded);
                     }
                     // A sample-apply mode asks its module's own read-only query about that pixel
                     // before anything is committed. The answer, not the coordinate, is what the
@@ -287,7 +287,7 @@ impl Editor {
                         let asset = state.asset.id.clone();
                         let Some(mask) = self.mask_panel.selected_mask.clone() else {
                             self.status.text = "Open a mask to pick a colour into it".into();
-                            self.settle_step(Settle::Pick);
+                            self.outcome(Outcome::PickEnded);
                             return Task::none();
                         };
                         let mut envelope = Map::new();
@@ -333,7 +333,7 @@ impl Editor {
                         self.status.text = error
                             .split_once(": ")
                             .map_or(error.clone(), |(_, reason)| reason.to_owned());
-                        self.settle_step(Settle::Pick);
+                        self.outcome(Outcome::PickEnded);
                         return Task::none();
                     }
                 };
@@ -366,7 +366,7 @@ impl Editor {
                         "canvas_sample",
                         || json!({"action":action,"x":x,"y":y,"fields":Value::Null}),
                     );
-                    self.settle_step(Settle::Pick);
+                    self.outcome(Outcome::PickEnded);
                     return Task::none();
                 }
                 if let Some(reason) = self.gesture_refusal(Starting::Pick) {
@@ -374,7 +374,7 @@ impl Editor {
                     // query was out. The answer is not committed behind it; the pick is refused
                     // with the pick's one refusal and said so.
                     self.status.text = reason;
-                    self.settle_step(Settle::Pick);
+                    self.outcome(Outcome::PickEnded);
                     return Task::none();
                 }
                 // A host command addresses the objects it edits by its declared identities, which
@@ -384,13 +384,13 @@ impl Editor {
                 if host.is_some() {
                     if self.mask_panel.selected_mask.is_none() {
                         self.status.text = "Open a mask to pick a colour into it".into();
-                        self.settle_step(Settle::Pick);
+                        self.outcome(Outcome::PickEnded);
                         return Task::none();
                     }
                     if self.mask_panel.selected_component.is_none() {
                         self.status.text =
                             "Select the component this pick fills before picking".into();
-                        self.settle_step(Settle::Pick);
+                        self.outcome(Outcome::PickEnded);
                         return Task::none();
                     }
                 }
@@ -398,7 +398,7 @@ impl Editor {
                     Ok(request) => request,
                     Err(message) => {
                         self.status.text = message;
-                        self.settle_step(Settle::Pick);
+                        self.outcome(Outcome::PickEnded);
                         return Task::none();
                     }
                 };
@@ -408,7 +408,7 @@ impl Editor {
                 );
                 // This pick commits, so its evidence is the render that follows rather than the
                 // status it leaves.
-                self.await_step(Settle::Preview);
+                self.outcome(Outcome::PickCommitting);
                 // One command for the whole pick: one history entry, labelled by its own family.
                 let command = self.command(method, request);
                 // A host pick fills a swatch list a person may go on adding to, so it stays.

@@ -10,9 +10,9 @@ use crate::{
     app::{
         Editor,
         draft::{Event, GestureId},
-        evidence::Settle,
         gesture::{Kind, MaskGesture, Starting},
         message::{Message, mask::MaskMessage, mask::PaintTarget, mask::RowEdit},
+        outcome::Outcome,
         tasks::{Refresh, mutation},
     },
     mask_draft::{ContentMap, MaskDraft, MaskDraftOp, painted_kind},
@@ -912,15 +912,6 @@ impl Editor {
         })
     }
 
-    /// A tint the gesture showed of its own accord was refused: the step waiting for its texture is
-    /// captured without it, and fails nothing.
-    fn overlay_forced_absent(&mut self) {
-        self.settle_step(Settle::MaskOverlay);
-        if let Some(evidence) = &mut self.evidence {
-            evidence.capture_overlay = false;
-        }
-    }
-
     /// The status line for `shape` in Mask mode, naming its mask and component as the draft bar does.
     fn mask_gesture_line(&self, shape: &MaskDraft) -> String {
         let names = crate::state::canvas::gesture_names(shape, self.document.masks.as_ref());
@@ -1482,20 +1473,14 @@ impl Editor {
                 || json!({"generation":generation,"cells":[width,height]}),
             );
         }
-        // Released either way: a refused overlay is visible in the evidence rather than leaving the
-        // run waiting for a frame nothing will arm.
-        self.settle_step(Settle::MaskOverlay);
-        if !shown && let Some(evidence) = &mut self.evidence {
-            // And with nothing to draw, the capture is the frame as it is: waiting for the overlay
-            // of the frame on screen would wait for one that failed.
-            evidence.capture_overlay = false;
-        }
+        // Reported either way: a grid the surface refused is an outcome too.
+        self.outcome(Outcome::MaskGrid { shown });
     }
 
     /// The frame asked for a coverage grid and arrived without one, for a reason the host named.
     ///
     /// The last grid is dropped rather than left over a frame it does not describe, the host's own
-    /// reason is logged, and a scripted step waiting for the overlay's own texture is ended with it.
+    /// reason is logged, and the absence is reported with it.
     /// A mask whose coverage depends on the pixel it reads is the case this exists for. Its grid
     /// reads the input of the mask's first bound layer
     /// ([proposal P16](../../../../docs/design/range-study.md#proposals), decided and built), and
@@ -1512,12 +1497,8 @@ impl Editor {
             || json!({"generation":generation,"detail":reason,"forced":forced}),
         );
         // A tint the gesture showed of its own accord, over a setting of `off`, is not something
-        // the person or the script asked for, so its refusal fails nothing: the frame is captured
-        // as it is, without the tint, and the reason is in the log.
-        if forced {
-            self.overlay_forced_absent();
-        } else {
-            self.mask_overlay_refused_step(reason);
-        }
+        // the person or a script asked for, so its absence is reported as forced: nothing asked
+        // for it failed.
+        self.outcome(Outcome::MaskGridAbsent { forced, reason });
     }
 }

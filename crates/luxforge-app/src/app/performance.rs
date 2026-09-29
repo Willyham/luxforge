@@ -14,16 +14,17 @@ use crate::coalesce::Coalesce;
 use crate::{
     app::{
         Editor,
-        evidence::Settle,
         message::{Message, performance::PerformanceMessage},
+        outcome::Outcome,
         tasks::{PerformanceRead, performance_task},
     },
     state::performance::PerformanceHistory,
 };
 use iced::{Subscription, Task};
 use luxforge_core::{ActivitySnapshot, resources::ResourceReport};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::VecDeque, time::Duration};
+use std::time::Duration;
 
 /// The sampler's interval, which is the sparklines' resolution: sixty points span a minute.
 pub(crate) const INTERVAL: Duration = Duration::from_secs(1);
@@ -53,12 +54,6 @@ pub(crate) struct Sampler {
     /// Reads asked of the owner since launch, for evidence: a run proves the section asleep by this
     /// staying put while it is collapsed.
     pub(crate) requested: u64,
-    /// The last two `resources.read` answers exactly as the owner sent them, oldest first, each with
-    /// the wall-clock moment it was read. Evidence records them so a runner can re-derive the shown
-    /// figures and the newest rate without trusting the model that derived them.
-    pub(crate) raw: VecDeque<(u64, Value)>,
-    /// The last `activity.list` answer as the owner sent it.
-    pub(crate) activity: Option<Value>,
     /// Why the last read could not be used, until one can.
     pub(crate) error: Option<String>,
 }
@@ -76,25 +71,18 @@ impl Sampler {
     /// Start a fresh window: nothing read before the section last stopped sampling is kept.
     fn restart(&mut self) {
         self.history.clear();
-        self.raw.clear();
-        self.activity = None;
         self.error = None;
     }
 
     /// Take up one read: parse both answers into the core's own report types, the way any Rust
     /// API client would, and add them to the window. An answer that does not parse changes nothing
-    /// but the error it leaves.
-    fn adopt(&mut self, read: PerformanceRead) -> Result<(), String> {
-        let sample: ResourceReport = serde_json::from_value(read.resources.clone())
+    /// but the error it leaves. The answers are read in place: nothing of them is kept.
+    fn adopt(&mut self, read: &PerformanceRead) -> Result<(), String> {
+        let sample = ResourceReport::deserialize(&read.resources)
             .map_err(|error| format!("resources.read: {error}"))?;
-        let activity: ActivitySnapshot = serde_json::from_value(read.activity.clone())
+        let activity = ActivitySnapshot::deserialize(&read.activity)
             .map_err(|error| format!("activity.list: {error}"))?;
         self.history.push(sample, activity);
-        if self.raw.len() == 2 {
-            self.raw.pop_front();
-        }
-        self.raw.push_back((read.wall_ms, read.resources));
-        self.activity = Some(read.activity);
         self.error = None;
         Ok(())
     }
@@ -137,6 +125,7 @@ impl Editor {
             return Task::none();
         }
         self.performance.restart();
+        self.outcome(Outcome::PerformanceRestarted);
         self.performance_read()
     }
 
@@ -176,24 +165,31 @@ impl Editor {
                 Task::none()
             };
         }
-        let adopted = result.and_then(|read| self.performance.adopt(*read));
-        if let Err(error) = adopted {
-            self.event("performance_read_failed", || json!({ "reason": error }));
-            self.performance.error = Some(error);
-        }
-        // The expanded frame is captured on the first answer, figures and all, rather than on the
-        // frame before it, which could only show dashes.
-        self.settle_step(Settle::Performance);
+        let adopted = result.and_then(|read| self.performance.adopt(&read).map(|()| read));
+        let read = match adopted {
+            Ok(read) => Some(read),
+            Err(error) => {
+                self.event("performance_read_failed", || json!({ "reason": error }));
+                self.performance.error = Some(error);
+                None
+            }
+        };
+        // The answer is reported with the read it took up, which only evidence keeps.
+        self.outcome(Outcome::PerformanceRead(read));
         Task::none()
     }
 
     /// The section as a captured frame records it: the flag, the reads asked for, the raw answers
-    /// the figures came from, and the rows exactly as the model gave them to the view, so a runner
-    /// can re-derive every figure from the recorded answers and compare.
+    /// the figures came from, which the evidence driver keeps ([`Recorded`]), and the rows exactly
+    /// as the model gave them to the view, so a runner can re-derive every figure from the
+    /// recorded answers and compare.
+    ///
+    /// [`Recorded`]: crate::app::evidence::Recorded
     pub(crate) fn performance_summary(&self) -> Value {
         let model = &self.workspace.performance;
-        let raw = &self.performance.raw;
-        let previous = (raw.len() == 2).then(|| &raw[0]);
+        let recorded = self.evidence.as_ref().map(|evidence| &evidence.recorded);
+        let raw = recorded.map(|recorded| &recorded.performance);
+        let previous = raw.filter(|raw| raw.len() == 2).map(|raw| &raw[0]);
         json!({
             "expanded": self.performance.expanded,
             "sampling": self.performance_sampling(),
@@ -201,11 +197,11 @@ impl Editor {
             "in_flight": self.performance.read.in_flight(),
             "samples": self.performance.history.len(),
             "pid": std::process::id(),
-            "wall_ms": raw.back().map(|(wall_ms, _)| wall_ms),
-            "resources": raw.back().map(|(_, resources)| resources),
+            "wall_ms": raw.and_then(|raw| raw.back()).map(|(wall_ms, _)| wall_ms),
+            "resources": raw.and_then(|raw| raw.back()).map(|(_, resources)| resources),
             "previous_wall_ms": previous.map(|(wall_ms, _)| wall_ms),
             "previous_resources": previous.map(|(_, resources)| resources),
-            "activity": self.performance.activity,
+            "activity": recorded.and_then(|recorded| recorded.activity.as_ref()),
             "error": self.performance.error,
             "caption": model.caption,
             "rows": model.metrics.iter().map(|row| json!({
@@ -483,9 +479,12 @@ mod tests {
     }
 
     /// The frame records the raw answers the figures came from and the rows as the view shows them.
+    /// The raw answers are only a captured frame's, so the evidence driver keeps them: without an
+    /// evidence run nothing of a read is kept but the figures.
     #[test]
     fn the_snapshot_records_the_answers_and_the_rows_as_shown() {
         let (mut editor, catalog) = boot_collapsed();
+        editor.evidence = Some(crate::app::testing::scripted_evidence("[]"));
         assert_eq!(editor.snapshot()["performance"]["expanded"], json!(false));
         assert_eq!(
             editor.snapshot()["performance"]["reads_requested"],

@@ -385,7 +385,11 @@ impl Editor {
                         json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(luxforge_core::MaskId::as_str),"artifacts":layer.artifacts})
                     })
                     .collect();
-                let displayed = self.presentation.rendered_entry.as_ref().map(|entry| json!({
+                let rendered = self
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.recorded.rendered_entry.as_ref());
+                let displayed = rendered.map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.presentation.dimensions,
