@@ -58,6 +58,18 @@ impl Step {
         }
     }
 
+    /// One edit of the open photograph by a second client, with these parameters, which must be a
+    /// JSON object.
+    pub fn agent(method: impl Into<String>, params: Value) -> Self {
+        let Value::Object(params) = params else {
+            panic!("agent params are an object, not {params}");
+        };
+        Self::Agent {
+            method: method.into(),
+            params,
+        }
+    }
+
     /// A tools-panel section expanded or collapsed.
     pub fn section(module: impl Into<String>, expanded: bool) -> Self {
         Self::Section(SectionStep {

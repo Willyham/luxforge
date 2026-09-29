@@ -352,9 +352,10 @@ impl Editor {
     /// names the event the poll then skips — and a photograph open. Called after every message, so
     /// a wake that arrived during a request is read as soon as the request is answered. With
     /// nothing wanted it does nothing: the sync costs nothing until the owner wakes it. An evidence
-    /// run has no event sync, so what it records is what its script did.
+    /// run syncs exactly as a session does, which is how its `agent` step's change reaches the
+    /// screen.
     pub(crate) fn sync_when_wanted(&mut self) -> Task<Message> {
-        if self.busy || self.evidence.is_some() {
+        if self.busy {
             return Task::none();
         }
         let Some(held) = self
@@ -582,9 +583,9 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 /// The owner's wake for another client's change. The event sync needs no timer: the owner posts a
 /// signal when another client's change reaches its log, and this carries it in as a `Changed`. An
 /// open photograph with nothing happening to it wakes nothing, and a signal posted while no
-/// photograph is open is buffered and read once one is. An evidence run has no event sync.
+/// photograph is open is buffered and read once one is. An evidence run is woken the same way.
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
-    if editor.document.state.is_none() || editor.evidence.is_some() {
+    if editor.document.state.is_none() {
         return Subscription::none();
     }
     waker::events_subscription()

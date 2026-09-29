@@ -30,6 +30,8 @@ pub(crate) enum EvidenceMessage {
     /// A host method an evidence script called directly answered, with the preset library read
     /// after it when the method was one of the library's own.
     HostAnswered(Result<Box<HostAnswer>, String>),
+    /// The edit an `agent` step sent through the run's second client answered.
+    AgentAnswered(Result<Value, String>),
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
 }

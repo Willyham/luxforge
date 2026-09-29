@@ -1707,7 +1707,7 @@
     {
       "id": "TASK-021",
       "description": "Render the live-agent path in evidence: a scripted step that edits through a second client, with the event sync on in evidence runs, and move the \"Changed elsewhere\" frames onto it.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-015"
       ],
