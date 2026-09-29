@@ -7,7 +7,7 @@
 //! output it claims.
 use crate::{
     fixtures::COLORS,
-    scenario::{Checked, Fixture, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, plan::only},
     *,
 };
 use luxforge_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
@@ -178,17 +178,18 @@ pub fn draft_plan(_: &[PathBuf]) -> Plan {
             "rail",
             script::Step::Draft(DraftStep::AngleRail(vec![0.6, RAIL_ANGLE_FRACTION])),
         ),
-        uncommitted("percent", script::Step::View(ViewStep::Percent(100.0))),
-        uncommitted("fit", script::Step::View(ViewStep::Fit)),
+        uncommitted("percent", script::Step::View(ViewStep::Percent(100.0))).percent(100.0),
+        uncommitted("fit", script::Step::View(ViewStep::Fit)).fit(),
         // Apply commits the straightened square once.
         Step::new("applied", DraftStep::Apply)
             .commits(1)
             .label("Crop 2.4\u{b0}"),
-        // 16:9 pressed in the idle section opens a draft on the committed layer.
+        // 16:9 pressed in the idle section opens a draft on the committed layer, in the crop mode.
         uncommitted(
             "idle-preset",
             script::Step::Draft(DraftStep::Preset("16:9".into())),
-        ),
+        )
+        .mode(CROP_MODULE),
         // Cancel ends it with the committed layer untouched.
         uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel))
             .same_layer(CROP_EFFECT, "applied"),
@@ -511,18 +512,22 @@ fn correlated(events: &[Value], name: &str, frame: &Value) -> Result<Value> {
     Ok(found.clone())
 }
 
-/// The opened frame both scenarios start from: the fixture, ready at Fit. Returns the checks record
-/// it starts.
-fn opened(launch: &Checked) -> Result<Vec<Value>> {
+/// The opened frame both scenarios start from: the fixture, ready at Fit. Returns the checks it
+/// starts.
+fn opened(launch: &Checked) -> Result<Checks> {
     let opened = launch.at("opened")?;
     ensure(
-        opened["state"]["source_dimensions"] == json!([STAGE.0, STAGE.1])
-            && opened["state"]["phase"] == "ready",
+        opened.state()["source_dimensions"] == json!([STAGE.0, STAGE.1])
+            && opened.state()["phase"] == "ready",
         "The fixture did not open",
     )?;
-    Ok(vec![
-        json!({"frame":opened["file"],"shows":"the fixture at Fit","pixels":opened.fixture(Fixture::fit(1))?}),
-    ])
+    let mut checks = Checks::new();
+    checks.note(
+        opened,
+        "the fixture at Fit",
+        opened.fixture(Fixture::fit(1))?,
+    );
+    Ok(checks)
 }
 
 /// What the `crop` steps show, once the plan has held: the crop state each frame recorded, the
@@ -531,9 +536,6 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let events = &launch.events;
     let mut checks = opened(launch)?;
-    let mut record = |frame: &Value, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
-    };
     let fit = launch.at("fit")?;
     let straightened = launch.at("straightened")?;
     let started = launch.at("started")?;
@@ -551,7 +553,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         (ratio - 16.0 / 9.0).abs() <= 3.0 / f64::from(output[1]),
         format!("The fitted crop is {output:?}, which is not 16:9 within a pixel"),
     )?;
-    record(
+    checks.note(
         fit,
         "a 16:9 crop-fit at angle 0",
         shows_committed(fit, true)?,
@@ -561,7 +563,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         reads_as(STAGE, output) == "16:9",
         format!("The fitted crop {output:?} does not read as 16:9"),
     )?;
-    record(
+    checks.note(
         fit,
         "the crop section reading the fit as 16:9",
         idle_section(fit, "16:9", "0.0")?,
@@ -572,7 +574,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let wanted = off_centre()?;
     let (_, committed_payload, straightened_output) = committed(straightened)?;
     let straightened_reads = reads_as(STAGE, straightened_output);
-    record(
+    checks.note(
         straightened,
         "the crop section reading the straightened crop at 7 degrees",
         idle_section(straightened, straightened_reads, "7.0")?,
@@ -589,7 +591,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             .all(|(saved, sent)| (saved - sent).abs() <= f64::EPSILON * 8.0),
         format!("The committed payload is not the one that was sent: {committed_payload:?}"),
     )?;
-    record(
+    checks.note(
         straightened,
         "an off-centre 7 degree crop",
         shows_committed(straightened, false)?,
@@ -625,7 +627,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             draft["rect"]
         ),
     )?;
-    record(
+    checks.note(
         started,
         "a draft opened on the committed crop",
         json!({"overlay":shows_draft(started)?,"event":correlated(events, "crop_draft_started", started)?["elapsed_ms"]}),
@@ -638,7 +640,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         committed(angled)?.1.angle == ANGLE,
         "A draft change altered the committed stack",
     )?;
-    record(
+    checks.note(
         angled,
         "the same draft straightened to 12 degrees",
         json!({"overlay":shows_draft(angled)?,"event":correlated(events, "crop_draft_changed", angled)?["elapsed_ms"]}),
@@ -654,7 +656,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             .any(|event| event["event"] == "crop_draft_discarded"),
         "Cancel logged no discard",
     )?;
-    record(
+    checks.note(
         cancelled,
         "the committed crop again after Cancel",
         json!({"pixels":shows_committed(cancelled, false)?,"section":idle_section(cancelled, straightened_reads, "7.0")?}),
@@ -666,7 +668,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         restarted["state"]["crop"]["angle"] == json!(ANGLE),
         "The second draft did not reopen at the committed angle",
     )?;
-    record(
+    checks.note(
         restarted,
         "a second draft on the same layer",
         shows_draft(restarted)?,
@@ -675,7 +677,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         nudged["state"]["crop"]["angle"] == json!(ANGLE + NUDGE),
         "The nudge did not reach the draft",
     )?;
-    record(
+    checks.note(
         nudged,
         "the draft nudged half a degree",
         shows_draft(nudged)?,
@@ -695,13 +697,12 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             && applied_event["detail"]["entry_id"] == applied["state"]["stack"]["entry"],
         "The applied event does not name the committed entry and revision",
     )?;
-    record(
+    checks.note(
         applied,
         "the applied crop",
         json!({"pixels":shows_committed(applied, false)?,"section":idle_section(applied, reads_as(STAGE, nudged_output), "7.5")?}),
     );
-    write_json(&launch.evidence.join("crop-checks.json"), &json!(checks))?;
-    Ok(())
+    checks.write(&launch.evidence, "crop", json!({}))
 }
 
 /// What the `crop-draft` steps show, once the plan has held: the crop state each frame recorded,
@@ -710,9 +711,6 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let events = &launch.events;
     let mut checks = opened(launch)?;
-    let mut record = |frame: &Value, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
-    };
     let expanded = launch.at("crop-expanded")?;
     let started = launch.at("started")?;
     let rect_frame = launch.at("rect")?;
@@ -731,7 +729,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
         expanded["state"]["crop"]["drafting"] != json!(true),
         "The idle crop section is drafting before the draft starts",
     )?;
-    record(
+    checks.note(
         expanded,
         "the idle section on an uncropped stack: Free at 0 degrees",
         idle_section(expanded, "Free", "0.0")?,
@@ -744,7 +742,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
             && draft["rect"] == json!([0.0, 0.0, f64::from(STAGE.0), f64::from(STAGE.1)]),
         format!("A neutral draft is not the whole stage: {draft}"),
     )?;
-    record(
+    checks.note(
         started,
         "a neutral draft over the whole stage",
         shows_draft(started)?,
@@ -757,7 +755,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
             rect_frame["state"]["crop"]["rect"]
         ),
     )?;
-    record(
+    checks.note(
         rect_frame,
         "an off-centre rectangle from two corner gestures",
         shows_draft(rect_frame)?,
@@ -768,7 +766,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
         square["preset"] == json!("1:1") && square["rect"] == json!([90.0, 24.0, 200.0, 200.0]),
         format!("The 1:1 preset produced {}", square["rect"]),
     )?;
-    record(
+    checks.note(
         square_frame,
         "the declared 1:1 preset, centred on the same rectangle",
         shows_draft(square_frame)?,
@@ -780,7 +778,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
             && scrolled["state"]["tools_scroll"] == json!(1.0),
         "Scrolling the tools panel changed the draft",
     )?;
-    record(
+    checks.note(
         scrolled,
         "the drafting section scrolled into view",
         shows_draft(scrolled)?,
@@ -796,14 +794,14 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
             && rect.is_some_and(|rect| rect.len() == 4 && rect[2] == rect[3]),
         format!("The angle rail produced {straightened}"),
     )?;
-    record(
+    checks.note(
         rail,
         "the angle dragged on its rail to 2.4°, the square refitted, nothing committed",
         json!({"overlay":shows_draft(rail)?,"event":correlated(events, "crop_draft_changed", rail)?["elapsed_ms"]}),
     );
     // The overlay follows the view: 100% draws the box at one input pixel per physical pixel.
-    record(percent, "the same draft at 100%", shows_draft(percent)?);
-    record(fit, "the same draft back at Fit", shows_draft(fit)?);
+    checks.note(percent, "the same draft at 100%", shows_draft(percent)?);
+    checks.note(fit, "the same draft back at Fit", shows_draft(fit)?);
     // Apply, which the plan holds as the one commit since the open.
     let (_, applied_payload, output) = committed(applied)?;
     ensure(
@@ -820,7 +818,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
     correlated(events, "crop_draft_applied", fit)?;
     // The square crop's own quarter points straddle the fixture's centre line, so this frame
     // proves the four quadrants are present rather than sampling their corners.
-    record(
+    checks.note(
         applied,
         "the applied straightened square crop",
         shows_committed(applied, false)?,
@@ -833,7 +831,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
         expected == "1:1",
         format!("The committed square {output:?} reads as {expected}"),
     )?;
-    record(
+    checks.note(
         applied,
         "the idle section reading the committed square at 2.4 degrees",
         idle_section(applied, expected, "2.4")?,
@@ -850,8 +848,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
             && draft["preset"] == json!("16:9")
             && draft["angle"] == json!(RAIL_ANGLE)
             && (rect[2] - rect[3] * 16.0 / 9.0).abs() <= 2.0 * 16.0 / 9.0
-            && draft["section"]["chosen"] == json!("16:9")
-            && idle_preset["state"]["workspace"]["mode"] == json!(CROP_MODULE),
+            && draft["section"]["chosen"] == json!("16:9"),
         format!("16:9 from the idle section produced {draft}"),
     )?;
     let seeded = events
@@ -867,7 +864,7 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
             seeded["detail"]
         ),
     )?;
-    record(
+    checks.note(
         idle_preset,
         "16:9 pressed in the idle section: a draft on the committed square, refitted to 16:9",
         json!({"overlay":shows_draft(idle_preset)?,"seeded":seeded["detail"],"changed":correlated(events, "crop_draft_changed", idle_preset)?["detail"]}),
@@ -880,13 +877,12 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
         unchanged == square,
         "Cancelling the idle change's draft changed the committed crop",
     )?;
-    record(
+    checks.note(
         cancelled,
         "the idle section again after Cancel, the committed square untouched",
         json!({"section":idle_section(cancelled, expected, "2.4")?,"pixels":shows_committed(cancelled, false)?}),
     );
-    write_json(&launch.evidence.join("crop-checks.json"), &json!(checks))?;
-    Ok(())
+    checks.write(&launch.evidence, "crop", json!({}))
 }
 
 #[cfg(test)]
