@@ -22,7 +22,7 @@
 //! sweep from a centre to a point puts `radius_x = |Δx| · W/H` and `radius_y = |Δy|` on the draft,
 //! so each component below is swept to `(x + r · H/W, y + r)` and is a circle.
 use crate::{
-    scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, Tolerance, pixels, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
 };
 use luxforge_core::PRESENCE_EFFECT;
@@ -108,10 +108,11 @@ const PROBE_NAMES: [&str; 4] = ["keep", "cut", "intersected", "out"];
 /// Half the side of a measured patch, in capture pixels. The nearest boundary to any probe is
 /// about 29 capture pixels away, so a patch this size is well clear of every one of them.
 const PATCH_HALF: i64 = 6;
-/// How bright a `mask-on-black` patch must read before this scenario calls it covered, and how
-/// dark before it calls it uncovered. The overlay paints coverage straight into all three
-/// channels, so full coverage is 255 and none is 0; these are margins, not tuned thresholds.
-const COVERED: f64 = 200.0;
+/// How close to full coverage's 255 a `mask-on-black` patch must read before this scenario calls it
+/// covered (200 or brighter), and how close to no coverage's 0 before it calls it uncovered (40 or
+/// darker). The overlay paints coverage straight into all three channels; these are margins, not
+/// tuned thresholds.
+const COVERED_WITHIN: f64 = 55.0;
 const UNCOVERED: f64 = 40.0;
 /// How far the flat quadrant's mean must move before this scenario calls the masked Presence
 /// adjustment visible, and how close it must stay before it calls a patch untouched. Both are
@@ -126,8 +127,9 @@ fn hover(row: usize) -> String {
 
 /// One more component after the first: its mode chosen on the Add row before the gesture rather
 /// than guessed from a modifier afterwards, a radial added, swept from its centre out to one
-/// radius, and committed as one entry. Only the commit moves the history.
-fn component(name: &str, mode: &str, shape: &Shape, label: &str) -> [Step; 4] {
+/// radius, and committed as one entry, after which the mask holds `components`. Only the commit
+/// moves the history.
+fn component(name: &str, mode: &str, shape: &Shape, label: &str, components: &[&str]) -> [Step; 4] {
     [
         Step::new(format!("{name}-mode"), MaskStep::Mode(mode.into())).commits(0),
         Step::new(format!("{name}-new"), MaskStep::Add(RADIAL.into())).commits(0),
@@ -142,19 +144,39 @@ fn component(name: &str, mode: &str, shape: &Shape, label: &str) -> [Step; 4] {
         Step::new(format!("{name}-applied"), MaskStep::Apply)
             .commits(1)
             .label(label)
-            .no_draft(),
+            .no_draft()
+            .components(components),
     ]
 }
+
+/// The finished mask's components, in the order they were drawn, and after the reorder.
+const FINISHED: [&str; 4] = [
+    "add radial",
+    "subtract radial",
+    "intersect radial",
+    "add radial",
+];
+const REORDERED: [&str; 4] = [
+    "add radial",
+    "add radial",
+    "subtract radial",
+    "intersect radial",
+];
 
 /// Every frame, in order: the open, then one per step. Every step says what it commits, so the
 /// four components are four entries and nothing between them commits; `verify` below checks the
 /// composition, the list and what the photograph shows.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let mut steps = vec![
-        // The fixture as launched: no Presence layer and nothing drafted.
-        Step::opened("opened").no_layer(PRESENCE_EFFECT).no_draft(),
+        // The fixture as launched: no mask, no Presence layer and nothing drafted.
+        Step::opened("opened")
+            .no_layer(PRESENCE_EFFECT)
+            .no_draft()
+            .masks(0),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends.
-        Step::new("mask-mode", WorkspaceStep::default().mode("mask")).commits(0),
+        Step::new("mask-mode", WorkspaceStep::default().mode("mask"))
+            .commits(0)
+            .mode("mask"),
         // 2-5: the first component. A new mask whose first component is a radial, swept from its
         // centre out to one radius, the pointer lifted, then committed.
         Step::new("add-new", MaskStep::New(RADIAL.into())).commits(0),
@@ -170,25 +192,35 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("add-applied", MaskStep::Apply)
             .commits(1)
             .label("Add radial")
-            .no_draft(),
+            .no_draft()
+            .masks(1)
+            .components(&FINISHED[..1]),
         // 6: the coverage itself on screen, which is what every reading below is taken from.
         Step::new(
             "overlay-on",
             WorkspaceStep::default().mask_overlay("mask-on-black"),
         )
-        .commits(0),
+        .commits(0)
+        .workspace("mask_overlay", json!("mask-on-black")),
     ];
     // 7-10: a subtract.
-    steps.extend(component("subtract", "subtract", &S, "Add subtract radial"));
+    steps.extend(component(
+        "subtract",
+        "subtract",
+        &S,
+        "Add subtract radial",
+        &FINISHED[..2],
+    ));
     // 11-14: an intersect.
     steps.extend(component(
         "intersect",
         "intersect",
         &I,
         "Add intersect radial",
+        &FINISHED[..3],
     ));
     // 15-18: a second add, over the region the subtraction took out.
-    steps.extend(component("restore", "add", &D, "Add radial"));
+    steps.extend(component("restore", "add", &D, "Add radial", &FINISHED));
     // 19-22: each component's own contribution, by putting the pointer on its row. This is what
     // makes a subtraction on top of a gradient legible instead of guesswork. Pointing commits
     // nothing.
@@ -203,7 +235,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 24: the one move this list refuses: a subtract at the front. The panel states that rule
         // on the row rather than offering the move, so only an explicit position reaches the
         // host's own refusal — and the refusal is what ends this step, because a refused command
-        // renders nothing for it to settle on. It commits nothing.
+        // renders nothing for it to settle on. It commits nothing, and the list does not move.
         Step::new(
             "front-refused",
             MaskStep::Row(MaskRow {
@@ -212,7 +244,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             }),
         )
         .commits(0)
-        .refused("validation: mask Mask 1 begins with a subtract component"),
+        .refused("validation: mask Mask 1 begins with a subtract component")
+        .components(&FINISHED),
         // 25: the reorder that does change the picture: the second add above the subtraction, so
         // what it put back is taken out again.
         Step::new(
@@ -224,9 +257,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(1)
         .label("Move Radial 4")
-        .no_draft(),
+        .no_draft()
+        .components(&REORDERED),
         // 26: the overlay off, leaving the photograph.
-        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off")).commits(0),
+        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off"))
+            .commits(0)
+            .workspace("mask_overlay", json!("off")),
         // 27: Presence through the mask, as the panel's own drag: the sections below the list are
         // bound to the open mask, so this commits a masked spatial layer.
         Step::new(
@@ -247,15 +283,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(steps)
 }
 
-/// The modes of the open mask's components, in list order: the composition, in one line.
-fn modes(frame: &Frame) -> Result<Vec<String>> {
-    Ok(frame
-        .components()?
-        .iter()
-        .map(|component| component["mode"].as_str().unwrap_or_default().to_owned())
-        .collect())
-}
-
 /// The identities of the open mask's components, in list order.
 fn component_ids(frame: &Frame) -> Result<Vec<String>> {
     Ok(frame
@@ -265,146 +292,66 @@ fn component_ids(frame: &Frame) -> Result<Vec<String>> {
         .collect())
 }
 
-/// The stack's one Presence layer, or `None` when the stack holds none.
-fn presence_layer(frame: &Frame) -> Option<&Value> {
-    frame.layer(PRESENCE_EFFECT)
-}
-
-/// Where the photograph is drawn inside the capture.
-///
-/// It is found once, on the opened fixture, and reused: the zoom is Fit for the whole run and the
-/// panels never move, so the rectangle is the same in every frame — and it cannot be found again
-/// from a frame the coverage overlay has painted black, which is most of them. The vertical extent
-/// is taken first, for the reason [`Scan::Tallest`] records.
-const BOUNDS: Bright = Bright {
-    threshold: 32,
-    scan: Scan::Tallest { last_row: false },
-    least: Some((200, 100)),
-};
-
-/// All four probes of one capture: the mean Rec. 709 luminance of a small patch at each.
-fn probes(frame: &Frame, bounds: [u32; 4]) -> Result<[f64; 4]> {
-    let image = frame.image()?;
+/// All four probes of one capture: the mean Rec. 709 luminance of a small patch at each, in the
+/// photograph's recorded rectangle.
+fn probes(frame: &Frame) -> Result<[f64; 4]> {
     let mut out = [0.0; 4];
     for (slot, at) in out.iter_mut().zip(PROBES) {
-        *slot = pixels::mean_luminance(image, pixels::at(bounds, at), PATCH_HALF)?;
+        *slot = frame.luminance_at(at, PATCH_HALF)?;
     }
     Ok(out)
 }
 
 /// One coverage frame against what the composition algebra says it must be: `1` for covered, `0`
-/// for uncovered, at each of the four probes in turn.
-fn coverage(frame: &Frame, bounds: [u32; 4], what: &str, expected: [u8; 4]) -> Result<[f64; 4]> {
-    let read = probes(frame, bounds)?;
+/// for uncovered, at each of the four probes in turn. A covered probe reads within
+/// [`COVERED_WITHIN`] of the overlay's full 255, an uncovered one within [`UNCOVERED`] of its 0.
+fn coverage(checks: &mut Checks, frame: &Frame, what: &str, expected: [u8; 4]) -> Result {
+    let read = probes(frame)?;
     for ((value, want), name) in read.iter().zip(expected).zip(PROBE_NAMES) {
-        let ok = if want == 1 {
-            *value >= COVERED
+        let (full, within) = if want == 1 {
+            (255.0, COVERED_WITHIN)
         } else {
-            *value <= UNCOVERED
+            (0.0, UNCOVERED)
         };
-        ensure(
-            ok,
-            format!(
-                "{what}: {name} read {value:.1}, which is not coverage {want} \
-                 (covered is >= {COVERED}, uncovered <= {UNCOVERED})"
-            ),
+        checks.compare(
+            frame,
+            &format!("{what}: {name} at coverage {want}"),
+            *value,
+            full,
+            Tolerance::Within(within),
         )?;
     }
-    Ok(read)
-}
-
-/// The one launch, once it has held its plan: every step against the algebra and the pixels.
-pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
-    let checks = checks(only(launches)?)?;
-    run.record("checks", checks.clone());
-    write_json(
-        &run.out().join("mask-combine-checks.json"),
-        &json!({"checks": checks}),
-    )?;
     Ok(())
 }
 
 /// Every step, in order, against the algebra and against the pixels.
-fn checks(launch: &Checked) -> Result<Value> {
-    let opened_frame = launch.at("opened")?;
-    let bounds = pixels::bright_bounds(opened_frame, BOUNDS)?;
-    let mut shows = Vec::new();
-    let mut record = |frame: &Value, what: &str, detail: Value| {
-        shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
-    };
-
-    // The fixture as launched, with no mask in the recipe (the plan holds it to no Presence
-    // layer).
-    ensure(
-        opened_frame.masks()?.is_empty(),
-        "The fixture opened with a mask already in the recipe",
-    )?;
-    let opened = probes(opened_frame, bounds)?;
-    record(
-        opened_frame,
-        "the fixture as launched, with no mask in the recipe",
-        json!({"patches":opened,"bounds":bounds}),
-    );
-
-    // The first component committed. One mask, one `add` component.
-    let first = launch.at("add-applied")?;
-    ensure(
-        modes(first)? == ["add"],
-        format!("The first commit holds {:?}", modes(first)?),
-    )?;
-    let mask = first.only_mask()?["id"]
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let mut checks = Checks::new();
+    let opened = probes(launch.at("opened")?)?;
+    let mask = launch.at("add-applied")?.only_mask()?["id"]
         .as_str()
         .ok_or("The listed mask has no identity")?
         .to_owned();
 
     // The composition after each commit, read off the coverage itself. Each one moves exactly one
-    // probe, which is what makes the algebra legible in the captures.
-    let stages: [(&str, &str, [u8; 4], &str); 4] = [
-        (
-            "overlay-on",
-            "the first add alone",
-            [1, 1, 1, 0],
-            "one radial: everything inside it is selected",
-        ),
+    // probe, which is what makes the algebra legible in the captures: one radial selects
+    // everything inside it; the subtracted radial takes its own region back out; the intersect
+    // keeps only what both it and what came before hold; a second add puts back exactly the region
+    // the subtraction removed.
+    for (step, what, expected) in [
+        ("overlay-on", "the first add alone", [1, 1, 1, 0]),
         (
             "subtract-applied",
             "the add minus the subtract",
             [1, 0, 1, 0],
-            "the subtracted radial takes its own region back out",
         ),
-        (
-            "intersect-applied",
-            "intersected",
-            [1, 0, 0, 0],
-            "the intersect keeps only what both it and what came before hold",
-        ),
-        (
-            "restore-applied",
-            "the second add restored",
-            [1, 1, 0, 0],
-            "a second add puts back exactly the region the subtraction removed",
-        ),
-    ];
-    let mut readings = Vec::new();
-    for (step, what, expected, caption) in stages {
-        let frame = launch.at(step)?;
-        let read = coverage(frame, bounds, what, expected)?;
-        readings
-            .push(json!({"frame":frame["file"],"stage":what,"expected":expected,"patches":read}));
-        record(
-            frame,
-            caption,
-            json!({"modes":modes(frame)?,"expected":expected,"patches":read}),
-        );
+        ("intersect-applied", "intersected", [1, 0, 0, 0]),
+        ("restore-applied", "the second add restored", [1, 1, 0, 0]),
+    ] {
+        coverage(&mut checks, launch.at(step)?, what, expected)?;
     }
-    // Four components, and — the plan holds every step from the open to here to what it commits —
-    // four history entries.
-    let finished = launch.at("restore-applied")?;
-    ensure(
-        modes(finished)? == ["add", "subtract", "intersect", "add"],
-        format!("The finished mask holds {:?}", modes(finished)?),
-    )?;
-    let drawn = component_ids(finished)?;
+    let drawn = component_ids(launch.at("restore-applied")?)?;
 
     // Each component's own contribution, shown by pointing at its row. What the overlay draws is
     // the component's own field, before its mode is applied, so the subtract's row reads 1 where it
@@ -426,32 +373,26 @@ fn checks(launch: &Checked) -> Result<Value> {
                 == Some(row),
             format!("Step {step} shows {} hovered", json!(frame.components()?)),
         )?;
-        let read = coverage(frame, bounds, &format!("component {row} alone"), expected)?;
-        record(
+        coverage(
+            &mut checks,
             frame,
-            "one component's own contribution, shown by pointing at its row",
-            json!({"component":drawn[row],"mode":modes(frame)?[row],"expected":expected,"patches":read}),
-        );
+            &format!("component {row} alone"),
+            expected,
+        )?;
     }
 
     // The pointer off the list, and the composition again.
-    let hover_off = launch.at("hover-off")?;
-    let composed = coverage(
-        hover_off,
-        bounds,
+    coverage(
+        &mut checks,
+        launch.at("hover-off")?,
         "the composition with the pointer off the list",
         [1, 1, 0, 0],
     )?;
-    record(
-        hover_off,
-        "the composed mask again, with the pointer off the list",
-        json!({"patches":composed}),
-    );
 
-    // The refused reorder. The plan holds the step to the host's own refusal and to no commit; the
-    // reason names the rule, the list did not move, and the coverage is exactly what it was — and
-    // the run reached this frame at all, which is the point: a refused command renders nothing, so
-    // the step is ended by the refusal.
+    // The refused reorder. The plan holds the step to the host's own refusal, to no commit and to
+    // the list it had; the reason names the rule, no component moved, and the coverage is exactly
+    // what it was — and the run reached this frame at all, which is the point: a refused command
+    // renders nothing, so the step is ended by the refusal.
     let refused = launch.at("front-refused")?;
     let reason = refused["step"]["reason"]
         .as_str()
@@ -461,49 +402,30 @@ fn checks(launch: &Checked) -> Result<Value> {
         format!("The refusal's reason is {reason:?}"),
     )?;
     ensure(
-        component_ids(refused)? == drawn && modes(refused)? == modes(finished)?,
+        component_ids(refused)? == drawn,
         "The refused reorder moved the list",
     )?;
-    let after_refusal = coverage(
+    coverage(
+        &mut checks,
         refused,
-        bounds,
         "the coverage after a refused reorder",
         [1, 1, 0, 0],
     )?;
-    record(
-        refused,
-        "a reorder the host refused: its reason on the step, the list and the coverage unmoved",
-        json!({"reason":reason,"patches":after_refusal,"modes":modes(refused)?}),
-    );
 
     // The reorder that changes the picture. The second add now applies before the subtraction
     // rather than after it, so what it restored is taken out again.
     let reorder = launch.at("reorder")?;
+    let reordered = [&drawn[0], &drawn[3], &drawn[1], &drawn[2]].map(String::to_owned);
     ensure(
-        modes(reorder)? == ["add", "add", "subtract", "intersect"],
-        format!("The reordered mask holds {:?}", modes(reorder)?),
-    )?;
-    ensure(
-        component_ids(reorder)?
-            == [
-                drawn[0].clone(),
-                drawn[3].clone(),
-                drawn[1].clone(),
-                drawn[2].clone(),
-            ],
+        component_ids(reorder)? == reordered,
         format!("The reorder produced {:?}", component_ids(reorder)?),
     )?;
-    let reordered = coverage(
+    coverage(
+        &mut checks,
         reorder,
-        bounds,
         "the coverage after the reorder",
         [1, 0, 0, 0],
     )?;
-    record(
-        reorder,
-        "the second add moved above the subtraction, so the region it restored is removed again",
-        json!({"modes":modes(reorder)?,"label":reorder.label()?,"patches":reordered}),
-    );
 
     // The overlay off. The mask is a selection and nothing else: no layer is bound to it yet, so
     // the photograph is byte-unchanged from the one that opened.
@@ -512,91 +434,81 @@ fn checks(launch: &Checked) -> Result<Value> {
         overlay_off.only_mask()?["layers"] == json!([]),
         "A mask with no adjustment already has a layer bound to it",
     )?;
-    let bare = probes(overlay_off, bounds)?;
+    let bare = probes(overlay_off)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
-        pixels::compare(
+        checks.compare(
+            overlay_off,
             &format!("{name} with the mask drawn and no layer bound to it"),
             bare[index],
             opened[index],
             Tolerance::Within(PRESENCE_UNTOUCHED),
         )?;
     }
-    record(
-        overlay_off,
-        "the overlay off: a mask on its own is a selection, not an edit",
-        json!({"patches":bare}),
-    );
 
     // Presence through the mask. The flat quadrant moves inside the mask and is left exactly as it
     // was outside it, and the layer the panel committed names the mask.
     let dehaze = launch.at("dehaze")?;
-    let layer = presence_layer(dehaze).ok_or("The masked gesture committed no Presence layer")?;
+    let layer = dehaze
+        .layer(PRESENCE_EFFECT)
+        .ok_or("The masked gesture committed no Presence layer")?;
     ensure(
         layer["mask"] == json!(mask),
         format!("The committed Presence layer names {}", layer["mask"]),
     )?;
-    let dehazed = probes(dehaze, bounds)?;
-    pixels::compare(
+    let dehazed = probes(dehaze)?;
+    checks.compare(
+        dehaze,
         "the covered patch under masked Presence",
         dehazed[0],
         bare[0],
         Tolerance::Apart(PRESENCE_MOVED),
     )?;
-    ensure(
-        dehazed[0] > 1.0 && dehazed[0] < 254.0,
-        format!(
-            "The covered patch read {:.2}, which is against the end of the range: a clipped \
-             reading is produced by a broken render as readily as by a correct one",
-            dehazed[0]
-        ),
+    // Strictly inside 1..254, which is strictly within 126.5 of 127.5: a clipped reading is
+    // produced by a broken render as readily as by a correct one.
+    checks.compare(
+        dehaze,
+        "the covered patch under masked Presence, clear of the ends of the range",
+        dehazed[0],
+        127.5,
+        Tolerance::Under(126.5),
     )?;
-    pixels::compare(
+    checks.compare(
+        dehaze,
         "the uncovered patch under masked Presence",
         dehazed[3],
         bare[3],
         Tolerance::Within(PRESENCE_UNTOUCHED),
     )?;
-    record(
-        dehaze,
-        "one part of the photograph adjusted through the composed mask and the other left alone",
-        json!({"layer":layer["id"],DEHAZE:DEHAZED,"label":dehaze.label()?,
-               "covered":dehazed[0],"uncovered":dehazed[3],"before":bare}),
-    );
 
     // Undo. The plan holds the layer to gone; the mask and every component keep their identities
     // in their reordered order, and the photograph is back to the one the mask alone left.
     let undo = launch.at("undo")?;
     ensure(
-        component_ids(undo)? == component_ids(reorder)?,
+        component_ids(undo)? == reordered,
         "Undo changed the component identities or their order",
     )?;
-    let undone = probes(undo, bounds)?;
+    let undone = probes(undo)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
-        pixels::compare(
+        checks.compare(
+            undo,
             &format!("{name} after undo"),
             undone[index],
             bare[index],
             Tolerance::Within(PRESENCE_UNTOUCHED),
         )?;
     }
-    record(
-        undo,
-        "the undone state: the composed mask, with nothing applied through it",
-        json!({"patches":undone,"label":undo.label()?}),
-    );
 
-    Ok(json!({
-        "mask": mask,
-        "components": drawn,
-        "reordered": component_ids(reorder)?,
-        "modes": modes(reorder)?,
-        "revision": undo.revision()?,
-        "refused_step": {"step": refused["step"]["step"], "reason": reason},
-        "coverage": readings,
-        "presence": {"covered": dehazed[0], "uncovered": dehazed[3], "before": bare},
-        "covered_threshold": COVERED,
-        "uncovered_threshold": UNCOVERED,
-        "frames": shows,
-        "scope": "Mean Rec. 709 luminance of four patches of the displayed photograph, read back from the renderer; the coverage readings are of the mask-on-black overlay, which paints coverage straight into all three channels, and are not a colorimetric claim",
-    }))
+    checks.write(
+        run.out(),
+        SCENARIO,
+        json!({
+            "mask": mask,
+            "components": drawn,
+            "reordered": reordered,
+            "refused_step": {"step": refused["step"]["step"], "reason": reason},
+            "covered_within": COVERED_WITHIN,
+            "uncovered_within": UNCOVERED,
+            "scope": "Mean Rec. 709 luminance of four patches of the photograph the editor records drawing, read back from the renderer; the coverage readings are of the mask-on-black overlay, which paints coverage straight into all three channels, and are not a colorimetric claim",
+        }),
+    )
 }
