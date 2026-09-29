@@ -137,7 +137,7 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
 
 /// The canvas surface's own colour, `#19191b`, which is all the canvas shows where no photograph is
 /// drawn.
-const CANVAS: [u8; 3] = [0x19, 0x19, 0x1b];
+pub const CANVAS: [u8; 3] = [0x19, 0x19, 0x1b];
 
 impl Frame {
     /// [`fixture`] over this frame's capture, inside the photo surface it records.
@@ -341,41 +341,6 @@ pub fn identity_photo(frame: &Frame) -> Result<Value> {
         json!({"bounds":[left,top,right,bottom],"aspect":aspect,"corner_rgb":samples,
         "tolerance_per_channel":8,"scope":"Displayed photo surface; control sidebar excluded"}),
     )
-}
-
-/// The bounding box of the photo surface's bright pixels, `[left, top, right, bottom)`, between the
-/// notices at the top of the canvas and the floating mode strip at its bottom, for a fixture with no
-/// coloured quadrants to match on. The scan starts 4 px inside the surface's own 1 px edge dividers,
-/// which are as bright as dark content. Only the photograph is brighter than the canvas surface
-/// (`#19191b`) and the bars over it (`#232326`) in that band, provided no notice is drawn.
-pub fn band_bounds(frame: &Frame, threshold: u32) -> Result<[u32; 4]> {
-    const INSET: u32 = 4;
-    let image = frame.image()?;
-    let (width, height) = image.dimensions();
-    let [left_edge, right_edge] = frame.columns()?.unwrap_or([0, width]);
-    ensure(
-        left_edge + INSET < right_edge.saturating_sub(INSET) && right_edge <= width,
-        "Invalid surface columns",
-    )?;
-    let (band_top, band_bottom) = (height * 3 / 20, height * 22 / 25);
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
-    for y in band_top..band_bottom {
-        for x in (left_edge + INSET)..(right_edge - INSET) {
-            let pixel = image.get_pixel(x, y).0;
-            let mean = (u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) / 3;
-            if mean >= threshold {
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 1);
-                bottom = bottom.max(y + 1);
-            }
-        }
-    }
-    ensure(
-        right > left && bottom > top,
-        "No photograph in the frame: blank or wrong render",
-    )?;
-    Ok([left, top, right, bottom])
 }
 
 /// How two readings of a capture must relate, with the threshold the scenario states for it.
