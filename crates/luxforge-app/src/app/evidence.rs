@@ -17,7 +17,10 @@ use crate::{
             pointer::PointerMessage, preset::PresetMessage, view::ViewMessage,
         },
         performance,
-        tasks::{HostAnswer, PerformanceRead, host_task, mutation, request, workspace_task},
+        tasks::{
+            HostAnswer, PerformanceRead, call, host_task, mutation, owner_task, request,
+            workspace_task,
+        },
     },
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
@@ -32,7 +35,7 @@ use crate::{
 };
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use iced::{Subscription, Task};
-use luxforge_core::HistoryEntry;
+use luxforge_core::{ClientId, HistoryEntry, Mutation};
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{
@@ -50,6 +53,10 @@ pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
 /// Full RAW edit/history scripts can redevelop a 100 MP source several times.
 /// The Q2 correction journey makes progress beyond the single-open deadline.
 pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// The actor an `agent` step's edits are committed under, so history tells them from the
+/// desktop's own.
+const AGENT_ACTOR: &str = "evidence-agent";
 
 pub(crate) struct Evidence {
     pub(crate) dir: PathBuf,
@@ -101,6 +108,11 @@ pub(crate) struct Evidence {
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
+    /// The run's second client, registered on the owner at the first `agent` step and disconnected
+    /// when the run finishes.
+    pub(crate) agent: Option<ClientId>,
+    /// What a running `agent` step still waits for.
+    pub(crate) agent_wait: Option<AgentWait>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -128,6 +140,22 @@ pub(crate) struct Recorded {
     pub(crate) activity: Option<Value>,
 }
 
+/// What a running `agent` step waits for. The desktop sends nothing for it: the owner wakes the
+/// event sync for the second client's change, the sync reads it back as a change made elsewhere,
+/// and the frame of the entry the agent's request committed reaches the screen. The step is over
+/// once that frame is presented and the agent has its answer, which may come in either order.
+#[derive(Debug)]
+pub(crate) struct AgentWait {
+    /// The request id of the agent's mutation envelope, which the entry it commits records.
+    pub(crate) request_id: String,
+    /// The revision the envelope expected: an answer still at it committed nothing.
+    pub(crate) expected_revision: u64,
+    /// The agent's request has answered.
+    pub(crate) answered: bool,
+    /// A frame of the entry it committed has been presented, or failed in its place.
+    pub(crate) shown: bool,
+}
+
 impl Evidence {
     /// An evidence run writing into `dir`: it opens `queue` in turn, then runs `script`.
     pub(crate) fn new(dir: PathBuf, queue: VecDeque<PathBuf>, script: VecDeque<Step>) -> Self {
@@ -153,6 +181,8 @@ impl Evidence {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            agent: None,
+            agent_wait: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         }
@@ -389,6 +419,9 @@ pub(crate) enum Settle {
     Capability,
     /// An export step's job has ended — written, failed or cancelled — or its request was refused.
     Export,
+    /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
+    /// entry it committed to the screen: see [`AgentWait`].
+    Agent,
 }
 
 impl Settle {
@@ -410,6 +443,7 @@ impl Settle {
             Self::Performance => "performance",
             Self::Capability => "capability",
             Self::Export => "export",
+            Self::Agent => "agent",
         }
     }
 
@@ -820,6 +854,7 @@ impl Editor {
             EvidenceMessage::HostAnswered(result) => {
                 return self.host_answered(result.map(|answer| *answer));
             }
+            EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
         }
         Task::none()
     }
@@ -846,6 +881,7 @@ impl Editor {
         self.event("script_step", || record);
         match step {
             Step::Api { method, params } => self.api_step(method, params),
+            Step::Agent { method, params } => self.agent_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
             Step::Slider(slider) => self.slider_step(slider),
             Step::DoubleClick(step) => self.double_click_step(step),
@@ -1019,6 +1055,137 @@ impl Editor {
             .extend(params);
         self.begin_request();
         self.command(method, request)
+    }
+
+    /// One edit of the open photograph sent by the run's second client, an agent editing beside
+    /// the person, registered on the same owner at the first `agent` step. Its envelope carries the
+    /// revision the desktop holds, a fresh request id and the agent's own actor; name references
+    /// resolve as an `api` step's do. The desktop itself sends nothing: the owner wakes the event
+    /// sync for another client's change, the sync reads it back, and the step's frame is captured
+    /// once the frame of the entry this request committed is on screen and the agent has its
+    /// answer ([`AgentWait`]).
+    fn agent_step(&mut self, method: String, mut params: Map<String, Value>) -> Task<Message> {
+        if envelope_free(&method).is_some() {
+            return self.fail_step(format!(
+                "an agent step edits the open photograph, and {method} is not an edit of it"
+            ));
+        }
+        if let Err(reason) = self.resolve_identities(&mut params) {
+            return self.fail_step(reason);
+        }
+        let Some((asset, revision)) = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| (state.asset.id.clone(), state.revision))
+        else {
+            return self.fail_step("no photograph is open");
+        };
+        let owner = self.owner.clone();
+        let Some(evidence) = &mut self.evidence else {
+            return Task::none();
+        };
+        let agent = *evidence.agent.get_or_insert_with(|| owner.register());
+        let mutation = Mutation {
+            actor: AGENT_ACTOR.into(),
+            ..mutation(revision)
+        };
+        evidence.agent_wait = Some(AgentWait {
+            request_id: mutation.request_id.clone(),
+            expected_revision: revision,
+            answered: false,
+            shown: false,
+        });
+        self.note_step(json!({
+            "expected_revision": revision,
+            "request_id": mutation.request_id,
+            "actor": AGENT_ACTOR,
+        }));
+        self.await_step(Settle::Agent);
+        let mut request = json!({"asset_id":asset,"mutation":mutation});
+        request
+            .as_object_mut()
+            .expect("the envelope is an object")
+            .extend(params);
+        owner_task(
+            move || call(&owner, agent, &method, request).map(|(answer, _)| answer),
+            |result| Message::Evidence(EvidenceMessage::AgentAnswered(result)),
+        )
+    }
+
+    /// The running `agent` step's edit answered. A refusal, or an answer still at the revision it
+    /// expected, commits nothing and so brings no frame: the step is captured on the next one, a
+    /// refusal recorded as failed. Otherwise the step settles here if its frame is already on
+    /// screen.
+    fn agent_answered(&mut self, result: Result<Value, String>) {
+        let Some(wait) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.agent_wait.as_mut())
+        else {
+            return;
+        };
+        let answer = match result {
+            Ok(answer) => answer,
+            Err(error) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.agent_wait = None;
+                }
+                self.refuse_step(&error);
+                self.capture_next_frame();
+                return;
+            }
+        };
+        let committed = answer["revision"]
+            .as_u64()
+            .is_some_and(|revision| revision > wait.expected_revision);
+        wait.answered = true;
+        let shown = wait.shown;
+        self.note_step(json!({ "result": answer }));
+        if !committed {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.agent_wait = None;
+            }
+            self.capture_next_frame();
+        } else if shown {
+            self.agent_settled("agent_answered");
+        }
+    }
+
+    /// A frame reached the surface, or the newest one failed: when it belongs to the entry the
+    /// running `agent` step's request committed, that step's frame is on screen.
+    fn agent_frame(&mut self, failed: bool, by: &str) {
+        let Some(evidence) = &mut self.evidence else {
+            return;
+        };
+        let recorded = &evidence.recorded;
+        let entry = if failed {
+            &recorded.requested_entry
+        } else {
+            &recorded.rendered_entry
+        };
+        let Some(wait) = evidence.agent_wait.as_mut() else {
+            return;
+        };
+        if entry
+            .as_ref()
+            .and_then(|entry| entry.request_id.as_ref())
+            .is_none_or(|request| *request != wait.request_id)
+        {
+            return;
+        }
+        wait.shown = true;
+        if wait.answered {
+            self.agent_settled(by);
+        }
+    }
+
+    /// Both halves of the running `agent` step have happened: capture its frame.
+    fn agent_settled(&mut self, by: &str) {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.agent_wait = None;
+        }
+        self.settle_step(Settle::Agent, by);
     }
 
     /// Replace a `{"name": …}` reference in a request's `mask` or `component` envelope field with
@@ -3195,12 +3362,14 @@ impl Editor {
             Outcome::Presented(presented) => {
                 if let Some(settle) = Settle::presented(presented) {
                     self.settle_step(settle, by);
+                    self.agent_frame(false, by);
                 }
             }
             // The failure is that step's outcome, and its frame shows it.
             Outcome::PreviewFailed { newest } => {
                 if newest {
                     self.settle_step(Settle::Preview, by);
+                    self.agent_frame(true, by);
                 }
             }
             Outcome::NoNewFrame => self.settle_step(Settle::Preview, by),
@@ -3394,6 +3563,9 @@ impl Editor {
         let frames = std::mem::take(&mut evidence.frames);
         let script = std::mem::take(&mut evidence.steps);
         let had_errors = evidence.had_errors;
+        if let Some(agent) = evidence.agent.take() {
+            self.owner.disconnect(agent);
+        }
         let result = json!({"run_id":self.log.run_id,"status":"captured","had_input_errors":had_errors,"frames":frames,"script":script,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"build_version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH});
         let state = self.snapshot();
         let log = self.log.diagnostics.take();
@@ -4004,6 +4176,8 @@ mod tests {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            agent: None,
+            agent_wait: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         });
@@ -4407,6 +4581,136 @@ mod tests {
         );
         assert!(editor.busy, "the owner call is in flight");
         drop(asset);
+        finish(editor, catalog);
+    }
+
+    /// An `agent` step edits through a second client registered on the same owner, and the desktop
+    /// sends nothing for it: its event sync, which runs in an evidence run as in a session, reads
+    /// the change back as another client's. The step settles only once the agent has its answer
+    /// and the frame of the entry that request committed has been presented, and the log names
+    /// that wait.
+    #[test]
+    fn an_agent_step_edits_through_a_second_client_and_settles_on_the_synced_frame() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-agent-{}-{}.sqlite",
+            std::process::id(),
+            crate::app::tasks::REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
+        crate::app::testing::attach_script(
+            &mut editor,
+            r#"[{"agent":{"method":"edit.transform","params":{"transform":"rotate-right"}}}]"#,
+        );
+        let log = crate::app::testing::attach_log(&mut editor);
+        let (owner, client) = (editor.owner.clone(), editor.client);
+        let held = editor
+            .document
+            .state
+            .as_ref()
+            .expect("a photograph")
+            .revision;
+        let requested = editor.activity.requested;
+
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("sent"));
+        assert_eq!(record["actor"], json!(AGENT_ACTOR));
+        assert_eq!(record["expected_revision"], json!(held));
+        let agent = evidence(&editor).agent.expect("the second client");
+        assert_ne!(agent, client, "a client of its own");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Agent));
+        assert!(
+            !editor.busy && editor.activity.requested == requested,
+            "the desktop sends nothing for it"
+        );
+
+        // What the step's task sends: the edit, through the second client.
+        let (answer, _) = crate::app::tasks::call(
+            &owner,
+            agent,
+            "edit.transform",
+            json!({
+                "asset_id": asset,
+                "mutation": {
+                    "expected_revision": held,
+                    "request_id": record["request_id"],
+                    "actor": AGENT_ACTOR,
+                },
+                "transform": "rotate-right",
+            }),
+        )
+        .expect("the agent's edit commits");
+        let _ = editor.update(Message::Evidence(EvidenceMessage::AgentAnswered(Ok(
+            answer,
+        ))));
+        assert_eq!(
+            evidence(&editor).awaiting,
+            Some(Settle::Agent),
+            "answered, but nothing of it is on screen"
+        );
+
+        // The owner's wake starts the poll, which reads the agent's event back.
+        let _ = editor.update(Message::Sync(SyncMessage::Changed));
+        assert!(editor.sync.poll.in_flight(), "an evidence run syncs");
+        let polled = crate::app::tasks::sync_now(
+            &owner,
+            client,
+            (asset.clone(), held),
+            editor.sync.sequence,
+            &editor.sync.own_requests.iter().cloned().collect::<Vec<_>>(),
+            None,
+        )
+        .expect("the poll answers");
+        assert!(
+            polled.refresh.is_some(),
+            "another client's change is read back"
+        );
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(polled))));
+        let state = editor.document.state.as_ref().expect("a photograph");
+        assert_eq!(state.revision, held + 1);
+        assert_eq!(state.current_entry.actor, AGENT_ACTOR);
+        assert_eq!(
+            evidence(&editor).awaiting,
+            Some(Settle::Agent),
+            "read back, but its frame is not on screen yet"
+        );
+
+        luxforge_testbase::wait_until("the agent's entry on screen", || {
+            let _ = editor.update(Message::Preview(
+                crate::app::message::preview::PreviewMessage::Poll,
+            ));
+            evidence(&editor).awaiting.is_none()
+        });
+        assert!(evidence(&editor).capture_pending);
+        let shown = evidence(&editor)
+            .recorded
+            .rendered_entry
+            .clone()
+            .expect("a rendered entry");
+        assert_eq!(shown.request_id.as_deref(), record["request_id"].as_str());
+        let records = crate::app::testing::logged(&mut editor, &log);
+        let settled: Vec<&Value> = records
+            .iter()
+            .filter(|record| record["event"] == "script_step_settled")
+            .map(|record| &record["detail"]["waited_for"])
+            .collect();
+        assert_eq!(settled, [&json!("agent")]);
+        finish(editor, catalog);
+    }
+
+    /// An `agent` step sends only an edit of the open photograph, whose read-back is what it
+    /// settles on; any other method is refused and still captured.
+    #[test]
+    fn an_agent_step_refuses_a_method_that_is_no_edit_of_the_photograph() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"agent":{"method":"preset.list"}}]"#);
+        let _ = editor.next_step();
+        assert!(evidence(&editor).had_errors && evidence(&editor).capture_pending);
+        assert!(evidence(&editor).agent.is_none(), "no client registered");
+        assert!(
+            editor.status.text.contains("not an edit of it"),
+            "{}",
+            editor.status.text
+        );
         finish(editor, catalog);
     }
 

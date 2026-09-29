@@ -37,8 +37,8 @@ Doctor reports missing tools and the graphics environment without installing any
 | Every smoke scenario, with its launches and frame counts, what it opens and its window | `cargo xtask smoke --list` |
 | A recorded smoke run's checks again, over a copy and without launching | `cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR [--scenario NAME] [--source RAW]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
-| Rendered workspace panels, mode, preview, the Transforms icon row, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
-| Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
+| Rendered workspace panels, mode, preview, the Transforms icon row, an agent's conflicting commit and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
+| Rendered Basic slider gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit | `cargo xtask smoke --scenario basic --output NEW_DIR` |
 | Rendered Basic panel on a JPEG: all three groups, the White balance group's four controls (Temperature, Tint, Neutral picker, As shot) with As shot sending Basic's own 0 and 0, historical values, a group reset, the neutral picker, As shot after a warm drag, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
@@ -650,6 +650,20 @@ Each step is an object with exactly one key.
   desktop reads that module's settings and status again, as it does after another client's change,
   and the frame is captured once that read has answered and any job it found reports progress. A
   `module.settings.set-secret` step's `value` is kept and recorded as `<redacted>`.
+- `agent` sends one edit of the open photograph through a second client, an agent editing beside
+  the person: `{"agent": {"method": "edit.transform", "params": {"transform": "rotate-right"}}}`.
+  The client is registered on the desktop's own owner at the run's first `agent` step and
+  disconnected when the run ends. The desktop fills `asset_id` and the `mutation` envelope as an
+  `api` edit's, with the revision it holds, a fresh request id and the actor `evidence-agent`, resolves name
+  references the same way, and rejects a script that sets either; a method that is not an edit of
+  the open asset fails the step. The desktop sends nothing itself: the owner wakes its event sync
+  for the other client's change, the sync reads it back as a change made elsewhere, and the frame
+  is captured once the agent has its answer and the frame of the entry that request committed has
+  been presented (`waited_for` `agent`), so an open draft is conflicted exactly as another client's
+  commit conflicts it. An answer that commits nothing is captured on the next frame, and a refused
+  one is recorded as failed. The event sync runs in every evidence run as it does in a session; it
+  reads only what the owner wakes it for, which is another client's change or a job of the
+  desktop's own that ended (an import, an export, a module task).
 - `draft` drives the crop draft: `start`, `reapply`, `angle` (typed into the angle's box and
   submitted), `nudge` (`-1` or `1`: one press of the angle's − or + button), `angle_rail` (a drag
   through rail fractions, then its release), `preset` (a declared aspect option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
@@ -837,9 +851,9 @@ fails the launch. Each launch writes `app/zoom-checks.json` with the measured va
 tolerances.
 
 `workspace` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives a rotate, three panel and
-thirds changes, a historical preview and its return, a crop draft, a commit during that draft (the
-conflict, since any other commit while a draft is open marks it conflicted, whoever made it) and the
-command palette, before cancelling the draft. The runner checks, per frame, that `state.workspace`
+thirds changes, a historical preview and its return, a crop draft, an `agent` step's rotate during
+that draft (the conflict: another client's commit, read back by the event sync, marks the open draft
+conflicted) and the command palette, before cancelling the draft. The runner checks, per frame, that `state.workspace`
 matches the requested panels, mode and thirds and that the photograph stays centred in the recorded
 `surface_columns`; that the historical-preview frame's `state.status` starts with "Previewing entry
 0"; that the conflict frame's `state.notices` names "Changed elsewhere" and `state.crop.conflicted`
@@ -850,8 +864,8 @@ the thirds frame's fitted photograph reads brighter at its one-third column than
 
 `basic` opens the same fixture at 1440 × 900 and drives the whole Exposure gesture: a drag to
 +1.00 EV left open, the same gesture released, a second drag that returns to +1.00 and releases, a
-typed −0.50 with Enter, `history.undo`, the Tone group's reset, a drag to +2.00 EV, a commit by
-another route while that drag is open, and the notice's Reapply and Discard in turn. The runner
+typed −0.50 with Enter, `history.undo`, the Tone group's reset, a drag to +2.00 EV, an `agent`
+step's rotate while that drag is open, and the notice's Reapply and Discard in turn. The runner
 checks, per frame, `state.draft` (its identity, the field it holds, both revisions and whether it is
 conflicted), the revision, the current entry's stored label, what the Exposure field shows, the one
 Basic layer's stored payload, and the photograph's own mean Rec. 709 luminance over its central

@@ -76,14 +76,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .label("Reset Tone")
             .field(SET_BASIC, EXPOSURE, "0.00")
             .payload(BASIC_EFFECT, json!({})),
-        // A drag left open, then somebody else commits under it: the draft is kept, marked
-        // conflicted.
+        // A drag left open, then an agent commits under it through a client of its own: the
+        // desktop's event sync reads the change back, and the draft is kept, marked conflicted.
         Step::new("drag-open", SliderStep::new(SET_BASIC, EXPOSURE, [2.0]))
             .commits(0)
             .draft(SET_BASIC, json!({ EXPOSURE: 2.0 })),
         Step::new(
             "conflict",
-            script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
+            script::Step::agent("edit.transform", json!({"transform":"rotate-right"})),
         )
         .commits(1)
         .conflicted(SET_BASIC, json!({ EXPOSURE: 2.0 }))
@@ -187,7 +187,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         brighter,
     )?;
 
-    // A commit by another route while that gesture is open raises the Changed elsewhere notice,
+    // An agent's commit while that gesture is open raises the Changed elsewhere notice,
     // which the plan holds. Reapply: the draft is rebased on the new revision, the notice gone, and
     // the drafted preview returns over the committed stack; Discard: the canvas is the committed
     // stack again.

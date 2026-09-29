@@ -107,10 +107,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             CROP_MODULE,
             true,
         ),
-        // A commit while the draft is open is the conflict, whoever made it.
+        // An agent's commit while the draft is open, through a client of its own and read back by
+        // the event sync, is the conflict.
         Step::new(
             "conflict",
-            script::Step::call("edit.transform", json!({"transform":"rotate-left"})),
+            script::Step::agent("edit.transform", json!({"transform":"rotate-left"})),
         )
         .commits(1)
         .label("Rotate left")
@@ -260,8 +261,8 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
-    // Starting a crop draft, by the `draft.start` route, opens one; a commit while it is open
-    // marks it conflicted, and the palette and the cancel follow.
+    // Starting a crop draft, by the `draft.start` route, opens one; an agent's commit while it is
+    // open marks it conflicted, and the palette and the cancel follow.
     ensure(
         launch.at("draft")?.state()["crop"]["drafting"] == json!(true),
         "draft.start did not open a draft",

@@ -337,7 +337,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "workspace",
-        about: "Panels, canvas mode, thirds, a historical preview, a conflict and the palette",
+        about: "Panels, canvas mode, thirds, a historical preview, an agent's conflicting commit and the palette",
         launches: &[LaunchSpec {
             plan: workspace::plan,
             ..APP
@@ -350,7 +350,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "basic",
-        about: "The Exposure slider's whole gesture: draft, commit, typed value, undo, reset and conflict",
+        about: "The Exposure slider's whole gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit",
         launches: &[LaunchSpec {
             plan: basic::plan,
             ..APP

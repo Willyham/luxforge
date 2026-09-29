@@ -114,6 +114,7 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"gallery":{"page":8}},
         {"gallery":{"page":null}},
         {"tools_scroll":1.0},
+        {"agent":{"method":"edit.transform","params":{"transform":"rotate-right"}}},
     ]));
     assert_eq!(steps[1], Step::api("history.undo"));
     assert_eq!(steps[2], Step::Draft(DraftStep::Start));
@@ -134,6 +135,10 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
     assert_eq!(steps[22], Step::Preview(PreviewStep::Current));
     assert_eq!(steps[25], Step::hover(12, 34));
     assert_eq!(steps[31], Step::gallery(None));
+    assert_eq!(
+        steps[33],
+        Step::agent("edit.transform", json!({"transform":"rotate-right"}))
+    );
     // An integer where a number is expected is the same number.
     assert_eq!(
         parse(r#"[{"draft":{"rect":[10,20,300,200]}},{"view":{"zoom":100}}]"#).unwrap(),
@@ -163,6 +168,15 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         ),
         (
             json!({"api":{"method":"edit.crop","params":{"asset_id":"a"}}}),
+            "may not set it",
+        ),
+        (json!({"agent":{}}), "missing field `method`"),
+        (
+            json!({"agent":{"method":""}}),
+            "agent method takes a non-empty string",
+        ),
+        (
+            json!({"agent":{"method":"edit.crop","params":{"mutation":{}}}}),
             "may not set it",
         ),
         (json!({"draft":{"start":false}}), "takes true"),
@@ -764,6 +778,15 @@ fn capability_steps_round_trip_and_an_api_step_is_kept_through_the_redactor() {
     assert_eq!(
         steps[5].kept(redact),
         json!({"api": {"method": "module.settings.set-secret", "params": {"module_id": module, "setting": "api-key", "value": "<redacted>"}}})
+    );
+    // An `agent` step's parameters too, although the desktop sends only edits through one.
+    let agent = Step::agent(
+        "module.settings.set-secret",
+        json!({"module_id": module, "setting": "api-key", "value": "script-sentinel"}),
+    );
+    assert_eq!(
+        agent.kept(redact),
+        json!({"agent": {"method": "module.settings.set-secret", "params": {"module_id": module, "setting": "api-key", "value": "<redacted>"}}})
     );
     for step in &steps[..5] {
         assert_eq!(step.kept(redact), step.to_value());

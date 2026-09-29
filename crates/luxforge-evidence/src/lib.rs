@@ -77,6 +77,15 @@ pub enum Step {
         #[serde(default, skip_serializing_if = "Map::is_empty")]
         params: Map<String, Value>,
     },
+    /// One edit of the open photograph sent by a second client registered on the same owner: an
+    /// agent editing beside the person. The desktop fills `asset_id` and the mutation envelope
+    /// with the revision it holds, and the change reaches the screen only through the desktop's
+    /// event sync, as any other client's change does.
+    Agent {
+        method: String,
+        #[serde(default, skip_serializing_if = "Map::is_empty")]
+        params: Map<String, Value>,
+    },
     Draft(DraftStep),
     /// One slider gesture on a generated control: the exact messages a drag sends.
     Slider(SliderStep),
@@ -173,15 +182,18 @@ impl Step {
         serde_json::to_value(self).expect("an evidence step always serializes")
     }
 
-    /// The step as it is kept beside the evidence and recorded beside its frame: an `api` step's
-    /// parameters passed through `redact`, the core's one rule for what a request may show (a
-    /// secret's value replaced), and every other step as written.
+    /// The step as it is kept beside the evidence and recorded beside its frame: an `api` or
+    /// `agent` step's parameters passed through `redact`, the core's one rule for what a request
+    /// may show (a secret's value replaced), and every other step as written.
     pub fn kept(&self, redact: impl Fn(&str, &Value) -> Value) -> Value {
         let mut kept = self.to_value();
-        if let Self::Api { method, params } = self
-            && !params.is_empty()
-        {
-            kept["api"]["params"] = redact(method, &Value::Object(params.clone()));
+        let (kind, method, params) = match self {
+            Self::Api { method, params } => ("api", method, params),
+            Self::Agent { method, params } => ("agent", method, params),
+            _ => return kept,
+        };
+        if !params.is_empty() {
+            kept[kind]["params"] = redact(method, &Value::Object(params.clone()));
         }
         kept
     }
@@ -190,8 +202,13 @@ impl Step {
     /// step's fields may take.
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Api { method, params } => {
-                text(method, "api method")?;
+            Self::Api { method, params } | Self::Agent { method, params } => {
+                let kind = if matches!(self, Self::Api { .. }) {
+                    "api method"
+                } else {
+                    "agent method"
+                };
+                text(method, kind)?;
                 for reserved in ["asset_id", "mutation"] {
                     if params.contains_key(reserved) {
                         return Err(format!(
