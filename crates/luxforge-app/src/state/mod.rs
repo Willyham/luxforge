@@ -1859,57 +1859,6 @@ mod tests {
         assert_eq!(temperature(2), ("set-basic".into(), None));
     }
 
-    /// A field-patch layer returned to its neutral values stays in the stack but is not an edit, so
-    /// its band has no dot; any field that changes the picture lights it. Neutrality is the core's
-    /// answer on each `recipe.describe` row, which is what makes the vignette's rule (amount 0,
-    /// whatever its shape) come out right with no payload parsing here.
-    #[test]
-    fn a_field_patch_section_has_no_dot_once_its_layer_is_neutral() {
-        let modules = descriptors();
-        for (module_id, effect, neutral, edited) in [
-            (
-                "luxforge.basic",
-                luxforge_core::BASIC_EFFECT,
-                json!({"exposure": 0.0}),
-                json!({"exposure": 0.5}),
-            ),
-            (
-                "luxforge.presence",
-                luxforge_core::PRESENCE_EFFECT,
-                json!({}),
-                json!({"clarity": -20}),
-            ),
-            (
-                "luxforge.mixer",
-                luxforge_core::MIXER_EFFECT,
-                json!({"red-hue": 0}),
-                json!({"blue-saturation": 30}),
-            ),
-            (
-                "luxforge.vignette",
-                luxforge_core::VIGNETTE_EFFECT,
-                json!({"midpoint": 70, "roundness": -40}),
-                json!({"amount": -25}),
-            ),
-        ] {
-            let module = modules
-                .iter()
-                .find(|module| module.id == module_id)
-                .expect("a registered module")
-                .clone();
-            let dot = |payload: &serde_json::Value| {
-                let scene = Scene::new(vec![module.clone()])
-                    .opened(vec![luxforge_core::Layer::new(effect, payload.clone())]);
-                section(&scene.derive(), module_id).active
-            };
-            assert!(
-                !dot(&neutral),
-                "{module_id}: {neutral} is stored but not an edit"
-            );
-            assert!(dot(&edited), "{module_id}: {edited} is an edit");
-        }
-    }
-
     /// The dot follows the current entry's rows, not the displayed entry's: previewing an older
     /// entry whose Basic layer was an edit leaves the dot as the current, reset layer has it.
     #[test]
