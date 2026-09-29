@@ -233,16 +233,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // The fixture as launched, with the Presence module listed and available.
     let opened = launch.at("opened")?;
-    let presence = opened.state()["modules"]
-        .as_array()
-        .ok_or("Missing modules")?
-        .iter()
-        .find(|module| module["id"] == json!(PRESENCE_MODULE))
-        .ok_or("The Presence module is not listed at all")?;
-    ensure(
-        presence["available"] == json!(true),
-        "The Presence module is not available",
-    )?;
+    opened.module_available(PRESENCE_MODULE)?;
     let opened_contrast = edge_contrast(opened)?;
     let opened_texture_range = texture_range(opened)?;
     let opened_flat = grey(&mut checks, opened, "as launched")?;

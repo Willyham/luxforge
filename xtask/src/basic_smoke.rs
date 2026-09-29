@@ -102,35 +102,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     ])
 }
 
-/// Whether the module registry lists `module` and offers it.
-fn available(frame: &Frame, module: &str) -> Result {
-    let listed = frame.state()["modules"]
-        .as_array()
-        .ok_or("Missing modules")?
-        .iter()
-        .find(|listed| listed["id"] == json!(module))
-        .ok_or_else(|| format!("The {module} module is not listed at all"))?;
-    ensure(
-        listed["available"] == json!(true),
-        format!("The {module} module is not available"),
-    )
-}
-
-/// The drag's frame displays the draft it holds, at a draft revision of its own.
-fn displays_draft(drag: &Frame) -> Result {
-    let drafted = drag.draft();
-    ensure(
-        drafted["draft_revision"]
-            .as_u64()
-            .is_some_and(|value| value >= 1)
-            && drag.state()["displayed_draft_revision"] == drafted["draft_revision"],
-        format!(
-            "The drag displays draft revision {} while the draft is {drafted}",
-            drag.state()["displayed_draft_revision"]
-        ),
-    )
-}
-
 /// What the photograph shows at each step, once the plan has held.
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
@@ -143,12 +114,12 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let (brighter, same) = (Tolerance::Above(BRIGHTER), Tolerance::Within(SAME));
 
     let opened = launch.at("opened")?;
-    available(opened, BASIC_MODULE)?;
+    opened.module_available(BASIC_MODULE)?;
     opened.fixture(Fixture::fit(1))?;
 
     // Mid-gesture at +1.00 EV: the photograph on screen is the drafted render, which is brighter;
     // the release commits that render, and a drag back to where it started commits nothing.
-    displays_draft(launch.at("drag")?)?;
+    launch.at("drag")?.displays_draft()?;
     claim(
         "drag",
         "+1.00 EV drafted against the neutral open",

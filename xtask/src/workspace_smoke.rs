@@ -346,12 +346,7 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
             histogram["status"], histogram["notice"]
         ),
     )?;
-    let crop_module = frame2.state()["modules"]
-        .as_array()
-        .ok_or("Missing modules")?
-        .iter()
-        .find(|m| m["id"] == json!(CROP_MODULE))
-        .ok_or("The crop module is not listed at all")?;
+    let crop_module = frame2.module(CROP_MODULE)?;
     ensure(
         crop_module["available"] == json!(false),
         "The crop module is not reported unavailable",
