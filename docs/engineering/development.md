@@ -57,6 +57,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered module capabilities: settings, a profile, its key, a download grant and install through `api` steps, the photo-data consent denied then allowed, a task with progress, Apply and a refused task through the desktop, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | Rendered Masks panel over the photograph the design boards use: Sky, Face (a radial, a subtracting brush of two strokes and an intersecting luminance range) and Foreground built through the panel and renamed through `mask.rename` and `mask.rename-component`, Foreground's overlay hidden with its eye, Face's amount, Exposure and Clarity through it; then the Brush section armed and put down, a held stroke's draft bar, the New mask menu and Escape, Radial 1's fields, the overlay in each mode and both tints, a hovered row, and Radial 1 reopened with its grip swung to −12°, the mask-mode board's own state. Every frame's list, open mask, selected component, overlay and mode are checked against the plan, and the draft bar, scope chips, dot and bound layers by state | `cargo xtask smoke --scenario mask-panel --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture` |
+| How promptly a cancelled 24 MP render stops, in the transform pass and mid colour chunk, against its 25 ms bound, release only | `cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -167,10 +168,11 @@ A dev build is not a timing build; timing uses release.
 Every integration-test binary links the whole of `luxforge-core`, so the core's integration tests
 are grouped into one binary per area, one module per file: `basic` (Exposure, white balance, Tone,
 Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
-field-patch conformance suite), `mask` (each kind against its reference, the coverage grid, geometry survival and masked edits on
-both paths and through the JSON method table), and `cancellation` and `resources_cost`, which stay
-apart because the first renders 24 MP frames against a latency bound and the second is a timing
-measurement. Narrow a run with the module path, for example
+field-patch conformance suite), `mask` (each kind against its reference, the coverage grid,
+geometry survival and masked edits on both paths and through the JSON method table), and
+`cancellation` and `resources_cost`, which stay apart because each is an ignored release timing:
+the first times how promptly a cancelled 24 MP render stops, against its 25 ms bound, and the
+second the cost of `resources.read`. Narrow a run with the module path, for example
 `cargo test -p luxforge-core --test basic white_balance::` or `--test mask range::`.
 Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
 independent references and their studies, the mask, brush and range studies among them, live in
