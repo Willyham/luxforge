@@ -28,17 +28,17 @@ use crate::{
 use serde_json::{Map, Value, json};
 use std::{io::Read, path::Path, sync::Arc};
 
-pub(super) const PROOF_MODULE: &str = "luxforge.capabilities";
-pub(super) const PROOF_EFFECT: &str = "luxforge.capabilities.tint";
+pub(crate) const PROOF_MODULE: &str = "luxforge.capabilities";
+pub(crate) const PROOF_EFFECT: &str = "luxforge.capabilities.tint";
 pub(crate) const PROOF_TASK: &str = "generate-proof-tint";
-pub(super) const APPLY_PROOF_TINT: &str = "apply-proof-tint";
+pub(crate) const APPLY_PROOF_TINT: &str = "apply-proof-tint";
 pub(super) const RESET_PROOF_TINT: &str = "reset-proof-tint";
 pub(super) const PROOF_ADAPTER: &str = "proof-echo";
 pub(super) const PROOF_RESOURCE: &str = "proof-palette";
 /// The version the resource is pinned at, which names its install directory.
 pub(super) const PROOF_RESOURCE_VERSION: &str = "1";
 /// The kind of the artifact the task publishes.
-pub(super) const PROOF_TINT_KIND: &str = "luxforge.capabilities.tint";
+pub(crate) const PROOF_TINT_KIND: &str = "luxforge.capabilities.tint";
 /// Where the proof endpoint serves the palette and answers the sample grid, under its base URL.
 pub const PROOF_PALETTE_PATH: &str = "/proof-palette.bin";
 pub const PROOF_GENERATE_PATH: &str = "/generate";
