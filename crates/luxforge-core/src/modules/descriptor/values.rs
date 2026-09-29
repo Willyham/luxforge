@@ -221,11 +221,23 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         ParameterKind::Identity { of } => {
             if !value.as_str().is_some_and(|text| of.accepts(text)) {
                 return Err(Error::validation(format!(
-                    "parameter {name} must be a {} identity",
-                    of.as_str()
+                    "parameter {name} must be {} identity",
+                    of.with_article()
                 )));
             }
         }
+        ParameterKind::Text { max_bytes } => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| Error::validation(format!("parameter {name} must be a string")))?;
+            if text.len() > *max_bytes {
+                return Err(Error::validation(format!(
+                    "parameter {name} must be at most {max_bytes} bytes"
+                )));
+            }
+        }
+        // Any value: the field's own type checks its shape when the request is parsed.
+        ParameterKind::Json => {}
     }
     Ok(())
 }

@@ -1467,6 +1467,11 @@ fn value_model(
             "identity parameter {parameter} of action {action} is supplied by the selection, not \
              a control"
         )),
+        // Registration refuses both on an action: only a host method declares one.
+        ParameterKind::Text { .. } | ParameterKind::Json => ControlModel::Unsupported(format!(
+            "{} parameter {parameter} of action {action} belongs to a host method, not a control",
+            declared.kind.name()
+        )),
     }
 }
 

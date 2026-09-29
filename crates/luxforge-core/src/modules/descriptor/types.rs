@@ -214,12 +214,34 @@ pub enum ParameterKind {
     Identity {
         of: IdentityKind,
     },
+    /// UTF-8 text of at most `max_bytes` bytes that, unlike a [`ParameterKind::String`], may hold
+    /// control characters such as line breaks: a file's contents or a filesystem path. Only a host
+    /// method declares one, because only the host reads files.
+    Text {
+        max_bytes: usize,
+    },
+    /// Any JSON value: a structured field of a host method, such as a zoom, an analysis target or
+    /// a draft's fields, whose shape the parameter's notes give and whose own type checks it when
+    /// the request is parsed. The one kind for a structure no other kind describes, so a host
+    /// method never needs a second vocabulary; only a host method declares one, because a module's
+    /// parameters are checked here and a value this kind accepts would reach the module unchecked.
+    Json,
 }
 
 /// Which host object a [`ParameterKind::Identity`] parameter names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IdentityKind {
+    /// A photo in the catalog, `asset-…`.
+    Asset,
+    /// One history entry of a photo, `entry-…`.
+    Entry,
+    /// A client's open draft, `draft-…`.
+    Draft,
+    /// A job of the one job table, `job-…`.
+    Job,
+    /// A preset of the library, `preset-…`.
+    Preset,
     /// A mask of the recipe, `mask-…`.
     Mask,
     /// A component of one mask, `component-…`.
@@ -229,21 +251,33 @@ pub enum IdentityKind {
 }
 
 impl IdentityKind {
-    /// The object, as a refusal names it.
-    pub(crate) fn as_str(self) -> &'static str {
+    /// The object with its article, as a refusal names it: `an asset`, `a mask`.
+    pub(crate) fn with_article(self) -> &'static str {
         match self {
-            Self::Mask => "mask",
-            Self::Component => "component",
-            Self::Stroke => "stroke",
+            Self::Asset => "an asset",
+            Self::Entry => "an entry",
+            Self::Draft => "a draft",
+            Self::Job => "a job",
+            Self::Preset => "a preset",
+            Self::Mask => "a mask",
+            Self::Component => "a component",
+            Self::Stroke => "a stroke",
         }
     }
 
-    /// Whether `text` is an identity of this kind, by the parser the identity type owns, so the
+    /// Whether `text` is an identity of this kind, by the check the identity type owns, so the
     /// generic check and the command that resolves the identity cannot disagree about its shape.
+    /// The minted identities are checked in place, without allocating, because every host request
+    /// that names an asset, entry or draft is checked here.
     pub(crate) fn accepts(self, text: &str) -> bool {
         match self {
-            Self::Mask => crate::MaskId::parse(text).is_ok(),
-            Self::Component => crate::ComponentId::parse(text).is_ok(),
+            Self::Asset => crate::AssetId::is_valid(text),
+            Self::Entry => crate::EntryId::is_valid(text),
+            Self::Draft => crate::DraftId::is_valid(text),
+            Self::Job => crate::JobId::is_valid(text),
+            Self::Preset => crate::PresetId::is_valid(text),
+            Self::Mask => crate::MaskId::is_valid(text),
+            Self::Component => crate::ComponentId::is_valid(text),
             Self::Stroke => crate::path::StrokeId::parse(text).is_ok(),
         }
     }
@@ -252,7 +286,7 @@ impl IdentityKind {
 /// The longest endpoint URL a value may be before it is parsed, in bytes.
 pub(super) const MAX_ENDPOINT_BYTES: usize = 4096;
 /// The longest secret a module may declare, in characters.
-pub(super) const MAX_SECRET_LENGTH: usize = 4096;
+pub(crate) const MAX_SECRET_LENGTH: usize = 4096;
 
 impl ParameterKind {
     /// The kind's tag as it is serialized, for messages.
@@ -271,6 +305,8 @@ impl ParameterKind {
             Self::Endpoint { .. } => "endpoint",
             Self::Secret { .. } => "secret",
             Self::Identity { .. } => "identity",
+            Self::Text { .. } => "text",
+            Self::Json => "json",
         }
     }
 
@@ -280,10 +316,11 @@ impl ParameterKind {
         matches!(self, Self::Endpoint { .. } | Self::Secret { .. })
     }
 
-    /// Whether only the host declares this kind, for its own objects' commands: see
-    /// [`Self::Identity`]. A module's action, query or task, and a module setting, refuse it.
+    /// Whether only the host declares this kind, for its own objects' commands and its own
+    /// methods: see [`Self::Identity`], [`Self::Text`] and [`Self::Json`]. A module's action,
+    /// query or task, and a module setting, refuse it.
     pub(crate) fn host_only(&self) -> bool {
-        self.is_identity()
+        matches!(self, Self::Identity { .. } | Self::Text { .. } | Self::Json)
     }
 
     /// Whether this parameter names an object rather than setting a value, which is what keeps a

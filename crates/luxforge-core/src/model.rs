@@ -34,6 +34,12 @@ macro_rules! identifier {
                     uuid::Uuid::new_v4().simple()
                 ))
             }
+            /// Whether `value` is an identity of this type, checked in place. A request never
+            /// names a layer or snapshot, so theirs goes unused.
+            #[allow(dead_code)]
+            pub(crate) fn is_valid(value: &str) -> bool {
+                valid_id(value, $prefix)
+            }
             pub fn parse(value: impl Into<String>) -> Result<Self, Error> {
                 let value = value.into();
                 if valid_id(&value, $prefix) {

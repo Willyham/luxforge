@@ -908,6 +908,12 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
                 parameter.name
             )));
         }
+        ParameterKind::Text { max_bytes: 0 } => {
+            return Err(Error::validation(format!(
+                "parameter {} declares a max_bytes of 0",
+                parameter.name
+            )));
+        }
         ParameterKind::Points {
             points_min,
             points_max,

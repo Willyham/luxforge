@@ -217,7 +217,7 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
                 Value::Array(xs.into_iter().map(|x| serde_json::json!([x, x])).collect())
                     .to_string()
             }),
-        ParameterKind::String { .. } => parameter
+        ParameterKind::String { .. } | ParameterKind::Text { .. } => parameter
             .default
             .as_ref()
             .and_then(Value::as_str)
@@ -228,6 +228,12 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .as_ref()
             .map(Value::to_string)
             .unwrap_or_else(|| "{}".into()),
+        // Only a host method declares a structured value, and no panel field edits one.
+        ParameterKind::Json => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| "null".into()),
         // A path has no seed to start from: nothing here draws one, and an empty list is what a
         // field shows until a gesture or a client supplies one.
         ParameterKind::Points { .. } => parameter
@@ -307,11 +313,16 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map(|_| value)
             }),
         // Text is taken as typed, untrimmed: the parameter's own check decides what it accepts.
-        ParameterKind::String { .. } | ParameterKind::Identity { .. } => {
+        ParameterKind::String { .. }
+        | ParameterKind::Text { .. }
+        | ParameterKind::Identity { .. } => {
             let value = Value::from(text);
             check_value(parameter, &value)
                 .map_err(|error| error.detail)
                 .map(|_| value)
+        }
+        ParameterKind::Json => {
+            serde_json::from_str::<Value>(text.trim()).map_err(|_| format!("{name} must be JSON"))
         }
         ParameterKind::Settings => serde_json::from_str::<Value>(text.trim())
             .map_err(|_| format!("{name} must be a JSON settings object"))
@@ -356,10 +367,12 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
             .join(","),
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
         ParameterKind::Artifact => value.as_str().unwrap().to_owned(),
-        ParameterKind::Curve { .. } | ParameterKind::Points { .. } | ParameterKind::Settings => {
-            value.to_string()
-        }
+        ParameterKind::Curve { .. }
+        | ParameterKind::Points { .. }
+        | ParameterKind::Settings
+        | ParameterKind::Json => value.to_string(),
         ParameterKind::String { .. }
+        | ParameterKind::Text { .. }
         | ParameterKind::Endpoint { .. }
         | ParameterKind::Identity { .. } => value.as_str().unwrap().to_owned(),
         // No plain value of a secret passes the check above.
