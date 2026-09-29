@@ -1369,8 +1369,11 @@ fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() 
     editor.presentation.presented_proxy = true;
     editor.presentation.preview_generation = 7;
     editor.presentation.presented_bounds = editor.proxy_bounds();
-    editor.session.preview.selection =
-        luxforge_core::HistorySelection::Entry(entry(&asset, 2, None).id);
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        luxforge_core::HistorySelection::Entry(entry(&asset, 2, None).id),
+    );
     editor.busy = true;
     assert!(editor.gesture_refusal(gesture::Starting::Action).is_some());
     let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));

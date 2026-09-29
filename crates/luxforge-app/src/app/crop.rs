@@ -509,7 +509,7 @@ impl Editor {
     /// by `draft.reapply` and the rebased frame's fields follow it, both in this update, and the new
     /// stage's pixels are asked for.
     pub(crate) fn crop_reapply(&mut self) -> Task<Message> {
-        if self.busy || !self.session.preview.can_edit() || self.crop().is_none() {
+        if self.busy || !self.at_current() || self.crop().is_none() {
             return Task::none();
         }
         let row = match self.crop_row() {
@@ -571,9 +571,7 @@ impl Editor {
         else {
             return false;
         };
-        self.session.preview.can_edit()
-            && &state.current_entry.id == entry
-            && state.revision == base_revision
+        self.at_current() && &state.current_entry.id == entry && state.revision == base_revision
     }
 
     /// The crop layer's input stage is on screen, so the canvas draws the frame over it.
@@ -604,7 +602,7 @@ impl Editor {
     /// Whether the crop draft's input stage, rather than the photograph, is what the view shows or
     /// is waiting for, so a zoom is answered by the stage.
     pub(crate) fn crop_stage_owns_view(&self) -> bool {
-        self.session.preview.can_edit()
+        self.at_current()
             && matches!(
                 self.crop_stage(),
                 Some(StageView::Rendering { .. } | StageView::Shown)

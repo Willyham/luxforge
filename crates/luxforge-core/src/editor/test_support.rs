@@ -355,8 +355,12 @@ pub(crate) fn recast_as_raw(catalog: &Path, asset: &crate::AssetId) {
     let changed = Connection::open(catalog)
         .unwrap()
         .execute(
-            "UPDATE assets SET source_json=?1 WHERE id=?2",
-            params![super::encode(&kind).unwrap(), asset.as_str()],
+            "UPDATE assets SET source_json=?1,source_kind=?2 WHERE id=?3",
+            params![
+                super::encode(&kind).unwrap(),
+                kind.tag().as_str(),
+                asset.as_str()
+            ],
         )
         .unwrap();
     assert_eq!(changed, 1, "one asset row");

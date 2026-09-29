@@ -11,7 +11,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 10 stores each asset request's whole answer in the request table — for a `mask.*` command
+/// Format 11 stores each asset's source kind tag in a column of its own beside the interpretation,
+/// so a `catalog.list` page reads columns only and decodes no interpretation. Format 10 stored each
+/// asset request's whole answer in the request table — for a `mask.*` command
 /// the label it committed and the mask and component it addressed or minted beside the mutation
 /// result — so a retry answers with the identities the first attempt created. Format 9 kept each
 /// entry's history row — its label, actor, timestamp and restore target, beside the sequence, action
@@ -22,9 +24,15 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 10;
+pub(super) const CATALOG_FORMAT: i64 = 11;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
+
+/// Assets per `catalog.list` page, and the page a request that names no `limit` gets. A page reads
+/// `limit + 1` rows of the asset table's own columns and decodes nothing, so its cost is bounded by
+/// the limit however large the catalog is.
+pub(crate) const MAX_ASSET_PAGE: usize = 500;
+pub(crate) const DEFAULT_ASSET_PAGE: usize = 100;
 
 /// A catalog failure: `conflict` while another connection holds the database, `catalog` otherwise.
 impl From<rusqlite::Error> for Error {
@@ -106,7 +114,8 @@ impl EditorService {
                     byte_len INTEGER NOT NULL,
                     width INTEGER NOT NULL,
                     height INTEGER NOT NULL,
-                    source_json TEXT NOT NULL
+                    source_json TEXT NOT NULL,
+                    source_kind TEXT NOT NULL
                  );
                  CREATE TABLE entries (
                     id TEXT PRIMARY KEY,
@@ -518,6 +527,33 @@ mod tests {
         mask::commands::{self, MaskTarget},
     };
     use serde_json::{Value, json};
+
+    /// A page of assets reads the asset table's own columns: it decodes no stored value, whatever
+    /// the interpretations hold, and its kinds are the tags imported beside them.
+    #[test]
+    fn an_asset_page_decodes_nothing() {
+        let catalog = temp("asset-page.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset;
+        crate::editor::read_counts::take();
+        let page = service.assets(None, MAX_ASSET_PAGE).unwrap();
+        assert_eq!(crate::editor::read_counts::take(), (0, 0));
+        assert_eq!(
+            page.assets,
+            [crate::AssetSummary {
+                id: asset.id.clone(),
+                locator: asset.locator.clone(),
+                kind: asset.source.tag(),
+                width: asset.width,
+                height: asset.height,
+            }]
+        );
+        assert_eq!(page.next, None);
+        assert!(service.assets(None, 0).is_err());
+        assert!(service.assets(None, MAX_ASSET_PAGE + 1).is_err());
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
 
     #[test]
     fn competing_catalog_owners_are_rejected() {

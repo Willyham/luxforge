@@ -21,7 +21,7 @@ pub(crate) mod tools;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
-use luxforge_core::{ClientSession, EditorState, MaskId, ModuleDescriptor};
+use luxforge_core::{ClientSession, EditorState, HistorySelection, MaskId, ModuleDescriptor};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
@@ -98,7 +98,25 @@ pub(crate) fn editable_refusal(
     if state.is_none() {
         return Some(NO_PHOTOGRAPH);
     }
-    (!session.preview.can_edit()).then_some(NOT_CURRENT)
+    (!at_current(state, session)).then_some(NOT_CURRENT)
+}
+
+/// What the desktop shows of its photograph: its session's selection of the one asset it holds,
+/// or current with none open. The owner keeps a selection per asset; the desktop edits one asset at
+/// a time, so its photograph's selection is the whole of what it previews.
+pub(crate) fn shown_selection(
+    state: Option<&EditorState>,
+    session: &ClientSession,
+) -> HistorySelection {
+    state.map_or(HistorySelection::Current, |state| {
+        session.preview.selection(&state.asset.id)
+    })
+}
+
+/// Whether the desktop's photograph is at its current state, with none of its history previewed:
+/// what editing it needs. With no photograph open nothing is previewed.
+pub(crate) fn at_current(state: Option<&EditorState>, session: &ClientSession) -> bool {
+    state.is_none_or(|state| session.preview.can_edit(&state.asset.id))
 }
 
 /// Why an edit cannot start now, in the words the status bar and a disabled section use: the
@@ -781,7 +799,11 @@ mod tests {
         let mut scene = scene;
         scene.list(older.clone());
         scene.document.display_entry = Some(older.id.clone());
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id.clone());
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(older.id.clone()),
+        );
         let workspace = scene.derive();
         assert_eq!(workspace.panel.history[0].marker, Marker::Current);
         assert_eq!(workspace.panel.history[1].marker, Marker::Previewed);
@@ -808,7 +830,11 @@ mod tests {
         let older = entry(&asset, 1, None);
         scene.list(older.clone());
         scene.document.display_entry = Some(older.id.clone());
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id);
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(older.id),
+        );
         let preview = |scene: &Scene| scene.derive().panel.preview.expect("preview controls");
         assert_eq!(
             preview(&scene),
@@ -877,14 +903,22 @@ mod tests {
         );
         scene = scene.opened(Vec::new());
         assert!(section(&scene.derive(), &crop.id).enabled);
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(EntryId::new());
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(EntryId::new()),
+        );
         assert_eq!(
             section(&scene.derive(), &crop.id)
                 .disabled_reason
                 .as_deref(),
             Some(NOT_CURRENT)
         );
-        scene.session.preview.selection = luxforge_core::HistorySelection::Current;
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Current,
+        );
         scene.busy = true;
         assert_eq!(
             section(&scene.derive(), &crop.id)
@@ -1115,7 +1149,11 @@ mod tests {
         let older = entry(&asset, 1, None);
         scene.list(older.clone());
         scene.document.display_entry = Some(older.id.clone());
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id);
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(older.id),
+        );
         let model = crop_model(&scene.derive(), &crop.id);
         assert!(!model.enabled && !model.can_swap);
         assert_eq!(
@@ -1886,7 +1924,11 @@ mod tests {
                 json!({"exposure": 1.0}),
             ))
             .expect("a valid stack");
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id.clone());
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(older.id.clone()),
+        );
         scene.document.display_entry = Some(older.id.clone());
         scene.document.recipe = Some(crate::state::testing::described(&older));
         assert!(
@@ -1906,8 +1948,11 @@ mod tests {
                 json!({}),
             ))
             .expect("a valid stack");
-        edited.session.preview.selection =
-            luxforge_core::HistorySelection::Entry(neutral.id.clone());
+        crate::state::testing::show(
+            &mut edited.session,
+            edited.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(neutral.id.clone()),
+        );
         edited.document.display_entry = Some(neutral.id.clone());
         edited.document.recipe = Some(crate::state::testing::described(&neutral));
         assert!(
@@ -2452,7 +2497,11 @@ mod tests {
         let crop = crop_descriptor();
         let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());
         assert!(section(&scene.derive(), &crop.id).reset.is_some());
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(EntryId::new());
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(EntryId::new()),
+        );
         let workspace = scene.derive();
         let section = section(&workspace, &crop.id);
         assert!(!section.enabled);
@@ -2945,9 +2994,17 @@ mod tests {
             (false, Some("Waiting for the last request".into()))
         );
         scene.busy = false;
-        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(EntryId::new());
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Entry(EntryId::new()),
+        );
         assert_eq!(enabled(&scene), (false, Some(NOT_CURRENT.into())));
-        scene.session.preview.selection = luxforge_core::HistorySelection::Current;
+        crate::state::testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            luxforge_core::HistorySelection::Current,
+        );
         scene.draft = Some(CropDraft::neutral(
             luxforge_core::CropStage {
                 width: 480,

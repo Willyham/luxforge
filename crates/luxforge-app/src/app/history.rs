@@ -11,6 +11,18 @@ use luxforge_core::HistorySelection;
 use serde_json::{Value, json};
 
 impl Editor {
+    /// What the desktop shows of its photograph: the session's selection of the asset it holds
+    /// ([`crate::state::shown_selection`]).
+    pub(crate) fn shown_selection(&self) -> HistorySelection {
+        crate::state::shown_selection(self.document.state.as_ref(), &self.session)
+    }
+
+    /// Whether the photograph is at its current state, so it may be edited
+    /// ([`crate::state::at_current`]).
+    pub(crate) fn at_current(&self) -> bool {
+        crate::state::at_current(self.document.state.as_ref(), &self.session)
+    }
+
     /// One history or versions message.
     pub(super) fn history_update(&mut self, message: HistoryMessage) -> Task<Message> {
         // Undo, Redo and Restore move the current entry at once, so an open draft or a request in
@@ -155,7 +167,7 @@ impl Editor {
             }
             HistoryMessage::Restore => {
                 let (Some(state), HistorySelection::Entry(entry_id)) =
-                    (&self.document.state, &self.session.preview.selection)
+                    (&self.document.state, self.shown_selection())
                 else {
                     return Task::none();
                 };
@@ -238,7 +250,7 @@ impl Editor {
         if self.document.compare_return.is_some() {
             return Task::none();
         }
-        self.document.compare_return = Some(self.session.preview.selection.clone());
+        self.document.compare_return = Some(self.shown_selection());
         let asset = state.asset.id.clone();
         self.status.text = "Comparing with the original…".into();
         let proxy = self.proxy_bounds();

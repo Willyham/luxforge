@@ -481,7 +481,7 @@ impl Editor {
             ));
         }
         match &gesture.kind {
-            Kind::Crop(_) if !self.session.preview.can_edit() => {
+            Kind::Crop(_) if !self.at_current() => {
                 Some("Return to the current state to apply".into())
             }
             Kind::Crop(_) if self.busy => Some(IN_FLIGHT.into()),

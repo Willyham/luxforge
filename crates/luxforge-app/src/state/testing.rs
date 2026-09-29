@@ -10,6 +10,34 @@ use luxforge_core::{
 };
 use serde_json::{Map, Value, json};
 
+/// Record `selection` of the open photograph in `session` as the owner records it, without moving
+/// the session's generation: how a test puts the desktop on a previewed entry or back on current.
+/// With no photograph open there is nothing to preview, so nothing is recorded.
+pub(crate) fn show(
+    session: &mut luxforge_core::ClientSession,
+    state: Option<&luxforge_core::EditorState>,
+    selection: luxforge_core::HistorySelection,
+) {
+    let Some(state) = state else {
+        return;
+    };
+    let asset = state.asset.id.clone();
+    match selection {
+        luxforge_core::HistorySelection::Current => {
+            session.preview.selections.remove(&asset);
+        }
+        luxforge_core::HistorySelection::Entry(entry_id) => {
+            session.preview.selections.insert(
+                asset,
+                luxforge_core::AssetSelection {
+                    entry_id,
+                    geometry_from: None,
+                },
+            );
+        }
+    }
+}
+
 pub(crate) const CROP_EFFECT: &str = "luxforge.geometry.crop";
 
 pub(crate) const CROP_ASPECTS: [&str; 7] =

@@ -23,7 +23,11 @@ fn compare_remembers_the_selection_it_replaced() {
     let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
     assert!(editor.document.compare_return.is_none());
     // From a historical preview Compare returns to that entry, not to current.
-    editor.session.preview.selection = HistorySelection::Entry(entry_id.clone());
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry_id.clone()),
+    );
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
         editor.document.compare_return,
@@ -64,7 +68,7 @@ fn compare_is_refused_while_a_crop_draft_is_open() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
     editor.document.original_entry = Some(luxforge_core::EntryId::new());
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    let selection = editor.session.preview.selection.clone();
+    let selection = editor.shown_selection();
 
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert!(
@@ -81,13 +85,13 @@ fn compare_is_refused_while_a_crop_draft_is_open() {
         editor.status.text
     );
     assert!(editor.crop().is_some(), "the draft is untouched");
-    assert_eq!(editor.session.preview.selection, selection);
+    assert_eq!(editor.shown_selection(), selection);
     assert!(!editor.workspace.title.compare_held);
 
     // The release of a refused hold changes nothing.
     let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
     assert!(editor.document.compare_return.is_none());
-    assert_eq!(editor.session.preview.selection, selection);
+    assert_eq!(editor.shown_selection(), selection);
     assert!(!editor.busy, "nothing was sent");
 
     // With the draft gone, Compare works as before and reaches the title bar model.
@@ -133,7 +137,11 @@ fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
         assert!(!current.contains(identity), "{current}");
     }
 
-    editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(older.id.clone()),
+    );
     assert_eq!(
         editor.displayed_status(&older.id),
         format!("Previewing entry 2 \u{b7} {}", older.label)
@@ -201,14 +209,18 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
     );
     let held = editor.gesture.clone().map(|gesture| format!("{gesture:?}"));
     let revision = editor.document.state.as_ref().map(|state| state.revision);
-    let selection = editor.session.preview.selection.clone();
+    let selection = editor.shown_selection();
     for (name, message) in [
         ("undo", HistoryMessage::Undo),
         ("redo", HistoryMessage::Redo),
         ("restore", HistoryMessage::Restore),
     ] {
         if name == "restore" {
-            editor.session.preview.selection = HistorySelection::Entry(entry.clone());
+            crate::state::testing::show(
+                &mut editor.session,
+                editor.document.state.as_ref(),
+                HistorySelection::Entry(entry.clone()),
+            );
         }
         editor.status.text.clear();
         assert!(!editor.busy, "{name}: nothing in flight before it");
@@ -225,7 +237,11 @@ pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryI
             revision
         );
     }
-    editor.session.preview.selection = selection;
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        selection,
+    );
 }
 
 /// Undo, Redo and Restore commit at once, so an open slider draft refuses them as it refuses every
@@ -267,7 +283,11 @@ fn history_navigation_is_refused_while_a_request_is_in_flight() {
         HistoryMessage::Redo,
         HistoryMessage::Restore,
     ] {
-        editor.session.preview.selection = HistorySelection::Entry(original.clone());
+        crate::state::testing::show(
+            &mut editor.session,
+            editor.document.state.as_ref(),
+            HistorySelection::Entry(original.clone()),
+        );
         editor.status.text.clear();
         let task = editor.update(Message::History(message.clone()));
         assert_eq!(task.units(), 0, "{message:?}: nothing is sent");
