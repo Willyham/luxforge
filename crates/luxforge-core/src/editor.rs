@@ -40,7 +40,7 @@ mod source;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
-pub(crate) use test_support::recast_as_raw;
+pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
 
 pub(crate) use catalog::{decode, encode, now_ms, write};
 pub use evaluate::Evaluation;

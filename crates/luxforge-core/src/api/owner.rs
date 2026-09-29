@@ -5199,6 +5199,42 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A malformed request is refused with one structured error however it arrives: the code and
+    /// message the API answers are the service's own error, unchanged.
+    #[test]
+    fn a_malformed_request_is_the_same_error_through_the_service_and_the_api() {
+        let catalog = temp("malformed.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let registry = Arc::new(ModuleRegistry::developer());
+        let malformed = json!({"x": 0, "y": 0, "rgb": [1, 2]});
+        let (asset, direct) = {
+            let mut service = EditorService::open_with(&catalog, Arc::clone(&registry)).unwrap();
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            let direct = service
+                .apply_action(
+                    &asset,
+                    crate::editor::mutation(0, "malformed"),
+                    "set-pixel",
+                    malformed.clone(),
+                )
+                .expect_err("an rgb of two channels is refused");
+            (asset, direct)
+        };
+        let (owner, join) = OwnerHandle::start_with(&catalog, registry).unwrap();
+        let client = owner.register();
+        let mut params = malformed;
+        params["asset_id"] = json!(asset);
+        params["mutation"] = crate::editor::mutation_json(0, "malformed");
+        let failure = failure(&owner, client, "malformed", "edit.set-pixel", params);
+        assert_eq!(
+            serde_json::to_value(failure).unwrap(),
+            json!({"code": direct.kind.code(), "message": direct.detail})
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// Every mutating method `schema.list` lists — the host's, a module action, a `mask.*` command
     /// and a module's task — has its envelope checked once, by the dispatcher, before any handler
     /// runs: a request identity or actor out of range is refused in the envelope's words although

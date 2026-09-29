@@ -5,7 +5,8 @@ use crate::artifacts::{
     ArtifactId, collect_files, object_path,
     testing::{APPLY_PLAIN, APPLY_TINT, TINT_EFFECT, TINT_MODULE, TintModule},
 };
-use crate::{Layer, Mutation, Recipe};
+use super::test_support::mutation;
+use crate::{Layer, Recipe};
 use rusqlite::params;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -31,14 +32,6 @@ fn directory(name: &str) -> PathBuf {
 
 fn source() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
-
-fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "test".into(),
-    }
 }
 
 fn open(catalog: &Path) -> EditorService {

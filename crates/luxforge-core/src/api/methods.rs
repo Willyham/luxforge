@@ -2093,6 +2093,7 @@ mod tests {
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
         ExactGeometry, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
         ToolModule,
+        editor::mutation_json,
         modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
     use std::{
@@ -2204,6 +2205,11 @@ mod tests {
         (planned.answer().expect("an answer"), changed)
     }
 
+    /// `schema.list` checked for what holds of every method rather than what any one publishes:
+    /// each name is listed once, every listed method dispatches through the one table as the kind
+    /// of method it is, and a method mutates exactly when it names an envelope the schema describes.
+    /// What the built-in modules and the host publish, name by name and field by field, is the
+    /// committed descriptor snapshot's (`tests/modules/descriptors.rs`).
     #[test]
     fn host_and_generated_methods_are_unique_complete_and_match_the_schema() {
         let catalog =
@@ -2213,228 +2219,67 @@ mod tests {
         let mut session = ClientSession::default();
         let names: HashSet<&str> = METHODS.iter().map(|spec| spec.name).collect();
         assert_eq!(names.len(), METHODS.len(), "duplicate method names");
-        let generated: Vec<String> = service
-            .registry()
+        // Every action and query the modules and the host declare, as (method, identity), resolved
+        // through the registry's one lookup.
+        let registry = Arc::clone(service.registry());
+        let (mut actions, mut queries) = (Vec::new(), Vec::new());
+        for descriptor in registry
             .descriptors()
-            .iter()
-            .flat_map(|descriptor| descriptor.actions.iter())
-            .map(|action| {
-                service
-                    .registry()
-                    .resolve_action(&action.id)
-                    .unwrap()
-                    .method()
-            })
-            .collect();
-        // Which methods the built-in modules generate, with their parameters, is the committed
-        // descriptor snapshot's (`tests/modules/descriptors.rs`); here each is unique and listed.
-        let queries: Vec<String> = service
-            .registry()
-            .descriptors()
-            .iter()
-            .flat_map(|descriptor| descriptor.queries.iter())
-            .map(|query| {
-                service
-                    .registry()
-                    .resolve_query(&query.id)
-                    .unwrap()
-                    .method()
-            })
-            .collect();
-        // The host's own `mask.*` family, published as the host descriptor in the module shape and
-        // resolved through the registry's one action lookup, whose method names are the commands'
-        // own identities.
-        let host = service.registry().host_descriptors();
-        assert_eq!(
-            host.map(|descriptor| descriptor.id.as_str()),
-            ["luxforge.masks"]
-        );
-        let masks: Vec<String> = host[0]
-            .actions
-            .iter()
-            .map(|action| {
-                service
-                    .registry()
-                    .resolve_action(&action.id)
-                    .unwrap()
-                    .method()
-            })
-            .collect();
-        let reads: Vec<String> = host[0]
-            .queries
-            .iter()
-            .map(|query| {
-                service
-                    .registry()
-                    .resolve_query(&query.id)
-                    .unwrap()
-                    .method()
-            })
-            .collect();
-        assert_eq!(reads, ["mask.list", "mask.sample-input"]);
-        assert_eq!(
-            masks,
-            [
-                // The kind-independent commands, then three geometry methods per registered
-                // component kind, generated from the host's own kind table.
-                "mask.delete",
-                "mask.rename",
-                "mask.rename-component",
-                "mask.duplicate",
-                "mask.set-amount",
-                "mask.set-invert",
-                "mask.reorder",
-                "mask.set-component-mode",
-                "mask.set-component-invert",
-                "mask.delete-component",
-                "mask.reorder-component",
-                "mask.add-stroke",
-                "mask.delete-stroke",
-                "mask.create-linear",
-                "mask.add-linear",
-                "mask.set-linear",
-                "mask.create-radial",
-                "mask.add-radial",
-                "mask.set-radial",
-                "mask.create-luminance-range",
-                "mask.add-luminance-range",
-                "mask.set-luminance-range",
-                "mask.create-colour-range",
-                "mask.add-colour-range",
-                "mask.set-colour-range",
-                // And, for the one kind that holds a list of picked colours, the two sample methods
-                // the same table generates.
-                "mask.add-colour-range-sample",
-                "mask.delete-colour-range-sample"
-            ]
-        );
-        let schema = schemas(service.registry());
+            .into_iter()
+            .chain(registry.host_descriptors())
+        {
+            actions.extend(descriptor.actions.iter().map(|action| {
+                let method = registry.resolve_action(&action.id).unwrap().method();
+                (method, action.id.clone())
+            }));
+            queries.extend(descriptor.queries.iter().map(|query| {
+                let method = registry.resolve_query(&query.id).unwrap().method();
+                (method, query.id.clone())
+            }));
+        }
+        let schema = schemas(&registry);
         let listed = schema["methods"].as_object().unwrap();
+        // The map holds each name once, so a generated name that collided with another would
+        // shorten it.
         assert_eq!(
             listed.len(),
-            METHODS.len() + generated.len() + queries.len() + masks.len() + reads.len()
+            METHODS.len() + actions.len() + queries.len(),
+            "every host, action and query method is listed under a name of its own"
         );
-        for method in &generated {
-            assert!(listed.contains_key(method), "{method} is not discoverable");
-            assert!(
-                matches!(find(&service, method), Some(Method::Action(_))),
-                "{method} does not dispatch as an action"
-            );
-        }
-        for method in &queries {
-            assert!(listed.contains_key(method), "{method} is not discoverable");
-            assert!(
-                matches!(find(&service, method), Some(Method::Query(_))),
-                "{method} does not dispatch as a query"
-            );
-        }
-        for method in &masks {
-            assert!(listed.contains_key(method), "{method} is not discoverable");
-            assert!(
-                matches!(find(&service, method), Some(Method::Action(id)) if &id == method),
-                "{method} does not dispatch as an action"
-            );
-        }
-        for method in &reads {
-            assert!(listed.contains_key(method), "{method} is not discoverable");
-            assert!(
-                matches!(find(&service, method), Some(Method::Query(id)) if &id == method),
-                "{method} does not dispatch as a query"
-            );
-        }
-        // A host action is not reachable through a module's namespace, nor a module's through the
-        // host's.
-        assert!(find(&service, "edit.mask.create-linear").is_none());
-        assert!(find(&service, "set-basic").is_none());
-        assert_eq!(
-            listed["mask.list"]["mutates"],
-            json!(false),
-            "mask.list writes nothing"
-        );
-        assert_eq!(
-            listed["query.neutral-sample"]["mutates"],
-            json!(false),
-            "a query writes nothing"
-        );
-        assert_eq!(
-            listed["query.neutral-sample"]["required"],
-            json!(["asset_id", "x", "y"])
-        );
-        assert_eq!(
-            listed["query.neutral-sample"]["optional"]
-                .as_object()
-                .expect("the query's optional fields")
-                .keys()
-                .collect::<Vec<_>>(),
-            ["entry_id", "mask"],
-            "a query answers about the session's selection unless an entry is named, and about \
-             the global target unless a mask is named"
-        );
-        assert_eq!(
-            listed["query.neutral-sample"]["target"]["kind"],
-            json!("identity"),
-            "a maskable module's query declares the target its actions take"
-        );
-        // A method lists the source kinds its module applies to only when that is not every kind.
-        for method in [
-            "edit.set-raw",
-            "edit.set-raw-red-gain",
-            "edit.set-raw-blue-gain",
-            "edit.pick-raw-neutral",
-        ] {
-            assert_eq!(listed[method]["sources"], json!(["raw"]), "{method}");
-        }
-        for method in [
-            "edit.set-basic",
-            "edit.apply-preset",
-            "query.neutral-sample",
-        ] {
-            assert!(listed[method].get("sources").is_none(), "{method}");
-        }
-        // Each superseded parameter names the source kind and the field that is its one path there.
-        let parameter = |method: &str, name: &str| {
-            listed[method]["parameters"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|parameter| parameter["name"] == name)
-                .cloned()
-                .unwrap_or_else(|| panic!("{method} {name}"))
-        };
-        assert_eq!(
-            parameter("edit.set-basic", "temperature")["superseded"],
-            json!([{"source": "raw", "by": "set-raw.temperature"}])
-        );
-        assert_eq!(
-            parameter("edit.set-basic", "tint")["superseded"],
-            json!([{"source": "raw", "by": "set-raw.tint"}])
-        );
-        for (method, name) in [
-            ("edit.set-basic", "exposure"),
-            ("edit.set-raw", "temperature"),
-            ("edit.set-presence", "clarity"),
-        ] {
-            assert!(
-                parameter(method, name).get("superseded").is_none(),
-                "{method} {name}"
-            );
-        }
         assert_eq!(
             schema["modules"].as_array().unwrap().len(),
-            service.registry().descriptors().len()
+            registry.descriptors().len()
         );
         assert_eq!(
-            listed["edit.set-pixel"]["required"],
-            json!(["asset_id", "mutation", "x", "y", "rgb"])
+            schema["host"].as_array().unwrap().len(),
+            registry.host_descriptors().len()
         );
-        assert_eq!(
-            listed["edit.set-pixel"]["parameters"]
-                .as_array()
-                .unwrap()
-                .len(),
-            3
-        );
-        assert_eq!(listed["edit.transform"]["mutates"], json!(true));
+        for (method, id) in &actions {
+            assert!(
+                matches!(find(&service, method), Some(Method::Action(found)) if &found == id),
+                "{method} does not dispatch as the action {id}"
+            );
+            assert_eq!(
+                listed[method]["mutation"],
+                json!("revision"),
+                "{method}: every generated action commits a revisioned change"
+            );
+            // An action is reached only through its own namespace: a host action not as a module's
+            // `edit.*`, and a module's not by its bare identity.
+            for alias in [id.clone(), format!("edit.{id}")] {
+                if &alias != method {
+                    assert!(find(&service, &alias).is_none(), "{alias} reaches {id}");
+                }
+            }
+        }
+        for (method, id) in &queries {
+            assert!(
+                matches!(find(&service, method), Some(Method::Query(found)) if &found == id),
+                "{method} does not dispatch as the query {id}"
+            );
+            assert_eq!(listed[method]["mutates"], json!(false), "{method}");
+        }
+        assert!(find(&service, "edit.missing").is_none());
         // Each host method's schema is generated from the struct its handler parses, so the lists
         // are the parser's own; the owner's generated test sends every method its declared fields.
         for spec in METHODS {
@@ -2454,13 +2299,6 @@ mod tests {
                 "{}",
                 spec.name
             );
-            // A method mutates exactly when it carries a mutation envelope, and says which.
-            assert_eq!(
-                schema["mutates"],
-                json!(Method::Host(spec).mutates()),
-                "{}",
-                spec.name
-            );
             assert_eq!(
                 schema.get("mutation").cloned(),
                 spec.params.envelope.name().map(|name| json!(name)),
@@ -2474,189 +2312,79 @@ mod tests {
                 spec.name
             );
         }
-        // Every generated action commits a revisioned change to an asset.
-        assert_eq!(listed["edit.set-pixel"]["mutation"], json!("revision"));
-        assert_eq!(listed["mask.delete"]["mutation"], json!("revision"));
-        assert_eq!(listed["mask.list"].get("mutation"), None);
-        for (name, envelope) in [
-            ("history.undo", "revision"),
-            ("draft.commit", "revision"),
-            ("module.settings.set", "revision"),
-            ("preset.create", "request"),
-            ("version.create", "request"),
-            ("catalog.import", "request"),
-            ("artifact.collect", "request"),
-            ("module.permission.grant", "request"),
-            ("module.resource.install", "request"),
-            ("export.jpeg", "request"),
-        ] {
-            assert_eq!(listed[name]["mutation"], json!(envelope), "{name}");
-        }
+        // The envelopes the schema describes are the fields their structs parse.
+        let keys = |value: &Value| -> Vec<String> {
+            let mut keys: Vec<String> = match value {
+                Value::Object(object) => object.keys().cloned().collect(),
+                Value::Array(fields) => fields
+                    .iter()
+                    .map(|field| field.as_str().expect("a field name").to_owned())
+                    .collect(),
+                other => panic!("not an envelope: {other}"),
+            };
+            keys.sort();
+            keys
+        };
         assert_eq!(
-            schema["mutation"]["revision"],
-            json!(["expected_revision", "request_id", "actor"])
+            keys(&schema["mutation"]["revision"]),
+            keys(&mutation_json(0, "revision"))
         );
         assert_eq!(
-            schema["mutation"]["request"],
-            json!(["request_id", "actor"])
-        );
-        // The descriptor additions the workspace renders from reach a client through module.list.
-        let modules = ok(&mut service, &mut session, "module.list", json!({}));
-        let module = |id: &str| -> Value {
-            modules["modules"]
-                .as_array()
+            keys(&schema["mutation"]["request"]),
+            keys(
+                &serde_json::to_value(crate::MutationRequest {
+                    request_id: "request".into(),
+                    actor: "test".into(),
+                })
                 .unwrap()
-                .iter()
-                .find(|module| module["id"] == json!(id))
-                .unwrap_or_else(|| panic!("{id} is registered"))
-                .clone()
-        };
-        let pixel = module("luxforge.pixel");
-        assert_eq!(pixel["hint"], json!("One exact pixel"));
-        assert_eq!(pixel["developer"], json!(true));
-        assert_eq!(pixel["reset"], json!(null));
-        assert_eq!(pixel["canvas"]["title"], json!("Pick pixel"));
-        assert_eq!(pixel["canvas"]["shortcut"], json!(null));
-        // Every pick mode is discovered as a control of its own module, so a client reaches it
-        // from that module's panel and not only from a mode strip it has to invent.
-        let picker = |module: &Value| -> Value {
-            module["controls"][0]["controls"]
-                .as_array()
-                .unwrap_or(&Vec::new())
-                .iter()
-                .find(|control| control["kind"] == json!("picker"))
-                .cloned()
-                .unwrap_or(Value::Null)
-        };
-        assert_eq!(
-            picker(&pixel),
-            json!({"kind": "picker", "label": "Pick pixel"})
+            )
         );
-        assert_eq!(
-            picker(&module("luxforge.basic")),
-            json!({"kind": "picker", "label": "Neutral picker",
-                   "variants": [{"source": "raw", "module": "luxforge.raw",
-                                 "control": {"kind": "picker", "label": "Neutral picker"}}]}),
-            "the neutral picker is a control of the White balance group, and on a RAW photo it \
-             enters the RAW module's sensor pick"
-        );
-        let raw = module("luxforge.raw");
-        assert_eq!(
-            raw["controls"],
-            json!([]),
-            "the RAW module draws no section"
-        );
-        assert_eq!(raw["canvas"]["title"], json!("Neutral picker"));
-        assert_eq!(raw["canvas"]["shortcut"], json!(null));
-        let transform = module("luxforge.transform");
-        assert_eq!(transform["hint"], json!("Rotate, mirror and flip"));
-        assert_eq!(transform["developer"], json!(false));
-        let crop = module("luxforge.crop");
-        assert_eq!(crop["hint"], json!("Frame, ratio and angle"));
-        assert_eq!(crop["reset"], json!({"action": "crop-reset", "preset": {}}));
-        assert_eq!(
-            crop["controls"],
-            json!([]),
-            "the crop reset moved from a control to the section header"
-        );
-        assert_eq!(crop["canvas"]["title"], json!("Crop"));
-        assert_eq!(crop["canvas"]["shortcut"], json!("R"));
-        assert_eq!(crop["canvas"]["icon"], json!("crop"));
-        assert_eq!(
-            pixel["canvas"]["icon"],
-            json!(null),
-            "a mode without an icon reports none"
-        );
-        // A preset is applied through one generated method, whose parameters carry their kinds.
-        let apply = &listed["edit.apply-preset"];
-        assert_eq!(apply["mutates"], json!(true));
-        assert_eq!(apply["patch"], json!(false));
-        assert_eq!(
-            apply["required"],
-            json!(["asset_id", "mutation", "settings", "name"])
-        );
-        assert_eq!(
-            apply["optional"]
-                .as_object()
-                .expect("the optional fields")
-                .keys()
-                .collect::<Vec<_>>(),
-            ["preset-id"]
-        );
-        assert_eq!(
-            apply["parameters"]
-                .as_array()
-                .expect("the declared parameters")
-                .iter()
-                .map(|parameter| json!([
-                    parameter["name"],
-                    parameter["kind"],
-                    parameter.get("max_length").cloned().unwrap_or(Value::Null),
-                    parameter["required"],
-                ]))
-                .collect::<Vec<_>>(),
-            [
-                json!(["settings", "settings", null, true]),
-                json!(["name", "string", 128, true]),
-                json!(["preset-id", "string", 96, false]),
-            ]
-        );
-        // The presets module leads module.list with its one presets control and no effect.
-        let presets = &modules["modules"][0];
-        assert_eq!(presets["id"], json!("luxforge.presets"));
-        assert_eq!(presets["title"], json!("Presets"));
-        assert_eq!(presets["hint"], json!("Saved and imported settings"));
-        assert_eq!(presets["collapsed"], json!(true));
-        assert_eq!(presets["effects"], json!([]));
-        assert_eq!(
-            presets["controls"],
-            json!([{"kind": "presets", "action": "apply-preset"}])
-        );
-        assert_eq!(presets, &module("luxforge.presets"));
-        // Every module lists its layout hint, stacked by default; the mixer declares tabs because
-        // its three groups are parallel views of the same eight ranges.
-        assert_eq!(module("luxforge.mixer")["layout"], json!("tabs"));
-        assert_eq!(module("luxforge.basic")["layout"], json!("stacked"));
-        for name in names
-            .iter()
-            .copied()
-            .chain(generated.iter().map(String::as_str))
-        {
-            let spec = find(&service, name).expect("listed methods resolve");
-            if matches!(spec.route(), Route::Service) {
+        for (name, method) in listed {
+            let resolved = find(&service, name).expect("every listed method resolves");
+            // A method mutates exactly when it names an envelope, and the schema describes it.
+            let envelope = method.get("mutation");
+            assert_eq!(method["mutates"], json!(envelope.is_some()), "{name}");
+            assert_eq!(method["mutates"], json!(resolved.mutates()), "{name}");
+            if let Some(envelope) = envelope {
+                assert!(
+                    schema["mutation"][envelope.as_str().expect("an envelope name")].is_array(),
+                    "{name}: its envelope {envelope} is described"
+                );
+            }
+            assert_eq!(
+                resolved.retries() != Retries::None,
+                resolved.mutates(),
+                "{name}: every mutating method, and only one, declares who answers its retry"
+            );
+            // Only a mutating handler can report a change, and only a method with an envelope has
+            // one.
+            if let Method::Host(host) = &resolved {
+                match host.handler {
+                    Handler::Service(_) | Handler::Planned(_) => {
+                        assert!(!resolved.mutates(), "{name}: a read reports no change");
+                    }
+                    Handler::Mutating(_) => {
+                        assert!(resolved.mutates(), "{name}: a change carries an envelope");
+                    }
+                    Handler::Owner(_) => {}
+                }
+            }
+            if matches!(resolved.route(), Route::Service) {
                 let response = call(&mut service, &mut session, name, json!({}));
                 if let Some(error) = &response.error {
                     assert_ne!(error.code, "internal", "{name}: {}", error.message);
                 }
             }
-            // Only a mutating handler can report a change, and only a method with an envelope has
-            // one.
-            if let Method::Host(host) = &spec {
-                match host.handler {
-                    Handler::Service(_) | Handler::Planned(_) => {
-                        assert!(!spec.mutates(), "{name}: a read reports no change");
-                    }
-                    Handler::Mutating(_) => {
-                        assert!(spec.mutates(), "{name}: a change carries an envelope");
-                    }
-                    Handler::Owner(_) => {}
-                }
-            }
-            assert_eq!(
-                spec.retries() != Retries::None,
-                spec.mutates(),
-                "{name}: every mutating method, and only one, declares who answers its retry"
+            assert!(
+                !method["notes"].as_str().unwrap().is_empty(),
+                "{name} has notes"
             );
-            assert!(!listed[name]["notes"].as_str().unwrap().is_empty());
         }
-        assert!(find(&service, "edit.missing").is_none());
-        assert!(find(&service, "set-pixel").is_none());
         assert!(
-            schema["coordinate_space"]
+            !schema["coordinate_space"]
                 .as_str()
                 .expect("the coordinate note")
-                .contains("number parameter"),
-            "the schema describes number parameters"
+                .is_empty()
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
@@ -3033,7 +2761,7 @@ mod tests {
             &mut service,
             &mut session,
             "edit.crop",
-            json!({"asset_id": asset, "mutation": mutation(0, "crop"), "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "crop"), "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
         );
         let cropped = service.state(&asset).unwrap().current_entry.id;
         let output = |service: &mut EditorService, session: &mut ClientSession, params: Value| {
@@ -3509,7 +3237,7 @@ mod tests {
             for action in &module.actions {
                 let mut params = json!({
                     "asset_id": asset,
-                    "mutation": mutation(state.revision, &format!("refused-{}", action.id)),
+                    "mutation": mutation_json(state.revision, &format!("refused-{}", action.id)),
                 });
                 for parameter in action.parameters.iter().filter(|p| p.required) {
                     params[&parameter.name] = match (&parameter.default, &parameter.kind) {
@@ -3880,10 +3608,6 @@ mod tests {
         (service, catalog, asset)
     }
 
-    fn mutation(revision: u64, request: &str) -> Value {
-        json!({"expected_revision": revision, "request_id": request, "actor": "test"})
-    }
-
     fn patch_method() -> String {
         format!("edit.{PATCH_ACTION}")
     }
@@ -3927,7 +3651,7 @@ mod tests {
             "edit.apply-preset",
             json!({
                 "asset_id": asset,
-                "mutation": mutation(0, "preset"),
+                "mutation": mutation_json(0, "preset"),
                 "settings": settings,
                 "name": "Warm",
                 "preset-id": "preset-7",
@@ -3965,7 +3689,7 @@ mod tests {
             "edit.apply-preset",
             json!({
                 "asset_id": asset,
-                "mutation": mutation(1, "again"),
+                "mutation": mutation_json(1, "again"),
                 "settings": settings,
                 "name": "Warm",
             }),
@@ -3980,7 +3704,7 @@ mod tests {
             "edit.apply-preset",
             json!({
                 "asset_id": asset,
-                "mutation": mutation(1, "refused"),
+                "mutation": mutation_json(1, "refused"),
                 "settings": {"set-patch": {"red": 300}},
                 "name": "Too red",
             }),
@@ -4039,7 +3763,7 @@ mod tests {
                      fields: Value| {
             let mut params = fields;
             params["asset_id"] = asset.clone();
-            params["mutation"] = mutation(revision, request);
+            params["mutation"] = mutation_json(revision, request);
             ok(service, session, &patch_method(), params)
         };
 
@@ -4114,7 +3838,7 @@ mod tests {
             &mut service,
             &mut session,
             "edit.crop",
-            json!({"asset_id": asset, "mutation": mutation(3, "crop"), "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
+            json!({"asset_id": asset, "mutation": mutation_json(3, "crop"), "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
         );
         let rows = described(&mut service, &mut session, &asset);
         let crop = rows["layers"]
@@ -4231,7 +3955,7 @@ mod tests {
             &mut service,
             &mut session,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(0, "gesture")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(0, "gesture")}),
         );
         assert_eq!(committed["outcome"], json!("applied"));
         assert_eq!(committed["revision"], json!(1));
@@ -4291,7 +4015,7 @@ mod tests {
             &mut service,
             &mut session,
             "edit.set-raw",
-            json!({"asset_id": asset, "mutation": mutation(0, "raw"), "temperature": 5000.0}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "raw"), "temperature": 5000.0}),
         ));
         assert_eq!(
             committed,
@@ -4314,7 +4038,7 @@ mod tests {
             &mut service,
             &mut session,
             "mask.create-linear",
-            json!({"asset_id": asset, "mutation": mutation(0, "mask"),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "mask"),
                    "x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0}),
         );
         let state = service.state(&asset).unwrap();
@@ -4328,7 +4052,7 @@ mod tests {
             &mut service,
             &mut session,
             "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(state.revision, "wb"),
+            json!({"asset_id": asset, "mutation": mutation_json(state.revision, "wb"),
                    "temperature": 20.0}),
         ));
         assert_eq!(
@@ -4466,7 +4190,7 @@ mod tests {
             &mut service,
             &mut session,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(0, "single")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(0, "single")}),
         );
         assert_eq!(committed["outcome"], json!("applied"));
         assert_eq!(committed["revision"], json!(1));
@@ -4571,7 +4295,7 @@ mod tests {
             &mut service,
             &mut session,
             &patch_method(),
-            json!({"asset_id": asset, "mutation": mutation(0, "one"), "red": 5.0}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "one"), "red": 5.0}),
         );
         ok(
             &mut service,
@@ -4695,7 +4419,7 @@ mod tests {
             &mut service,
             &mut session,
             &patch_method(),
-            json!({"asset_id": asset, "mutation": mutation(0, "start"), "red": 10.0}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "start"), "red": 10.0}),
         );
         let entries = |service: &mut EditorService, session: &mut ClientSession| -> usize {
             ok(service, session, "history.list", json!({"asset_id": asset}))["entries"]
@@ -4723,7 +4447,7 @@ mod tests {
             &mut service,
             &mut session,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(1, "return")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(1, "return")}),
         );
         assert_eq!(committed["outcome"], json!("no-op"));
         assert_eq!(committed["revision"], json!(1));
@@ -4761,7 +4485,7 @@ mod tests {
             &mut service,
             &mut agent,
             &patch_method(),
-            json!({"asset_id": asset, "mutation": mutation(0, "agent"), "green": 60.0}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "agent"), "green": 60.0}),
         );
         assert!(
             agent.draft.is_none() && editor.draft.is_some(),
@@ -4785,7 +4509,7 @@ mod tests {
             &mut service,
             &mut editor,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(0, "editor")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(0, "editor")}),
         )
         .error
         .expect("a conflicted draft cannot commit");
@@ -4818,7 +4542,7 @@ mod tests {
             &mut service,
             &mut editor,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(1, "editor")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(1, "editor")}),
         );
         assert_eq!(committed["outcome"], json!("applied"));
         assert_eq!(
@@ -4851,7 +4575,7 @@ mod tests {
             &mut service,
             &mut session,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(1, "stale")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(1, "stale")}),
         )
         .error
         .expect("the envelope must name the revision the draft was based on");
@@ -4869,7 +4593,7 @@ mod tests {
             &mut service,
             &mut session,
             "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(0, "gesture")}),
+            json!({"draft_id": draft_id, "mutation": mutation_json(0, "gesture")}),
         );
         assert_eq!(committed["outcome"], json!("applied"));
 
@@ -4879,7 +4603,7 @@ mod tests {
             &mut service,
             &mut session,
             &patch_method(),
-            json!({"asset_id": asset, "mutation": mutation(0, "gesture"), "red": 10.0}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "gesture"), "red": 10.0}),
         );
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["current_entry_id"], committed["current_entry_id"]);
@@ -4888,7 +4612,7 @@ mod tests {
             &mut service,
             &mut session,
             &patch_method(),
-            json!({"asset_id": asset, "mutation": mutation(0, "gesture"), "red": 11.0}),
+            json!({"asset_id": asset, "mutation": mutation_json(0, "gesture"), "red": 11.0}),
         )
         .error
         .expect("the same request id with different input is a conflict");

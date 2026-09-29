@@ -669,7 +669,7 @@
     {
       "id": "TASK-010",
       "description": "Prove each core service property once: delete the parity module that now holds by construction, reduce the schema test to structural properties, and delete the storage study and the historical catalog-format tests.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],

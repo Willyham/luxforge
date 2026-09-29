@@ -6,7 +6,8 @@ use super::*;
 use crate::{
     ActionDescriptor, AssetId, Availability, BASIC_EFFECT, EFFECT_FORMAT, EditorService,
     EffectDescriptor, EffectStage, EntryId, Error, ErrorKind, MAX_PRESET_NAME, ModuleDescriptor,
-    ModuleRegistry, Mutation, MutationOutcome, ParameterDescriptor, ParameterKind, PresetId,
+    ModuleRegistry, MutationOutcome, ParameterDescriptor, ParameterKind, PresetId,
+    editor::mutation,
     modules::{STAGE_ACTION, StageModule, TestModule},
 };
 use rusqlite::{Connection, params};
@@ -33,14 +34,6 @@ fn preset_file(name: &str) -> String {
 
 fn set(value: Value) -> Map<String, Value> {
     value.as_object().expect("a settings set").clone()
-}
-
-fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "library-test".into(),
-    }
 }
 
 fn stored_rows(service: &EditorService) -> i64 {

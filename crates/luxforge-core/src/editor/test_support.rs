@@ -1,5 +1,6 @@
-//! Helpers the editor's test modules share: temporary catalogs, the JPEG fixture, mutations,
-//! stored strokes and entries, and a test geometry module.
+//! Helpers the editor's test modules share: temporary catalogs, the JPEG fixture, mutations (the
+//! crate's one test mutation, in its `Mutation` and JSON forms), stored strokes and entries, and a
+//! test geometry module.
 use super::{
     EditorState,
     catalog::{default_artifact_root, insert_entry},
@@ -19,12 +20,19 @@ use std::{path::Path, sync::Arc};
 /// `luxforge-testkit` (both are plain paths, the same type in these unit tests).
 pub(super) use luxforge_testkit::fixtures::{jpeg as fixture, temp_path as temp};
 
-pub(super) fn mutation(revision: u64, request: &str) -> Mutation {
+/// The crate's one test mutation envelope: `request` at `revision`, by the actor `test`. Every core
+/// test module that sends a mutation takes it from here, through `crate::editor`.
+pub(crate) fn mutation(revision: u64, request: &str) -> Mutation {
     Mutation {
         expected_revision: revision,
         request_id: request.into(),
         actor: "test".into(),
     }
+}
+
+/// [`mutation`] as the JSON a client sends in a method's `mutation` field.
+pub(crate) fn mutation_json(revision: u64, request: &str) -> Value {
+    serde_json::to_value(mutation(revision, request)).expect("a mutation serializes")
 }
 
 pub(super) fn stored_entry_json(catalog: &Path, entry: &EntryId) -> String {
