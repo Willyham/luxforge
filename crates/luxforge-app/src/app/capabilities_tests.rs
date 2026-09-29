@@ -8,7 +8,7 @@ use super::{
     Boot, Editor,
     capabilities::{poll, run},
     evidence::{Settle, Step, parse_script, record},
-    message::{CapabilityMessage, ControlMessage, Message, SyncMessage},
+    message::{Message, capability::CapabilityMessage, control::ControlMessage, sync::SyncMessage},
     tasks::{ACTOR, HostAnswer, REQUEST_NUMBER, Scope, call, refresh, request},
     testing::{attach_log, logged},
 };

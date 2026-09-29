@@ -6,8 +6,11 @@
 //! The panel pads its sections [`theme::PANEL_PADDING_X`] from its sides and each row adds its own
 //! grid unit inside that, so every label, chip and caption starts 16 pt from the panel's edge, as
 //! the default board draws them.
+use crate::state::MenuTarget;
 use crate::{
-    app::message::{HistoryMessage, MenuTarget, Message, PerformanceMessage, ViewMessage},
+    app::message::{
+        Message, history::HistoryMessage, performance::PerformanceMessage, view::ViewMessage,
+    },
     state::{
         panel::{Marker as PanelMarker, StatePanelModel},
         performance::{PerformanceModel, WINDOW},

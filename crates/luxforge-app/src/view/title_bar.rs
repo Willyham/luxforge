@@ -7,10 +7,12 @@
 //! Export sits beside Open and drops its two-item menu under itself. Where
 //! the bar is the window's own title bar ([`crate::window_frame`]), its empty area drags the
 //! window; every control in it answers its own press first.
+use crate::state::MenuTarget;
+use crate::state::palette::Panel;
 use crate::{
     app::message::{
-        ExportMessage, HistoryMessage, MenuTarget, Message, OverlayMessage, Panel, SyncMessage,
-        ViewMessage,
+        Message, export::ExportMessage, history::HistoryMessage, overlay::OverlayMessage,
+        sync::SyncMessage, view::ViewMessage,
     },
     state::{
         Workspace,

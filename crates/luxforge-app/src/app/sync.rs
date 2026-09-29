@@ -3,7 +3,7 @@
 //! only when it is newer than what the desktop holds, decided from what the answer carries.
 use super::{
     Editor,
-    message::{Message, SyncMessage},
+    message::{Message, sync::SyncMessage},
     tasks::{
         self, PreviewPayload, Refresh, import_task, merge_current_entry, presets_task, state_task,
         sync_task,

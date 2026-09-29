@@ -2,7 +2,7 @@
 //! to, and that a refused start writes its reason to the status bar and sends nothing.
 use super::{
     gesture::Starting,
-    message::{CropMessage, PointerMessage},
+    message::{crop::CropMessage, pointer::PointerMessage},
     testing::{attach_log, boot, entry, finish, logged, open_crop, opened, picking, sample_mode},
     *,
 };
@@ -219,13 +219,13 @@ fn a_refused_reapply_keeps_the_draft_conflicted_and_says_why() {
     testing::stand_in(&mut editor)
         .reapplies
         .push_back(refusal.into());
-    let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
     assert_eq!(editor.status, refusal);
     let draft = &editor.core_gesture().expect("the draft is kept").draft;
     assert!(draft.conflicted && draft.base_revision == newer - 1);
     assert!(editor.gesture_conflicted(), "the notice stays up");
 
-    let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
     let draft = &editor.core_gesture().expect("the rebased draft").draft;
     assert!(!draft.conflicted && draft.base_revision == newer);
     finish(editor, catalog);

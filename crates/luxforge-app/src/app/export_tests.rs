@@ -4,11 +4,13 @@
 use super::{
     export::{ExportChoice, exported_text, refused_text},
     gesture,
-    message::{ExportMessage, MenuTarget, PaletteAction, ViewMessage},
+    message::{export::ExportMessage, view::ViewMessage},
     tasks::CallError,
     testing::{boot, descriptors, finish, opened_with_modules},
     *,
 };
+use crate::state::MenuTarget;
+use crate::state::palette::PaletteAction;
 
 fn start(editor: &mut Editor, keep_metadata: bool) {
     let _ = editor.update(Message::Export(ExportMessage::Start { keep_metadata }));
@@ -193,9 +195,11 @@ fn a_destination_that_exists_is_refused_in_the_status_bar() {
 #[test]
 fn the_palette_lists_both_exports_for_export_jpeg() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
-    let _ = editor.update(Message::Palette(crate::app::message::PaletteMessage::Open));
     let _ = editor.update(Message::Palette(
-        crate::app::message::PaletteMessage::Query("export".into()),
+        crate::app::message::palette::PaletteMessage::Open,
+    ));
+    let _ = editor.update(Message::Palette(
+        crate::app::message::palette::PaletteMessage::Query("export".into()),
     ));
     let exports: Vec<_> = editor
         .workspace

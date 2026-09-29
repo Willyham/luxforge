@@ -1,7 +1,7 @@
 //! The pointer over the photograph: the hover readout and canvas picks, located through the core
 //! and answered by the mode on screen.
 use super::{
-    message::{ControlMessage, PointerMessage},
+    message::{control::ControlMessage, pointer::PointerMessage},
     testing::{
         attach_log, descriptors, finish, logged, opened, opened_with_modules, patch_control,
         pick_events, pick_fields, pick_mode, picking, sample_mode,
@@ -111,7 +111,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
     editor.selected_mask = Some(mask.clone());
     editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
     assert_eq!(editor.section_target(), Some(&mask));
-    let _ = editor.update(Message::View(super::message::ViewMessage::SetMode(
+    let _ = editor.update(Message::View(super::message::view::ViewMessage::SetMode(
         mode.clone(),
     )));
     assert!(
@@ -162,7 +162,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
 
     // Entered from the global sections: global, with the same mask still open in the panel.
     editor.session.workspace.mode = luxforge_core::POINTER_MODE.into();
-    let _ = editor.update(Message::View(super::message::ViewMessage::SetMode(
+    let _ = editor.update(Message::View(super::message::view::ViewMessage::SetMode(
         mode.clone(),
     )));
     editor.session.workspace.mode = mode.clone();
@@ -195,7 +195,7 @@ fn a_committed_module_pick_puts_itself_away() {
     });
     editor.selected_mask = Some(mask);
     editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
-    let _ = editor.update(Message::View(super::message::ViewMessage::SetMode(
+    let _ = editor.update(Message::View(super::message::view::ViewMessage::SetMode(
         mode.clone(),
     )));
     editor.session.workspace.mode = mode;

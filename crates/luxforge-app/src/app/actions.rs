@@ -3,7 +3,7 @@
 use super::{
     Editor,
     gesture::Starting,
-    message::{ActionMessage, Message},
+    message::{Message, action::ActionMessage},
 };
 use crate::state::{
     fields::{action_params, submit_preset},

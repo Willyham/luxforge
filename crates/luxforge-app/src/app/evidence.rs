@@ -1,15 +1,18 @@
 //! Evidence mode: import queued files in order, capture a frame after each outcome, run any script
 //! steps with a frame each, then exit. Every step goes through the same messages and owner calls the
 //! controls use, so a script proves the real paths rather than a parallel implementation.
+use crate::state::MenuTarget;
+use crate::state::palette::PaletteAction;
 use crate::{
     app::{
         Editor,
         gesture::Starting,
         message::{
-            ActionMessage, BrushEdit, ControlMessage, CropMessage, CropPointer, DraftMessage,
-            EvidenceMessage, HistoryMessage, MaskMessage, MenuTarget, Message, PaintTarget,
-            PaletteAction, PaletteMessage, PerformanceMessage, PointerMessage, PresetMessage,
-            RowEdit, ViewMessage,
+            Message, action::ActionMessage, control::ControlMessage, crop::CropMessage,
+            crop::CropPointer, draft::DraftMessage, evidence::EvidenceMessage,
+            history::HistoryMessage, mask::BrushEdit, mask::MaskMessage, mask::PaintTarget,
+            mask::RowEdit, palette::PaletteMessage, performance::PerformanceMessage,
+            pointer::PointerMessage, preset::PresetMessage, view::ViewMessage,
         },
         performance,
         tasks::{HostAnswer, host_task, mutation, request, workspace_task},
@@ -1094,7 +1097,7 @@ impl Editor {
     /// frame would capture the photograph before the grid it is evidence of reached the GPU. One
     /// that only changes a selection is captured on the next redraw.
     fn mask_step(&mut self, step: MaskStep) -> Task<Message> {
-        use crate::app::message::MaskPointer;
+        use crate::app::message::mask::MaskPointer;
         if self.state.is_none() {
             return self.fail_step("no photograph is open");
         }
@@ -1883,7 +1886,7 @@ impl Editor {
     }
 
     /// One tick of a paced stroke step: the next pointer position, through the same
-    /// [`MaskPointer`](crate::app::message::MaskPointer) messages a hand on the canvas raises.
+    /// [`MaskPointer`](crate::app::message::mask::MaskPointer) messages a hand on the canvas raises.
     ///
     /// The first tick presses, every later one moves, and the last releases when the step said to —
     /// so one paced step is still one stroke and one history entry. A tick with nothing left to send
@@ -1893,7 +1896,7 @@ impl Editor {
     /// simply retries on its next tick, so a loaded host lengthens the stroke rather than superseding
     /// a position no `preview_displayed` will ever answer for.
     pub(crate) fn stroke_paced_tick(&mut self) -> Task<Message> {
-        use crate::app::message::MaskPointer;
+        use crate::app::message::mask::MaskPointer;
         let Some(paced) = self
             .evidence
             .as_ref()
@@ -3291,7 +3294,7 @@ fn angle_messages(step: &DraftStep, action: &str, parameter: &str) -> Vec<Messag
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::message::SyncMessage;
+    use crate::app::message::sync::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
 
     #[test]

@@ -5,14 +5,14 @@
 //! the update function without simulating a pointer, and every request the panel sends is the one an
 //! independent JSON client would send for the same edit. The shape gestures go through the delivered
 //! `draft.*` lifecycle — one drag is one history entry — and the list edits are ordinary mutations.
-use crate::app::message::ViewMessage;
+use crate::app::message::view::ViewMessage;
 use crate::{
     app::{
         Editor,
         draft::{Event, GestureId},
         evidence::Settle,
         gesture::{Kind, MaskGesture, Starting},
-        message::{MaskMessage, Message, PaintTarget, RowEdit},
+        message::{Message, mask::MaskMessage, mask::PaintTarget, mask::RowEdit},
         tasks::{Refresh, mutation},
     },
     mask_draft::{ContentMap, MaskDraft, MaskDraftOp, painted_kind},
@@ -412,8 +412,8 @@ impl Editor {
                 | MaskMessage::Handle(_)
                 | MaskMessage::Transform(..)
                 | MaskMessage::Brush(_)
-                | MaskMessage::Drag(crate::app::message::DragEdit::Over(_))
-                | MaskMessage::Typing(crate::app::message::TypingEdit::Text(_))
+                | MaskMessage::Drag(crate::app::message::mask::DragEdit::Over(_))
+                | MaskMessage::Typing(crate::app::message::mask::TypingEdit::Text(_))
         ) {
             self.close_mask_menu();
         }
@@ -691,8 +691,8 @@ impl Editor {
     /// stroke's own request. An open painted gesture is told as well, so the cursor and the request
     /// the release will send are the same brush — and a stroke already down keeps the brush it was
     /// begun with, which is what makes a stored stroke the record of one pass.
-    fn brush_edit(&mut self, edit: crate::app::message::BrushEdit) -> Task<Message> {
-        use crate::app::message::BrushEdit;
+    fn brush_edit(&mut self, edit: crate::app::message::mask::BrushEdit) -> Task<Message> {
+        use crate::app::message::mask::BrushEdit;
         let changed = match &edit {
             BrushEdit::Nudge { name, steps } => self.brush.nudge(name, *steps),
             BrushEdit::Set { name, value } => self.brush.set(name, *value),
@@ -1149,8 +1149,8 @@ impl Editor {
 
     /// One pointer step of a shape gesture, already mapped into normalized content coordinates by
     /// the canvas.
-    fn mask_handle(&mut self, handle: crate::app::message::MaskPointer) -> Task<Message> {
-        use crate::app::message::MaskPointer;
+    fn mask_handle(&mut self, handle: crate::app::message::mask::MaskPointer) -> Task<Message> {
+        use crate::app::message::mask::MaskPointer;
         // A press with the brush in hand is the one pointer step that opens a draft.
         if let MaskPointer::PaintBegin { x, y } = handle {
             return self.paint_press((x, y));

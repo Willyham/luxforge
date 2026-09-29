@@ -12,7 +12,7 @@
 //! when the gesture opened and the [`CanvasView`] the output stage is drawn with — never through a
 //! `render.locate` per move, which would put a runtime hop on the input path.
 use crate::{
-    app::message::{MaskMessage, MaskPointer, Message},
+    app::message::{Message, mask::MaskMessage, mask::MaskPointer},
     mask_draft::{ContentMap, Grip, MaskDraft, MaskHandle, Pen},
     view::canvas_view::{self, CanvasView},
 };

@@ -14,7 +14,7 @@ use crate::{
         Editor,
         draft::Event,
         gesture::{Kind, SliderGesture, Starting},
-        message::{ActionMessage, Message},
+        message::{Message, action::ActionMessage},
     },
     state::{fields, tools},
 };

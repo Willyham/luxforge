@@ -6,11 +6,11 @@
 //! at the bottom centre, the draft bar and the notices at the top centre. None of it reads state:
 //! the [`CanvasModel`] already says which mode is selected, what the draft reads and which notices
 //! apply, and every control here publishes one semantic message.
-use crate::app::message::{HistoryMessage, PointerMessage, ViewMessage};
+use crate::app::message::{history::HistoryMessage, pointer::PointerMessage, view::ViewMessage};
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{CapabilityMessage, DraftMessage, Message},
+        message::{Message, capability::CapabilityMessage, draft::DraftMessage},
     },
     layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
     state::canvas::{

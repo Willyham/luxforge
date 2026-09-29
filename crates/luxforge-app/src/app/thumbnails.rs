@@ -604,7 +604,7 @@ mod tests {
     /// with them: a kept RAW development would hold the source worker's memory gate.
     #[test]
     fn mask_mode_thumbnails_every_listed_mask_from_the_settled_stack_once() {
-        use crate::app::message::{Message, PreviewMessage};
+        use crate::app::message::{Message, preview::PreviewMessage};
         let (mut editor, catalog) =
             crate::app::testing::opened_with_modules(crate::app::testing::descriptors(), 4);
         let (sky, face) = (linear(), radial());
@@ -798,7 +798,7 @@ mod tests {
     #[ignore = "requires a private RAW fixture: set LUXFORGE_RAW_FIXTURE"]
     fn a_raw_with_a_mask_develops_again_while_its_thumbnails_are_shown() {
         use crate::app::{
-            message::{Message, PreviewMessage, SyncMessage},
+            message::{Message, preview::PreviewMessage, sync::SyncMessage},
             tasks::{self, Refresh, Scope},
         };
         use std::time::{Duration, Instant};
@@ -883,9 +883,10 @@ mod tests {
         )
         .expect("Mask mode");
         let _ = editor.update(Message::View(
-            crate::app::message::ViewMessage::WorkspaceUpdated(Ok(
-                serde_json::from_value(session).unwrap()
-            )),
+            crate::app::message::view::ViewMessage::WorkspaceUpdated(Ok(serde_json::from_value(
+                session,
+            )
+            .unwrap())),
         ));
         assert!(editor.mask_mode_active());
         // Entering Mask mode planned the stack on screen again: the owner task's plain call.

@@ -9,14 +9,18 @@ use super::{
     Editor,
     draft::Round,
     message::{
-        ActionMessage, ControlMessage, DraftMessage, DragEdit, DragItem, HistoryMessage,
-        MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, PreviewMessage, RowEdit,
-        SyncMessage, TypingEdit, TypingTarget, ViewMessage,
+        Message, action::ActionMessage, control::ControlMessage, draft::DraftMessage,
+        history::HistoryMessage, mask::DragEdit, mask::MaskMessage, mask::MaskPointer,
+        mask::PaintTarget, mask::RowEdit, mask::TypingEdit, preview::PreviewMessage,
+        sync::SyncMessage, view::ViewMessage,
     },
     tasks::{self, call},
     testing,
 };
 use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, MaskHandle, RADIAL};
+use crate::state::MenuTarget;
+use crate::state::masks::DragItem;
+use crate::state::masks::TypingTarget;
 use iced::keyboard::{Key, Modifiers};
 use luxforge_core::{
     AssetId, ClientId, ComponentMode, MASK_MODE, MaskOverlayMode, OwnerHandle, POINTER_MODE,
@@ -2924,7 +2928,7 @@ fn every_start_answers_to_the_one_refusal() {
     );
     let _ = masking
         .editor
-        .update(Message::Crop(crate::app::message::CropMessage::Start));
+        .update(Message::Crop(crate::app::message::crop::CropMessage::Start));
     assert_eq!(
         masking.editor.status,
         "Apply or Cancel the mask gesture before cropping"
@@ -3652,7 +3656,8 @@ fn every_disabled_menu_item_carries_its_reason() {
     };
     let mask_menu = crate::view::masks_panel::mask_menu(&model, row, false);
     let component_menu = crate::view::masks_panel::component_menu(&model, row, part);
-    let kinds = crate::view::masks_panel::kind_menu(&model, crate::app::message::KindMenu::Add);
+    let kinds =
+        crate::view::masks_panel::kind_menu(&model, crate::app::message::mask::KindMenu::Add);
     for entries in [&mask_menu, &component_menu, &kinds] {
         for entry in entries.iter() {
             if let luxforge_ui::MenuEntry::Item(item) = entry
@@ -4023,7 +4028,7 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
     // Every item is a kind the menu can start, labelled with its letter where it has one.
     let items = crate::view::masks_panel::kind_menu(
         &masking.editor.workspace.masks,
-        crate::app::message::KindMenu::New,
+        crate::app::message::mask::KindMenu::New,
     );
     let letters: Vec<(String, Option<String>)> = items
         .iter()

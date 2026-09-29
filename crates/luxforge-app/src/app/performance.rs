@@ -13,7 +13,7 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
-        message::{Message, PerformanceMessage},
+        message::{Message, performance::PerformanceMessage},
         tasks::{PerformanceRead, performance_task},
     },
     state::performance::PerformanceHistory,
@@ -230,12 +230,14 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::message::{PaletteMessage, PerformanceMessage, ViewMessage};
+    use crate::app::message::{
+        palette::PaletteMessage, performance::PerformanceMessage, view::ViewMessage,
+    };
     use crate::app::{
-        message::PaletteAction,
         tasks::call,
         testing::{boot, finish},
     };
+    use crate::state::palette::PaletteAction;
 
     /// A real read, answered by the editor's own owner exactly as the task would ask for it.
     fn read(editor: &Editor) -> Box<PerformanceRead> {

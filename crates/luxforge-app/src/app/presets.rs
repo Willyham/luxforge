@@ -1,18 +1,19 @@
 //! The Presets section's driver. Every library change goes through [`Editor::preset_update`], so the
 //! section's buttons, its row menus and an evidence script share one path. Applying a preset is not
 //! here: a row's click and its palette entry are the section action's own
-//! [`ActionMessage::Run`](crate::app::message::ActionMessage::Run),
+//! [`ActionMessage::Run`](crate::app::message::action::ActionMessage::Run),
 //! the path every declared action takes, with its one mutation, `asset.state` and preview job.
 //!
 //! The library calls are catalog work for the owner and file work for the task: none of them
 //! renders, opens a source or touches the recipe, so none sets the editor's `busy` flag. They run
 //! one at a time under the library's own `pending` flag instead, and each reads the listing again
 //! before it answers.
+use crate::state::MenuTarget;
 use crate::{
     app::{
         Editor,
         evidence::Settle,
-        message::{MenuTarget, Message, PresetMessage},
+        message::{Message, preset::PresetMessage},
         tasks::{
             PresetChange, preset_create_task, preset_delete_task, preset_export_task,
             preset_import_task, preset_report_task, request,

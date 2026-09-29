@@ -1,7 +1,7 @@
 //! Per-client view state: the developer gallery, workspace flags reaching the models only through
 //! the adopted session, and one pan in flight.
 use super::{
-    message::ControlMessage,
+    message::control::ControlMessage,
     testing::{boot, crop_descriptor, finish, opened},
     *,
 };

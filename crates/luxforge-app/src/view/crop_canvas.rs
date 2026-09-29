@@ -9,7 +9,7 @@
 //! [`stage_turn`] places it. That rotation is the GPU's display filter, not the reference sampler:
 //! the committed render is the reference. The canvas never rasterizes a pixel itself.
 use crate::{
-    app::message::{CropMessage, CropPointer, Message},
+    app::message::{Message, crop::CropMessage, crop::CropPointer},
     crop_draft::{Corner, CropDraft, Handle},
     view::canvas_view::CanvasView,
 };

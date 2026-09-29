@@ -3,7 +3,7 @@
 //! connected, what kind of frame the renderer put on screen and how long it took, and what the
 //! current zoom comes to on this display.
 use crate::{
-    app::message::{Message, ViewMessage},
+    app::message::{Message, view::ViewMessage},
     state::status::StatusBarModel,
 };
 use iced::{

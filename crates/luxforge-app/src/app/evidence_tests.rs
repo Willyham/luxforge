@@ -1,6 +1,6 @@
 //! Evidence capture waits for the frame its state describes.
 use super::{
-    message::SyncMessage,
+    message::sync::SyncMessage,
     testing::{boot, finish},
     *,
 };

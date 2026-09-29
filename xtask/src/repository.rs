@@ -331,7 +331,8 @@ const SOURCE_RULES: &[SourceRule] = &[
                  worker's job type (app/thumbnails.rs) names one",
     },
     // Nor a planned preview job, which carries its stack. The desktop names `PreviewJob` only in
-    // the files that pass one straight through: the messages that carry it (app/message.rs), the
+    // the files that pass one straight through: the message files that carry it (app/message.rs
+    // and each seam's app/message/<variant>.rs, such as the crop's `PreviewReady`), the
     // owner tasks that plan and answer with it (app/tasks.rs), the preview request that hands it to
     // the worker (app/preview.rs), and the two answers that read one on its way there, a
     // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs). A crop draft keeps
@@ -344,7 +345,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         scope: &["crates/luxforge-app/src"],
         types: &["rs"],
         allowed: &[
-            "crates/luxforge-app/src/app/message.rs",
+            "crates/luxforge-app/src/app/message",
             "crates/luxforge-app/src/app/tasks.rs",
             "crates/luxforge-app/src/app/preview.rs",
             "crates/luxforge-app/src/app/gesture.rs",
@@ -1133,7 +1134,7 @@ const SENDER_RULES: &[SenderRule] = &[
     SenderRule {
         name: "widget-sent-controls",
         message: "ControlMessage",
-        declared: "crates/luxforge-app/src/app/message.rs",
+        declared: "crates/luxforge-app/src/app/message/control.rs",
         handler: "crates/luxforge-app/src/app/controls.rs",
         scope: &["crates/luxforge-app/src"],
         drivers: &["crates/luxforge-app/src/app/evidence.rs"],
@@ -2309,15 +2310,22 @@ mod tests {
     fn only_the_files_that_pass_a_preview_job_through_name_one_on_the_desktop() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // The messages, the owner tasks, the preview request and the two answers may, on as many
-        // lines as they need; so may a test file, a test item, a comment and a longer name.
+        // The message files, the owner tasks, the preview request and the two answers may, on as
+        // many lines as they need; so may a test file, a test item, a comment and a longer name.
         write_all(
             root,
             &[
                 (
                     "crates/luxforge-app/src/app/message.rs",
-                    "PreviewReady(StagePlan, Result<Box<PreviewJob>, String>),\n\
-                     ThumbnailSource(Result<Box<PreviewJob>, String>),\n",
+                    "Preview(preview::PreviewMessage),\nfn carried(job: PreviewJob) {}\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/message/crop.rs",
+                    "PreviewReady(StagePlan, Result<Box<PreviewJob>, String>),\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/message/preview.rs",
+                    "ThumbnailSource(Result<Box<PreviewJob>, String>),\n",
                 ),
                 (
                     "crates/luxforge-app/src/app/tasks.rs",
@@ -2378,8 +2386,9 @@ mod tests {
                 "job: Option<Box<luxforge_core::PreviewJob>>,\n",
             )],
         );
+        // The crop seam's own state file is not its message file.
         let error = refusal(root, &["desktop-keeps-no-preview-job"], "a kept job");
-        assert!(error.contains("crop.rs:1"), "{error}");
+        assert!(error.contains("app/crop.rs:1"), "{error}");
     }
 
     #[test]
@@ -2605,7 +2614,7 @@ mod tests {
             root,
             &[
                 (
-                    "crates/luxforge-app/src/app/message.rs",
+                    "crates/luxforge-app/src/app/message/control.rs",
                     "pub(crate) enum ControlMessage {\n    /// A rail position.\n    Fraction {\n        \
                      fraction: f64,\n    },\n    #[allow(dead_code)]\n    Scripted {\n        \
                      value: f64,\n    },\n    ToggleSection(String),\n    Answered,\n}\n\
@@ -2672,7 +2681,7 @@ mod tests {
         assert!(error.contains("`ControlMessage::Answered`"), "{error}");
         assert_eq!(
             enum_variants(
-                &fs::read_to_string(root.join(app).join("message.rs")).unwrap(),
+                &fs::read_to_string(root.join(app).join("message/control.rs")).unwrap(),
                 "ControlMessage"
             ),
             Some(vec!["Fraction", "Scripted", "ToggleSection", "Answered"])

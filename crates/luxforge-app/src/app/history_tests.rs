@@ -1,7 +1,7 @@
 //! History selection, compare and navigation: a selection of the current entry returns to current,
 //! compare restores the selection it replaced, and an open draft refuses Undo, Redo and Restore.
 use super::{
-    message::{CropMessage, DraftMessage, HistoryMessage, SyncMessage},
+    message::{crop::CropMessage, draft::DraftMessage, history::HistoryMessage, sync::SyncMessage},
     testing::{
         boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for, stand_in,
     },

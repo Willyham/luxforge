@@ -1,7 +1,7 @@
 //! The clipping overlay: its toggles send exactly their own flags and commit nothing, and it
 //! follows the frame on screen.
 use super::{
-    message::{ClipEndpoint, OverlayMessage},
+    message::{overlay::ClipEndpoint, overlay::OverlayMessage},
     overlay::clip_params,
     testing::{analysed, drafted, finish, opened},
     *,

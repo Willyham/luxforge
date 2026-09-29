@@ -1,7 +1,7 @@
 //! Owner answers: which the desktop adopts, what a commit reads back, and answers overtaken by a
 //! newer selection or revision dropped on arrival.
 use super::{
-    message::SyncMessage,
+    message::sync::SyncMessage,
     testing::{boot, entry, finish, opened, refresh_for},
     *,
 };

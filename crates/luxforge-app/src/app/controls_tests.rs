@@ -2,12 +2,13 @@
 use super::{
     Editor,
     message::{
-        ActionMessage, ControlMessage, DraftMessage, HistoryMessage, Message, PaletteAction,
-        PreviewMessage, SyncMessage, ViewMessage,
+        Message, action::ActionMessage, control::ControlMessage, draft::DraftMessage,
+        history::HistoryMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage,
     },
     tasks,
     testing::{self, *},
 };
+use crate::state::palette::PaletteAction;
 use crate::state::{fields, tools};
 use luxforge_core::{AssetId, HistorySelection, POINTER_MODE, RawPayload, WhiteBalanceMode};
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};

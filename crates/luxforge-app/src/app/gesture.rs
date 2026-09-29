@@ -18,7 +18,7 @@ use crate::{
         crop::CropGesture,
         draft::{CoreDraft, Event, GestureId, Round, Step},
         evidence::Settle,
-        message::{DraftMessage, Message, PreviewMessage},
+        message::{Message, draft::DraftMessage, preview::PreviewMessage},
         tasks::{self, PreviewPayload, Refresh, RoundTrip, mutation},
     },
     mask_draft::{ContentMap, MaskDraft},

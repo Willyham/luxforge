@@ -2,10 +2,12 @@
 //! with the widget library. The view knows no tool and no parameter limit; it draws what the
 //! section says and publishes messages, exactly as the generated-control mapping in
 //! `state::tools` describes it.
+use crate::state::MenuTarget;
 use crate::{
     app::message::{
-        ActionMessage, ClipEndpoint, ControlMessage, CropMessage, DraftMessage, MenuTarget,
-        Message, OverlayMessage, PresetMessage, ViewMessage,
+        Message, action::ActionMessage, control::ControlMessage, crop::CropMessage,
+        draft::DraftMessage, overlay::ClipEndpoint, overlay::OverlayMessage, preset::PresetMessage,
+        view::ViewMessage,
     },
     state::{
         fields,

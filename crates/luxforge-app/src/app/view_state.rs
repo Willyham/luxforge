@@ -5,9 +5,10 @@ use super::{
     Editor,
     evidence::Settle,
     gesture::Starting,
-    message::{CropMessage, Message, Panel, ViewMessage},
+    message::{Message, crop::CropMessage, view::ViewMessage},
     tasks::{pan_task, session_task, workspace_task},
 };
+use crate::state::palette::Panel;
 use crate::{state::tools, view, window_frame};
 use iced::{Task, widget::operation};
 use serde_json::{Map, Value, json};

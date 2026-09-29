@@ -3,7 +3,7 @@
 use super::{
     Editor,
     gesture::Starting,
-    message::{HistoryMessage, Message, PreviewMessage},
+    message::{Message, history::HistoryMessage, preview::PreviewMessage},
     tasks::{self, mutation, older_task, preview_task, versions_task},
 };
 use iced::Task;
