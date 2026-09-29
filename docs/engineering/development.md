@@ -167,15 +167,14 @@ A dev build is not a timing build; timing uses release.
 Every integration-test binary links the whole of `luxforge-core`, so the core's integration tests
 are grouped into one binary per area, one module per file: `basic` (Exposure, white balance, Tone,
 Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
-field-patch conformance suite), `mask` (the mask, brush and range studies, each kind against its
-reference, the coverage grid, geometry survival and masked edits on both paths and through the JSON
-method table), and `cancellation` and `resources_cost`, which stay apart because the first renders
-24 MP frames against a latency bound and the second is a timing measurement. Narrow a run with the
-module path, for example `cargo test -p luxforge-core --test basic white_balance::` or
-`--test mask range::`.
+field-patch conformance suite), `mask` (each kind against its reference, the coverage grid, geometry survival and masked edits on
+both paths and through the JSON method table), and `cancellation` and `resources_cost`, which stay
+apart because the first renders 24 MP frames against a latency bound and the second is a timing
+measurement. Narrow a run with the module path, for example
+`cargo test -p luxforge-core --test basic white_balance::` or `--test mask range::`.
 Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
-independent references and their studies live in `luxforge-reference`
-(`cargo test -p luxforge-reference --test studies tone::`).
+independent references and their studies, the mask, brush and range studies among them, live in
+`luxforge-reference`, one module per study (`cargo test -p luxforge-reference --test studies tone::`).
 
 ### Tests that do not depend on host load
 

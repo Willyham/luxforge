@@ -1,7 +1,7 @@
 //! Independent proofs for the frozen mask coverage mathematics — mask
 //! space, the component composition algebra and the linear and radial falloffs.
 //!
-//! This binary shares no code with `luxforge-core`'s production sources. The
+//! This module shares no code with `luxforge-core`'s production sources. The
 //! frozen equations live in `crates/luxforge-reference/src/mask.rs`; the mathematics, the
 //! rejected alternatives and every measured figure quoted below are written out
 //! in full in `docs/design/mask-study.md`, which this file's test names track.
@@ -9,11 +9,12 @@
 //! The study's 24 MP figures are printed by the one ignored test at the end:
 //!
 //! ```sh
-//! cargo test --release --locked --package luxforge-core --test mask \
+//! cargo test --release --locked --package luxforge-reference --test studies \
 //!     -- --ignored --nocapture mask_study_figures
 //! ```
 
-use super::*;
+use super::{LANDSCAPE, PORTRAIT};
+use luxforge_reference::SplitMix64;
 use luxforge_reference::mask::{
     Algebra, Component, DISTANCE_MAX, DISTANCE_MIN, Easing, Kind, Linear, Mask, Mode, Radial,
     Stage, axis_is_legal, blend, combine, component_coverage, coverage, distance_is_legal, ease,

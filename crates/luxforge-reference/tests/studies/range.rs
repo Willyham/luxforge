@@ -2,7 +2,7 @@
 //! the luminance band's axis, band and shoulders, and the Oklab colour range's
 //! metric, multi-sample combination and refine mapping.
 //!
-//! This binary shares no code with `luxforge-core`'s production sources. The
+//! This module shares no code with `luxforge-core`'s production sources. The
 //! frozen equations live in `crates/luxforge-reference/src/range.rs`; the mathematics, the
 //! rejected alternatives, the honest limits and every measured figure quoted
 //! below are written out in full in `docs/design/range-study.md`, which this
@@ -11,11 +11,11 @@
 //! The study's dense figures are printed by the one ignored test at the end:
 //!
 //! ```sh
-//! cargo test --release --locked --package luxforge-core --test mask \
+//! cargo test --release --locked --package luxforge-reference --test studies \
 //!     -- --ignored --nocapture range_study_figures
 //! ```
 
-use super::*;
+use luxforge_reference::SplitMix64;
 use luxforge_reference::colour::{self, Oklab};
 use luxforge_reference::mask::smooth;
 use luxforge_reference::range::{
