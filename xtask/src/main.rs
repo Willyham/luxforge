@@ -1,6 +1,7 @@
 mod basic_acceptance;
 mod basic_smoke;
 mod capabilities_smoke;
+mod check;
 /// The field-patch conformance suite the core's own integration test runs, compiled in rather than
 /// copied, so `editor-acceptance` records the evidence of exactly the checks `cargo test` makes.
 #[path = "../../crates/luxforge-core/tests/modules/conformance/mod.rs"]
@@ -177,7 +178,6 @@ fn cargo(root: &Path, op: &str, release: bool) -> Result {
             "--package",
             "luxforge-cli",
         ],
-        "test" => vec!["test", "--locked", "--workspace"],
         "fmt" => vec!["fmt", "--all", "--", "--check"],
         "lint" => vec![
             "clippy",
@@ -302,19 +302,21 @@ fn main_result() -> Result {
             )?;
         }
         "check" => {
+            let quick = a.flag("--quick");
             a.done()?;
-            repository::check(&root)?;
-            policy::checked(&root)?;
-            for op in ["fmt", "lint", "test"] {
-                cargo(&root, op, false)?
-            }
+            check::check(&root, quick)?;
             println!("Headless checks passed. GUI and platform acceptance remain separate.");
         }
         "check-repository" => {
             a.done()?;
             repository::check(&root)?;
         }
-        "build" | "fmt" | "lint" | "test" => {
+        "test" => {
+            let quick = a.flag("--quick");
+            a.done()?;
+            check::tests(&root, quick)?;
+        }
+        "build" | "fmt" | "lint" => {
             let release = a.flag("--release");
             a.done()?;
             cargo(&root, op.to_str().unwrap(), release)?;
@@ -622,7 +624,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

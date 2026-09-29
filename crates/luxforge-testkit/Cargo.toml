@@ -17,5 +17,10 @@ luxforge-testbase = { path = "../luxforge-testbase" }
 serde_json.workspace = true
 sha2.workspace = true
 
+[dev-dependencies]
+# The core with the disk flush skipped, for this crate's tests only (luxforge-core's
+# `test-skip-disk-flush`).
+luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush"] }
+
 [lints]
 workspace = true

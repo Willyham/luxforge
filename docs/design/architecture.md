@@ -68,7 +68,7 @@ Paths are under `crates/luxforge-core/src`.
 | `capabilities/` | Beside the host: settings and profiles, grants and consent, the worker's `ModuleContext`, resource installs, and endpoint parsing (`endpoint.rs`, which the module parameter vocabulary, the descriptors, settings and every transport share) |
 | `capabilities/secrets.rs` and `capabilities/transport.rs` | The two contracts the host is given rather than owns: the `SecretStore` trait, with the in-memory and unavailable stores, and the `Transport` trait that sends one checked request, with the unavailable transport. The core names no TLS, HTTP or Keychain crate, which `cargo xtask check-repository` enforces |
 | `capabilities/document.rs` | The one JSON document store the settings, grants and installed-resource records and the artifact manifest share |
-| `atomic_file.rs` | The crate's one durable file write, which the document store and the derived-artifact store write through |
+| `atomic_file.rs` | The crate's one durable file write, which the document store and the derived-artifact store write through, and its one disk flush (`flush`), which every durable write in the crate makes and which test builds skip ([tests skip the disk flush](../engineering/development.md#tests-skip-the-disk-flush)) |
 | `jobs.rs` | Every job the catalog owner runs — source preparation, analysis, capability work and export — as a record in one table, which also runs the capability and export lanes ([jobs](modules-and-api.md#jobs)) |
 
 ### The transport's files

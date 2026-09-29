@@ -1893,6 +1893,7 @@ dependencies = [
  "idna_adapter",
  "image",
  "kamadak-exif",
+ "luxforge-core",
  "luxforge-jpeg",
  "luxforge-process",
  "luxforge-raw",

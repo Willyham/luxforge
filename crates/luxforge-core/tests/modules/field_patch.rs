@@ -11,7 +11,7 @@ use luxforge_testbase::paths;
 use std::fs;
 
 #[test]
-fn every_field_patch_module_passes_the_conformance_suite() {
+fn slow_every_field_patch_module_passes_the_conformance_suite() {
     let out = paths::temp_path("field-patch-conformance");
     fs::create_dir_all(&out).expect("a scratch directory");
     let result = conformance::run(&paths::jpeg(), &out);

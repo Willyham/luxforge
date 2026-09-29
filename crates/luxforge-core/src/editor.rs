@@ -574,13 +574,21 @@ impl EditorService {
         }
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_millis(100))?;
-        connection.execute_batch(
+        // A commit is durable (`synchronous=FULL`) wherever durable writes reach the drive
+        // (`atomic_file::FLUSHES`), which only a test build turns off.
+        connection.execute_batch(if crate::atomic_file::FLUSHES {
             "PRAGMA foreign_keys=ON;
              PRAGMA synchronous=FULL;
              PRAGMA locking_mode=EXCLUSIVE;
              BEGIN IMMEDIATE;
-             COMMIT;",
-        )?;
+             COMMIT;"
+        } else {
+            "PRAGMA foreign_keys=ON;
+             PRAGMA synchronous=OFF;
+             PRAGMA locking_mode=EXCLUSIVE;
+             BEGIN IMMEDIATE;
+             COMMIT;"
+        })?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => Self::create_schema(&mut connection)?,

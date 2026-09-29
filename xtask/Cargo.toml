@@ -27,3 +27,8 @@ flate2 = "=1.1.10"
 tar = "=0.4.46"
 zip = { version = "=8.2.0", default-features = false, features = ["deflate-flate2"] }
 time = { version = "=0.3.55", features = ["parsing"] }
+
+[dev-dependencies]
+# The core with the disk flush skipped, for this crate's tests only (luxforge-core's
+# `test-skip-disk-flush`).
+luxforge-core = { path = "../crates/luxforge-core", features = ["test-skip-disk-flush"] }

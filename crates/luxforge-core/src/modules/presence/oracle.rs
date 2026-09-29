@@ -654,7 +654,7 @@ fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
 /// the pool or keeps them on the calling thread: alone, in both directions of each amount, and
 /// chained, over interior and edge tiles of a textured stage.
 #[test]
-fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
+fn slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
     let module = PresenceModule::new();
     let (width, height) = (700_u32, 460_u32);
     let stage = Stage { width, height };

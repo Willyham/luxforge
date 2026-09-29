@@ -860,13 +860,28 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
             "crates/luxforge-testbase/src/server.rs",
-            // `verify`'s component pool.
+            // `verify`'s component pool, and `check`'s steps and test binaries.
             "xtask/src/verify.rs",
+            "xtask/src/check.rs",
         ],
         mode: Match::Whole,
         tests: false,
         once: false,
         reason: "production threads start only in the declared worker homes",
+    },
+    // One disk flush: every durable write in the crates reaches the drive through
+    // `atomic_file::flush`, and only that file names the test feature that skips it.
+    SourceRule {
+        name: "one-disk-flush",
+        tokens: &["sync_all", "sync_data", "test-skip-disk-flush"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/atomic_file.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "a durable write flushes only through luxforge-core's atomic_file::flush, the one \
+                 place the test-skip-disk-flush feature is read",
     },
     // One way to launch the editor from the harness: the scenario library's `Launch` assembles
     // every argument list and `Run` makes every launch, so each is recorded and watched alike.
@@ -1163,6 +1178,20 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "luxforge-cli builds the headless luxforge-json binary and may not depend on the \
                  GUI stack (iced, wgpu, rfd, luxforge-ui or luxforge-app)",
+    },
+    // Skipping the disk flush is for tests: only a `[dev-dependencies]` table turns the feature on,
+    // so no `cargo build` of a binary, whose dependencies are never dev-dependencies, has it.
+    DependencyRule {
+        name: "disk-flush-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-core",
+            feature: "test-skip-disk-flush",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-core's test-skip-disk-flush, \
+                 so no build of a binary skips the flush of a durable write",
     },
 ];
 
@@ -1627,13 +1656,22 @@ impl SourceRule {
             }
             let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
             let text = tree.text(path)?;
-            let lines = if self.tests {
+            // A token the file does not hold anywhere is on none of its lines.
+            let tokens: Vec<&str> = self
+                .tokens
+                .iter()
+                .copied()
+                .filter(|token| text.contains(token))
+                .collect();
+            let lines = if tokens.is_empty() {
+                Vec::new()
+            } else if self.tests {
                 text.lines().enumerate().map(|(i, l)| (i + 1, l)).collect()
             } else {
                 production_lines(text).0
             };
             for (number, line) in lines {
-                for token in self.tokens {
+                for &token in &tokens {
                     if holds_token(line, token, self.mode) {
                         let seen = homes.entry(token).or_default();
                         if home && *seen == 0 {
@@ -1672,9 +1710,19 @@ impl SenderRule {
             if tests.contains(path) || permitted(path, self.drivers) {
                 continue;
             }
-            for (_, line) in production_lines(tree.text(path)?).0 {
+            let text = tree.text(path)?;
+            let held: Vec<&String> = variants
+                .iter()
+                .filter(|token| text.contains(token.as_str()))
+                .collect();
+            let lines = if held.is_empty() {
+                Vec::new()
+            } else {
+                production_lines(text).0
+            };
+            for (_, line) in lines {
                 let arm = path == self.handler;
-                for token in &variants {
+                for &token in &held {
                     if holds_token(line, token, Match::Whole)
                         && !(arm && line.trim_start().starts_with(token.as_str()))
                     {
@@ -1908,7 +1956,7 @@ mod tests {
         assert!(schema(&json!({"n":2}), &s, &s).is_ok());
     }
     #[test]
-    fn active_repository_is_valid() {
+    fn slow_active_repository_is_valid() {
         check(&root().unwrap()).unwrap();
     }
     /// The desktop layering rules.
@@ -3090,6 +3138,84 @@ mod tests {
                 error.contains(&format!("{path}:"))
                     && error.contains("may depend on ureq")
                     && error.contains("DEPENDENCY_RULES"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_durable_write_flushes_through_one_function_and_only_tests_skip_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The one flush may name the call and the feature; a dev-dependency may turn it on; test
+        // code and a longer name may name the call; xtask is out of scope.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-core/src/atomic_file.rs",
+                    "const FLUSHES: bool = !cfg!(feature = \"test-skip-disk-flush\");\n\
+                     fn flush(file: &File) { file.sync_all() }\n",
+                ),
+                (
+                    "crates/luxforge-core/src/store.rs",
+                    "atomic_file::flush(&file)?;\nfn sync_all_entries() {}\n\
+                     #[cfg(test)]\nmod tests {\n    fn t() { file.sync_all(); }\n}\n",
+                ),
+                ("xtask/src/package.rs", "zip.finish()?.sync_all()?;\n"),
+                (
+                    "crates/luxforge-app/Cargo.toml",
+                    "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n\n\
+                     [dev-dependencies]\nluxforge-core = { path = \"../luxforge-core\", \
+                     features = [\"test-skip-disk-flush\"] }\n",
+                ),
+            ],
+        );
+        let rules = ["one-disk-flush", "disk-flush-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // Anywhere else in the crates' production code, each is refused.
+        refuses_each(
+            root,
+            "one-disk-flush",
+            &[
+                (
+                    "crates/luxforge-core/src/export/publish.rs",
+                    "file.sync_all()?;\n",
+                ),
+                (
+                    "crates/luxforge-app/src/diagnostics.rs",
+                    "file.sync_data()?;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/editor.rs",
+                    "if cfg!(feature = \"test-skip-disk-flush\") {}\n",
+                ),
+            ],
+            "atomic_file::flush",
+        );
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "xtask/Cargo.toml",
+                "[dependencies]\nluxforge-core = { path = \"../crates/luxforge-core\", \
+                 features = [\"test-skip-disk-flush\"] }\n",
+            ),
+            (
+                "crates/luxforge-cli/Cargo.toml",
+                "[build-dependencies.luxforge-core]\npath = \"../luxforge-core\"\n\
+                 features = [\"test-skip-disk-flush\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-core = { path = \"crates/luxforge-core\", \
+                 features = [\"test-skip-disk-flush\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
                 "{path}: {error}"
             );
             fs::remove_file(root.join(path)).unwrap();
