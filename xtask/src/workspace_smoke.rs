@@ -364,7 +364,7 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
         })
     });
     ensure(
-        frame2["photo_rect"].is_null() && !has_fixture_colour,
+        frame2.photo_rect().is_err() && !has_fixture_colour,
         "Launch 2 drew the photo despite the unavailable provider",
     )?;
     let mut checks = Checks::new();

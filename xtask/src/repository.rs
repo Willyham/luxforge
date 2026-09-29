@@ -796,6 +796,22 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "a test holds work at the one luxforge_testbase::Gate, never a gate of its own; \
                  extend that crate instead of writing a second gate",
     },
+    // One photo locator: a scenario finds the photograph in a capture by the rectangle the editor
+    // records per frame, read through `Frame::photo_rect` and the readers over it in
+    // `scenario/pixels.rs`, never by indexing the record itself or by searching the capture.
+    SourceRule {
+        name: "one-photo-locator",
+        tokens: &["[\"photo_rect\"]"],
+        scope: &["xtask/src"],
+        types: &["rs"],
+        allowed: &["xtask/src/scenario/pixels.rs"],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "a scenario locates the photograph through Frame::photo, Frame::visible_photo, \
+                 Frame::photo_edges or Frame::photo_rect in scenario/pixels.rs, never by reading \
+                 the frame's photo_rect itself; extend those instead",
+    },
     // One percentile definition: every timing figure — xtask's timing tools and the crates' own
     // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
     // never from a sort-and-index of its own. The tokens are the shapes each hand-written
@@ -2468,6 +2484,30 @@ mod tests {
             }
         }
         assert_eq!(read(tmp.path(), &["refusal-text"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn scenarios_locate_the_photograph_through_one_locator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scenario = tmp.path().join("xtask/src/scenario");
+        fs::create_dir_all(&scenario).unwrap();
+        let read_rect = "        serde_json::from_value(self[\"photo_rect\"].clone())\n";
+        fs::write(scenario.join("pixels.rs"), read_rect).unwrap();
+        // Writing the key into a record is not reading it.
+        fs::write(
+            tmp.path().join("xtask/src/zoom_smoke.rs"),
+            "        json!({\"photo_rect\": photo})\n",
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), &["one-photo-locator"]).unwrap(), (1, 0));
+        // A scenario reading the rectangle for itself is a second locator.
+        let own = "    let rect = &frame[\"photo_rect\"];\n";
+        fs::write(tmp.path().join("xtask/src/vignette_smoke.rs"), own).unwrap();
+        let error = refusal(tmp.path(), &["one-photo-locator"], own);
+        assert!(
+            error.contains("vignette_smoke.rs:") && error.contains("Frame::photo"),
+            "{error}"
+        );
     }
 
     #[test]
