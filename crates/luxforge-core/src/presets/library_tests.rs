@@ -17,10 +17,10 @@ use std::{
     sync::Arc,
 };
 
-use luxforge_testkit::fixtures::jpeg;
+use luxforge_testbase::paths::jpeg;
 
 fn catalog(name: &str) -> PathBuf {
-    luxforge_testkit::fixtures::temp_catalog(&format!("preset-library-{name}"))
+    luxforge_testbase::paths::temp_catalog(&format!("preset-library-{name}"))
 }
 
 fn preset_file(name: &str) -> String {

@@ -140,7 +140,8 @@ fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
 }
 
 /// One `cargo test` invocation `raw-authentic` runs: the package and integration-test binary that
-/// hold the `#[ignore]`d authentic-file tests, and, where more than one test in that binary is
+/// hold the `#[ignore]`d authentic-file tests, and the filters that select the ones it can answer:
+/// the module that holds them in a binary of several, or, where more than one test in a binary is
 /// `#[ignore]`d for a reason `raw-authentic` cannot answer (a separate CC0 public-fixture directory
 /// no manifest here names), the exact names of the ones it can.
 struct Authentic {
@@ -150,8 +151,8 @@ struct Authentic {
 }
 
 /// The authentic RAW tests `raw-authentic` can run from a manifest alone: every ignored test in
-/// `luxforge-raw`'s `real_files` and `luxforge-cli`'s `raw_json_cli` that needs nothing beyond one
-/// `LUXFORGE_RAW_OWNER_DIR` directory of exactly-named files
+/// `luxforge-raw`'s `real_files` and in the `raw` module of `luxforge-cli`'s `json_cli` that needs
+/// nothing beyond one `LUXFORGE_RAW_OWNER_DIR` directory of exactly-named files
 /// (`docs/engineering/development.md`). `real_files` also holds `authentic_public_modes_preserve_sources_and_develop_float`,
 /// which needs its own separate `LUXFORGE_RAW_PUBLIC_DIR` of CC0 fixtures no manifest here names, so
 /// it is filtered out rather than left to fail on a missing environment variable.
@@ -167,8 +168,8 @@ const AUTHENTIC: [Authentic; 2] = [
     },
     Authentic {
         package: "luxforge-cli",
-        test: "raw_json_cli",
-        filters: &[],
+        test: "json_cli",
+        filters: &["raw::"],
     },
 ];
 
@@ -1679,10 +1680,11 @@ mod tests {
                 "--package",
                 "luxforge-cli",
                 "--test",
-                "raw_json_cli",
+                "json_cli",
                 "--",
                 "--ignored",
                 "--nocapture",
+                "raw::",
             ]
         );
     }

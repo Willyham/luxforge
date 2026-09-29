@@ -13,7 +13,7 @@ use crate::state::tools::ControlModel;
 use luxforge_core::{
     ApiRequest, AssetId, ClientId, ControlsModule, ModuleDescriptor, ModuleRegistry, OwnerHandle,
 };
-use luxforge_testkit::fixtures::temp_catalog;
+use luxforge_testbase::paths::temp_catalog;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{

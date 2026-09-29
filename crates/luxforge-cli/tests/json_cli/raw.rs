@@ -3,9 +3,10 @@
 //! These tests deliberately stay ignored in normal CI. They need the owner's qualified RAW
 //! files and a release-built native RAW adapter. Run it with
 //! `LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release -p luxforge-cli
-//! --test raw_json_cli -- --ignored --nocapture`.
+//! --test json_cli -- --ignored --nocapture raw::`.
 
-use luxforge_testkit::{JsonProcess, client::request_id, fixtures};
+use luxforge_testbase::paths;
+use luxforge_testkit::{JsonProcess, client::request_id};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -171,7 +172,7 @@ fn apply_action(
 
 fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     let metadata_before = std::fs::metadata(path).expect("fixture metadata");
-    let catalog = fixtures::temp_catalog(&format!("raw-json-{label}"));
+    let catalog = paths::temp_catalog(&format!("raw-json-{label}"));
     let mut client = start(&catalog);
     let schema = client.call("schema.list", Value::Null);
     let temperature_action = raw_action(&schema, "set-raw", "temperature");

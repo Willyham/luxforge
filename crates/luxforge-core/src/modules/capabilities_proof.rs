@@ -5,7 +5,7 @@
 //! tint artifact, which its colour-stage effect applies by multiplying linear channels. It is a test
 //! fixture: the desktop and `luxforge-json` register it only in developer mode with
 //! `--proof-endpoint`, and tests directly, always against the fake provider a
-//! harness started (`luxforge-testkit`'s `ProofEndpoint`, which ships in no binary). See
+//! harness started (`luxforge-testbase`'s `ProofEndpoint`, which ships in no binary). See
 //! `docs/design/module-capabilities.md#proof-module`.
 use super::{
     ActionInput, ActionPlan, CapabilityModule, ColorOperation, LayerReport, LayerUpdate,

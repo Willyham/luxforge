@@ -857,9 +857,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/diagnostics.rs",
             // The widget crate's GPU retirement worker.
             "crates/luxforge-ui/src/photo_surface.rs",
-            // The test kit's process and server threads.
+            // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
-            "crates/luxforge-testkit/src/server.rs",
+            "crates/luxforge-testbase/src/server.rs",
             // `verify`'s component pool.
             "xtask/src/verify.rs",
         ],
@@ -1116,8 +1116,9 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "luxforge-reference may depend on no workspace crate and no path, so it can never \
                  reach luxforge-core",
     },
-    // The one gate, wait and distribution serve every crate's tests, the core's own and the widget
-    // crate's included, so they can never reach the core.
+    // The test base (the one gate, wait and distribution, the loopback test server, the proof
+    // endpoint and the fixture paths) serves every crate's tests, the core's own and the widget
+    // crate's included, so it can never reach the core: a core that names it builds itself once.
     DependencyRule {
         name: "core-free-test-base",
         refuses: Depends::WorkspaceCrate,
@@ -1125,7 +1126,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-testbase may depend on no workspace crate and no path, so the core's \
-                 and the widget crate's tests can use it",
+                 and the widget crate's tests can use it without building the core twice",
     },
     // The headless binary builds without the GUI stack: no window, renderer or dialog crate, and
     // not the widget crate or the desktop that bring them.

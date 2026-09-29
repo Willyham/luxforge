@@ -382,10 +382,9 @@ mod tests {
             descriptor::{AdapterCost, DataClass},
             endpoint::{EndpointClass, parse_endpoint},
             secrets::MemorySecretStore,
-            testing::{proof_transport, temp},
+            testing::{proof_endpoint, proof_transport, temp},
         },
     };
-    use luxforge_testkit::ProofEndpoint;
     use std::fs;
 
     fn assert_send<T: Send>() {}
@@ -531,7 +530,7 @@ mod tests {
 
     #[test]
     fn a_send_posts_the_sampled_grid_with_the_bearer_credential_and_maps_statuses() {
-        let endpoint = Arc::new(ProofEndpoint::in_process("proof-key"));
+        let endpoint = Arc::new(proof_endpoint("proof-key"));
         let transport = proof_transport(endpoint.clone());
         let store = Arc::new(MemorySecretStore::new());
         let key = SecretKey::new("test.module", Some("profile-1"), "api-key");

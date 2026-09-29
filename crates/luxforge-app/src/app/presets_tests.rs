@@ -18,7 +18,7 @@ use crate::{
     state::presets::{PresetRow, PresetsModel},
 };
 use luxforge_core::{AssetId, ClientId, MAX_PRESET_BYTES, OwnerHandle};
-use luxforge_testkit::fixtures::temp_catalog;
+use luxforge_testbase::paths::temp_catalog;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},

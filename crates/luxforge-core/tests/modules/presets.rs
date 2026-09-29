@@ -14,7 +14,8 @@ use luxforge_core::{
     MutationOutcome, ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext,
     ToolModule,
 };
-use luxforge_testkit::fixtures::{self, jpeg};
+use luxforge_testbase::paths::{self, jpeg};
+use luxforge_testkit::fixtures;
 use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc};
 
@@ -28,7 +29,7 @@ fn mutation(revision: u64, request: &str) -> Mutation {
 
 /// A service over a fresh catalog with the JPEG fixture imported.
 fn opened(name: &str, registry: Option<ModuleRegistry>) -> (EditorService, AssetId, PathBuf) {
-    let path = fixtures::temp_catalog(&format!("presets-{name}"));
+    let path = paths::temp_catalog(&format!("presets-{name}"));
     let mut service = match registry {
         Some(registry) => EditorService::open_with(&path, Arc::new(registry)),
         None => EditorService::open(&path),

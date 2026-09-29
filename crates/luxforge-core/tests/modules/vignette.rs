@@ -18,6 +18,7 @@ use luxforge_core::{
     Transform, VIGNETTE_EFFECT,
 };
 use luxforge_reference as reference;
+use luxforge_testbase::paths;
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use serde_json::{Value, json};
@@ -73,13 +74,9 @@ fn a_layer_describes_its_fields_in_the_declared_order() {
 /// therefore keeps recentring on whatever the tail produces.
 #[test]
 fn a_vignette_layer_stays_last_through_rotate_mirror_and_crop() {
-    let path = fixtures::temp_catalog("vignette-placement");
+    let path = paths::temp_catalog("vignette-placement");
     let mut service = EditorService::open(&path).expect("a catalog");
-    let asset = service
-        .import(&fixtures::jpeg())
-        .expect("an import")
-        .asset
-        .id;
+    let asset = service.import(&paths::jpeg()).expect("an import").asset.id;
 
     service
         .apply_action(
@@ -227,7 +224,7 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
 #[test]
 fn production_matches_every_amount_case_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
-    let raw = std::fs::read_to_string(fixtures::fixture("vignette/amount-cases.json"))
+    let raw = std::fs::read_to_string(paths::fixture("vignette/amount-cases.json"))
         .expect("fixtures/vignette/amount-cases.json");
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 60);
@@ -283,7 +280,7 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
 #[test]
 fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
-    let raw = std::fs::read_to_string(fixtures::fixture("vignette/mask-cases.json"))
+    let raw = std::fs::read_to_string(paths::fixture("vignette/mask-cases.json"))
         .expect("fixtures/vignette/mask-cases.json");
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 202);

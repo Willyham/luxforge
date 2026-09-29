@@ -15,6 +15,7 @@ use luxforge_core::{
 };
 use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{self, RejectReason};
+use luxforge_testbase::paths;
 use luxforge_testkit::client::{call, import, refused};
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
@@ -38,7 +39,7 @@ fn solver_cases() -> Vec<SolverCase> {
     struct Cases {
         solver_cases: Vec<SolverCase>,
     }
-    let raw = fs::read_to_string(fixtures::fixture("basic/white-balance-cases.json"))
+    let raw = fs::read_to_string(paths::fixture("basic/white-balance-cases.json"))
         .expect("the committed corpus");
     serde_json::from_str::<Cases>(&raw)
         .expect("white-balance cases")
@@ -74,7 +75,7 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
     struct Cases {
         transform_cases: Vec<TransformCase>,
     }
-    let raw = fs::read_to_string(fixtures::fixture("basic/white-balance-cases.json"))
+    let raw = fs::read_to_string(paths::fixture("basic/white-balance-cases.json"))
         .expect("the committed corpus");
     let cases = serde_json::from_str::<Cases>(&raw)
         .expect("cases")
@@ -224,7 +225,7 @@ fn write_cast_image(name: &str) -> CastImage {
     block(&mut image, 0, 0, [255, 255, 255]);
     block(&mut image, 48, 0, [12, 12, 12]);
     block(&mut image, 0, 48, [230, 30, 30]);
-    let path = fixtures::temp_path(&format!("basic-wb-{name}.jpg"));
+    let path = paths::temp_path(&format!("basic-wb-{name}.jpg"));
     let mut file = std::io::BufWriter::new(fs::File::create(&path).expect("the JPEG file"));
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 100)
         .encode_image(&image)
@@ -256,7 +257,7 @@ fn reference_settings(result: &Value) -> Result<(i32, i32), RejectReason> {
 #[test]
 fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     let image = write_cast_image("apply");
-    let catalog = fixtures::temp_catalog("basic-wb-apply");
+    let catalog = paths::temp_catalog("basic-wb-apply");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
 
@@ -344,7 +345,7 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
 #[test]
 fn the_picker_on_a_mask_reads_the_stage_with_the_global_white_balance() {
     let image = write_cast_image("masked");
-    let catalog = fixtures::temp_catalog("basic-wb-masked");
+    let catalog = paths::temp_catalog("basic-wb-masked");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
     let schema = call(&owner, client, "schema.list", json!({})).unwrap();
@@ -428,7 +429,7 @@ fn the_picker_on_a_mask_reads_the_stage_with_the_global_white_balance() {
 #[test]
 fn the_picker_reads_the_stage_before_the_basic_layer() {
     let image = write_cast_image("before");
-    let catalog = fixtures::temp_catalog("basic-wb-before");
+    let catalog = paths::temp_catalog("basic-wb-before");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
     let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
@@ -477,7 +478,7 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
 #[test]
 fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
     let image = write_cast_image("edges");
-    let catalog = fixtures::temp_catalog("basic-wb-edges");
+    let catalog = paths::temp_catalog("basic-wb-edges");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
     let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
@@ -600,7 +601,7 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
 #[test]
 fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
     let image = write_cast_image("locate");
-    let catalog = fixtures::temp_catalog("basic-wb-locate");
+    let catalog = paths::temp_catalog("basic-wb-locate");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
     let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
@@ -707,7 +708,7 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
 #[test]
 fn a_query_is_read_only_and_two_clients_agree() {
     let image = write_cast_image("shared");
-    let catalog = fixtures::temp_catalog("basic-wb-shared");
+    let catalog = paths::temp_catalog("basic-wb-shared");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let first = owner.register();
     let second = owner.register();

@@ -3,9 +3,10 @@
 //! read, and a refused file answered as a structured error with nothing stored. What the presets
 //! mean (mapping, reports, the stack an apply commits, capture, export, deduplication and the
 //! event log) is proved in-process by the core's own tests; the process transport itself is
-//! proved by `json_cli.rs`.
+//! proved by `process`.
 
-use luxforge_testkit::{JsonProcess, client::request_id, fixtures};
+use luxforge_testbase::paths;
+use luxforge_testkit::{JsonProcess, client::request_id};
 use serde_json::{Value, json};
 
 const ACTOR: &str = "presets-json-cli";
@@ -16,13 +17,12 @@ fn request() -> Value {
 }
 
 fn preset_file(name: &str) -> String {
-    std::fs::read_to_string(fixtures::fixture(&format!("presets/{name}")))
-        .expect("a preset fixture")
+    std::fs::read_to_string(paths::fixture(&format!("presets/{name}"))).expect("a preset fixture")
 }
 
 #[test]
 fn a_preset_imports_lists_and_applies_and_a_refused_file_is_an_error_over_the_pipe() {
-    let catalog = fixtures::temp_catalog("presets-json-cli");
+    let catalog = paths::temp_catalog("presets-json-cli");
     let mut client = JsonProcess::start(
         env!("CARGO_BIN_EXE_luxforge-json"),
         &["--catalog", catalog.to_str().expect("catalog is UTF-8")],
@@ -31,7 +31,7 @@ fn a_preset_imports_lists_and_applies_and_a_refused_file_is_an_error_over_the_pi
     let job = client.call(
         "catalog.import",
         json!({
-            "path": fixtures::jpeg().canonicalize().expect("the fixture"),
+            "path": paths::jpeg().canonicalize().expect("the fixture"),
             "mutation": request(),
         }),
     )["job_id"]

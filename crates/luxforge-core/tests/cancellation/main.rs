@@ -1,16 +1,21 @@
-//! The photo-sized cancellation case: how promptly a superseded full-resolution render stops, and
-//! what it leaves behind. The stop is a timing, so both cases are ignored and assert their 25 ms
-//! bound only where it means something, in release on the owner's Mac:
+//! The core's ignored release timings. The photo-sized cancellation case: how promptly a
+//! superseded full-resolution render stops, and what it leaves behind. The stop is a timing, so
+//! both cases are ignored and assert their 25 ms bound only where it means something, in release on
+//! the owner's Mac:
 //!
 //! ```sh
-//! cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture
+//! cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture cancelled
 //! ```
 //!
 //! What a cancel leaves behind at any size (the cancelled kind, no frame, every reservation
 //! released) is proven without timing by the core's `render::cancellation_tests`.
 //!
 //! Each test renders through a context of its own, so the scratch budget it reads holds its own
-//! render's reservations and nothing else's.
+//! render's reservations and nothing else's. The owner-side cost of `resources.read` is the other
+//! timing here (`resources_cost`); each runs by its own filter, so neither shares its process with
+//! the other.
+
+mod resources_cost;
 
 use luxforge_core::{
     BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId,

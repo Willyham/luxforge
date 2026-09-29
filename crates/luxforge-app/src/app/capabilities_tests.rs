@@ -24,8 +24,8 @@ use luxforge_core::{
     AssetId, HostConfig, ModuleDescriptor, OwnerHandle, capabilities::secrets::MemorySecretStore,
     jobs::JobStatus,
 };
-use luxforge_testbase::{wait_for, wait_until};
-use luxforge_testkit::ProofEndpoint;
+use luxforge_testbase::{ProofEndpoint, wait_for, wait_until};
+use luxforge_testkit::proof_protocol;
 use serde_json::{Map, Value, json};
 use std::{
     path::PathBuf,
@@ -53,7 +53,7 @@ impl Proof {
             REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
         );
         let key = format!("desktop-sentinel-{unique}");
-        let endpoint = ProofEndpoint::start(&key).unwrap();
+        let endpoint = ProofEndpoint::start(&key, proof_protocol()).unwrap();
         let root = std::env::temp_dir().join(format!("luxforge-desktop-capabilities-{unique}"));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();

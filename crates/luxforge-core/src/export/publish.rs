@@ -215,7 +215,7 @@ pub(crate) fn suggest(directory: &Path, stem: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_testkit::fixtures::temp_dir;
+    use luxforge_testbase::paths::temp_dir;
 
     fn scratch() -> PathBuf {
         temp_dir("export-publish")

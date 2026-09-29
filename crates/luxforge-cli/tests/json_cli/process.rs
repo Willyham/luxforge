@@ -1,5 +1,8 @@
-use luxforge_testbase::wait_for;
-use luxforge_testkit::{JsonProcess, fixtures};
+//! The `luxforge-json` process itself: a session over standard input and output that edits,
+//! queries and exits cleanly at end of input, permission authority, the developer-only test
+//! modules, and a proof-endpoint client installing, running and applying the capability proof.
+use luxforge_testbase::{ProofEndpoint, paths, wait_for};
+use luxforge_testkit::{JsonProcess, proof_protocol};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -11,8 +14,8 @@ const BINARY: &str = env!("CARGO_BIN_EXE_luxforge-json");
 
 #[test]
 fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
-    let catalog = fixtures::temp_catalog("json-cli");
-    let fixture = fixtures::jpeg().canonicalize().unwrap();
+    let catalog = paths::temp_catalog("json-cli");
+    let fixture = paths::jpeg().canonicalize().unwrap();
     // The pixel proof is a test module, served only with --developer.
     let mut child = Command::new(BINARY)
         .args(["--catalog", catalog.to_str().unwrap(), "--developer"])
@@ -84,7 +87,7 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
 /// Run one `luxforge-json` process over an isolated data root and in-memory secrets, send it
 /// `requests` and return its responses.
 fn session(data_root: &Path, extra: &[&str], requests: &[Value]) -> Vec<Value> {
-    let catalog = fixtures::temp_catalog("json-cli-session");
+    let catalog = paths::temp_catalog("json-cli-session");
     let mut child = Command::new(BINARY)
         .args(["--catalog", catalog.to_str().unwrap()])
         .args(["--data-root", data_root.to_str().unwrap()])
@@ -112,7 +115,7 @@ fn session(data_root: &Path, extra: &[&str], requests: &[Value]) -> Vec<Value> {
 
 #[test]
 fn only_a_client_started_with_permission_authority_may_grant() {
-    let data_root = fixtures::temp_path("json-cli-authority");
+    let data_root = paths::temp_path("json-cli-authority");
     let requests = [
         json!({"id": "state", "method": "session.state", "params": {}}),
         json!({"id": "grant", "method": "module.permission.grant", "params": {
@@ -147,7 +150,7 @@ fn only_a_client_started_with_permission_authority_may_grant() {
 /// before anything starts, in the desktop's words.
 #[test]
 fn test_modules_are_served_only_with_developer() {
-    let data_root = fixtures::temp_path("json-cli-developer");
+    let data_root = paths::temp_path("json-cli-developer");
     let requests = [
         json!({"id": "schema", "method": "schema.list", "params": {}}),
         json!({"id": "modules", "method": "module.list", "params": {}}),
@@ -251,12 +254,12 @@ fn tinted_code(code: u64, gain: f64) -> f64 {
 #[test]
 fn a_proof_endpoint_client_installs_runs_the_task_and_applies_its_tint() {
     let key = format!("CLI-SENTINEL-{}", std::process::id());
-    let endpoint = luxforge_testkit::ProofEndpoint::start(&key).unwrap();
-    let data_root = fixtures::temp_path("json-cli-proof");
+    let endpoint = ProofEndpoint::start(&key, proof_protocol()).unwrap();
+    let data_root = paths::temp_path("json-cli-proof");
     std::fs::create_dir_all(&data_root).unwrap();
     let data_root = data_root.canonicalize().unwrap();
     let catalog = data_root.join("catalog.sqlite");
-    let fixture = fixtures::jpeg().canonicalize().unwrap();
+    let fixture = paths::jpeg().canonicalize().unwrap();
     let base = endpoint.base_url();
     let mut client = JsonProcess::start(
         BINARY,

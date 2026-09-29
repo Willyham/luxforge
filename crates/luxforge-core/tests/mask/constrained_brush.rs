@@ -443,7 +443,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(luxforge_testkit::fixtures::jpeg(), &source).expect("the fixture copies");
+        std::fs::copy(luxforge_testbase::paths::jpeg(), &source).expect("the fixture copies");
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).expect("a catalog");
         let asset = service
             .import(&source)

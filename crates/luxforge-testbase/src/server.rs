@@ -346,7 +346,7 @@ fn read_request(index: usize, stream: &mut impl Read) -> Result<Request, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_testbase::Gate;
+    use crate::Gate;
 
     /// One raw exchange: the status and the body.
     fn exchange(server: &TestServer, request: &[u8]) -> (u16, Vec<u8>) {

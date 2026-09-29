@@ -7,12 +7,21 @@ rust-version.workspace = true
 publish.workspace = true
 
 # The core-free base of the workspace's test support: the one gate and the one wait every test
-# orders its steps by, and the one distribution every timing figure is computed with. It depends on
-# no workspace crate, so the core's own unit tests and the widget crate (luxforge-ui, which may not
-# reach the core) can use it; `cargo xtask check-repository` refuses a manifest of it that names
-# one. Only `[dev-dependencies]`, `luxforge-testkit` and `xtask` name this crate, so no build of a
-# shipped binary compiles it.
+# orders its steps by, the one distribution every timing figure is computed with, the one loopback
+# test server, the capability proof's fake provider on it, and the fixture and scratch paths. It
+# depends on no workspace crate, so the core's own unit tests and the widget crate (luxforge-ui,
+# which may not reach the core) can use it, and naming it never builds the core a second time;
+# `cargo xtask check-repository` refuses a manifest of it that names one. Only
+# `[dev-dependencies]`, `luxforge-testkit` and `xtask` name this crate, so no build of a shipped
+# binary compiles it.
 [dependencies]
+rustls = { workspace = true, optional = true }
+serde_json.workspace = true
+
+# `tls` lets a `TestServer` serve TLS. Only the transport's own tests (`luxforge-net`) ask for it,
+# so a build of the core's tests alone links no TLS crate.
+[features]
+tls = ["dep:rustls"]
 
 [lints]
 workspace = true

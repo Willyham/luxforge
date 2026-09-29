@@ -1896,7 +1896,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
-    use luxforge_testkit::fixtures::{jpeg as fixture, temp_path as temp};
+    use luxforge_testbase::paths::{jpeg as fixture, temp_path as temp};
 
     /// One JSON call against the owner, as an independent client would make it.
     fn send(
@@ -4660,7 +4660,7 @@ mod tests {
         let second = import_asset(
             &owner,
             agent,
-            &luxforge_testkit::fixtures::fixture("s0/orientation-2.jpg"),
+            &luxforge_testbase::paths::fixture("s0/orientation-2.jpg"),
         )["asset"]["id"]
             .clone();
         assert_ne!(first, second);

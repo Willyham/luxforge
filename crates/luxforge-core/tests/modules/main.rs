@@ -12,3 +12,13 @@ mod mixer;
 mod presence;
 mod presets;
 mod vignette;
+
+// `luxforge-testkit`'s core-typed helpers, compiled into this binary from their one source: the
+// core cannot name that crate, which depends on it, without building itself a second time for every
+// test build. The binary names itself `luxforge_testkit`, so a helper reads the same here as in
+// every other crate's tests and in xtask, which compiles the conformance suite as well.
+extern crate self as luxforge_testkit;
+#[path = "../../../luxforge-testkit/src/client.rs"]
+pub mod client;
+#[path = "../../../luxforge-testkit/src/fixtures.rs"]
+pub mod fixtures;

@@ -213,7 +213,7 @@ fn serve(
 mod tests {
     use super::*;
     use crate::ModuleRegistry;
-    use luxforge_testkit::fixtures::{jpeg as fixture, temp_path as temp};
+    use luxforge_testbase::paths::{jpeg as fixture, temp_path as temp};
     use serde_json::{Value, json};
     use std::io::Cursor;
     fn request(id: &str, method: &str, params: Value) -> String {

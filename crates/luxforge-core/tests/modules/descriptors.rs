@@ -13,7 +13,8 @@
 //! ```
 
 use luxforge_core::{ModuleRegistry, capabilities::host::TASK_PREFIX};
-use luxforge_testkit::{client::Owner, fixtures};
+use luxforge_testbase::paths;
+use luxforge_testkit::client::Owner;
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
@@ -25,7 +26,7 @@ fn snapshot_path() -> PathBuf {
 /// `module.list` and the generated part of `schema.list`, as a JSON client reads them from an
 /// owner serving [`ModuleRegistry::builtin`], pretty-printed with a trailing newline.
 fn published() -> String {
-    let catalog = fixtures::temp_catalog("builtin-descriptors");
+    let catalog = paths::temp_catalog("builtin-descriptors");
     let owner =
         Owner::start(&catalog, ModuleRegistry::builtin(), "descriptor-snapshot").expect("an owner");
     let client = owner.client();
@@ -129,7 +130,7 @@ fn the_built_in_descriptors_match_the_committed_snapshot() {
 #[test]
 fn schema_list_names_developer_only_methods_only_in_developer_mode() {
     let listed = |registry: ModuleRegistry, name: &str| -> Map<String, Value> {
-        let catalog = fixtures::temp_catalog(name);
+        let catalog = paths::temp_catalog(name);
         let owner = Owner::start(&catalog, registry, "developer-methods").expect("an owner");
         let client = owner.client();
         let schema = owner
