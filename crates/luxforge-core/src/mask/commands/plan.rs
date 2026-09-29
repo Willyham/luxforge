@@ -11,8 +11,9 @@ use crate::mask::{
 use crate::{
     Component, ComponentId, ComponentMode, Error, Layer, LayerId, Mask, MaskId, ModuleRegistry,
     Recipe,
+    mask::{ColourLimit, Stroke},
     model::MASKS_PER_RECIPE,
-    path::{self, Stroke, StrokeId},
+    path::{self, StrokeId},
 };
 use serde_json::{Map, Value, json};
 
@@ -474,7 +475,7 @@ fn plan_add_stroke(
     // from the request, and never read again when the picture is drawn.
     let stroke = match (boolean(parameters, "limit_to_colour")?, seed) {
         (false, _) => stroke,
-        (true, Some(seed)) => stroke.with_colour_limit(path::ColourLimit::sampled(
+        (true, Some(seed)) => stroke.with_colour_limit(ColourLimit::sampled(
             seed,
             number(parameters, "colour_refine")?,
         )?),

@@ -19,33 +19,33 @@ use serde_json::{Value, json};
 host_params! {
     /// `module.permission.list`.
     pub(crate) struct PermissionList {
-        module_id: Option<String> = "one module's grants and denials; default all",
+        module_id: Option<String> = name().notes("one module's grants and denials; default all"),
     }
 }
 
 host_params! {
     pub(crate) struct GrantParams {
-        module_id: String,
-        capability: String,
-        scope: Value,
+        module_id: String = name(),
+        capability: String = name(),
+        scope: Value = json("the exact scope, in the shape the capability kind gives: see the method's notes"),
         mutation: MutationRequest,
     }
 }
 
 host_params! {
     pub(crate) struct DenyParams {
-        module_id: String,
-        capability: String,
-        scope: Value,
+        module_id: String = name(),
+        capability: String = name(),
+        scope: Value = json("the exact scope, in the shape the capability kind gives: see the method's notes"),
         mutation: MutationRequest,
     }
 }
 
 host_params! {
     pub(crate) struct RevokeParams {
-        grant_id: String,
+        grant_id: String = name(),
         mutation: MutationRequest,
-        reason: Option<String> = "1..256 characters; default revoked",
+        reason: Option<String> = string(MAX_REASON).notes("non-empty after trimming; default revoked"),
     }
 }
 

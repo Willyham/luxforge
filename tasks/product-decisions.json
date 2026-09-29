@@ -286,7 +286,7 @@
       "extra_context": [
         "Every spatial layer is placed after all colour work today (`EffectStage` order and the placement rule in modules/registry/placement.rs), so noise reduction or sharpening before tone cannot be expressed; proxy eligibility is decided per stage (`ModuleRegistry::proxy_eligible`), with no per-effect policy, so a non-neutral spatial layer makes the proxy approximate at Fit.",
         "Lightroom-style noise reduction usually runs early on scene-referred data while output sharpening runs late; the choice decides whether Detail needs a new stage or an ordering rule inside the spatial stage.",
-        "It is the one question the post-consolidation design leaves open (docs/design/post-consolidation.md, Out of scope)."
+        "It is the one question the post-consolidation programme left open."
       ],
       "context_links": [
         {

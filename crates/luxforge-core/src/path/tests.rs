@@ -8,10 +8,10 @@ use serde_json::json;
 /// A small, fixed linear congruential generator, so "randomized" here means a lot of different
 /// shapes and not a different test on every run: a failure is reproducible from the seed printed
 /// with it.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -20,7 +20,7 @@ impl Rng {
     }
 
     /// A finite value in `[low, high)`.
-    fn range(&mut self, low: f64, high: f64) -> f64 {
+    pub(crate) fn range(&mut self, low: f64, high: f64) -> f64 {
         low + (self.next() % 1_000_000) as f64 / 1_000_000.0 * (high - low)
     }
 }
@@ -33,7 +33,7 @@ fn points_parameter(points_min: usize, points_max: usize) -> ParameterDescriptor
 
 /// A captured drag: a smooth arc with a little jitter on it, which is what a pointer produces and
 /// what decimation has to shorten without moving.
-fn captured(rng: &mut Rng, count: usize) -> Vec<[f64; 2]> {
+pub(crate) fn captured(rng: &mut Rng, count: usize) -> Vec<[f64; 2]> {
     let (cx, cy) = (rng.range(0.2, 0.8), rng.range(0.2, 0.8));
     let radius = rng.range(0.05, 0.3);
     let sweep = rng.range(0.5, 6.0);
@@ -125,21 +125,13 @@ fn a_posted_path_over_its_declared_count_names_the_posted_bound() {
             POSTED_POINTS_PER_STROKE + 1
         )
     );
-    // The one command that paints declares exactly this bound for its path.
-    let declared = crate::mask::commands::find(crate::mask::commands::ADD_STROKE)
-        .and_then(|command| command.action.parameter("points").cloned())
-        .expect("mask.add-stroke declares its path");
-    assert_eq!(
-        declared.kind,
-        crate::ParameterKind::Points {
-            points_min: 1,
-            points_max: POSTED_POINTS_PER_STROKE
-        }
-    );
 }
 
-/// The brush sizes decimation is held to: the declared minimum, the desktop's default brush and the
-/// declared maximum.
+/// The radii decimation is measured at: the mask brush's declared minimum and maximum and the
+/// desktop's default brush between them, written out here because the brush's range is the brush's
+/// and not this file's.
+const SIZE_MIN: f64 = 1e-4;
+const SIZE_MAX: f64 = 2.0;
 const SIZES: [f64; 3] = [SIZE_MIN, 0.1, SIZE_MAX];
 
 #[test]
@@ -203,8 +195,8 @@ fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
 /// and snap every position of the slice, drop consecutive repeats, then reduce. It shares only the
 /// reduction and the grid rules with the code under test, never the capture.
 fn reference_decimate(points: &[[f64; 2]], size: f64) -> Result<Vec<[f64; 2]>, String> {
-    if !size_is_legal(size) {
-        return Err("illegal size".into());
+    if !radius_is_decimable(size) {
+        return Err("illegal radius".into());
     }
     if points.is_empty() {
         return Err("empty".into());
@@ -325,7 +317,7 @@ fn a_capture_taken_one_position_at_a_time_decimates_as_the_whole_path_does() {
 
 /// A capture refuses what whole-path decimation refuses, in the same words: nothing at all, a
 /// position outside the stored range — named by its index and axis, and kept refused whatever comes
-/// after it, since the stroke it would store is not the one drawn — and a radius no stroke takes.
+/// after it, since the stroke it would store is not the one drawn — and a radius no path is decimated for.
 #[test]
 fn a_capture_refuses_what_whole_path_decimation_refuses() {
     let empty = PathCapture::default();
@@ -443,13 +435,13 @@ fn the_tolerance_is_a_share_of_the_radius_and_never_under_two_grid_steps() {
         "stored positions at the minimum, default and maximum sizes: {kept:?}"
     );
 
-    // A size no stroke can be captured at is refused by name here too.
+    // A radius no path can be decimated for is refused by name, whatever a consumer allows.
     for size in [0.0, f64::NAN, SIZE_MAX * 2.0] {
         assert!(
             decimate(&path, size)
                 .unwrap_err()
                 .detail
-                .starts_with("stroke size must be a number within"),
+                .starts_with("path radius must be a positive number"),
             "{size}"
         );
     }
@@ -480,207 +472,10 @@ fn distance_to_polyline(point: [f64; 2], polyline: &[[f64; 2]]) -> f64 {
 }
 
 #[test]
-fn one_captured_path_has_one_content_address() {
-    let mut rng = Rng(0xa11);
-    for _ in 0..100 {
-        let count = 2 + (rng.next() % 300) as usize;
-        let path = captured(&mut rng, count);
-        let once = Stroke::capture(&path, 0.05, 50.0, 100.0, false).expect("a legal stroke");
-        let twice = Stroke::capture(&path, 0.05, 50.0, 100.0, false).expect("a legal stroke");
-        assert_eq!(once.id(), twice.id(), "the same path is the same stroke");
-        assert_eq!(once, twice);
-
-        // Posting an already-decimated path reaches the same stored bytes as posting the raw one,
-        // which is what lets the desktop decimate before it sends without changing what is stored.
-        let predecimated = decimate(&path, 0.05).expect("a legal path");
-        let posted =
-            Stroke::capture(&predecimated, 0.05, 50.0, 100.0, false).expect("a legal stroke");
-        assert_eq!(once.id(), posted.id());
-
-        // A jitter that leaves every coordinate inside its own grid cell is below the stored
-        // precision and is the same stroke. It is applied to the on-grid path, because a jitter on
-        // the raw one could carry a coordinate across a cell boundary and that is a different
-        // stored position, not a rounding question.
-        let nudged: Vec<[f64; 2]> = predecimated
-            .iter()
-            .map(|[x, y]| {
-                let eighth = 1.0 / (COORDINATE_STEPS_PER_UNIT * 8.0);
-                [x + eighth, y - eighth]
-            })
-            .collect();
-        assert_eq!(
-            once.id(),
-            Stroke::capture(&nudged, 0.05, 50.0, 100.0, false)
-                .expect("a legal stroke")
-                .id(),
-            "a jitter below the stored precision is the same stroke",
-        );
-
-        // The settings are part of the contents, so changing one is a different stroke.
-        assert_ne!(
-            once.id(),
-            Stroke::capture(&path, 0.05, 50.0, 100.0, true)
-                .expect("a legal stroke")
-                .id(),
-            "an erase of the same path is a different stroke",
-        );
-        assert_ne!(
-            once.id(),
-            Stroke::capture(&path, 0.06, 50.0, 100.0, false)
-                .expect("a legal stroke")
-                .id(),
-        );
-    }
-}
-
-#[test]
-fn a_stroke_round_trips_through_its_stored_bytes() {
-    let stroke = Stroke::capture(
-        &[[0.1, 0.2], [0.4, 0.45], [0.8, 0.2]],
-        0.05,
-        37.5,
-        80.0,
-        true,
-    )
-    .expect("a legal stroke");
-    let id = stroke.id();
-    let stored = stroke.canonical();
-    assert_eq!(Stroke::from_stored(&id, &stored).unwrap(), stroke);
-    assert_eq!(
-        String::from_utf8(stored.clone()).unwrap(),
-        r#"{"points":[[1638,3277],[6554,7373],[13107,3277]],"size":819,"feather":38,"flow":80,"erase":true}"#,
-        "every stored field is a whole step and never a decimal, because the bytes are the identity",
-    );
-    assert!(stroke.erase());
-    assert_eq!(stroke.point_count(), 3);
-    // 37.5 was requested; the declared control moves in whole units, so 38 is what is stored.
-    assert_eq!(stroke.feather(), 38.0);
-    assert_eq!(stroke.flow(), 80.0);
-
-    // Bytes that are not the bytes the address names are refused rather than parsed.
-    let mut corrupt = stored.clone();
-    let at = corrupt.iter().position(|b| *b == b'8').expect("a digit");
-    corrupt[at] = b'9';
-    let error = Stroke::from_stored(&id, &corrupt).unwrap_err();
-    assert_eq!(error.kind, crate::ErrorKind::Incompatible);
-    assert_eq!(
-        error.detail,
-        format!("stored stroke {id} does not match its content address")
-    );
-
-    // And bytes that hash correctly but hold a number outside the stored range are refused too, so
-    // a legal address is never a licence to evaluate an illegal stroke.
-    let illegal = br#"{"points":[[1638,3277]],"size":819,"feather":250,"flow":80,"erase":false}"#;
-    let illegal_id = StrokeId::of(illegal);
-    assert_eq!(
-        Stroke::from_stored(&illegal_id, illegal)
-            .unwrap_err()
-            .detail,
-        format!("stored stroke {illegal_id} has an invalid feather")
-    );
-}
-
-#[test]
-fn a_stroke_is_refused_by_name_outside_its_declared_bounds() {
-    let path = [[0.1, 0.2], [0.4, 0.45]];
-    for (field, size, feather, flow) in [
-        ("size", 0.0, 50.0, 50.0),
-        ("size", 3.0, 50.0, 50.0),
-        ("feather", 0.05, -1.0, 50.0),
-        ("feather", 0.05, 101.0, 50.0),
-        ("flow", 0.05, 50.0, f64::NAN),
-        ("flow", 0.05, 50.0, 100.5),
-    ] {
-        let error = Stroke::capture(&path, size, feather, flow, false).unwrap_err();
-        assert_eq!(error.kind, crate::ErrorKind::Validation);
-        assert!(
-            error.detail.starts_with(&format!("stroke {field} must be")),
-            "{}",
-            error.detail
-        );
-    }
-    assert_eq!(
-        Stroke::capture(&[], 0.05, 50.0, 50.0, false)
-            .unwrap_err()
-            .detail,
-        "a path must hold at least one position"
-    );
-    assert_eq!(
-        Stroke::capture(&[[0.5, 3.0]], 0.05, 50.0, 50.0, false)
-            .unwrap_err()
-            .detail,
-        "path position 0 y must be a number within -1..=2"
-    );
-}
-
-/// A path that survives decimation at full length for a brush small enough to take the two-step
-/// floor — every other position eight steps off the line between its neighbours — so the per-stroke
-/// bound is reached rather than decimated away, and `Stroke::capture` refuses it one past the bound
-/// by name.
-fn incompressible(count: usize) -> Vec<[f64; 2]> {
-    (0..count)
-        .map(|index| {
-            let along = index as f64 * 8.0 / COORDINATE_STEPS_PER_UNIT;
-            let across = if index % 2 == 0 { 0.0 } else { 8.0 } / COORDINATE_STEPS_PER_UNIT;
-            [0.1 + along, 0.5 + across]
-        })
-        .collect()
-}
-
-#[test]
-fn a_captured_stroke_over_the_bound_names_the_points_per_stroke_limit() {
-    let at_bound = incompressible(POINTS_PER_STROKE);
-    let stroke = Stroke::capture(&at_bound, 0.001, 50.0, 100.0, false).expect("the bound is legal");
-    assert_eq!(stroke.point_count(), POINTS_PER_STROKE);
-
-    let error = Stroke::capture(
-        &incompressible(POINTS_PER_STROKE + 1),
-        0.001,
-        50.0,
-        100.0,
-        false,
-    )
-    .unwrap_err();
-    assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
-    assert_eq!(
-        error.detail,
-        format!(
-            "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} points \
-             per stroke",
-            POINTS_PER_STROKE + 1
-        )
-    );
-}
-
-#[test]
-fn a_broken_reference_is_named_and_is_never_an_empty_stroke() {
-    let stroke = Stroke::capture(&[[0.1, 0.2], [0.4, 0.45]], 0.05, 50.0, 100.0, false).unwrap();
-    let absent = Stroke::capture(&[[0.9, 0.9], [0.1, 0.1]], 0.05, 50.0, 100.0, false).unwrap();
-    let mut table = StrokeTable::new("entry entry-7");
-    let known = table.insert(stroke.clone());
-    assert_eq!(table.resolve(&known).unwrap(), &stroke);
-    assert_eq!(table.get(&known), Some(&stroke));
-
-    let missing = absent.id();
-    let error = table.resolve(&missing).unwrap_err();
-    assert_eq!(error.kind, crate::ErrorKind::Incompatible);
-    assert_eq!(
-        error.detail,
-        format!("stroke {missing} of entry entry-7 is not in the stroke store")
-    );
-
-    table.fault(missing.clone(), StrokeFault::Corrupt);
-    assert_eq!(
-        table.resolve(&missing).unwrap_err().detail,
-        format!("stroke {missing} of entry entry-7 does not match its stored content address")
-    );
-    assert_eq!(table.get(&missing), None, "a fault is never a stroke");
-}
-
-#[test]
 fn a_payload_declares_its_references_through_one_reserved_field() {
-    let stroke = Stroke::capture(&[[0.1, 0.2], [0.4, 0.45]], 0.05, 50.0, 100.0, false).unwrap();
-    let id = stroke.id();
+    let id = RepairStroke::capture(&[[0.1, 0.2], [0.4, 0.45]], 0.05, [0.0, 0.1])
+        .unwrap()
+        .id();
     assert_eq!(
         references(&json!({"amount": 5}), "layer x").unwrap(),
         vec![]
@@ -732,173 +527,209 @@ fn an_address_is_thirty_two_lowercase_hexadecimal_characters() {
     assert_eq!(serde_json::to_string(&id).unwrap().len() + 1, 35);
 }
 
-/// A stroke's identity is the hash of its bytes, so every stored field has to survive a round trip
-/// through JSON exactly. `serde_json` does not promise that for an arbitrary `f64` — the value below
-/// reads back one ulp away — so the settings are stored as whole units, like the positions and the
-/// size. A fractional request is quantized at capture rather than stored and later reparsed into a
-/// different content address than the recipe references.
-#[test]
-fn a_stroke_keeps_its_content_address_through_a_round_trip_of_any_setting() {
-    let path = [[0.10, 0.20], [0.40, 0.55], [0.80, 0.30]];
-    for (feather, flow) in [
-        (0.0, 100.0),
-        (55.0, 45.0),
-        // Values a client may legitimately post that no declared control offers.
-        (55.333_333_333_333_33, 2.624_122_239_649_296),
-        (99.999_999_999, 0.000_000_001),
-    ] {
-        let stroke = Stroke::capture(&path, 0.05, feather, flow, false).expect("capture");
-        let id = stroke.id();
-        let bytes = serde_json::to_vec(&stroke).expect("serialize");
-        let back: Stroke = serde_json::from_slice(&bytes).expect("deserialize");
-        assert_eq!(
-            back.id(),
-            id,
-            "a reparsed stroke must keep the address its recipe references \
-             (feather {feather}, flow {flow})"
-        );
-        assert_eq!(back, stroke, "and must be the same stroke");
-        assert_eq!(
-            (back.feather(), back.flow()),
-            (feather.round(), flow.round()),
-            "the stored setting is the declared control's own step"
-        );
+/// A second painting consumer, declared only here: a repair stroke of the kind the Corrections
+/// proposal describes, with a payload of its own — the offset its source is taken from — and a
+/// radius range of its own, narrower than the mask brush's. Nothing in production declares it; it
+/// proves that the store holds a consumer-declared stroke type and commits it by the same rules as
+/// the brush's, and it names no mask.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RepairStroke {
+    points: Vec<[i32; 2]>,
+    radius: i32,
+    source: [i32; 2],
+}
+
+/// The repair consumer's own radius range, which is not the brush's.
+const REPAIR_RADIUS_MIN: f64 = 0.01;
+const REPAIR_RADIUS_MAX: f64 = 0.5;
+
+impl RepairStroke {
+    /// Capture a repair stroke: its own radius and source offset checked by name first, then the
+    /// path captured onto the host's grid exactly as the brush's is.
+    pub(crate) fn capture(
+        points: &[[f64; 2]],
+        radius: f64,
+        source: [f64; 2],
+    ) -> Result<Self, Error> {
+        if !radius.is_finite() || !(REPAIR_RADIUS_MIN..=REPAIR_RADIUS_MAX).contains(&radius) {
+            return Err(Error::validation(format!(
+                "repair radius must be a number within {REPAIR_RADIUS_MIN}..={REPAIR_RADIUS_MAX}"
+            )));
+        }
+        if source
+            .iter()
+            .any(|value| !value.is_finite() || !(-1.0..=1.0).contains(value))
+        {
+            return Err(Error::validation(
+                "repair source offset must be two numbers within -1..=1",
+            ));
+        }
+        let radius = quantize(radius);
+        Ok(Self {
+            points: capture_grid(points, radius)?,
+            radius,
+            source: [quantize(source[0]), quantize(source[1])],
+        })
+    }
+
+    pub(crate) fn radius(&self) -> f64 {
+        steps_to_units(self.radius)
+    }
+
+    /// The reference a recipe part carrying this stroke would declare.
+    pub(crate) fn reference(&self, what: &str) -> StrokeReference {
+        StrokeReference {
+            what: what.to_owned(),
+            id: self.id(),
+            kind: StrokeType::of::<Self>(),
+        }
     }
 }
 
-/// Cloning a recipe shares its stroke table instead of copying every stroke's positions, and a
-/// stroke added to a clone copies the table's pointers only: the recipe it was cloned from keeps
-/// its table unchanged, and both still hold the one allocation of each stroke they share.
-#[test]
-fn cloning_a_recipe_shares_its_strokes_and_a_write_copies_only_pointers() {
-    let drawn = Stroke::capture(&[[0.1, 0.1], [0.4, 0.3]], 0.05, 50.0, 100.0, false).unwrap();
-    let mut table = StrokeTable::new("entry entry-1");
-    let first = table.insert(drawn);
-    let recipe = crate::Recipe {
-        strokes: table,
-        ..crate::Recipe::default()
-    };
-    let clone = recipe.clone();
-    assert!(
-        clone.strokes.shares(&recipe.strokes),
-        "a clone shares the table"
-    );
-    assert!(std::ptr::eq(
-        clone.strokes.get(&first).unwrap(),
-        recipe.strokes.get(&first).unwrap()
-    ));
+impl StrokeKind for RepairStroke {
+    const NAME: &'static str = "test repair";
 
-    let mut next = recipe.clone();
-    let second = next
-        .strokes
-        .insert(Stroke::capture(&[[0.6, 0.6]], 0.05, 50.0, 100.0, true).unwrap());
-    assert!(
-        !next.strokes.shares(&recipe.strokes),
-        "a write copies on write"
-    );
-    assert!(
-        recipe.strokes.get(&second).is_none(),
-        "and leaves the original alone"
-    );
-    assert_eq!(recipe.strokes.strokes().count(), 1);
-    assert_eq!(next.strokes.strokes().count(), 2);
-    assert!(
-        std::ptr::eq(
-            next.strokes.get(&first).unwrap(),
-            recipe.strokes.get(&first).unwrap()
-        ),
-        "the copy holds the same stroke, not a copy of its positions"
-    );
+    fn canonical(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a repair stroke is serializable")
+    }
+
+    fn parse_stored(id: &StrokeId, stored: &[u8]) -> Result<Self, Error> {
+        let stroke: Self = serde_json::from_slice(stored).map_err(|error| {
+            Error::incompatible(format!("stored stroke {id} is malformed: {error}"))
+        })?;
+        let bad = |what: &str| {
+            Err(Error::incompatible(format!(
+                "stored stroke {id} has an invalid {what}"
+            )))
+        };
+        if let Some(what) = stored_path_fault(&stroke.points) {
+            return bad(what);
+        }
+        if !(REPAIR_RADIUS_MIN..=REPAIR_RADIUS_MAX).contains(&stroke.radius()) {
+            return bad("radius");
+        }
+        let reach = quantize(1.0);
+        if stroke.source.iter().any(|value| value.abs() > reach) {
+            return bad("source offset");
+        }
+        Ok(stroke)
+    }
 }
 
-/// A stroke's radius has one legal range, and every reader holds it: the declared `size` of the one
-/// command that paints, [`Stroke::capture`], the stored-stroke recheck and the brush's compile. A
-/// radius just outside it is refused by each of them, naming the range, and one just inside is taken
-/// by each.
+/// A second consumer declares its own stroke type against the same grid, decimation and store: it
+/// captures a path onto the grid as the brush does, holds its own radius range and its own payload,
+/// is addressed by its own canonical bytes, round-trips through them, and is held to its own ranges
+/// when it is read back — none of which this file or the store knows anything about.
 #[test]
-fn one_stroke_radius_range_is_read_by_capture_the_stored_recheck_and_compile() {
-    let range = format!("{SIZE_MIN}..={SIZE_MAX}");
-    let declared = crate::mask::commands::find(crate::mask::commands::ADD_STROKE)
-        .and_then(|command| command.action.parameter("size").cloned())
-        .expect("mask.add-stroke declares its size");
+fn a_second_consumer_declares_its_own_stroke_type_against_the_same_store() {
+    let mut rng = Rng(0x2e9a);
+    let path = captured(&mut rng, 200);
+    let stroke = RepairStroke::capture(&path, 0.05, [0.1, -0.2]).expect("a legal repair");
+    // The path is the host's: the same decimation at the same radius a brush stroke would take.
     assert_eq!(
-        declared.kind,
-        crate::ParameterKind::Number {
-            min: SIZE_MIN,
-            max: SIZE_MAX
-        },
-        "the declared size is the one range"
+        from_grid(&stroke.points).collect::<Vec<_>>(),
+        decimate(&path, 0.05).unwrap()
+    );
+    assert_eq!(
+        stroke.id(),
+        RepairStroke::capture(&path, 0.05, [0.1, -0.2])
+            .unwrap()
+            .id(),
+        "one captured path has one address, for this consumer too"
+    );
+    assert_ne!(
+        stroke.id(),
+        RepairStroke::capture(&path, 0.05, [0.1, 0.2]).unwrap().id(),
+        "the consumer's own payload is part of what is addressed"
     );
 
-    // Capture, on the posted size.
-    let path = [[0.4, 0.5], [0.6, 0.5]];
-    for inside in [SIZE_MIN, SIZE_MAX] {
-        Stroke::capture(&path, inside, 50.0, 100.0, false).expect("the range is closed");
-    }
-    for outside in [SIZE_MIN * (1.0 - 1e-9), SIZE_MAX * (1.0 + 1e-9)] {
-        let error = Stroke::capture(&path, outside, 50.0, 100.0, false).unwrap_err();
-        assert_eq!(error.kind, crate::ErrorKind::Validation);
-        assert_eq!(
-            error.detail,
-            format!("stroke size must be a number within {range}")
-        );
-    }
+    // Its limits are its own: a radius the brush takes is refused here by this consumer's name.
+    assert_eq!(
+        RepairStroke::capture(&path, 1.5, [0.0, 0.0])
+            .unwrap_err()
+            .detail,
+        "repair radius must be a number within 0.01..=0.5"
+    );
+    // And the host's rules on a captured path hold for it as for every consumer.
+    let error = RepairStroke::capture(&[], 0.05, [0.0, 0.0]).unwrap_err();
+    assert_eq!(error.detail, "a path must hold at least one position");
 
-    // The stored recheck and the compile, on the size as stored: whole grid steps, so the legal
-    // ones are the steps inside the range and the illegal ones the steps either side of it.
-    let lowest = (SIZE_MIN * COORDINATE_STEPS_PER_UNIT).ceil() as i32;
-    let highest = (SIZE_MAX * COORDINATE_STEPS_PER_UNIT).floor() as i32;
-    let stored = |size: i32| Stroke {
-        points: vec![[6554, 8192], [9830, 8192]],
-        size,
-        feather: 50,
-        flow: 100,
-        erase: false,
-        colour: None,
-    };
-    let compiled = |stroke: &Stroke| {
-        let mut table = StrokeTable::new("the range test");
-        let id = table.insert(stroke.clone());
-        let mut mask = crate::Mask::new("Mask 1");
-        mask.components.push(crate::Component::new(
-            "Brush 1",
-            crate::ComponentMode::Add,
-            crate::mask::BRUSH,
-            json!({ "strokes": [id.to_string()] }),
-        ));
-        crate::mask::CompiledMask::new(
-            &mask,
-            crate::modules::Stage {
-                width: 60,
-                height: 40,
-            },
-            &table,
-        )
-        .map(|_| ())
-    };
-    for inside in [lowest, highest] {
-        let stroke = stored(inside);
-        Stroke::from_stored(&stroke.id(), &stroke.canonical())
-            .unwrap_or_else(|error| panic!("{inside} steps is a legal stored size: {error}"));
-        compiled(&stroke)
-            .unwrap_or_else(|error| panic!("{inside} steps is a legal compiled size: {error}"));
-    }
-    for outside in [lowest - 1, highest + 1] {
-        let stroke = stored(outside);
-        let id = stroke.id();
-        let error = Stroke::from_stored(&id, &stroke.canonical()).unwrap_err();
-        assert_eq!(error.kind, crate::ErrorKind::Incompatible);
-        assert_eq!(
-            error.detail,
-            format!("stored stroke {id} has an invalid size; a stroke size is within {range}"),
-            "{outside} steps"
-        );
-        let error = compiled(&stroke).unwrap_err();
-        assert_eq!(error.kind, crate::ErrorKind::Validation);
-        assert_eq!(
-            error.detail,
-            format!("component Brush 1 stroke {id} size must be a number within {range}"),
-            "{outside} steps"
-        );
-    }
+    // Stored bytes round-trip to the same stroke, and are checked against the address and against
+    // the consumer's own ranges on the way back in.
+    let id = stroke.id();
+    assert_eq!(
+        RepairStroke::from_stored(&id, &stroke.canonical()).unwrap(),
+        stroke
+    );
+    let mut corrupt = stroke.canonical();
+    corrupt.push(b' ');
+    assert_eq!(
+        RepairStroke::from_stored(&id, &corrupt).unwrap_err().detail,
+        format!("stored stroke {id} does not match its content address")
+    );
+    let wide = br#"{"points":[[1638,3277]],"radius":16384,"source":[0,0]}"#;
+    let wide_id = StrokeId::of(wide);
+    assert_eq!(
+        RepairStroke::from_stored(&wide_id, wide)
+            .unwrap_err()
+            .detail,
+        format!("stored stroke {wide_id} has an invalid radius")
+    );
+
+    // The store holds it as the type it was declared, refuses a broken reference to it by name,
+    // and shares on clone and copies on write exactly as it does for any stroke.
+    let mut table = StrokeTable::new("entry entry-3");
+    assert_eq!(table.insert(stroke.clone()), id);
+    assert_eq!(table.get::<RepairStroke>(&id), Some(&stroke));
+    assert_eq!(table.resolve::<RepairStroke>(&id).unwrap(), &stroke);
+    assert_eq!(table.stored_bytes(&id), Some(stroke.canonical()));
+    let absent = RepairStroke::capture(&[[0.9, 0.9]], 0.05, [0.0, 0.0])
+        .unwrap()
+        .id();
+    assert_eq!(
+        table.resolve::<RepairStroke>(&absent).unwrap_err().detail,
+        format!("stroke {absent} of entry entry-3 is not in the stroke store")
+    );
+    let shared = table.clone();
+    assert!(shared.shares(&table));
+    let mut written = table.clone();
+    written.insert(RepairStroke::capture(&[[0.2, 0.2]], 0.02, [0.0, 0.0]).unwrap());
+    assert!(!written.shares(&table), "a write copies on write");
+    assert!(std::ptr::eq(
+        written.get::<RepairStroke>(&id).unwrap(),
+        table.get::<RepairStroke>(&id).unwrap()
+    ));
+}
+
+/// A stroke read from the store is read as the type its reference declares and is marked known
+/// stored; bytes that are not a legal stroke of that type are corrupt, and absent bytes are missing.
+#[test]
+fn a_reference_loads_as_the_type_it_declares() {
+    let stroke = RepairStroke::capture(&[[0.1, 0.1], [0.3, 0.2]], 0.05, [0.0, 0.1]).unwrap();
+    let reference = stroke.reference("repair 1");
+    let mut table = StrokeTable::new("entry entry-4");
+    assert!(!table.knows(&reference.id));
+    table.load(
+        reference.id.clone(),
+        reference.kind,
+        Some(&stroke.canonical()),
+    );
+    assert!(table.knows(&reference.id));
+    assert!(table.is_known_stored(&reference.id));
+    assert_eq!(table.get::<RepairStroke>(&reference.id), Some(&stroke));
+    table.check_reference(&reference).unwrap();
+
+    // Bytes that hash to their address but are not a stroke of the declared type are corrupt.
+    let other = br#"{"not":"a repair"}"#;
+    let other_id = StrokeId::of(other);
+    table.load(other_id.clone(), reference.kind, Some(other));
+    assert_eq!(
+        table.resolve::<RepairStroke>(&other_id).unwrap_err().detail,
+        format!("stroke {other_id} of entry entry-4 does not match its stored content address")
+    );
+    let gone = StrokeId::of(b"gone");
+    table.load(gone.clone(), reference.kind, None);
+    assert!(table.has_missing());
+    assert!(!table.is_known_stored(&gone));
 }

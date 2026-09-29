@@ -12,8 +12,9 @@ use crate::mask::{
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Control, Mask, ModuleDescriptor, NumberStyle,
     ParameterDescriptor, ParameterKind,
+    mask::{SIZE_MAX, SIZE_MIN},
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
-    path::{POINTS_PER_STROKE, POSTED_POINTS_PER_STROKE, SIZE_MAX, SIZE_MIN},
+    path::{POINTS_PER_STROKE, POSTED_POINTS_PER_STROKE},
 };
 use std::sync::LazyLock;
 

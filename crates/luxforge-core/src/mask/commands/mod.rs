@@ -255,6 +255,22 @@ impl MaskTarget {
         }
     }
 
+    /// The identities this target holds as a draft's target ([`crate::DraftTarget`]): the mask,
+    /// component and stroke it names, by the parameter names a command declares them under. A
+    /// rename's `name` is a value and not an identity, so it is never part of one.
+    pub fn identities(&self) -> crate::DraftTarget {
+        [
+            (MASK, self.mask.as_ref().map(MaskId::as_str)),
+            (COMPONENT, self.component.as_ref().map(ComponentId::as_str)),
+            (STROKE, self.stroke.as_ref().map(StrokeId::as_str)),
+        ]
+        .into_iter()
+        .filter_map(|(name, identity)| {
+            identity.map(|identity| (name.to_owned(), identity.to_owned()))
+        })
+        .collect()
+    }
+
     /// A request's parameters with this target's fields added: what a client sends.
     pub fn request(&self, parameters: Value) -> Value {
         let mut parameters = match parameters {

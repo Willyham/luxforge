@@ -125,10 +125,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             })
             .collect(),
         can_load_older: inputs.document.history.next_before_sequence.is_some(),
-        preview: (!inputs.session.preview.can_edit()).then_some(PreviewControls {
-            can_return: !inputs.busy,
-            can_restore: !inputs.busy && inputs.history_refusal.is_none(),
-        }),
+        preview: (!super::at_current(inputs.document.state.as_ref(), inputs.session)).then_some(
+            PreviewControls {
+                can_return: !inputs.busy,
+                can_restore: !inputs.busy && inputs.history_refusal.is_none(),
+            },
+        ),
         menu: inputs.view_state.menu.clone(),
         can_select: !inputs.busy,
     }

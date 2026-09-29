@@ -14,6 +14,12 @@
 //!   navigation wrote;
 //! - a no-op records only its request and moves nothing.
 //!
+//! One write changes a head's row rather than its history: a relocation, which points an asset at
+//! the file its original is now found at, rewrites the asset's locator and file identity in one
+//! transaction and, after it commits, puts the row it stored on the cached head
+//! ([`EntryCache::row_changed`]), so the next read sees the new locator without reopening the
+//! catalog.
+//!
 //! No other write moves a head. An import inserts a new asset under a new identity, which no head or
 //! entry here can name, so there is nothing to update, and a repeated import writes nothing; naming
 //! or removing a version touches neither an entry nor a head; and reopening builds a new service,
@@ -127,6 +133,15 @@ impl EntryCache {
         }
     }
 
+    /// A committed write changed this asset's own row — where its original is — rather than its
+    /// history: the cached head now carries `asset`, which must be the row exactly as the write
+    /// stored it. A head that is not cached is read from the committed row when next asked.
+    pub(super) fn row_changed(&mut self, asset: AssetRecord) {
+        if let Some(head) = self.heads.iter_mut().find(|head| head.asset.id == asset.id) {
+            head.asset = asset;
+        }
+    }
+
     /// How many entries and heads are held.
     #[cfg(test)]
     pub(super) fn held(&self) -> (usize, usize) {
@@ -186,9 +201,10 @@ mod tests {
     };
     use crate::{
         Draft, Snapshot, SnapshotId,
+        mask::Stroke,
         mask::commands::{self, MaskTarget},
         modules::ActionInput,
-        path::{Stroke, StrokeId},
+        path::StrokeId,
     };
     use rusqlite::{Connection, params};
     use serde_json::{Map, Value, json};
@@ -206,13 +222,13 @@ mod tests {
     }
 
     /// The strokes an entry resolved, which the recipe's own equality leaves out.
-    fn strokes(entry: &HistoryEntry) -> Vec<(StrokeId, Stroke)> {
+    fn strokes(entry: &HistoryEntry) -> Vec<(StrokeId, Vec<u8>)> {
         entry
             .snapshot
             .recipe
             .strokes
             .strokes()
-            .map(|(id, stroke)| (id.clone(), stroke.clone()))
+            .map(|(id, stroke)| (id.clone(), stroke.stored_bytes()))
             .collect()
     }
 
@@ -266,7 +282,8 @@ mod tests {
     }
 
     /// Commit, undo, redo, restore, a no-op, a deduplicated retry, versions, a second import, a
-    /// write that fails and a reopen, each followed by reads compared against the rows.
+    /// relocation, a write that fails and a reopen, each followed by reads compared against the
+    /// rows.
     #[test]
     fn every_write_keeps_the_cached_reads_equal_to_the_rows() {
         let dir = temp("entry-cache-coherence");
@@ -375,6 +392,31 @@ mod tests {
             .unwrap();
         assert_coherent(&service, &other, "a commit to the second asset");
         assert_coherent(&service, &asset, "the first asset after the second moved");
+
+        // A relocation changes the second asset's own row, and the cached head with it; one the
+        // catalog refuses changes neither.
+        let moved = dir.join("moved.jpg");
+        std::fs::rename(&second_source, &moved).unwrap();
+        assert_eq!(
+            service.relocate(&other, &moved).unwrap(),
+            MutationOutcome::Applied
+        );
+        assert_coherent(&service, &other, "a relocation");
+        assert_eq!(
+            service.state(&other).unwrap().asset.locator,
+            moved.canonicalize().unwrap()
+        );
+        assert_coherent(
+            &service,
+            &asset,
+            "the first asset after the second relocated",
+        );
+        let short = dir.join("short.jpg");
+        std::fs::write(&short, b"not the original").unwrap();
+        let relocated = service.state(&other).unwrap();
+        assert!(service.relocate(&other, &short).is_err());
+        assert_eq!(service.state(&other).unwrap(), relocated);
+        assert_coherent(&service, &other, "a refused relocation");
 
         // A write that fails moves neither the rows nor the cache.
         service
@@ -639,7 +681,7 @@ mod tests {
                 .snapshot
                 .recipe
                 .strokes
-                .get(&drawn.id())
+                .get::<Stroke>(&drawn.id())
                 .is_none()
         );
         read_counts::take();

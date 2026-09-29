@@ -518,7 +518,7 @@ fn masked_colour_cost_on_a_24_megapixel_frame() {
 }
 
 /// One brush mask over these strokes, with the resolved table its addresses read through.
-fn brush_mask(strokes: &[crate::path::Stroke]) -> (crate::Mask, crate::path::StrokeTable) {
+fn brush_mask(strokes: &[crate::mask::Stroke]) -> (crate::Mask, crate::path::StrokeTable) {
     let mut table = crate::path::StrokeTable::new("the brush measurement");
     let addresses: Vec<String> = strokes
         .iter()
@@ -539,12 +539,12 @@ fn brush_mask(strokes: &[crate::path::Stroke]) -> (crate::Mask, crate::path::Str
 /// the frame: each is a three-position path across its own column, at a radius of 0.05 mask-space
 /// units — a twentieth of the frame's height, which is 200 px on a 24 MP stage — and softly
 /// feathered, which is the brush the panel starts with.
-fn painted_strokes(count: usize) -> Vec<crate::path::Stroke> {
+fn painted_strokes(count: usize) -> Vec<crate::mask::Stroke> {
     (0..count)
         .map(|index| {
             let t = (index as f64 + 0.5) / count as f64;
             let y = 0.1 + 0.8 * t;
-            crate::path::Stroke::capture(
+            crate::mask::Stroke::capture(
                 &[[0.1, y], [0.5, y + 0.02], [0.9, y]],
                 0.05,
                 50.0,
@@ -667,7 +667,10 @@ fn masked_brush_cost_on_photo_sized_frames() {
 #[test]
 #[ignore = "a recorded measurement, not an assertion"]
 fn painted_stroke_path_work_per_position() {
-    use crate::path::{PathCapture, Stroke, decimate};
+    use crate::{
+        mask::Stroke,
+        path::{PathCapture, decimate},
+    };
     let size = 0.06;
     let sine = |n: usize| -> Vec<[f64; 2]> {
         (0..n)

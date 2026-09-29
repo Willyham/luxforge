@@ -7,12 +7,12 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
     EffectStage, ExactGeometry, LayerEdit, LayerReport, LayerUpdate, ModuleDescriptor, NewLayer,
-    ParameterDescriptor, Processing, Stage, StageContext, ToolModule, crop::stored_payload,
-    decode_parameters, label_value,
+    ParameterDescriptor, Processing, Stage, StageContext, ToolModule, decode_parameters,
+    label_value,
 };
 #[cfg(test)]
 use crate::ErrorKind;
-use crate::{CROP_EFFECT, EFFECT_FORMAT, Error, Layer, Orientation, Transform};
+use crate::{EFFECT_FORMAT, Error, Layer, Orientation, Transform};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -281,24 +281,26 @@ fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation,
 /// the pixel, colour and spatial work, and ahead of the crop, whose geometry order is later. The
 /// transform composes into the orientation layer just before that position when there is one, and
 /// otherwise commits a new layer there. Every geometry layer from `at` on is re-expressed so the
-/// output is this transform applied to what the stack produced: the crop is carried through it,
-/// selecting the same content in the turned stage, and an orientation layer after the crop, which
-/// the host never places there but a stored stack may hold, is folded into the layer ahead of it
-/// and left neutral, the crop carried through it too. The crop's input stage therefore includes
-/// every transform once this has run. Finish layers after the tail follow the output as they
-/// always did, and nothing else is placed there.
+/// output is this transform applied to what the stack produced: each one is carried through it by
+/// its own module ([`ToolModule::carry`]), the crop selecting the same content in the turned
+/// stage, and an orientation layer after them, which the host never places there but a stored stack
+/// may hold, is folded into the layer ahead of it and left neutral, the other geometry carried
+/// through it too. Their input stages therefore include every transform once this has run. Finish
+/// layers after the tail follow the output as they always did, and nothing else is placed there.
 fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEdit>, Error> {
     let layers = context.layers;
     let at = context
         .insertion_index_for(ORIENTATION_EFFECT)
         .min(layers.len());
-    let mut crop = None;
+    let mut geometry = Vec::new();
     let mut folded = Orientation::NEUTRAL;
     let mut edits = Vec::new();
     for (index, layer) in layers.iter().enumerate().skip(at) {
-        if layer.effect_id == CROP_EFFECT {
-            crop = Some((index, layer));
-        } else if layer.effect_id == ORIENTATION_EFFECT {
+        if layer.effect_id != ORIENTATION_EFFECT {
+            if context.registry.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry) {
+                geometry.push((index, layer));
+            }
+        } else {
             let trailing = payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
             folded = folded.followed_by(trailing);
             if trailing != Orientation::NEUTRAL {
@@ -310,14 +312,25 @@ fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEd
         }
     }
     let turned = folded.then(transform);
-    if let Some((index, layer)) = crop {
-        let stored = stored_payload(layer)?;
+    // Every other geometry layer after the orientation is asked, through its own module, to select
+    // the same content in the turned stage; none is named here.
+    for (index, layer) in geometry {
+        let (provider, _) = context
+            .registry
+            .effect(&layer.effect_id)
+            .filter(|(provider, _)| provider.descriptor().is_available())
+            .ok_or_else(|| Error::unavailable_effect(&layer.effect_id, &[layer.id.as_str()]))?;
         let input = context.stage_before(index)?;
-        let carried = stored.carried((input.width, input.height), turned)?;
-        if carried != stored {
+        if let Some(carried) = provider.carry(
+            &layer.effect_id,
+            layer.effect_format,
+            &layer.payload,
+            input,
+            turned,
+        )? {
             edits.push(LayerEdit::Update(LayerUpdate::new(
                 layer.id.clone(),
-                serde_json::to_value(carried).expect("a crop payload is serializable"),
+                carried,
             )));
         }
     }
@@ -453,8 +466,8 @@ impl ToolModule for TransformModule {
 mod tests {
     use super::*;
     use crate::{
-        ActionControl, CropPayload, GroupControl, LayerId, ModuleRegistry, PIXEL_EFFECT,
-        VIGNETTE_EFFECT,
+        ActionControl, CROP_EFFECT, CropPayload, GroupControl, LayerId, ModuleRegistry,
+        PIXEL_EFFECT, VIGNETTE_EFFECT,
         modules::{ParameterKind, StageQuestions, check_parameters},
     };
     use serde_json::json;

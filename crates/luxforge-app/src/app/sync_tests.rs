@@ -219,7 +219,8 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
     let mut selected = editor.session.clone();
     selected
         .preview
-        .select(HistorySelection::Entry(older.id.clone()));
+        .select(&asset, HistorySelection::Entry(older.id.clone()))
+        .unwrap();
     selected.revision += 1;
     let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
         tasks::PreviewPayload {
@@ -276,7 +277,7 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
     // A selection's frame planned before the newer selection.
     let mut earlier = editor.session.clone();
     earlier.preview.generation -= 1;
-    earlier.preview.selection = HistorySelection::Current;
+    earlier.preview.selections.clear();
     let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
         tasks::PreviewPayload {
             job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,

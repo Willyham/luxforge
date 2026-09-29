@@ -4,13 +4,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Engineering
 
-**After the consolidation** (authorized 2026-09-26; [design](design/post-consolidation.md)). Finish one path per concept, fix the defects the post-consolidation review found, take the byte-identical speedups and trim the tests. One plan per group: [core service](../tasks/core-service.json), [module contract](../tasks/module-contract.json), [rendering](../tasks/rendering.json), [RAW](../tasks/raw.json), [masking](../tasks/masking.json) and [desktop](../tasks/desktop.json); the capabilities and harness plans are complete and deleted. The waves run in order, overlapping where they touch different files; waves 1 to 5 are complete, and wave 6 starts with each milestone below:
-1. Fix: the verified defects, each with a regression test
-2. Finish the consolidation: one path for every concept that still has two, each kept single by a repository check
-3. Speed: the byte-identical speedups on the preview, RAW-development and gesture paths, each measured before and after
-4. Structure: the simplifications that follow once each path is single
-5. Tests: each property proven once per layer, and fewer test binaries
-6. Roadmap groundwork, done first when its milestone below starts: MCP (`events.wait`, typed host parameters, the headless binary's crate), the library and Locate (per-photo selection, a paged catalog, relocation, surface ids), JPEG export (its lane joins the one job table), Corrections (stage-boundary methods, per-tile input regions, generic path primitives), and a new geometry module (a carry hook)
+**GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
 
 ## Output
 

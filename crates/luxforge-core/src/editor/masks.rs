@@ -365,6 +365,82 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
+    /// A draft's target is the action's declared identity parameters by name, whichever action it
+    /// is: a host command's identities are checked as a patch's are, a module action takes the
+    /// host's `mask` field through the one target check, and a name the action declares as a value
+    /// rather than an identity is refused by name. The target a command's declaration builds
+    /// (`crate::declared_target`) is the one the desktop sends.
+    #[test]
+    fn a_draft_target_is_the_actions_declared_identities() {
+        let catalog = temp("draft-target.sqlite");
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let mask = MaskId::new();
+        let component = crate::ComponentId::new();
+        let target = |pairs: &[(&str, &str)]| -> crate::DraftTarget {
+            pairs
+                .iter()
+                .map(|(name, identity)| ((*name).to_owned(), (*identity).to_owned()))
+                .collect()
+        };
+
+        let stroke = crate::mask::commands::find(crate::mask::commands::ADD_STROKE).unwrap();
+        let declared = crate::declared_target(&stroke.action, |kind| match kind {
+            crate::IdentityKind::Mask => Some(mask.as_str().to_owned()),
+            crate::IdentityKind::Component => Some(component.as_str().to_owned()),
+            _ => Some("never asked".to_owned()),
+        });
+        assert_eq!(
+            declared,
+            target(&[("mask", mask.as_str()), ("component", component.as_str())]),
+            "a stroke names the mask and component it paints on, the identities it declares"
+        );
+        assert_eq!(
+            service
+                .draft_target(&asset, stroke.method, declared.clone())
+                .unwrap(),
+            declared
+        );
+        assert_eq!(
+            service
+                .draft_target(&asset, "set-basic", target(&[("mask", mask.as_str())]))
+                .unwrap(),
+            target(&[("mask", mask.as_str())]),
+            "a module action's target is the host's mask field"
+        );
+        assert_eq!(
+            service
+                .draft_target(&asset, "set-basic", target(&[("exposure", "0.5")]))
+                .unwrap_err()
+                .detail,
+            "parameter exposure of action set-basic is not an identity; a draft's target names \
+             only the objects its gesture edits"
+        );
+        let rename = crate::mask::commands::find("mask.rename").unwrap();
+        assert_eq!(
+            service
+                .draft_target(
+                    &asset,
+                    rename.method,
+                    target(&[("mask", mask.as_str()), ("name", "Sky")])
+                )
+                .unwrap_err()
+                .detail,
+            "parameter name of action mask.rename is not an identity; a draft's target names \
+             only the objects its gesture edits"
+        );
+        assert_eq!(
+            service
+                .draft_target(&asset, stroke.method, target(&[("stroke", "not-an-id")]))
+                .unwrap_err()
+                .detail,
+            "unknown parameter stroke for action mask.add-stroke"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// An action's and a query's `mask` target take the one target check: taken out of the request
     /// so the module never sees it, checked as an identity, and refused by name where the action or
     /// query does not accept one, a field left in place.

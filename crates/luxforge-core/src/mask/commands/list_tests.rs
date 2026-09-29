@@ -3,10 +3,7 @@ use super::plan::strokes_payload;
 use super::tests::{created, registry};
 use super::*;
 use crate::mask::stroke_kind;
-use crate::{
-    Component, ComponentMode, Layer, LayerId, Mask, Recipe,
-    path::{self, Stroke, StrokeId},
-};
+use crate::{Component, ComponentMode, Layer, LayerId, Mask, Recipe, mask::Stroke, path::StrokeId};
 use serde_json::json;
 
 #[test]
@@ -66,7 +63,7 @@ fn the_listing_reports_each_strokes_settings_in_stored_order() {
     let add = Stroke::capture(&[[0.2, 0.2], [0.4, 0.4]], 0.0625, 50.0, 100.0, false).unwrap();
     let erase = Stroke::capture(&[[0.3, 0.3], [0.5, 0.2]], 0.03125, 30.0, 80.0, true)
         .unwrap()
-        .with_colour_limit(path::ColourLimit::sampled([200, 120, 40], 50.0).unwrap());
+        .with_colour_limit(crate::mask::ColourLimit::sampled([200, 120, 40], 50.0).unwrap());
     let add = recipe.strokes.insert(add);
     let erase = recipe.strokes.insert(erase);
     // A reference the store does not hold is listed with no settings rather than dropped.

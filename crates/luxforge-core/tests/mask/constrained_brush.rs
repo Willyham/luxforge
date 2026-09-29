@@ -26,11 +26,12 @@ use super::*;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
     Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
+    mask::{ColourLimit, Stroke},
     mask::{
         CompiledMask,
         commands::{self, MaskTarget},
     },
-    path::{ColourLimit, Stroke, StrokeTable},
+    path::StrokeTable,
 };
 use luxforge_reference::mask::{
     Brush as RefBrush, ColourLimit as RefColourLimit, Stage as RefStage, brush_coverage,
@@ -571,7 +572,7 @@ fn the_host_seeds_a_limited_stroke_from_the_masked_operations_input() {
     assert_eq!(ids.len(), 2, "two strokes on the one component");
     let stored = recipe
         .strokes
-        .get(&ids[1])
+        .get::<Stroke>(&ids[1])
         .expect("the second stroke")
         .clone();
     let held = stored.colour_limit().expect("the stroke carries its limit");

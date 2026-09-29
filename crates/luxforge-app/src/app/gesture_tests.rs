@@ -68,10 +68,18 @@ fn every_start_answers_to_the_halves_it_declares() {
         Starting::Pick,
         Starting::Action,
     ];
-    editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry(&asset, 2, None).id),
+    );
     assert_eq!(refusals(&editor), only(&editing, NOT_CURRENT));
 
-    editor.session.preview.selection = HistorySelection::Current;
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Current,
+    );
     editor.busy = true;
     let waiting = [
         Starting::Mask,
@@ -87,7 +95,11 @@ fn every_start_answers_to_the_halves_it_declares() {
 
     // Both at once: the editable half is asked first, and what takes only the busy half still
     // says so from a previewed entry.
-    editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry(&asset, 2, None).id),
+    );
     for (starting, reason) in refusals(&editor) {
         let expected = if editing.contains(&starting) {
             Some(NOT_CURRENT)
@@ -101,7 +113,11 @@ fn every_start_answers_to_the_halves_it_declares() {
 
     // An open draft refuses every start but an export, which writes the displayed entry the
     // draft does not change.
-    editor.session.preview.selection = HistorySelection::Current;
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Current,
+    );
     editor.busy = false;
     let _ = editor.update(Message::Crop(CropMessage::Start));
     open_crop(&mut editor);
@@ -139,11 +155,16 @@ fn a_refused_crop_start_says_why() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
     for (case, reason) in [("busy", IN_FLIGHT), ("previewed", NOT_CURRENT)] {
         editor.busy = case == "busy";
-        editor.session.preview.selection = if case == "previewed" {
+        let selection = if case == "previewed" {
             HistorySelection::Entry(entry(&asset, 2, None).id)
         } else {
             HistorySelection::Current
         };
+        crate::state::testing::show(
+            &mut editor.session,
+            editor.document.state.as_ref(),
+            selection,
+        );
         editor.status.text.clear();
         let task = editor.update(Message::Crop(CropMessage::Start));
         assert_eq!(task.units(), 0, "{case}: nothing is sent");
@@ -166,7 +187,7 @@ fn a_refused_begin_opens_nothing_and_says_why() {
         editor.client,
         asset,
         &action,
-        Default::default(),
+        &Default::default(),
     )
     .expect_err("the owner does not hold the photograph");
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
@@ -240,7 +261,11 @@ fn a_refused_pick_uses_the_one_wording() {
         .asset
         .id
         .clone();
-    editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry(&asset, 2, None).id),
+    );
     let task = editor.update(Message::Pointer(PointerMessage::Picked { x: 3, y: 4 }));
     assert_eq!(task.units(), 0);
     assert_eq!(editor.status.text, NOT_CURRENT);

@@ -47,12 +47,12 @@ pub use cancel::Cancel;
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
-pub use draft::Draft;
+pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
-    ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, HistoryPage,
-    LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome, MutationResult,
-    PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting, SourceKind,
-    SourceTag, Version,
+    ActionResult, AssetPage, AssetRecord, AssetSummary, DraftStamp, EditorService, EditorState,
+    Evaluation, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
+    MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
+    SourceKind, SourceTag, Version,
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::CaptureMetadata;
@@ -85,9 +85,10 @@ pub use presets::{
     PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
 };
 pub use preview::{
-    ExactOutcome, HistorySelection, MaskCoverage, MaskOverlayOutcome, MaskOverlayRequest,
-    PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase, PreviewQueue, PreviewResult,
-    PreviewSession, PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
+    AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
+    MaskOverlayOutcome, MaskOverlayRequest, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
+    PreviewQueue, PreviewResult, PreviewSession, PreviewSource, ProxyOutcome, Queued,
+    RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::{

@@ -99,16 +99,18 @@ pub struct StrokeColour {
 
 impl StrokeReport {
     fn of(id: StrokeId, strokes: &path::StrokeTable) -> Self {
-        let settings = strokes.get(&id).map(|stroke| StrokeSettings {
-            erase: stroke.erase(),
-            size: stroke.size(),
-            feather: stroke.feather(),
-            flow: stroke.flow(),
-            colour: stroke.colour_limit().map(|limit| StrokeColour {
-                seed: limit.codes(),
-                refine: limit.refine(),
-            }),
-        });
+        let settings = strokes
+            .get::<crate::mask::Stroke>(&id)
+            .map(|stroke| StrokeSettings {
+                erase: stroke.erase(),
+                size: stroke.size(),
+                feather: stroke.feather(),
+                flow: stroke.flow(),
+                colour: stroke.colour_limit().map(|limit| StrokeColour {
+                    seed: limit.codes(),
+                    refine: limit.refine(),
+                }),
+            });
         Self { id, settings }
     }
 }

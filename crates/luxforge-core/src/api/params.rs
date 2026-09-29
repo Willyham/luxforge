@@ -2,16 +2,19 @@
 //!
 //! Every host method's parameters are one struct written with [`host_params!`]. The macro generates
 //! the `deny_unknown_fields` struct the request is parsed into and the [`ParamSchema`] `schema.list`
-//! publishes, from the same field list: a field typed `Option<T>` is optional and carries the note
-//! the schema shows, and every other field is required. A `mutation` field typed [`Mutation`] or
-//! [`MutationRequest`] also names the method's [`Envelope`]. The schema therefore cannot list a field
-//! the parser refuses, or leave out one it requires.
+//! publishes, from the same field list. Each field is declared with a kind from the one parameter
+//! vocabulary module descriptors use ([`ParameterDescriptor`]), written with the constructors in
+//! [`kind`]; a field typed `Option<T>` is optional and every other field is required. A `mutation`
+//! field typed [`Mutation`] or [`MutationRequest`] names the method's [`Envelope`] instead. The
+//! parse checks every field a request names against its declared kind before the struct is
+//! deserialized ([`parse`]), so the schema cannot list a field the parser refuses, leave out one it
+//! requires, or publish a range it does not enforce.
 //!
 //! [`Mutation`]: crate::Mutation
 //! [`MutationRequest`]: crate::MutationRequest
 #[cfg(test)]
 use crate::ErrorKind;
-use crate::{Error, Mutation, MutationRequest};
+use crate::{Error, Mutation, MutationRequest, ParameterDescriptor, ParameterKind, check_value};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
@@ -71,9 +74,9 @@ impl Envelope {
 /// One method's parameters as `schema.list` publishes them.
 #[derive(Debug)]
 pub(crate) struct ParamSchema {
-    pub required: &'static [&'static str],
-    /// Each optional field with the note the schema shows for it.
-    pub optional: &'static [(&'static str, &'static str)],
+    /// Every field but the envelope, in declared order, typed with the module parameter
+    /// vocabulary; a required field is declared required. Built once, on first use.
+    pub parameters: fn() -> &'static [ParameterDescriptor],
     pub envelope: Envelope,
 }
 
@@ -84,9 +87,25 @@ pub(crate) trait HostParams: DeserializeOwned {
 
 /// Parse one request's parameters, borrowing them rather than cloning the request. Absent params are
 /// an empty object; anything but an object is refused, as is any field the struct does not declare.
-pub(crate) fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, Error> {
+///
+/// Each declared field the request names is first checked against its declared kind by the check
+/// a module's parameters get ([`check_value`]), so a value outside its published range is refused
+/// in the same words whichever method it is sent to: `O(declared fields)`, allocating nothing unless
+/// it refuses. `null` is left to the struct, which reads it as an absent optional field and refuses
+/// it for a required one, and so is a secret, which is never a plain value to that check: its own
+/// type takes it without echoing it, and its setting's limit is checked where it is stored.
+pub(crate) fn parse<T: HostParams>(params: &Value) -> Result<T, Error> {
     let parsed = match params {
-        Value::Object(_) => T::deserialize(params),
+        Value::Object(object) => {
+            for parameter in (T::SCHEMA.parameters)() {
+                match object.get(&parameter.name) {
+                    None | Some(Value::Null) => {}
+                    Some(_) if matches!(parameter.kind, ParameterKind::Secret { .. }) => {}
+                    Some(value) => check_value(parameter, value)?,
+                }
+            }
+            T::deserialize(params)
+        }
         Value::Null => T::deserialize(&Value::Object(Map::new())),
         _ => {
             return Err(Error::validation("params must be a JSON object"));
@@ -130,76 +149,210 @@ pub(crate) fn take_optional<T: DeserializeOwned>(
         .transpose()
 }
 
-/// Declare one host method's parameters. Written like a struct:
+/// The kinds a host field is declared with, written after its `=` in [`host_params!`]. Each is a
+/// [`ParameterDescriptor`] without a name, to which a descriptor's hints chain as they do for a
+/// module's parameter (`.notes(..)`, `.unit(..)`, `.default(..)`); the macro names it after its
+/// field and marks it required unless the field is an `Option`.
+pub(crate) mod kind {
+    use crate::{IdentityKind, ParameterDescriptor, ParameterKind};
+
+    /// The longest plain name a host field looks something up by: a module, resource, setting,
+    /// profile, grant, capability or action. The `string` kind's own limit.
+    pub(crate) const MAX_NAME: usize = 256;
+    /// The longest filesystem path a request carries, in bytes: Linux's `PATH_MAX`, which is longer
+    /// than macOS's, so no path either platform accepts is refused here.
+    pub(crate) const MAX_PATH_BYTES: usize = 4096;
+
+    fn identity(of: IdentityKind) -> ParameterDescriptor {
+        ParameterDescriptor::identity("", of)
+    }
+
+    pub(crate) fn asset() -> ParameterDescriptor {
+        identity(IdentityKind::Asset)
+    }
+
+    pub(crate) fn entry() -> ParameterDescriptor {
+        identity(IdentityKind::Entry)
+    }
+
+    pub(crate) fn draft() -> ParameterDescriptor {
+        identity(IdentityKind::Draft)
+    }
+
+    pub(crate) fn job() -> ParameterDescriptor {
+        identity(IdentityKind::Job)
+    }
+
+    pub(crate) fn preset() -> ParameterDescriptor {
+        identity(IdentityKind::Preset)
+    }
+
+    pub(crate) fn mask() -> ParameterDescriptor {
+        identity(IdentityKind::Mask)
+    }
+
+    pub(crate) fn component() -> ParameterDescriptor {
+        identity(IdentityKind::Component)
+    }
+
+    pub(crate) fn artifact() -> ParameterDescriptor {
+        ParameterDescriptor::new("", ParameterKind::Artifact)
+    }
+
+    pub(crate) fn integer(min: i64, max: i64) -> ParameterDescriptor {
+        ParameterDescriptor::integer("", min, max)
+    }
+
+    /// An event or history sequence, a cursor a client hands back: any non-negative integer the
+    /// catalog can store.
+    pub(crate) fn sequence() -> ParameterDescriptor {
+        integer(0, i64::MAX)
+    }
+
+    pub(crate) fn number(min: f64, max: f64) -> ParameterDescriptor {
+        ParameterDescriptor::number("", min, max)
+    }
+
+    /// A pixel coordinate of a stage, as a module's point parameter declares one.
+    pub(crate) fn pixel_coordinate() -> ParameterDescriptor {
+        ParameterDescriptor::pixel_coordinate("")
+    }
+
+    pub(crate) fn boolean() -> ParameterDescriptor {
+        ParameterDescriptor::boolean("")
+    }
+
+    pub(crate) fn enumeration<S: Into<String>>(
+        options: impl IntoIterator<Item = S>,
+    ) -> ParameterDescriptor {
+        ParameterDescriptor::enumeration("", options)
+    }
+
+    pub(crate) fn string(max_length: usize) -> ParameterDescriptor {
+        ParameterDescriptor::string("", max_length)
+    }
+
+    /// A plain name the method looks something up by, which says itself whether it names anything.
+    pub(crate) fn name() -> ParameterDescriptor {
+        string(MAX_NAME)
+    }
+
+    pub(crate) fn text(max_bytes: usize) -> ParameterDescriptor {
+        ParameterDescriptor::new("", ParameterKind::Text { max_bytes })
+    }
+
+    /// A filesystem path, which may hold any character a file name can.
+    pub(crate) fn path() -> ParameterDescriptor {
+        text(MAX_PATH_BYTES)
+    }
+
+    pub(crate) fn settings() -> ParameterDescriptor {
+        ParameterDescriptor::settings("")
+    }
+
+    /// A credential as long as any setting may declare one; the setting's own limit is checked
+    /// where the value is stored.
+    pub(crate) fn secret() -> ParameterDescriptor {
+        ParameterDescriptor::secret("", crate::modules::MAX_SECRET_LENGTH)
+    }
+
+    /// A structured value whose shape `notes` gives and whose own field type checks it.
+    pub(crate) fn json(notes: &str) -> ParameterDescriptor {
+        ParameterDescriptor::new("", ParameterKind::Json).notes(notes)
+    }
+
+    /// Name a declared kind after its field. [`host_params!`] calls this; nothing else does.
+    pub(crate) fn named(
+        name: &str,
+        required: bool,
+        mut parameter: ParameterDescriptor,
+    ) -> ParameterDescriptor {
+        parameter.name = name.to_owned();
+        parameter.required = required;
+        parameter
+    }
+}
+
+/// Declare one host method's parameters. Written like a struct, with each field's kind after `=`:
 ///
 /// ```ignore
 /// host_params! {
 ///     /// `history.list`.
 ///     pub(crate) struct HistoryList {
-///         asset_id: AssetId,
-///         before_sequence: Option<u64> = "u64",
-///         limit: Option<usize> = "1..100",
+///         asset_id: AssetId = asset(),
+///         before_sequence: Option<u64> = sequence(),
+///         limit: Option<usize> = integer(1, 100).default(50),
 ///     }
 /// }
 /// ```
 ///
-/// A field typed `Option<T>` is optional and must carry its note after `=`; every other field is
-/// required. `mutation: Mutation` and `mutation: MutationRequest` name the envelope. Field attributes
-/// pass through to serde.
+/// A kind is one expression of the constructors in [`kind`], with a descriptor's hints chained to
+/// it. A field typed `Option<T>` is optional; every other field is required. `mutation: Mutation`
+/// and `mutation: MutationRequest` name the envelope and take no kind, because `schema.list`
+/// describes each envelope once. Field attributes pass through to serde.
 macro_rules! host_params {
     ($(#[$attr:meta])* $vis:vis struct $name:ident { $($body:tt)* }) => {
         $crate::api::params::host_params!(
-            @munch [$(#[$attr])* $vis struct $name] $name [] [] []
+            @munch [$(#[$attr])* $vis struct $name] $name [] []
             [$crate::api::params::Envelope::None] $($body)*
         );
     };
-    // An optional field and its note.
-    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
-        $(#[$fmeta:meta])* $f:ident : Option<$t:ty> = $note:literal $(, $($rest:tt)*)?) => {
+    // An optional field and its kind.
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
+        $(#[$fmeta:meta])* $f:ident : Option<$t:ty> = $kind:expr $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* $f: Option<$t>,] [$($req)*]
-            [$($opt)* (stringify!($f), $note),] [$env] $($($rest)*)?
+            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* $f: Option<$t>,]
+            [$($params)* (stringify!($f), false, $kind),] [$env] $($($rest)*)?
         );
-    };
-    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
-        $(#[$fmeta:meta])* $f:ident : Option<$t:ty> $(, $($rest:tt)*)?) => {
-        compile_error!(concat!("optional parameter ", stringify!($f), " needs a note"));
     };
     // The two mutation envelopes. The dispatcher checks either before the handler runs
     // ([`Envelope::check`]), and a handler reads it only for what it records, such as the actor, so
     // many never read it.
-    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
         mutation : Mutation $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
             @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] mutation: $crate::Mutation,]
-            [$($req)* "mutation",] [$($opt)*] [$crate::api::params::Envelope::Revision]
-            $($($rest)*)?
+            [$($params)*] [$crate::api::params::Envelope::Revision] $($($rest)*)?
         );
     };
-    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
         mutation : MutationRequest $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
             @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] mutation: $crate::MutationRequest,]
-            [$($req)* "mutation",] [$($opt)*] [$crate::api::params::Envelope::Request]
-            $($($rest)*)?
+            [$($params)*] [$crate::api::params::Envelope::Request] $($($rest)*)?
         );
     };
-    // A required field.
-    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]
-        $(#[$fmeta:meta])* $f:ident : $t:ty $(, $($rest:tt)*)?) => {
+    // A required field and its kind.
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
+        $(#[$fmeta:meta])* $f:ident : $t:ty = $kind:expr $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
             @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* $f: $t,]
-            [$($req)* stringify!($f),] [$($opt)*] [$env] $($($rest)*)?
+            [$($params)* (stringify!($f), true, $kind),] [$env] $($($rest)*)?
         );
     };
-    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($req:tt)*] [$($opt:tt)*] [$env:expr]) => {
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
+        $(#[$fmeta:meta])* $f:ident : $t:ty $(, $($rest:tt)*)?) => {
+        compile_error!(concat!("parameter ", stringify!($f), " needs a kind"));
+    };
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*]
+        [$(($pname:expr, $required:expr, $pkind:expr),)*] [$env:expr]) => {
         #[derive(::serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         $($head)* { $($fields)* }
         impl $crate::api::params::HostParams for $name {
             const SCHEMA: $crate::api::params::ParamSchema = $crate::api::params::ParamSchema {
-                required: &[$($req)*],
-                optional: &[$($opt)*],
+                parameters: || {
+                    static PARAMETERS: ::std::sync::LazyLock<
+                        ::std::vec::Vec<$crate::ParameterDescriptor>,
+                    > = ::std::sync::LazyLock::new(|| {
+                        #[allow(unused_imports)]
+                        use $crate::api::params::kind::*;
+                        ::std::vec![$(
+                            $crate::api::params::kind::named($pname, $required, $pkind)
+                        ),*]
+                    });
+                    &PARAMETERS
+                },
                 envelope: $env,
             };
         }
@@ -220,9 +373,9 @@ mod tests {
 
     host_params! {
         struct Declared {
-            asset_id: AssetId,
+            asset_id: AssetId = asset(),
             mutation: Mutation,
-            limit: Option<usize> = "1..100",
+            limit: Option<usize> = integer(1, 100).notes("a page"),
         }
     }
 
@@ -234,8 +387,21 @@ mod tests {
 
     #[test]
     fn one_declaration_is_both_the_parser_and_the_schema() {
-        assert_eq!(Declared::SCHEMA.required, ["asset_id", "mutation"]);
-        assert_eq!(Declared::SCHEMA.optional, [("limit", "1..100")]);
+        assert_eq!(
+            (Declared::SCHEMA.parameters)(),
+            [
+                ParameterDescriptor::identity("asset_id", crate::IdentityKind::Asset)
+                    .required(true),
+                ParameterDescriptor::integer("limit", 1, 100).notes("a page"),
+            ]
+        );
+        assert!(
+            std::ptr::eq(
+                (Declared::SCHEMA.parameters)(),
+                (Declared::SCHEMA.parameters)()
+            ),
+            "the parameters are built once"
+        );
         assert_eq!(Declared::SCHEMA.envelope, Envelope::Revision);
         assert_eq!(Requested::SCHEMA.envelope, Envelope::Request);
         assert_eq!(NoParams::SCHEMA.envelope, Envelope::None);
@@ -248,10 +414,36 @@ mod tests {
         assert_eq!(parsed.asset_id, asset);
         assert_eq!(parsed.mutation.expected_revision, 3);
         assert_eq!(parsed.limit, None);
+        assert_eq!(
+            parse::<Declared>(&json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 3, "request_id": "r", "actor": "a"},
+                "limit": null,
+            }))
+            .unwrap()
+            .limit,
+            None,
+            "null is an absent optional field"
+        );
+        // The declared kinds are checked before the struct is parsed, in the words a module
+        // parameter's check uses, and the struct still refuses what no kind covers.
         for (params, expected) in [
             (json!({"asset_id": asset}), "missing field `mutation`"),
             (json!({"extra": 1}), "unknown field `extra`"),
             (json!([]), "params must be a JSON object"),
+            (
+                json!({"asset_id": "entry-0123456789"}),
+                "parameter asset_id must be an asset identity",
+            ),
+            (
+                json!({"asset_id": asset, "limit": 101}),
+                "parameter limit must be an integer within 1..=100",
+            ),
+            (
+                json!({"asset_id": asset, "limit": 0}),
+                "parameter limit must be an integer within 1..=100",
+            ),
+            (json!({"asset_id": null}), "invalid type: null"),
         ] {
             let error = parse::<Declared>(&params).map(|_| ()).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Validation);

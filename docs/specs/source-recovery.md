@@ -2,6 +2,8 @@
 
 Status: stable identity, fingerprints and missing or changed-source protection exist since M1; manual Locate is an editor follow-up. The owner references local files and syncs them to external storage, so this matters early.
 
+The internal write of step 5 exists, with no method or UI: a relocation (`EditorService::relocate`, crate-visible) rewrites an asset's locator, source root and file identity in one catalog transaction, moves the owner's cached asset head where it commits, and is announced as an event naming the asset with no revision, which a watching client (the desktop included) answers by reading the asset again. It refuses a file of another length and a file another asset already names, and leaves history, fingerprint and interpretation untouched. It does not hash the candidate: the Locate command verifies the fingerprint first (step 3), and a later preparation of the relocated asset is still checked against the stored fingerprint.
+
 ## Data model
 
 An asset has a permanent catalog ID. Its path is a changeable locator. A content fingerprint verifies which bytes the locator currently names; it is not the asset's identity. Recipe and history stay attached to the asset ID through moves, offline periods and relinking.

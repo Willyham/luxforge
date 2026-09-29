@@ -24,8 +24,8 @@ use super::*;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
     Mask, MaskId, ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId,
+    mask::Stroke,
     mask::commands::{self, MaskTarget},
-    path::Stroke,
 };
 use luxforge_reference::mask::{
     Algebra, Brush, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Radial,

@@ -11,7 +11,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 10 stores each asset request's whole answer in the request table — for a `mask.*` command
+/// Format 11 stores each asset's source kind tag in a column of its own beside the interpretation,
+/// so a `catalog.list` page reads columns only and decodes no interpretation. Format 10 stored each
+/// asset request's whole answer in the request table — for a `mask.*` command
 /// the label it committed and the mask and component it addressed or minted beside the mutation
 /// result — so a retry answers with the identities the first attempt created. Format 9 kept each
 /// entry's history row — its label, actor, timestamp and restore target, beside the sequence, action
@@ -22,9 +24,15 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 10;
+pub(super) const CATALOG_FORMAT: i64 = 11;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
+
+/// Assets per `catalog.list` page, and the page a request that names no `limit` gets. A page reads
+/// `limit + 1` rows of the asset table's own columns and decodes nothing, so its cost is bounded by
+/// the limit however large the catalog is.
+pub(crate) const MAX_ASSET_PAGE: usize = 500;
+pub(crate) const DEFAULT_ASSET_PAGE: usize = 100;
 
 /// A catalog failure: `conflict` while another connection holds the database, `catalog` otherwise.
 impl From<rusqlite::Error> for Error {
@@ -106,7 +114,8 @@ impl EditorService {
                     byte_len INTEGER NOT NULL,
                     width INTEGER NOT NULL,
                     height INTEGER NOT NULL,
-                    source_json TEXT NOT NULL
+                    source_json TEXT NOT NULL,
+                    source_kind TEXT NOT NULL
                  );
                  CREATE TABLE entries (
                     id TEXT PRIMARY KEY,
@@ -302,20 +311,33 @@ pub(super) fn insert_entry(
 /// sitting beside the mask it copied — is written at most once here too.
 fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
     let references = recipe.stroke_references()?;
+    write_fresh_strokes(tx, &references, &recipe.strokes)
+}
+
+/// [`store_strokes`] over a list of references and the table they resolve in, whichever consumer's
+/// strokes they are: the table holds each as its consumer declared it and hands back its canonical
+/// bytes, which are what is stored, so the rule — write only what is not known stored, and each
+/// address once — is the store's and not any one consumer's.
+fn write_fresh_strokes(
+    tx: &Transaction<'_>,
+    references: &[crate::path::StrokeReference],
+    strokes: &crate::path::StrokeTable,
+) -> Result<(), Error> {
     if references.is_empty() {
         return Ok(());
     }
     let mut statement =
         tx.prepare("INSERT OR IGNORE INTO strokes (id,stroke_json) VALUES (?1,?2)")?;
     let mut issued = std::collections::BTreeSet::new();
-    for (_, id) in &references {
-        if recipe.strokes.is_known_stored(id) || !issued.insert(id.clone()) {
+    for reference in references {
+        let id = &reference.id;
+        if strokes.is_known_stored(id) || !issued.insert(id.clone()) {
             continue;
         }
-        let Some(stroke) = recipe.strokes.get(id) else {
+        let Some(bytes) = strokes.stored_bytes(id) else {
             continue;
         };
-        let text = String::from_utf8(stroke.canonical())
+        let text = String::from_utf8(bytes)
             .map_err(|e| Error::internal(format!("cannot store stroke: {e}")))?;
         statement.execute(params![id.as_str(), text])?;
         #[cfg(test)]
@@ -334,9 +356,10 @@ fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
 /// it.
 ///
 /// Every stroke this resolves is durable by construction — it was just read from the store — so it
-/// goes in through [`crate::path::StrokeTable::insert_stored`], which trusts the address
-/// [`crate::path::Stroke::from_stored`] already checked the stored bytes against, and marks it known
-/// stored: a later commit built on this recipe writes only what it captures fresh, never these.
+/// goes in through [`crate::path::StrokeTable::load`] as the stroke type its reference declares,
+/// which trusts the address that type's `from_stored` already checked the stored bytes against, and
+/// marks it known stored: a later commit built on this recipe writes only what it captures fresh,
+/// never these.
 fn hydrate_strokes(
     connection: &Connection,
     recipe: &mut Recipe,
@@ -346,25 +369,33 @@ fn hydrate_strokes(
     if references.is_empty() {
         return Ok(());
     }
+    recipe.strokes = read_strokes(connection, references, origin)?;
+    Ok(())
+}
+
+/// [`hydrate_strokes`] over a list of references, whichever consumer's strokes they are: each
+/// address is read once and decoded as the type its reference declares.
+fn read_strokes(
+    connection: &Connection,
+    references: Vec<crate::path::StrokeReference>,
+    origin: &str,
+) -> Result<crate::path::StrokeTable, Error> {
     let mut table = crate::path::StrokeTable::new(origin);
     let mut statement = connection.prepare("SELECT stroke_json FROM strokes WHERE id=?1")?;
-    for (_, id) in references {
-        if table.get(&id).is_some() {
+    for reference in references {
+        if table.knows(&reference.id) {
             continue;
         }
         let stored: Option<String> = statement
-            .query_row(params![id.as_str()], |row| row.get(0))
+            .query_row(params![reference.id.as_str()], |row| row.get(0))
             .optional()?;
-        match stored {
-            None => table.fault(id, crate::path::StrokeFault::Missing),
-            Some(text) => match crate::path::Stroke::from_stored(&id, text.as_bytes()) {
-                Ok(stroke) => table.insert_stored(id, stroke),
-                Err(_) => table.fault(id, crate::path::StrokeFault::Corrupt),
-            },
-        }
+        table.load(
+            reference.id,
+            reference.kind,
+            stored.as_deref().map(str::as_bytes),
+        );
     }
-    recipe.strokes = table;
-    Ok(())
+    Ok(table)
 }
 
 pub(super) fn next_sequence(connection: &Connection, asset_id: &AssetId) -> Result<u64, Error> {
@@ -496,6 +527,33 @@ mod tests {
         mask::commands::{self, MaskTarget},
     };
     use serde_json::{Value, json};
+
+    /// A page of assets reads the asset table's own columns: it decodes no stored value, whatever
+    /// the interpretations hold, and its kinds are the tags imported beside them.
+    #[test]
+    fn an_asset_page_decodes_nothing() {
+        let catalog = temp("asset-page.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset;
+        crate::editor::read_counts::take();
+        let page = service.assets(None, MAX_ASSET_PAGE).unwrap();
+        assert_eq!(crate::editor::read_counts::take(), (0, 0));
+        assert_eq!(
+            page.assets,
+            [crate::AssetSummary {
+                id: asset.id.clone(),
+                locator: asset.locator.clone(),
+                kind: asset.source.tag(),
+                width: asset.width,
+                height: asset.height,
+            }]
+        );
+        assert_eq!(page.next, None);
+        assert!(service.assets(None, 0).is_err());
+        assert!(service.assets(None, MAX_ASSET_PAGE + 1).is_err());
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
 
     #[test]
     fn competing_catalog_owners_are_rejected() {
@@ -820,6 +878,95 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A second consumer's strokes commit through the same content-addressed store as the brush's,
+    /// by the same fresh-only rule: a write stores each address it does not already know is stored,
+    /// once, as the canonical bytes of whichever type declared it; a read hands each back as its own
+    /// type, known stored, so writing the read table again writes nothing, and only what is added
+    /// after it is written. The brush stroke's stored row is its canonical bytes under its pinned
+    /// address, exactly as before the store was shared.
+    #[test]
+    fn a_second_consumers_strokes_commit_through_the_same_store_fresh_only() {
+        use crate::path::{StrokeKind, StrokeTable, tests::RepairStroke};
+        let catalog = temp("second-consumer-strokes.sqlite");
+        drop(EditorService::open(&catalog).unwrap());
+        let brush = crate::mask::Stroke::capture(
+            &[[0.1, 0.2], [0.4, 0.45], [0.8, 0.2]],
+            0.05,
+            37.5,
+            80.0,
+            true,
+        )
+        .unwrap();
+        let first = RepairStroke::capture(&[[0.2, 0.2], [0.5, 0.3]], 0.05, [0.1, 0.0]).unwrap();
+        let second = RepairStroke::capture(&[[0.6, 0.6], [0.7, 0.8]], 0.02, [0.0, -0.1]).unwrap();
+        let mut table = StrokeTable::new("the two consumers");
+        let brush_id = table.insert(brush.clone());
+        table.insert(first.clone());
+        table.insert(second.clone());
+        let mut references = vec![
+            crate::path::StrokeReference {
+                what: "component Brush 1 of mask Mask 1".to_owned(),
+                id: brush_id.clone(),
+                kind: crate::path::StrokeType::of::<crate::mask::Stroke>(),
+            },
+            first.reference("repair 1"),
+            second.reference("repair 2"),
+            // One address twice is one row.
+            first.reference("repair 3"),
+        ];
+        let write = |references: &[crate::path::StrokeReference], table: &StrokeTable| {
+            let mut connection = Connection::open(&catalog).unwrap();
+            let tx = connection.transaction().unwrap();
+            super::write_fresh_strokes(&tx, references, table).unwrap();
+            tx.commit().unwrap();
+            crate::editor::stroke_writes::take()
+        };
+        crate::editor::stroke_writes::take();
+        assert_eq!(
+            write(&references, &table),
+            3,
+            "every fresh address once, whichever consumer declared it"
+        );
+        assert_eq!(stored_strokes(&catalog), 3);
+
+        let connection = Connection::open(&catalog).unwrap();
+        let read = super::read_strokes(&connection, references.clone(), "the read back").unwrap();
+        assert_eq!(read.get::<crate::mask::Stroke>(&brush_id), Some(&brush));
+        assert_eq!(read.get::<RepairStroke>(&first.id()), Some(&first));
+        assert_eq!(read.get::<RepairStroke>(&second.id()), Some(&second));
+        let stored: String = connection
+            .query_row(
+                "SELECT stroke_json FROM strokes WHERE id=?1",
+                params![brush_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(brush_id.as_str(), "f90567c23419da29e9a57267732c52b1");
+        assert_eq!(
+            stored,
+            r#"{"points":[[1638,3277],[6554,7373],[13107,3277]],"size":819,"feather":38,"flow":80,"erase":true}"#,
+            "the brush's stored row is the bytes it always was"
+        );
+        drop(connection);
+
+        assert_eq!(
+            write(&references, &read),
+            0,
+            "a table read out of the store writes nothing again"
+        );
+        let mut next = read.clone();
+        let third = RepairStroke::capture(&[[0.3, 0.9]], 0.3, [0.0, 0.0]).unwrap();
+        next.insert(third.clone());
+        references.push(third.reference("repair 4"));
+        assert_eq!(
+            write(&references, &next),
+            1,
+            "only the stroke captured after the read"
+        );
+        assert_eq!(stored_strokes(&catalog), 4);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// Every way a stroke can enter a recipe, in one session: painting, undo onto an older entry
     /// then painting again — a new branch — a copied recipe (`mask.duplicate`, which references
     /// existing strokes under new component identities and stores nothing new), and a draft's
@@ -920,11 +1067,12 @@ mod tests {
         let duplicated = service.state(&asset).unwrap();
         let copy = &duplicated.current_entry.snapshot.recipe.masks[1];
         let mut draft = Draft::new(commands::ADD_STROKE, asset.clone(), duplicated.revision);
-        draft.target = Some(MaskTarget {
+        draft.target = MaskTarget {
             mask: Some(copy.id.clone()),
             component: Some(copy.components[0].id.clone()),
             ..MaskTarget::default()
-        });
+        }
+        .identities();
         draft.merge(
             stroke_request(json!([[0.7, 0.7], [0.8, 0.6]]))
                 .as_object()
@@ -959,8 +1107,9 @@ mod tests {
                 row.sequence,
                 row.label,
             );
-            for (_, id) in entry.snapshot.recipe.stroke_references().unwrap() {
-                if let Err(error) = entry.snapshot.recipe.strokes.resolve(&id) {
+            for reference in entry.snapshot.recipe.stroke_references().unwrap() {
+                let id = &reference.id;
+                if let Err(error) = entry.snapshot.recipe.strokes.check_reference(&reference) {
                     panic!(
                         "entry {} ({}) stroke {id}: {error}",
                         row.sequence, row.label
@@ -991,7 +1140,7 @@ mod tests {
     fn brush_mask(
         name: &str,
         table: &mut crate::path::StrokeTable,
-        strokes: &[crate::path::Stroke],
+        strokes: &[crate::mask::Stroke],
     ) -> Mask {
         let addresses: Vec<String> = strokes
             .iter()
@@ -1025,7 +1174,7 @@ mod tests {
         let mut connection = Connection::open(catalog).unwrap();
         let tx = connection.transaction().unwrap();
         let mut table = crate::path::StrokeTable::new("the measured session");
-        let mut drawn: Vec<Vec<crate::path::Stroke>> = Vec::new();
+        let mut drawn: Vec<Vec<crate::mask::Stroke>> = Vec::new();
         let mut previous = state.current_entry.clone();
         let mut revision = state.revision;
         // What an entry embedding its strokes would have cost, accumulated beside what the
@@ -1473,10 +1622,10 @@ mod tests {
 
     /// One single-position stroke, distinct per index, for the sessions that press a count rather
     /// than a length.
-    fn tiny_stroke(index: usize) -> crate::path::Stroke {
+    fn tiny_stroke(index: usize) -> crate::mask::Stroke {
         let x = 0.1 + (index % 4096) as f64 / 16384.0;
         let y = 0.1 + (index / 4096) as f64 / 16384.0;
-        crate::path::Stroke::capture(&[[x, y]], 0.04, 50.0, 100.0, false).expect("a legal stroke")
+        crate::mask::Stroke::capture(&[[x, y]], 0.04, 50.0, 100.0, false).expect("a legal stroke")
     }
 
     /// The per-recipe serialized mask bound is the one that keeps a painting session's snapshots
@@ -1618,9 +1767,9 @@ mod tests {
         std::fs::remove_file(&catalog).unwrap();
 
         let registry = ModuleRegistry::builtin();
-        let at_bound: Vec<crate::path::Stroke> = (0..STROKES_PER_MASK).map(stroke).collect();
-        let points: usize = at_bound.iter().map(crate::path::Stroke::point_count).sum();
-        let recipe = |strokes: &[crate::path::Stroke]| {
+        let at_bound: Vec<crate::mask::Stroke> = (0..STROKES_PER_MASK).map(stroke).collect();
+        let points: usize = at_bound.iter().map(crate::mask::Stroke::point_count).sum();
+        let recipe = |strokes: &[crate::mask::Stroke]| {
             let mut table = crate::path::StrokeTable::new("the test session");
             Recipe {
                 masks: vec![brush_mask("Mask 1", &mut table, strokes)],
@@ -1639,13 +1788,13 @@ mod tests {
         let mut over = at_bound.clone();
         while over
             .iter()
-            .map(crate::path::Stroke::point_count)
+            .map(crate::mask::Stroke::point_count)
             .sum::<usize>()
             <= crate::POINTS_PER_MASK
         {
             over.push(stroke(over.len()));
         }
-        let total: usize = over.iter().map(crate::path::Stroke::point_count).sum();
+        let total: usize = over.iter().map(crate::mask::Stroke::point_count).sum();
         let error = registry
             .validate_recipe(&recipe(&over))
             .expect_err("past the bound");
