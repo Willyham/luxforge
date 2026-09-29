@@ -55,4 +55,4 @@ The previous `luxforge.geometry.transform` effect is removed. Stacks holding it 
 - A transform after a crop composes into the orientation layer ahead of it and carries the crop: at angle zero every pixel is the previous render turned or reflected; through a straightened crop the frame moves by at most half a box pixel and keeps its extents unless it touches the rotated source.
 - A stack with an orientation layer stored after the crop is folded by the next transform, and its render is exactly the stored one under that transform.
 - A crop draft opened after a transform shows the turned photograph, and Reapply across a transform keeps the drafted frame on the same content.
-- Specs, feature status and the user guide describe the orientation layer; `cargo xtask check` passes and the editor acceptance run covers the collapse.
+- Specs, feature status and the user guide describe the orientation layer; `cargo xtask check` passes, which runs the core test that covers the collapse (`four_quarter_turns_leave_one_neutral_orientation_layer_and_four_entries`).

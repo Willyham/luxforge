@@ -26,7 +26,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Exact current-editor journey, display-independent, including the Basic and histogram, field-patch conformance, Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
@@ -398,9 +398,27 @@ render, render_ms, render_proxy}`, what the bar drew and the figure behind it. T
 `render_ms` below 5 s and that each captured status bar states one of those figures in the editor's
 own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 
+### What editor-acceptance proves
+
+`editor-acceptance` keeps only what `cargo test` cannot prove at the same layer: a chapter or step
+exists only if no `cargo test` proves it at that layer. Four things remain, each driven through the
+JSON method table with `OwnerHandle::call` as an independent client, against its own catalog inside
+the run's output directory: the [field-patch conformance suite](#the-field-patch-conformance-chapter)
+in release, [Basic's numerics on the photo fixture against the independent
+reference](#the-basic-and-histogram-acceptance-chapter), the [placement of Presence, the mixer and
+the vignette](#the-field-patch-conformance-chapter), and a [masked catalog reopened through a fresh
+owner](#the-masking-acceptance-chapter). Everything the core's own tests prove stays there: history
+order, the read-only preview, undo, redo and restore, the orientation layer, the crop and reopen are
+`editor::history`, `editor::plan`, `modules::transform` and `modules::crop`'s tests, the module and
+method discovery is the [descriptor snapshot](#the-built-in-descriptor-snapshot) and the method
+table's, and the mask commands, their refusals, a disabled maskable module and a missing or changed
+original are the `mask` test binary's, the command family's own tests and the conformance suite.
+A new step here needs a property that only a release build, an independent oracle, a second process
+lifetime or a fresh owner can show.
+
 ### The Basic and histogram acceptance chapter
 
-`editor-acceptance` ends with a chapter that drives the whole Basic and histogram surface through
+`editor-acceptance` starts with a chapter that drives Basic and the histogram's numerics through
 the JSON method table with `OwnerHandle::call`, exactly as an independent client reaches it, against
 its own catalog inside the run's output directory. Its oracle is the independent f64 reference under
 `crates/luxforge-reference/src/`, compiled into `xtask` through a `#[path]` module rather
@@ -411,18 +429,21 @@ in `xtask/src/basic_acceptance.rs` from the crop spec and the histogram contract
 `analysis::reduce`. Every result lands in `result.json` under `basic_and_histogram`, and any
 mismatch fails the command.
 
-The chapter covers what is Basic's and the histogram's own: the neutral picker's query and the
-analysis methods in `schema.list` and Basic's ten fields in their frozen order, `edit.set-basic`
+The chapter covers Basic's numerics on the photo fixture: `edit.set-basic`
 checked whole-raster against the f64 reference for one field and for the frozen unit order of all of
 them, `analysis.request/read` on current, historical and drafted targets against an independent
-reduction, cropped-population semantics, mixed stacks (a straightened 10° crop against a stepwise
+reduction, cropped-population semantics, and mixed stacks (a straightened 10° crop against a stepwise
 quantize-then-bilinear reference, a point replacement before and after the Basic layer, and Basic
-under an orientation layer), a historical selection and its analysis staying attached through
-another client's commit, and analysis sharing and cancellation. The host behaviour Basic shares
+under an orientation layer). The host behaviour Basic shares
 with every field-patch module is the
-[field-patch conformance chapter](#the-field-patch-conformance-chapter)'s. The supersede and
-disconnect races are covered by
-`luxforge_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`
+[field-patch conformance chapter](#the-field-patch-conformance-chapter)'s. Basic's ten fields in their
+frozen order and the analysis methods' discovery are the descriptor snapshot's and
+`luxforge_core::api::methods::tests::host_and_generated_methods_are_unique_complete_and_match_the_schema`'s.
+The supersede and disconnect races, analysis sharing and one client's cancel of a shared job, and a
+historical selection and its analysis staying attached through another client's commit are covered by
+`luxforge_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`,
+`luxforge_core::api::owner::tests::two_clients_share_one_job_and_keep_independent_current_and_historical_results`
+and `luxforge_core::api::owner::tests::historical_preview_stays_selected_during_another_clients_commit`
 and are referenced rather than duplicated.
 
 ### The field-patch conformance chapter
@@ -519,29 +540,24 @@ exactly the methods the test modules generate, none of which the snapshot holds.
 ### The masking acceptance chapter
 
 `editor-acceptance` also ends with a masking chapter, in `xtask/src/mask_acceptance.rs`, driven the
-same way: every step is one JSON request through `OwnerHandle::call`, against its own catalogs inside
-the run's output directory, with no desktop, no window and no pointer. It exists for the parity pillar
-rather than for the pixels: the five `mask-*` smoke scenarios are where a gesture's own frames and
-correlated state live, and this chapter is the claim that each of those gestures has a discoverable
-programmatic equivalent which produces the stacks, history, pixels and refusals the design states.
+same way: every step is one JSON request through `OwnerHandle::call`, against its own catalog inside
+the run's output directory, with no desktop, no window and no pointer. It proves one thing no
+`cargo test` proves at that layer: a catalog written by one owner and read by a fresh one returns
+what the first wrote. The five `mask-*` smoke scenarios are where a gesture's own frames and
+correlated state live; the mask commands, their refusals, an agent committing under an open mask
+gesture, history across mask entries, a maskable module served unavailable and a missing or changed
+original are the core's own tests (`tests/mask/commands.rs`, `mask/commands/plan_tests.rs`,
+`editor/masks.rs`, `tests/modules/conformance/` and `editor/history.rs`), and the mask kinds'
+pixels are the kind-conformance suite's.
 
-It covers discovery against the host's own command table (every declared `mask.*` method is in
-`schema.list`; a brush generates none of the three geometry methods; the optional `mask` field is on
-every action of a maskable effect and on no other); all five component kinds created from JSON; one
-mask composing four kinds in three modes, read back from `mask.list` in composition order; a masked
-Basic layer moving the pixels the mask covers and no others; masked Presence and masked mixer layers,
-so a masked spatial layer is in the recipe too; amount, inversion at both levels, a component's mode
-and order, a geometry patch, a rename, a mask reorder and a duplicate that copies the bound layers; a
-second stroke as an update and `mask.delete-stroke` as a forward edit that appends its own entry; four
-refusals checked by the host's own words; a live agent committing during an open mask gesture, the
-conflict on the stale commit, Reapply keeping the agent's edit, and a cancelled gesture writing
-nothing; a read-only historical preview of the entry before the first mask, Restore, undo and redo
-across mask entries; the same catalog served with a maskable module unavailable, which keeps every
-mask and refuses to sample; a missing and a changed original under a masked recipe, which discard
-nothing, the changed one — the original's bytes with more after them at the same path — refused as
-`source-unavailable` naming the changed fingerprint; and a reopen that returns the masks, components and bound layers by identity with the
-same sampled pixels. Everything lands in `result.json` under `masks`, and any mismatch fails the
-command.
+The first owner builds the catalog: all five component kinds created from JSON (a gradient, a
+radial, the two range selections and a brush through `mask.add-stroke`), one mask composing three
+kinds in the three modes, a second stroke on a brush, an amount, an inversion, a geometry patch, a
+rename, a masked Basic layer, a masked Presence layer and a masked mixer layer, and a duplicate that
+copies the bound layer. It then stops. A fresh owner over the same file returns the same revision
+and current entry, the masks, components, payloads and bound layers by identity, and the same
+`render.sample` values at six positions across the frame. Everything lands in `result.json` under
+`masks`, and any mismatch fails the command.
 
 One contract shapes how it reads pixels: it uses `render.sample` and never renders a recipe in
 process. A brush component's payload holds its strokes by content address and the resolved strokes are

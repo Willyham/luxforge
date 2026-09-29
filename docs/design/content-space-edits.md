@@ -47,4 +47,4 @@ Crop-last does not cost more here. A crop at angle zero composes into the exact 
 - Set a pixel on a cropped photograph, then move, enlarge and shrink the crop through UI and API: the same content pixel stays edited, the crop is never rejected because of the pixel, and exact buffers prove it at angle zero and through the resample reference at a nonzero angle.
 - The pick on the canvas and `render.locate` agree, at Fit and at a percentage, before and after transforms and crops.
 - Existing identity, ordering and immutability proofs still pass; the interleaving renderer tests keep proving that the renderer's coordinate meaning is unchanged.
-- `cargo xtask check`, the editor acceptance run and a background smoke with correlated state and logs.
+- `cargo xtask check` and a background smoke with correlated state and logs.
