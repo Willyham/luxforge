@@ -8,6 +8,7 @@ use super::{
     },
     *,
 };
+use crate::state::histogram::Readout;
 use luxforge_core::{ContentPoint, EntryId};
 use serde_json::Map;
 
@@ -313,16 +314,19 @@ fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
 fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((3, 4)))));
-    assert!(editor.sample_in_flight, "the first move asks");
-    assert_eq!(editor.pending_sample, None);
+    assert!(editor.hover.sample.in_flight(), "the first move asks");
+    assert_eq!(editor.hover.sample.pending().copied(), None);
     // Two further moves while the first is outstanding: only the newest is kept.
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((5, 6)))));
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((7, 8)))));
-    assert_eq!(editor.pending_sample, Some((7, 8)));
-    assert!(editor.sample_in_flight, "still exactly one in flight");
+    assert_eq!(editor.hover.sample.pending().copied(), Some((7, 8)));
+    assert!(
+        editor.hover.sample.in_flight(),
+        "still exactly one in flight"
+    );
     // The same position again is not a second request.
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((7, 8)))));
-    assert_eq!(editor.pending_sample, Some((7, 8)));
+    assert_eq!(editor.hover.sample.pending().copied(), Some((7, 8)));
 
     // An answer for another stack describes an image the canvas has left.
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
@@ -333,10 +337,13 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
             rgba: [1, 2, 3, 255],
         }),
     }));
-    assert!(editor.readout.is_none(), "a mismatched identity is dropped");
+    assert!(
+        editor.hover.readout.is_none(),
+        "a mismatched identity is dropped"
+    );
     // The newest position was released as the next request when the first answered.
-    assert!(editor.sample_in_flight);
-    assert_eq!(editor.pending_sample, None);
+    assert!(editor.hover.sample.in_flight());
+    assert_eq!(editor.hover.sample.pending().copied(), None);
 
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: entry_id,
@@ -346,9 +353,9 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
             rgba: [128, 64, 255, 255],
         }),
     }));
-    let readout = editor.readout.as_ref().expect("an adopted readout");
+    let readout = editor.hover.readout.as_ref().expect("an adopted readout");
     assert_eq!(readout.rgba, [128, 64, 255, 255]);
-    assert!(!editor.sample_in_flight);
+    assert!(!editor.hover.sample.in_flight());
     editor.rederive();
     // The readout is the status bar's. No frame has been analysed in this test, so the plot
     // draws its pending notice inside its own area, and neither reaches the other.
@@ -370,7 +377,7 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
 
     // The pointer leaving clears the readout and any waiting position.
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
-    assert!(editor.readout.is_none() && editor.pending_sample.is_none());
+    assert!(editor.hover.readout.is_none() && editor.hover.sample.pending().is_none());
     editor.rederive();
     assert_eq!(editor.workspace.status.readout, None);
     assert_eq!(editor.snapshot()["status_bar"]["readout"], Value::Null);
@@ -383,7 +390,7 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
     let (action, x, y) = pick_fields(&editor);
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((7, 9)))));
-    assert_eq!(editor.pointer, Some((7, 9)));
+    assert_eq!(editor.hover.pointer, Some((7, 9)));
     // The click itself fills nothing: which content pixel it is is the core's answer.
     let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
     assert_eq!(editor.fields.get(&action, &x), Some("0"));

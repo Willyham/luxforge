@@ -243,11 +243,11 @@ impl Editor {
             "version": self.presentation.presenter.photo().map(luxforge_ui::Frame::version),
             "texture_writes": luxforge_ui::photo_surface::texture_writes(),
             "detail_updating":self.visible_detail_updating(),
-            "desired_view_dirty":self.desired_view_dirty,
-            "view_plan_in_flight":self.view_plan_in_flight,
-            "view_request_generation":self.view_request_generation,
-            "quiet_timer_armed":self.quiet_since.is_some() && !self.quiet_settle_requested,
-            "quiet_elapsed_ms":self.quiet_since.map(|at| at.elapsed().as_secs_f64()*1000.0),
+            "desired_view_dirty":self.view_plan.dirty,
+            "view_plan_in_flight":self.view_plan.in_flight,
+            "view_request_generation":self.view_plan.request_generation,
+            "quiet_timer_armed":self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested,
+            "quiet_elapsed_ms":self.view_plan.quiet_since.map(|at| at.elapsed().as_secs_f64()*1000.0),
             "gpu": {
                 "photo_writes":gpu.photo_writes,
                 "upload_bytes":gpu.upload_bytes,
@@ -320,7 +320,7 @@ impl Editor {
 
     /// The pointer readout, when one has been sampled: the three output codes and their pixel.
     pub(super) fn readout_summary(&self) -> Value {
-        match &self.readout {
+        match &self.hover.readout {
             Some(readout) => {
                 json!({"x":readout.x,"y":readout.y,"rgba":readout.rgba,"text":state::histogram::readout_text(readout)})
             }

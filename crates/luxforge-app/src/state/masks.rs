@@ -822,7 +822,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
                 &TypingTarget::RenameMask(report.id.as_str().to_owned()),
             ),
             menu_open: matches!(
-                inputs.menu,
+                inputs.view_state.menu.as_ref(),
                 Some(crate::state::MenuTarget::Mask(id) | crate::state::MenuTarget::MaskCopy(id))
                     if id == report.id.as_str()
             ),
@@ -876,7 +876,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         name,
         overlay: overlay_model(inputs),
         collapsed: inputs.mask_panel.collapsed,
-        menu: inputs.menu.filter(|menu| panel_menu(menu)).cloned(),
+        menu: inputs
+            .view_state
+            .menu
+            .as_ref()
+            .filter(|menu| panel_menu(menu))
+            .cloned(),
         typing: inputs.mask_panel.typing.clone(),
         drag: inputs.mask_panel.drag.clone(),
         count: format!("{} of {}", reports.len(), luxforge_core::MASKS_PER_RECIPE),
@@ -1085,7 +1090,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                     &TypingTarget::RenameComponent(component.id.as_str().to_owned()),
                 ),
                 menu_open: matches!(
-                    inputs.menu,
+                    inputs.view_state.menu.as_ref(),
                     Some(
                         crate::state::MenuTarget::Component(id)
                             | crate::state::MenuTarget::ComponentCopy(id)

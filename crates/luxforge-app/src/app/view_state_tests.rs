@@ -116,23 +116,23 @@ fn workspace_state_reaches_the_models_only_through_the_adopted_session() {
 fn pan_keeps_one_request_in_flight_and_only_the_newest_pending_position() {
     let (mut editor, catalog) = boot();
     let _ = editor.update(Message::View(ViewMessage::Panned(1.0, 2.0)));
-    assert!(editor.pan_in_flight);
-    assert_eq!(editor.pending_pan, None);
+    assert!(editor.view_state.pan.in_flight());
+    assert_eq!(editor.view_state.pan.pending().copied(), None);
     let _ = editor.update(Message::View(ViewMessage::Panned(3.0, 4.0)));
     let _ = editor.update(Message::View(ViewMessage::Panned(5.0, 6.0)));
-    assert_eq!(editor.pending_pan, Some((5.0, 6.0)));
+    assert_eq!(editor.view_state.pan.pending().copied(), Some((5.0, 6.0)));
     let _ = editor.update(Message::View(ViewMessage::PanSynced(Ok(
         ClientSession::default(),
     ))));
     assert!(
-        editor.pan_in_flight,
+        editor.view_state.pan.in_flight(),
         "the pending position starts the next request"
     );
-    assert_eq!(editor.pending_pan, None);
+    assert_eq!(editor.view_state.pan.pending().copied(), None);
     let _ = editor.update(Message::View(ViewMessage::PanSynced(Ok(
         ClientSession::default(),
     ))));
-    assert!(!editor.pan_in_flight);
+    assert!(!editor.view_state.pan.in_flight());
     finish(editor, catalog);
 }
 
@@ -190,7 +190,7 @@ fn the_percentage_segment_opens_as_the_zoom_field_and_a_zoom_closes_it() {
     assert!(shown.ends_with('%'), "{shown}");
     let _ = editor.update(Message::View(ViewMessage::EditZoom));
     assert!(editor.workspace.title.zoom_editing);
-    assert_eq!(editor.zoom, shown.trim_end_matches('%'));
+    assert_eq!(editor.view_state.zoom, shown.trim_end_matches('%'));
     let _ = editor.update(Message::View(ViewMessage::Zoom("50".into())));
     let _ = editor.update(Message::View(ViewMessage::ApplyZoom));
     assert!(!editor.workspace.title.zoom_editing);

@@ -45,8 +45,8 @@ fn failed_clipping_derivation_marks_the_evidence_step_and_releases_capture() {
 #[test]
 fn viewport_and_whole_mask_grids_use_physical_density_at_their_own_stage_sizes() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
-    editor.scale_factor = 2.0;
+    editor.view_state.window = (1440.0, 900.0);
+    editor.view_state.scale_factor = 2.0;
     editor.presentation.dimensions = Some((6000, 4000));
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let visible = editor

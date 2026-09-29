@@ -265,7 +265,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             Zoom::Fit => ZoomView::Fit,
             Zoom::Percent { value } => ZoomView::Percent(value),
         },
-        scale_factor: inputs.scale_factor,
+        scale_factor: inputs.view_state.scale_factor,
         dimensions: inputs.dimensions,
         modes,
         thirds: inputs.session.workspace.thirds,
@@ -283,7 +283,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                 inputs.target,
                 &inputs.session.workspace.mode,
             ),
-        pointer: inputs.pointer,
+        pointer: inputs.hover.pointer,
         surface_mode: if inputs.crop_section.space {
             SurfaceMode::Pan
         } else if inputs.crop_section.guide {

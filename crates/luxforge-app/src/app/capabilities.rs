@@ -586,7 +586,7 @@ impl Editor {
                 };
             }
             CapabilityMessage::CopyTaskRequest { module_id, task } => {
-                self.menu = None;
+                self.view_state.menu = None;
                 return match self.task_operation(&module_id, &task) {
                     Ok(Operation::RunTask {
                         task,

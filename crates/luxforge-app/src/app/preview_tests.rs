@@ -314,17 +314,18 @@ fn an_interactive_region_does_not_settle_a_history_preview_step() {
         "the region did not finish the history step"
     );
     assert!(
-        editor.quiet_since.is_some(),
+        editor.view_plan.quiet_since.is_some(),
         "a region without a whole committed report must schedule settlement"
     );
-    editor.quiet_since = Some(std::time::Instant::now() - std::time::Duration::from_millis(150));
-    editor.desired_view_dirty = false;
+    editor.view_plan.quiet_since =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(150));
+    editor.view_plan.dirty = false;
     let _ = editor.preview_update(PreviewMessage::QuietTick);
     assert!(
-        editor.quiet_settle_requested && editor.view_plan_in_flight,
+        editor.view_plan.quiet_settle_requested && editor.view_plan.in_flight,
         "quiet refinement starts without another input or evidence step: quiet={} plan={} busy={}",
-        editor.quiet_settle_requested,
-        editor.view_plan_in_flight,
+        editor.view_plan.quiet_settle_requested,
+        editor.view_plan.in_flight,
         editor.presentation.queue.is_busy()
     );
     finish(editor, catalog);
@@ -786,11 +787,11 @@ fn zooming_and_panning_ask_for_no_preview_and_no_analysis() {
 fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.window = (1440.0, 900.0);
-    editor.scale_factor = 2.0;
+    editor.view_state.window = (1440.0, 900.0);
+    editor.view_state.scale_factor = 2.0;
     editor.session.workspace.state_panel = true;
     editor.session.workspace.tools_panel = true;
-    let surface = crate::layout::photo_surface(editor.window, true, true);
+    let surface = crate::layout::photo_surface(editor.view_state.window, true, true);
     let inset = crate::layout::FIT_INSET;
     let bounds = editor
         .proxy_bounds()
@@ -808,7 +809,7 @@ fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
     let wider = editor.proxy_bounds().expect("Fit is still bounded");
     assert!(wider.width > bounds.width && wider.height == bounds.height);
     // A window with no room at all offers nothing rather than a degenerate rectangle.
-    editor.window = (0.0, 0.0);
+    editor.view_state.window = (0.0, 0.0);
     assert_eq!(editor.proxy_bounds(), None);
     finish(editor, catalog);
 }
@@ -819,8 +820,8 @@ fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
 #[test]
 fn a_percentage_is_bounded_only_while_the_stage_is_drawn_smaller_than_itself() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
-    editor.scale_factor = 1.0;
+    editor.view_state.window = (1440.0, 900.0);
+    editor.view_state.scale_factor = 1.0;
     editor.presentation.dimensions = Some((6000, 4000));
     editor.session.preview.view.zoom = Zoom::Percent { value: 50.0 };
     let half = editor.proxy_bounds().expect("a zoomed-out view is bounded");
@@ -846,7 +847,7 @@ fn a_percentage_is_bounded_only_while_the_stage_is_drawn_smaller_than_itself() {
 #[test]
 fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
     // A proxy of generation 7 is on screen, with its exact phase adopted beside it.
@@ -956,7 +957,7 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
 fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_the_report() {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
     let log = attach_log(&mut editor);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.presentation.queue = PreviewQueue::default();
@@ -1158,7 +1159,7 @@ fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_req
 #[test]
 fn a_zoom_back_to_fit_with_no_retained_proxy_requests_one_preview() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.presentation.presented_generation = 3;
     editor.presentation.presented_proxy = false;
@@ -1255,29 +1256,29 @@ fn a_percentage_view_uses_exact_pixel_bounds_after_pan_on_an_odd_stage() {
 fn a_late_view_plan_cannot_replace_a_newer_input_or_asset() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     let before = editor.presentation.preview_generation;
-    editor.view_plan_in_flight = true;
-    editor.view_plan_epoch = 2;
+    editor.view_plan.in_flight = true;
+    editor.view_plan.epoch = 2;
     let old = preview_job_for(&editor);
     let _ = editor.preview_update(PreviewMessage::ViewLoaded {
         epoch: 1,
         intent: luxforge_core::PreviewIntent::Interactive,
         result: Ok(Box::new(old)),
     });
-    assert!(!editor.view_plan_in_flight);
-    assert!(editor.desired_view_dirty);
+    assert!(!editor.view_plan.in_flight);
+    assert!(editor.view_plan.dirty);
     assert_eq!(
         editor.presentation.preview_generation, before,
         "stale plan was not queued"
     );
-    editor.view_plan_in_flight = true;
-    editor.desired_view_dirty = false;
+    editor.view_plan.in_flight = true;
+    editor.view_plan.dirty = false;
     let wrong_asset = preview_job_for(&editor);
     let _ = editor.preview_update(PreviewMessage::ViewLoaded {
         epoch: 2,
         intent: luxforge_core::PreviewIntent::Interactive,
         result: Ok(Box::new(wrong_asset)),
     });
-    assert!(editor.desired_view_dirty);
+    assert!(editor.view_plan.dirty);
     assert_eq!(
         editor.presentation.preview_generation, before,
         "another asset's frame was not queued"
@@ -1291,11 +1292,11 @@ fn a_late_view_plan_cannot_replace_a_newer_input_or_asset() {
 #[test]
 fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 1.0;
+    editor.view_state.scale_factor = 1.0;
     let at_one = editor.proxy_bounds().expect("Fit asks for a proxy");
-    editor.scale_factor = 2.0;
+    editor.view_state.scale_factor = 2.0;
     let at_two = editor.proxy_bounds().expect("Fit asks for a proxy");
     assert_eq!(
         at_two.width,
@@ -1324,10 +1325,10 @@ fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
 #[test]
 fn a_bounds_change_refits_the_presented_proxy_once() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 1.0;
+    editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_generation = 7;
     editor.presentation.presented_proxy = true;
     editor.presentation.preview_generation = 7;
@@ -1357,10 +1358,10 @@ fn a_bounds_change_refits_the_presented_proxy_once() {
 #[test]
 fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 1.0;
+    editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_generation = 7;
     editor.presentation.presented_proxy = true;
     editor.presentation.preview_generation = 7;
@@ -1382,10 +1383,10 @@ fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() 
 #[test]
 fn an_exact_only_refit_replaces_an_undersized_proxy() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((1440, 960));
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 2.0;
+    editor.view_state.scale_factor = 2.0;
     editor.presentation.presented_proxy = true;
     editor.presentation.presented_generation = 7;
     editor.presentation.preview_generation = 8;
@@ -1429,10 +1430,10 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
 #[test]
 fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
-    editor.scale_factor = 1.0;
+    editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_generation = 7;
     editor.presentation.presented_proxy = true;
     editor.presentation.preview_generation = 7;

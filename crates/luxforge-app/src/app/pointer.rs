@@ -86,28 +86,28 @@ impl Editor {
     pub(super) fn pointer_update(&mut self, message: PointerMessage) -> Task<Message> {
         match message {
             PointerMessage::Sampled { entry, result } => {
-                self.sample_in_flight = false;
+                self.hover.sample.answered();
                 // The answer is adopted only when it describes the stack still on screen.
-                self.readout = (self.displayed_entry() == Some(entry))
+                self.hover.readout = (self.displayed_entry() == Some(entry))
                     .then_some(result)
                     .and_then(Result::ok);
                 self.settle_step(Settle::Readout);
-                if let Some((x, y)) = self.pending_sample.take() {
+                if let Some(&(x, y)) = self.hover.sample.pending() {
                     return self.sample(x, y);
                 }
             }
             PointerMessage::Moved(point) => {
-                if self.pointer == point {
+                if self.hover.pointer == point {
                     return Task::none();
                 }
-                self.pointer = point;
+                self.hover.pointer = point;
                 return match point {
                     Some((x, y)) => self.sample(x, y),
                     None => {
                         // The pointer left the photograph: the readout is cleared rather than left
                         // naming a pixel nothing is over.
-                        self.readout = None;
-                        self.pending_sample = None;
+                        self.hover.readout = None;
+                        self.hover.sample.drop_pending();
                         Task::none()
                     }
                 };
@@ -428,17 +428,16 @@ impl Editor {
     /// position waiting. `render.sample` is a point query: it evaluates one coordinate of the
     /// compiled recipe and rasterizes nothing.
     pub(super) fn sample(&mut self, x: u32, y: u32) -> Task<Message> {
-        if self.sample_in_flight {
-            self.pending_sample = Some((x, y));
-            return Task::none();
-        }
+        self.hover.sample.offer((x, y));
         let Some(state) = &self.document.state else {
             return Task::none();
         };
         let Some(entry) = self.displayed_entry() else {
             return Task::none();
         };
-        self.sample_in_flight = true;
+        let Some((x, y)) = self.hover.sample.start() else {
+            return Task::none();
+        };
         sample_task(
             self.owner.clone(),
             self.client,

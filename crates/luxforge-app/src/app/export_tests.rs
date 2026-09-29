@@ -35,7 +35,7 @@ fn chosen(editor: &mut Editor, name: &str) {
         choice,
     ))))));
     assert_eq!(editor.status, format!("Exporting {name}\u{2026}"));
-    assert!(!editor.picker_open);
+    assert!(!editor.view_state.picker_open);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn the_button_opens_its_menu_and_an_item_starts_one_export_at_a_time() {
     // An item closes the menu and starts the chain: the dialog is open, so Open and Export wait.
     start(&mut editor, true);
     assert!(!editor.workspace.title.export_menu_open);
-    assert!(editor.picker_open);
+    assert!(editor.view_state.picker_open);
     assert!(!editor.workspace.title.can_export);
     assert_eq!(
         editor.export.run.as_ref().map(|run| run.keep_metadata),
@@ -117,7 +117,7 @@ fn the_button_opens_its_menu_and_an_item_starts_one_export_at_a_time() {
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(None))));
     assert_eq!(editor.status, "Export cancelled");
     assert!(editor.export.run.is_none());
-    assert!(!editor.picker_open);
+    assert!(!editor.view_state.picker_open);
     assert!(editor.workspace.title.can_export);
     finish(editor, catalog);
 }

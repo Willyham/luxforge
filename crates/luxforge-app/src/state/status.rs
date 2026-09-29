@@ -246,7 +246,7 @@ pub(crate) fn view_text(zoom: &Zoom, effective: Option<f32>, scale: f32) -> Stri
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
     StatusBarModel {
         message: inputs.status.to_owned(),
-        readout: inputs.readout.map(histogram::readout_text),
+        readout: inputs.hover.readout.as_ref().map(histogram::readout_text),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
         render: if inputs.rendering {
@@ -260,7 +260,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         view: view_text(
             &inputs.session.preview.view.zoom,
             title::effective_percent(inputs),
-            inputs.scale_factor,
+            inputs.view_state.scale_factor,
         ),
     }
 }

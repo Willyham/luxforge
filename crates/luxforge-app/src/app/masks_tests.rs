@@ -1155,7 +1155,7 @@ fn the_row_menu_duplicates_inverts_and_deletes_through_the_host() {
             mask.as_str().to_owned(),
         ))));
     assert_eq!(
-        masking.editor.menu,
+        masking.editor.view_state.menu,
         Some(MenuTarget::Mask(mask.as_str().to_owned()))
     );
 
@@ -2898,10 +2898,10 @@ fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
     masking.sweep((0.5, 0.2), (0.5, 0.8));
-    masking.editor.window = (1440.0, 900.0);
+    masking.editor.view_state.window = (1440.0, 900.0);
     masking.editor.presentation.dimensions = Some((4000, 3000));
     masking.editor.session.preview.view.zoom = luxforge_core::Zoom::Fit;
-    masking.editor.scale_factor = 1.0;
+    masking.editor.view_state.scale_factor = 1.0;
     masking.editor.presentation.presented_generation =
         masking.editor.presentation.preview_generation;
     masking.editor.presentation.presented_proxy = true;
@@ -3736,7 +3736,7 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
         TypingTarget::RenameMask(mask.clone()),
     )));
     assert_eq!(
-        masking.editor.menu, None,
+        masking.editor.view_state.menu, None,
         "choosing Rename puts the menu away"
     );
     let row = &masking.editor.workspace.masks.masks[0];
@@ -4054,7 +4054,7 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
         Modifiers::empty(),
         iced::event::Status::Ignored,
     );
-    assert_eq!(masking.editor.menu, None);
+    assert_eq!(masking.editor.view_state.menu, None);
     assert!(masking.editor.mask_mode_active());
 
     // Every item is a kind the menu can start, labelled with its letter where it has one.
@@ -4081,7 +4081,7 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
     // `L` starts a linear while New mask is open.
     open(&mut masking, MenuTarget::NewMask);
     masking.key("l", Modifiers::empty());
-    assert_eq!(masking.editor.menu, None);
+    assert_eq!(masking.editor.view_state.menu, None);
     assert_eq!(
         masking.editor.mask_shape().map(MaskDraft::kind),
         Some(LINEAR)
@@ -4157,7 +4157,10 @@ fn a_swatch_menu_removes_one_colour_with_the_request_it_copies() {
     };
     let expected = masking.request_for(&edit);
     masking.run(MaskMessage::Row(edit));
-    assert_eq!(masking.editor.menu, None, "Remove puts the menu away");
+    assert_eq!(
+        masking.editor.view_state.menu, None,
+        "Remove puts the menu away"
+    );
     let (_, params) = masking.editor.mask_panel.last_request.clone().unwrap();
     assert_eq!(identified(params), expected);
     assert_eq!(
@@ -4220,7 +4223,10 @@ fn a_script_opens_a_kind_menu_and_presses_an_eye() {
     let _ = masking.editor.next_step();
     // A step runs outside `update`, which derives the panel after every message.
     masking.editor.rederive();
-    assert_eq!(masking.editor.menu.as_ref(), Some(&MenuTarget::NewMask));
+    assert_eq!(
+        masking.editor.view_state.menu.as_ref(),
+        Some(&MenuTarget::NewMask)
+    );
     assert_eq!(
         masking.editor.workspace.masks.summary()["menu"],
         json!("new_mask")
@@ -4230,7 +4236,7 @@ fn a_script_opens_a_kind_menu_and_presses_an_eye() {
     assert_eq!(run.current.as_ref().unwrap()["status"], json!("sent"));
     let _ = masking.editor.next_step();
     assert_eq!(
-        masking.editor.menu.as_ref(),
+        masking.editor.view_state.menu.as_ref(),
         Some(&MenuTarget::AddComponent)
     );
 

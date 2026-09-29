@@ -129,7 +129,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             can_return: !inputs.busy,
             can_restore: !inputs.busy && inputs.history_refusal.is_none(),
         }),
-        menu: inputs.menu.cloned(),
+        menu: inputs.view_state.menu.clone(),
         can_select: !inputs.busy,
     }
 }

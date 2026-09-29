@@ -119,13 +119,14 @@ impl Editor {
         if let Some(reason) = self.gesture_refusal(Starting::Export) {
             return Some(reason);
         }
-        self.picker_open
+        self.view_state
+            .picker_open
             .then(|| "A file dialog is already open".to_owned())
     }
 
     fn close_export_menu(&mut self) {
-        if matches!(self.menu, Some(MenuTarget::Export)) {
-            self.menu = None;
+        if matches!(self.view_state.menu, Some(MenuTarget::Export)) {
+            self.view_state.menu = None;
         }
     }
 
@@ -149,7 +150,7 @@ impl Editor {
         let asset = state.asset.id.clone();
         let original = state.asset.locator.clone();
         if destination.is_none() {
-            self.picker_open = true;
+            self.view_state.picker_open = true;
         }
         self.export.run = Some(ExportRun {
             keep_metadata,
@@ -176,7 +177,7 @@ impl Editor {
         &mut self,
         result: Result<Option<Box<ExportChoice>>, String>,
     ) -> Task<Message> {
-        self.picker_open = false;
+        self.view_state.picker_open = false;
         match result {
             Ok(Some(choice)) => {
                 let file_name = file_name(&choice.destination);

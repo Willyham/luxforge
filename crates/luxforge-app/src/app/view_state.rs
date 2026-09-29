@@ -38,8 +38,8 @@ impl Editor {
                 // The page is this desktop's own view state, so opening, turning and closing the
                 // board is local and immediate: nothing is sent to the owner.
                 self.palette_open = false;
-                self.menu = None;
-                self.gallery = page;
+                self.view_state.menu = None;
+                self.view_state.gallery = page;
             }
             ViewMessage::CopyStatus => {
                 // While the status still reads an import's summary, Copy copies its whole report.
@@ -76,18 +76,18 @@ impl Editor {
                 self.settle_step(Settle::Session);
             }
             ViewMessage::PanSynced(result) => {
-                self.pan_in_flight = false;
+                self.view_state.pan.answered();
                 match result {
                     Ok(session) => self.adopt(session),
                     Err(error) => self.status = error,
                 }
-                if let Some((x, y)) = self.pending_pan.take() {
+                if let Some(&(x, y)) = self.view_state.pan.pending() {
                     return self.pan(x, y);
                 }
                 self.settle_step(Settle::Pan);
             }
             ViewMessage::Resized(width, height) => {
-                self.window = (width, height);
+                self.view_state.window = (width, height);
                 // Entering or leaving fullscreen resizes the window, and nothing else reports it.
                 if window_frame::INTEGRATED_TITLE_BAR {
                     return iced::window::oldest()
@@ -99,7 +99,7 @@ impl Editor {
                         });
                 }
             }
-            ViewMessage::Fullscreen(fullscreen) => self.fullscreen = fullscreen,
+            ViewMessage::Fullscreen(fullscreen) => self.view_state.fullscreen = fullscreen,
             ViewMessage::TogglePanel(panel) => {
                 let open = match panel {
                     Panel::State => self.session.workspace.state_panel,
@@ -145,46 +145,49 @@ impl Editor {
                 // generic catch-up in `sync_mode`, so the same field is never asked for twice.
                 return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
             }
-            ViewMessage::OpenMenu(target) => self.menu = Some(target),
+            ViewMessage::OpenMenu(target) => self.view_state.menu = Some(target),
             ViewMessage::OpenControlMenu {
                 action,
                 parameter,
                 preset,
-            } => self.menu = Some(crate::state::MenuTarget::control(action, parameter, preset)),
-            ViewMessage::CloseMenu => self.menu = None,
+            } => {
+                self.view_state.menu =
+                    Some(crate::state::MenuTarget::control(action, parameter, preset))
+            }
+            ViewMessage::CloseMenu => self.view_state.menu = None,
             ViewMessage::FocusNext => return operation::focus_next(),
             ViewMessage::FocusPrevious => return operation::focus_previous(),
-            ViewMessage::Zoom(value) => self.zoom = value,
+            ViewMessage::Zoom(value) => self.view_state.zoom = value,
             ViewMessage::Panned(x, y) => return self.pan(x, y),
             ViewMessage::Fit => {
-                self.zoom = "Fit".into();
-                self.zoom_editing = false;
+                self.view_state.zoom = "Fit".into();
+                self.view_state.zoom_editing = false;
                 return self.session_command("view.set", json!({"zoom":{"mode":"fit"}}));
             }
             ViewMessage::HundredPercent => {
-                self.zoom = "100".into();
-                self.zoom_editing = false;
+                self.view_state.zoom = "100".into();
+                self.view_state.zoom_editing = false;
                 return self
                     .session_command("view.set", json!({"zoom":{"mode":"percent","value":100.0}}));
             }
             ViewMessage::ApplyZoom => {
-                let Ok(value) = self.zoom.parse::<f32>() else {
+                let Ok(value) = self.view_state.zoom.parse::<f32>() else {
                     self.status = "Zoom must be Fit or a percentage from 10 to 1600".into();
                     return Task::none();
                 };
-                self.zoom_editing = false;
+                self.view_state.zoom_editing = false;
                 return self
                     .session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}));
             }
             ViewMessage::EditZoom => {
                 // The field starts from what the segment showed, without its percent sign.
-                self.zoom = self
+                self.view_state.zoom = self
                     .workspace
                     .title
                     .zoom_percent
                     .trim_end_matches('%')
                     .to_owned();
-                self.zoom_editing = true;
+                self.view_state.zoom_editing = true;
                 return Task::batch([
                     operation::focus(view::title_bar::ZOOM_FIELD),
                     operation::select_all(view::title_bar::ZOOM_FIELD),
@@ -195,7 +198,7 @@ impl Editor {
             }
             ViewMessage::ScaleFactor(scale) => {
                 if scale.is_finite() && scale > 0.0 {
-                    self.scale_factor = scale;
+                    self.view_state.scale_factor = scale;
                 }
             }
         }
@@ -205,16 +208,15 @@ impl Editor {
     /// Pan is session state like zoom, but scroll events arrive faster than round trips complete:
     /// keep one request in flight and only the newest pending position.
     pub(super) fn pan(&mut self, x: f32, y: f32) -> Task<Message> {
-        if (x, y) != self.local_pan {
-            self.local_pan = (x, y);
+        if (x, y) != self.view_state.local_pan {
+            self.view_state.local_pan = (x, y);
             self.note_view_motion();
         }
-        if self.pan_in_flight {
-            self.pending_pan = Some((x, y));
-            return Task::none();
+        self.view_state.pan.offer((x, y));
+        match self.view_state.pan.start() {
+            Some((x, y)) => pan_task(self.owner.clone(), self.client, x, y),
+            None => Task::none(),
         }
-        self.pan_in_flight = true;
-        pan_task(self.owner.clone(), self.client, x, y)
     }
 
     pub(super) fn session_command(&mut self, method: &'static str, params: Value) -> Task<Message> {
@@ -256,6 +258,6 @@ impl Editor {
     }
 
     pub(super) fn gallery_page(&self) -> Option<usize> {
-        self.developer.then_some(self.gallery).flatten()
+        self.developer.then_some(self.view_state.gallery).flatten()
     }
 }

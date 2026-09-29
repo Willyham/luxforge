@@ -754,7 +754,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         sections,
         developer,
         status,
-        menu: inputs.menu.cloned(),
+        menu: inputs.view_state.menu.clone(),
     }
 }
 

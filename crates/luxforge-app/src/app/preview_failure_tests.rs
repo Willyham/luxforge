@@ -494,7 +494,7 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
 #[test]
 fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     let (mut editor, catalog, asset, current) = opened_and_shown();
-    editor.window = (1440.0, 900.0);
+    editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
     let raster = |code: u8| {
