@@ -12,7 +12,7 @@ use crate::{
     AssetId, Draft, DraftId, EntryId, Error, HistoryEntry, HistoryRow, LayerId, MaskId,
     ModuleRegistry, Orientation, RenderContext, SnapshotId, StageSize,
     analysis::AnalysisIdentity,
-    artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
+    artifacts::{ArtifactId, LiveArtifacts, PREPARED_ARTIFACT_BYTES, PreparedArtifacts},
     source::PreparedSource,
 };
 use catalog::{CATALOG_FORMAT, default_artifact_root};
@@ -612,7 +612,7 @@ impl EditorService {
             render: RenderContext::new(),
             catalog_id,
             artifact_root,
-            prepared_artifacts: RefCell::new(PreparedArtifacts::default()),
+            prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
             live_artifacts: LiveArtifacts::default(),
         })
