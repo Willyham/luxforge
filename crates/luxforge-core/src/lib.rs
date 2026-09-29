@@ -116,7 +116,7 @@ pub(crate) use model::MASK_BYTES_PER_RECIPE;
 #[cfg(test)]
 pub(crate) use modules::{
     APPLY_PRESET, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
-    PROOF_TASK, PresenceModule,
+    PresenceModule,
 };
 #[cfg(test)]
 pub(crate) use render::ProxyRegionPlan;

@@ -26,7 +26,7 @@ pub use capabilities_proof::{
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
 #[cfg(test)]
-pub(crate) use capabilities_proof::{PROOF_PALETTE_GAINS, PROOF_TASK};
+pub(crate) use capabilities_proof::PROOF_PALETTE_GAINS;
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, Controls, ControlsModule};
 pub(crate) use crop::CropModule;

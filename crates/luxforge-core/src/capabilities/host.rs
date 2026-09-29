@@ -742,22 +742,15 @@ mod tests {
     use crate::{
         ApiRequest, ApiResponse, ClientId, OwnerHandle,
         capabilities::{
-            grants::{DENY, GRANT, LIST, REVOKE},
-            resources::{INSTALL, REMOVE, RESOURCE_LIST},
             secrets::{MemorySecretStore, SecretKey},
             settings::READ,
-            testing::{ADAPTER, MODULE, TASK, capability_descriptor, temp},
+            testing::{ADAPTER, MODULE, capability_descriptor, files, temp},
         },
-        jobs::{JOB_CANCEL, JOB_READ},
+        editor::mutation_json,
         modules::TestModule,
-        redact_params,
     };
     use serde_json::json;
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        thread::JoinHandle,
-    };
+    use std::{fs, path::PathBuf, thread::JoinHandle};
 
     fn registry() -> Arc<ModuleRegistry> {
         let mut registry = ModuleRegistry::builtin();
@@ -848,96 +841,9 @@ mod tests {
         (error.code, error.message)
     }
 
-    fn mutation(revision: u64, request: &str) -> Value {
-        json!({"expected_revision": revision, "request_id": request, "actor": "test"})
-    }
-
     fn stop(owner: OwnerHandle, join: JoinHandle<()>) {
         owner.stop();
         join.join().unwrap();
-    }
-
-    /// Every file under `root`, read whole.
-    fn files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut found = Vec::new();
-        let mut pending = vec![root.to_path_buf()];
-        while let Some(dir) = pending.pop() {
-            for entry in fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else {
-                    found.push((path.clone(), fs::read(&path).unwrap()));
-                }
-            }
-        }
-        found
-    }
-
-    #[test]
-    fn discovery_and_reopen_touch_no_settings_file_or_secret_store() {
-        let fixture = Fixture::new("discovery");
-        let declared = serde_json::to_value(capability_descriptor()).unwrap();
-        for round in 0..2 {
-            let (owner, join) = fixture.start();
-            let client = owner.register();
-            let modules = ok(&owner, client, "list", "module.list", json!({}));
-            let listed = modules["modules"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|module| module["id"] == json!(MODULE))
-                .expect("the module is listed");
-            assert_eq!(listed, &declared, "round {round}: exactly the declarations");
-            let schema = ok(&owner, client, "schema", "schema.list", json!({}));
-            let in_schema = schema["modules"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|module| module["id"] == json!(MODULE))
-                .unwrap();
-            assert_eq!(in_schema, &declared);
-            let methods = schema["methods"].as_object().unwrap();
-            for method in [
-                READ,
-                SET,
-                SET_SECRET,
-                CLEAR_SECRET,
-                RESET,
-                CREATE_PROFILE,
-                REMOVE_PROFILE,
-                GRANT,
-                DENY,
-                REVOKE,
-                LIST,
-                STATUS,
-                RESOURCE_LIST,
-                INSTALL,
-                REMOVE,
-                JOB_READ,
-                JOB_CANCEL,
-            ] {
-                assert!(methods.contains_key(method), "{method} is discoverable");
-            }
-            let task = &methods[&format!("task.{TASK}")];
-            assert_eq!(task["mutates"], json!(true), "the request queues a job");
-            assert_eq!(task["mutation"], json!("request"));
-            assert_eq!(
-                task["required"],
-                json!(["mutation", "asset_id", "profile_id"])
-            );
-            assert_eq!(task["optional"], json!({"gain": "test"}));
-            stop(owner, join);
-        }
-        assert_eq!(
-            fixture.secrets.calls().total(),
-            0,
-            "discovery and reopen never ask the secret store"
-        );
-        assert!(
-            !fixture.root.join("config").exists(),
-            "discovery and reopen never create the settings directory"
-        );
     }
 
     #[test]
@@ -965,7 +871,7 @@ mod tests {
             json!({
                 "module_id": MODULE,
                 "values": {"mode": "fast", "label": "tint"},
-                "mutation": mutation(0, "set-1"),
+                "mutation": mutation_json(0, "set-1"),
             }),
         );
         assert_eq!(set["outcome"], json!("committed"));
@@ -990,7 +896,7 @@ mod tests {
             client,
             "set-2",
             SET,
-            json!({"module_id": MODULE, "values": {"mode": "fast"}, "mutation": mutation(1, "set-2")}),
+            json!({"module_id": MODULE, "values": {"mode": "fast"}, "mutation": mutation_json(1, "set-2")}),
         );
         assert_eq!(again["outcome"], json!("no-op"));
         assert_eq!(again["revision"], json!(1));
@@ -1002,7 +908,7 @@ mod tests {
             json!({
                 "module_id": MODULE,
                 "values": {"mode": "fast", "label": "tint"},
-                "mutation": mutation(0, "set-1"),
+                "mutation": mutation_json(0, "set-1"),
             }),
         );
         assert_eq!(retry["deduplicated"], json!(true));
@@ -1022,7 +928,7 @@ mod tests {
             client,
             "set-1",
             SET,
-            json!({"module_id": MODULE, "values": {"mode": "exact"}, "mutation": mutation(0, "set-1")}),
+            json!({"module_id": MODULE, "values": {"mode": "exact"}, "mutation": mutation_json(0, "set-1")}),
         );
         assert_eq!(
             (code.as_str(), message.as_str()),
@@ -1033,7 +939,7 @@ mod tests {
         );
         // A secret write's retry is matched by the setting alone: the value is never part of the
         // request's identity, and the retry stores nothing.
-        let secret = |value: &str| json!({"module_id": MODULE, "setting": "token", "value": value, "mutation": mutation(1, "secret")});
+        let secret = |value: &str| json!({"module_id": MODULE, "setting": "token", "value": value, "mutation": mutation_json(1, "secret")});
         let first = ok(&owner, client, "secret", SET_SECRET, secret("first-value"));
         assert_eq!(first["deduplicated"], json!(false));
         let again = ok(&owner, client, "secret", SET_SECRET, secret("other-value"));
@@ -1049,7 +955,7 @@ mod tests {
             client,
             "stale",
             SET,
-            json!({"module_id": MODULE, "values": {"mode": "exact"}, "mutation": mutation(0, "stale")}),
+            json!({"module_id": MODULE, "values": {"mode": "exact"}, "mutation": mutation_json(0, "stale")}),
         );
         assert_eq!(code, "conflict");
         assert!(
@@ -1074,7 +980,7 @@ mod tests {
             json!({
                 "module_id": MODULE,
                 "values": {"mode": "fast", "label": "tint"},
-                "mutation": mutation(0, "set-1"),
+                "mutation": mutation_json(0, "set-1"),
             }),
         );
         assert_eq!(code, "conflict");
@@ -1095,7 +1001,7 @@ mod tests {
             client,
             "create",
             CREATE_PROFILE,
-            json!({"module_id": MODULE, "adapter": ADAPTER, "label": "Echo", "mutation": mutation(0, "create")}),
+            json!({"module_id": MODULE, "adapter": ADAPTER, "label": "Echo", "mutation": mutation_json(0, "create")}),
         );
         let profile = created["profile"]["id"].as_str().unwrap().to_owned();
         assert_eq!(created["profile"]["adapter"], json!(ADAPTER));
@@ -1110,7 +1016,7 @@ mod tests {
             SET,
             json!({
                 "module_id": MODULE, "profile_id": profile,
-                "values": {"endpoint": "http://localhost:9/echo"}, "mutation": mutation(1, "endpoint"),
+                "values": {"endpoint": "http://localhost:9/echo"}, "mutation": mutation_json(1, "endpoint"),
             }),
         );
         let secret = ok(
@@ -1120,7 +1026,7 @@ mod tests {
             SET_SECRET,
             json!({
                 "module_id": MODULE, "profile_id": profile, "setting": "api-key",
-                "value": "key-value", "mutation": mutation(2, "secret"),
+                "value": "key-value", "mutation": mutation_json(2, "secret"),
             }),
         );
         assert_eq!(secret["outcome"], json!("committed"));
@@ -1144,7 +1050,7 @@ mod tests {
             client,
             "clear",
             CLEAR_SECRET,
-            json!({"module_id": MODULE, "profile_id": profile, "setting": "api-key", "mutation": mutation(3, "clear")}),
+            json!({"module_id": MODULE, "profile_id": profile, "setting": "api-key", "mutation": mutation_json(3, "clear")}),
         );
         assert_eq!(
             cleared["settings"]["profiles"][0]["status"],
@@ -1155,7 +1061,7 @@ mod tests {
             client,
             "remove",
             REMOVE_PROFILE,
-            json!({"module_id": MODULE, "profile_id": profile, "mutation": mutation(4, "remove")}),
+            json!({"module_id": MODULE, "profile_id": profile, "mutation": mutation_json(4, "remove")}),
         );
         assert_eq!(removed["profile"]["id"], json!(profile));
         assert_eq!(removed["settings"]["profiles"], json!([]));
@@ -1165,7 +1071,7 @@ mod tests {
             client,
             "reset",
             RESET,
-            json!({"module_id": MODULE, "mutation": mutation(5, "reset")}),
+            json!({"module_id": MODULE, "mutation": mutation_json(5, "reset")}),
         );
         assert_eq!(reset["outcome"], json!("no-op"));
         assert_eq!(reset["revision"], json!(5));
@@ -1201,7 +1107,7 @@ mod tests {
             client,
             "locked",
             SET_SECRET,
-            json!({"module_id": MODULE, "setting": "token", "value": "locked-plain", "mutation": mutation(5, "locked")}),
+            json!({"module_id": MODULE, "setting": "token", "value": "locked-plain", "mutation": mutation_json(5, "locked")}),
         );
         assert_eq!(
             (code.as_str(), message.as_str()),
@@ -1227,11 +1133,11 @@ mod tests {
             (READ, json!({"module_id": MODULE})),
             (
                 SET_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": "x", "mutation": mutation(0, "a")}),
+                json!({"module_id": MODULE, "setting": "token", "value": "x", "mutation": mutation_json(0, "a")}),
             ),
             (
                 RESET,
-                json!({"module_id": MODULE, "mutation": mutation(0, "b")}),
+                json!({"module_id": MODULE, "mutation": mutation_json(0, "b")}),
             ),
         ] {
             assert_eq!(
@@ -1269,138 +1175,12 @@ mod tests {
             client,
             "wrong",
             SET_SECRET,
-            json!({"module_id": MODULE, "setting": "token", "value": 12345, "mutation": mutation(0, "c")}),
+            json!({"module_id": MODULE, "setting": "token", "value": 12345, "mutation": mutation_json(0, "c")}),
         );
         assert_eq!(
             (code.as_str(), message.as_str()),
             ("validation", "value must be a string")
         );
         stop(owner, join);
-    }
-
-    #[test]
-    fn a_sentinel_secret_appears_on_no_observable_surface() {
-        let fixture = Fixture::new("sentinel");
-        let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
-        let (owner, join) = fixture.start();
-        let client = owner.register();
-        let mut observed = Vec::new();
-        let mut send = |id: &str, method: &str, params: Value| {
-            let response = call(&owner, client, id, method, params);
-            observed.push(serde_json::to_string(&response).unwrap());
-            response
-        };
-        let created = send(
-            "create",
-            CREATE_PROFILE,
-            json!({"module_id": MODULE, "adapter": ADAPTER, "label": "Echo", "mutation": mutation(0, "create")}),
-        );
-        let profile = created.result.unwrap()["profile"]["id"].clone();
-        let module_secret = json!({
-            "module_id": MODULE, "setting": "token", "value": sentinel, "mutation": mutation(1, "token"),
-        });
-        assert!(
-            send("token", SET_SECRET, module_secret.clone())
-                .error
-                .is_none()
-        );
-        assert!(
-            send("token", SET_SECRET, module_secret.clone())
-                .error
-                .is_none(),
-            "a retry"
-        );
-        let profile_secret = json!({
-            "module_id": MODULE, "profile_id": profile, "setting": "api-key", "value": sentinel,
-            "mutation": mutation(2, "api-key"),
-        });
-        assert!(send("api-key", SET_SECRET, profile_secret).error.is_none());
-        // Refused requests carrying the secret echo none of it.
-        for (id, method, params) in [
-            (
-                "long",
-                SET_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": format!("{sentinel}{}", "x".repeat(64)), "mutation": mutation(3, "long")}),
-            ),
-            (
-                "object",
-                SET_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": {"nested": sentinel}, "mutation": mutation(3, "object")}),
-            ),
-            (
-                "array",
-                SET_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": [sentinel], "mutation": mutation(3, "array")}),
-            ),
-            (
-                "extra",
-                SET_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": sentinel, "extra": sentinel, "mutation": mutation(3, "extra")}),
-            ),
-            (
-                "wrong-setting",
-                SET_SECRET,
-                json!({"module_id": MODULE, "setting": "note", "value": sentinel, "mutation": mutation(3, "wrong")}),
-            ),
-            (
-                "as-value",
-                SET,
-                json!({"module_id": MODULE, "values": {"token": sentinel}, "mutation": mutation(3, "as-value")}),
-            ),
-            (
-                "clear-with-value",
-                CLEAR_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": sentinel, "mutation": mutation(3, "clear")}),
-            ),
-            (
-                "stale",
-                SET_SECRET,
-                json!({"module_id": MODULE, "setting": "token", "value": sentinel, "mutation": mutation(0, "stale")}),
-            ),
-        ] {
-            assert!(send(id, method, params).error.is_some(), "{id} was refused");
-        }
-        send("read", READ, json!({"module_id": MODULE}));
-        send("events", "events.since", json!({"after": 0}));
-        send("list", "module.list", json!({}));
-        send("schema", "schema.list", json!({}));
-        send("status", "session.state", json!({}));
-        stop(owner, join);
-        assert!(observed.len() >= 14);
-        for text in &observed {
-            assert!(
-                !text.contains(&sentinel),
-                "a response carries the secret: {text}"
-            );
-        }
-        for (path, bytes) in files(&fixture.root) {
-            assert!(
-                !String::from_utf8_lossy(&bytes).contains(&sentinel),
-                "{} holds the secret",
-                path.display()
-            );
-        }
-        // The secret did reach the store, under both of its keys.
-        for key in [
-            SecretKey::new(MODULE, None, "token"),
-            SecretKey::new(MODULE, profile.as_str(), "api-key"),
-        ] {
-            assert_eq!(
-                fixture.secrets.read(&key).unwrap().unwrap().expose(),
-                sentinel
-            );
-        }
-        // And a request log, evidence capture or Copy as JSON of the request carries none of it.
-        let request = ApiRequest {
-            id: "token".into(),
-            method: SET_SECRET.into(),
-            params: module_secret,
-            token: None,
-        };
-        assert!(serde_json::to_string(&request).unwrap().contains(&sentinel));
-        let redacted =
-            serde_json::to_string(&redact_params(&request.method, &request.params)).unwrap();
-        assert!(!redacted.contains(&sentinel), "{redacted}");
-        assert!(redacted.contains("<redacted>"));
     }
 }

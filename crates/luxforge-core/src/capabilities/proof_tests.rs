@@ -1,42 +1,40 @@
 //! The capability proof end to end through the catalog owner's JSON methods, exactly as a client
-//! drives it: discovery, settings and a profile, consent for the resource download, install,
-//! consent for the per-asset remote send, the task with its sample grid, the published
-//! artifact, its application and the render, against a [`ProofEndpoint`] answered in process by
-//! the in-memory transport, isolated directories and an in-memory secret store. Nothing here opens
-//! a socket.
+//! drives it: settings and a profile, consent for the resource download, install, consent for the
+//! per-asset remote send, the task with its sample grid, the published artifact, its application
+//! and the render, against a [`ProofEndpoint`] answered in process by the in-memory transport,
+//! isolated directories and an in-memory secret store. Nothing here opens a socket. The behaviours
+//! every capability module shares — authority, consent, denial, revocation, cancellation, resource
+//! installs and removal, inert discovery — are owned by `lifecycle_tests.rs`; this file keeps the
+//! journey and what only a task that sends a photo and publishes an artifact can show.
 use super::{
     data::SAMPLE_GRID_BYTES,
-    grants::{DENY, GRANT, REVOKE},
+    grants::{GRANT, REVOKE},
     host::{HostConfig, STATUS},
-    resources::{INSTALL, REMOVE},
+    resources::INSTALL,
     secrets::MemorySecretStore,
-    settings::{CREATE_PROFILE, READ, SET, SET_SECRET},
-    testing::{enveloped, proof_transport, temp},
+    settings::{CLEAR_SECRET, CREATE_PROFILE, READ, SET, SET_SECRET},
+    testing::{Owner, files, proof_transport, temp},
 };
 use crate::{
-    ApiFailure, ApiRequest, ApiResponse, ArtifactId, AssetId, CapabilitiesProofModule,
-    CapabilityModule, ClientAuthority, ClientId, EditorService, EntryId, Error, Layer, LayerUpdate,
-    ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK,
-    ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
+    ApiFailure, ApiRequest, ArtifactId, AssetId, CapabilitiesProofModule, CapabilityModule,
+    EditorService, EntryId, Error, Layer, LayerUpdate, ModuleDescriptor, ModuleRegistry,
+    PROOF_PALETTE_GAINS, ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
     capabilities::{context::ModuleContext, descriptor::TaskDescriptor},
     colour::srgb::{decode_u8, quantize_pixel},
-    jobs::{JOB_CANCEL, JOB_READ},
+    editor::mutation_json,
+    jobs::JOB_CANCEL,
     modules::{ActionInput, ActionPlan},
     redact_params,
 };
-use luxforge_testbase::wait_for;
 use luxforge_testkit::ProofEndpoint;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    cell::{Cell, RefCell},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    thread::JoinHandle,
     time::Instant,
 };
-
 const MODULE: &str = "luxforge.capabilities";
 const TASK: &str = "task.generate-proof-tint";
 const STRENGTH: f64 = 0.75;
@@ -184,38 +182,7 @@ impl Fixture {
     }
 
     fn start(&self) -> Owner {
-        let (handle, join) =
-            OwnerHandle::start_with_host(&self.catalog(), self.registry(), self.host()).unwrap();
-        let edit = handle.register();
-        let admin = handle.register_with(ClientAuthority::Permissions);
-        Owner {
-            handle,
-            join: Some(join),
-            edit,
-            admin,
-            next: Cell::new(0),
-            observed: RefCell::new(Vec::new()),
-        }
-    }
-
-    /// Every file under the root, read whole.
-    fn files(&self) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut found = Vec::new();
-        let mut pending = vec![self.root.clone()];
-        while let Some(dir) = pending.pop() {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if let Ok(bytes) = fs::read(&path) {
-                    found.push((path, bytes));
-                }
-            }
-        }
-        found
+        Owner::start(&self.catalog(), self.registry(), self.host())
     }
 }
 
@@ -225,73 +192,28 @@ impl Drop for Fixture {
     }
 }
 
-/// A running owner with an edit client and a permission client, recording every response.
-struct Owner {
-    handle: OwnerHandle,
-    join: Option<JoinHandle<()>>,
-    edit: ClientId,
-    admin: ClientId,
-    next: Cell<u64>,
-    observed: RefCell<Vec<String>>,
+/// What the proof tests ask of the owner besides the shared harness.
+trait Proof {
+    /// Commit settings of the module, or of one of its profiles.
+    fn set(&self, profile: Option<&str>, values: Value) -> Value;
+    fn set_key(&self, profile: &str, key: &str);
+    /// Grant the scope a `consent-required` failure named, as the permission client.
+    fn grant(&self, refused: &ApiFailure) -> Value;
+    /// Ask for the task, waiting through any preparation job its sampling asks for, as a client
+    /// does. Returns the failure or the queued answer.
+    fn task(&self, asset: &AssetId, profile: &str) -> Result<Value, ApiFailure>;
+    /// [`Self::task`] with these exact parameters: a request that names its envelope asks again
+    /// under the same `request_id`, as a client that waits for a preparation does.
+    fn task_with(&self, params: Value) -> Result<Value, ApiFailure>;
+    fn state(&self, asset: &AssetId) -> Value;
+    fn apply(&self, asset: &AssetId, artifact: &Value) -> Value;
+    fn sample(&self, asset: &AssetId, x: u32, y: u32) -> Value;
 }
 
-impl Owner {
-    fn call(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
-        let id = format!("request-{}", self.next.get());
-        self.next.set(self.next.get() + 1);
-        let params = enveloped(method, params, &id);
-        let response = self
-            .handle
-            .call(
-                client,
-                ApiRequest {
-                    id,
-                    method: method.into(),
-                    params,
-                    token: None,
-                },
-            )
-            .expect("the owner answered");
-        self.observed
-            .borrow_mut()
-            .push(serde_json::to_string(&response).unwrap());
-        response
-    }
-
-    fn ok_as(&self, client: ClientId, method: &str, params: Value) -> Value {
-        let response = self.call(client, method, params);
-        assert!(response.error.is_none(), "{method}: {:?}", response.error);
-        response.result.expect("a result")
-    }
-
-    fn ok(&self, method: &str, params: Value) -> Value {
-        self.ok_as(self.edit, method, params)
-    }
-
-    fn fail(&self, method: &str, params: Value) -> ApiFailure {
-        self.call(self.edit, method, params)
-            .error
-            .unwrap_or_else(|| panic!("{method} was expected to fail"))
-    }
-
-    fn revision(&self) -> u64 {
-        self.ok(READ, json!({"module_id": MODULE}))["revision"]
-            .as_u64()
-            .unwrap()
-    }
-
-    fn mutation(&self) -> Value {
-        json!({
-            "expected_revision": self.revision(),
-            "request_id": format!("settings-{}", uuid::Uuid::new_v4().simple()),
-            "actor": "test",
-        })
-    }
-
-    /// Commit settings of the module, or of one of its profiles.
+impl Proof for Owner {
     fn set(&self, profile: Option<&str>, values: Value) -> Value {
         let mut params =
-            json!({"module_id": MODULE, "values": values, "mutation": self.mutation()});
+            json!({"module_id": MODULE, "values": values, "mutation": self.mutation(MODULE)});
         if let Some(profile) = profile {
             params["profile_id"] = json!(profile);
         }
@@ -303,12 +225,11 @@ impl Owner {
             SET_SECRET,
             json!({
                 "module_id": MODULE, "profile_id": profile, "setting": "api-key", "value": key,
-                "mutation": self.mutation(),
+                "mutation": self.mutation(MODULE),
             }),
         );
     }
 
-    /// Grant the scope a `consent-required` failure named, as the permission client.
     fn grant(&self, refused: &ApiFailure) -> Value {
         assert_eq!(refused.code, "consent-required", "{}", refused.message);
         let consent = &refused.data.as_ref().expect("consent data")["consent"];
@@ -324,22 +245,10 @@ impl Owner {
             .clone()
     }
 
-    /// Wait for a capability job to finish and return its record.
-    fn finished(&self, job_id: &Value) -> Value {
-        wait_for(&format!("job {job_id} to finish"), || {
-            let job = self.ok(JOB_READ, json!({"job_id": job_id}));
-            (!matches!(job["status"].as_str(), Some("queued" | "running"))).then_some(job)
-        })
-    }
-
-    /// Ask for the task, waiting through any preparation job its sampling asks for, as a client
-    /// does. Returns the failure or the queued answer.
     fn task(&self, asset: &AssetId, profile: &str) -> Result<Value, ApiFailure> {
         self.task_with(json!({"asset_id": asset, "profile_id": profile}))
     }
 
-    /// [`Self::task`] with these exact parameters: a request that names its envelope asks again
-    /// under the same `request_id`, as a client that waits for a preparation does.
     fn task_with(&self, params: Value) -> Result<Value, ApiFailure> {
         for _ in 0..4 {
             let response = self.call(self.edit, TASK, params.clone());
@@ -361,45 +270,19 @@ impl Owner {
     }
 
     fn apply(&self, asset: &AssetId, artifact: &Value) -> Value {
-        let revision = self.state(asset)["revision"].clone();
+        let revision = self.state(asset)["revision"].as_u64().unwrap();
         self.ok(
             "edit.apply-proof-tint",
             json!({
                 "asset_id": asset,
                 "artifact": artifact,
-                "mutation": {"expected_revision": revision, "request_id": format!("apply-{}", self.next.get()), "actor": "test"},
+                "mutation": mutation_json(revision, &uuid::Uuid::new_v4().to_string()),
             }),
         )
     }
 
     fn sample(&self, asset: &AssetId, x: u32, y: u32) -> Value {
         self.ok("render.sample", json!({"asset_id": asset, "x": x, "y": y}))
-    }
-
-    fn events(&self) -> Vec<String> {
-        self.ok("events.since", json!({"after": 0}))["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|event| event["method"].as_str().unwrap().to_owned())
-            .collect()
-    }
-
-    fn stop(mut self) -> Vec<String> {
-        self.handle.stop();
-        if let Some(join) = self.join.take() {
-            join.join().unwrap();
-        }
-        self.observed.take()
-    }
-}
-
-impl Drop for Owner {
-    fn drop(&mut self) {
-        if let Some(join) = self.join.take() {
-            self.handle.stop();
-            let _ = join.join();
-        }
     }
 }
 
@@ -415,7 +298,7 @@ fn ready(fixture: &Fixture, owner: &Owner, assets: [AssetId; 2]) -> Ready {
     owner.set(None, json!({"strength": STRENGTH}));
     let created = owner.ok(
         CREATE_PROFILE,
-        json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": owner.mutation()}),
+        json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": owner.mutation(MODULE)}),
     );
     let profile = created["profile"]["id"].as_str().unwrap().to_owned();
     owner.set(
@@ -487,64 +370,6 @@ fn assert_tint_renders(
 }
 
 #[test]
-fn the_proof_module_and_its_task_method_are_discovered_without_any_side_effect() {
-    let fixture = Fixture::new("proof-discovery");
-    let owner = fixture.start();
-    let modules = owner.ok("module.list", json!({}));
-    let listed = modules["modules"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|module| module["id"] == MODULE)
-        .expect("the proof module is listed")
-        .clone();
-    let declared = serde_json::to_value(
-        CapabilitiesProofModule::new(&fixture.endpoint.base_url()).descriptor(),
-    )
-    .unwrap();
-    assert_eq!(listed, declared, "exactly the declarations");
-    assert_eq!(listed["developer"], true);
-    assert_eq!(listed["title"], "Capabilities proof");
-    assert_eq!(
-        listed["controls"],
-        json!([
-            {"kind": "task", "task": PROOF_TASK, "label": "Generate tint"},
-            {"kind": "action", "action": "reset-proof-tint", "label": "Reset tint", "preset": {}},
-        ])
-    );
-    let schema = owner.ok("schema.list", json!({}));
-    let task = &schema["methods"][TASK];
-    assert_eq!(task["mutates"], true);
-    assert_eq!(task["mutation"], "request");
-    assert_eq!(
-        task["required"],
-        json!(["mutation", "asset_id", "profile_id"])
-    );
-    assert_eq!(task["optional"], json!({}));
-    assert!(
-        task["notes"]
-            .as_str()
-            .unwrap()
-            .contains("{job_id, status, deduplicated}")
-    );
-    assert_eq!(
-        schema["methods"]["task.publish-then-answer"]["optional"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .collect::<Vec<_>>(),
-        ["fail"]
-    );
-    assert_eq!(owner.handle.lane_threads(), 0);
-    let observed = owner.stop();
-    assert!(observed.iter().all(|text| !text.contains("\"error\"")));
-    assert!(fixture.endpoint.requests().is_empty(), "no network");
-    assert_eq!(fixture.secrets.calls().total(), 0, "no secret store call");
-    assert!(!fixture.root.join("config").exists());
-    assert!(!fixture.root.join("data").exists());
-}
-
-#[test]
 fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_reopen() {
     let fixture = Fixture::new("proof-journey");
     let assets = fixture.import();
@@ -552,7 +377,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     owner.set(None, json!({"strength": STRENGTH}));
     let created = owner.ok(
         CREATE_PROFILE,
-        json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": owner.mutation()}),
+        json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": owner.mutation(MODULE)}),
     );
     let profile = created["profile"]["id"].as_str().unwrap().to_owned();
     owner.set(
@@ -561,10 +386,60 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     );
     let key_request = json!({
         "module_id": MODULE, "profile_id": profile, "setting": "api-key", "value": fixture.key,
-        "mutation": owner.mutation(),
+        "mutation": owner.mutation(MODULE),
     });
     let keyed = owner.ok(SET_SECRET, key_request.clone());
     assert_eq!(keyed["settings"]["profiles"][0]["status"], "ready");
+    // A retry of the request that stored the key, and every refused request carrying it, echo none
+    // of it (the scan at the end reads every answer).
+    assert_eq!(
+        owner.ok(SET_SECRET, key_request.clone())["deduplicated"],
+        true
+    );
+    let key = &fixture.key;
+    let secret = |changes: Value| {
+        let mut params = key_request.clone();
+        params["mutation"] = owner.mutation(MODULE);
+        for (field, value) in changes.as_object().unwrap() {
+            params[field] = value.clone();
+        }
+        params
+    };
+    for (case, method, params) in [
+        (
+            "long",
+            SET_SECRET,
+            secret(json!({"value": format!("{key}{}", "x".repeat(256))})),
+        ),
+        (
+            "object",
+            SET_SECRET,
+            secret(json!({"value": {"nested": key}})),
+        ),
+        ("array", SET_SECRET, secret(json!({"value": [key]}))),
+        ("extra", SET_SECRET, secret(json!({"extra": key}))),
+        (
+            "not a secret",
+            SET_SECRET,
+            secret(json!({"setting": "endpoint"})),
+        ),
+        (
+            "stale",
+            SET_SECRET,
+            secret(json!({"mutation": mutation_json(0, "stale")})),
+        ),
+        ("clear with a value", CLEAR_SECRET, secret(json!({}))),
+        (
+            "as a value",
+            SET,
+            json!({"module_id": MODULE, "profile_id": profile, "values": {"api-key": key}, "mutation": owner.mutation(MODULE)}),
+        ),
+    ] {
+        assert!(
+            owner.call(owner.edit, method, params).error.is_some(),
+            "{case} was refused"
+        );
+    }
     // The task reads its palette, so nothing runs it before the palette is installed.
     let refused = owner.task(&assets[0], &profile).unwrap_err();
     assert_eq!(refused.code, "not-ready");
@@ -573,7 +448,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         json!([{"kind": "resource", "id": "proof-palette", "state": "not-installed"}])
     );
 
-    // The download needs consent, which only the permission client can give.
+    // The download needs consent, which the permission client gives.
     let install = json!({"module_id": MODULE, "resource_id": "proof-palette"});
     let refused = owner.fail(INSTALL, install.clone());
     assert_eq!(refused.code, "consent-required");
@@ -585,18 +460,6 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     );
     assert_eq!(consent["disclosure"]["bytes"], 20);
     assert_eq!(consent["disclosure"]["license"], "GPL-3.0-or-later");
-    assert_eq!(
-        owner
-            .call(
-                owner.edit,
-                GRANT,
-                json!({"module_id": MODULE, "capability": "palette", "scope": consent["scope"], "mutation": {"request_id": "edit-grant", "actor": "test"}}),
-            )
-            .error
-            .unwrap()
-            .code,
-        "forbidden"
-    );
     owner.grant(&refused);
     let installed = owner.ok(INSTALL, install);
     let job = owner.finished(&installed["job_id"]);
@@ -703,7 +566,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     let applied = owner.apply(asset, &artifact);
     assert_eq!(applied["outcome"], "applied", "{applied}");
     let sampled = owner.sample(asset, 5, 7)["rgba"].clone();
-    let service_events = owner.events();
+    let service_events = owner.methods();
     assert!(service_events.contains(&TASK.to_owned()));
     assert!(service_events.contains(&"edit.apply-proof-tint".to_owned()));
     assert_eq!(
@@ -753,7 +616,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
             "a response carries the key: {text}"
         );
     }
-    for (path, bytes) in fixture.files() {
+    for (path, bytes) in files(&fixture.root) {
         assert!(
             !String::from_utf8_lossy(&bytes).contains(&fixture.key),
             "{} holds the key",
@@ -773,7 +636,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
 }
 
 #[test]
-fn every_photo_needs_its_own_remote_grant_and_a_denial_is_reported() {
+fn every_photo_needs_its_own_remote_grant_and_a_task_is_checked_before_its_consent() {
     let fixture = Fixture::new("proof-per-asset");
     let assets = fixture.import();
     let owner = fixture.start();
@@ -786,15 +649,6 @@ fn every_photo_needs_its_own_remote_grant_and_a_denial_is_reported() {
     let consent = refused.data.unwrap()["consent"].clone();
     assert_eq!(consent["capability"], "echo");
     assert_eq!(consent["scope"]["asset_id"], json!(assets[1]));
-    assert_eq!(consent["denied"], false);
-    // "Don't allow" from any client is reported with the next request for that scope.
-    owner.ok(
-        DENY,
-        json!({"module_id": MODULE, "capability": "echo", "scope": consent["scope"]}),
-    );
-    let refused = owner.task(&assets[1], &profile).unwrap_err();
-    assert_eq!(refused.code, "consent-required");
-    assert_eq!(refused.data.unwrap()["consent"]["denied"], true);
     let sent = fixture
         .endpoint
         .requests()
@@ -828,7 +682,7 @@ fn every_photo_needs_its_own_remote_grant_and_a_denial_is_reported() {
     // A profile without its key is reported, before any grant is asked for.
     owner.ok(
         "module.settings.clear-secret",
-        json!({"module_id": MODULE, "profile_id": profile, "setting": "api-key", "mutation": owner.mutation()}),
+        json!({"module_id": MODULE, "profile_id": profile, "setting": "api-key", "mutation": owner.mutation(MODULE)}),
     );
     let refused = owner.task(&assets[0], &profile).unwrap_err();
     assert_eq!(refused.code, "not-ready");
@@ -923,7 +777,11 @@ fn a_retried_task_returns_the_first_job_and_starts_no_second() {
     assert_eq!(retried["job_id"], first["job_id"], "the first job");
     assert_eq!(owner.finished(&first["job_id"])["status"], "ready");
     assert_eq!(generations(), 1, "the photo was sent once");
-    let tasks = owner.events().iter().filter(|event| *event == TASK).count();
+    let tasks = owner
+        .methods()
+        .iter()
+        .filter(|event| *event == TASK)
+        .count();
     assert_eq!(tasks, 1, "one task, announced once");
     // The same request_id with other input is a conflict, and starts nothing either.
     let other = owner.fail(TASK, request(&assets[1], "generate-once"));
@@ -968,7 +826,7 @@ fn a_wrong_api_key_fails_the_task_with_the_endpoints_refusal_and_commits_nothing
     assert_eq!(owner.state(&assets[0]), before);
     let status = owner.ok("artifact.status", json!({}));
     assert_eq!(status["bytes"], 0, "no artifact was recorded: {status}");
-    assert!(!owner.events().contains(&TASK.to_owned()));
+    assert!(!owner.methods().contains(&TASK.to_owned()));
     owner.stop();
 }
 
@@ -1012,103 +870,6 @@ fn only_a_successful_task_records_what_it_published() {
         "parameter fail must be a boolean"
     );
     owner.stop();
-}
-
-#[test]
-fn changing_the_endpoint_revokes_its_grant_and_asks_for_consent_again() {
-    let fixture = Fixture::new("proof-endpoint-change");
-    let assets = fixture.import();
-    let owner = fixture.start();
-    let Ready { assets, profile } = ready(&fixture, &owner, assets);
-    let elsewhere = "https://elsewhere.example";
-    let moved = fixture
-        .endpoint
-        .generate_url()
-        .replace(&fixture.endpoint.base_url(), elsewhere);
-    let changed = owner.set(Some(&profile), json!({"endpoint": moved}));
-    assert_eq!(changed["revoked"].as_array().unwrap().len(), 1);
-    let refused = owner.task(&assets[0], &profile).unwrap_err();
-    assert_eq!(refused.code, "consent-required");
-    let consent = refused.data.unwrap()["consent"].clone();
-    assert_eq!(consent["capability"], "echo");
-    assert_eq!(consent["scope"]["origin"], json!(elsewhere));
-    owner.stop();
-}
-
-#[test]
-fn a_running_task_is_cancelled_at_its_checkpoint() {
-    let fixture = Fixture::new("proof-cancel");
-    let assets = fixture.import();
-    let owner = fixture.start();
-    let Ready { assets, profile } = ready(&fixture, &owner, assets);
-    let generation = fixture.endpoint.generation();
-    generation.shut();
-    let sends = generation.reached();
-    let queued = owner.task(&assets[0], &profile).unwrap();
-    generation.wait_reached(sends + 1, "the task's send");
-    let cancelled = owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
-    assert_eq!(
-        cancelled["status"], "running",
-        "a running job stops at its checkpoint"
-    );
-    let job = owner.finished(&queued["job_id"]);
-    assert!(
-        generation.holding(),
-        "the task stopped while its answer was still held"
-    );
-    assert_eq!(job["status"], "cancelled");
-    assert_eq!(job["error"]["message"], "the job was cancelled");
-    generation.open();
-    assert_eq!(owner.ok("artifact.status", json!({}))["bytes"], 0);
-    owner.stop();
-}
-
-#[test]
-fn removing_the_resource_refuses_the_task_and_the_accepted_tint_still_renders() {
-    let fixture = Fixture::new("proof-remove");
-    let assets = fixture.import();
-    let owner = fixture.start();
-    let Ready { assets, profile } = ready(&fixture, &owner, assets);
-    let asset = &assets[0];
-    let untinted = owner.state(asset)["current_entry"]["id"].clone();
-    let queued = owner.task(asset, &profile).unwrap();
-    let job = owner.finished(&queued["job_id"]);
-    owner.apply(asset, &job["result"]["artifacts"][0]);
-    let pixel = owner.sample(asset, 10, 10)["rgba"].clone();
-    let removed = owner.ok(
-        REMOVE,
-        json!({"module_id": MODULE, "resource_id": "proof-palette"}),
-    );
-    assert_eq!(owner.finished(&removed["job_id"])["status"], "ready");
-    let status = owner.ok(STATUS, json!({"module_id": MODULE}));
-    assert_eq!(status["resources"][0]["state"], "not-installed");
-    assert_eq!(owner.sample(asset, 10, 10)["rgba"], pixel);
-    let refused = owner.task(asset, &profile).unwrap_err();
-    assert_eq!(refused.code, "not-ready");
-    assert_eq!(
-        refused.data.unwrap()["requirements"],
-        json!([{"kind": "resource", "id": "proof-palette", "state": "not-installed"}])
-    );
-    // Resetting returns the photo to neutral in place; a second reset changes nothing.
-    let revision = owner.state(asset)["revision"].clone();
-    let reset = owner.ok(
-        "edit.reset-proof-tint",
-        json!({"asset_id": asset, "mutation": {"expected_revision": revision, "request_id": "reset", "actor": "test"}}),
-    );
-    assert_eq!(reset["outcome"], "applied");
-    let revision = owner.state(asset)["revision"].clone();
-    let again = owner.ok(
-        "edit.reset-proof-tint",
-        json!({"asset_id": asset, "mutation": {"expected_revision": revision, "request_id": "reset-again", "actor": "test"}}),
-    );
-    assert_eq!(again["outcome"], "no-op");
-    owner.stop();
-    let untinted = EntryId::parse(untinted.as_str().unwrap()).unwrap();
-    assert_eq!(
-        assert_tint_renders(&fixture, asset, &untinted, [1.0; 3]),
-        0,
-        "a neutral tint is the source"
-    );
 }
 
 /// The proof module's apply and reset plan against a stack exactly as the contract says: commit,
@@ -1243,8 +1004,7 @@ fn capability_timing() {
     report("module.settings.read round trip", &mut settings);
 
     let Ready { assets, profile } = ready(&fixture, &owner, assets);
-    let installed = fixture
-        .files()
+    let installed = files(&fixture.root)
         .into_iter()
         .filter(|(path, _)| {
             path.components()

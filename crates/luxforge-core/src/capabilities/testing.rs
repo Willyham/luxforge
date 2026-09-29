@@ -1,7 +1,8 @@
 //! A module declaring every kind of capability, shared by the descriptor, settings and host tests;
-//! a module whose resource check the lifecycle tests steer; and the in-memory transport every
+//! a module whose resource check the lifecycle tests steer; the in-memory transport every
 //! capability test sends through, which counts its requests, so a test can prove a path sent none,
-//! and answers the capability proof's fake provider in process.
+//! and answers the capability proof's fake provider in process; and the one owner harness the
+//! lifecycle and proof tests drive the catalog owner through, as a client does.
 use super::{
     descriptor::{
         AdapterAuth, AdapterCost, AdapterDescriptor, CapabilityDescriptor, CapabilityKind,
@@ -9,25 +10,31 @@ use super::{
         TaskApply, TaskDescriptor,
     },
     endpoint::EndpointClass,
+    host::{HostConfig, STATUS},
+    settings::READ,
     transport::{Method, SendOptions, Transport, TransportRequest, TransportResponse},
 };
 use crate::{
-    ActionDescriptor, ActionInput, ActionPlan, CapabilityModule, Control, EffectDescriptor,
-    EffectStage, Error, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
-    ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, ApiFailure, ApiRequest, ApiResponse,
+    CapabilityModule, ClientAuthority, ClientId, Control, EffectDescriptor, EffectStage, Error,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, ParameterDescriptor, Processing, Stage,
+    StageContext, ToolModule, editor::mutation_json, jobs::JOB_READ,
 };
+use luxforge_testbase::wait_for;
 use luxforge_testkit::ProofEndpoint;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::{Cell, RefCell},
+    fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
-    thread,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 use url::Url;
@@ -471,4 +478,170 @@ pub(crate) fn proof_transport(endpoint: Arc<ProofEndpoint>) -> Arc<MemoryTranspo
         let reply = endpoint.answer(method, exchange.path(), &exchange.headers, &exchange.body);
         answer.whole(reply.status, &reply.body);
     })
+}
+
+/// A running owner with an edit client and a permission client, recording every response it gives.
+pub(crate) struct Owner {
+    pub handle: OwnerHandle,
+    join: Option<JoinHandle<()>>,
+    pub edit: ClientId,
+    pub admin: ClientId,
+    next: Cell<u64>,
+    pub observed: RefCell<Vec<String>>,
+}
+
+impl Owner {
+    /// Start an owner over `catalog` and register its two clients.
+    pub(crate) fn start(catalog: &Path, registry: Arc<ModuleRegistry>, host: HostConfig) -> Self {
+        let (handle, join) = OwnerHandle::start_with_host(catalog, registry, host).unwrap();
+        let edit = handle.register();
+        let admin = handle.register_with(ClientAuthority::Permissions);
+        Self {
+            handle,
+            join: Some(join),
+            edit,
+            admin,
+            next: Cell::new(0),
+            observed: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Send one request as `client`, its envelope filled in as a client fills it ([`enveloped`]),
+    /// and record the answer.
+    pub(crate) fn call(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
+        let id = format!("request-{}", self.next.get());
+        self.next.set(self.next.get() + 1);
+        let params = enveloped(method, params, &id);
+        let response = self
+            .handle
+            .call(
+                client,
+                ApiRequest {
+                    id,
+                    method: method.into(),
+                    params,
+                    token: None,
+                },
+            )
+            .expect("the owner answered");
+        self.observed
+            .borrow_mut()
+            .push(serde_json::to_string(&response).unwrap());
+        response
+    }
+
+    pub(crate) fn ok_as(&self, client: ClientId, method: &str, params: Value) -> Value {
+        let response = self.call(client, method, params);
+        assert!(response.error.is_none(), "{method}: {:?}", response.error);
+        response.result.expect("a result")
+    }
+
+    pub(crate) fn ok(&self, method: &str, params: Value) -> Value {
+        self.ok_as(self.edit, method, params)
+    }
+
+    pub(crate) fn fail_as(&self, client: ClientId, method: &str, params: Value) -> ApiFailure {
+        self.call(client, method, params)
+            .error
+            .unwrap_or_else(|| panic!("{method} was expected to fail"))
+    }
+
+    pub(crate) fn fail(&self, method: &str, params: Value) -> ApiFailure {
+        self.fail_as(self.edit, method, params)
+    }
+
+    /// The settings revision of `module`.
+    pub(crate) fn revision(&self, module: &str) -> u64 {
+        self.ok(READ, json!({"module_id": module}))["revision"]
+            .as_u64()
+            .unwrap()
+    }
+
+    /// A settings mutation of `module` at its current revision, under a fresh request identity.
+    pub(crate) fn mutation(&self, module: &str) -> Value {
+        mutation_json(self.revision(module), &uuid::Uuid::new_v4().to_string())
+    }
+
+    pub(crate) fn status(&self, module: &str) -> Value {
+        self.ok(STATUS, json!({"module_id": module}))
+    }
+
+    pub(crate) fn job(&self, job_id: &Value) -> Value {
+        self.ok(JOB_READ, json!({"job_id": job_id}))
+    }
+
+    /// Wait for a capability job to finish and return its record.
+    pub(crate) fn finished(&self, job_id: &Value) -> Value {
+        self.until(job_id, |job| {
+            !matches!(job["status"].as_str(), Some("queued" | "running"))
+        })
+    }
+
+    /// Wait until a job's record satisfies `done`, and return it.
+    pub(crate) fn until(&self, job_id: &Value, done: impl Fn(&Value) -> bool) -> Value {
+        wait_for(&format!("job {job_id} getting there"), || {
+            Some(self.job(job_id)).filter(|job| done(job))
+        })
+    }
+
+    /// Every recorded event: its method and the request that caused it.
+    pub(crate) fn events(&self) -> Vec<(String, String)> {
+        self.ok("events.since", json!({"after": 0}))["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                (
+                    event["method"].as_str().unwrap().to_owned(),
+                    event["request_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// The method of every recorded event, in order.
+    pub(crate) fn methods(&self) -> Vec<String> {
+        self.events()
+            .into_iter()
+            .map(|(method, _)| method)
+            .collect()
+    }
+
+    /// Stop the owner and return every response it gave.
+    pub(crate) fn stop(mut self) -> Vec<String> {
+        self.handle.stop();
+        if let Some(join) = self.join.take() {
+            join.join().unwrap();
+        }
+        self.observed.take()
+    }
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        if let Some(join) = self.join.take() {
+            self.handle.stop();
+            let _ = join.join();
+        }
+    }
+}
+
+/// Every file under `root`, read whole.
+pub(crate) fn files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if let Ok(bytes) = fs::read(&path) {
+                found.push((path, bytes));
+            }
+        }
+    }
+    found
 }
