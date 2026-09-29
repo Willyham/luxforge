@@ -11,8 +11,16 @@
 //! controls (`controls.rs`), declared actions (`actions.rs`), the pointer and canvas picks
 //! (`pointer.rs`), crop (`crop.rs`), masks (`masks.rs`), the core-draft lifecycle (`gesture.rs`),
 //! presets (`presets.rs`), capabilities (`capabilities.rs`), the Performance section
-//! (`performance.rs`), export (`export.rs`) and evidence mode (`evidence.rs`). Routing is one match on the calling
-//! thread: it adds no task and no runtime hop.
+//! (`performance.rs`), export (`export.rs`) and evidence mode (`evidence.rs`). Routing is one match
+//! on the calling thread: it adds no task and no runtime hop.
+//!
+//! Each seam holds its own state in one [`Editor`] field, most of them the seam's own struct; the
+//! parts the view model reads are declared in the view-model layer and borrowed whole by
+//! [`state::Inputs`]. What a seam does after every message is its `after_message` hook, listed once
+//! in [`AFTER_MESSAGE`] (or its `after_derive` in [`AFTER_DERIVE`], when it reads the screen just
+//! derived), and what it listens to is its `subscription`, listed once in [`SUBSCRIPTIONS`]. A new
+//! panel adds its seam file and message file, one [`Message`] variant, one dispatch arm and its
+//! entries in those lists.
 mod actions;
 #[cfg(test)]
 mod actions_tests;
@@ -97,16 +105,9 @@ use luxforge_core::{
     ClientAuthority, ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle,
     POINTER_MODE,
 };
-use message::{
-    Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
-    view::ViewMessage,
-};
+use message::{Message, evidence::EvidenceMessage, preview::PreviewMessage, view::ViewMessage};
 use serde_json::{Value, json};
-use std::{
-    sync::Arc,
-    thread::JoinHandle,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, thread::JoinHandle, time::Instant};
 use tasks::{modules_task, presets_task};
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
@@ -133,6 +134,25 @@ pub(crate) struct Activity {
     pub(crate) render: Option<state::status::RenderTime>,
 }
 
+impl Activity {
+    /// Nothing asked for yet.
+    fn empty() -> Self {
+        Self {
+            requested: 0,
+            displayed: 0,
+            pending: false,
+            phase: "empty",
+            error_code: None,
+            source_dimensions: None,
+            preview_dimensions: None,
+            orientation: None,
+            backend: None,
+            request_started: Instant::now(),
+            render: None,
+        }
+    }
+}
+
 /// What the status bar says, and what it will say about the open photograph once the current
 /// entry's frame is on screen.
 pub(crate) struct StatusLine {
@@ -148,6 +168,17 @@ pub(crate) struct StatusLine {
     pub(crate) skipped: Option<String>,
 }
 
+impl Default for StatusLine {
+    fn default() -> Self {
+        Self {
+            text: "Open a photo to begin".into(),
+            copy: None,
+            happened: None,
+            skipped: None,
+        }
+    }
+}
+
 /// Where this run's events go and what they are stamped with, and where the main thread's time
 /// goes; never read by the view.
 pub(crate) struct EventLog {
@@ -157,6 +188,18 @@ pub(crate) struct EventLog {
     pub(crate) verbose: bool,
     pub(crate) started: Instant,
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
+}
+
+impl EventLog {
+    fn new(config: &crate::Config) -> Self {
+        Self {
+            diagnostics: config.diagnostics.clone(),
+            run_id: config.run_id.clone(),
+            verbose: config.wants_events(),
+            started: Instant::now(),
+            loop_timing: Default::default(),
+        }
+    }
 }
 
 /// Where the main thread's time went in its last update and view, so an evidence event can say
@@ -172,6 +215,9 @@ pub(crate) struct LoopTiming {
     pub(crate) last_update_end: Option<Instant>,
 }
 
+/// The desktop's state: the owner connection, and one field per seam, most of them the seam's own
+/// struct. A seam's hooks after every message and its subscription are listed once, in
+/// [`AFTER_MESSAGE`], [`AFTER_DERIVE`] and [`SUBSCRIPTIONS`].
 pub(crate) struct Editor {
     pub(crate) owner: OwnerHandle,
     pub(crate) owner_join: Option<JoinHandle<()>>,
@@ -180,54 +226,46 @@ pub(crate) struct Editor {
     pub(crate) client: ClientId,
     /// Local copy of the owner's session, replaced only by a response with a newer revision.
     pub(crate) session: ClientSession,
-    pub(crate) activity: Activity,
+    /// A request of this client's is in flight.
+    pub(crate) busy: bool,
     /// Cancels older source waits and rejects their late desktop results.
     pub(crate) open_generation: Arc<tasks::OpenGuard>,
-    pub(crate) evidence: Option<Evidence>,
+    pub(crate) activity: Activity,
     /// Where this run's events go, and where the main thread's time goes.
     pub(crate) log: EventLog,
-    /// The clipping overlays' worker and the request on screen.
-    pub(crate) overlays: overlay::Overlays,
-    /// What the status bar says.
-    pub(crate) status: StatusLine,
-    /// The generated controls' local state; authoritative values stay in the recipe.
-    pub(crate) controls: controls::Controls,
-    /// The command palette.
-    pub(crate) palette: state::palette::Palette,
-    /// The version chip row's naming form.
-    pub(crate) version_form: state::VersionForm,
-    /// The Presets section: the library and its create form.
-    pub(crate) presets: presets::Presets,
+    pub(crate) evidence: Option<Evidence>,
     /// The open photograph as this desktop last read it: state, history, versions, lineage, the
     /// displayed entry's recipe rows and masks, and the Original.
     pub(crate) document: state::document::Document,
     /// What the photo surface shows and the bookkeeping that decides it.
     pub(crate) presentation: preview::Presentation,
+    /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
+    pub(crate) view_plan: preview::ViewPlan,
+    /// The clipping overlays' worker and the request on screen.
+    pub(crate) overlays: overlay::Overlays,
     /// This desktop's own view state: window, zoom and pan, menu, gallery page and file dialog.
     pub(crate) view_state: state::ViewState,
     /// The pixel under the pointer and its one sample in flight.
     pub(crate) hover: state::Hover,
-    /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
-    pub(crate) view_plan: preview::ViewPlan,
-    pub(crate) busy: bool,
+    /// What the status bar says.
+    pub(crate) status: StatusLine,
     /// The event sync: its one poll, its cursor, this desktop's own requests and a mode to tell.
     pub(crate) sync: sync::EventSync,
-    /// The curve sample queries: one in flight, the newest waiting, and what each curve asked.
-    pub(crate) curve_sampling: controls::CurveSampling,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
     pub(crate) modules: Vec<ModuleDescriptor>,
     /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
     pub(crate) modules_ready: bool,
     /// Proof and diagnostic modules are listed only when the run asked for them.
     pub(crate) developer: bool,
+    /// The generated controls' local state; authoritative values stay in the recipe.
+    pub(crate) controls: controls::Controls,
+    /// The curve sample queries: one in flight, the newest waiting, and what each curve asked.
+    pub(crate) curve_sampling: controls::CurveSampling,
     /// This client's one draft: a slider, mask or crop gesture on the core lifecycle. One field, so
     /// two drafts cannot exist at once.
     pub(crate) gesture: Option<Box<CoreGesture>>,
     /// The last local gesture identity minted, so every owner answer names the gesture it is for.
     pub(crate) gesture_serial: u64,
-    /// The brush in hand between strokes: this desktop's view state, holding no core draft. Its
-    /// press opens the stroke's draft ([`Editor::paint_press`]).
-    pub(crate) armed: Option<masks::ArmedBrush>,
     /// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
     #[cfg(test)]
     pub(crate) stand_in: Option<testing::StandIn>,
@@ -235,9 +273,20 @@ pub(crate) struct Editor {
     pub(crate) crop_section: state::CropSection,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
     pub(crate) mask_panel: state::masks::MaskPanel,
+    /// The Masks panel's brush in hand between strokes: this desktop's view state, holding no core
+    /// draft. Its press opens the stroke's draft ([`Editor::paint_press`]). It holds the gesture's
+    /// identity and content map, which the view model may not name, so it is not in the panel's
+    /// view-model state.
+    pub(crate) armed: Option<masks::ArmedBrush>,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
+    /// The command palette.
+    pub(crate) palette: state::palette::Palette,
+    /// The version chip row's naming form.
+    pub(crate) version_form: state::VersionForm,
+    /// The Presets section: the library and its create form.
+    pub(crate) presets: presets::Presets,
     /// What the desktop knows about every capability-declaring module: its last settings and
     /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
     /// the authoritative state; this is what was last read back.
@@ -255,6 +304,79 @@ pub(crate) struct Editor {
     pub(crate) workspace: Workspace,
 }
 
+/// What the hooks compare the state a message left behind with: the state before it was
+/// dispatched.
+pub(crate) struct Before {
+    /// The session's zoom.
+    pub(crate) zoom: luxforge_core::Zoom,
+    /// Everything but the zoom that decides the view's geometry ([`Editor::view_geometry`]).
+    pub(crate) geometry: ViewGeometry,
+    /// The view plan's epoch, which a view motion noted inside the message has already moved.
+    pub(crate) view_epoch: u64,
+    /// Whether a worker had a job ([`Editor::workers_busy`]).
+    pub(crate) workers_busy: bool,
+    /// The entry the canvas was showing ([`Editor::displayed_entry`]).
+    pub(crate) entry: Option<luxforge_core::EntryId>,
+}
+
+impl Before {
+    fn of(editor: &Editor) -> Self {
+        Self {
+            zoom: editor.session.preview.view.zoom.clone(),
+            geometry: editor.view_geometry(),
+            view_epoch: editor.view_plan.epoch,
+            workers_busy: editor.workers_busy(),
+            entry: editor.displayed_entry(),
+        }
+    }
+}
+
+/// The window, the display scale, the two side panels and the local pan: what, with the zoom,
+/// decides the view's geometry.
+pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, (f32, f32));
+
+/// One seam's work after every message, given the state before it.
+type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
+
+/// Every seam's work after every message, before the screen is derived again, each listed once and
+/// run in this order: whatever route changed what a seam follows — a button, a key, a script, an
+/// owner answer or another client's change through an adopted session — is answered in one place.
+/// The order is the dependency order: view motion is noted before the preview reconciles the view,
+/// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
+/// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
+/// the view and the stack everything before them left.
+const AFTER_MESSAGE: [AfterMessage; 11] = [
+    view_state::after_message,
+    performance::after_message,
+    slider::after_message,
+    evidence::after_message,
+    controls::after_message,
+    preview::after_message,
+    mask_panel::after_message,
+    crop::after_message,
+    sync::after_message,
+    overlay::after_message,
+    thumbnails::after_message,
+];
+
+/// The seams whose work reads the screen just derived: what a capability section or a curve shows
+/// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
+    [capabilities::after_derive, controls::after_derive];
+
+/// Every seam's subscription, each listed once. A seam with nothing to listen to returns
+/// [`Subscription::none`], so no timer or stream exists that no seam gates.
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 8] = [
+    keymap::subscription,
+    mask_panel::subscription,
+    preview::subscription,
+    sync::subscription,
+    performance::subscription,
+    evidence::subscription,
+    capabilities::subscription,
+    export::subscription,
+];
+
 impl Editor {
     pub(crate) fn new(boot: Boot) -> (Self, Task<Message>) {
         let Boot {
@@ -269,99 +391,52 @@ impl Editor {
         // The desktop's own client may grant module permissions: it does so only after the person
         // presses Allow in its consent notice.
         let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
-        let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
-            Evidence {
-                dir,
-                opens: queue.len() as u64,
-                queue,
-                script,
-                step: 0,
-                awaiting: None,
-                current: None,
-                steps: Vec::new(),
-                frames: Vec::new(),
-                capture_pending: false,
-                view_idle: None,
-                allow_unready_capture: false,
-                capture_overlay: false,
-                saving: false,
-                had_errors: false,
-                paced_slider: None,
-                paced_stroke: None,
-                second_click: None,
-                tools_scroll: None,
-                capability_wait: None,
-                wait_until: None,
-                sync: evidence::CaptureSync::default(),
-            }
+            Evidence::new(dir, queue, std::mem::take(&mut config.script))
         });
         let initial = config.files.pop_front();
         let mut editor = Self {
-            log: EventLog {
-                diagnostics: config.diagnostics.clone(),
-                run_id: config.run_id.clone(),
-                verbose: config.wants_events(),
-                started: Instant::now(),
-                loop_timing: Default::default(),
-            },
-            overlays: Default::default(),
-            status: StatusLine {
-                text: "Open a photo to begin".into(),
-                copy: None,
-                happened: None,
-                skipped: None,
-            },
-            controls: Default::default(),
-            palette: Default::default(),
-            version_form: Default::default(),
-            presets: Default::default(),
             owner: owner.clone(),
             owner_join: Some(join),
             live_server,
             client,
             session: ClientSession::default(),
+            busy: false,
             open_generation: Arc::default(),
-            activity: Activity {
-                requested: 0,
-                displayed: 0,
-                pending: false,
-                phase: "empty",
-                error_code: None,
-                source_dimensions: None,
-                preview_dimensions: None,
-                orientation: None,
-                backend: None,
-                request_started: Instant::now(),
-                render: None,
-            },
+            activity: Activity::empty(),
+            log: EventLog::new(&config),
             evidence,
             document: Default::default(),
-            presentation: preview::Presentation::default(),
+            presentation: Default::default(),
+            view_plan: Default::default(),
+            overlays: Default::default(),
             view_state: state::ViewState::new(window),
             hover: Default::default(),
-            view_plan: Default::default(),
-            busy: false,
+            status: Default::default(),
             sync: Default::default(),
-            curve_sampling: Default::default(),
             modules: Default::default(),
             modules_ready: false,
             developer: config.developer,
+            controls: Default::default(),
+            curve_sampling: Default::default(),
             gesture: None,
             gesture_serial: 0,
-            armed: None,
             #[cfg(test)]
             stand_in: None,
             crop_section: Default::default(),
             mask_panel: Default::default(),
+            armed: None,
             thumbnailer: Default::default(),
+            palette: Default::default(),
+            version_form: Default::default(),
+            presets: Default::default(),
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
             performance: performance::Sampler::open(),
-            export: export::Exporting::default(),
-            workspace: Workspace::default(),
+            export: Default::default(),
+            workspace: Default::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -437,98 +512,32 @@ impl Editor {
         task
     }
 
+    /// Route the message to its seam, then run every seam's hook in [`AFTER_MESSAGE`], derive the
+    /// screen again, run the hooks that read it in [`AFTER_DERIVE`], and wake the workers' poll.
     fn update_inner(&mut self, message: Message) -> Task<Message> {
-        let zoom = self.session.preview.view.zoom.clone();
-        let previous_geometry = (
-            self.view_state.window,
-            self.view_state.scale_factor,
-            self.session.workspace.state_panel,
-            self.session.workspace.tools_panel,
-            self.view_state.local_pan,
-        );
-        let previous_view_epoch = self.view_plan.epoch;
-        let busy = self.presentation.queue.is_busy()
-            || self.overlays.queue.is_busy()
-            || self.thumbnailer.queue.is_busy();
-        let before_entry = self.displayed_entry();
-        let task = self.dispatch(message);
-        if (self.session.preview.view.zoom != zoom
-            || (
-                self.view_state.window,
-                self.view_state.scale_factor,
-                self.session.workspace.state_panel,
-                self.session.workspace.tools_panel,
-                self.view_state.local_pan,
-            ) != previous_geometry)
-            && self.view_plan.epoch == previous_view_epoch
-        {
-            self.note_view_motion();
-        }
-        // Whatever route opened, closed, hid or showed the Performance section is answered in one
-        // place: starting to sample reads at once, and stopping drops the read in flight.
-        let task = Task::batch([task, self.performance_transition()]);
-        // A reset that waited for this client's commit or request runs once nothing is in flight.
-        let task = Task::batch([task, self.run_pending_reset()]);
-        self.settle_when_quiet();
-        if self.displayed_entry() != before_entry {
-            self.controls.ui.clear_curve_samples();
-            self.curve_sampling.requested_source.clear();
-        }
-        // Whatever route changed the zoom — the buttons, the field, a script or an API client's
-        // `view.set` reaching us through an adopted session — is answered in one place.
-        let zoomed = self.zoom_changed(&zoom);
-        // The typed field closes on any zoom change, so the segment shows the zoom it now holds.
-        if self.session.preview.view.zoom != zoom {
-            self.view_state.zoom_editing = false;
-        }
-        let refit = self.refit_proxy();
-        let view_request = self.reconcile_view();
-        // The panel's selection follows the stack and the mode before anything is derived from it,
-        // so a section is never bound to a mask the recipe no longer holds.
-        if self.follow_mask_selection() {
-            self.seed_values();
-        }
-        let brush = self.follow_armed_brush();
-        let abandoned = self.close_abandoned_crop();
-        // A wake that arrived while a request was in flight is read once it has been answered.
-        let synced = self.sync_when_wanted();
-        let task = self.sync_mode(Task::batch([task, brush, abandoned, synced]));
-        self.refresh_overlay();
-        let task = Task::batch([task, self.refresh_thumbnails()]);
+        let before = Before::of(self);
+        let mut tasks = vec![self.dispatch(message)];
+        tasks.extend(AFTER_MESSAGE.iter().map(|hook| hook(self, &before)));
         let rederive_started = Instant::now();
         self.rederive();
-        // A capability section is read for the first time once it is on screen: its first read is
-        // what the section then shows, so the screen is derived again to show it loading.
-        let loads = self.request_capability_loads();
-        if loads.is_some() {
-            self.rederive();
-        }
-        // A curve is sampled once it is on screen, which the derived tools panel says.
-        let sample = self.request_visible_curve_samples();
+        tasks.extend(AFTER_DERIVE.iter().map(|hook| hook(self)));
         let mut timing = self.log.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.log.loop_timing.set(timing);
         // A queue that went busy in this message may finish before the runtime has built the waker
         // subscription for it. The signal is buffered rather than lost, so this is the second
         // guarantee and it is free: `Poll` against an empty queue does nothing at all.
-        let woken = if !busy
-            && (self.presentation.queue.is_busy()
-                || self.overlays.queue.is_busy()
-                || self.thumbnailer.queue.is_busy())
-        {
-            Task::done(Message::Preview(PreviewMessage::Poll))
-        } else {
-            Task::none()
-        };
-        Task::batch([
-            task,
-            zoomed,
-            refit,
-            view_request,
-            woken,
-            loads.unwrap_or_else(Task::none),
-            sample,
-        ])
+        if !before.workers_busy && self.workers_busy() {
+            tasks.push(Task::done(Message::Preview(PreviewMessage::Poll)));
+        }
+        Task::batch(tasks)
+    }
+
+    /// One of the three workers — preview, clipping overlay, mask thumbnails — has a job.
+    fn workers_busy(&self) -> bool {
+        self.presentation.queue.is_busy()
+            || self.overlays.queue.is_busy()
+            || self.thumbnailer.queue.is_busy()
     }
 
     /// Bring the screen up to date with the state this message left behind: every region is
@@ -723,96 +732,24 @@ impl Editor {
     /// can trigger the redraw that admits a deferred texture without another user event.
     pub(crate) fn preview_wake_needed(&self) -> bool {
         self.document.state.is_some()
-            || self.presentation.queue.is_busy()
-            || self.overlays.queue.is_busy()
-            || self.thumbnailer.queue.is_busy()
+            || self.workers_busy()
             || luxforge_ui::surface_retirement_pending()
     }
 
+    /// The window, the display scale, the side panels and the local pan, which with the zoom
+    /// decide the view's geometry: a change to any of them is view motion.
+    pub(crate) fn view_geometry(&self) -> ViewGeometry {
+        (
+            self.view_state.window,
+            self.view_state.scale_factor,
+            self.session.workspace.state_panel,
+            self.session.workspace.tools_panel,
+            self.view_state.local_pan,
+        )
+    }
+
+    /// Every seam's subscription ([`SUBSCRIPTIONS`]).
     fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![iced::event::listen_with(keymap::raw_event)];
-        // A reorder by drag ends wherever the button comes up, inside the panel or not, so its
-        // release is heard window-wide — and only while a row is being dragged.
-        if self.mask_panel.drag.is_some() {
-            subscriptions.push(iced::event::listen_with(keymap::drag_release));
-        }
-        // A blocked channel stream costs no idle work. It remains installed while a photograph is
-        // open because the surface may defer an upload in `prepare`, after this update's
-        // subscription set was computed. Its retirement wake must have a listener then.
-        if self.preview_wake_needed() {
-            subscriptions.push(waker::subscription());
-        }
-        if self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(25))
-                    .map(|_| Message::Preview(PreviewMessage::QuietTick)),
-            );
-        }
-        // The gesture needs no timer of its own: a slider move sends `draft.set` the moment
-        // nothing is in flight, and records only the newest value while one is. The event sync
-        // needs none either: the owner posts a signal when another client's change reaches its
-        // log, and this carries it in as the `Changed` a 500 ms timer used to stand in for. An
-        // open photograph with nothing happening to it wakes nothing. A signal posted while no
-        // photograph is open is buffered, and read once one is.
-        if self.document.state.is_some() && self.evidence.is_none() {
-            subscriptions.push(waker::events_subscription());
-        }
-        // The Performance section's sampler, gated on the section being expanded with the state
-        // panel on screen. Collapsed or hidden, there is no timer at all, in evidence runs too.
-        if self.performance_sampling() {
-            subscriptions.push(
-                iced::time::every(performance::INTERVAL)
-                    .map(|_| Message::Performance(PerformanceMessage::Tick)),
-            );
-        }
-        if let Some(evidence) = &self.evidence {
-            if let Some(idle) = &evidence.view_idle {
-                subscriptions.push(
-                    iced::time::every(Duration::from_millis(idle.ms))
-                        .map(|_| Message::Evidence(EvidenceMessage::ViewIdleDeadline)),
-                );
-            } else {
-                subscriptions.push(
-                    iced::time::every(Duration::from_millis(250))
-                        .map(|_| Message::Evidence(EvidenceMessage::Tick)),
-                );
-            }
-            if evidence.capture_pending && evidence.view_idle.is_none() {
-                subscriptions.push(
-                    iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)),
-                );
-            }
-            // A paced slider step's own timer, which belongs to the evidence run rather than to
-            // the editor: it is gated on the step still having values left to send, so a script
-            // with no paced step in flight runs no timer for it at all.
-            if let Some(paced) = &evidence.paced_slider {
-                subscriptions.push(
-                    iced::time::every(Duration::from_millis(paced.interval_ms))
-                        .map(|_| Message::Evidence(EvidenceMessage::PacedSliderTick)),
-                );
-            }
-            // A paced stroke's own timer, gated the same way: a script with no paced stroke in
-            // flight runs none.
-            if let Some(paced) = &evidence.paced_stroke {
-                subscriptions.push(
-                    iced::time::every(Duration::from_millis(paced.interval_ms))
-                        .map(|_| Message::Evidence(EvidenceMessage::PacedStrokeTick)),
-                );
-            }
-            // A scripted double-click's gap before its second press, which the first tick ends.
-            if let Some(second) = &evidence.second_click {
-                subscriptions.push(
-                    iced::time::every(Duration::from_millis(second.gap_ms.max(1)))
-                        .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
-                );
-            }
-        }
-        // Capability jobs are read while one the desktop follows is queued or running, and never
-        // otherwise; the interval is justified where it is declared.
-        subscriptions.extend(self.capability_poll_subscription());
-        // The running export is read on its own timer, which exists only while its job is queued
-        // or running; the interval is justified where it is declared.
-        subscriptions.extend(self.export_poll_subscription());
-        Subscription::batch(subscriptions)
+        Subscription::batch(SUBSCRIPTIONS.iter().map(|subscription| subscription(self)))
     }
 }

@@ -1080,3 +1080,22 @@ impl Editor {
         }))
     }
 }
+
+/// After the screen is derived: a capability section is read for the first time once it is on
+/// screen. Its first read is what the section then shows, so the screen is derived again to show
+/// it loading.
+pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
+    let Some(loads) = editor.request_capability_loads() else {
+        return Task::none();
+    };
+    editor.rederive();
+    loads
+}
+
+/// Capability jobs are read while one the desktop follows is queued or running, and never
+/// otherwise ([`Editor::capability_poll_subscription`]).
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    editor
+        .capability_poll_subscription()
+        .unwrap_or_else(Subscription::none)
+}

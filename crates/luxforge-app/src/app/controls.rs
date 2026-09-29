@@ -1,5 +1,6 @@
 //! Host mapping for generated controls. Widgets report fractions and events; descriptors own values.
 
+use crate::app::Before;
 use crate::app::{
     Editor,
     message::{Message, action::ActionMessage, control::ControlMessage},
@@ -1046,6 +1047,22 @@ pub(crate) fn initial_group_expanded(
         Control::Group(luxforge_core::GroupControl { collapsed, .. }) => Some(!collapsed),
         _ => None,
     }
+}
+
+/// After every message: a curve's samples describe the entry they were read on, so a change of
+/// the displayed entry drops them before the screen is derived.
+pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Message> {
+    if editor.displayed_entry() != before.entry {
+        editor.controls.ui.clear_curve_samples();
+        editor.curve_sampling.requested_source.clear();
+    }
+    Task::none()
+}
+
+/// After the screen is derived: a curve is sampled once it is on screen, which the derived tools
+/// panel says ([`Editor::request_visible_curve_samples`]).
+pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
+    editor.request_visible_curve_samples()
 }
 
 #[cfg(test)]

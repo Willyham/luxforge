@@ -8,6 +8,7 @@ use super::{
     message::{Message, crop::CropMessage, view::ViewMessage},
     tasks::{pan_task, session_task, workspace_task},
 };
+use crate::app::Before;
 use crate::state::palette::Panel;
 use crate::{state::tools, view, window_frame};
 use iced::{Task, widget::operation};
@@ -231,17 +232,14 @@ impl Editor {
     /// Fold in the one `workspace.set` a just-started or just-ended draft still needs, whatever
     /// route opened or closed it. `ViewMessage::SetMode` already asks the session itself and clears
     /// this before returning, so it is never doubled.
-    pub(super) fn sync_mode(&mut self, task: Task<Message>) -> Task<Message> {
+    pub(super) fn sync_mode(&mut self) -> Task<Message> {
         let Some(target) = self.sync.mode.take() else {
-            return task;
+            return Task::none();
         };
         if target == self.session.workspace.mode {
-            return task;
+            return Task::none();
         }
-        Task::batch([
-            task,
-            workspace_task(self.owner.clone(), self.client, json!({ "mode": target })),
-        ])
+        workspace_task(self.owner.clone(), self.client, json!({ "mode": target }))
     }
 
     /// What the status bar says on entering a canvas mode that samples the photograph: the mode's
@@ -260,4 +258,21 @@ impl Editor {
     pub(super) fn gallery_page(&self) -> Option<usize> {
         self.developer.then_some(self.view_state.gallery).flatten()
     }
+}
+
+/// After every message: whatever route moved the zoom, the window, the display scale, a side panel
+/// or the pan — a button, the field, a script, a resize or an API client's `view.set` reaching us
+/// through an adopted session — is view motion, unless the message already noted it. The typed
+/// zoom field closes on any zoom change, so the segment shows the zoom it now holds.
+pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Message> {
+    let zoomed = editor.session.preview.view.zoom != before.zoom;
+    if (zoomed || editor.view_geometry() != before.geometry)
+        && editor.view_plan.epoch == before.view_epoch
+    {
+        editor.note_view_motion();
+    }
+    if zoomed {
+        editor.view_state.zoom_editing = false;
+    }
+    Task::none()
 }

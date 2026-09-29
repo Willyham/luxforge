@@ -20,6 +20,7 @@ use super::{
     message::{Message, overlay::ClipEndpoint, overlay::OverlayMessage},
     tasks::workspace_task,
 };
+use crate::app::Before;
 use crate::state;
 use iced::Task;
 use luxforge_core::{
@@ -441,6 +442,13 @@ pub(crate) fn clip_params(
             })
         }
     }
+}
+
+/// After every message: the clipping overlay follows the flags, the zoom and the photo surface
+/// ([`Editor::refresh_overlay`]).
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    editor.refresh_overlay();
+    Task::none()
 }
 
 #[cfg(test)]

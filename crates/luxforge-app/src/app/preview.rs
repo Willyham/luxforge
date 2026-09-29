@@ -17,8 +17,9 @@ use super::{
     presenter::Presenter,
     tasks::{self, recipe_task},
 };
+use crate::app::{Before, waker};
 use crate::{layout, state, state::histogram::Analysis, view};
-use iced::Task;
+use iced::{Subscription, Task};
 use luxforge_core::{
     DraftId, EntryId, ExactOutcome, HistoryEntry, MaskOverlayOutcome, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewQueue, PreviewResult, ProxyBounds, Raster, Region,
@@ -2423,4 +2424,32 @@ impl Editor {
             && self.presentation.presenter.stage().is_some()
             && self.session.preview.can_edit()
     }
+}
+
+/// After every message: a changed zoom is answered in one place ([`Editor::zoom_changed`]), the
+/// proxy on screen is refitted to new bounds, and the desired view is admitted once nothing owns
+/// the pending slot.
+pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Message> {
+    let zoomed = editor.zoom_changed(&before.zoom);
+    let refit = editor.refit_proxy();
+    let view = editor.reconcile_view();
+    Task::batch([zoomed, refit, view])
+}
+
+/// The workers' wake and the quiet settle's timer. A blocked channel stream costs no idle work: it
+/// stays installed while a photograph is open, because the surface may defer an upload in
+/// `prepare`, after this update's subscription set was computed, and its retirement wake must have
+/// a listener then. The 25 ms timer runs only while the quiet policy waits to settle.
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    let mut subscriptions = Vec::new();
+    if editor.preview_wake_needed() {
+        subscriptions.push(waker::subscription());
+    }
+    if editor.view_plan.quiet_since.is_some() && !editor.view_plan.quiet_settle_requested {
+        subscriptions.push(
+            iced::time::every(Duration::from_millis(25))
+                .map(|_| Message::Preview(PreviewMessage::QuietTick)),
+        );
+    }
+    Subscription::batch(subscriptions)
 }

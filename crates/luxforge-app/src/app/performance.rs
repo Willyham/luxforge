@@ -9,6 +9,7 @@
 //! lands instead of being drawn into a window it does not belong to. At most one read is in flight:
 //! a tick that finds one still out does nothing, so a slow owner stretches the interval rather than
 //! queueing reads behind itself.
+use crate::app::Before;
 use crate::coalesce::Coalesce;
 use crate::{
     app::{
@@ -19,7 +20,7 @@ use crate::{
     },
     state::performance::PerformanceHistory,
 };
-use iced::Task;
+use iced::{Subscription, Task};
 use luxforge_core::{ActivitySnapshot, resources::ResourceReport};
 use serde_json::{Value, json};
 use std::{collections::VecDeque, time::Duration};
@@ -227,6 +228,21 @@ impl Editor {
             "version": model.version,
         })
     }
+}
+
+/// After every message: whatever route opened, closed, hid or showed the section is answered here
+/// ([`Editor::performance_transition`]).
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    editor.performance_transition()
+}
+
+/// The sampler's timer, gated on the section being expanded with the state panel on screen.
+/// Collapsed or hidden, there is no timer at all, in evidence runs too.
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    if !editor.performance_sampling() {
+        return Subscription::none();
+    }
+    iced::time::every(INTERVAL).map(|_| Message::Performance(PerformanceMessage::Tick))
 }
 
 #[cfg(test)]

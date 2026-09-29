@@ -9,12 +9,13 @@ use super::{
         sync_task,
     },
 };
+use crate::app::{Before, waker};
 use crate::coalesce::Coalesce;
 use crate::state::{
     self,
     fields::{self, Fields},
 };
-use iced::Task;
+use iced::{Subscription, Task};
 use luxforge_core::{ClientSession, HistoryRow, HistorySelection, ModuleDescriptor};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
@@ -578,4 +579,22 @@ impl Editor {
             proxy,
         )
     }
+}
+
+/// After every message: a wake that arrived while a request was in flight is read once it has
+/// been answered, and a draft's start or end tells the session its mode.
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    let synced = editor.sync_when_wanted();
+    Task::batch([synced, editor.sync_mode()])
+}
+
+/// The owner's wake for another client's change. The event sync needs no timer: the owner posts a
+/// signal when another client's change reaches its log, and this carries it in as a `Changed`. An
+/// open photograph with nothing happening to it wakes nothing, and a signal posted while no
+/// photograph is open is buffered and read once one is. An evidence run has no event sync.
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    if editor.document.state.is_none() || editor.evidence.is_some() {
+        return Subscription::none();
+    }
+    waker::events_subscription()
 }
