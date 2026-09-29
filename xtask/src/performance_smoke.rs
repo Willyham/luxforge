@@ -196,6 +196,13 @@ pub fn watch(
 }
 
 // -- Independent re-derivations of what the section shows. --
+//
+// These are written beside, not imported from, the desktop's `format_bytes`, `format_percent` and
+// `format_elapsed` (`crates/luxforge-app/src/state/performance.rs`), on purpose: the scenario
+// checks the text the screen shows against a second reading of the same design, and a check that
+// called the code under test would agree with it whatever it did. `luxforge-app` has no library
+// target, so xtask could not import them as they stand either. This file's tests and the desktop's
+// assert the same figures, including a dash for a non-finite percentage.
 
 /// Bytes in Activity Monitor's units: whole MB below one GiB, two decimals below ten, then one,
 /// with the unit chosen from the rounded figure and every rounding half up.
@@ -217,8 +224,12 @@ fn bytes_text(bytes: u64) -> (String, &'static str) {
     }
 }
 
-/// A percentage: one decimal while it rounds below ten, whole numbers from there.
+/// A percentage: one decimal while it rounds below ten, whole numbers from there; a negative one
+/// reads zero and a non-finite one a dash.
 fn percent_text(percent: f64) -> String {
+    if !percent.is_finite() {
+        return DASH.to_owned();
+    }
     let percent = percent.max(0.0);
     if (percent * 10.0).round() < 100.0 {
         let tenths = (percent * 10.0).round() as u64;
@@ -842,6 +853,9 @@ mod tests {
         assert_eq!(percent_text(3.24), "3.2");
         assert_eq!(percent_text(9.96), "10");
         assert_eq!(percent_text(419.6), "420");
+        assert_eq!(percent_text(-2.0), "0.0");
+        assert_eq!(percent_text(f64::NAN), DASH);
+        assert_eq!(percent_text(f64::INFINITY), DASH);
         assert_eq!(elapsed_text(760), "0.8 s");
         assert_eq!(elapsed_text(12_400), "12 s");
         assert_eq!(elapsed_text(64_000), "1 min 4 s");
