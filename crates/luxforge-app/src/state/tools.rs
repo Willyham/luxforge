@@ -1645,14 +1645,14 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         title: frame.title.to_owned(),
         paused: !inputs.session.preview.can_edit(),
         custom: (
-            inputs.crop_custom.0.to_owned(),
-            inputs.crop_custom.1.to_owned(),
+            inputs.crop_section.custom.0.clone(),
+            inputs.crop_section.custom.1.clone(),
         ),
         custom_ids: (
             field_id(frame.fit_action, "custom-width", None),
             field_id(frame.fit_action, "custom-height", None),
         ),
-        guide: inputs.crop_guide,
+        guide: inputs.crop_section.guide,
         enabled,
         ..CropSectionModel::default()
     };

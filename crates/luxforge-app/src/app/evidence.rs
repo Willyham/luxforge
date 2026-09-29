@@ -1657,7 +1657,7 @@ impl Editor {
             let Some(from) = self.crop().map(|draft| corner.point(&draft.rect)) else {
                 break;
             };
-            let option = self.crop_option;
+            let option = self.crop_section.option;
             for pointer in [
                 CropPointer::Begin {
                     handle: Handle::Corner(corner),

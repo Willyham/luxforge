@@ -282,14 +282,14 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                 &inputs.session.workspace.mode,
             ),
         pointer: inputs.pointer,
-        surface_mode: if inputs.crop_space {
+        surface_mode: if inputs.crop_section.space {
             SurfaceMode::Pan
-        } else if inputs.crop_guide {
+        } else if inputs.crop_section.guide {
             SurfaceMode::Guide
         } else {
             SurfaceMode::Frame
         },
-        option: inputs.crop_option,
+        option: inputs.crop_section.option,
         masking: inputs.session.workspace.mode == MASK_MODE,
         // A pick taken on a mask keeps its Masks panel on screen, bound to that mask.
         mask_panel: mask_workspace(&inputs.session.workspace.mode) || inputs.target.is_some(),

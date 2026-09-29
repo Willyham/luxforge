@@ -1251,7 +1251,7 @@ impl Editor {
             if !result.cancelled() {
                 return Some(result);
             }
-            let draft = Some(result.generation) == self.draft_generation;
+            let draft = Some(result.generation) == self.draft_generation();
             self.presentation.forget(result.generation);
             if self.view_request_generation == Some(result.generation) {
                 self.view_request_generation = None;
@@ -1314,7 +1314,7 @@ impl Editor {
         // stack rather than the layer prefix it renders. A slider gesture's drafted preview is not
         // this: it renders the whole drafted stack into the ordinary photograph, and is adopted
         // like any other frame.
-        let for_draft = Some(result.generation) == self.draft_generation;
+        let for_draft = Some(result.generation) == self.draft_generation();
         if let Some(stamp) = &result.identity.draft
             && (self.released_draft.as_ref() == Some(&stamp.draft_id)
                 || self.session.draft.as_ref().map(|draft| &draft.draft_id)
@@ -1864,7 +1864,7 @@ impl Editor {
     pub(crate) fn draft_preview_failed(&mut self, error: &luxforge_core::Error) {
         if self.crop_stage() == Some(crate::app::crop::StageView::Shown) {
             // The stage on screen stays under the frame; only its other phase failed, and says so.
-            self.draft_generation = None;
+            self.set_draft_generation(None);
             self.status = format!("The crop's input stage could not be rendered: {error}");
             self.settle_step(Settle::Draft);
             return;
@@ -1892,7 +1892,7 @@ impl Editor {
         let Some(crate::app::crop::StageView::Rendering { reapply, .. }) = self.crop_stage() else {
             // A stage already on screen keeps its frame: only the request for its other phase
             // ended, and the next zoom that needs that phase asks for it again.
-            self.draft_generation = None;
+            self.set_draft_generation(None);
             return;
         };
         let again = if reapply { "reapply" } else { "start" };
@@ -2088,7 +2088,7 @@ impl Editor {
             self.view_request_generation = None;
             self.desired_view_dirty = true;
         }
-        if replaced.is_some() && replaced == self.draft_generation {
+        if replaced.is_some() && replaced == self.draft_generation() {
             self.draft_preview_superseded(replaced);
         }
         if viewport.is_some_and(|rect| {
