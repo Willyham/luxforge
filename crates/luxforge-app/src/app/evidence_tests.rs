@@ -201,7 +201,7 @@ fn evidence_retries_a_readback_superseded_by_new_pixels() {
     assert_eq!(editor.presentation.presenter.photo_version(), 2);
     let path = crate::app::testing::attach_log(&mut editor);
     let evidence = editor.evidence.as_mut().expect("evidence run");
-    evidence.sync.state = Some((json!({"old":"proxy"}), 1, 1));
+    evidence.sync.state = Some((json!({"old":"proxy"}), 1, 1, None));
     evidence.capture_pending = false;
     evidence.capture_overlay = true;
     evidence.saving = true;
@@ -270,7 +270,7 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
     assert_ne!(editor.overlay_surface().unwrap().version(), first_clipping);
 
     let evidence = editor.evidence.as_mut().expect("evidence run");
-    evidence.sync.state = Some((json!({"old":"clipping"}), 1, photo_version));
+    evidence.sync.state = Some((json!({"old":"clipping"}), 1, photo_version, None));
     evidence.sync.clipping_version = Some(first_clipping);
     evidence.capture_pending = false;
     evidence.saving = true;

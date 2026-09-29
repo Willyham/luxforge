@@ -71,16 +71,15 @@ pub(crate) fn surface_columns(
     ]
 }
 
-/// The canvas region inside a captured frame as `[left, top, right, bottom]` physical pixels: the
-/// area between the panels' rules and between the rules under the title bar and over the status
-/// bar. At a percentage zoom this is exactly the scrollable the photograph pans in, so evidence can
-/// map a captured pixel back to the source pixel the zoom and the pan put there.
-pub(crate) fn canvas_rect(
+/// The canvas region of a window whose logical size is `logical`, as `[left, top, right, bottom]`
+/// logical pixels: the area between the panels' rules and between the rules under the title bar
+/// and over the status bar. The photo surface lays the photograph out inside it, at Fit less the
+/// Fit padding and at a percentage as the scrollable it pans in.
+pub(crate) fn canvas_logical(
     logical: (f32, f32),
-    scale: f32,
     state_panel: bool,
     tools_panel: bool,
-) -> [u32; 4] {
+) -> [f32; 4] {
     let left = if state_panel {
         STATE_PANEL_WIDTH + DIVIDER_WIDTH
     } else {
@@ -93,7 +92,20 @@ pub(crate) fn canvas_rect(
     };
     let top = TITLE_BAR_HEIGHT + DIVIDER_WIDTH;
     let bottom = logical.1 - STATUS_BAR_HEIGHT - DIVIDER_WIDTH;
-    [left, top, right, bottom].map(|edge| (edge * scale).round().max(0.0) as u32)
+    [left, top, right, bottom]
+}
+
+/// [`canvas_logical`] inside a captured frame, in physical pixels. At a percentage zoom this is
+/// exactly the scrollable the photograph pans in, so evidence can map a captured pixel back to the
+/// source pixel the zoom and the pan put there.
+pub(crate) fn canvas_rect(
+    logical: (f32, f32),
+    scale: f32,
+    state_panel: bool,
+    tools_panel: bool,
+) -> [u32; 4] {
+    canvas_logical(logical, state_panel, tools_panel)
+        .map(|edge| (edge * scale).round().max(0.0) as u32)
 }
 
 #[cfg(test)]

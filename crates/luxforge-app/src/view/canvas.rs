@@ -411,7 +411,7 @@ fn plain<'a>(
         }
         ZoomView::Percent(value) => {
             let scale = value / 100.0 / model.scale_factor;
-            let size = Size::new(width as f32 * scale, height as f32 * scale);
+            let size = percent_size((width, height), value, model.scale_factor);
             let surfaces = *surfaces;
             scrolled(size, move || {
                 let (box_width, box_height) =
@@ -578,6 +578,78 @@ fn scrolled<'a>(
         .into()
     })
     .into()
+}
+
+/// The logical size a percentage zoom draws an image of `image` pixels at: 100% is one physical
+/// pixel per image pixel, so the display scale divides it.
+fn percent_size(image: (u32, u32), value: f32, scale_factor: f32) -> Size {
+    let scale = value / 100.0 / scale_factor;
+    Size::new(image.0 as f32 * scale, image.1 as f32 * scale)
+}
+
+/// Where the plain photograph is drawn in the window, in logical pixels, when the canvas region is
+/// `canvas` and the scrollable's offset is `pan`: the rectangle [`plain`] lays it out in, which the
+/// photo surface then snaps to the physical pixel grid. At Fit that is [`fit_rect`] inside the
+/// canvas less [`FIT_PADDING`]; at a percentage it is the zoomed box, centred on an axis where it is
+/// smaller than the canvas as [`scrolled`] centres it, and moved by the scroll offset, which the
+/// scrollable holds between zero and how far the box overhangs the canvas. `None` when the surface
+/// draws no photograph: nothing open, a placeholder line, or a crop draft's input stage.
+pub(crate) fn drawn_photo(
+    model: &CanvasModel,
+    surfaces: &Surfaces<'_>,
+    canvas: Rectangle,
+    pan: (f32, f32),
+) -> Option<Rectangle> {
+    let drafting = matches!(model.photo, PhotoView::Draft)
+        && surfaces.draft.is_some()
+        && surfaces.stage.is_some();
+    if drafting || matches!(model.photo, PhotoView::Empty(_)) {
+        return None;
+    }
+    let dimensions = model.dimensions?;
+    match model.zoom {
+        ZoomView::Fit => {
+            surfaces.photo?;
+            let available = Size::new(
+                canvas.width - FIT_PADDING.left - FIT_PADDING.right,
+                canvas.height - FIT_PADDING.top - FIT_PADDING.bottom,
+            );
+            let rect = fit_rect(dimensions, available)?;
+            Some(Rectangle::new(
+                Point::new(
+                    canvas.x + FIT_PADDING.left + rect.x,
+                    canvas.y + FIT_PADDING.top + rect.y,
+                ),
+                rect.size(),
+            ))
+        }
+        ZoomView::Percent(value) => {
+            (surfaces.photo.is_some() || surfaces.region.is_some()).then_some(())?;
+            let size = percent_size(dimensions, value, model.scale_factor);
+            if !(size.width > 0.0 && size.height > 0.0) {
+                return None;
+            }
+            let axis = |start: f32, available: f32, content: f32, offset: f32| {
+                start + ((available - content).max(0.0) / 2.0)
+                    - offset.clamp(0.0, (content - available).max(0.0))
+            };
+            Some(Rectangle::new(
+                Point::new(
+                    axis(canvas.x, canvas.width, size.width, pan.0),
+                    axis(canvas.y, canvas.height, size.height, pan.1),
+                ),
+                size,
+            ))
+        }
+    }
+}
+
+/// A logical rectangle in physical pixels as `[left, top, right, bottom]`, right and bottom
+/// exclusive, each edge snapped as the photo surface's vertex shader snaps it: WGSL's `round`,
+/// which rounds a half to even.
+pub(crate) fn snapped(rect: Rectangle, scale: f32) -> [i64; 4] {
+    [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
+        .map(|edge| (edge * scale).round_ties_even() as i64)
 }
 
 /// Where the toolkit draws a contained image inside `available`, matching the image widget's own
@@ -826,6 +898,90 @@ mod tests {
         // A canvas too small for the padding collapses to an empty rectangle, never an inverted one.
         let tiny = fit_rect_in([10, 10, 30, 30], 2.0);
         assert!(tiny[2] >= tiny[0] && tiny[3] >= tiny[1], "{tiny:?}");
+    }
+
+    /// The rectangle evidence records for the photograph is where [`plain`] lays it out: at Fit the
+    /// contained rectangle inside the padded canvas, at a percentage the zoomed box, centred on an
+    /// axis it does not fill and moved by the scroll offset the scrollable clamps; and nothing
+    /// when the surface draws no photograph.
+    #[test]
+    fn the_drawn_photo_is_where_the_surface_lays_the_photograph_out() {
+        let pixels = std::sync::Arc::new(vec![0u8; 4]);
+        let frame = luxforge_ui::Frame::new(pixels, 1, 1, 1).expect("a one-pixel frame");
+        let surfaces = Surfaces {
+            photo: Some(&frame),
+            photo_content: None,
+            current_content: 0,
+            region: None,
+            region_clipping: None,
+            region_coverage: None,
+            stage: None,
+            clipping: None,
+            coverage: None,
+            mask_draft: None,
+            mask_map: None,
+            draft: None,
+        };
+        let model = CanvasModel {
+            photo: PhotoView::Plain,
+            zoom: ZoomView::Fit,
+            scale_factor: 2.0,
+            dimensions: Some((480, 320)),
+            ..CanvasModel::default()
+        };
+        let canvas = Rectangle::new(Point::new(241.0, 44.0), Size::new(898.0, 830.0));
+        // Fit: 858 × 754 available after the padding, so the width binds: 858 × 572, centred in
+        // the 754 rows under the top padding.
+        let fit = drawn_photo(&model, &surfaces, canvas, (0.0, 0.0)).expect("a photograph");
+        assert_eq!((fit.x, fit.width, fit.height), (261.0, 858.0, 572.0));
+        assert_eq!(fit.y, 64.0 + (754.0 - 572.0) / 2.0);
+        assert_eq!(snapped(fit, 2.0), [522, 310, 2238, 1454]);
+        // A pan has nothing to move at Fit.
+        assert_eq!(
+            drawn_photo(&model, &surfaces, canvas, (40.0, 9.0)),
+            Some(fit)
+        );
+
+        // 100% at scale 2: 240 × 160 logical, smaller than the canvas, so centred and never moved.
+        let percent = CanvasModel {
+            zoom: ZoomView::Percent(100.0),
+            ..model.clone()
+        };
+        let small = drawn_photo(&percent, &surfaces, canvas, (30.0, 30.0)).expect("a photograph");
+        assert_eq!(
+            (small.x, small.y, small.width, small.height),
+            (241.0 + 329.0, 44.0 + 335.0, 240.0, 160.0)
+        );
+        // 800%: 1920 × 1280 logical, larger than the canvas, so it starts at the canvas's corner
+        // less the pan, which cannot pass the overhang.
+        let large = CanvasModel {
+            zoom: ZoomView::Percent(800.0),
+            ..model.clone()
+        };
+        let panned = drawn_photo(&large, &surfaces, canvas, (100.0, 50.0)).expect("a photograph");
+        assert_eq!((panned.x, panned.y), (141.0, -6.0));
+        let clamped = drawn_photo(&large, &surfaces, canvas, (5000.0, -9.0)).expect("a photograph");
+        assert_eq!((clamped.x, clamped.y), (241.0 - (1920.0 - 898.0), 44.0));
+
+        // Nothing is drawn: no photograph open, or none rendered yet at Fit.
+        let empty = CanvasModel {
+            photo: PhotoView::Empty("Open a photograph".into()),
+            ..model.clone()
+        };
+        assert_eq!(drawn_photo(&empty, &surfaces, canvas, (0.0, 0.0)), None);
+        let unrendered = Surfaces {
+            photo: None,
+            ..surfaces
+        };
+        assert_eq!(drawn_photo(&model, &unrendered, canvas, (0.0, 0.0)), None);
+        // A half rounds to even, as WGSL's `round` does.
+        assert_eq!(
+            snapped(
+                Rectangle::new(Point::new(0.25, 0.75), Size::new(1.0, 1.0)),
+                2.0
+            ),
+            [0, 2, 2, 4]
+        );
     }
 
     #[test]
