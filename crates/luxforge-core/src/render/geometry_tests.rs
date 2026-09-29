@@ -159,9 +159,13 @@ fn colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
     let compiled = registry
         .compile(source.width, source.height, &recipe)
         .unwrap();
-    let Some(Entry::Resample(_)) = compiled.segments[1].entry else {
-        panic!("a rotated crop resamples");
-    };
+    assert!(
+        compiled.segments[1]
+            .entry
+            .as_ref()
+            .is_some_and(Entry::blends),
+        "a rotated crop resamples"
+    );
     let band = band(&compiled, 0);
     assert!(
         band.start > 0 && band.end < compiled.segments[0].height as usize,

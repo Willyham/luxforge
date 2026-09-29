@@ -7,15 +7,15 @@
 //! exactly as it evaluates a JPEG's bytes, and only what a linear pixel is lives here.
 
 use super::{
-    ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext, RowScratch, Segment,
-    SegmentRows, Taps, apply_units, segment_pass,
+    ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext, ResampleEntry,
+    RowScratch, Segment, SegmentRows, Taps, apply_units, segment_pass,
 };
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
     Cancel, Error, LinearImage, SnapshotId,
     colour::{mat3, srgb},
-    modules::{Parallelism, Region, Resample, Stage},
+    modules::{Parallelism, Region, Stage},
     source::{ViewReader, layout},
 };
 use std::borrow::Cow;
@@ -168,7 +168,7 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
     let resamples = compiled
         .segments
         .iter()
-        .filter(|segment| matches!(segment.entry.as_ref().map(Entry::resample), Some(Some(_))))
+        .filter(|segment| segment.entry.as_ref().is_some_and(Entry::blends))
         .count();
     if resamples > MAX_RESAMPLES {
         return Err(Error::validation(
@@ -518,7 +518,7 @@ pub(super) const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
 /// between its entry and the terminal boundary, exactly the value [`Linear::colour`] converts a
 /// pixel to; one without colour has nothing to hold, so its entry and replacements go straight to
 /// terminal bytes.
-struct LinearRows<'e, 'x, 's> {
+pub(super) struct LinearRows<'e, 'x, 's> {
     evaluation: &'e Evaluation<'x, Linear<'s>>,
     index: usize,
     segment: &'e Segment,
@@ -532,7 +532,7 @@ struct LinearRows<'e, 'x, 's> {
 
 /// What one worker reuses for every chunk of linear rows it takes.
 #[derive(Default)]
-struct LinearScratch {
+pub(super) struct LinearScratch {
     /// A colour segment's rows, in `f32`; empty for a segment without colour.
     rows: Vec<[f32; 3]>,
     /// The pixels of the segment before a resample that one block of taps reads.
@@ -578,107 +578,17 @@ impl LinearRows<'_, '_, '_> {
         Ok(())
     }
 
-    /// A resampled segment's rows, in blocks of [`TAP_BLOCK_COLUMNS`] columns: each block reads
-    /// the rectangle of the segment before the resample its taps need ([`Resample::reads`]), unless
-    /// it holds more than [`TAP_BLOCK_PIXELS`], once, through
-    /// [`Evaluation::region_in`], and blends every output pixel from it with the resample's own
-    /// [`Linear::blend`]. Every tap is the value [`Evaluation::pixel_in`] answers there, so the
-    /// result is [`Evaluation::entry_pixel`]'s, while each pixel before the resample is evaluated
-    /// about once per block instead of once per tap and its colour runs over rows.
-    fn load_resampled(
+    /// The rows of a chunk whose entry is pulled one pixel at a time through the evaluation
+    /// ([`Evaluation::entry_pixel`]), or read from the source's rows when the segment reads the
+    /// source through the identity.
+    pub(super) fn load_pulled(
         &self,
-        resample: Resample,
         scratch: &mut LinearScratch,
         y0: u32,
         chunk: &mut [u8],
     ) -> Result<(), Error> {
-        let width = self.segment.width;
-        let rows = (chunk.len() / (width as usize * 4)) as u32;
-        let stage = self.evaluation.compiled.segments[self.index - 1].stage();
-        let outside = || Error::render("a resample tap was outside its stage");
-        let LinearScratch {
-            rows: values,
-            block,
-            row,
-        } = scratch;
-        for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
-            let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
-            // The block's rectangle of the resample's full output: the segment's exact geometry
-            // maps the block onto one, placed at the entry window's origin.
-            let local = self.segment.geometry.unmap_region(Region {
-                x0,
-                y0,
-                width: columns,
-                height: rows,
-            });
-            let (full_x, full_y) = self.segment.resample_output_at(local.x0, local.y0);
-            let window = Region {
-                x0: full_x,
-                y0: full_y,
-                ..local
-            };
-            let held = resample
-                .reads(self.segment.entry_origin, window, stage)
-                .filter(|region| region.pixels() <= TAP_BLOCK_PIXELS);
-            if let Some(region) = held {
-                self.evaluation
-                    .region_in(self.index - 1, region, block, row)?;
-                #[cfg(test)]
-                self.context
-                    .note_resample_bytes(block.capacity() * std::mem::size_of::<[f64; 3]>());
-            }
-            for y in y0..y0 + rows {
-                for x in x0..x0 + columns {
-                    let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-                    let (full_x, full_y) = self.segment.resample_output_at(input_x, input_y);
-                    let (u, v) = resample.input_from(self.segment.entry_origin, full_x, full_y);
-                    let pixel =
-                        Linear::blend(u, v, stage.width, stage.height, |x, y| match held {
-                            Some(region) if region.contains(x, y) => {
-                                Ok(block
-                                    [((y - region.y0) * region.width + (x - region.x0)) as usize])
-                            }
-                            _ => self
-                                .evaluation
-                                .pixel_in(self.index - 1, x, y)?
-                                .ok_or_else(outside),
-                        })?;
-                    let offset = ((y - y0) * width + x) as usize;
-                    self.put(values, chunk, offset, pixel)?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl SegmentRows for LinearRows<'_, '_, '_> {
-    type Scratch = LinearScratch;
-
-    fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
-        let colour = if self.segment.has_color {
-            rows * width * std::mem::size_of::<[f32; 3]>()
-        } else {
-            0
-        };
-        let taps = match self.segment.entry {
-            Some(Entry::Resample(_)) => TAP_BLOCK_PIXELS as usize * std::mem::size_of::<[f64; 3]>(),
-            _ => 0,
-        };
-        colour + taps
-    }
-
-    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error> {
         let width = self.segment.width as usize;
         let domain = &self.evaluation.domain;
-        if self.segment.has_color {
-            // Every value is written below, by the rows or the resample's blocks, before anything
-            // reads it, so a worker's buffer is resized and never cleared.
-            scratch.rows.resize(chunk.len() / 4, [0.0; 3]);
-        }
-        if let Some(Entry::Resample(resample)) = self.segment.entry {
-            return self.load_resampled(resample, scratch, y0, chunk);
-        }
         for (row, bytes) in chunk.chunks_exact_mut(width * 4).enumerate() {
             let y = y0 + row as u32;
             let values = &mut scratch.rows;
@@ -719,6 +629,104 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
             }
         }
         Ok(())
+    }
+
+    /// A resampled segment's rows, in blocks of [`TAP_BLOCK_COLUMNS`] columns: each block reads
+    /// the rectangle of the segment before the resample its taps need ([`ResampleEntry::reads`]),
+    /// unless it holds more than [`TAP_BLOCK_PIXELS`], once, through
+    /// [`Evaluation::region_in`], and blends every output pixel from it with the resample's own
+    /// [`Linear::blend`]. Every tap is the value [`Evaluation::pixel_in`] answers there, so the
+    /// result is [`Evaluation::entry_pixel`]'s, while each pixel before the resample is evaluated
+    /// about once per block instead of once per tap and its colour runs over rows.
+    pub(super) fn load_resampled(
+        &self,
+        entry: &ResampleEntry,
+        scratch: &mut LinearScratch,
+        y0: u32,
+        chunk: &mut [u8],
+    ) -> Result<(), Error> {
+        let width = self.segment.width;
+        let rows = (chunk.len() / (width as usize * 4)) as u32;
+        let stage = self.evaluation.compiled.segments[self.index - 1].stage();
+        let outside = || Error::render("a resample tap was outside its stage");
+        let LinearScratch {
+            rows: values,
+            block,
+            row,
+        } = scratch;
+        for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
+            let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
+            // The block's rectangle of the resample's full output: the segment's exact geometry
+            // maps the block onto one, placed at the entry window's origin.
+            let local = self.segment.geometry.unmap_region(Region {
+                x0,
+                y0,
+                width: columns,
+                height: rows,
+            });
+            let (full_x, full_y) = entry.output_at(local.x0, local.y0);
+            let window = Region {
+                x0: full_x,
+                y0: full_y,
+                ..local
+            };
+            let held = entry
+                .reads(window, stage)
+                .filter(|region| region.pixels() <= TAP_BLOCK_PIXELS);
+            if let Some(region) = held {
+                self.evaluation
+                    .region_in(self.index - 1, region, block, row)?;
+                #[cfg(test)]
+                self.context
+                    .note_resample_bytes(block.capacity() * std::mem::size_of::<[f64; 3]>());
+            }
+            for y in y0..y0 + rows {
+                for x in x0..x0 + columns {
+                    let (input_x, input_y) = self.segment.geometry.unmap(x, y);
+                    let (u, v) = entry.input_at(input_x, input_y);
+                    let pixel =
+                        Linear::blend(u, v, stage.width, stage.height, |x, y| match held {
+                            Some(region) if region.contains(x, y) => {
+                                Ok(block
+                                    [((y - region.y0) * region.width + (x - region.x0)) as usize])
+                            }
+                            _ => self
+                                .evaluation
+                                .pixel_in(self.index - 1, x, y)?
+                                .ok_or_else(outside),
+                        })?;
+                    let offset = ((y - y0) * width + x) as usize;
+                    self.put(values, chunk, offset, pixel)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SegmentRows for LinearRows<'_, '_, '_> {
+    type Scratch = LinearScratch;
+
+    fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
+        let colour = if self.segment.has_color {
+            rows * width * std::mem::size_of::<[f32; 3]>()
+        } else {
+            0
+        };
+        let taps = self.segment.entry.as_ref().map_or(0, Entry::linear_scratch);
+        colour + taps
+    }
+
+    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error> {
+        if self.segment.has_color {
+            // Every value is written below, by the rows or the resample's blocks, before anything
+            // reads it, so a worker's buffer is resized and never cleared.
+            scratch.rows.resize(chunk.len() / 4, [0.0; 3]);
+        }
+        match &self.segment.entry {
+            Some(entry) => entry.load_linear(self, scratch, y0, chunk),
+            None => self.load_pulled(scratch, y0, chunk),
+        }
     }
 
     fn replace(
@@ -1758,7 +1766,12 @@ mod tests {
             .segments
             .iter()
             .enumerate()
-            .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial { .. })))
+            .filter(|(_, segment)| {
+                segment
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.point_tiles().is_some())
+            })
             .map(|(index, _)| index)
             .collect();
         assert_eq!(spatial.len(), 4, "four spatial segments");

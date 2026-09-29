@@ -807,18 +807,8 @@ fn same_segments(left: &Compiled, right: &Compiled) -> bool {
             .iter()
             .zip(&right.segments)
             .all(|(left, right)| {
-                matches!(
-                    (&left.entry, &right.entry),
-                    (None, None)
-                        | (
-                            Some(super::Entry::Resample(_)),
-                            Some(super::Entry::Resample(_))
-                        )
-                        | (
-                            Some(super::Entry::Spatial { .. }),
-                            Some(super::Entry::Spatial { .. })
-                        )
-                )
+                left.entry.as_ref().map(std::mem::discriminant)
+                    == right.entry.as_ref().map(std::mem::discriminant)
             })
 }
 

@@ -1,9 +1,9 @@
 //! The byte domain: a JPEG's decoded 8-bit sRGB, its rows and its driver.
 
 use super::{
-    ColorRun, Compiled, Entry, PixelDomain, Raster, RenderContext, RowScratch, Segment,
-    SegmentRows, SpatialEntry, apply_units, bilinear, color_pixel, frame_mut, resample_frame,
-    segment_pass, spatial, spatial::fill_planes, spatial_entry, zeroed_frame,
+    ColorRun, Compiled, PixelDomain, Raster, RenderContext, RowScratch, Segment, SegmentRows,
+    SpatialEntry, apply_units, bilinear, color_pixel, frame_mut, segment_pass, spatial,
+    spatial::fill_planes, spatial_entry, zeroed_frame,
 };
 use crate::{
     Cancel, Error, SnapshotId, SourceImage,
@@ -343,12 +343,12 @@ fn colour_byte_rows(
 /// reservation held is released on the way out.
 ///
 /// This driver materializes every segment's output as a byte frame, which is exactly what the next
-/// boundary reads: a segment's input frame is the source, a resample of the frame before it or a
-/// spatial operation's output, and one [`segment_pass`] writes the segment's frame from it through
-/// its exact geometry, replacements and colour runs. A segment whose geometry is the identity writes
-/// in place over a frame this render wrote, loads the shared source's rows into its new frame
-/// inside the pass, and shares its input when it writes nothing, so an identity stack returns the
-/// source allocation itself. At most two frames exist at once.
+/// boundary reads: a segment's input frame is the source, or the frame its boundary writes from the
+/// frame before it ([`super::Entry::byte_frame`]), and one [`segment_pass`] writes the segment's
+/// frame from it through its exact geometry, replacements and colour runs. A segment whose geometry
+/// is the identity writes in place over a frame this render wrote, loads the shared source's rows
+/// into its new frame inside the pass, and shares its input when it writes nothing, so an identity
+/// stack returns the source allocation itself. At most two frames exist at once.
 pub(super) fn rasterize(
     source: &SourceImage,
     compiled: &Compiled,
@@ -367,52 +367,10 @@ pub(super) fn rasterize(
     for (index, segment) in compiled.segments.iter().enumerate() {
         if let Some(entry) = &segment.entry {
             let input = frame.as_deref().unwrap_or(&source.rgba).as_slice();
-            let next = match entry {
-                Entry::Resample(resample) => resample_frame(
-                    input,
-                    width,
-                    height,
-                    *resample,
-                    segment.entry_origin,
-                    segment.resample_window(*resample),
-                    cancel,
-                )?,
-                Entry::Spatial { .. } => {
-                    let stage = Stage { width, height };
-                    let offset = |x: u32, y: u32| {
-                        ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize
-                    };
-                    let table = decode_table();
-                    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-                        let at = offset(x, y);
-                        Ok(decode_pixel_in(
-                            table,
-                            [input[at], input[at + 1], input[at + 2]],
-                        ))
-                    };
-                    spatial_entry(
-                        &domain,
-                        SpatialEntry::of(segment).expect("a spatial entry"),
-                        stage,
-                        tiling,
-                        cancel,
-                        context,
-                        |region, planes, parallelism| {
-                            fill_planes(region, planes, parallelism, read)
-                        },
-                    )?
-                }
-            };
-            #[cfg(test)]
-            if matches!(entry, Entry::Resample(_)) {
-                context.note_resample_bytes(next.len());
-            }
-            if let Some(resample) = entry.resample() {
-                (width, height) = segment
-                    .entry_window
-                    .map(|window| (window.width, window.height))
-                    .unwrap_or((resample.output_width, resample.output_height));
-            }
+            let received = Stage { width, height };
+            let next = entry.byte_frame(&domain, input, received, tiling, cancel, context)?;
+            let held = entry.held(received);
+            (width, height) = (held.width, held.height);
             // The frame the boundary read is released before the next pass, so two frames is the
             // peak.
             frame = Some(next);
@@ -470,24 +428,55 @@ pub(super) fn rasterize(
     })
 }
 
-/// The rows of segment `index`'s frame its colour runs reach: those the resample after it reads
-/// ([`crate::modules::Resample::reads`]), or every row when a spatial boundary, which reads every row plus a halo,
-/// or nothing follows it. Everything outside the band is discarded by the resample, so leaving it
-/// uncoloured changes no output byte.
+/// The rows of segment `index`'s frame its colour runs reach: those the boundary after it reads
+/// ([`super::Entry::reads`] over the rectangle its frame holds): a resample's taps
+/// ([`crate::modules::Resample::reads`]), or every row under a spatial boundary, which reads every
+/// row plus a halo; every row when nothing follows it. Everything outside the band is discarded by
+/// the boundary, so leaving it uncoloured changes no output byte.
 pub(super) fn band(compiled: &Compiled, index: usize) -> std::ops::Range<usize> {
     let segment = &compiled.segments[index];
     let every = 0..segment.height as usize;
-    let Some(next) = compiled.segments.get(index + 1) else {
+    let Some(entry) = compiled
+        .segments
+        .get(index + 1)
+        .and_then(|next| next.entry.as_ref())
+    else {
         return every;
     };
-    let Some(Entry::Resample(resample)) = next.entry else {
-        return every;
-    };
-    resample
-        .reads(
-            next.entry_origin,
-            next.resample_window(resample),
-            segment.stage(),
-        )
+    let stage = segment.stage();
+    entry
+        .reads(entry.held(stage), stage)
         .map_or(every, |read| read.y0 as usize..read.y1() as usize)
+}
+
+/// The byte driver's frame of the spatial boundary `entry` over `input`, the finished byte frame
+/// of the `stage` it receives: its tiles read the frame through the sRGB decode table.
+pub(super) fn spatial_frame(
+    domain: &Byte<'_>,
+    entry: &SpatialEntry,
+    input: &[u8],
+    stage: Stage,
+    tiling: spatial::Tiling,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Arc<Vec<u8>>, Error> {
+    let offset =
+        |x: u32, y: u32| ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
+    let table = decode_table();
+    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+        let at = offset(x, y);
+        Ok(decode_pixel_in(
+            table,
+            [input[at], input[at + 1], input[at + 2]],
+        ))
+    };
+    spatial_entry(
+        domain,
+        entry,
+        stage,
+        tiling,
+        cancel,
+        context,
+        |region, planes, parallelism| fill_planes(region, planes, parallelism, read),
+    )
 }

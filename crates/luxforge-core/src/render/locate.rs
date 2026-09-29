@@ -1,7 +1,7 @@
 //! The public locate and transform types, and the walks that answer them from a compilation
 //! without reading a pixel.
 
-use super::{Compiled, Entry, nearest_index};
+use super::Compiled;
 use crate::{Error, ModuleRegistry, Recipe, modules::ExactGeometry};
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +67,7 @@ pub struct StageTransform {
 /// One affine map in the continuous, pixel-center coordinates [`StageTransform`] documents, in the
 /// coefficient order [`Resample::inverse`](crate::modules::Resample::inverse) fixes.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Affine([f64; 6]);
+pub(super) struct Affine(pub(super) [f64; 6]);
 
 impl Affine {
     const IDENTITY: Self = Self([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
@@ -91,7 +91,7 @@ impl Affine {
 
     /// `self` followed by `next`. Composing the tail this way is what keeps the cost `O(layers)`:
     /// one matrix multiply per layer, and no walk per point afterwards.
-    fn then(self, next: Self) -> Self {
+    pub(super) fn then(self, next: Self) -> Self {
         let [a0, a1, a2, a3, a4, a5] = self.0;
         let [b0, b1, b2, b3, b4, b5] = next.0;
         Self([
@@ -109,7 +109,7 @@ impl Affine {
     /// put a gesture's pointer somewhere the recipe never puts it. The compiler already refuses a
     /// resample whose mapping is not finite or whose output stage is empty; this is the remaining
     /// degenerate case, refused in the same voice.
-    fn invert(self) -> Result<Self, Error> {
+    pub(super) fn invert(self) -> Result<Self, Error> {
         let [m0, m1, m2, m3, m4, m5] = self.0;
         let determinant = m0 * m4 - m1 * m3;
         let inverted = Self([
@@ -142,9 +142,9 @@ pub(crate) fn locate(
     y: u32,
 ) -> Result<ContentPoint, Error> {
     /// Walk one segment backwards, the same walk `pixel_in` makes to fetch a colour: the composed
-    /// exact geometry unmaps to the segment's input frame by its integer inverse, and a resample
-    /// takes the nearest pixel of the previous stage to the input coordinate its output pixel
-    /// centre samples.
+    /// exact geometry unmaps to the segment's input frame by its integer inverse, and the boundary
+    /// entering it maps that pixel back to the previous stage ([`super::Entry::locate`]): a
+    /// resample takes the nearest pixel to the input coordinate its output pixel centre samples.
     fn walk(compiled: &Compiled, index: usize, x: u32, y: u32) -> Option<(u32, u32)> {
         let segment = &compiled.segments[index];
         if x >= segment.width || y >= segment.height {
@@ -155,20 +155,8 @@ pub(crate) fn locate(
             // The first segment reads the source, which is the content stage.
             return Some((input_x, input_y));
         };
-        let Some(resample) = entry.resample() else {
-            // A spatial entry keeps the stage and every coordinate in it: the pixel a spatial
-            // output shows is the pixel of its input at the same place.
-            return walk(compiled, index - 1, input_x, input_y);
-        };
-        let previous = &compiled.segments[index - 1];
-        let (full_x, full_y) = segment.resample_output_at(input_x, input_y);
-        let (u, v) = resample.input_from(segment.entry_origin, full_x, full_y);
-        walk(
-            compiled,
-            index - 1,
-            nearest_index(u, previous.width),
-            nearest_index(v, previous.height),
-        )
+        let (x, y) = entry.locate(input_x, input_y, compiled.segments[index - 1].stage());
+        walk(compiled, index - 1, x, y)
     }
     let stage = compiled.stage();
     let (content_x, content_y) =
@@ -221,28 +209,10 @@ pub(crate) fn transform_of(
 ) -> Result<StageTransform, Error> {
     let mut forward = Affine::IDENTITY;
     for segment in &compiled.segments {
-        // A resample declares the map from its output back to its input, which is the direction a
-        // sampler reads; the forward direction is that map inverted. A spatial boundary is at the
-        // dimensions of the stage it receives and moves no coordinate, so it contributes nothing.
-        if let Some(resample) = segment.entry.as_ref().and_then(Entry::resample) {
-            // A windowed proxy's frame before the resample is a window of the stage the resample
-            // was compiled against, placed at `entry_origin` in it.
-            let (x, y) = segment.entry_origin;
-            forward = forward
-                .then(Affine([1.0, 0.0, f64::from(x), 0.0, 1.0, f64::from(y)]))
-                .then(Affine(resample.inverse).invert()?);
-            // The boundary now holds only this rectangle of the full resample output. Its
-            // segment geometry reads local entry coordinates, not full-stage coordinates.
-            if let Some(window) = segment.entry_window {
-                forward = forward.then(Affine([
-                    1.0,
-                    0.0,
-                    -f64::from(window.x0),
-                    0.0,
-                    1.0,
-                    -f64::from(window.y0),
-                ]));
-            }
+        // Each boundary adds its own forward map (`Entry::forward`); a spatial boundary is at
+        // the dimensions of the stage it receives and moves no coordinate.
+        if let Some(entry) = &segment.entry {
+            forward = entry.forward(forward)?;
         }
         forward = forward.then(Affine::from_exact(segment.geometry));
     }
