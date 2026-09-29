@@ -190,11 +190,10 @@ pub(crate) struct Editor {
     /// Where the main thread's time goes, for the evidence events; never read by the view.
     pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     pub(crate) busy: bool,
-    /// The event sync's one poll is in flight.
-    pub(crate) syncing: bool,
-    /// The owner said another client changed something, or an answer of this desktop's own left
-    /// it unknown whether its change landed: the event sync polls once nothing is in flight.
-    pub(crate) sync_wanted: bool,
+    /// The event sync: its one poll, its cursor, this desktop's own requests and a mode to tell.
+    pub(crate) sync: sync::EventSync,
+    /// The curve sample queries: one in flight, the newest waiting, and what each curve asked.
+    pub(crate) curve_sampling: controls::CurveSampling,
     pub(crate) status: String,
     /// What Copy in the status bar copies instead of the line itself, while the status still reads
     /// that line: an import's whole report behind its one-line summary.
@@ -205,15 +204,6 @@ pub(crate) struct Editor {
     /// What the last composite action (a preset, Reset Basic) left out because it does not apply
     /// to the photo, said beside what happened once its frame is on screen.
     pub(crate) skipped: Option<String>,
-    /// The event sync's cursor: the newest event sequence a poll has read up to. Only a poll moves
-    /// it, and never backwards; the sequence any other answer carries counts events of other
-    /// clients' that no poll has read yet.
-    pub(crate) api_sequence: u64,
-    /// This desktop's own requests whose answers read their changes back and reached the screen,
-    /// oldest first and at most [`OWN_REQUESTS`]. A poll reads their events and skips them; one
-    /// that falls out of the bound is read back like another client's, which costs a refresh and
-    /// loses nothing.
-    pub(crate) own_requests: std::collections::VecDeque<String>,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
     pub(crate) modules: Vec<ModuleDescriptor>,
     /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
@@ -224,12 +214,6 @@ pub(crate) struct Editor {
     pub(crate) fields: Fields,
     /// Local presentation state of generated controls; authoritative values stay in the recipe.
     pub(crate) controls_ui: tools::ControlsUi,
-    pub(crate) curve_sample_sequence: u64,
-    pub(crate) curve_sample_requested: BTreeMap<(String, String), u64>,
-    pub(crate) curve_sample_requested_source:
-        BTreeMap<(String, String), (luxforge_core::AssetId, luxforge_core::EntryId, Value)>,
-    pub(crate) curve_sample_in_flight: bool,
-    pub(crate) curve_sample_pending: Option<controls::CurveSampleRequest>,
     /// The (action, parameter) whose value is being typed.
     pub(crate) editing: Option<(String, String)>,
     /// The (action, parameter) whose slider is being dragged.
@@ -257,11 +241,6 @@ pub(crate) struct Editor {
     pub(crate) version_form_open: bool,
     /// The crop section's own options: the custom ratio's extents and the held modifiers.
     pub(crate) crop_section: state::CropSection,
-    /// Set when a draft just started or ended by a route that does not already ask the session
-    /// itself: the next `update` call folds in one `workspace.set` for this mode, unless the
-    /// session already reports it, so the mode strip shows Crop selected during every draft
-    /// however it was opened, and pointer again however it ended.
-    pub(crate) mode_sync: Option<String>,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
     pub(crate) mask_panel: state::masks::MaskPanel,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
@@ -365,24 +344,17 @@ impl Editor {
             hover: Default::default(),
             view_plan: Default::default(),
             busy: false,
-            syncing: false,
-            sync_wanted: false,
+            sync: Default::default(),
+            curve_sampling: Default::default(),
             status: "Open a photo to begin".into(),
             status_copy: None,
             happened: None,
             skipped: None,
-            api_sequence: 0,
-            own_requests: std::collections::VecDeque::new(),
             modules: Default::default(),
             modules_ready: false,
             developer: config.developer,
             fields: Default::default(),
             controls_ui: Default::default(),
-            curve_sample_sequence: 0,
-            curve_sample_requested: BTreeMap::new(),
-            curve_sample_requested_source: BTreeMap::new(),
-            curve_sample_in_flight: false,
-            curve_sample_pending: None,
             editing: None,
             dragging: None,
             gesture: None,
@@ -398,7 +370,6 @@ impl Editor {
             version_name: String::new(),
             version_form_open: false,
             crop_section: Default::default(),
-            mode_sync: None,
             mask_panel: Default::default(),
             thumbnailer: Default::default(),
             capabilities: Default::default(),
@@ -519,7 +490,7 @@ impl Editor {
         self.settle_when_quiet();
         if self.displayed_entry() != before_entry {
             self.controls_ui.clear_curve_samples();
-            self.curve_sample_requested_source.clear();
+            self.curve_sampling.requested_source.clear();
         }
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
         // `view.set` reaching us through an adopted session — is answered in one place.

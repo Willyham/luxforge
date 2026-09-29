@@ -493,12 +493,12 @@ fn every_refused_control_start_says_why() {
     let refused = |editor: &mut Editor, name: &str, message: Message, reason: &str| {
         editor.set_control_field_value(ACTION, "amount", &json!(3.0));
         let fields = editor.fields.clone();
-        let (sequence, busy) = (editor.api_sequence, editor.busy);
+        let (sequence, busy) = (editor.sync.sequence, editor.busy);
         editor.status.clear();
         let task = editor.update(message);
         assert_eq!(editor.status, reason, "{name}");
         assert_eq!(task.units(), 0, "{name}: nothing is sent");
-        assert_eq!(editor.api_sequence, sequence, "{name}: nothing is called");
+        assert_eq!(editor.sync.sequence, sequence, "{name}: nothing is called");
         assert_eq!(editor.busy, busy, "{name}");
         assert!(editor.gesture.is_none(), "{name}: no draft opens");
         assert_eq!(editor.fields, fields, "{name}: the field is as it was");
@@ -1427,7 +1427,10 @@ fn sampling(modules: Vec<luxforge_core::ModuleDescriptor>) -> (Editor, PathBuf) 
 fn a_curve_in_a_hidden_section_queries_no_samples() {
     let (editor, catalog) = sampling(vec![controls_descriptor()]);
     assert!(
-        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        editor
+            .curve_sampling
+            .requested
+            .contains_key(&fixture_curve()),
         "an expanded section's curve is sampled"
     );
     finish(editor, catalog);
@@ -1440,12 +1443,15 @@ fn a_curve_in_a_hidden_section_queries_no_samples() {
     let (mut editor, catalog) = sampling(vec![collapsed]);
     assert!(!editor.workspace.tools.all().any(|section| section.expanded));
     assert!(
-        editor.curve_sample_requested.is_empty(),
+        editor.curve_sampling.requested.is_empty(),
         "a section declared collapsed shows no curve"
     );
     let _ = editor.update(Message::Control(ControlMessage::ToggleSection(module_id)));
     assert!(
-        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        editor
+            .curve_sampling
+            .requested
+            .contains_key(&fixture_curve()),
         "opening the section shows its curve"
     );
     finish(editor, catalog);
@@ -1457,7 +1463,7 @@ fn a_curve_in_a_hidden_section_queries_no_samples() {
     let (editor, catalog) = sampling(vec![developer]);
     assert!(!editor.developer);
     assert!(
-        editor.curve_sample_requested.is_empty(),
+        editor.curve_sampling.requested.is_empty(),
         "a developer section is not drawn outside developer mode"
     );
     finish(editor, catalog);
@@ -1484,7 +1490,7 @@ fn a_curve_in_a_hidden_tab_queries_no_samples() {
     let module_id = tabs.id.clone();
     let (mut editor, catalog) = sampling(vec![tabs]);
     assert!(
-        editor.curve_sample_requested.is_empty(),
+        editor.curve_sampling.requested.is_empty(),
         "the curve's tab is not the one shown"
     );
     let _ = editor.update(Message::Control(ControlMessage::SelectTab {
@@ -1492,7 +1498,10 @@ fn a_curve_in_a_hidden_tab_queries_no_samples() {
         index: 1,
     }));
     assert!(
-        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        editor
+            .curve_sampling
+            .requested
+            .contains_key(&fixture_curve()),
         "selecting the curve's tab shows it"
     );
     finish(editor, catalog);
@@ -1516,7 +1525,7 @@ fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
     let (mut editor, catalog) = sampling(vec![raw_only]);
     assert_eq!(editor.workspace.tools.all().count(), 0);
     assert!(
-        editor.curve_sample_requested.is_empty(),
+        editor.curve_sampling.requested.is_empty(),
         "a module that does not apply to a JPEG shows no curve"
     );
     let asset = editor.document.state.as_ref().unwrap().asset.id.clone();
@@ -1526,7 +1535,10 @@ fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
         raw_refresh(&asset, &raw),
     )))));
     assert!(
-        editor.curve_sample_requested.contains_key(&fixture_curve()),
+        editor
+            .curve_sampling
+            .requested
+            .contains_key(&fixture_curve()),
         "on a RAW photo the module applies and its curve is sampled"
     );
     finish(editor, catalog);

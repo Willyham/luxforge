@@ -59,6 +59,11 @@ impl<T> Coalesce<T> {
     pub(crate) fn pending(&self) -> Option<&T> {
         self.pending.as_ref()
     }
+
+    /// Nothing is in flight and nothing waits.
+    pub(crate) fn idle(&self) -> bool {
+        !self.in_flight && self.pending.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -68,7 +73,7 @@ mod tests {
     #[test]
     fn one_request_is_in_flight_and_only_the_newest_waits_behind_it() {
         let mut slot = Coalesce::default();
-        assert!(!slot.in_flight() && slot.pending().is_none());
+        assert!(slot.idle());
         assert_eq!(slot.offer(1), None);
         assert_eq!(
             slot.start(),
@@ -88,7 +93,7 @@ mod tests {
         assert_eq!(slot.start(), Some(3), "the answer lets the newest go out");
         slot.answered();
         assert_eq!(slot.start(), None);
-        assert!(!slot.in_flight() && slot.pending().is_none());
+        assert!(slot.idle());
     }
 
     #[test]
@@ -100,6 +105,6 @@ mod tests {
         slot.drop_pending();
         slot.answered();
         assert_eq!(slot.start(), None);
-        assert!(!slot.in_flight() && slot.pending().is_none());
+        assert!(slot.idle());
     }
 }

@@ -5,6 +5,7 @@ use crate::app::{
     message::{Message, action::ActionMessage, control::ControlMessage},
     tasks::call,
 };
+use crate::coalesce::Coalesce;
 use crate::state::{
     control_tree::{at_path, walk},
     fields::{self, submit_preset},
@@ -15,6 +16,7 @@ use iced::{Task, widget::operation};
 use luxforge_core::{AssetId, Control, EntryId, ParameterKind, check_value};
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent, hex_to_rgb, hsv_to_rgb, rgb_to_hsv};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 /// A query result can only update the exact curve, entry, channel and points that requested it.
 #[derive(Clone, Debug)]
@@ -32,6 +34,20 @@ pub(crate) struct CurveSampleIdentity {
 pub(crate) struct CurveSampleRequest {
     identity: CurveSampleIdentity,
     query: String,
+}
+
+/// The curve sample queries: one in flight with only the newest waiting, and which request each
+/// displayed curve last asked, so a late or displaced answer is recognised and dropped.
+#[derive(Debug, Default)]
+pub(crate) struct CurveSampling {
+    /// The last request's sequence number, minted per request.
+    pub(crate) sequence: u64,
+    /// The sequence each (action, parameter) last asked under.
+    pub(crate) requested: BTreeMap<(String, String), u64>,
+    /// The asset, entry and points each (action, parameter) last asked about.
+    pub(crate) requested_source:
+        BTreeMap<(String, String), (luxforge_core::AssetId, luxforge_core::EntryId, Value)>,
+    pub(crate) slot: Coalesce<CurveSampleRequest>,
 }
 
 impl Editor {
@@ -229,7 +245,7 @@ impl Editor {
     /// section's collapse, its tabs, developer filtering, the photo's source kind and each
     /// control's resolved variant are the rules the panel drew it by.
     pub(crate) fn request_visible_curve_samples(&mut self) -> Task<Message> {
-        if self.curve_sample_in_flight || self.curve_sample_pending.is_some() {
+        if !self.curve_sampling.slot.idle() {
             return Task::none();
         }
         let (Some(entry), Some(asset)) = (
@@ -255,7 +271,7 @@ impl Editor {
                     .is_some_and(|samples| {
                         samples.source == value && samples.entry == entry && &samples.asset == asset
                     });
-                let requested = self.curve_sample_requested_source.get(&key).is_some_and(
+                let requested = self.curve_sampling.requested_source.get(&key).is_some_and(
                     |(requested_asset, requested_entry, points)| {
                         requested_asset == asset && requested_entry == &entry && points == &value
                     },
@@ -769,9 +785,9 @@ impl Editor {
         let Some(entry) = self.displayed_entry() else {
             return Task::none();
         };
-        self.curve_sample_sequence = self.curve_sample_sequence.wrapping_add(1);
+        self.curve_sampling.sequence = self.curve_sampling.sequence.wrapping_add(1);
         let identity = CurveSampleIdentity {
-            sequence: self.curve_sample_sequence,
+            sequence: self.curve_sampling.sequence,
             asset: state.asset.id.clone(),
             entry,
             action: action.into(),
@@ -779,9 +795,10 @@ impl Editor {
             channel,
             points,
         };
-        self.curve_sample_requested
+        self.curve_sampling
+            .requested
             .insert((action.into(), parameter.into()), identity.sequence);
-        self.curve_sample_requested_source.insert(
+        self.curve_sampling.requested_source.insert(
             (action.into(), parameter.into()),
             (
                 identity.asset.clone(),
@@ -790,21 +807,21 @@ impl Editor {
             ),
         );
         let request = CurveSampleRequest { identity, query };
-        if self.curve_sample_in_flight {
-            if let Some(displaced) = self.curve_sample_pending.replace(request) {
-                let key = (displaced.identity.action, displaced.identity.parameter);
-                if self.curve_sample_requested.get(&key) == Some(&displaced.identity.sequence) {
-                    self.curve_sample_requested.remove(&key);
-                    self.curve_sample_requested_source.remove(&key);
-                }
+        if let Some(displaced) = self.curve_sampling.slot.offer(request) {
+            let key = (displaced.identity.action, displaced.identity.parameter);
+            if self.curve_sampling.requested.get(&key) == Some(&displaced.identity.sequence) {
+                self.curve_sampling.requested.remove(&key);
+                self.curve_sampling.requested_source.remove(&key);
             }
-            return Task::none();
         }
-        self.send_curve_sample_request(request)
+        self.start_curve_sample()
     }
 
-    fn send_curve_sample_request(&mut self, request: CurveSampleRequest) -> Task<Message> {
-        self.curve_sample_in_flight = true;
+    /// Send the newest curve sample query waiting, once none is in flight.
+    fn start_curve_sample(&mut self) -> Task<Message> {
+        let Some(request) = self.curve_sampling.slot.start() else {
+            return Task::none();
+        };
         let owner = self.owner.clone();
         let client = self.client;
         let CurveSampleRequest { identity, query } = request;
@@ -832,10 +849,11 @@ impl Editor {
         identity: CurveSampleIdentity,
         result: Result<Value, String>,
     ) -> Task<Message> {
-        self.curve_sample_in_flight = false;
+        self.curve_sampling.slot.answered();
         let key = curve_key(&self.modules, &identity.action, &identity.parameter);
         let valid = self
-            .curve_sample_requested
+            .curve_sampling
+            .requested
             .get(&(identity.action.clone(), identity.parameter.clone()))
             == Some(&identity.sequence)
             && self
@@ -875,11 +893,7 @@ impl Editor {
                 Err(error) => self.status = error,
             }
         }
-        if let Some(next) = self.curve_sample_pending.take() {
-            self.send_curve_sample_request(next)
-        } else {
-            Task::none()
-        }
+        self.start_curve_sample()
     }
 }
 

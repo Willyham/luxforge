@@ -9,6 +9,7 @@
 //! lands instead of being drawn into a window it does not belong to. At most one read is in flight:
 //! a tick that finds one still out does nothing, so a slow owner stretches the interval rather than
 //! queueing reads behind itself.
+use crate::coalesce::Coalesce;
 use crate::{
     app::{
         Editor,
@@ -40,7 +41,8 @@ pub(crate) struct Sampler {
     /// section costs anything.
     pub(crate) expanded: bool,
     pub(crate) history: PerformanceHistory,
-    pub(crate) in_flight: bool,
+    /// The one read in flight: a read is never duplicated beside it.
+    pub(crate) read: Coalesce<()>,
     /// The gate as the sampler last acted on it. Holding it here, rather than comparing the gate
     /// before and after each message, makes a message handled inside another — an evidence step
     /// runs its own update from within one — start sampling once rather than twice.
@@ -141,10 +143,10 @@ impl Editor {
     /// earlier epoch is not duplicated: it is dropped when it lands, and that is when the new
     /// epoch's first read goes out.
     fn performance_read(&mut self) -> Task<Message> {
-        if self.performance.in_flight {
+        self.performance.read.offer(());
+        if self.performance.read.start().is_none() {
             return Task::none();
         }
-        self.performance.in_flight = true;
         self.performance.requested += 1;
         performance_task(self.owner.clone(), self.client, self.performance.epoch)
     }
@@ -165,7 +167,7 @@ impl Editor {
         epoch: u64,
         result: Result<Box<PerformanceRead>, String>,
     ) -> Task<Message> {
-        self.performance.in_flight = false;
+        self.performance.read.answered();
         if epoch != self.performance.epoch || !self.performance_sampling() {
             return if self.performance_sampling() {
                 self.performance_read()
@@ -195,7 +197,7 @@ impl Editor {
             "expanded": self.performance.expanded,
             "sampling": self.performance_sampling(),
             "reads_requested": self.performance.requested,
-            "in_flight": self.performance.in_flight,
+            "in_flight": self.performance.read.in_flight(),
             "samples": self.performance.history.len(),
             "pid": std::process::id(),
             "wall_ms": raw.back().map(|(wall_ms, _)| wall_ms),
@@ -312,7 +314,7 @@ mod tests {
             editor.performance.requested, 1,
             "read at once, not a second later"
         );
-        assert!(editor.performance.in_flight);
+        assert!(editor.performance.read.in_flight());
         // A message that carried the toggle inside it — an evidence step's own update — sees the
         // gate already acted on and starts nothing again.
         let epoch = editor.performance.epoch;
@@ -326,7 +328,7 @@ mod tests {
             epoch,
             result: Ok(answer),
         }));
-        assert!(!editor.performance.in_flight);
+        assert!(!editor.performance.read.in_flight());
         assert_eq!(editor.performance.history.len(), 1);
         let rows = &editor.workspace.performance.metrics;
         assert_eq!(rows.len(), 3);
@@ -398,7 +400,7 @@ mod tests {
             0,
             "dropped after collapsing"
         );
-        assert!(!editor.performance.in_flight);
+        assert!(!editor.performance.read.in_flight());
         assert_eq!(
             editor.performance.requested, 1,
             "and nothing asked in its place"
@@ -421,7 +423,7 @@ mod tests {
             editor.performance.requested, 3,
             "the new epoch's first read"
         );
-        assert!(editor.performance.in_flight);
+        assert!(editor.performance.read.in_flight());
         let current = editor.performance.epoch;
         let answer = read(&editor);
         let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {

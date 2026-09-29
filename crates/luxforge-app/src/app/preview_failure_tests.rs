@@ -572,7 +572,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     assert_eq!(editor.draft_generation(), None);
     assert!(editor.crop().is_none(), "the start's frame left at once");
     assert_eq!(editor.crop_stage(), Some(StageView::Abandoned));
-    assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
+    assert_eq!(editor.sync.mode.as_deref(), Some(POINTER_MODE));
     assert!(
         editor
             .status
@@ -755,7 +755,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     assert_eq!(editor.draft_generation(), None);
     assert!(editor.crop().is_none() && editor.presentation.presenter.stage().is_none());
     assert_eq!(
-        editor.mode_sync.as_deref(),
+        editor.sync.mode.as_deref(),
         Some(POINTER_MODE),
         "the session was not asked to leave the crop mode"
     );
@@ -948,7 +948,7 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
         "the stale stage was not requested"
     );
     assert!(editor.crop().is_none());
-    assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
+    assert_eq!(editor.sync.mode.as_deref(), Some(POINTER_MODE));
     assert!(
         editor.status.ends_with("start the crop again"),
         "{}",

@@ -472,7 +472,7 @@ impl Editor {
         // Starting a draft by any route — the section's own button, `R`, the mode strip, a change
         // in the idle section or a scripted `draft.start` — asks the session to enter this
         // module's mode, so the strip shows Crop selected for the whole life of the draft.
-        self.mode_sync = Some(module_id);
+        self.sync.mode = Some(module_id);
         let crop = CropGesture {
             action,
             frame,
@@ -1036,7 +1036,7 @@ impl Editor {
         if self.editing_angle() {
             self.editing = None;
         }
-        self.mode_sync = Some(POINTER_MODE.into());
+        self.sync.mode = Some(POINTER_MODE.into());
     }
 
     /// The crop gesture was discarded: the frame leaves the screen and says so, unless it is a
@@ -1472,7 +1472,7 @@ mod tests {
             editor.crop().is_none(),
             "no neutral crop replaced the layer"
         );
-        assert_eq!(editor.mode_sync, None, "the mode did not change");
+        assert_eq!(editor.sync.mode, None, "the mode did not change");
         assert!(
             editor.status.contains("cannot be read"),
             "{}",
@@ -2012,14 +2012,14 @@ mod tests {
         // to enter the crop mode.
         let _ = editor.dispatch(Message::Crop(CropMessage::Start));
         assert_eq!(
-            editor.mode_sync.as_deref(),
+            editor.sync.mode.as_deref(),
             Some(crop_id.as_str()),
             "starting a draft by any route queues the session's own mode change"
         );
         // The public entry point folds that into the returned task and consumes the flag.
         editor.session.workspace.mode = crop_id.clone();
         let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
-        assert_eq!(editor.mode_sync, None, "the wrapper always consumes it");
+        assert_eq!(editor.sync.mode, None, "the wrapper always consumes it");
 
         open_crop(&mut editor);
         assert!(editor.workspace.canvas.modes[0].id == POINTER_MODE);
@@ -2032,7 +2032,7 @@ mod tests {
         // returns the session to pointer.
         let _ = editor.dispatch(Message::Draft(DraftMessage::Cancel));
         assert_eq!(
-            editor.mode_sync.as_deref(),
+            editor.sync.mode.as_deref(),
             Some(POINTER_MODE),
             "ending a draft by any route queues the session's return to pointer"
         );
@@ -2054,7 +2054,7 @@ mod tests {
         let refused = |editor: &mut Editor, case: &str| {
             let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
             assert_eq!(task.units(), 0, "{case}: nothing is sent");
-            assert_eq!(editor.mode_sync, None, "{case}: no mode change is queued");
+            assert_eq!(editor.sync.mode, None, "{case}: no mode change is queued");
             assert!(editor.crop().is_none());
             assert_eq!(editor.session.workspace.mode, mode, "{case}");
         };
@@ -2073,7 +2073,7 @@ mod tests {
             "its input stage's truncated preview: the draft's begin answered in this update"
         );
         assert!(editor.crop().is_some());
-        assert_eq!(editor.mode_sync.as_deref(), Some(crop_id.as_str()));
+        assert_eq!(editor.sync.mode.as_deref(), Some(crop_id.as_str()));
         finish(editor, catalog);
     }
 
@@ -2218,7 +2218,7 @@ mod tests {
         assert_eq!(draft.aspect.ratio(), Some(1.0));
         assert_eq!(draft.rect.width, draft.rect.height);
         assert_eq!(
-            editor.mode_sync.as_deref(),
+            editor.sync.mode.as_deref(),
             Some("luxforge.crop"),
             "the canvas enters crop mode"
         );
@@ -2291,7 +2291,7 @@ mod tests {
         assert!(editor.crop().is_none(), "the frame left at once");
         assert!(editor.gesture.is_none(), "and its core draft with it");
         assert_eq!(editor.draft_generation(), None);
-        assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
+        assert_eq!(editor.sync.mode.as_deref(), Some(POINTER_MODE));
         assert_eq!(editor.status, "Crop draft discarded");
         assert_eq!(editor.document.state.as_ref().expect("a state").revision, 2);
         finish(editor, catalog);
