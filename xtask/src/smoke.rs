@@ -11,7 +11,7 @@ use crate::{
     mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
     performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
     raw_panel_smoke as raw_panel,
-    scenario::{Checked, Fixture, Launch, Plan, Run, Step, launch::Guard},
+    scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
     zoom_smoke as zoom, *,
 };
@@ -1039,7 +1039,7 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
             }),
             "A photo-sized frame at Fit does not report the proxy's render time",
         )?;
-        write_json(&launch.evidence.join("render-times.json"), &record)?;
+        Checks::new().write(&launch.evidence, scenario, json!({"render_times": record}))?;
     }
     Ok(())
 }
