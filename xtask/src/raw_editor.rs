@@ -18,7 +18,7 @@
 //! tier: it takes the file from `--source` and the manifest that lists it, by its SHA-256, from
 //! `--manifest`. The run keeps a copy of the manifest, which a replay reads again.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, pixels},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance},
     smoke::{self, Scenario},
     *,
 };
@@ -136,8 +136,10 @@ fn journey([x, y]: [u32; 2]) -> Plan {
         // The same pair again, once both entries' developments have been made.
         Step::new(HISTORICAL_AGAIN, PreviewStep::Sequence(0)).commits(0),
         Step::new(CURRENT_AGAIN, PreviewStep::Current).commits(0),
-        Step::new(ZOOM, ViewStep::Percent(100.0)).commits(0),
-        Step::new(FIT, ViewStep::Fit).commits(0),
+        Step::new(ZOOM, ViewStep::Percent(100.0))
+            .commits(0)
+            .percent(100.0),
+        Step::new(FIT, ViewStep::Fit).commits(0).fit(),
     ])
 }
 
@@ -366,16 +368,16 @@ fn ready_raw_frame(frame: &Frame) -> Result {
     Ok(())
 }
 
-/// How far a mean channel of the photograph's centred window may move and still be the same
+/// How far a mean channel of the photograph's central window may move and still be the same
 /// picture, and how far it must move for an edit to have changed it, in 8-bit codes. The window
 /// holds hundreds of thousands of pixels: the same recipe rendered twice reads exactly equal, and
 /// the smallest edit here, a tint of +10, moves a channel by about 0.7 on the Z6.
 const SAME: f64 = 0.5;
 const CHANGED: f64 = 0.25;
 
-/// The largest move of any mean channel of the centred window between two frames.
+/// The largest move of any mean channel of the photograph's central window between two frames.
 fn moved(before: &Frame, after: &Frame) -> Result<f64> {
-    let (a, b) = (pixels::window_rgb(before)?, pixels::window_rgb(after)?);
+    let (a, b) = (before.window_rgb()?, after.window_rgb()?);
     Ok(a.iter()
         .zip(b)
         .map(|(a, b)| (a - b).abs())
@@ -519,7 +521,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "RAW reopen displayed a stale entry",
     )?;
 
-    let mut readings = serde_json::Map::new();
+    let mut checks = Checks::new();
     for (what, before, after) in [
         ("exposure", OPENED, EXPOSURE),
         ("red gain", EXPOSURE, RED_GAIN),
@@ -528,14 +530,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ("tint", TEMPERATURE, TINT),
         ("neutral pick", TINT, NEUTRAL),
     ] {
-        let moved = moved(edit.at(before)?, edit.at(after)?)?;
-        pixels::compare(
+        let after = edit.at(after)?;
+        checks.compare(
+            after,
             &format!("The {what} edit's move of the photograph"),
-            moved,
+            moved(edit.at(before)?, after)?,
             0.0,
-            pixels::Tolerance::Above(CHANGED),
+            Tolerance::Above(CHANGED),
         )?;
-        readings.insert(what.into(), json!(moved));
     }
     for (what, before, after) in [
         ("historical Original", edit.at(OPENED)?, preview),
@@ -547,24 +549,23 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ("current again", edit.at(CURRENT)?, edit.at(CURRENT_AGAIN)?),
         ("reopened current", edit.at(FIT)?, reopened),
     ] {
-        let moved = moved(before, after)?;
-        pixels::compare(
+        checks.compare(
+            after,
             &format!("The {what}'s move of the photograph"),
-            moved,
+            moved(before, after)?,
             0.0,
-            pixels::Tolerance::Within(SAME),
+            Tolerance::Within(SAME),
         )?;
-        readings.insert(what.into(), json!(moved));
     }
 
-    write_json(
-        &run.out().join("raw-editor-checks.json"),
-        &json!({
+    checks.write(
+        run.out(),
+        SCENARIO,
+        json!({
             "source":entry,
             "original_entry":original,
             "current_entry":current,
             "revision":revision,
-            "window_channel_moves":readings,
             "thresholds":{"changed":CHANGED,"same":SAME},
             "observations":{
                 "note":"One functional run's times, not a distribution.",
@@ -572,6 +573,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 "reopen_open_ms":open_times(reopen),
                 "steps":step_times(edit)?,
             },
+            "scope": "The largest move of a mean channel of the central window of the photograph the editor records drawing, read back from the renderer",
         }),
     )
 }

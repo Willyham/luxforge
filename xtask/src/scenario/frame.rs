@@ -215,21 +215,6 @@ impl Frame {
             .ok_or_else(|| format!("Frame records no {name} field").into())
     }
 
-    pub fn section_expanded(&self, module: &str) -> bool {
-        self.state()["expanded"][module] == json!(true)
-    }
-
-    /// The expanded state of each of `modules`' sections, for the correlation a recorded frame
-    /// carries alongside its revision, entry and draft.
-    pub fn expanded_sections(&self, modules: &[&str]) -> Value {
-        Value::Object(
-            modules
-                .iter()
-                .map(|module| ((*module).to_owned(), json!(self.section_expanded(module))))
-                .collect(),
-        )
-    }
-
     /// The committed stack's first layer of `effect`, or `None` when it holds none.
     pub fn layer(&self, effect: &str) -> Option<&Value> {
         self.state()["stack"]["layers"]
@@ -309,7 +294,6 @@ mod tests {
                 {"effect":"a","id":"one","payload":{"x":1.0}},
                 {"effect":"b","id":"two","payload":{}}
             ]},
-            "expanded":{"m":true,"n":false},
             "controls":{"set-basic.exposure":"1.00"},
             "notices":["Changed elsewhere", 3],
             "masks":{"masks":[{"id":"m1"}],"components":[{"mode":"add","kind":"linear"}]}
@@ -327,10 +311,6 @@ mod tests {
         );
         assert_eq!(recorded.notices(), ["Changed elsewhere"]);
         assert!(recorded.expect_no_draft("Frame 1").is_ok());
-        assert_eq!(
-            recorded.expanded_sections(&["m", "n", "o"]),
-            json!({"m":true,"n":false,"o":false})
-        );
         assert_eq!(recorded.payload("a"), Some(&json!({"x":1.0})));
         assert_eq!(recorded.layer_id("b"), Some("two"));
         assert!(recorded.layer("c").is_none());
