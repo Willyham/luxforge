@@ -32,6 +32,11 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - M4 responsiveness, memory and JPEG regression measurements
 - End-to-end RAW editing journey
 
+**Popular cameras and faster unpacking** ([popular camera support](design/popular-camera-support.md), [RawSpeed unpacking](design/rawspeed-unpack.md), [plan](../tasks/raw-cameras.json)).
+- Admit the default and common recording modes of the most-used cameras
+- Refuse Nikon High Efficiency NEF explicitly until upstream LibRaw decodes it
+- Unpack NEF, CR2, lossless RAF, ORF, PEF and DNG with RawSpeed where exact and faster
+
 ## Editing tools
 
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
