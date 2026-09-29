@@ -1,7 +1,5 @@
 //! The development of a retained mosaic: the Rust normalization, the one native demosaic call and
-//! the output scale, through [`develop_with`]. Its items are crate-private; the
-//! `performance-diagnostics` feature re-exports [`develop_with`] and [`DevelopOptions`] for
-//! `luxforge-core`'s ignored contention diagnostics.
+//! the output scale, through [`develop_with`]. Its items are crate-private.
 
 use crate::{
     CancelCallback, MAX_GAIN, MAX_RGB_BYTES, NativeMetadata, PARALLEL_PIXELS, PlanarRgb, RawError,
@@ -14,7 +12,7 @@ use std::{
 
 /// How [`develop_with`] runs a development. The default is production's: every pass on the
 /// development executor at the shared pool's width, without diagnostics.
-pub struct DevelopOptions<'a> {
+pub(crate) struct DevelopOptions<'a> {
     /// Zero chooses the shared pool's width; nonzero is an exactness-test override, no wider than
     /// the pool. The native tile jobs also keep their eight-lane cap
     /// ([`native_tiles::ExecutorContext`]); the Rust passes do not ([`development_lanes`]).
@@ -40,7 +38,7 @@ impl Default for DevelopOptions<'_> {
 /// The wall time of a development's normalization and of its native demosaic call, for the
 /// ignored release profiles.
 #[derive(Debug, Default)]
-pub struct DevelopDiagnostics {
+pub(crate) struct DevelopDiagnostics {
     pub normalization_ns: u64,
     pub demosaic_ns: u64,
 }
@@ -96,7 +94,7 @@ unsafe extern "C" {
 
 /// Normalize `raw`'s retained mosaic with `gains`, demosaic it natively and divide the planes by
 /// the sensor scale, as `options` say. The DNG corrections are the caller's.
-pub fn develop_with(
+pub(crate) fn develop_with(
     raw: &RawSource,
     gains: [f32; 3],
     cancel: &AtomicBool,

@@ -46,7 +46,7 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 
 ### Sample counts for a p50/p95 claim
 
-Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. Every p50 and p95, in `xtask`'s timing tools and in the crates' own ignored timing tests alike, is now read from one nearest-rank `Distribution` (`luxforge-testbase`): `sorted[ceil(percent·n/100) − 1]`, always one of the samples, never interpolated. Figures recorded below before that change were taken with the tool's or test's own definition and can read one rank apart from the same measurement taken now. The `measure` medians and p95 figures used an interpolated median and an uncapped `p95 = sorted[n·95/100]` index, so an even-count median differs most. The crates' timing tests mostly used the upper median `sorted[n/2]` (or `sorted[round((n−1)/2)]`), which at an even count is one rank above nearest-rank's p50: `presence_timing` and `spatial_timing` at 10 runs, `masked_spatial_zero_coverage_timing` at 6, `capability_timing` at 30 and 200, the Fit-proxy contention diagnostics in `render/linear.rs` at 30 (theirs was `sorted[ceil((n−1)·q)]`), `resources_cost` and the process sampler's `cost` at their even counts, and the preset inspection timing at 20. Their p95s, and every figure at an odd count, are unchanged.
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. Every p50 and p95, in `xtask`'s timing tools and in the crates' own ignored timing tests alike, is now read from one nearest-rank `Distribution` (`luxforge-testbase`): `sorted[ceil(percent·n/100) − 1]`, always one of the samples, never interpolated. Figures recorded below before that change were taken with the tool's or test's own definition and can read one rank apart from the same measurement taken now. The `measure` medians and p95 figures used an interpolated median and an uncapped `p95 = sorted[n·95/100]` index, so an even-count median differs most. The crates' timing tests mostly used the upper median `sorted[n/2]` (or `sorted[round((n−1)/2)]`), which at an even count is one rank above nearest-rank's p50: `presence_timing` and `spatial_timing` at 10 runs, `masked_spatial_zero_coverage_timing` at 6, `capability_timing` at 30 and 200, the core's shared-pool Fit-proxy contention figures at 30 (theirs was `sorted[ceil((n−1)·q)]`), `resources_cost` and the process sampler's `cost` at their even counts, and the preset inspection timing at 20. Their p95s, and every figure at an odd count, are unchanged.
 
 | Measurement | Result |
 | --- | --- |
@@ -2647,8 +2647,10 @@ loaded pass development p50 falls from 271.5 to 291.6 ms to 183.8 to 232.3 ms on
 31.3 to 33.8 ms on the Air 2S (about 17%, leaving out the 85.0 ms before run, taken during a load
 spike). The X100VI gains most because its normalization was serial and it has the largest frame. The
 p95 figures carry the host's load and no tail claim is made. Concurrent Fit proxies against this
-development are not measured; the same-pool Fit proxy diagnostic last measured the native Bayer
-batching before RCD's tile jobs ([further performance](../research/further-performance.md#bayer-normalization-batching)).
+development are not measured in the core; the last core-only same-pool Fit proxy figures predate
+RCD's tile jobs ([further performance](../research/further-performance.md#bayer-normalization-batching)).
+That contention is left to the RAW plan's whole-editor measurement, which measures the owner's
+responsiveness and cancellation through the editor.
 The per-site table is at most one CFA and black-repeat period, each row widened to at least 64
 sites: 396 sites for a 6 × 6 X-Trans period and 128 for a 2 × 2 Bayer one without a repeat pattern.
 
@@ -2785,8 +2787,8 @@ input-to-presented-frame limit. A one-row callback experiment measured 213.5/226
 in 6.0 seconds. This measures a continuously active core exact render and a core proxy, not a user's
 UI gesture or GPU presentation. The external load at the starts of the two variant legs was 7.86
 and 6.98; no build or test ran alongside either. The intentional shared-pool work raised the ending
-loads to 8.91 and 9.57. Full scope, scratch accounting and the repeatable diagnostic are
-in [further performance opportunities](../research/further-performance.md#raw-colour-row-implementation-and-measurement).
+loads to 8.91 and 9.57. Full scope and scratch accounting are in
+[further performance opportunities](../research/further-performance.md#raw-colour-row-implementation-and-measurement).
 
 ### Shared-pool contention and rendering controls
 
