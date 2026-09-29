@@ -774,8 +774,9 @@ mod tests {
     };
     use crate::{
         Layer, Recipe, RenderContext, RenderOptions, SnapshotId,
-        modules::{CropPayload, ModuleRegistry, SPATIAL_TILE},
+        modules::{CropPayload, ModuleRegistry},
     };
+    use luxforge_raw::SPATIAL_TILE;
     use luxforge_reference::srgb as srgb_ref;
     use luxforge_testbase::Distribution;
     use rayon::prelude::*;

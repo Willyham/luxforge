@@ -21,28 +21,28 @@ mod vignette;
 
 pub use basic::{BASIC_EFFECT, BasicModule};
 pub use capabilities_proof::{
-    APPLY_PROOF_TINT, CapabilitiesProofModule, PROOF_ADAPTER, PROOF_EFFECT, PROOF_GENERATE_PATH,
-    PROOF_MODULE, PROOF_PALETTE, PROOF_PALETTE_GAINS, PROOF_PALETTE_PATH, PROOF_PALETTE_SHA256,
-    PROOF_RESOURCE, PROOF_RESOURCE_VERSION, PROOF_TASK, PROOF_TINT_KIND, RESET_PROOF_TINT,
-    palette_bytes,
+    CapabilitiesProofModule, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
+#[cfg(test)]
+pub(crate) use capabilities_proof::{PROOF_PALETTE_GAINS, PROOF_TASK};
 pub use capability::CapabilityModule;
-pub use controls::{CONTROLS_EFFECT, ControlsModule, SAMPLE_CONTROLS_CURVE, SET_CONTROLS};
+pub use controls::{CONTROLS_EFFECT, ControlsModule};
 pub use crop::geometry::{
-    BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
-    guide_angle, largest_with_ratio_inside,
+    BoxRect, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect, guide_angle,
+    largest_with_ratio_inside,
 };
 pub use crop::{CROP_EFFECT, CropAspect, CropModule};
 pub use descriptor::{
-    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceControl,
-    ChoiceStyle, ColorControl, ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel,
-    CurveControl, EffectDescriptor, EffectStage, GroupControl, IdentityKind, MAX_COORDINATE,
-    MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS,
-    ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle, ParameterDescriptor, ParameterKind,
-    PickerControl, PresetsControl, RailDecoration, RangeControl, ResetAction, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl, check_parameters, check_value, resolve_control,
+    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
+    ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel, CurveControl,
+    EffectDescriptor, EffectStage, GroupControl, IdentityKind, MAX_SETTINGS_ACTIONS,
+    MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
+    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
+    ResolvedControl, ResolvedReset, check_parameters, check_value, resolve_control,
     resolve_group_reset, valid_identity, valid_name,
 };
+#[cfg(test)]
+pub(crate) use descriptor::{ChoiceControl, RangeControl, ToggleControl};
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
     check_settings, check_target, decode_parameters,
@@ -51,7 +51,9 @@ pub(crate) use descriptor::{label_value, not_applicable, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
 pub use pixel::{PIXEL_EFFECT, PixelModule};
 pub use presence::{PRESENCE_EFFECT, PresenceModule};
-pub use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
+#[cfg(test)]
+pub(crate) use presets::APPLY_PRESET;
+pub use presets::{MAX_PRESET_NAME, PresetsModule};
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
@@ -74,10 +76,9 @@ pub use registry::{
     insertion_index_among,
 };
 pub use spatial::{
-    ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
-    MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS,
-    Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
-    SpatialOperation, SpatialUnit,
+    ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_MASKED_SPATIAL_LAYERS,
+    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction, Region,
+    SPATIAL_BUDGET_BYTES, SpatialOperation, SpatialUnit,
 };
 pub(crate) use transform::stored_orientation;
 pub use transform::{ORIENTATION_EFFECT, TransformModule};

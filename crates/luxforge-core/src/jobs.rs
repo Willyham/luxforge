@@ -159,7 +159,7 @@ impl JobKind {
 /// The shared job lifecycle (`crate::JobStatus`): every kind reaches `queued`, `running`, `ready`,
 /// `failed` and `cancelled`; `superseded` is a pending analysis a newer request replaced before it
 /// ran.
-pub use crate::JobStatus;
+pub use crate::model::JobStatus;
 
 /// How far a job has come. The one progress model every activity publisher shares
 /// (`crate::activity::ActivityProgress`): a lane job reports through the activity its lane begins

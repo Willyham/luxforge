@@ -11,7 +11,7 @@ pub use methods::schemas;
 pub(crate) use owner::SourceFlightKey;
 pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
-pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines, serve_json_lines_with};
+pub use transport::{LocalServer, serve_json_lines_with};
 
 use crate::{AssetId, Draft, DraftId, Error, PreviewSession};
 use serde::{Deserialize, Serialize};

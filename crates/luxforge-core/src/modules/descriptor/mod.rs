@@ -22,14 +22,15 @@ mod values_tests;
 
 pub(crate) use labels::{label_value, not_applicable, title_case};
 pub use types::{
-    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceControl,
-    ChoiceStyle, ColorControl, ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel,
-    CurveControl, EffectDescriptor, EffectStage, GroupControl, IdentityKind, MAX_COORDINATE,
-    MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout, NumberControl,
-    NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration,
-    RangeControl, ResetAction, ResolvedControl, ResolvedReset, TaskControl, ToggleControl,
-    resolve_control, resolve_group_reset,
+    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
+    ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel, CurveControl,
+    EffectDescriptor, EffectStage, GroupControl, IdentityKind, ModuleDescriptor, ModuleLayout,
+    NumberControl, NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl,
+    RailDecoration, ResetAction, ResolvedControl, ResolvedReset, resolve_control,
+    resolve_group_reset,
 };
+#[cfg(test)]
+pub(crate) use types::{ChoiceControl, ColorControl, RangeControl, ToggleControl};
 pub(crate) use types::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS};
 pub(crate) use validate::{check_declaration, check_parameter_declarations};
 pub use validate::{valid_identity, valid_name};
