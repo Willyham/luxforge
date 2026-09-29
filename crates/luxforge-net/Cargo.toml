@@ -22,8 +22,7 @@ url.workspace = true
 security-framework.workspace = true
 
 [dev-dependencies]
-luxforge-testbase = { path = "../luxforge-testbase" }
-luxforge-testkit = { path = "../luxforge-testkit", features = ["tls"] }
+luxforge-testbase = { path = "../luxforge-testbase", features = ["tls"] }
 
 [lints]
 workspace = true

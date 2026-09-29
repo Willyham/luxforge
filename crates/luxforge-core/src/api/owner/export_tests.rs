@@ -3,7 +3,7 @@
 //! lane's bound and cancellation, and shutdown.
 use super::*;
 use crate::{AssetId, api::ApiFailure};
-use luxforge_testkit::fixtures::{jpeg as fixture, temp_dir};
+use luxforge_testbase::paths::{jpeg as fixture, temp_dir};
 use std::{
     fs,
     sync::{Mutex, mpsc},

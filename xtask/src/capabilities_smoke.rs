@@ -17,7 +17,8 @@ use luxforge_core::{
     AssetId, EditorService, EntryId, ModuleRegistry, PROOF_GENERATE_PATH, RegistryOptions,
 };
 use luxforge_evidence::{self as script, CapabilityAction, CapabilityStep};
-use luxforge_testkit::ProofEndpoint;
+use luxforge_testbase::ProofEndpoint;
+use luxforge_testkit::proof_protocol;
 use std::{sync::Arc, time::Duration};
 
 const MODULE: &str = "luxforge.capabilities";
@@ -175,7 +176,7 @@ pub const NOTE: &str = "The runner starts a loopback proof endpoint in its own p
 pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
     let key = sentinel("sentinel");
     let wrong = sentinel("wrong");
-    let endpoint = ProofEndpoint::start(&key)?;
+    let endpoint = ProofEndpoint::start(&key, proof_protocol())?;
     endpoint.set_delay(DELAY);
     endpoint.set_palette_delay(DELAY);
     // A replay checks the recorded run's steps, whose endpoint steps name the endpoint the

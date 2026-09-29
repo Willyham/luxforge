@@ -340,7 +340,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(luxforge_testkit::fixtures::jpeg(), &source).unwrap();
+        std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
         Self { service, asset }

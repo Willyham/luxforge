@@ -1,10 +1,11 @@
-//! The inputs integration tests build their checks from: repository fixtures, unique scratch paths,
-//! exact synthetic sources, single-layer stacks, mutation envelopes, frames and samples through the
-//! one render entry point, and the one tolerance rule a rendered byte is held to against an f64
-//! reference.
+//! The inputs integration tests build their checks from: exact synthetic sources, single-layer
+//! stacks, mutation envelopes, frames and samples through the one render entry point, and the one
+//! tolerance rule a rendered byte is held to against an f64 reference. Repository fixtures and
+//! scratch paths are `luxforge_testbase::paths`.
 //!
-//! These speak `luxforge-core` types, so they serve the core's integration tests, other crates'
-//! tests and xtask, not the core's own unit tests (see the crate documentation).
+//! These speak `luxforge-core` types, so they serve the core's integration tests (compiled into
+//! each, see the crate documentation), other crates' tests and xtask, not the core's own unit
+//! tests.
 use luxforge_core::{
     EFFECT_FORMAT, Error, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Mutation,
     RECIPE_FORMAT, Raster, Recipe, RenderContext, RenderOptions, RenderSource, Sample, SnapshotId,
@@ -12,53 +13,6 @@ use luxforge_core::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
-
-/// The workspace root.
-pub fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// A file under the repository's `fixtures/`.
-pub fn fixture(name: &str) -> PathBuf {
-    repository().join("fixtures").join(name)
-}
-
-/// The 480x320 synthetic quadrant JPEG most journeys import.
-pub fn jpeg() -> PathBuf {
-    fixture("s0/orientation-1.jpg")
-}
-
-static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-
-/// A path in the system temporary directory no other test of any process uses: the process, a
-/// per-process counter and `name`, which ends in whatever extension the file needs. Whatever a
-/// previous run left there is removed first.
-pub fn temp_path(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "luxforge-{}-{}-{name}",
-        std::process::id(),
-        NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir_all(&path);
-    path
-}
-
-/// A new, empty scratch directory at a [`temp_path`].
-pub fn temp_dir(name: &str) -> PathBuf {
-    let path = temp_path(name);
-    std::fs::create_dir_all(&path).expect("a scratch directory");
-    path
-}
-
-/// A new catalog path, as [`temp_path`] makes one.
-pub fn temp_catalog(label: &str) -> PathBuf {
-    temp_path(&format!("{label}.sqlite"))
-}
 
 /// A fingerprint that names exactly these contents, as a real source's does. The host keys what it
 /// caches for a source (Dehaze's atmospheric light among it) by the fingerprint, so two different

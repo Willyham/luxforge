@@ -21,6 +21,16 @@ mod overlay;
 mod radial;
 mod range;
 
+// `luxforge-testkit`'s core-typed helpers, compiled into this binary from their one source: the
+// core cannot name that crate, which depends on it, without building itself a second time for every
+// test build. The binary names itself `luxforge_testkit`, so a helper reads the same here as in
+// every other crate's tests and in xtask.
+extern crate self as luxforge_testkit;
+#[path = "../../../luxforge-testkit/src/client.rs"]
+pub mod client;
+#[path = "../../../luxforge-testkit/src/fixtures.rs"]
+pub mod fixtures;
+
 use luxforge_core::{
     BASIC_EFFECT, Component, ComponentMode, Layer, LinearImage, Mask, Raster, Recipe, SourceImage,
     Stage,
@@ -28,7 +38,7 @@ use luxforge_core::{
 use luxforge_reference::mask::{
     Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Stage as RefStage,
 };
-use luxforge_testkit::fixtures;
+use luxforge_testbase::paths;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -71,7 +81,7 @@ fn mode_of(index: usize) -> (ComponentMode, Mode) {
 
 /// A scratch directory for one journey's catalog.
 fn temp(name: &str) -> PathBuf {
-    fixtures::temp_dir(&format!("mask-{name}"))
+    paths::temp_dir(&format!("mask-{name}"))
 }
 
 /// The rendered code against the reference's, within [`CODE_BAND`].

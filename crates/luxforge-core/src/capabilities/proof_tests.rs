@@ -13,7 +13,7 @@ use super::{
     resources::INSTALL,
     secrets::MemorySecretStore,
     settings::{CLEAR_SECRET, CREATE_PROFILE, READ, SET, SET_SECRET},
-    testing::{Owner, files, proof_transport, temp},
+    testing::{Owner, files, proof_endpoint, proof_transport, temp},
 };
 use crate::{
     ApiFailure, ApiRequest, ArtifactId, AssetId, CapabilitiesProofModule, CapabilityModule,
@@ -26,7 +26,7 @@ use crate::{
     modules::{ActionInput, ActionPlan},
     redact_params,
 };
-use luxforge_testkit::ProofEndpoint;
+use luxforge_testbase::ProofEndpoint;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -136,7 +136,7 @@ impl Fixture {
         let root = root.canonicalize().unwrap();
         let key = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
         Self {
-            endpoint: Arc::new(ProofEndpoint::in_process(&key)),
+            endpoint: Arc::new(proof_endpoint(&key)),
             key,
             root,
             secrets: Arc::new(MemorySecretStore::new()),

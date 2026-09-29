@@ -13,8 +13,7 @@ use luxforge_core::{
     },
     jobs::JobControl,
 };
-use luxforge_testbase::{Gate, HANG, wait_until};
-use luxforge_testkit::{Options, Request, TestServer, send};
+use luxforge_testbase::{Gate, HANG, Options, Request, TestServer, send, wait_until};
 use rustls::{
     ServerConfig,
     pki_types::{PrivateKeyDer, pem::PemObject},

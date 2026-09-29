@@ -1662,7 +1662,7 @@
         {
           "kind": "file",
           "label": "JSON CLI test",
-          "target": "crates/luxforge-cli/tests/json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli/process.rs",
           "relevance": "One of the three process tests that move with the binary."
         },
         {
@@ -1842,13 +1842,13 @@
         {
           "kind": "file",
           "label": "Preset CLI test",
-          "target": "crates/luxforge-cli/tests/presets_json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli/presets.rs",
           "relevance": "The two-process preset re-proof to cut to a transport check."
         },
         {
           "kind": "file",
           "label": "JSON CLI test",
-          "target": "crates/luxforge-cli/tests/json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli/process.rs",
           "relevance": "Already proves the process-transport layer the trimmed preset CLI test should rely on."
         },
         {

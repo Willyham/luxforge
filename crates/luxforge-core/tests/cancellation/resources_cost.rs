@@ -1,12 +1,12 @@
 //! The owner-side cost of `resources.read`, for the performance record. It is a timing, not a
-//! check, so it is ignored; run it in release on a quiet machine:
+//! check, so it is ignored; run it alone, in release on a quiet machine:
 //!
 //! ```sh
-//! cargo test --release --locked -p luxforge-core --test resources_cost -- --ignored --nocapture
+//! cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture resources_cost
 //! ```
 //!
-//! It is a test binary of its own so its first half runs in a process that has never touched the
-//! GPU, as the headless owner is, before its second half declares a presenter as the desktop does.
+//! Run alone, its first half runs in a process that has never touched the GPU, as the headless
+//! owner is, before its second half declares a presenter as the desktop does.
 use luxforge_core::resources;
 use std::time::Instant;
 

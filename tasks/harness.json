@@ -113,7 +113,7 @@
         {
           "kind": "file",
           "label": "Authentic RAW JSON tests",
-          "target": "crates/luxforge-cli/tests/raw_json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli/raw.rs",
           "relevance": "The other `#[ignore]`d authentic-file suite `full` should run with a manifest."
         }
       ],
@@ -1009,7 +1009,7 @@
     {
       "id": "TASK-014",
       "description": "Split the loopback test server and other core-free helpers out of `luxforge-testkit` into a crate with no core dependency, so a core `--lib` edit builds the core once, and merge the app's three CLI test binaries and `resources_cost` into their siblings.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 5, tests. `cargo test --workspace` builds 26 test executables; 13 link `luxforge-core` (its library and five integration binaries, `luxforge-testkit`, the app's two binaries and three CLI test binaries, and xtask). The core dev-depends on `luxforge-testkit`, which depends back on the core, so testing the core's library alone builds the core twice.",
@@ -1047,7 +1047,7 @@
         {
           "kind": "file",
           "label": "One of three app CLI test binaries",
-          "target": "crates/luxforge-cli/tests/json_cli.rs",
+          "target": "crates/luxforge-cli/tests/json_cli/main.rs",
           "relevance": "One of the three binaries this task merges into one."
         },
         {

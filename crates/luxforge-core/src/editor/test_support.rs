@@ -17,8 +17,8 @@ use serde_json::{Map, Value, json};
 use std::{path::Path, sync::Arc};
 
 /// A scratch path no other test uses, and the JPEG fixture: the workspace's one pair, from
-/// `luxforge-testkit` (both are plain paths, the same type in these unit tests).
-pub(super) use luxforge_testkit::fixtures::{jpeg as fixture, temp_path as temp};
+/// `luxforge-testbase`.
+pub(super) use luxforge_testbase::paths::{jpeg as fixture, temp_path as temp};
 
 /// The crate's one test mutation envelope: `request` at `revision`, by the actor `test`. Every core
 /// test module that sends a mutation takes it from here, through `crate::editor`.

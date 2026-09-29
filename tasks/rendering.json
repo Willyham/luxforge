@@ -1099,7 +1099,7 @@
         {
           "kind": "file",
           "label": "Cancellation timing",
-          "target": "crates/luxforge-core/tests/cancellation.rs",
+          "target": "crates/luxforge-core/tests/cancellation/main.rs",
           "relevance": "Two tests over 24 MP renders whose 25 ms bound is compiled out in the dev profile."
         },
         {

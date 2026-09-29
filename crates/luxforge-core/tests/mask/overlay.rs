@@ -33,7 +33,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(luxforge_testkit::fixtures::jpeg(), &source).unwrap();
+        std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
         let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
         let client = owner.register();
         let queued = ok(

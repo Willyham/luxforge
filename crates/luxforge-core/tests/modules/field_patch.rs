@@ -7,14 +7,14 @@
 //! same function in release and records what it returns as evidence.
 
 use super::conformance;
-use luxforge_testkit::fixtures;
+use luxforge_testbase::paths;
 use std::fs;
 
 #[test]
 fn every_field_patch_module_passes_the_conformance_suite() {
-    let out = fixtures::temp_path("field-patch-conformance");
+    let out = paths::temp_path("field-patch-conformance");
     fs::create_dir_all(&out).expect("a scratch directory");
-    let result = conformance::run(&fixtures::jpeg(), &out);
+    let result = conformance::run(&paths::jpeg(), &out);
     let _ = fs::remove_dir_all(&out);
     if let Err(failure) = result {
         panic!("{failure}");

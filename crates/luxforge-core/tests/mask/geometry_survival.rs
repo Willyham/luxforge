@@ -72,7 +72,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(luxforge_testkit::fixtures::jpeg(), &source).unwrap();
+        std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
         Self {
@@ -284,7 +284,7 @@ fn a_reopened_catalog_gives_back_the_masks_their_components_and_the_layers_bound
     let dir = temp("reopen");
     let catalog = dir.join("catalog.sqlite");
     let source = dir.join("orientation-1.jpg");
-    std::fs::copy(luxforge_testkit::fixtures::jpeg(), &source).unwrap();
+    std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
 
     let (asset, mask, component, layer, entries, label) = {
         let mut service = EditorService::open(&catalog).unwrap();

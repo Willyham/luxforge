@@ -1,6 +1,9 @@
 //! The core-free base of the workspace's test support: the one [`Gate`] and the one
-//! [`wait_until`] every test orders its steps by, and the one [`Distribution`] every timing figure
-//! is computed with.
+//! [`wait_until`] every test orders its steps by, the one [`Distribution`] every timing figure is
+//! computed with, the one loopback [`TestServer`] (TLS only with the `tls` feature, which only the
+//! transport's own tests in `luxforge-net` ask for), the capability proof's fake provider
+//! [`ProofEndpoint`] built on it, and the repository fixtures and unique scratch paths of
+//! [`paths`].
 //!
 //! A test must not depend on how loaded the host is. It shares no mutable state with another test,
 //! it orders its steps by a gate or a channel, never by sleeping for long enough, and a deadline
@@ -18,13 +21,20 @@
 //!   the only percentile definition in the workspace.
 //!
 //! This crate depends on no workspace crate, so the core's own unit tests, the widget crate's,
-//! the desktop's and every other crate's can use it. `cargo xtask check-repository` refuses a
-//! second gate, wait loop or percentile written anywhere else: extend this crate instead.
+//! the desktop's and every other crate's can use it, and a core that names it as a
+//! dev-dependency is built once for its tests. `cargo xtask check-repository` refuses a second
+//! gate, wait loop or percentile written anywhere else: extend this crate instead. The helpers that
+//! speak core types are `luxforge-testkit`'s.
 
 mod distribution;
 mod gate;
+pub mod paths;
+mod proof;
+mod server;
 mod wait;
 
 pub use distribution::Distribution;
 pub use gate::Gate;
+pub use proof::{ProofAnswer, ProofEndpoint, ProofProtocol, ProofRequest};
+pub use server::{Options, Request, TestServer, respond, send};
 pub use wait::{HANG, try_wait_for, wait_for, wait_until};

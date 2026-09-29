@@ -21,7 +21,7 @@ use crate::{
     StageContext, ToolModule, editor::mutation_json, jobs::JOB_READ,
 };
 use luxforge_testbase::wait_for;
-use luxforge_testkit::ProofEndpoint;
+use luxforge_testbase::{ProofEndpoint, ProofProtocol};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -64,7 +64,7 @@ pub(crate) fn enveloped(method: &str, params: Value, request_id: &str) -> Value 
 }
 
 /// A fresh path under the system temporary directory; nothing is created.
-pub(crate) use luxforge_testkit::fixtures::temp_path as temp;
+pub(crate) use luxforge_testbase::paths::temp_path as temp;
 
 /// A setting of `parameter`, labelled with its name.
 pub(crate) fn setting(parameter: ParameterDescriptor) -> SettingDescriptor {
@@ -466,6 +466,23 @@ impl Transport for MemoryTransport {
             received,
         })
     }
+}
+
+/// The capability proof's fake provider, answered in process, serving this crate's side of the
+/// exchange: its paths, its pinned palette and a well-formed one the pin refuses, and the size of a
+/// sample grid. `luxforge_testkit::proof_protocol` hands every other crate's endpoint the same.
+pub(crate) fn proof_endpoint(api_key: &str) -> ProofEndpoint {
+    ProofEndpoint::in_process(
+        api_key,
+        ProofProtocol {
+            palette_path: crate::PROOF_PALETTE_PATH,
+            generate_path: crate::PROOF_GENERATE_PATH,
+            palette: crate::PROOF_PALETTE.to_vec(),
+            wrong_palette: crate::palette_bytes([1.0, 1.0, 1.0]).to_vec(),
+            grid_bytes: super::data::SAMPLE_GRID_BYTES,
+            grid_samples: super::data::SAMPLE_GRID_SAMPLES,
+        },
+    )
 }
 
 /// A transport that answers every request with `endpoint`, in process.

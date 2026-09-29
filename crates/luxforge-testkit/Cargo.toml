@@ -6,20 +6,16 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# Test support the workspace's tests and xtask share. Only `[dev-dependencies]` and xtask name this
-# crate, so no build of a shipped binary compiles it.
+# Test support that speaks core types, which the workspace's tests and xtask share. Only
+# `[dev-dependencies]` and xtask name this crate, so no build of a shipped binary compiles it, and
+# `luxforge-core` never does: its integration tests compile `client` and `fixtures` in through
+# `#[path]` modules, so a core test build compiles the core once.
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
-rustls = { workspace = true, optional = true }
 serde_json.workspace = true
 sha2.workspace = true
-
-# `tls` lets a `TestServer` serve TLS. Only the transport's own tests (`luxforge-net`) ask for it,
-# so a build of the core's tests alone links no TLS crate.
-[features]
-tls = ["dep:rustls"]
 
 [lints]
 workspace = true

@@ -57,7 +57,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered module capabilities: settings, a profile, its key, a download grant and install through `api` steps, the photo-data consent denied then allowed, a task with progress, Apply and a refused task through the desktop, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | Rendered Masks panel over the photograph the design boards use: Sky, Face (a radial, a subtracting brush of two strokes and an intersecting luminance range) and Foreground built through the panel and renamed through `mask.rename` and `mask.rename-component`, Foreground's overlay hidden with its eye, Face's amount, Exposure and Clarity through it; then the Brush section armed and put down, a held stroke's draft bar, the New mask menu and Escape, Radial 1's fields, the overlay in each mode and both tints, a hovered row, and Radial 1 reopened with its grip swung to −12°, the mask-mode board's own state. Every frame's list, open mask, selected component, overlay and mode are checked against the plan, and the draft bar, scope chips, dot and bound layers by state | `cargo xtask smoke --scenario mask-panel --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture` |
-| How promptly a cancelled 24 MP render stops, in the transform pass and mid colour chunk, against its 25 ms bound, release only | `cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture` |
+| How promptly a cancelled 24 MP render stops, in the transform pass and mid colour chunk, against its 25 ms bound, release only | `cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture cancelled` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -171,13 +171,31 @@ Colour), `modules` (the mixer, Presence, the vignette, the controls proof, prese
 field-patch conformance suite), `mask` (the kind-conformance suite, whose one checklist every
 component kind passes against its reference through one adapter per kind, each kind's own tests,
 the command family through the JSON method table, the coverage grid, geometry survival and masked
-edits on both paths), and `cancellation` and `resources_cost`, which stay apart because each is an
-ignored release timing: the first times how promptly a cancelled 24 MP render stops, against its
-25 ms bound, and the second the cost of `resources.read`. Narrow a run with the module path, for example
-`cargo test -p luxforge-core --test basic white_balance::` or `--test mask range::`.
-Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
-independent references and their studies, the mask, brush and range studies among them, live in
-`luxforge-reference`, one module per study (`cargo test -p luxforge-reference --test studies tone::`).
+edits on both paths), and `cancellation`, which holds the ignored release timings and stays apart
+so they never share a process with the pixel tests: how promptly a cancelled 24 MP render stops,
+against its 25 ms bound (filter `cancelled`), and the cost of `resources.read` (filter
+`resources_cost`, run alone so its first half runs in a process that has touched no GPU). Narrow a
+run with the module path, for example `cargo test -p luxforge-core --test basic white_balance::` or
+`--test mask range::`. `luxforge-cli`'s process tests are one binary, `json_cli`, one module per
+slice: `process`, `presets` and the ignored authentic RAW journeys in `raw`
+(`cargo test -p luxforge-cli --test json_cli presets::`).
+
+Test helpers are split by whether they name a core type. `luxforge-testbase` holds what needs none:
+the gate, the wait and the distribution, the loopback `TestServer`, the proof endpoint
+`ProofEndpoint` and the fixture and scratch paths (`paths`). `luxforge-testkit` holds what does:
+`client`, `fixtures`, `JsonProcess` and `proof_protocol`. `luxforge-core` names only the base, so
+testing the core compiles it once: a dev-dependency on the kit, which depends on the core, would
+compile the core a second time for every core test build, `--lib` included. On the owner's M4,
+touching one core source file and rebuilding `cargo test -p luxforge-core --lib --no-run` took 4.6
+to 7.0 s with that second build and 2.7 to 3.3 s without it (three runs each, one-minute load 5 to
+11 on a shared host). The core's integration binaries compile the kit's `client.rs` and
+`fixtures.rs` in through `#[path]` modules and name themselves `luxforge_testkit`
+(`extern crate self as luxforge_testkit;` in each `main.rs`), so a helper call reads the same in
+every crate's tests; a helper those binaries need goes in those files, and one the core's unit
+tests need goes in the core's own test-support modules (`editor/test_support.rs`,
+`capabilities/testing.rs`, `artifacts/testing.rs`). The independent references and their studies,
+the mask, brush and range studies among them, live in `luxforge-reference`, one module per study
+(`cargo test -p luxforge-reference --test studies tone::`).
 
 ### Tests that do not depend on host load
 
@@ -229,9 +247,9 @@ runs in `full` whether or not a manifest is given. Without a manifest, `full` li
 `raw-panel` or RAW `performance` components at all, since there is no source to run them over.
 `verify` reads the manifest through the one RAW manifest reader, so a manifest the `raw-editor`
 scenario would refuse is refused before anything runs. `raw-authentic` runs the
-`#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and `luxforge-cli`'s
-`raw_json_cli` (the ones that need only `LUXFORGE_RAW_OWNER_DIR`, not `real_files`'s separate
-CC0-fixture test) with that variable pointed at the directory the manifest's own sources live in.
+`#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and the `raw::` module of
+`luxforge-cli`'s `json_cli` (the ones that need only `LUXFORGE_RAW_OWNER_DIR`, not `real_files`'s
+separate CC0-fixture test) with that variable pointed at the directory the manifest's own sources live in.
 
 A skip is never a pass: a tier with any component `skipped` or `not_run`, and nothing failed
 outright, is `incomplete` rather than `passed`, naming which components and why in the headline and
@@ -575,7 +593,7 @@ Native and JSON authentic-file tests are opt-in, ignored in the normal test suit
 
 ```sh
 LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw LUXFORGE_RAW_PUBLIC_DIR=/path/to/cc0/raw cargo test --release --locked -p luxforge-raw --test real_files -- --ignored --nocapture
-LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p luxforge-cli --test raw_json_cli -- --ignored --nocapture
+LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p luxforge-cli --test json_cli -- --ignored --nocapture raw::
 ```
 
 The absence of private fixtures is a skip, not passing authentic-file evidence. Synthetic/reference tests remain normal CI checks.

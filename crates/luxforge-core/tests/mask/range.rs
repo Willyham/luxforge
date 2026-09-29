@@ -442,7 +442,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
 fn the_generated_methods_create_patch_sample_and_unsample_a_range() {
     let dir = temp("api");
     let source = dir.join("orientation-1.jpg");
-    std::fs::copy(luxforge_testkit::fixtures::jpeg(), &source).expect("the fixture copies");
+    std::fs::copy(luxforge_testbase::paths::jpeg(), &source).expect("the fixture copies");
     let mut service = EditorService::open(&dir.join("catalog.sqlite")).expect("a catalog");
     let asset: AssetId = service
         .import(&source)

@@ -9,6 +9,7 @@ use luxforge_core::{
     ClientId, ComponentId, EditorService, MaskId,
     mask::commands::{self, MaskTarget},
 };
+use luxforge_testbase::paths;
 use luxforge_testkit::client::{Owner, mutation as envelope};
 
 /// Who this module's mutations name.
@@ -30,7 +31,7 @@ impl Session {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(fixtures::jpeg(), &source).expect("the fixture copies");
+        std::fs::copy(paths::jpeg(), &source).expect("the fixture copies");
         let owner = Owner::start(
             &dir.join("catalog.sqlite"),
             luxforge_core::ModuleRegistry::builtin(),

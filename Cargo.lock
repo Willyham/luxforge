@@ -1898,7 +1898,6 @@ dependencies = [
  "luxforge-raw",
  "luxforge-reference",
  "luxforge-testbase",
- "luxforge-testkit",
  "moxcms",
  "rayon",
  "roxmltree",
@@ -1937,7 +1936,6 @@ version = "0.0.0"
 dependencies = [
  "luxforge-core",
  "luxforge-testbase",
- "luxforge-testkit",
  "rustls",
  "rustls-platform-verifier",
  "security-framework",
@@ -1983,6 +1981,10 @@ dependencies = [
 [[package]]
 name = "luxforge-testbase"
 version = "0.0.0"
+dependencies = [
+ "rustls",
+ "serde_json",
+]
 
 [[package]]
 name = "luxforge-testkit"
@@ -1991,7 +1993,6 @@ dependencies = [
  "luxforge-core",
  "luxforge-reference",
  "luxforge-testbase",
- "rustls",
  "serde_json",
  "sha2",
 ]

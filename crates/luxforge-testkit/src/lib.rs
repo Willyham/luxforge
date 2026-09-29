@@ -1,23 +1,21 @@
-//! Test support shared by the workspace's tests and by `xtask`, kept out of every shipped crate:
-//! the one loopback HTTP test server (TLS only with the `tls` feature, which only the transport's
-//! own tests in `luxforge-net` ask for), the capability proof's fake provider built on it, the
-//! in-process JSON client of the catalog owner ([`client`]) the field-patch conformance suite and
-//! xtask's acceptance chapters drive the owner with, a `luxforge-json` process client
-//! ([`JsonProcess`]) and the inputs tests build their checks from ([`fixtures`]).
+//! Test support that speaks `luxforge-core` types, shared by the workspace's tests and by `xtask`,
+//! kept out of every shipped crate: the in-process JSON client of the catalog owner ([`client`])
+//! the field-patch conformance suite and xtask's acceptance chapters drive the owner with, a
+//! `luxforge-json` process client ([`JsonProcess`]), the inputs tests build their checks from
+//! ([`fixtures`]), and the capability proof's side of the exchange its fake provider serves
+//! ([`proof_protocol`]). What needs no core type (the gate, the wait, the distribution, the loopback
+//! test server, the proof endpoint and the fixture and scratch paths) is `luxforge-testbase`'s.
 //!
 //! Only `[dev-dependencies]` and `xtask` name this crate, so a build of `luxforge-app` never
-//! compiles it. `luxforge-core`'s own unit tests reach it through a dev-dependency on a crate that
-//! depends on `luxforge-core`, which Cargo allows, but a `luxforge-core` type is a different type
-//! in those tests: the proof endpoint therefore takes and returns none, and is what the core's unit
-//! tests use, answered in process through their in-memory transport, with the plain scratch and
-//! fixture paths of [`fixtures`]. The helpers that speak core types serve the core's integration
-//! tests, other crates' tests and xtask, where there is one `luxforge-core`.
+//! compiles it. `luxforge-core` does not name it, since this crate depends on the core and a
+//! dev-dependency on it would build the core a second time for every core test build: the core's
+//! own unit tests use `luxforge-testbase`, and its integration tests compile [`client`] and
+//! [`fixtures`] in from their one source through `#[path]` modules, naming the test binary itself
+//! `luxforge_testkit` so these helpers and the conformance suite xtask shares read the same there.
 pub mod client;
 pub mod fixtures;
 mod process;
 mod proof;
-mod server;
 
 pub use process::JsonProcess;
-pub use proof::{ProofAnswer, ProofEndpoint, ProofRequest};
-pub use server::{Options, Request, TestServer, respond, send};
+pub use proof::proof_protocol;

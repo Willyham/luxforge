@@ -12,6 +12,7 @@ use luxforge_core::{
     ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform,
 };
 use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
+use luxforge_testbase::paths;
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use serde::Deserialize;
@@ -44,8 +45,7 @@ struct ExposureCase {
 /// codes and the explicit clip and floor boundaries.
 #[test]
 fn every_corpus_case_renders_through_a_real_basic_layer() {
-    let raw =
-        fs::read_to_string(fixtures::fixture("basic/exposure-cases.json")).expect("the corpus");
+    let raw = fs::read_to_string(paths::fixture("basic/exposure-cases.json")).expect("the corpus");
     let cases: Vec<ExposureCase> = serde_json::from_str(&raw).expect("a corpus of cases");
     assert!(cases.len() >= 132, "the committed corpus has 132 cases");
     // One render per distinct EV, with every input code of that EV as a pixel of one row, so the
@@ -134,8 +134,8 @@ struct MixedCase {
 /// processed by it, one after it is not, and an exact mirror commutes with the colour operation.
 #[test]
 fn mixed_order_cases_reproduce_exactly_through_real_layers() {
-    let raw = fs::read_to_string(fixtures::fixture("basic/mixed-order.json"))
-        .expect("the mixed-order file");
+    let raw =
+        fs::read_to_string(paths::fixture("basic/mixed-order.json")).expect("the mixed-order file");
     let file: MixedOrder = serde_json::from_str(&raw).expect("mixed-order cases");
     let source = SourceImage {
         width: file.width,
@@ -183,17 +183,13 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
 /// conformance suite's.
 #[test]
 fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update_it() {
-    let path = fixtures::temp_catalog("basic-place");
+    let path = paths::temp_catalog("basic-place");
     let mut service = EditorService::open_with(
         &path,
         std::sync::Arc::new(luxforge_core::ModuleRegistry::developer()),
     )
     .expect("a catalog");
-    let asset = service
-        .import(&fixtures::jpeg())
-        .expect("an import")
-        .asset
-        .id;
+    let asset = service.import(&paths::jpeg()).expect("an import").asset.id;
 
     service
         .apply_action(

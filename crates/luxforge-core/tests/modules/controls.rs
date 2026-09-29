@@ -2,6 +2,7 @@
 //! method table, persistence and identity render are exercised through the same public paths as
 //! an independent JSON client.
 use luxforge_core::{CONTROLS_EFFECT, ControlsModule, ModuleRegistry, OwnerHandle, SnapshotId};
+use luxforge_testbase::paths;
 use luxforge_testkit::client::{call, import, refused};
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
@@ -20,7 +21,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
     registry
         .register(Arc::new(ControlsModule::new()))
         .expect("proof module registers");
-    let catalog = fixtures::temp_catalog("controls-proof");
+    let catalog = paths::temp_catalog("controls-proof");
     let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).expect("owner");
     let client = owner.register();
     let modules = call(&owner, client, "module.list", json!({})).unwrap();
@@ -57,7 +58,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         false
     );
 
-    let asset = import(&owner, client, &fixtures::jpeg(), "test").unwrap()["asset"]["id"].clone();
+    let asset = import(&owner, client, &paths::jpeg(), "test").unwrap()["asset"]["id"].clone();
     let fields = [
         ("amount", json!(2.5)),
         ("coordinate", json!(72.0)),
