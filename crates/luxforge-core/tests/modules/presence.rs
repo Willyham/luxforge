@@ -20,7 +20,7 @@ use luxforge_reference::{
     presence::{PresenceParams, Rgb, apply_presence},
 };
 use luxforge_testkit::fixtures::{self, linear_source_of, recipe, source_of};
-use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
+use luxforge_testkit::fixtures::{render, render_linear};
 use serde_json::{Value, json};
 
 /// The frozen production tolerance's relative band, in linear light.
@@ -198,8 +198,8 @@ fn parameter_sets() -> Vec<(&'static str, Value, PresenceParams)> {
 // -------------------------------------------------------------------------------------------
 
 /// Production against the independent `f64` reference through the real render path, on the 8-bit
-/// source path and on the RAW linear path, with `render.sample` equal to the rendered byte at every
-/// pixel on both.
+/// source path and on the RAW linear path. `sample` equal to the rendered byte, on both paths, is
+/// the conformance suite's.
 #[test]
 fn production_matches_the_reference_through_both_render_paths() {
     let registry = ModuleRegistry::builtin();
@@ -244,14 +244,6 @@ fn production_matches_the_reference_through_both_render_paths() {
                             worst_case = format!("{case} byte ({x}, {y}) channel {channel}");
                         }
                     }
-                    let sampled = sample(&registry, &byte_image, &stack, x as u32, y as u32)
-                        .expect("a sample")
-                        .rgba
-                        .expect("an opaque pixel");
-                    assert_eq!(
-                        sampled, pixel,
-                        "{case}: the sample at ({x}, {y}) disagreed with the rendered byte"
-                    );
                 }
             }
 
@@ -286,21 +278,6 @@ fn production_matches_the_reference_through_both_render_paths() {
                             worst_case = format!("{case} linear ({x}, {y}) channel {channel}");
                         }
                     }
-                    let sampled = sample_linear(
-                        &registry,
-                        &linear_image,
-                        &stack,
-                        LinearSettings::default(),
-                        x as u32,
-                        y as u32,
-                    )
-                    .expect("a linear sample")
-                    .rgba
-                    .expect("an opaque pixel");
-                    assert_eq!(
-                        sampled, pixel,
-                        "{case}: the linear sample at ({x}, {y}) disagreed with the rendered byte"
-                    );
                 }
             }
         }

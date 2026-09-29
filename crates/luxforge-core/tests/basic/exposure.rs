@@ -12,8 +12,8 @@ use luxforge_core::{
     ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform,
 };
 use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
+use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
-use luxforge_testkit::fixtures::{render, sample};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, fs};
@@ -100,30 +100,6 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
     }
 }
 
-/// A sample and a rendered byte are the same evaluation, over every code and several exposures.
-#[test]
-fn a_sample_equals_the_rendered_byte_for_every_code() {
-    let registry = ModuleRegistry::builtin();
-    let codes: Vec<[u8; 3]> = (0u8..=255).map(|code| [code, code, code]).collect();
-    let source = source_of(256, 1, &codes);
-    for ev in [-5.0, -1.0, -0.25, 0.5, 1.0, 5.0] {
-        let stack = recipe(vec![exposure_layer(ev)]);
-        let rendered =
-            render(&registry, &source, SnapshotId::new(), &stack).expect("a rendered frame");
-        for code in 0u32..256 {
-            let sampled = sample(&registry, &source, &stack, code, 0)
-                .expect("a sample")
-                .rgba
-                .expect("an opaque pixel");
-            assert_eq!(
-                sampled,
-                rendered.pixel(code, 0).expect("a rendered pixel"),
-                "code {code} at {ev} EV"
-            );
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Mixed order with replacements and exact geometry
 // ---------------------------------------------------------------------------------------------
@@ -202,7 +178,9 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
 // ---------------------------------------------------------------------------------------------
 
 /// The Basic layer joins a stack that already holds a pixel replacement and a geometry tail, at the
-/// colour insertion index before that tail, and every later set updates it in place.
+/// colour insertion index before that tail, and a later set updates it there in place with every
+/// other layer untouched. What a set that changes nothing writes and what a reset keeps are the
+/// conformance suite's.
 #[test]
 fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update_it() {
     let path = fixtures::temp_catalog("basic-place");
@@ -290,57 +268,6 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
         others, before,
         "every other layer keeps its identity, its payload and its place"
     );
-
-    // The same value again is a no-op with no history row.
-    let entries = service
-        .history(&asset, None, 50)
-        .expect("history")
-        .entries
-        .len();
-    let repeat = service
-        .apply_action(
-            &asset,
-            mutation(5, "expose-same"),
-            "set-basic",
-            json!({"exposure": -1.25}),
-        )
-        .expect("an unchanged set");
-    assert_eq!(repeat.outcome, MutationOutcome::NoOp);
-    assert_eq!(repeat.created_entry_id, None);
-    assert_eq!(
-        service
-            .history(&asset, None, 50)
-            .expect("history")
-            .entries
-            .len(),
-        entries,
-        "a set that changes nothing writes no history row"
-    );
-
-    // A reset keeps the layer and its identity; resetting again is a no-op.
-    let reset = service
-        .apply_action(&asset, mutation(5, "reset"), "reset-basic", json!({}))
-        .expect("a reset");
-    assert_eq!(reset.outcome, MutationOutcome::Applied);
-    let stack = layers(&service, &asset);
-    assert_eq!(stack[1].id, basic.id, "a reset keeps the layer's identity");
-    assert_eq!(stack[1].payload, json!({}), "the canonical neutral payload");
-    let again = service
-        .apply_action(&asset, mutation(6, "reset-again"), "reset-basic", json!({}))
-        .expect("a second reset");
-    assert_eq!(again.outcome, MutationOutcome::NoOp);
-    assert_eq!(again.created_entry_id, None);
-
-    // A set of neutral on a neutral layer is a no-op too, both spellings of the same state.
-    let neutral_set = service
-        .apply_action(
-            &asset,
-            mutation(6, "expose-zero"),
-            "set-basic",
-            json!({"exposure": 0.0}),
-        )
-        .expect("a neutral set");
-    assert_eq!(neutral_set.outcome, MutationOutcome::NoOp);
 
     drop(service);
     fs::remove_file(path).expect("the catalog is removed");

@@ -300,35 +300,6 @@ fn a_tiled_evaluation_agrees_with_the_whole_frame_at_every_tile_size() {
     println!("maximum observed tiled-versus-whole-frame deviation {worst:e}");
 }
 
-/// A unit at amount 0 is not in the operation at all, and an operation of the remaining units is
-/// the exact identity nowhere else: this checks the other half, that every unit's own zero really
-/// is bit-exact, by compiling each amount alone and comparing the whole frame to its input.
-#[test]
-fn every_unit_at_zero_is_omitted_and_the_neutral_payload_compiles_to_nothing() {
-    let module = PresenceModule::new();
-    let stage = Stage {
-        width: 24,
-        height: 24,
-    };
-    for payload in [
-        json!({}),
-        json!({"texture": 0.0}),
-        json!({"texture": 0.0, "clarity": 0.0, "dehaze": 0.0}),
-    ] {
-        let crate::modules::Processing::Spatial(operation) = module
-            .compile(PRESENCE_EFFECT, 1, &payload, stage)
-            .expect("a compiled operation")
-        else {
-            panic!("a spatial operation");
-        };
-        assert!(
-            operation.is_empty(),
-            "{payload} compiles to units the host would have to run"
-        );
-        assert_eq!(operation.summed_halo(stage), 0);
-    }
-}
-
 /// The host reserves what the units declare, and the declaration covers what they actually take:
 /// a unit that asked for more than it declared fails with an internal error instead of reading
 /// somebody else's memory, and no case here does. The budget is a target that never refuses a

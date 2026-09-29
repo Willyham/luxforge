@@ -16,8 +16,8 @@ use luxforge_core::{
 use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{self, RejectReason};
 use luxforge_testkit::client::{call, import, refused};
+use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
-use luxforge_testkit::fixtures::{render, sample};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 
@@ -116,38 +116,6 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
                     ),
                 );
             }
-        }
-    }
-}
-
-/// A sample and a rendered byte are the same evaluation, over every grey code and several
-/// parameter pairs.
-#[test]
-fn a_sample_equals_the_rendered_byte_for_every_code() {
-    let registry = ModuleRegistry::builtin();
-    let codes: Vec<[u8; 3]> = (0u8..=255).map(|code| [code, 255 - code, 128]).collect();
-    let source = source_of(256, 1, &codes);
-    for (temperature, tint) in [
-        (-100.0, 0.0),
-        (-30.0, 45.0),
-        (0.0, -100.0),
-        (20.0, -20.0),
-        (100.0, 100.0),
-    ] {
-        let stack = recipe(vec![basic_layer(
-            json!({"temperature": temperature, "tint": tint}),
-        )]);
-        let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a frame");
-        for x in 0u32..256 {
-            let sampled = sample(&registry, &source, &stack, x, 0)
-                .expect("a sample")
-                .rgba
-                .expect("an opaque pixel");
-            assert_eq!(
-                sampled,
-                rendered.pixel(x, 0).expect("a rendered pixel"),
-                "code {x} at ({temperature}, {tint})"
-            );
         }
     }
 }
@@ -282,58 +250,15 @@ fn reference_settings(result: &Value) -> Result<(i32, i32), RejectReason> {
     white_balance::solve_from_patch(&pixels)
 }
 
-/// An independent JSON client discovers the query and the picker mode, runs the pick and applies
-/// what it returns; the corrected patch is neutral to the code.
+/// An independent JSON client runs the pick and applies what it returns; the corrected patch is
+/// neutral to the code. The query's and the picker mode's discoverability is the descriptor
+/// snapshot's.
 #[test]
 fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     let image = write_cast_image("apply");
     let catalog = fixtures::temp_catalog("basic-wb-apply");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-
-    // Discovery: the query, its generated method and the canvas mode it puts on the strip.
-    let modules = call(&owner, client, "module.list", json!({})).unwrap();
-    let basic = modules["modules"]
-        .as_array()
-        .expect("the modules")
-        .iter()
-        .find(|module| module["id"] == json!("luxforge.basic"))
-        .expect("the Basic module")
-        .clone();
-    assert_eq!(
-        basic["queries"][0]["id"],
-        json!("neutral-sample"),
-        "the query is discoverable: {basic}"
-    );
-    assert_eq!(
-        basic["canvas"],
-        json!({
-            "kind": "sample-apply",
-            "query": "neutral-sample",
-            "x": "x",
-            "y": "y",
-            "action": "set-basic",
-            "title": "Neutral picker",
-            "shortcut": "W",
-        })
-    );
-    let schema = call(&owner, client, "schema.list", json!({})).unwrap();
-    assert_eq!(
-        schema["methods"]["query.neutral-sample"]["mutates"],
-        json!(false)
-    );
-    // The picker's mode is accepted by workspace.set because the accepted modes are derived from
-    // the canvas declarations themselves.
-    assert_eq!(
-        call(
-            &owner,
-            client,
-            "workspace.set",
-            json!({"mode": "luxforge.basic"})
-        )
-        .unwrap()["workspace"]["mode"],
-        json!("luxforge.basic")
-    );
 
     let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (x, y) = image.neutral;

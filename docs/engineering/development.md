@@ -447,12 +447,12 @@ mismatch fails the command.
 The chapter covers what is Basic's and the histogram's own: the neutral picker's query and the
 analysis methods in `schema.list` and Basic's ten fields in their frozen order, `edit.set-basic`
 checked whole-raster against the f64 reference for one field and for the frozen unit order of all of
-them, `render.sample` against the rendered bytes, `analysis.request/read` on current, historical and
-drafted targets against an independent reduction, cropped-population semantics, mixed stacks (a
-straightened 10° crop against a stepwise quantize-then-bilinear reference, a point replacement
-before and after the Basic layer, and Basic under an orientation layer), a historical selection and
-its analysis staying attached through another client's commit, and analysis sharing and
-cancellation. The host behaviour Basic shares with every field-patch module is the
+them, `analysis.request/read` on current, historical and drafted targets against an independent
+reduction, cropped-population semantics, mixed stacks (a straightened 10° crop against a stepwise
+quantize-then-bilinear reference, a point replacement before and after the Basic layer, and Basic
+under an orientation layer), a historical selection and its analysis staying attached through
+another client's commit, and analysis sharing and cancellation. The host behaviour Basic shares
+with every field-patch module is the
 [field-patch conformance chapter](#the-field-patch-conformance-chapter)'s. The supersede and
 disconnect races are covered by
 `luxforge_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`

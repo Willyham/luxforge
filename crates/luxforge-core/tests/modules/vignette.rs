@@ -42,6 +42,29 @@ fn layers_of(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
 }
 
 // -------------------------------------------------------------------------------------------
+// Field order
+// -------------------------------------------------------------------------------------------
+
+/// A layer that moves every field describes them in the declared order: amount, midpoint,
+/// roundness, feather. The order is spelled out here, not read from the descriptor, so swapping two
+/// fields in the module's table is caught. The conformance suite proves the description follows the
+/// declared table, whatever the table says.
+#[test]
+fn a_layer_describes_its_fields_in_the_declared_order() {
+    let registry = ModuleRegistry::builtin();
+    let report = registry
+        .layer_report(&layer(json!({
+            "feather": 40.0, "roundness": 20.0, "midpoint": 60.0, "amount": -35.0,
+        })))
+        .expect("the layer is described");
+    assert_eq!(
+        report.summary,
+        "Vignette amount -35, Vignette midpoint 60, Vignette roundness +20, Vignette feather 40"
+    );
+    assert!(!report.neutral);
+}
+
+// -------------------------------------------------------------------------------------------
 // Placement: a committed vignette layer stays last through the whole host editing surface.
 // -------------------------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 //! The Basic module's Vibrance and Saturation parameters end to end: real layers, real rendering
-//! and sampling, and the frozen internal order against the independent f64 reference composed the
+//! and the frozen internal order against the independent f64 reference composed the
 //! same way. Basic's own label words are in `modules::basic`'s unit tests.
 //!
 //! Numerical rule, from `docs/design/basic-colour.md`'s frozen tolerance: the band around a code
@@ -9,8 +9,8 @@
 use super::basic_layer;
 use luxforge_core::{ModuleRegistry, SnapshotId};
 use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
+use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
-use luxforge_testkit::fixtures::{render, sample};
 use serde_json::json;
 
 /// The Colour contract's relative band around a code threshold.
@@ -95,9 +95,8 @@ fn greys_stay_grey_through_a_real_layer_for_a_sweep_of_v_and_s() {
     }
 }
 
-/// A sample and a rendered byte are the same evaluation for a combined exposure/vibrance/
-/// saturation layer over a small hue sweep, and both agree with the independent f64 reference
-/// composed in the frozen internal order: exposure, then vibrance, then saturation.
+/// A combined exposure/vibrance/saturation layer over a small hue sweep agrees with the independent
+/// f64 reference composed in the frozen internal order: exposure, then vibrance, then saturation.
 #[test]
 fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_order() {
     let registry = ModuleRegistry::builtin();
@@ -148,12 +147,6 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
                     &format!("input {input:?} channel {channel} ev={ev} v={v} s={s}"),
                 );
             }
-
-            let sampled = sample(&registry, &source, &stack, index as u32, 0)
-                .expect("a sample")
-                .rgba
-                .expect("an opaque pixel");
-            assert_eq!(sampled, pixel, "sample disagreed with the rendered byte");
         }
     }
 }

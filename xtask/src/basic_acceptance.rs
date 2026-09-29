@@ -560,8 +560,8 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "The imported asset already holds layers",
         )?;
 
-        // 3. Exposure +1 EV through the patch action. The rendered bytes and `render.sample` are
-        //    both checked against the f64 reference, and against each other.
+        // 3. Exposure +1 EV through the patch action. The rendered bytes are checked against the
+        //    f64 reference.
         let plus_one = Basic {
             exposure: 1.0,
             ..Basic::default()
@@ -597,24 +597,10 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 "+1.00 EV differs from the f64 reference by {difference} codes at pixel {at_pixel}"
             ),
         )?;
-        // The API's own pixel access must answer the same bytes the raster holds.
         let probes = [(0u32, 0u32), (120, 60), (240, 200), (60, 160), (479, 319)];
         let mut sampled = Vec::new();
         for (x, y) in probes {
-            let sample = call(
-                &owner,
-                editor,
-                "render.sample",
-                json!({"asset_id": asset, "x": x, "y": y}),
-            )?;
             let raster_pixel = exposed.pixel(x, y).ok_or("The raster has no such pixel")?;
-            ensure(
-                sample["rgba"] == json!(raster_pixel),
-                format!(
-                    "render.sample at {x},{y} answered {} while the raster holds {raster_pixel:?}",
-                    sample["rgba"]
-                ),
-            )?;
             let index = ((y as usize) * width as usize + x as usize) * 4;
             let reference_pixel = &expected[index..index + 4];
             for channel in 0..4 {
@@ -631,7 +617,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 .push(json!({"pixel":[x,y],"rendered":raster_pixel,"reference":reference_pixel}));
         }
         record(
-            "edit.set-basic exposure +1.00 EV: the whole raster within one code of the f64 reference, render.sample byte-identical to it",
+            "edit.set-basic exposure +1.00 EV: the whole raster and its probed pixels within one code of the f64 reference",
             json!({"largest_code_difference": difference, "probes": sampled, "layer": basic_layer, "layer_index": basic_index}),
         );
 
@@ -677,24 +663,9 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 "The full Basic stack differs from the f64 reference by {difference} codes at pixel {at_pixel}"
             ),
         )?;
-        let mut full_probes = Vec::new();
-        for (x, y) in probes {
-            let sample = call(
-                &owner,
-                editor,
-                "render.sample",
-                json!({"asset_id": asset, "x": x, "y": y}),
-            )?;
-            let raster_pixel = composed.pixel(x, y).ok_or("The raster has no such pixel")?;
-            ensure(
-                sample["rgba"] == json!(raster_pixel),
-                format!("render.sample disagreed with the raster at {x},{y}"),
-            )?;
-            full_probes.push(json!({"pixel":[x,y],"rendered":raster_pixel}));
-        }
         record(
             "a nine-field patch merged onto the same layer: the frozen unit order within one code of the f64 reference over every pixel",
-            json!({"largest_code_difference": difference, "values": values, "probes": full_probes}),
+            json!({"largest_code_difference": difference, "values": values}),
         );
 
         // 5. The histogram of an open draft: the analysis of the drafted stack, identified by the

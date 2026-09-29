@@ -12,7 +12,7 @@
 use luxforge_core::{Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, SnapshotId};
 use luxforge_reference::{self as reference, mixer::RANGE_NAMES};
 use luxforge_testkit::fixtures::{self, linear_source_of, recipe, source_of};
-use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
+use luxforge_testkit::fixtures::{render, render_linear};
 use serde_json::{Map, Value, json};
 use std::fs;
 
@@ -37,6 +37,46 @@ fn fields() -> Vec<String> {
                 .map(move |range| format!("{range}-{property}"))
         })
         .collect()
+}
+
+// -------------------------------------------------------------------------------------------
+// Field order
+// -------------------------------------------------------------------------------------------
+
+/// A layer that moves every field describes them in the declared order: the hue group, then
+/// saturation, then luminance, each over the eight ranges in the reference's wheel order. The
+/// expected order is rebuilt here from the reference, not read from the descriptor, so swapping two
+/// fields in the module's table is caught. The conformance suite proves the description follows the
+/// declared table, whatever the table says.
+#[test]
+fn a_layer_describes_its_fields_in_the_declared_wheel_order() {
+    let registry = ModuleRegistry::builtin();
+    let names = fields();
+    let payload: Map<String, Value> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), json!(index as f64 + 1.0)))
+        .collect();
+    let expected: Vec<String> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let (range, property) = name.split_once('-').expect("a range and a property");
+            let mut characters = range.chars();
+            let range: String = characters
+                .next()
+                .expect("a range name")
+                .to_uppercase()
+                .chain(characters)
+                .collect();
+            format!("{range} {property} +{}", index + 1)
+        })
+        .collect();
+    let report = registry
+        .layer_report(&layer(Value::Object(payload)))
+        .expect("the layer is described");
+    assert_eq!(report.summary, expected.join(", "));
+    assert!(!report.neutral);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -292,20 +332,6 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                         worst_case = format!("{name} channel {channel} (srgb8, output codes)");
                     }
                 }
-                let sampled = sample(
-                    &registry,
-                    &source,
-                    &recipe(vec![layer.clone()]),
-                    index as u32,
-                    0,
-                )
-                .expect("a sample")
-                .rgba
-                .expect("an opaque pixel");
-                assert_eq!(
-                    sampled, pixel,
-                    "{name}: sample disagreed with the rendered byte"
-                );
             }
         }
 
@@ -350,21 +376,6 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                         worst_case = format!("{name} channel {channel} (linear, output codes)");
                     }
                 }
-                let sampled = sample_linear(
-                    &registry,
-                    &source,
-                    &recipe(vec![layer.clone()]),
-                    LinearSettings::default(),
-                    index as u32,
-                    0,
-                )
-                .expect("a linear sample")
-                .rgba
-                .expect("an opaque pixel");
-                assert_eq!(
-                    sampled, pixel,
-                    "{name}: linear sample disagreed with the rendered byte"
-                );
             }
         }
     }

@@ -172,13 +172,8 @@ mod tests {
     }
 
     #[test]
-    fn compile_is_neutral_for_the_empty_payload_and_orders_the_units_dehaze_texture_clarity() {
+    fn compile_orders_the_units_dehaze_texture_clarity() {
         let module = PresenceModule::new();
-        let neutral = module
-            .compile(PRESENCE_EFFECT, 1, &json!({}), STAGE)
-            .unwrap();
-        assert_eq!(neutral, Processing::Spatial(SpatialOperation::neutral()));
-
         let operation = |payload: Value| -> SpatialOperation {
             match module.compile(PRESENCE_EFFECT, 1, &payload, STAGE).unwrap() {
                 Processing::Spatial(operation) => operation,

@@ -1,17 +1,17 @@
 //! The Basic module's Tone controls (Contrast, Highlights, Shadows, Whites, Blacks) end to end:
-//! monotonicity through the whole production pipeline, sample/render agreement, and the declared
-//! internal evaluation order against exposure.
+//! monotonicity through the whole production pipeline and the declared internal evaluation order
+//! against exposure.
 //!
 //! The frozen per-pixel numerical proof against `fixtures/basic/tone-cases.json` lives in
 //! `crates/luxforge-core/src/modules/basic/tone.rs`, next to the production unit it checks; this
-//! module only exercises the unit through the real host pipeline (`ModuleRegistry`, `render`,
-//! `sample`), as the Exposure module does.
+//! module only exercises the unit through the real host pipeline (`ModuleRegistry`, `render`), as
+//! the Exposure module does.
 
 use super::basic_layer;
 use luxforge_core::{ModuleRegistry, SnapshotId};
 use luxforge_reference::tone::ToneParams;
+use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{recipe, source_of};
-use luxforge_testkit::fixtures::{render, sample};
 use serde_json::{Value, json};
 
 fn tone_payload(params: ToneParams) -> Value {
@@ -149,52 +149,6 @@ fn negative_contrast_renders_flatter_than_the_source_and_positive_contrast_steep
                     "code {code}: -{magnitude} gave {low}, +{magnitude} gave {high}"
                 );
             }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Sample and render agreement
-// ---------------------------------------------------------------------------------------------
-
-/// Isolated single-field values and one combined value all render and sample identically, over
-/// every pixel of a small gradient.
-#[test]
-fn isolated_and_combined_tone_values_render_and_sample_identically() {
-    let registry = ModuleRegistry::builtin();
-    let width = 32u32;
-    let pixels: Vec<[u8; 3]> = (0..width)
-        .map(|x| {
-            let level = (x * 255 / (width - 1)) as u8;
-            [level, level / 2, 255 - level]
-        })
-        .collect();
-    let source = source_of(width, 1, &pixels);
-    let payloads = [
-        json!({"contrast": 40.0}),
-        json!({"highlights": -60.0}),
-        json!({"shadows": 60.0}),
-        json!({"whites": -40.0}),
-        json!({"blacks": 40.0}),
-        json!({
-            "contrast": 40.0, "highlights": -30.0, "shadows": 20.0, "whites": 10.0,
-            "blacks": -15.0,
-        }),
-    ];
-    for payload in payloads {
-        let stack = recipe(vec![basic_layer(payload.clone())]);
-        let rendered = render(&registry, &source, SnapshotId::new(), &stack)
-            .unwrap_or_else(|error| panic!("{payload}: {error}"));
-        for x in 0..width {
-            let sampled = sample(&registry, &source, &stack, x, 0)
-                .expect("a sample")
-                .rgba
-                .expect("an opaque pixel");
-            assert_eq!(
-                sampled,
-                rendered.pixel(x, 0).expect("a rendered pixel"),
-                "{payload} at x={x}"
-            );
         }
     }
 }

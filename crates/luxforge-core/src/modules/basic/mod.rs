@@ -512,27 +512,9 @@ mod tests {
     }
 
     #[test]
-    fn compilation_produces_an_exposure_unit_a_tone_unit_both_or_neither() {
+    fn compilation_produces_the_units_a_payload_names_in_the_frozen_order() {
         let module = BasicModule::new();
         let compiled = |payload: Value| module.compile(BASIC_EFFECT, 1, &payload, STAGE).unwrap();
-        match compiled(json!({})) {
-            Processing::Color(operation) => {
-                assert!(
-                    operation.is_empty(),
-                    "a neutral payload compiles to nothing"
-                );
-                assert_eq!(operation, ColorOperation::neutral());
-            }
-            other => panic!("expected a colour operation, got {other:?}"),
-        }
-        // Every Tone field at neutral, spelled out explicitly, still compiles to nothing: no Tone
-        // unit is ever constructed for an all-neutral parameter set.
-        match compiled(json!({
-            "contrast": 0.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0, "blacks": 0.0,
-        })) {
-            Processing::Color(operation) => assert!(operation.is_empty()),
-            other => panic!("expected a colour operation, got {other:?}"),
-        }
         match compiled(json!({"exposure": 0.5})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
@@ -635,28 +617,6 @@ mod tests {
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
-        assert!(
-            module.compile(BASIC_EFFECT, 2, &json!({}), STAGE).is_err(),
-            "an unsupported format never compiles"
-        );
-        assert!(
-            module
-                .compile(BASIC_EFFECT, 1, &json!({"exposure": 99.0}), STAGE)
-                .is_err(),
-            "a stored value outside the declared range never compiles"
-        );
-        assert!(
-            module
-                .compile(BASIC_EFFECT, 1, &json!({"contrast": 999.0}), STAGE)
-                .is_err(),
-            "a stored Tone value outside the declared range never compiles"
-        );
-        assert!(
-            module
-                .compile(BASIC_EFFECT, 1, &json!({"vibrance": 101.0}), STAGE)
-                .is_err(),
-            "a vibrance value outside the declared range never compiles"
-        );
     }
 
     // -----------------------------------------------------------------------------------------
