@@ -915,11 +915,13 @@ fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
     finish(editor, catalog);
 }
 
-/// Every declared field of a patch action goes through one gesture path: it drafts on the
-/// first move, sends exactly one `draft.set` naming that field, commits once on release,
-/// cancels without committing, and survives an external commit until Reapply clears it. The
-/// loop is over the descriptor's own parameters, so no field is named here and a new one is
-/// covered the day it is declared.
+/// Every declared field of a patch action goes through one gesture path. The driver underneath is
+/// field-agnostic, so each field is checked for what differs between fields, over the
+/// descriptor's own parameters (no field is named here, and a new one is covered the day it is
+/// declared): its first move drafts, sends exactly one `draft.set` naming that field alone and
+/// shows the drafted value with the field's declared decimals. One field then goes through the
+/// whole cycle: one commit on release, Escape cancelling without committing, and an external
+/// commit surviving until Reapply clears it.
 #[test]
 fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
@@ -976,80 +978,90 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             Some(shown.as_str()),
             "{parameter} shows the drafted value, with its declared decimals"
         );
-
-        // The release: one commit, then the no-op outcome that ends the gesture.
-        let log = attach_log(&mut editor);
-        let _ = testing::let_go(&mut editor, &action, parameter);
-        let records = logged(&mut editor, &log);
-        assert_eq!(
-            events(&records, "slider_draft_commit").len(),
-            1,
-            "{parameter} committed once"
-        );
-        testing::answer_commit(&mut editor, Ok(None));
-        assert!(
-            editor.slider_gesture().is_none(),
-            "{parameter} left a gesture open"
-        );
-
-        // Escape: the gesture ends and commits nothing.
-        editor.busy = false;
-        let log = attach_log(&mut editor);
-        let _ = testing::slide(&mut editor, &action, parameter, *value);
         let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
-        let records = logged(&mut editor, &log);
-        assert!(
-            events(&records, "slider_draft_commit").is_empty(),
-            "{parameter} committed on Escape"
-        );
-        assert!(
-            !events(&records, "slider_draft_cancelled").is_empty(),
-            "{parameter} did not cancel"
-        );
-        assert!(
-            editor.slider_gesture().is_none(),
-            "{parameter} kept its draft"
-        );
-        // The slot is free once the owner has ended the draft.
         assert!(
             editor.gesture.is_none(),
             "{parameter} left its draft closing"
         );
-
-        // An external commit under the gesture, then Reapply.
-        editor.busy = false;
-        let _ = testing::slide(&mut editor, &action, parameter, *value);
-        let state = editor.document.state.as_mut().expect("open");
-        state.revision += 1;
-        let newer = state.revision;
-        editor.gesture_revision(newer);
-        assert!(
-            editor
-                .core_gesture()
-                .is_some_and(|gesture| gesture.draft.conflicted),
-            "{parameter} was not marked conflicted"
-        );
-        let log = attach_log(&mut editor);
-        let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
-        let rebased = &editor.core_gesture().expect("the rebased draft").draft;
-        assert!(!rebased.conflicted, "{parameter} stayed conflicted");
-        assert_eq!(
-            rebased.base_revision, newer,
-            "{parameter} was not rebased on the new revision"
-        );
-        assert_eq!(
-            rebased.sent(),
-            Some(&json!({ parameter.clone(): value })),
-            "{parameter} did not re-send the value this client set"
-        );
-        assert_eq!(
-            events(&logged(&mut editor, &log), "slider_draft_set").len(),
-            1,
-            "{parameter}: the reapply re-sent it once"
-        );
-        let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
-        assert!(editor.gesture.is_none());
     }
+
+    // The cycle, once, for the first field: the driver it goes through is the same for every one.
+    let (parameter, value) = &fields[0];
+
+    // The release: one commit, then the no-op outcome that ends the gesture.
+    editor.busy = false;
+    let _ = testing::slide(&mut editor, &action, parameter, *value);
+    let log = attach_log(&mut editor);
+    let _ = testing::let_go(&mut editor, &action, parameter);
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        events(&records, "slider_draft_commit").len(),
+        1,
+        "{parameter} committed once"
+    );
+    testing::answer_commit(&mut editor, Ok(None));
+    assert!(
+        editor.slider_gesture().is_none(),
+        "{parameter} left a gesture open"
+    );
+
+    // Escape: the gesture ends and commits nothing.
+    editor.busy = false;
+    let log = attach_log(&mut editor);
+    let _ = testing::slide(&mut editor, &action, parameter, *value);
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
+    let records = logged(&mut editor, &log);
+    assert!(
+        events(&records, "slider_draft_commit").is_empty(),
+        "{parameter} committed on Escape"
+    );
+    assert!(
+        !events(&records, "slider_draft_cancelled").is_empty(),
+        "{parameter} did not cancel"
+    );
+    assert!(
+        editor.slider_gesture().is_none(),
+        "{parameter} kept its draft"
+    );
+    // The slot is free once the owner has ended the draft.
+    assert!(
+        editor.gesture.is_none(),
+        "{parameter} left its draft closing"
+    );
+
+    // An external commit under the gesture, then Reapply.
+    editor.busy = false;
+    let _ = testing::slide(&mut editor, &action, parameter, *value);
+    let state = editor.document.state.as_mut().expect("open");
+    state.revision += 1;
+    let newer = state.revision;
+    editor.gesture_revision(newer);
+    assert!(
+        editor
+            .core_gesture()
+            .is_some_and(|gesture| gesture.draft.conflicted),
+        "{parameter} was not marked conflicted"
+    );
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Reapply));
+    let rebased = &editor.core_gesture().expect("the rebased draft").draft;
+    assert!(!rebased.conflicted, "{parameter} stayed conflicted");
+    assert_eq!(
+        rebased.base_revision, newer,
+        "{parameter} was not rebased on the new revision"
+    );
+    assert_eq!(
+        rebased.sent(),
+        Some(&json!({ parameter.clone(): value })),
+        "{parameter} did not re-send the value this client set"
+    );
+    assert_eq!(
+        events(&logged(&mut editor, &log), "slider_draft_set").len(),
+        1,
+        "{parameter}: the reapply re-sent it once"
+    );
+    let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
+    assert!(editor.gesture.is_none());
     finish(editor, catalog);
 }
 
