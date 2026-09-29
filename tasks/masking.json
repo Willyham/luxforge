@@ -458,7 +458,7 @@
         "`store_strokes` (`editor/catalog.rs`) re-serializes and `INSERT OR IGNORE`s every stroke the recipe's whole mask table references (`Recipe::stroke_references`, which walks every mask and every component, not only the ones this commit touched) on every entry write — O(references) per commit and O(n²) CPU over a session, even though the SQL is a no-op for a stroke already stored. At the measured 1,809-stroke ceiling (docs/design/masking.md \"Stroke storage\", docs/specs/performance.md) that is an estimated 9–18 ms of owner-thread time per commit, and 1–3 ms at a few hundred strokes: the growth the content-addressed store removed from stored bytes reappears as CPU time.",
         "Separately, `hydrate_strokes` hashes each resolved stroke twice: once in `Stroke::from_stored`'s content-address check and again in `StrokeTable::insert`, which recomputes the stroke's id from the same bytes.",
         "Catalog bytes must stay identical: `INSERT OR IGNORE` semantics are kept, so writing only the strokes captured since the recipe was read changes what work happens, not what ends up stored.",
-        "The existing painting-session measurement (`measure_mask_growth_across_a_painting_session` in `editor/catalog.rs`) times reopen and reports catalog size but not per-commit write time; extend it, or add beside it, to record commit time across a long session before and after this change."
+        "The painting-session helper in `editor/catalog.rs` (`painting_session`) drives a long session; the growth and commit-time figures it recorded are in docs/specs/performance.md, and `a_painting_session_grows_with_the_square_of_its_stroke_count` gates the curve."
       ],
       "context_links": [
         {
@@ -485,7 +485,7 @@
           "kind": "file",
           "label": "Catalog writes",
           "target": "crates/luxforge-core/src/editor/catalog.rs",
-          "locator": "store_strokes, hydrate_strokes, measure_mask_growth_across_a_painting_session",
+          "locator": "store_strokes, hydrate_strokes, painting_session",
           "relevance": "The write path this task changes and the existing session measurement to extend."
         },
         {
@@ -513,7 +513,7 @@
         "commands": [
           "cargo test -p luxforge-core catalog",
           "cargo test -p luxforge-core masks",
-          "cargo test --release --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture"
+          "cargo test --package luxforge-core --lib painting_session"
         ],
         "expected_results": [
           "Only new strokes are written per commit, and each resolved stroke is hashed once at hydration.",

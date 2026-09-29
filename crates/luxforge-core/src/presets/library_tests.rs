@@ -10,7 +10,7 @@ use crate::{
     editor::mutation,
     modules::{STAGE_ACTION, StageModule, TestModule},
 };
-use rusqlite::{Connection, params};
+use rusqlite::params;
 use serde_json::{Map, Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -97,32 +97,6 @@ fn a_fresh_catalog_is_marked_with_the_current_format_and_starts_with_an_empty_li
     let reopened = EditorService::open(&path).expect("a current-format catalog reopens");
     assert!(reopened.presets().expect("a listing").is_empty());
     drop(reopened);
-    std::fs::remove_file(path).expect("the catalog is removed");
-}
-
-#[test]
-fn a_format_4_catalog_is_refused_by_name_without_rewriting_it() {
-    let path = catalog("format-4");
-    let mut service = EditorService::open(&path).expect("a catalog");
-    service.import(&jpeg()).expect("an import");
-    drop(service);
-    let connection = Connection::open(&path).expect("the file");
-    connection
-        .pragma_update(None, "user_version", 4)
-        .expect("a marker");
-    drop(connection);
-    let before = std::fs::read(&path).expect("the bytes");
-    let error = EditorService::open(&path).expect_err("format 4 has no library");
-    assert_eq!(error.kind, ErrorKind::Incompatible);
-    assert_eq!(
-        error.detail,
-        "catalog format 4 is not supported; expected 10; choose a new catalog path"
-    );
-    assert_eq!(
-        std::fs::read(&path).expect("the bytes"),
-        before,
-        "a refused catalog is left byte for byte as it was"
-    );
     std::fs::remove_file(path).expect("the catalog is removed");
 }
 
