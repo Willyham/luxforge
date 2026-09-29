@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
+pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
 pub(crate) mod masks;
@@ -20,12 +21,9 @@ pub(crate) mod tools;
 
 use crate::{crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
-use luxforge_core::{
-    ClientSession, ComponentId, ComponentMode, EditorState, EntryId, HistoryPage, MaskId,
-    ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
-};
+use luxforge_core::{ClientSession, EditorState, MaskId, ModuleDescriptor};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 /// The actor this desktop records on every request it sends, which is how its own history entries
 /// are told from another client's.
@@ -145,22 +143,11 @@ impl Default for CropSection {
 
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
-    pub(crate) state: Option<&'a EditorState>,
-    pub(crate) history: &'a HistoryPage,
-    pub(crate) versions: &'a [Version],
-    /// Entries on the current undo-parent chain; other loaded entries are abandoned branches.
-    pub(crate) lineage: &'a HashSet<EntryId>,
-    /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
-    pub(crate) lineage_floor: Option<u64>,
-    pub(crate) display_entry: Option<&'a EntryId>,
+    /// The open photograph: its state, history, versions and lineage, the displayed entry's recipe
+    /// rows and masks, and the current entry's rows, whose `neutral` a section's edited dot reads.
+    pub(crate) document: &'a document::Document,
     pub(crate) modules: &'a [ModuleDescriptor],
     pub(crate) modules_ready: bool,
-    /// The displayed entry's layers as the owner described them. The idle crop section reads the
-    /// committed crop, and the stage it receives, from these rows.
-    pub(crate) recipe: Option<&'a RecipeDescription>,
-    /// The current entry's layers as the owner described them, whichever entry is displayed. A
-    /// section's edited dot reads each row's `neutral`, the core's own answer.
-    pub(crate) current_recipe: Option<&'a RecipeDescription>,
     pub(crate) fields: &'a Fields,
     /// Local presentation state for generated controls; it never enters the recipe.
     pub(crate) control_ui: &'a tools::ControlsUi,
@@ -191,8 +178,6 @@ pub(crate) struct Inputs<'a> {
     /// read this answer rather than a rule of their own.
     pub(crate) edit_refusal: Option<String>,
     pub(crate) draft: Option<&'a CropDraft>,
-    /// The masks of the displayed entry as `mask.list` last answered them.
-    pub(crate) masks: Option<&'a MaskListing>,
     /// The Masks panel's own state: the open mask and component, the hovered row, the hidden
     /// overlays, the next mode and brush, typing, drag and the delivered thumbnails.
     pub(crate) mask_panel: &'a masks::MaskPanel,
@@ -424,24 +409,18 @@ mod tests {
         tabs_descriptor,
     };
     use luxforge_core::{
-        AssetId, AssetRecord, Availability, CropPayload, Orientation, POINTER_MODE,
+        AssetId, AssetRecord, Availability, ComponentId, ComponentMode, CropPayload, EntryId,
+        HistoryPage, Orientation, POINTER_MODE, mask::commands::MaskListing,
     };
     use serde_json::json;
-    use std::path::PathBuf;
+    use std::{collections::HashSet, path::PathBuf};
 
     /// The pieces a derivation borrows, owned by the test so `Inputs` can point at them.
     struct Scene {
-        state: Option<EditorState>,
-        history: HistoryPage,
+        document: document::Document,
         /// The whole entries behind the page's rows, where the displayed entry's layers are read.
         stacks: Vec<luxforge_core::HistoryEntry>,
-        versions: Vec<Version>,
-        lineage: HashSet<EntryId>,
-        lineage_floor: Option<u64>,
-        display_entry: Option<EntryId>,
         modules: Vec<ModuleDescriptor>,
-        recipe: Option<RecipeDescription>,
-        current_recipe: Option<RecipeDescription>,
         fields: Fields,
         control_ui: tools::ControlsUi,
         editing: Option<(String, String)>,
@@ -452,7 +431,6 @@ mod tests {
         crop_conflicted: bool,
         /// What the app's release refusal answers for the open gesture.
         apply_refusal: Option<String>,
-        masks: Option<MaskListing>,
         mask_panel: masks::MaskPanel,
         crop_section: CropSection,
         mask_draft: Option<MaskDraft>,
@@ -478,19 +456,9 @@ mod tests {
         fn new(modules: Vec<ModuleDescriptor>) -> Self {
             let fields = Fields::seeded(&modules);
             Self {
-                state: None,
-                history: HistoryPage {
-                    entries: Vec::new(),
-                    next_before_sequence: None,
-                },
+                document: document::Document::default(),
                 stacks: Vec::new(),
-                versions: Vec::new(),
-                lineage: HashSet::new(),
-                lineage_floor: None,
-                display_entry: None,
                 modules,
-                recipe: None,
-                current_recipe: None,
                 fields,
                 control_ui: tools::ControlsUi::default(),
                 editing: None,
@@ -499,7 +467,6 @@ mod tests {
                 draft: None,
                 crop_conflicted: false,
                 apply_refusal: None,
-                masks: None,
                 mask_panel: masks::MaskPanel::default(),
                 crop_section: CropSection::default(),
                 mask_draft: None,
@@ -530,15 +497,15 @@ mod tests {
             for layer in layers {
                 current.snapshot = current.snapshot.append(layer).expect("a valid stack");
             }
-            self.display_entry = Some(current.id.clone());
-            self.current_recipe = Some(crate::state::testing::described(&current));
-            self.lineage.insert(current.id.clone());
-            self.history = HistoryPage {
+            self.document.display_entry = Some(current.id.clone());
+            self.document.current_recipe = Some(crate::state::testing::described(&current));
+            self.document.lineage.insert(current.id.clone());
+            self.document.history = HistoryPage {
                 entries: vec![luxforge_core::HistoryRow::from(&current)],
                 next_before_sequence: None,
             };
             self.stacks = vec![current.clone()];
-            self.state = Some(EditorState {
+            self.document.state = Some(EditorState {
                 asset: AssetRecord {
                     id: asset,
                     source_root: PathBuf::new(),
@@ -559,16 +526,9 @@ mod tests {
 
         fn inputs(&self) -> Inputs<'_> {
             Inputs {
-                state: self.state.as_ref(),
-                history: &self.history,
-                versions: &self.versions,
-                lineage: &self.lineage,
-                lineage_floor: self.lineage_floor,
-                display_entry: self.display_entry.as_ref(),
+                document: &self.document,
                 modules: &self.modules,
                 modules_ready: true,
-                recipe: self.recipe.as_ref(),
-                current_recipe: self.current_recipe.as_ref(),
                 fields: &self.fields,
                 control_ui: &self.control_ui,
                 editing: self.editing.as_ref(),
@@ -594,9 +554,8 @@ mod tests {
                 history_refusal: (self.slider_draft.is_some() || self.draft.is_some()).then(|| {
                     "Finish the open draft before undoing, redoing or restoring".to_owned()
                 }),
-                edit_refusal: edit_refusal(self.state.as_ref(), &self.session, self.busy),
+                edit_refusal: edit_refusal(self.document.state.as_ref(), &self.session, self.busy),
                 draft: self.draft.as_ref(),
-                masks: self.masks.as_ref(),
                 mask_panel: &self.mask_panel,
                 mask_draft: self.mask_draft.as_ref(),
                 target: self
@@ -655,14 +614,18 @@ mod tests {
         /// Give the scene the owner's `recipe.describe` rows for whichever entry it displays,
         /// described against the open asset's extents, input stages included.
         fn describe_displayed(&mut self) {
-            let displayed = self.display_entry.as_ref().expect("a displayed entry");
-            let asset = &self.state.as_ref().expect("an open asset").asset;
+            let displayed = self
+                .document
+                .display_entry
+                .as_ref()
+                .expect("a displayed entry");
+            let asset = &self.document.state.as_ref().expect("an open asset").asset;
             let entry = self
                 .stacks
                 .iter()
                 .find(|entry| &entry.id == displayed)
                 .expect("the displayed entry's stack");
-            self.recipe = Some(crate::state::testing::described_at(
+            self.document.recipe = Some(crate::state::testing::described_at(
                 entry,
                 (asset.width, asset.height),
             ));
@@ -670,7 +633,8 @@ mod tests {
 
         /// Add one entry's row to the loaded page, and its stack to what the scene can display.
         fn list(&mut self, entry: luxforge_core::HistoryEntry) {
-            self.history
+            self.document
+                .history
                 .entries
                 .push(luxforge_core::HistoryRow::from(&entry));
             self.stacks.push(entry);
@@ -679,7 +643,7 @@ mod tests {
         /// The open asset's source dimensions, which the crop layer's input stage starts from, and
         /// the displayed entry's rows described against them.
         fn sized(mut self, width: u32, height: u32) -> Self {
-            let asset = &mut self.state.as_mut().expect("an open asset").asset;
+            let asset = &mut self.document.state.as_mut().expect("an open asset").asset;
             asset.width = width;
             asset.height = height;
             self.describe_displayed();
@@ -751,11 +715,18 @@ mod tests {
         assert!(workspace.panel.preview.is_none());
 
         // A history preview marks the displayed entry and offers the preview controls.
-        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let asset = scene
+            .document
+            .state
+            .as_ref()
+            .expect("an asset")
+            .asset
+            .id
+            .clone();
         let older = entry(&asset, 1, None);
         let mut scene = scene;
         scene.list(older.clone());
-        scene.display_entry = Some(older.id.clone());
+        scene.document.display_entry = Some(older.id.clone());
         scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id.clone());
         let workspace = scene.derive();
         assert_eq!(workspace.panel.history[0].marker, Marker::Current);
@@ -772,10 +743,17 @@ mod tests {
     #[test]
     fn restore_is_disabled_while_the_history_refusal_holds() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
-        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let asset = scene
+            .document
+            .state
+            .as_ref()
+            .expect("an asset")
+            .asset
+            .id
+            .clone();
         let older = entry(&asset, 1, None);
         scene.list(older.clone());
-        scene.display_entry = Some(older.id.clone());
+        scene.document.display_entry = Some(older.id.clone());
         scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id);
         let preview = |scene: &Scene| scene.derive().panel.preview.expect("preview controls");
         assert_eq!(
@@ -814,7 +792,14 @@ mod tests {
     #[test]
     fn an_entry_off_the_lineage_is_marked_as_a_branch() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
-        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let asset = scene
+            .document
+            .state
+            .as_ref()
+            .expect("an asset")
+            .asset
+            .id
+            .clone();
         let abandoned = entry(&asset, 2, None);
         scene.list(abandoned.clone());
         assert!(
@@ -822,7 +807,7 @@ mod tests {
             "an entry the lineage walk never reached is a branch"
         );
         // Below a truncated lineage nothing can be called abandoned.
-        scene.lineage_floor = Some(2);
+        scene.document.lineage_floor = Some(2);
         assert!(!scene.derive().panel.history[1].branch);
     }
 
@@ -1016,7 +1001,12 @@ mod tests {
             .sized(480, 320);
         assert_eq!(chosen(&crop_model(&scene.derive(), &crop.id)), ["Free"]);
         fn row(scene: &mut Scene) -> &mut luxforge_core::LayerDescription {
-            &mut scene.recipe.as_mut().expect("described rows").layers[0]
+            &mut scene
+                .document
+                .recipe
+                .as_mut()
+                .expect("described rows")
+                .layers[0]
         }
         row(&mut scene).input_stage = Some(luxforge_core::StageSize {
             width: 200,
@@ -1060,10 +1050,17 @@ mod tests {
         );
         scene.busy = false;
 
-        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let asset = scene
+            .document
+            .state
+            .as_ref()
+            .expect("an asset")
+            .asset
+            .id
+            .clone();
         let older = entry(&asset, 1, None);
         scene.list(older.clone());
-        scene.display_entry = Some(older.id.clone());
+        scene.document.display_entry = Some(older.id.clone());
         scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id);
         let model = crop_model(&scene.derive(), &crop.id);
         assert!(!model.enabled && !model.can_swap);
@@ -1536,7 +1533,13 @@ mod tests {
         let derive = |payload: &RawPayload| {
             let mut scene = Scene::new(modules.clone())
                 .opened(vec![payload.layer(luxforge_core::LayerId::new())]);
-            scene.state.as_mut().expect("an asset").asset.source = raw_source();
+            scene
+                .document
+                .state
+                .as_mut()
+                .expect("an asset")
+                .asset
+                .source = raw_source();
             scene.derive()
         };
         let white_balance = |workspace: &Workspace| {
@@ -1561,7 +1564,13 @@ mod tests {
         let dragged = {
             let mut scene = Scene::new(modules.clone())
                 .opened(vec![original.layer(luxforge_core::LayerId::new())]);
-            scene.state.as_mut().expect("an asset").asset.source = raw_source();
+            scene
+                .document
+                .state
+                .as_mut()
+                .expect("an asset")
+                .asset
+                .source = raw_source();
             scene.dragging = Some(("set-raw".into(), "temperature".into()));
             scene.derive()
         };
@@ -1638,16 +1647,24 @@ mod tests {
         for (name, kind, target) in &targets {
             let mut scene = Scene::new(modules.clone()).opened(Vec::new());
             if *kind == SourceTag::Raw {
-                scene.state.as_mut().expect("an asset").asset.source =
-                    crate::state::testing::raw_source();
+                scene
+                    .document
+                    .state
+                    .as_mut()
+                    .expect("an asset")
+                    .asset
+                    .source = crate::state::testing::raw_source();
             }
             if let Some(mask) = target {
                 scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
                 scene.mask_panel.selected_mask = Some(mask.clone());
             }
             let workspace = scene.derive();
-            let shortcuts =
-                tools::mode_shortcuts(&scene.modules, scene.state.as_ref(), target.as_ref());
+            let shortcuts = tools::mode_shortcuts(
+                &scene.modules,
+                scene.document.state.as_ref(),
+                target.as_ref(),
+            );
             let section = section(&workspace, &basic.id).clone();
             derived.push((*name, *kind, target.clone(), section, shortcuts));
         }
@@ -1852,6 +1869,7 @@ mod tests {
             json!({}),
         )]);
         let current = scene
+            .document
             .state
             .as_ref()
             .expect("an asset")
@@ -1866,8 +1884,8 @@ mod tests {
             ))
             .expect("a valid stack");
         scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id.clone());
-        scene.display_entry = Some(older.id.clone());
-        scene.recipe = Some(crate::state::testing::described(&older));
+        scene.document.display_entry = Some(older.id.clone());
+        scene.document.recipe = Some(crate::state::testing::described(&older));
         assert!(
             !section(&scene.derive(), &basic.id).active,
             "the previewed edit does not light the current entry's dot"
@@ -1887,8 +1905,8 @@ mod tests {
             .expect("a valid stack");
         edited.session.preview.selection =
             luxforge_core::HistorySelection::Entry(neutral.id.clone());
-        edited.display_entry = Some(neutral.id.clone());
-        edited.recipe = Some(crate::state::testing::described(&neutral));
+        edited.document.display_entry = Some(neutral.id.clone());
+        edited.document.recipe = Some(crate::state::testing::described(&neutral));
         assert!(
             section(&edited.derive(), &basic.id).active,
             "the current edit keeps its dot during a preview"
@@ -2061,7 +2079,7 @@ mod tests {
         let (listing, mask, radial, brush) = face();
         let mut scene = Scene::new(Vec::new()).opened(Vec::new());
         scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
-        scene.masks = Some(listing);
+        scene.document.masks = Some(listing);
         scene.mask_panel.selected_mask = Some(mask.clone());
 
         // Adding a radial to Face: the component has no name until the commit spends its
@@ -2378,7 +2396,7 @@ mod tests {
         // An entry with no parent has nothing to undo, and nothing has been undone to redo.
         assert!(!title.can_undo && !title.can_redo);
         let mut undone = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
-        let state = undone.state.as_mut().expect("an open photograph");
+        let state = undone.document.state.as_mut().expect("an open photograph");
         state.redo.push(EntryId::new());
         state.current_entry.undo_parent = Some(EntryId::new());
         let title = undone.derive().title;
@@ -2545,8 +2563,8 @@ mod tests {
         curve.samples.insert(
             "red".into(),
             tools::CurveSamples {
-                asset: scene.state.as_ref().unwrap().asset.id.clone(),
-                entry: scene.display_entry.clone().unwrap(),
+                asset: scene.document.state.as_ref().unwrap().asset.id.clone(),
+                entry: scene.document.display_entry.clone().unwrap(),
                 source: json!([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]),
                 points: vec![[0.0, 0.0], [1.0, 1.0]],
                 version: 7,
@@ -2570,13 +2588,17 @@ mod tests {
         assert!(
             matches!(fixture_section.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
         );
-        let original_entry = scene.display_entry.replace(EntryId::new()).unwrap();
+        let original_entry = scene
+            .document
+            .display_entry
+            .replace(EntryId::new())
+            .unwrap();
         workspace.derive(&scene.inputs());
         assert!(
             matches!(section(&workspace, &fixture.id).controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "a different entry cannot reuse sampled geometry for identical control points"
         );
-        scene.display_entry = Some(original_entry);
+        scene.document.display_entry = Some(original_entry);
         workspace.derive(&scene.inputs());
         scene.fields.set(
             "fixture-set",
@@ -2601,7 +2623,7 @@ mod tests {
         let modules = descriptors();
         let mut scene = Scene::new(modules.clone()).opened(Vec::new());
         scene.developer = true;
-        if let Some(state) = &mut scene.state {
+        if let Some(state) = &mut scene.document.state {
             state.asset.source = crate::state::testing::raw_source();
         }
         let workspace = scene.derive();
@@ -2696,6 +2718,7 @@ mod tests {
             "the default tab is the first group"
         );
         let recipe_before = scene
+            .document
             .state
             .as_ref()
             .map(|state| state.current_entry.snapshot.recipe.layers.clone());
@@ -2711,10 +2734,12 @@ mod tests {
             "an unrelated section is unchanged"
         );
         assert_eq!(
-            scene
-                .state
-                .as_ref()
-                .map(|state| state.current_entry.snapshot.recipe.layers.clone()),
+            scene.document.state.as_ref().map(|state| state
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .clone()),
             recipe_before,
             "selecting a tab changes no recipe"
         );
@@ -3017,7 +3042,7 @@ mod tests {
         scene.presets.pending = true;
         assert!(!form(&scene).can_create, "one library request at a time");
         scene.presets.pending = false;
-        scene.state = None;
+        scene.document.state = None;
         assert!(
             !form(&scene).can_create,
             "capture reads the displayed photograph"
@@ -3069,11 +3094,20 @@ mod tests {
             scene.developer = true;
             scene.palette_open = true;
             if kind == SourceTag::Raw {
-                scene.state.as_mut().expect("an asset").asset.source =
-                    crate::state::testing::raw_source();
+                scene
+                    .document
+                    .state
+                    .as_mut()
+                    .expect("an asset")
+                    .asset
+                    .source = crate::state::testing::raw_source();
             }
             assert_eq!(
-                scene.state.as_ref().map(|state| state.asset.source.tag()),
+                scene
+                    .document
+                    .state
+                    .as_ref()
+                    .map(|state| state.asset.source.tag()),
                 Some(kind)
             );
             let workspace = scene.derive();
@@ -3088,8 +3122,9 @@ mod tests {
                 .iter()
                 .filter_map(|entry| owner(&entry.action))
                 .collect();
-            let shortcuts = tools::mode_shortcuts(&scene.modules, scene.state.as_ref(), None);
-            let picks = tools::pick_modes(&scene.modules, scene.state.as_ref(), None);
+            let shortcuts =
+                tools::mode_shortcuts(&scene.modules, scene.document.state.as_ref(), None);
+            let picks = tools::pick_modes(&scene.modules, scene.document.state.as_ref(), None);
             for module in &modules {
                 let applies = module.applies_to(kind);
                 let id = &module.id;
@@ -3179,8 +3214,12 @@ mod tests {
     /// A photograph open with `masks` listed for its displayed entry.
     fn masked_scene(masks: &[(&MaskId, &str)]) -> Scene {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
-        scene.masks = Some(MaskListing {
-            entry_id: scene.display_entry.clone().expect("a displayed entry"),
+        scene.document.masks = Some(MaskListing {
+            entry_id: scene
+                .document
+                .display_entry
+                .clone()
+                .expect("a displayed entry"),
             masks: masks
                 .iter()
                 .enumerate()
@@ -3230,7 +3269,7 @@ mod tests {
         assert_eq!(workspace.scopes()["luxforge.basic"], json!("Face"));
 
         // A rename reaches the bands.
-        scene.masks.as_mut().expect("a listing").masks[0].name = "Portrait".into();
+        scene.document.masks.as_mut().expect("a listing").masks[0].name = "Portrait".into();
         let workspace = scene.derive();
         assert_eq!(
             section(&workspace, "luxforge.basic").scope.as_deref(),

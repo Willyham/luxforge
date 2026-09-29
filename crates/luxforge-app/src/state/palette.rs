@@ -75,10 +75,15 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
     let applicable: Vec<_> = inputs
         .modules
         .iter()
-        .filter(|module| crate::state::tools::applies(module, inputs.state))
+        .filter(|module| crate::state::tools::applies(module, inputs.document.state.as_ref()))
         .cloned()
         .collect();
-    let mut raw = palette_entries(&applicable, inputs.developer, inputs.state, inputs.target);
+    let mut raw = palette_entries(
+        &applicable,
+        inputs.developer,
+        inputs.document.state.as_ref(),
+        inputs.target,
+    );
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
     let entries: Vec<PaletteEntry> = filter(raw, inputs.palette_query)

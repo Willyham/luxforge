@@ -248,6 +248,7 @@ fn double_click_before_the_commit_answers(
     value: f64,
 ) -> luxforge_core::HistoryEntry {
     let current = editor
+        .document
         .state
         .as_ref()
         .expect("an open asset")
@@ -297,10 +298,20 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
         let (mut editor, catalog, log, asset, _, _) = drafting();
         // Basic's Temperature and Tint are the RAW development's on a RAW photo's global target.
         if action != "set-basic" {
-            editor.state.as_mut().expect("an open asset").asset.source =
-                crate::state::testing::raw_source();
+            editor
+                .document
+                .state
+                .as_mut()
+                .expect("an open asset")
+                .asset
+                .source = crate::state::testing::raw_source();
         }
-        let revision = editor.state.as_ref().expect("an open asset").revision;
+        let revision = editor
+            .document
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .revision;
         let committed =
             double_click_before_the_commit_answers(&mut editor, &asset, action, parameter, value);
         let records = logged(&mut editor, &log);
@@ -350,7 +361,14 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
     for (action, parameter) in [("set-raw", "temperature"), ("set-raw", "tint")] {
         let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
         let log = attach_log(&mut editor);
-        let asset = editor.state.as_ref().expect("open").asset.id.clone();
+        let asset = editor
+            .document
+            .state
+            .as_ref()
+            .expect("open")
+            .asset
+            .id
+            .clone();
         let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
         let mut custom = original.clone();
         custom.wb_mode = WhiteBalanceMode::Custom;
@@ -475,6 +493,7 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
     let (mut editor, catalog, log, asset, _, _) = drafting();
     let (action, parameter) = single_parameter_control(&editor);
     let current = editor
+        .document
         .state
         .as_ref()
         .expect("an open asset")
@@ -530,8 +549,13 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
 fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
     let (mut editor, catalog, log, _, _, _) = drafting();
     // A RAW photo's global target, where Basic's Temperature is the development's `set-raw`.
-    editor.state.as_mut().expect("an open asset").asset.source =
-        crate::state::testing::raw_source();
+    editor
+        .document
+        .state
+        .as_mut()
+        .expect("an open asset")
+        .asset
+        .source = crate::state::testing::raw_source();
     // The owner accepts the value, but its preview job answers preparation-required.
     testing::stand_in(&mut editor)
         .sets
@@ -666,7 +690,7 @@ fn a_slider_released_while_another_request_is_in_flight_commits() {
 #[test]
 fn release_commits_once_and_a_return_to_start_commits_nothing() {
     let (mut editor, catalog, log, _, action, parameter) = drafting();
-    let history = editor.history.entries.len();
+    let history = editor.document.history.entries.len();
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
 
     let _ = testing::let_go(&mut editor, &action, &parameter);
@@ -686,7 +710,7 @@ fn release_commits_once_and_a_return_to_start_commits_nothing() {
     assert!(editor.slider_gesture().is_none(), "the gesture is over");
     assert!(editor.session.draft.is_none(), "and so is the core draft");
     assert_eq!(
-        editor.history.entries.len(),
+        editor.document.history.entries.len(),
         history,
         "a no-op adds no history entry"
     );
@@ -972,7 +996,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         // An external commit under the gesture, then Reapply.
         editor.busy = false;
         let _ = testing::slide(&mut editor, &action, parameter, *value);
-        let state = editor.state.as_mut().expect("open");
+        let state = editor.document.state.as_mut().expect("open");
         state.revision += 1;
         let newer = state.revision;
         editor.gesture_revision(newer);
@@ -1091,9 +1115,9 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop)));
     assert!(editor.crop_gesture().is_none());
     assert!(editor.status.contains("slider draft"), "{}", editor.status);
-    editor.original_entry = Some(entry(&asset, 0, None).id);
+    editor.document.original_entry = Some(entry(&asset, 0, None).id);
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
-    assert!(editor.compare_return.is_none());
+    assert!(editor.document.compare_return.is_none());
     assert!(editor.status.contains("slider draft"), "{}", editor.status);
     finish(editor, catalog);
 }

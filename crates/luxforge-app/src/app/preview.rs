@@ -945,7 +945,7 @@ impl Editor {
                 match result {
                     Ok(job) => {
                         let mut job = *job;
-                        if self.state.as_ref().map(|state| &state.asset.id)
+                        if self.document.state.as_ref().map(|state| &state.asset.id)
                             != Some(&job.evaluation.entry().asset_id)
                             || self.displayed_entry().as_ref() != Some(&job.evaluation.entry().id)
                             || job.identity.draft.as_ref().map(|stamp| &stamp.draft_id)
@@ -1007,7 +1007,7 @@ impl Editor {
                         self.presentation.preview_generation = self.request_preview(payload.job);
                         self.status = "Rendering selected history state…".into();
                         // The recipe rows follow the displayed entry: one payload read, no render.
-                        if let Some(state) = &self.state {
+                        if let Some(state) = &self.document.state {
                             return recipe_task(
                                 self.owner.clone(),
                                 self.client,
@@ -1058,7 +1058,7 @@ impl Editor {
     }
 
     fn view_plan(&mut self, intent: PreviewIntent) -> Task<Message> {
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         let draft = match self.core_gesture() {
@@ -1946,7 +1946,7 @@ impl Editor {
     /// job.
     pub(super) fn zoom_changed(&mut self, previous: &Zoom) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
-        if zoom == *previous || self.state.is_none() {
+        if zoom == *previous || self.document.state.is_none() {
             return Task::none();
         }
         // A crop draft's input stage is what the view shows, or is about to: the same rule is
@@ -2105,7 +2105,7 @@ impl Editor {
     /// storm of these into one active and one pending job, and nothing is asked for while a
     /// gesture or a crop draft owns the preview, or while a refit is already on its way.
     pub(super) fn refit_proxy(&mut self) -> Task<Message> {
-        if self.state.is_none()
+        if self.document.state.is_none()
             || self.proxy_refit_deferred()
             || self.presentation.presented_generation == 0
             || !self.presentation.presented_proxy
@@ -2179,7 +2179,7 @@ impl Editor {
     }
 
     pub(super) fn request_current_preview(&mut self) -> Task<Message> {
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         let asset = state.asset.id.clone();
@@ -2347,11 +2347,11 @@ impl Editor {
     /// another entry drops it and anything waiting to be sampled rather than leaving codes on screen
     /// that belong to an image no longer shown.
     pub(super) fn show_entry(&mut self, entry: luxforge_core::EntryId) {
-        if self.display_entry.as_ref() != Some(&entry) {
+        if self.document.display_entry.as_ref() != Some(&entry) {
             self.readout = None;
             self.pending_sample = None;
         }
-        self.display_entry = Some(entry);
+        self.document.display_entry = Some(entry);
     }
 
     /// What the status bar says about the frame that just reached the screen: what last happened
@@ -2361,11 +2361,12 @@ impl Editor {
     /// hash; those stay with the API and the evidence state.
     pub(super) fn displayed_status(&self, entry: &EntryId) -> String {
         if !self.session.preview.can_edit() {
-            if self.compare_return.is_some() {
+            if self.document.compare_return.is_some() {
                 return state::status::COMPARING.to_owned();
             }
             return state::status::previewing(
-                self.history
+                self.document
+                    .history
                     .entries
                     .iter()
                     .find(|row| row.id == *entry)
@@ -2377,7 +2378,7 @@ impl Editor {
         if let Some(line) = self.mask_gesture_status() {
             return line;
         }
-        let sentence = match (&self.happened, &self.state) {
+        let sentence = match (&self.happened, &self.document.state) {
             (Some(happened), _) => happened.sentence(),
             (None, Some(state)) => {
                 state::status::showing(state.current_entry.sequence, &state.current_entry.label)

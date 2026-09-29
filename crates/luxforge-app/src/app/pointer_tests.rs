@@ -96,7 +96,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
     let (mode, query, action) = sample_mode(&editor);
     let mask = luxforge_core::MaskId::new();
     // The panel holds that mask, as `mask.list` reported it.
-    editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+    editor.document.masks = Some(luxforge_core::mask::commands::MaskListing {
         entry_id: editor.displayed_entry().expect("a displayed entry"),
         masks: vec![luxforge_core::mask::commands::MaskReport {
             id: mask.clone(),
@@ -181,7 +181,7 @@ fn a_committed_module_pick_puts_itself_away() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let (mode, _, action) = sample_mode(&editor);
     let mask = luxforge_core::MaskId::new();
-    editor.masks = Some(luxforge_core::mask::commands::MaskListing {
+    editor.document.masks = Some(luxforge_core::mask::commands::MaskListing {
         entry_id: editor.displayed_entry().expect("a displayed entry"),
         masks: vec![luxforge_core::mask::commands::MaskReport {
             id: mask.clone(),
@@ -231,7 +231,7 @@ fn a_refused_sample_shows_its_reason_and_commits_nothing() {
     let (mode, _, action) = sample_mode(&editor);
     editor.session.workspace.mode = mode;
     let entry_id = editor.displayed_entry().expect("a displayed entry");
-    let revision = editor.state.as_ref().expect("open").revision;
+    let revision = editor.document.state.as_ref().expect("open").revision;
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
@@ -248,7 +248,10 @@ fn a_refused_sample_shows_its_reason_and_commits_nothing() {
         editor.status
     );
     assert!(!editor.busy, "a refused sample committed something");
-    assert_eq!(editor.state.as_ref().expect("open").revision, revision);
+    assert_eq!(
+        editor.document.state.as_ref().expect("open").revision,
+        revision
+    );
     let records = logged(&mut editor, &log);
     assert!(
         records
@@ -408,7 +411,7 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
         vec![&json!({"action":action,"view_x":7,"view_y":9,"x":100,"y":42})]
     );
     // A pick commits nothing: the open stack and its revision are untouched.
-    let state = editor.state.as_ref().expect("the open asset");
+    let state = editor.document.state.as_ref().expect("the open asset");
     assert_eq!(state.revision, 4);
     assert!(state.current_entry.snapshot.recipe.layers.is_empty());
     let _ = editor.update(Message::Control(ControlMessage::Field {

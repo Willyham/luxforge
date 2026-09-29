@@ -26,7 +26,8 @@ impl Editor {
                 }
                 if page.is_some()
                     && let Some(reason) = self.gesture_refusal(Starting::Gallery).or_else(|| {
-                        self.compare_return
+                        self.document
+                            .compare_return
                             .is_some()
                             .then(|| "Release Compare before opening Components".to_owned())
                     })
@@ -217,7 +218,7 @@ impl Editor {
     }
 
     pub(super) fn session_command(&mut self, method: &'static str, params: Value) -> Task<Message> {
-        if self.state.is_none() || self.busy {
+        if self.document.state.is_none() || self.busy {
             return Task::none();
         }
         self.busy = true;

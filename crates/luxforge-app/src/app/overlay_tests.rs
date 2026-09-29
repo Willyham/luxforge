@@ -262,8 +262,13 @@ fn a_clipping_toggle_sets_one_view_flag_and_commits_nothing() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     let before = (
         editor.activity.requested,
-        editor.state.as_ref().expect("an open asset").revision,
-        editor.history.entries.len(),
+        editor
+            .document
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .revision,
+        editor.document.history.entries.len(),
     );
     for message in [
         Message::Overlay(OverlayMessage::ToggleClipping(Some(ClipEndpoint::Shadows))),
@@ -275,11 +280,15 @@ fn a_clipping_toggle_sets_one_view_flag_and_commits_nothing() {
         let _ = editor.update(message);
         assert!(!editor.busy, "a view toggle never takes the mutation path");
     }
-    let state = editor.state.as_ref().expect("an open asset");
+    let state = editor.document.state.as_ref().expect("an open asset");
     assert_eq!(editor.activity.requested, before.0, "no request was opened");
     assert_eq!(state.revision, before.1, "no edit committed");
     assert!(state.current_entry.snapshot.recipe.layers.is_empty());
-    assert_eq!(editor.history.entries.len(), before.2, "no history entry");
+    assert_eq!(
+        editor.document.history.entries.len(),
+        before.2,
+        "no history entry"
+    );
     finish(editor, catalog);
 }
 

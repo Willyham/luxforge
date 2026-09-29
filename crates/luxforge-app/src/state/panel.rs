@@ -77,23 +77,35 @@ pub(crate) fn actor_caption(actor: &str) -> Option<String> {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
-    let current = inputs.state.map(|state| &state.current_entry.id);
+    let current = inputs
+        .document
+        .state
+        .as_ref()
+        .map(|state| &state.current_entry.id);
     StatePanelModel {
         versions: inputs
+            .document
             .versions
             .iter()
             .map(|version| VersionChip {
                 name: version.name.clone(),
                 entry_sequence: version.entry_sequence,
                 entry_id: version.entry_id.clone(),
-                selected: inputs.display_entry == Some(&version.entry_id),
+                selected: inputs.document.display_entry.as_ref() == Some(&version.entry_id),
             })
             .collect(),
         version_name: inputs.version_name.to_owned(),
         version_form_open: inputs.version_form_open,
-        can_save: inputs.state.is_some() && inputs.display_entry.is_some() && !inputs.busy,
-        revision: inputs.state.map(|state| format!("rev {}", state.revision)),
+        can_save: inputs.document.state.is_some()
+            && inputs.document.display_entry.is_some()
+            && !inputs.busy,
+        revision: inputs
+            .document
+            .state
+            .as_ref()
+            .map(|state| format!("rev {}", state.revision)),
         history: inputs
+            .document
             .history
             .entries
             .iter()
@@ -104,7 +116,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
                 actor: actor_caption(&entry.actor),
                 marker: if current == Some(&entry.id) {
                     Marker::Current
-                } else if inputs.display_entry == Some(&entry.id) {
+                } else if inputs.document.display_entry.as_ref() == Some(&entry.id) {
                     Marker::Previewed
                 } else {
                     Marker::Plain
@@ -112,7 +124,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
                 branch: !on_current_lineage(inputs, entry),
             })
             .collect(),
-        can_load_older: inputs.history.next_before_sequence.is_some(),
+        can_load_older: inputs.document.history.next_before_sequence.is_some(),
         preview: (!inputs.session.preview.can_edit()).then_some(PreviewControls {
             can_return: !inputs.busy,
             can_restore: !inputs.busy && inputs.history_refusal.is_none(),
@@ -125,8 +137,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
 /// An entry is on the current chain when the lineage walk reached it, or when the walk was
 /// truncated above it and nothing can be said about it.
 pub(crate) fn on_current_lineage(inputs: &Inputs<'_>, entry: &luxforge_core::HistoryRow) -> bool {
-    inputs.lineage.contains(&entry.id)
+    inputs.document.lineage.contains(&entry.id)
         || inputs
+            .document
             .lineage_floor
             .is_some_and(|floor| entry.sequence <= floor)
 }

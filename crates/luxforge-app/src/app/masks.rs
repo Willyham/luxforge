@@ -119,7 +119,8 @@ impl Editor {
     /// The masks the panel is listing right now, by identity, so a command's answer can be compared
     /// against what was there before it.
     pub(crate) fn listed_masks(&self) -> Vec<MaskId> {
-        self.masks
+        self.document
+            .masks
             .as_ref()
             .map(|listing| {
                 listing
@@ -161,6 +162,7 @@ impl Editor {
         self.drop_stale_panel_state();
         let before = self.mask_panel.selected_mask.clone();
         let reports = self
+            .document
             .masks
             .as_ref()
             .map(|listing| listing.masks.as_slice())
@@ -312,6 +314,7 @@ impl Editor {
         let shape = &armed.mask.shape;
         let gone = shape.mask.as_ref().is_some_and(|mask| {
             let report = self
+                .document
                 .masks
                 .as_ref()
                 .and_then(|listing| listing.masks.iter().find(|report| &report.id == mask));
@@ -332,7 +335,10 @@ impl Editor {
         }
         let entry = self.displayed_entry();
         let (Some(asset), true) = (
-            self.state.as_ref().map(|state| state.asset.id.clone()),
+            self.document
+                .state
+                .as_ref()
+                .map(|state| state.asset.id.clone()),
             armed.entry != entry,
         ) else {
             return Task::none();
@@ -359,7 +365,8 @@ impl Editor {
     /// The open mask's report, when the panel has one open and the listing still holds it.
     fn open_mask(&self) -> Option<&MaskReport> {
         let id = self.mask_panel.selected_mask.as_ref()?;
-        self.masks
+        self.document
+            .masks
             .as_ref()?
             .masks
             .iter()
@@ -377,7 +384,7 @@ impl Editor {
         target: &MaskTarget,
         fields: &Map<String, Value>,
     ) -> Option<Value> {
-        let state = self.state.as_ref()?;
+        let state = self.document.state.as_ref()?;
         let mut request = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
         let object = request.as_object_mut().expect("the envelope is an object");
         target.insert_into(object);
@@ -794,7 +801,7 @@ impl Editor {
     /// filled beside the frame by the preview worker, so the overlay costs no second render — but a
     /// grid for a different mask is a different request.
     pub(crate) fn refresh_mask_overlay(&mut self) -> Task<Message> {
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         // A drafted frame is already in flight for an open gesture; it carries the overlay request of
@@ -913,7 +920,7 @@ impl Editor {
 
     /// The status line for `shape` in Mask mode, naming its mask and component as the draft bar does.
     fn mask_gesture_line(&self, shape: &MaskDraft) -> String {
-        let names = crate::state::canvas::gesture_names(shape, self.masks.as_ref());
+        let names = crate::state::canvas::gesture_names(shape, self.document.masks.as_ref());
         crate::state::status::mask_gesture(
             &names,
             shape.brush().map(crate::mask_draft::BrushStroke::painting),
@@ -1075,7 +1082,12 @@ impl Editor {
             self.status = format!("This build cannot draw a {} component", shape.kind());
             return Task::none();
         };
-        let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
+        let Some(asset) = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| state.asset.id.clone())
+        else {
             return Task::none();
         };
         let entry = self.displayed_entry();
@@ -1292,7 +1304,7 @@ impl Editor {
     /// from the refreshed listing, because a stroke that drew a mask or added a brush minted one.
     fn rearm_brush(&mut self, target: (Option<MaskId>, Option<ComponentId>)) -> Task<Message> {
         let (mask, component) = target;
-        let listing = self.masks.as_ref();
+        let listing = self.document.masks.as_ref();
         let report = match &mask {
             Some(id) => {
                 listing.and_then(|listing| listing.masks.iter().find(|report| &report.id == id))

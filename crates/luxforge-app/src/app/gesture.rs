@@ -304,7 +304,8 @@ impl Editor {
             return Some(reason);
         }
         if halves.editable
-            && let Some(reason) = state::editable_refusal(self.state.as_ref(), &self.session)
+            && let Some(reason) =
+                state::editable_refusal(self.document.state.as_ref(), &self.session)
         {
             return Some(reason.into());
         }
@@ -354,7 +355,7 @@ impl Editor {
         kind: Kind,
         fields: Option<Value>,
     ) -> Task<Message> {
-        let (Some(state), Some(action)) = (&self.state, kind.action()) else {
+        let (Some(state), Some(action)) = (&self.document.state, kind.action()) else {
             return Task::none();
         };
         let asset = state.asset.id.clone();
@@ -384,7 +385,7 @@ impl Editor {
     ) -> Result<Draft, String> {
         #[cfg(test)]
         if let Some(stand_in) = &mut self.stand_in {
-            return stand_in.begin(self.state.as_ref(), asset, action);
+            return stand_in.begin(self.document.state.as_ref(), asset, action);
         }
         tasks::draft_begin_now(&self.owner, self.client, asset, action, target)
     }
@@ -393,7 +394,11 @@ impl Editor {
     fn reapply_draft(&mut self, draft_id: &DraftId) -> Result<Draft, String> {
         #[cfg(test)]
         if let Some(stand_in) = &mut self.stand_in {
-            return stand_in.reapply(self.state.as_ref(), self.gesture.as_deref(), draft_id);
+            return stand_in.reapply(
+                self.document.state.as_ref(),
+                self.gesture.as_deref(),
+                draft_id,
+            );
         }
         tasks::draft_reapply_now(&self.owner, self.client, draft_id)
     }
@@ -403,6 +408,7 @@ impl Editor {
     /// longer holds the draft; that frame is returned for the caller to take up.
     fn cancel_draft(&mut self, draft_id: &DraftId) -> Option<Result<Box<PreviewPayload>, String>> {
         let reseed = self
+            .document
             .state
             .as_ref()
             .map(|state| (state.asset.id.clone(), self.displayed_entry()))
@@ -574,7 +580,7 @@ impl Editor {
             }
             Kind::Crop(crop) => self.crop_discarded(crop, &gesture.draft),
         }
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             self.settle_step(Settle::Preview);
         }
         match self.cancel_draft(draft_id) {
@@ -597,7 +603,7 @@ impl Editor {
                 self.reapplied(result)
             }
             Step::Conflicted => {
-                let revision = self.state.as_ref().map(|state| state.revision);
+                let revision = self.document.state.as_ref().map(|state| state.revision);
                 let Some(gesture) = self.core_gesture_mut() else {
                     return Task::none();
                 };
@@ -915,7 +921,7 @@ impl Editor {
     /// pixels — no `asset.state` request and no history refresh. `None` when there is nothing to
     /// show.
     pub(crate) fn reseed_committed(&mut self) -> Option<Task<Message>> {
-        let asset = self.state.as_ref()?.asset.id.clone();
+        let asset = self.document.state.as_ref()?.asset.id.clone();
         let entry = self.displayed_entry();
         self.seed_values();
         let proxy = self.proxy_bounds();

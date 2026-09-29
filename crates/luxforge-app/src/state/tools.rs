@@ -734,7 +734,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if masking && !module.effects.iter().any(|effect| effect.maskable) {
             continue;
         }
-        if !applies(module, inputs.state) {
+        if !applies(module, inputs.document.state.as_ref()) {
             continue;
         }
         if !draws_section(module) {
@@ -869,8 +869,13 @@ pub(crate) fn headerless_group(module: &ModuleDescriptor) -> Option<&[Control]> 
 /// White balance's reset is the RAW development's As shot.
 fn group_reset(owner: &str, group: &Control, inputs: &Inputs<'_>) -> Option<ResetRef> {
     ResetRef::of(
-        luxforge_core::resolve_group_reset(owner, group, source_kind(inputs.state), inputs.target)
-            .map(|resolved| resolved.reset),
+        luxforge_core::resolve_group_reset(
+            owner,
+            group,
+            source_kind(inputs.document.state.as_ref()),
+            inputs.target,
+        )
+        .map(|resolved| resolved.reset),
     )
 }
 
@@ -949,7 +954,10 @@ fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
 
 /// The current recipe holds a non-neutral layer of one of `module`'s effects for the bound target.
 fn edits(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
-    let (Some(_), Some(recipe)) = (inputs.state, inputs.current_recipe) else {
+    let (Some(_), Some(recipe)) = (
+        inputs.document.state.as_ref(),
+        inputs.document.current_recipe.as_ref(),
+    ) else {
         return false;
     };
     recipe
@@ -965,8 +973,10 @@ fn edits(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
 pub(crate) fn bound_mask_name<'a>(inputs: &Inputs<'a>) -> Option<&'a str> {
     let target = inputs.target?;
     inputs
+        .document
         .masks
-        .filter(|listing| Some(&listing.entry_id) == inputs.display_entry)?
+        .as_ref()
+        .filter(|listing| Some(&listing.entry_id) == inputs.document.display_entry.as_ref())?
         .masks
         .iter()
         .find(|report| &report.id == target)
@@ -998,7 +1008,7 @@ pub(crate) fn control_model(
     let ControlOwner::Module(module) = owner else {
         return resolved_model(owner, None, control, inputs, enabled, path);
     };
-    let kind = source_kind(inputs.state);
+    let kind = source_kind(inputs.document.state.as_ref());
     match resolved(inputs.modules, module, control, kind, inputs.target) {
         Some((provider, variant)) if provider.id != module.id => resolved_model(
             ControlOwner::Module(provider),
@@ -1597,9 +1607,11 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
         .and_then(|local| local.samples.get(parameter))
         .filter(|samples| {
             parsed.as_ref() == Some(&samples.source)
-                && inputs.display_entry == Some(&samples.entry)
+                && inputs.document.display_entry.as_ref() == Some(&samples.entry)
                 && inputs
+                    .document
                     .state
+                    .as_ref()
                     .is_some_and(|state| state.asset.id == samples.asset)
         });
     let mut hasher = DefaultHasher::new();
@@ -1780,11 +1792,17 @@ pub(crate) struct CommittedCrop {
 /// the core cannot compile) reads as Free at its own angle. Reading it is `O(layers)` over rows
 /// already in hand: no render, no sample, no request.
 pub(crate) fn committed_crop(frame: &CropFrame<'_>, inputs: &Inputs<'_>) -> CommittedCrop {
-    let displayed = inputs
-        .display_entry
-        .or_else(|| inputs.state.map(|state| &state.current_entry.id));
+    let displayed = inputs.document.display_entry.as_ref().or_else(|| {
+        inputs
+            .document
+            .state
+            .as_ref()
+            .map(|state| &state.current_entry.id)
+    });
     let Some(recipe) = inputs
+        .document
         .recipe
+        .as_ref()
         .filter(|recipe| Some(&recipe.entry_id) == displayed)
     else {
         return CommittedCrop::default();
@@ -2118,7 +2136,7 @@ pub(crate) fn providers<'a>(
     module: &'a ModuleDescriptor,
     inputs: &Inputs<'a>,
 ) -> Vec<&'a ModuleDescriptor> {
-    let kind = source_kind(inputs.state);
+    let kind = source_kind(inputs.document.state.as_ref());
     let mut providers = vec![module];
     for control in walk(&module.controls) {
         let variant = luxforge_core::resolve_control(&module.id, control, kind, inputs.target);

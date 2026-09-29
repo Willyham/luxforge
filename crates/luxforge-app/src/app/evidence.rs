@@ -421,7 +421,7 @@ impl Editor {
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
     /// and do not inherit a stale diagnostic from the ordinary photograph.
     pub(super) fn capture_photo_ready(&self) -> bool {
-        if self.state.is_none()
+        if self.document.state.is_none()
             || self.crop().is_some()
             || self.gallery_page().is_some()
             || self.presentation.render_error.is_some()
@@ -468,7 +468,7 @@ impl Editor {
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
     /// including after a mask-overlay toggle causes a new photo and a new clipping derivation.
     pub(super) fn capture_clipping_ready(&self) -> bool {
-        if self.state.is_none()
+        if self.document.state.is_none()
             || self.crop().is_some()
             || self.gallery_page().is_some()
             || self.presentation.render_error.is_some()
@@ -868,7 +868,7 @@ impl Editor {
         }
         if let Some(step) = envelope_free(&method) {
             if step.takes_asset
-                && let Some(state) = &self.state
+                && let Some(state) = &self.document.state
             {
                 params.insert("asset_id".into(), json!(state.asset.id));
             }
@@ -893,6 +893,7 @@ impl Editor {
             );
         }
         let Some((asset, revision)) = self
+            .document
             .state
             .as_ref()
             .map(|state| (state.asset.id.clone(), state.revision))
@@ -960,6 +961,7 @@ impl Editor {
             return Ok(id.clone());
         }
         let listing = self
+            .document
             .masks
             .as_ref()
             .ok_or("no mask listing has been read yet")?;
@@ -994,6 +996,7 @@ impl Editor {
             return Ok(id.clone());
         }
         let listing = self
+            .document
             .masks
             .as_ref()
             .ok_or("no mask listing has been read yet")?;
@@ -1103,7 +1106,7 @@ impl Editor {
     /// that only changes a selection is captured on the next redraw.
     fn mask_step(&mut self, step: MaskStep) -> Task<Message> {
         use crate::app::message::mask::MaskPointer;
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if !self.mask_mode_active() {
@@ -1688,7 +1691,7 @@ impl Editor {
     /// [`Editor::slider_paced_tick`] instead, one per tick of the timer the subscription starts
     /// while `paced_slider` holds them, so this function's own frame is never captured for it.
     fn slider_step(&mut self, step: SliderStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if step.values.is_empty() {
@@ -1747,7 +1750,7 @@ impl Editor {
     /// opens the control's gesture exactly as a press does, and the release commits it. The second
     /// press is sent by its own one-shot timer `gap_ms` later, whatever the commit is doing then.
     fn double_click_step(&mut self, step: DoubleClickStep) -> Task<Message> {
-        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+        let Some(revision) = self.document.state.as_ref().map(|state| state.revision) else {
             return self.fail_step("no photograph is open");
         };
         if !crate::state::tools::drafts(&self.modules, &step.action, &step.parameter) {
@@ -1801,7 +1804,7 @@ impl Editor {
         self.event(
             "double_click_second",
             json!({"action":second.action,"parameter":second.parameter,
-                "revision":self.state.as_ref().map(|state| state.revision),
+                "revision":self.document.state.as_ref().map(|state| state.revision),
                 "gesture_open":self.slider_gesture().is_some()}),
         );
         self.await_step(Settle::Quiet);
@@ -1953,7 +1956,7 @@ impl Editor {
     /// Generated controls publish fractions and typed values, then use the same bounded draft
     /// driver as ordinary pointer input. The `slider` step is the same path, scripted in values.
     fn controls_step(&mut self, step: ControlsStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         match step {
@@ -1992,7 +1995,7 @@ impl Editor {
     }
 
     fn picker_step(&mut self, step: PickerStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let key = (step.action.clone(), step.parameter.clone());
@@ -2032,7 +2035,7 @@ impl Editor {
     }
 
     fn curve_step(&mut self, step: CurveStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let mut tasks = Vec::new();
@@ -2269,7 +2272,7 @@ impl Editor {
     /// scroll sends; the step settles on that answer, so the captured state carries the offset the
     /// frame was drawn at.
     fn pan_step(&mut self, x: f32, y: f32) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if !matches!(
@@ -2302,7 +2305,7 @@ impl Editor {
     /// Type into one generated field and, when the step says so, press Enter in it, which commits
     /// that one field without a draft.
     fn field_step(&mut self, step: FieldStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if crate::state::tools::declared_action(&self.modules, &step.action)
@@ -2343,7 +2346,7 @@ impl Editor {
     /// A module's header reset, or one control group's reset found by its declared label. Both run
     /// the action the descriptor declares, with its preset, exactly as the buttons do.
     fn reset_step(&mut self, step: ResetStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let Some(module) = crate::state::tools::module_of(&self.modules, &step.module) else {
@@ -2375,7 +2378,7 @@ impl Editor {
     /// sample-apply pick runs its module's query and submits the answer once. Nothing here names
     /// any of them.
     fn pick_step(&mut self, step: PickStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let mode = self.session.workspace.mode.clone();
@@ -2412,7 +2415,7 @@ impl Editor {
 
     /// A view change through the same session call the zoom controls make.
     fn view_step(&mut self, step: ViewStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if self.busy {
@@ -2432,7 +2435,7 @@ impl Editor {
     /// first. The deadline records the surface state before asking for a screenshot: otherwise a
     /// capture's own frame can conceal a missed GPU retirement wake.
     fn view_idle_step(&mut self, step: ViewIdleStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if self.busy {
@@ -2512,7 +2515,7 @@ impl Editor {
     /// the fields that actually differ from the session's own, exactly as `TogglePanel`, `SetMode`
     /// and `ToggleThirds` each already do for their one field. Captured on the session round trip.
     fn workspace_step(&mut self, step: WorkspaceStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let mut diff = Map::new();
@@ -2620,7 +2623,7 @@ impl Editor {
     /// Select a loaded history entry by sequence, or return to the current state, exactly as the
     /// state panel's rows and "Return to current" do. Captured once its pixels reach the GPU.
     fn preview_step(&mut self, step: PreviewStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if self.busy {
@@ -2633,6 +2636,7 @@ impl Editor {
             }
             PreviewStep::Sequence(sequence) => {
                 let Some(entry_id) = self
+                    .document
                     .history
                     .entries
                     .iter()
@@ -2651,7 +2655,7 @@ impl Editor {
     /// One pointer position over the photograph, published exactly as the canvas publishes a move,
     /// and captured once `render.sample` has answered with the three output codes under it.
     fn hover_step(&mut self, x: u32, y: u32) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         if self.pointer == Some((x, y)) {
@@ -2788,7 +2792,7 @@ impl Editor {
     /// Click one row, exactly as the section does: the section's own action with that preset's
     /// fields, through the action path every declared control takes. Captured on the render.
     fn preset_step(&mut self, pick: PresetPick) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let row = match self.preset_row(&pick) {
@@ -2824,7 +2828,7 @@ impl Editor {
 
     /// Fill and submit the create form through its own messages, in the order a person would.
     fn preset_create_step(&mut self, step: PresetCreateStep) -> Task<Message> {
-        if self.state.is_none() {
+        if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
         let labels: Vec<String> = presettable_groups(&self.modules, self.developer)

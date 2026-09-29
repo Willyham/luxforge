@@ -345,7 +345,8 @@ impl Editor {
         // the cells divide, so a mask overlay can be asked for with the first preview job rather
         // than only from the second one onwards.
         let source = self.presentation.dimensions.or_else(|| {
-            self.state
+            self.document
+                .state
                 .as_ref()
                 .map(|state| (state.asset.width, state.asset.height))
         })?;
@@ -366,7 +367,8 @@ impl Editor {
     /// density. Reusing the viewport's counts for that grid makes a large photograph coarse.
     pub(crate) fn whole_overlay_cells(&self) -> Option<(u32, u32)> {
         let source = self.presentation.dimensions.or_else(|| {
-            self.state
+            self.document
+                .state
                 .as_ref()
                 .map(|state| (state.asset.width, state.asset.height))
         })?;

@@ -86,7 +86,7 @@ fn the_retirement_wake_remains_subscribed_after_presenting_new_dimensions() {
 fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
-    let asset = editor.state.as_ref().unwrap().asset.id.clone();
+    let asset = editor.document.state.as_ref().unwrap().asset.id.clone();
     let draft_a = luxforge_core::Draft::new("basic.set", asset.clone(), 4);
     editor.presentation.displayed_draft_id = Some(draft_a.draft_id);
     editor.presentation.displayed_draft_revision = Some(10);

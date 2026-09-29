@@ -319,19 +319,19 @@ pub(crate) fn derive(inputs: &Inputs<'_>, previous: &HistogramModel) -> Histogra
         shadow: Triangle {
             tinted: false,
             active: flags.0,
-            enabled: inputs.state.is_some(),
+            enabled: inputs.document.state.is_some(),
         },
         highlight: Triangle {
             tinted: false,
             active: flags.1,
-            enabled: inputs.state.is_some(),
+            enabled: inputs.document.state.is_some(),
         },
         ..HistogramModel::default()
     };
     let Some(analysis) = inputs.analysis else {
         // No report: either the displayed frame failed to render, or none has arrived yet. A
         // failure says so with its reason; anything else is honestly pending, never an empty plot.
-        if inputs.state.is_some()
+        if inputs.document.state.is_some()
             && let Some(error) = inputs.render_error
         {
             model.status = HistogramStatus::Unavailable;

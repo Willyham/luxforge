@@ -109,7 +109,7 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
 fn identity(inputs: &Inputs<'_>) -> Option<String> {
     let (width, height) = inputs.dimensions?;
     let mut identity = format!("{width} \u{d7} {height}");
-    if let Some(state) = inputs.state {
+    if let Some(state) = inputs.document.state.as_ref() {
         identity.push_str(match state.asset.source {
             SourceKind::Jpeg => " \u{b7} JPEG",
             SourceKind::Raw { .. } => " \u{b7} RAW",
@@ -129,7 +129,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         can_open_gallery: inputs.developer
             && inputs.gallery_refusal.is_none()
             && !inputs.compare_held,
-        file_name: inputs.state.and_then(|state| {
+        file_name: inputs.document.state.as_ref().and_then(|state| {
             state
                 .asset
                 .locator
@@ -147,7 +147,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
             Zoom::Percent { value } if *value == 100.0 => SEGMENT_HUNDRED,
             Zoom::Percent { .. } => SEGMENT_PERCENT,
         },
-        can_view: inputs.state.is_some(),
+        can_view: inputs.document.state.is_some(),
         can_open: inputs.can_open,
         can_export: inputs.can_export,
         export_menu_open: inputs.can_export && matches!(inputs.menu, Some(MenuTarget::Export)),
@@ -155,9 +155,16 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         // so neither is offered then.
         can_undo: navigable
             && inputs
+                .document
                 .state
+                .as_ref()
                 .is_some_and(|state| state.current_entry.undo_parent.is_some()),
-        can_redo: navigable && inputs.state.is_some_and(|state| !state.redo.is_empty()),
+        can_redo: navigable
+            && inputs
+                .document
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.redo.is_empty()),
         state_panel_open: inputs.session.workspace.state_panel,
         tools_panel_open: inputs.session.workspace.tools_panel,
         compare_held: inputs.compare_held,

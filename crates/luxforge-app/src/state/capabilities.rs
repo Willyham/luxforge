@@ -610,7 +610,7 @@ pub(crate) fn task_control(
 ) -> TaskControl {
     let state = inputs.capabilities.module(&module.id);
     let declared = module.task(task);
-    let asset = inputs.state.map(|state| &state.asset.id);
+    let asset = inputs.document.state.as_ref().map(|state| &state.asset.id);
     let run = state
         .tasks
         .get(task)
@@ -647,7 +647,7 @@ pub(crate) fn task_control(
             // Once the current recipe references the result, Apply would change nothing.
             let applied = artifacts
                 .first()
-                .is_some_and(|artifact| applied(inputs.state, artifact));
+                .is_some_and(|artifact| applied(inputs.document.state.as_ref(), artifact));
             TaskControlState::Succeeded {
                 summary: match (artifacts.first(), applied) {
                     (Some(artifact), true) => format!("Applied · {}", short(artifact)),
@@ -675,7 +675,7 @@ pub(crate) fn task_control(
     let takes_profile = declared.is_some_and(|task| task.profile);
     let reason = if declared.is_none() {
         Some(format!("{} declares no task {task}", module.title))
-    } else if declared.is_some_and(|task| task.asset) && inputs.state.is_none() {
+    } else if declared.is_some_and(|task| task.asset) && inputs.document.state.is_none() {
         Some("No photograph is open".into())
     } else if takes_profile && task_profile(state, takes_profile).is_none() {
         let label = module

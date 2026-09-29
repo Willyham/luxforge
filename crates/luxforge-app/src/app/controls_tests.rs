@@ -252,7 +252,7 @@ fn curve_channel_selection_changes_no_request_value_or_recipe() {
     assert_eq!(editor.fields, fields);
     assert!(editor.slider_gesture().is_none());
     assert!(!editor.busy);
-    assert_eq!(editor.state.as_ref().unwrap().revision, 4);
+    assert_eq!(editor.document.state.as_ref().unwrap().revision, 4);
     finish(editor, catalog);
 }
 
@@ -293,7 +293,7 @@ fn escape_cancels_picker_and_curve_and_commits_nothing() {
                 .iter()
                 .any(|record| record["event"] == "slider_draft_cancelled")
         );
-        assert_eq!(editor.state.as_ref().unwrap().revision, 4);
+        assert_eq!(editor.document.state.as_ref().unwrap().revision, 4);
         finish(editor, catalog);
     }
 }
@@ -544,13 +544,19 @@ fn a_gesture_answer_leaves_busy_to_the_request_that_set_it() {
     );
 
     editor.busy = true;
-    let current = editor.state.as_ref().unwrap().current_entry.clone();
+    let current = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .clone();
     let next = entry(&asset, 5, Some(&current.id));
     let committed = refresh_for(&asset, &next, Vec::new(), &[&next], false);
     let job = committed.job.clone();
     answer_commit(&mut editor, Ok(Some(committed)));
     assert!(editor.gesture.is_none(), "the gesture committed");
-    assert_eq!(editor.state.as_ref().unwrap().revision, 5);
+    assert_eq!(editor.document.state.as_ref().unwrap().revision, 5);
     assert!(editor.busy, "the commit's answer leaves busy set");
 
     let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
@@ -605,7 +611,14 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
     let (pick, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
     let (pick, x) = (pick.to_owned(), x.to_owned());
     editor.fields.set(&pick, &x, "42".into());
-    let asset = editor.state.as_ref().expect("open").asset.id.clone();
+    let asset = editor
+        .document
+        .state
+        .as_ref()
+        .expect("open")
+        .asset
+        .id
+        .clone();
     let module = editor
         .modules
         .iter()
@@ -615,7 +628,13 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
         .clone();
 
     let seeded = |editor: &mut Editor, values: Option<Value>| {
-        let current = editor.state.as_ref().expect("open").current_entry.clone();
+        let current = editor
+            .document
+            .state
+            .as_ref()
+            .expect("open")
+            .current_entry
+            .clone();
         let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
         refresh.recipe.layers = values
             .into_iter()
@@ -874,7 +893,13 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
 #[test]
 fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
-    let current = editor.state.as_ref().expect("open").current_entry.clone();
+    let current = editor
+        .document
+        .state
+        .as_ref()
+        .expect("open")
+        .current_entry
+        .clone();
     let asset = current.asset_id.clone();
     let rows = |entry: &luxforge_core::HistoryEntry| testing::described(entry);
     let read = |entry: &luxforge_core::HistoryEntry| {
@@ -890,6 +915,7 @@ fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
     };
     let current_rows = |editor: &Editor| {
         editor
+            .document
             .current_recipe
             .as_ref()
             .map(|recipe| recipe.entry_id.clone())
@@ -902,7 +928,11 @@ fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
     let older = entry(&asset, 2, None);
     let _ = editor.update(read(&older));
     assert_eq!(
-        editor.recipe.as_ref().map(|recipe| &recipe.entry_id),
+        editor
+            .document
+            .recipe
+            .as_ref()
+            .map(|recipe| &recipe.entry_id),
         Some(&older.id)
     );
     assert_eq!(
@@ -928,7 +958,14 @@ fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
 fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_them() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let (action, parameter) = patch_control(&editor);
-    let asset = editor.state.as_ref().expect("open").asset.id.clone();
+    let asset = editor
+        .document
+        .state
+        .as_ref()
+        .expect("open")
+        .asset
+        .id
+        .clone();
     let module = editor
         .modules
         .iter()
@@ -937,7 +974,13 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
         .id
         .clone();
     let described = |editor: &mut Editor, value: f64| {
-        let current = editor.state.as_ref().expect("open").current_entry.clone();
+        let current = editor
+            .document
+            .state
+            .as_ref()
+            .expect("open")
+            .current_entry
+            .clone();
         let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
         refresh.recipe.layers = vec![luxforge_core::LayerDescription {
             id: luxforge_core::LayerId::new(),
@@ -968,7 +1011,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     // disabled with its values still visible.
     let older = entry(&asset, 2, None);
     editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
-    editor.display_entry = Some(older.id.clone());
+    editor.document.display_entry = Some(older.id.clone());
     let historical = described(&mut editor, -1.0);
     let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
         crate::app::tasks::RecipeRead {
@@ -1005,7 +1048,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     // Return to current: the current entry's values come back.
     editor.session.preview.selection = HistorySelection::Current;
     let current = described(&mut editor, 2.0);
-    editor.display_entry = Some(current.state.current_entry.id.clone());
+    editor.document.display_entry = Some(current.state.current_entry.id.clone());
     let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
         crate::app::tasks::RecipeRead {
             recipe: current.recipe,
@@ -1151,7 +1194,12 @@ fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 5);
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
     let (module_id, _, _) = sample_mode(&editor);
-    let revision = editor.state.as_ref().expect("an open asset").revision;
+    let revision = editor
+        .document
+        .state
+        .as_ref()
+        .expect("an open asset")
+        .revision;
     editor.rederive();
     let picker = |editor: &Editor| -> crate::state::tools::PickerControl {
         editor
@@ -1198,7 +1246,12 @@ fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
 
     // Nothing about it is an edit: no history entry, no revision, no draft.
     assert_eq!(
-        editor.state.as_ref().expect("an open asset").revision,
+        editor
+            .document
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .revision,
         revision
     );
     assert_eq!(editor.displayed_entry(), Some(entry_id));
@@ -1283,7 +1336,7 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
         tasks::PreviewPayload { job, session },
     )))));
-    assert_eq!(editor.display_entry, Some(historical.id.clone()));
+    assert_eq!(editor.document.display_entry, Some(historical.id.clone()));
     assert!(editor.editing.is_none());
     assert!(
         !editor.recipe_rows_shown(),
@@ -1323,7 +1376,7 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
             masks: read.masks,
         },
     )))));
-    assert_eq!(editor.display_entry, Some(current.id));
+    assert_eq!(editor.document.display_entry, Some(current.id));
     assert_eq!(
         shown(&editor),
         [Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
@@ -1466,7 +1519,7 @@ fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
         editor.curve_sample_requested.is_empty(),
         "a module that does not apply to a JPEG shows no curve"
     );
-    let asset = editor.state.as_ref().unwrap().asset.id.clone();
+    let asset = editor.document.state.as_ref().unwrap().asset.id.clone();
     let payload = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
     let raw = raw_entry(&asset, 5, None, &payload);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(

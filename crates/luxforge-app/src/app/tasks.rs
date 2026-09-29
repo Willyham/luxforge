@@ -2178,7 +2178,12 @@ mod tests {
         let mut cursor = editor.api_sequence;
         let mut poll = |editor: &mut Editor| {
             let own = editor.own_requests.iter().cloned().collect::<Vec<_>>();
-            let revision = editor.state.as_ref().expect("a photograph").revision;
+            let revision = editor
+                .document
+                .state
+                .as_ref()
+                .expect("a photograph")
+                .revision;
             let polled = sync_now(
                 &owner,
                 client,
@@ -2202,7 +2207,7 @@ mod tests {
         let caught_up = editor.api_sequence;
 
         let command = |editor: &mut Editor, transform: &str| {
-            let revision = editor.state.as_ref().unwrap().revision;
+            let revision = editor.document.state.as_ref().unwrap().revision;
             let refreshed = command_now(
                 &editor.owner,
                 client,
@@ -2229,7 +2234,10 @@ mod tests {
             editor.api_sequence, caught_up,
             "the commits' answers, which count the agent's event, move no cursor"
         );
-        assert!(editor.versions.is_empty(), "no read so far saw the version");
+        assert!(
+            editor.document.versions.is_empty(),
+            "no read so far saw the version"
+        );
 
         assert_eq!(
             poll(&mut editor),
@@ -2238,6 +2246,7 @@ mod tests {
         );
         assert_eq!(
             editor
+                .document
                 .versions
                 .iter()
                 .map(|version| version.name.as_str())

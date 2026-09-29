@@ -19,7 +19,11 @@ fn start(editor: &mut Editor, keep_metadata: bool) {
 /// The plan answered and the dialog chose `/tmp/<name>`: the status names the file, and
 /// `export.jpeg` is what the returned task would send.
 fn chosen(editor: &mut Editor, name: &str) {
-    let state = editor.state.as_ref().expect("a photograph is open");
+    let state = editor
+        .document
+        .state
+        .as_ref()
+        .expect("a photograph is open");
     let choice = ExportChoice {
         asset_id: state.asset.id.clone(),
         entry_id: state.current_entry.id.clone(),

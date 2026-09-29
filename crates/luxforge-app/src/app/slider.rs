@@ -77,7 +77,7 @@ impl Editor {
             // and the request it produces.
             return self.drive(Event::Offer(fields));
         }
-        let Some(state) = &self.state else {
+        let Some(state) = &self.document.state else {
             return Task::none();
         };
         let base_revision = state.revision;
@@ -152,7 +152,7 @@ impl Editor {
         if reset.is_some()
             && (gesture_open || self.busy)
             && self.session.preview.can_edit()
-            && let Some(state) = &self.state
+            && let Some(state) = &self.document.state
         {
             let (asset, revision) = (state.asset.id.clone(), state.revision);
             self.event(
@@ -203,6 +203,7 @@ impl Editor {
         let label = tools::control_label(&self.modules, &reset.action, &reset.parameter)
             .unwrap_or_else(|| reset.parameter.clone());
         let reason = if self
+            .document
             .state
             .as_ref()
             .is_none_or(|state| state.asset.id != reset.asset)
@@ -232,7 +233,7 @@ impl Editor {
         action: String,
         preset: Map<String, Value>,
     ) -> Task<Message> {
-        let revision = self.state.as_ref().map(|state| state.revision);
+        let revision = self.document.state.as_ref().map(|state| state.revision);
         self.event(
             "field_reset_sent",
             json!({"action":action,"preset":preset,"revision":revision,

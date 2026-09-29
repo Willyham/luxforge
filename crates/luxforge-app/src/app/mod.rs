@@ -101,8 +101,8 @@ use evidence::Evidence;
 use gesture::{CoreGesture, Starting};
 use iced::{Element, Subscription, Task};
 use luxforge_core::{
-    ClientAuthority, ClientId, ClientSession, EditorState, HistoryPage, HistorySelection,
-    LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, RecipeDescription, Version,
+    ClientAuthority, ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle,
+    POINTER_MODE,
 };
 use message::{
     Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
@@ -111,7 +111,7 @@ use message::{
 use overlay::{OverlayQueue, OverlayRequest};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -172,18 +172,9 @@ pub(crate) struct Editor {
     /// Emit events to stderr when a log was requested but is unavailable.
     pub(crate) verbose: bool,
     pub(crate) started: Instant,
-    pub(crate) state: Option<EditorState>,
-    pub(crate) history: HistoryPage,
-    pub(crate) versions: Vec<Version>,
-    /// Entries on the current undo-parent chain; other loaded entries are abandoned branches.
-    pub(crate) lineage: HashSet<luxforge_core::EntryId>,
-    /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
-    pub(crate) lineage_floor: Option<u64>,
-    pub(crate) display_entry: Option<luxforge_core::EntryId>,
-    /// The Original entry, so Compare needs no search.
-    pub(crate) original_entry: Option<luxforge_core::EntryId>,
-    /// What the selection was before Compare took it.
-    pub(crate) compare_return: Option<HistorySelection>,
+    /// The open photograph as this desktop last read it: state, history, versions, lineage, the
+    /// displayed entry's recipe rows and masks, and the Original.
+    pub(crate) document: state::document::Document,
     /// What the photo surface shows and the bookkeeping that decides it.
     pub(crate) presentation: preview::Presentation,
     /// One active and one replaceable pending overlay derivation, off the UI thread.
@@ -280,13 +271,6 @@ pub(crate) struct Editor {
     pub(crate) pending_reset: Option<slider::PendingReset>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: BTreeMap<String, bool>,
-    /// The displayed entry's layers as the recipe panel reads them.
-    pub(crate) recipe: Option<RecipeDescription>,
-    /// The current entry's layers, whichever entry is displayed: a section's edited dot follows the
-    /// current entry, never a historical preview.
-    pub(crate) current_recipe: Option<RecipeDescription>,
-    /// The last `recipe.describe` for a displayed entry failed, so no rows will come for it.
-    pub(crate) recipe_failed: bool,
     pub(crate) menu: Option<MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
@@ -306,9 +290,6 @@ pub(crate) struct Editor {
     /// session already reports it, so the mode strip shows Crop selected during every draft
     /// however it was opened, and pointer again however it ended.
     pub(crate) mode_sync: Option<String>,
-    /// The masks of the displayed entry, as `mask.list` last answered them. Read back with the
-    /// recipe after every change, so the panel never shows a mask the stack no longer holds.
-    pub(crate) masks: Option<luxforge_core::mask::commands::MaskListing>,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
     pub(crate) mask_panel: state::masks::MaskPanel,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
@@ -404,17 +385,7 @@ impl Editor {
             run_id: config.run_id.clone(),
             verbose: config.wants_events(),
             started: Instant::now(),
-            state: None,
-            history: HistoryPage {
-                entries: Vec::new(),
-                next_before_sequence: None,
-            },
-            versions: Default::default(),
-            lineage: Default::default(),
-            lineage_floor: None,
-            display_entry: None,
-            original_entry: None,
-            compare_return: None,
+            document: Default::default(),
             presentation: preview::Presentation::default(),
             overlay_queue: OverlayQueue::default(),
             overlay_request: None,
@@ -464,9 +435,6 @@ impl Editor {
             stand_in: None,
             pending_reset: None,
             expanded: Default::default(),
-            recipe: Default::default(),
-            current_recipe: Default::default(),
-            recipe_failed: false,
             menu: Default::default(),
             palette_open: false,
             palette_query: String::new(),
@@ -478,7 +446,6 @@ impl Editor {
             version_form_open: false,
             crop_section: Default::default(),
             mode_sync: None,
-            masks: Default::default(),
             mask_panel: Default::default(),
             thumbnailer: Default::default(),
             capabilities: Default::default(),
@@ -663,16 +630,9 @@ impl Editor {
     fn rederive(&mut self) {
         let mut workspace = std::mem::take(&mut self.workspace);
         let inputs = state::Inputs {
-            state: self.state.as_ref(),
-            history: &self.history,
-            versions: &self.versions,
-            lineage: &self.lineage,
-            lineage_floor: self.lineage_floor,
-            display_entry: self.display_entry.as_ref(),
+            document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
-            recipe: self.recipe.as_ref(),
-            current_recipe: self.current_recipe.as_ref(),
             fields: &self.fields,
             control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
@@ -686,9 +646,12 @@ impl Editor {
             history_refusal: self.gesture_refusal(Starting::History),
             // The one editability rule, computed once for every model that reads it; a start's
             // editable half in `gesture_refusal` asks the same rule.
-            edit_refusal: state::edit_refusal(self.state.as_ref(), &self.session, self.busy),
+            edit_refusal: state::edit_refusal(
+                self.document.state.as_ref(),
+                &self.session,
+                self.busy,
+            ),
             draft: self.crop(),
-            masks: self.masks.as_ref(),
             mask_panel: &self.mask_panel,
             mask_draft: self.mask_shape(),
             // The generated sections follow the open mask while Mask mode is active, and the global
@@ -703,7 +666,7 @@ impl Editor {
             can_open: !self.busy && self.evidence.is_none(),
             can_export: self.can_export(),
             developer: self.developer,
-            compare_held: self.compare_return.is_some(),
+            compare_held: self.document.compare_return.is_some(),
             scale_factor: self.scale_factor,
             zoom: &self.zoom,
             zoom_editing: self.zoom_editing,
@@ -773,15 +736,16 @@ impl Editor {
     /// generated fields are seeded from those rows, so an evidence frame waits for this: the
     /// controls it records are then the displayed entry's own values.
     pub(crate) fn recipe_rows_shown(&self) -> bool {
-        self.state.is_none()
-            || self.recipe_failed
-            || self.recipe.as_ref().map(|recipe| &recipe.entry_id)
+        self.document.state.is_none()
+            || self.document.recipe_failed
+            || self.document.recipe.as_ref().map(|recipe| &recipe.entry_id)
                 == self.displayed_entry().as_ref()
     }
 
     pub(crate) fn displayed_entry(&self) -> Option<luxforge_core::EntryId> {
-        self.display_entry.clone().or_else(|| {
-            self.state
+        self.document.display_entry.clone().or_else(|| {
+            self.document
+                .state
                 .as_ref()
                 .map(|state| state.current_entry.id.clone())
         })
@@ -835,7 +799,7 @@ impl Editor {
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(
                 &self.modules,
-                self.state.as_ref(),
+                self.document.state.as_ref(),
                 self.section_target(),
             ),
             mask_typing: self.mask_panel.typing.is_some(),
@@ -861,7 +825,7 @@ impl Editor {
     /// blocked wake stream installed for the whole time a photograph is open, so that later wake
     /// can trigger the redraw that admits a deferred texture without another user event.
     pub(crate) fn preview_wake_needed(&self) -> bool {
-        self.state.is_some()
+        self.document.state.is_some()
             || self.presentation.queue.is_busy()
             || self.overlay_queue.is_busy()
             || self.thumbnailer.queue.is_busy()
@@ -893,7 +857,7 @@ impl Editor {
         // log, and this carries it in as the `Changed` a 500 ms timer used to stand in for. An
         // open photograph with nothing happening to it wakes nothing. A signal posted while no
         // photograph is open is buffered, and read once one is.
-        if self.state.is_some() && self.evidence.is_none() {
+        if self.document.state.is_some() && self.evidence.is_none() {
             subscriptions.push(waker::events_subscription());
         }
         // The Performance section's sampler, gated on the section being expanded with the state
