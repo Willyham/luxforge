@@ -1,14 +1,13 @@
-//! Masking end to end, one module per area: the mask-space, composition and gradient study
-//! (`study`), the brush study (`brush_study`) and the range study (`range_study`) against the
-//! independent references in `luxforge-reference`; the compiled kinds against those references
-//! (`unit`, `radial`, `brush`, `constrained_brush`, `range`, `combination`); the coverage grid
-//! (`overlay`); geometry survival and reopen (`geometry_survival`); and masked edits on the colour
-//! and spatial paths and through the JSON method table (`masked_colour`, `masked_spatial`,
-//! `masked_edit_end_to_end`). The helpers below are the ones several of them share; the rest come
-//! from `luxforge-testkit`.
+//! Masking end to end, one module per area: the compiled kinds against the independent references
+//! in `luxforge-reference` (`unit`, `radial`, `brush`, `constrained_brush`, `range`,
+//! `combination`); the coverage grid (`overlay`); geometry survival and reopen
+//! (`geometry_survival`); and masked edits on the colour and spatial paths and through the JSON
+//! method table (`masked_colour`, `masked_spatial`, `masked_edit_end_to_end`). The studies that
+//! prove those references' own properties are in `luxforge-reference`'s `studies` binary. The
+//! helpers below are the ones several of these modules share; the rest come from
+//! `luxforge-testkit`.
 
 mod brush;
-mod brush_study;
 mod combination;
 mod constrained_brush;
 mod geometry_survival;
@@ -18,8 +17,6 @@ mod masked_spatial;
 mod overlay;
 mod radial;
 mod range;
-mod range_study;
-mod study;
 mod unit;
 
 use luxforge_core::{
@@ -45,10 +42,6 @@ const HEIGHT: u32 = 16;
 /// The exposure a masked layer applies, in EV. Large enough that a coverage difference of one part
 /// in a thousand is visible in the output codes rather than lost in the quantizer.
 const MASKED_EV: f64 = 2.0;
-
-/// The study's two 24 MP stages.
-const LANDSCAPE: RefStage = RefStage::new(6000, 4000);
-const PORTRAIT: RefStage = RefStage::new(4000, 6000);
 
 /// The stages the compiled gradients are held to the reference on: both 24 MP orientations, a
 /// square and a panorama.

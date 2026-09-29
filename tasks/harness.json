@@ -168,7 +168,7 @@
         {
           "kind": "file",
           "label": "Brush study deletion test",
-          "target": "crates/luxforge-core/tests/mask/brush_study.rs",
+          "target": "crates/luxforge-reference/tests/studies/brush.rs",
           "relevance": "The second stroke-deletion tautology, and `refine_radius(100.0) == refine_radius(100.0)`."
         },
         {

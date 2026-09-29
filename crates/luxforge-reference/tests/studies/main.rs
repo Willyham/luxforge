@@ -5,16 +5,28 @@
 //! One binary, one module per study, so a study is filtered by its module name: `cargo test -p
 //! luxforge-reference --test studies tone::`.
 
+mod brush;
 mod colour;
 mod colour_visual;
 mod dng;
 mod exposure;
+mod mask;
 mod mixer;
 mod presence;
+mod range;
 mod tone;
 mod vignette;
 mod white_balance;
 mod white_balance_visual;
+
+use luxforge_reference::mask::Stage;
+
+/// The mask studies' two 24 MP stages.
+const LANDSCAPE: Stage = Stage::new(6000, 4000);
+const PORTRAIT: Stage = Stage::new(4000, 6000);
+
+/// A pixel for the geometric kinds, which ignore the pixel they are handed.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 
 /// A JSON text round trip of a committed fixture against a fresh computation: `1e-12` relative is
 /// four orders of magnitude tighter than the production-against-reference tolerances the fixtures

@@ -2,7 +2,7 @@
 
 Status: frozen, and transcribed. This document, the independent [`f64`
 reference](../../crates/luxforge-reference/src/range.rs) and its
-[proofs](../../crates/luxforge-core/tests/mask/range_study.rs) are the complete specification the
+[proofs](../../crates/luxforge-reference/tests/studies/range.rs) are the complete specification the
 luminance-range and colour-range units of the [masking design](masking.md) are checked against,
 answering its [phase-D component section](masking.md#luminance-range-and-colour-range-phase-d). It
 is the value-based companion to the [mask study](mask-study.md), which froze the position-based
@@ -531,7 +531,7 @@ Every measured number above comes from the reference's own tests. The dense figu
 test, because the tables do not belong in an ordinary run:
 
 ```sh
-cargo test --release --locked --package luxforge-core --test mask \
+cargo test --release --locked --package luxforge-reference --test studies \
     -- --ignored --nocapture range_study_figures
 ```
 
@@ -544,7 +544,7 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | --- | --- |
 | `docs/design/range-study.md` | This document. |
 | [`crates/luxforge-reference/src/range.rs`](../../crates/luxforge-reference/src/range.rs) | The frozen `f64` reference: the luminance axis, the band, the legality rules, the colour metric, the refine mapping and the multi-sample combination. Reuses `reference/tone.rs`'s luminance and OETF, `reference/colour.rs`'s Oklab and `reference/mask.rs`'s `smooth` unchanged. |
-| [`crates/luxforge-core/tests/mask/range_study.rs`](../../crates/luxforge-core/tests/mask/range_study.rs) | The proofs and measurements above, the scenes chosen to fail, and the ignored figures test. |
+| [`crates/luxforge-reference/tests/studies/range.rs`](../../crates/luxforge-reference/tests/studies/range.rs) | The proofs and measurements above, the scenes chosen to fail, and the ignored figures test. |
 | [`crates/luxforge-reference/src/lib.rs`](../../crates/luxforge-reference/src/lib.rs) | Declares `pub mod range;` beside the other studies' references. |
 | [`crates/luxforge-core/src/mask/range.rs`](../../crates/luxforge-core/src/mask/range.rs) | The production transcription: both kinds' payloads, legality rules, declared parameters, compiled terms and per-pixel coverage, and the two answers a value-based component gives about the frame. |
 | [`crates/luxforge-core/tests/mask/range.rs`](../../crates/luxforge-core/tests/mask/range.rs) | The bit-identity sweeps, P12's condition on the geometric components, the byte and RAW linear renders, the sampled byte against the rendered byte, the composition with a gradient and a subtract brush, P13's answers, the whole-stage measurement, and `a_value_based_kind_is_exactly_one_that_reads_the_pixel`, which holds the kind table's own `value_based` column against every compiled kind's `reads_pixels` so a client can name the limits before a component has been drawn. |

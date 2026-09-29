@@ -2,7 +2,7 @@
 //! capsule profile, the per-stroke maximum, the screen union across add strokes
 //! and the multiply-complement for erase strokes.
 //!
-//! This binary shares no code with `luxforge-core`'s production sources. The
+//! This module shares no code with `luxforge-core`'s production sources. The
 //! frozen equations live in `crates/luxforge-reference/src/mask.rs` beside the gradients'; the
 //! mathematics, the rejected spellings and every measured figure quoted below
 //! are written out in full in `docs/design/mask-study.md#the-brush`, which this
@@ -11,11 +11,12 @@
 //! The study's dense figures are printed by the one ignored test at the end:
 //!
 //! ```sh
-//! cargo test --release --locked --package luxforge-core --test mask \
+//! cargo test --release --locked --package luxforge-reference --test studies \
 //!     -- --ignored --nocapture brush_study_figures
 //! ```
 
-use super::*;
+use super::{ANY_PIXEL, LANDSCAPE, PORTRAIT};
+use luxforge_reference::SplitMix64;
 use luxforge_reference::mask::{
     Brush, BrushStroke, ColourLimit, DISTANCE_MAX, DISTANCE_MIN, Stage, accumulate, brush_bounds,
     brush_coverage, brush_segments, brush_size_is_legal, capsule_profile, colour_similarity,
