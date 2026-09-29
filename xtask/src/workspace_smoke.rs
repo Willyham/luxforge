@@ -5,7 +5,7 @@
 //! the crop workflow. `unavailable` needs two launches sharing one catalog, the second with the crop
 //! module disabled, because a module can only be disabled at startup.
 use crate::{
-    scenario::{Checked, Fixture, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, plan::only},
     *,
 };
 use luxforge_core::CROP_EFFECT;
@@ -22,33 +22,67 @@ const TRANSFORM_MODULE: &str = "luxforge.transform";
 const POINTER_MODE: &str = "pointer";
 
 /// Every frame of `workspace`, in order: the open, then one per step. Comments in the acceptance
-/// criteria name what each step proves; the plan says what it commits, and `verify` below checks
-/// the workspace, the status and the photograph each step produces.
+/// criteria name what each step proves; the plan says what it commits and what the workspace
+/// holds — the four fields this scenario drives, and both clipping overlays off — and `verify`
+/// below checks the status and the photograph each step produces.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let workspace = |name: &str, request: WorkspaceStep| Step::new(name, request).commits(0);
     Plan::new(vec![
-        Step::opened("opened"),
+        panels(Step::opened("opened"), true, true, POINTER_MODE, false),
         // `edit.transform rotate-right` commits one entry; the panels are untouched.
-        Step::new(
-            "rotated",
-            script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
-        )
-        .commits(1)
-        .label("Rotate right"),
+        panels(
+            Step::new(
+                "rotated",
+                script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
+            )
+            .commits(1)
+            .label("Rotate right"),
+            true,
+            true,
+            POINTER_MODE,
+            false,
+        ),
         // Each workspace step, its own columns, the photograph still centred in them.
-        workspace("state-hidden", WorkspaceStep::default().state_panel(false)),
-        workspace(
-            "tools-hidden",
-            WorkspaceStep::default()
-                .state_panel(true)
-                .tools_panel(false),
+        panels(
+            workspace("state-hidden", WorkspaceStep::default().state_panel(false)),
+            false,
+            true,
+            POINTER_MODE,
+            false,
         ),
-        workspace(
-            "thirds",
-            WorkspaceStep::default().tools_panel(true).thirds(true),
+        panels(
+            workspace(
+                "tools-hidden",
+                WorkspaceStep::default()
+                    .state_panel(true)
+                    .tools_panel(false),
+            ),
+            true,
+            false,
+            POINTER_MODE,
+            false,
         ),
-        // A historical preview of entry 0, the Original, then back to current.
-        Step::new("preview", PreviewStep::Sequence(0)).commits(0),
+        panels(
+            workspace(
+                "thirds",
+                WorkspaceStep::default().tools_panel(true).thirds(true),
+            ),
+            true,
+            true,
+            POINTER_MODE,
+            true,
+        ),
+        // A historical preview of entry 0, the Original, named in the status bar, then back to
+        // current.
+        panels(
+            Step::new("preview", PreviewStep::Sequence(0))
+                .commits(0)
+                .status_starts("Previewing entry 0"),
+            true,
+            true,
+            POINTER_MODE,
+            true,
+        ),
         Step::new("current", PreviewStep::Current).commits(0),
         // Transforms, collapsed by its own default, expanded under a collapsed Basic: its four
         // exact operations as one row of icon buttons, both view state alone.
@@ -66,47 +100,44 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .expanded(TRANSFORM_MODULE)
         .collapsed(BASIC_MODULE),
         // Starting a crop draft, by the `draft.start` route, enters the crop mode.
-        Step::new("draft", DraftStep::Start).commits(0),
+        panels(
+            Step::new("draft", DraftStep::Start).commits(0),
+            true,
+            true,
+            CROP_MODULE,
+            true,
+        ),
         // A commit while the draft is open is the conflict, whoever made it.
         Step::new(
             "conflict",
             script::Step::call("edit.transform", json!({"transform":"rotate-left"})),
         )
         .commits(1)
-        .label("Rotate left"),
+        .label("Rotate left")
+        .notice("Changed elsewhere"),
         // The palette, opened and queried by the script.
         Step::new("palette", PaletteStep::Query("rotate".into())).commits(0),
         // Cancelling the draft returns the session to pointer.
-        Step::new("cancelled", DraftStep::Cancel).commits(0),
+        panels(
+            Step::new("cancelled", DraftStep::Cancel).commits(0),
+            true,
+            true,
+            POINTER_MODE,
+            true,
+        ),
     ])
 }
 
-fn workspace_state(frame: &Value) -> &Value {
-    &frame["state"]["workspace"]
-}
-
-fn expect_workspace(
-    frame: &Value,
-    state_panel: bool,
-    tools_panel: bool,
-    mode: &str,
-    thirds: bool,
-) -> Result {
-    let workspace = workspace_state(frame);
-    // The four fields this scenario drives, each read by name, plus the two clipping overlays it
-    // never touches: the session's workspace also holds the per-client fields other features add,
-    // and a scenario that does not touch them has nothing to say about them.
-    ensure(
-        workspace["state_panel"] == json!(state_panel)
-            && workspace["tools_panel"] == json!(tools_panel)
-            && workspace["mode"] == json!(mode)
-            && workspace["thirds"] == json!(thirds)
-            && workspace["clip_shadows"] == json!(false)
-            && workspace["clip_highlights"] == json!(false),
-        format!(
-            "Workspace state is {workspace}, expected state_panel {state_panel}, tools_panel {tools_panel}, mode {mode}, thirds {thirds}, both clipping overlays off"
-        ),
-    )
+/// The workspace fields this scenario drives, each read by name, plus the two clipping overlays it
+/// never touches: the session's workspace also holds the per-client fields other features add, and
+/// a scenario that does not touch them has nothing to say about them.
+fn panels(step: Step, state_panel: bool, tools_panel: bool, mode: &str, thirds: bool) -> Step {
+    step.workspace("state_panel", json!(state_panel))
+        .workspace("tools_panel", json!(tools_panel))
+        .mode(mode)
+        .workspace("thirds", json!(thirds))
+        .workspace("clip_shadows", json!(false))
+        .workspace("clip_highlights", json!(false))
 }
 
 /// The fitted photograph's own bounding box, then a horizontal brightness scan at its one-third
@@ -165,101 +196,55 @@ fn thirds_overlay_present(frame: &Frame) -> Result<Value> {
 
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
-    let mut checks = Vec::new();
-    let mut record = |frame: &Value, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
-    };
-
-    // The fixture opens with both panels shown, pointer mode, no thirds.
-    let opened = launch.at("opened")?;
-    expect_workspace(opened, true, true, POINTER_MODE, false)?;
-    record(
-        opened,
-        "the fixture at Fit, both panels open",
-        opened.fixture(Fixture::fit(1))?,
+    let mut checks = Checks::new();
+    // The fixture at its orientation and size in each frame that shows it at Fit: the open and
+    // the preview of the Original upright, every current frame after the rotate turned.
+    for (step, orientation) in [
+        ("opened", 1),
+        ("rotated", ROTATED),
+        ("state-hidden", ROTATED),
+        ("tools-hidden", ROTATED),
+        ("thirds", ROTATED),
+        ("preview", 1),
+        ("current", ROTATED),
+    ] {
+        let frame = launch.at(step)?;
+        checks.note(
+            frame,
+            "the fixture at Fit, centred in the photo surface",
+            frame.fixture(Fixture::fit(orientation))?,
+        );
+    }
+    let thirds = launch.at("thirds")?;
+    checks.note(
+        thirds,
+        "the thirds overlay on",
+        thirds_overlay_present(thirds)?,
     );
-
-    // `edit.transform rotate-right` committed revision 1; the panels are untouched.
-    let rotated = launch.at("rotated")?;
-    expect_workspace(rotated, true, true, POINTER_MODE, false)?;
     ensure(
-        rotated["state"]["stack"]["revision"] == json!(1),
+        launch.at("rotated")?.revision()? == 1,
         "rotate-right did not commit revision 1",
     )?;
-    record(
-        rotated,
-        "rotated right, committed as revision 1",
-        rotated.fixture(Fixture::fit(ROTATED))?,
-    );
 
-    // Each workspace step, its own columns, the photograph still centred in them.
-    let hidden = launch.at("state-hidden")?;
-    expect_workspace(hidden, false, true, POINTER_MODE, false)?;
-    record(
-        hidden,
-        "the state panel collapsed",
-        hidden.fixture(Fixture::fit(ROTATED))?,
-    );
-    let tools = launch.at("tools-hidden")?;
-    expect_workspace(tools, true, false, POINTER_MODE, false)?;
-    record(
-        tools,
-        "the state panel back, the tools panel collapsed",
-        tools.fixture(Fixture::fit(ROTATED))?,
-    );
-    let thirds_frame = launch.at("thirds")?;
-    expect_workspace(thirds_frame, true, true, POINTER_MODE, true)?;
-    let thirds = thirds_overlay_present(thirds_frame)?;
-    record(
-        thirds_frame,
-        "both panels open again, thirds overlay on",
-        json!({"fit":thirds_frame.fixture(Fixture::fit(ROTATED))?, "thirds":thirds}),
-    );
-
-    // Previewing entry 0, the Original, unrotated at 480x320.
-    let preview_frame = launch.at("preview")?;
-    ensure(
-        preview_frame["state"]["status"]
-            .as_str()
-            .is_some_and(|status| status.starts_with("Previewing entry 0")),
-        format!(
-            "The preview's status does not name the previewed entry: {}",
-            preview_frame["state"]["status"]
-        ),
-    )?;
-    expect_workspace(preview_frame, true, true, POINTER_MODE, true)?;
-    let preview = preview_frame.fixture(Fixture::fit(1))?;
-    record(
-        preview_frame,
-        "a historical preview of entry 0, the Original",
-        json!({
-            "pixels": preview,
-            // The tools panel disables editing during a historical preview; the correlated state
-            // carries no direct flag for it, so this is read off the status text it produces.
-            "tools_disabled_inferred_from_status": true,
-        }),
-    );
-
-    // Back to current, rotated again.
+    // Back to current, rotated again, and saying so.
+    let preview = launch.at("preview")?;
     let current = launch.at("current")?;
-    let label = current["state"]["stack"]["label"].as_str().unwrap_or("");
+    let label = current.label()?;
     ensure(
-        current["state"]["status"].as_str().is_some_and(|status| {
-            status.starts_with("Returned to entry ")
-                && status.ends_with(&format!(" \u{b7} {label}"))
-        }),
+        current.status()?.starts_with("Returned to entry ")
+            && current.status()?.ends_with(&format!(" \u{b7} {label}")),
         format!(
             "Return to current did not say it returned to the current entry: {}",
-            current["state"]["status"]
+            current.status()?
         ),
     )?;
     // The status bar says what happened in words: no frame's status names the entry, snapshot or
     // source identity the correlated state carries.
-    for frame in [preview_frame, current] {
-        let status = frame["state"]["status"].as_str().unwrap_or("");
-        let displayed = &frame["state"]["stack"]["displayed"];
+    for frame in [preview, current] {
+        let status = frame.status()?;
+        let displayed = &frame.state()["stack"]["displayed"];
         for identity in [
-            &frame["state"]["stack"]["entry"],
+            &frame.state()["stack"]["entry"],
             &displayed["entry"],
             &displayed["snapshot"],
         ] {
@@ -274,86 +259,32 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             format!("The status {status:?} names a snapshot or a source"),
         )?;
     }
-    record(
-        current,
-        "returned to the current, rotated state",
-        current.fixture(Fixture::fit(ROTATED))?,
-    );
 
-    let expanded = launch.at("transform-expanded")?;
-    record(
-        expanded,
-        "Transforms expanded under a collapsed Basic: its four actions as one icon-button row",
-        json!({"expanded": expanded["state"]["expanded"]}),
-    );
-
-    // Starting a crop draft, by the `draft.start` route, enters the crop mode.
-    let draft = launch.at("draft")?;
+    // Starting a crop draft, by the `draft.start` route, opens one; a commit while it is open
+    // marks it conflicted, and the palette and the cancel follow.
     ensure(
-        draft["state"]["crop"]["drafting"] == json!(true),
+        launch.at("draft")?.state()["crop"]["drafting"] == json!(true),
         "draft.start did not open a draft",
     )?;
-    expect_workspace(draft, true, true, CROP_MODULE, true)?;
-    record(
-        draft,
-        "a crop draft open; the mode strip shows Crop",
-        json!({"workspace": workspace_state(draft)}),
-    );
-
-    // A commit while the draft is open is the conflict, whoever made it.
     let conflict = launch.at("conflict")?;
-    let notices = conflict.notices();
     ensure(
-        notices.iter().any(|n| n == "Changed elsewhere"),
-        format!("The conflict's notices do not include it: {notices:?}"),
+        conflict.state()["crop"]["conflicted"] == json!(true) && conflict.revision()? == 2,
+        "rotate-left during the draft did not commit revision 2 and mark the draft conflicted",
     )?;
-    ensure(
-        conflict["state"]["crop"]["conflicted"] == json!(true),
-        "The draft was not marked conflicted",
-    )?;
-    ensure(
-        conflict["state"]["stack"]["revision"] == json!(2),
-        "rotate-left during the draft did not commit revision 2",
-    )?;
-    record(
-        conflict,
-        "rotate-left during the draft: Changed elsewhere",
-        json!({"notices": notices, "crop": conflict["state"]["crop"]}),
-    );
-
-    // The palette, opened and queried by the script.
     let palette = launch.at("palette")?;
     ensure(
-        palette["state"]["palette"] == json!({"open":true,"query":"rotate"}),
+        palette.state()["palette"] == json!({"open":true,"query":"rotate"}),
         format!(
             "The palette state was not recorded as open with its query: {}",
-            palette["state"]["palette"]
+            palette.state()["palette"]
         ),
     )?;
-    record(
-        palette,
-        "the command palette open, queried for \"rotate\"",
-        palette["state"]["palette"].clone(),
-    );
-
-    // Cancelling the draft returns the session to pointer.
-    let cancelled = launch.at("cancelled")?;
     ensure(
-        cancelled["state"]["crop"]["drafting"] == json!(false),
+        launch.at("cancelled")?.state()["crop"]["drafting"] == json!(false),
         "draft.cancel did not end the draft",
     )?;
-    expect_workspace(cancelled, true, true, POINTER_MODE, true)?;
-    record(
-        cancelled,
-        "the draft cancelled; the mode strip returns to Pointer",
-        json!({"workspace": workspace_state(cancelled)}),
-    );
 
-    write_json(
-        &launch.evidence.join("workspace-checks.json"),
-        &json!(checks),
-    )?;
-    Ok(())
+    checks.write(&launch.evidence, "workspace", json!({}))
 }
 
 pub const UNAVAILABLE_NOTE: &str = "Two launches: the first commits a crop layer with every built-in module registered; the second reuses its catalog with `--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same asset, so the stack's crop layer is reported unavailable instead of silently rendered without it.";
@@ -374,9 +305,13 @@ pub fn unavailable_first(_: &[PathBuf]) -> Plan {
 /// The second: the same catalog with the crop module disabled and the same fixture reopened, which
 /// the catalog dedupes to the same asset. Rendering its stack reports the unavailable effect rather
 /// than silently omitting it, so the open ends in the `incompatible` error, and that refusal is the
-/// run's one input error.
+/// run's one input error; the canvas says the preview is stale.
 pub fn unavailable_second(_: &[PathBuf]) -> Plan {
-    Plan::new(vec![Step::opened("reopened").refused("incompatible")])
+    Plan::new(vec![
+        Step::opened("reopened")
+            .refused("incompatible")
+            .notice("Preview is stale"),
+    ])
 }
 
 /// The two launches together: the crop committed in the first is reported unavailable in the
@@ -385,30 +320,22 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
     let [first, second] = launches else {
         return Err(format!("Expected two launches, found {}", launches.len()).into());
     };
-    let committed = &first.at("cropped")?["state"]["stack"];
     ensure(
-        committed["layers"]
-            .as_array()
-            .is_some_and(|layers| layers.iter().any(|l| l["effect"] == CROP_EFFECT)),
+        first.at("cropped")?.layer(CROP_EFFECT).is_some(),
         "Launch 1 did not commit a crop layer",
     )?;
     let frame2 = second.at("reopened")?;
     ensure(
-        frame2["state"]["render_error"]["code"] == json!("incompatible")
-            && frame2["state"]["render_error"]["data"]["effect_id"] == json!(CROP_EFFECT),
+        frame2.state()["render_error"]["code"] == json!("incompatible")
+            && frame2.state()["render_error"]["data"]["effect_id"] == json!(CROP_EFFECT),
         format!(
             "Launch 2's render error is {}, expected incompatible naming {CROP_EFFECT} in its data",
-            frame2["state"]["render_error"]
+            frame2.state()["render_error"]
         ),
-    )?;
-    let notices = frame2.notices();
-    ensure(
-        notices.iter().any(|n| n == "Preview is stale"),
-        format!("Launch 2's notices do not name the stale preview: {notices:?}"),
     )?;
     // The histogram has nothing to plot, and says why inside the plot's own area rather than in a
     // row under it that would move the tools panel.
-    let histogram = &frame2["state"]["histogram"];
+    let histogram = &frame2.state()["histogram"];
     ensure(
         histogram["status"] == json!("unavailable")
             && histogram["notice"]
@@ -419,7 +346,7 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
             histogram["status"], histogram["notice"]
         ),
     )?;
-    let crop_module = frame2["state"]["modules"]
+    let crop_module = frame2.state()["modules"]
         .as_array()
         .ok_or("Missing modules")?
         .iter()
@@ -429,7 +356,8 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
         crop_module["available"] == json!(false),
         "The crop module is not reported unavailable",
     )?;
-    // No photo drawn: the canvas region carries none of the fixture's own colours.
+    // No photo drawn: the editor records no photograph rectangle, and the canvas region carries
+    // none of the fixture's own colours.
     let image = frame2.image()?;
     let [left, right] = frame2.columns()?.unwrap_or([0, image.width()]);
     let has_fixture_colour = (0..image.height()).step_by(4).any(|y| {
@@ -441,19 +369,18 @@ pub fn verify_unavailable(run: &mut Run, launches: &[Checked]) -> Result {
         })
     });
     ensure(
-        !has_fixture_colour,
+        frame2["photo_rect"].is_null() && !has_fixture_colour,
         "Launch 2 drew the photo despite the unavailable provider",
     )?;
-    write_json(
-        &run.out().join("unavailable-checks.json"),
-        &json!({
-            "launch1_committed_crop_layer": true,
-            "launch2_render_error": frame2["state"]["render_error"],
-            "launch2_notices": notices,
-            "launch2_histogram_notice": frame2["state"]["histogram"]["notice"],
-            "launch2_crop_module": crop_module,
-            "launch2_photo_drawn": has_fixture_colour,
+    let mut checks = Checks::new();
+    checks.note(
+        frame2,
+        "the crop reported unavailable: a render error naming it, and no photograph drawn",
+        json!({
+            "render_error": frame2.state()["render_error"],
+            "histogram_notice": histogram["notice"],
+            "crop_module": crop_module,
         }),
-    )?;
-    Ok(())
+    );
+    checks.write(run.out(), "unavailable", json!({}))
 }
