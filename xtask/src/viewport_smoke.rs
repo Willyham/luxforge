@@ -2,7 +2,7 @@
 //! scripts as replayable smoke scenarios; the third observes a Fit refit before evidence is
 //! allowed to tick or capture again. A missing GPU draw counter is an error, never a zero.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
 };
 use luxforge_evidence::{self as script, ViewIdleStep, ViewStep, WorkspaceStep};
@@ -59,7 +59,9 @@ const FALLBACK_NAMES: [&str; 12] = [
     "release-pause",
 ];
 
-fn scripted(source: &str, names: &[&str]) -> Plan {
+/// The open, then one step per request of a committed script, each named, with `expect` applied to
+/// every scripted step.
+fn scripted(source: &str, names: &[&str], expect: impl Fn(Step) -> Step) -> Plan {
     let requests: Vec<script::Step> =
         serde_json::from_str(source).expect("committed evidence script");
     assert_eq!(
@@ -72,16 +74,19 @@ fn scripted(source: &str, names: &[&str]) -> Plan {
         requests
             .into_iter()
             .zip(names)
-            .map(|(request, name)| Step::new(*name, request)),
+            .map(|(request, name)| expect(Step::new(*name, request))),
     );
     Plan::new(steps)
 }
 
+/// The region journey, whose first step hides the state panel, which no later step opens again.
 pub fn region_plan(_: &[PathBuf]) -> Plan {
-    scripted(REGION_SCRIPT, &REGION_NAMES)
+    scripted(REGION_SCRIPT, &REGION_NAMES, |step| {
+        step.workspace("state_panel", json!(false))
+    })
 }
 pub fn fallback_plan(_: &[PathBuf]) -> Plan {
-    scripted(FALLBACK_SCRIPT, &FALLBACK_NAMES)
+    scripted(FALLBACK_SCRIPT, &FALLBACK_NAMES, |step| step)
 }
 
 pub fn idle_plan(_: &[PathBuf]) -> Plan {
@@ -97,7 +102,14 @@ pub fn idle_plan(_: &[PathBuf]) -> Plan {
         )
         .commits(0),
         Step::new("zoom-100", ViewStep::Percent(100.0)).commits(0),
-        Step::new("settled-100", script::Step::wait(1000)).commits(0),
+        // An ordinary 100% view with the panel hidden and every overlay off.
+        Step::new("settled-100", script::Step::wait(1000))
+            .commits(0)
+            .percent(100.0)
+            .workspace("state_panel", json!(false))
+            .workspace("clip_shadows", json!(false))
+            .workspace("clip_highlights", json!(false))
+            .workspace("mask_overlay", json!("off")),
         Step::new(
             "idle-fit",
             ViewIdleStep {
@@ -172,13 +184,15 @@ fn event<'a>(events: &'a [Value], kind: &str) -> impl Iterator<Item = &'a Value>
     events.iter().filter(move |event| event["event"] == kind)
 }
 
+/// How many pixels of the photograph's interior on screen differ between two captures: the part of
+/// the canvas the editor records drawing it in, clear of the canvas chrome around its edges.
 fn changed_pixels(first: &Frame, second: &Frame) -> Result<u64> {
     let (a, b) = (first.image()?, second.image()?);
     ensure(
         a.dimensions() == b.dimensions(),
         "Overlay captures changed physical size",
     )?;
-    let rect: [u32; 4] = serde_json::from_value(first["canvas_rect"].clone())?;
+    let rect = first.visible_photo()?;
     let (left, top, right, bottom) = (
         rect[0] + 60,
         rect[1] + 60,
@@ -222,13 +236,6 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
         "The region journey did not render through the rotated crop",
     )?;
     let reads = at("performance-expanded")?["performance"]["reads_requested"].clone();
-    for name in &REGION_NAMES[..29] {
-        let state = at(name)?;
-        ensure(
-            state["workspace"]["state_panel"] == false,
-            format!("{name} unexpectedly opened the state panel"),
-        )?;
-    }
     for name in &REGION_NAMES[9..21] {
         let state = at(name)?;
         ensure(
@@ -341,12 +348,13 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
                 == before_cancel["stack"]["displayed"]["snapshot"],
         "History preview or Return to current drew the wrong snapshot",
     )?;
-    run.record(
-        "viewport",
-        json!({"case":REGION,"mask_overlay_changed_pixels":tint_pixels,
-        "clipping_overlay_changed_pixels":clipping_pixels,"gpu":all_draws(launch)?}),
+    let mut checks = Checks::new();
+    checks.note(
+        launch.at("clipping-off")?,
+        "the mask and clipping overlays each changed the photograph's pixels",
+        json!({"mask_overlay_changed_pixels":tint_pixels,"clipping_overlay_changed_pixels":clipping_pixels}),
     );
-    Ok(())
+    checks.write(run.out(), REGION, json!({"gpu": all_draws(launch)?}))
 }
 
 pub fn verify_fallback(run: &mut Run, launches: &[Checked]) -> Result {
@@ -382,25 +390,15 @@ pub fn verify_fallback(run: &mut Run, launches: &[Checked]) -> Result {
                 .is_null(),
         "Fallback did not settle exact full histogram counts",
     )?;
-    run.record(
-        "viewport",
-        json!({"case":FALLBACK,"gpu":all_draws(launch)?}),
-    );
-    Ok(())
+    Checks::new().write(run.out(), FALLBACK, json!({"gpu": all_draws(launch)?}))
 }
 
 pub fn verify_idle(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
-    let before = launch.at("settled-100")?;
+    // The plan holds the precondition's view and overlays; its sampler is off too.
     ensure(
-        before.state()["surface"]["view"]["zoom"]["mode"] == "percent"
-            && before.state()["surface"]["view"]["zoom"]["value"] == 100.0
-            && before.state()["workspace"]["state_panel"] == false
-            && before.state()["workspace"]["clip_shadows"] == false
-            && before.state()["workspace"]["clip_highlights"] == false
-            && before.state()["workspace"]["mask_overlay"] == "off"
-            && before.state()["performance"]["sampling"] == false,
-        "Idle precondition was not an ordinary 100% view with overlays and sampling off",
+        launch.at("settled-100")?.state()["performance"]["sampling"] == false,
+        "Idle precondition was not an ordinary 100% view with sampling off",
     )?;
     let checks: Vec<_> = event(&launch.events, "view_idle_check").collect();
     ensure(
@@ -435,11 +433,11 @@ pub fn verify_idle(run: &mut Run, launches: &[Checked]) -> Result {
         after.state()["surface"]["gpu"]["drawn_full_version"] == detail["drawn_full_version"],
         "Capture after idle check did not show the checked Fit photo",
     )?;
-    run.record(
-        "viewport",
-        json!({"case":IDLE,"idle_check":detail,"gpu":all_draws(launch)?}),
-    );
-    Ok(())
+    Checks::new().write(
+        run.out(),
+        IDLE,
+        json!({"idle_check": detail, "gpu": all_draws(launch)?}),
+    )
 }
 
 #[cfg(test)]
