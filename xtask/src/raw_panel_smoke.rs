@@ -20,10 +20,10 @@
 //! the editor supports. It proves what the panel shows, what its double-click does and that a RAW
 //! crop is drawn and shown, not RAW decoding, which `raw-editor` covers.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
 };
-use luxforge_core::CROP_EFFECT;
+use luxforge_core::{CROP_EFFECT, POINTER_MODE};
 use luxforge_evidence::{self as script, DoubleClickStep, DraftStep, SliderStep, ViewStep};
 
 pub const SCENARIO: &str = "raw-panel";
@@ -153,26 +153,35 @@ fn hover((x, y): (u32, u32)) -> script::Step {
 
 /// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
 /// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two pointer readouts,
-/// replaced by a `crop-fit` through the API at 100% and read again, then Fit.
+/// replaced by a `crop-fit` through the API at 100% and read again, then Fit. Every frame of a
+/// committed crop shows it with no notice over it.
 fn crop_steps() -> Vec<Step> {
+    let at_100 = |step: Step| step.percent(100.0).no_notices();
     vec![
         Step::new(names::CROP_STARTED, DraftStep::Start),
         Step::new("crop-ratio", DraftStep::Preset("16:9".into())),
         Step::new(names::CROP_STRAIGHTENED, DraftStep::Angle(CROP_ANGLE)),
         // Apply commits one entry.
-        Step::new(names::CROP_APPLIED, DraftStep::Apply).commits(1),
-        Step::new(names::CROP_AT_100, ViewStep::Percent(100.0)),
-        Step::new(READOUTS[0].0, hover(READOUTS[0].1)),
-        Step::new(READOUTS[1].0, hover(READOUTS[1].1)),
+        Step::new(names::CROP_APPLIED, DraftStep::Apply)
+            .commits(1)
+            .fit()
+            .no_notices(),
+        at_100(Step::new(names::CROP_AT_100, ViewStep::Percent(100.0))),
+        at_100(Step::new(READOUTS[0].0, hover(READOUTS[0].1))),
+        at_100(Step::new(READOUTS[1].0, hover(READOUTS[1].1))),
         // The API's `crop-fit` updates the applied crop's own layer in one entry.
-        Step::new(
-            names::CROP_FITTED,
-            script::Step::call("edit.crop-fit", json!({"aspect":"3:2","angle":FIT_ANGLE})),
-        )
-        .commits(1)
-        .same_layer(CROP_EFFECT, names::CROP_APPLIED),
-        Step::new(names::FITTED_READOUT, hover(READOUTS[1].1)),
-        Step::new(names::FITTED_AT_FIT, ViewStep::Fit),
+        at_100(
+            Step::new(
+                names::CROP_FITTED,
+                script::Step::call("edit.crop-fit", json!({"aspect":"3:2","angle":FIT_ANGLE})),
+            )
+            .commits(1)
+            .same_layer(CROP_EFFECT, names::CROP_APPLIED),
+        ),
+        at_100(Step::new(names::FITTED_READOUT, hover(READOUTS[1].1))),
+        Step::new(names::FITTED_AT_FIT, ViewStep::Fit)
+            .fit()
+            .no_notices(),
     ]
 }
 
@@ -184,7 +193,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     for drag in &DRAGS {
         if !drag.fit {
             // 100%, where a frame shows a stage pixel per display pixel and has no proxy.
-            steps.push(Step::new("zoom-100", ViewStep::Percent(100.0)));
+            steps.push(Step::new("zoom-100", ViewStep::Percent(100.0)).percent(100.0));
         }
         // A Temperature drag left open. Its frame is the drafted value approximated on the planes
         // developed at the committed white balance.
@@ -208,7 +217,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         );
         if !drag.fit {
             // Back to Fit for the double-clicks.
-            steps.push(Step::new("zoom-fit", ViewStep::Fit));
+            steps.push(Step::new("zoom-fit", ViewStep::Fit).fit());
         }
     }
     // A double-click on Temperature's, Tint's and Exposure's rails. The first press moves the
@@ -231,11 +240,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     }));
     // Basic's letter enters the RAW development's sensor pick on this photograph's global
     // target; Escape leaves it for the pointer.
-    steps.push(Step::new(names::SENSOR_PICK, script::Step::key("w")));
-    steps.push(Step::new(
-        names::PICK_LEFT,
-        script::Step::key(script::KEY_ESCAPE),
-    ));
+    steps.push(Step::new(names::SENSOR_PICK, script::Step::key("w")).mode(RAW_MODULE));
+    steps.push(
+        Step::new(names::PICK_LEFT, script::Step::key(script::KEY_ESCAPE)).mode(POINTER_MODE),
+    );
     // A straightened crop drafted, applied and inspected; see `crop_steps`.
     steps.extend(crop_steps());
     // Basic's section, expanded in every frame; that its White balance fields are the RAW
@@ -372,7 +380,7 @@ fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
 /// and As shot fields, Basic's dot, the sensor pick `W` enters and the crop on screen.
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
-    let mut checks = Vec::new();
+    let mut checks = Checks::new();
     for (step, frame) in launch.names().iter().zip(&launch.frames) {
         let state = frame.state();
         ensure(
@@ -395,18 +403,19 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 format!("RAW panel step {step:?} shows no {field}"),
             )?;
         }
-        checks.push(json!({
-            "step": step,
-            "frame": frame["file"],
-            "expanded": state["expanded"],
-            "source_dimensions": state["source_dimensions"],
-            "revision": state["stack"]["revision"],
-            "controls": state["controls"],
-        }));
     }
-    checks.push(white_balance_group(launch.at(names::OPENED)?)?);
+    let opened = launch.at(names::OPENED)?;
+    checks.note(
+        opened,
+        "Basic's White balance group, the RAW development's own",
+        white_balance_group(opened)?,
+    );
     for drag in &DRAGS {
-        checks.push(white_balance_drag(launch, drag)?);
+        checks.note(
+            launch.at(drag.release)?,
+            "a temperature drag's approximate draft and its exact release",
+            white_balance_drag(launch, drag)?,
+        );
     }
 
     // Each double-click is two history entries, which the plan counts: the first press's committed
@@ -461,17 +470,20 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             )?;
             shown = shows_as_shot_equivalent(after, &field)?;
         }
-        checks.push(json!({
-            "step": click.step,
-            "field": field,
-            "reset": click.reset,
-            "label": after["state"]["stack"]["label"],
-            "revision_before": before.revision()?,
-            "revision_after": after.revision()?,
-            "reset_sent_at_revision": sent[0]["detail"]["revision"],
-            "queued": !named("field_reset_queued").is_empty(),
-            "shown": shown,
-        }));
+        checks.note(
+            after,
+            "a double-click's jump and reset",
+            json!({
+                "field": field,
+                "reset": click.reset,
+                "label": after["state"]["stack"]["label"],
+                "revision_before": before.revision()?,
+                "revision_after": after.revision()?,
+                "reset_sent_at_revision": sent[0]["detail"]["revision"],
+                "queued": !named("field_reset_queued").is_empty(),
+                "shown": shown,
+            }),
+        );
     }
     // The RAW development the white-balance resets leave: the camera's own white balance, which
     // is the Original's development.
@@ -506,18 +518,19 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 frame["state"]["active"][BASIC_MODULE]
             ),
         )?;
-        checks.push(
-            json!({"frame": frame["file"], "when": when, "basic_dot": dotted,
-            "revision": frame["state"]["stack"]["revision"]}),
+        checks.note(
+            frame,
+            "Basic's dot",
+            json!({"when": when, "basic_dot": dotted}),
         );
     }
-    checks.push(sensor_pick(launch)?);
-    checks.push(raw_crop(launch)?);
-    write_json(
-        &launch.evidence.join("raw-panel-checks.json"),
-        &json!(checks),
-    )?;
-    Ok(())
+    sensor_pick(launch)?;
+    checks.note(
+        launch.at(names::FITTED_AT_FIT)?,
+        "the RAW crop drafted, applied and inspected",
+        raw_crop(launch)?,
+    );
+    checks.write(&launch.evidence, SCENARIO, json!({}))
 }
 
 /// Basic's White balance group on this RAW photograph's global target: the same four controls, in
@@ -551,35 +564,25 @@ fn white_balance_group(frame: &Value) -> Result<Value> {
     Ok(json!({"white_balance_group": group}))
 }
 
-/// `W` enters the RAW development's sensor pick: the canvas mode is that module's, and Basic's
+/// `W` enters the RAW development's sensor pick, whose canvas mode the plan holds, and Basic's
 /// Neutral picker, which that pick provides on this photograph's global target, reads selected
 /// under its one letter. Escape returns to the pointer and deselects it.
-fn sensor_pick(launch: &Checked) -> Result<Value> {
+fn sensor_pick(launch: &Checked) -> Result {
     let entered = &launch.at(names::SENSOR_PICK)?["state"];
     let picker = &entered["pickers"][RAW_MODULE];
     ensure(
-        entered["workspace"]["mode"] == RAW_MODULE
-            && picker["selected"] == json!(true)
+        picker["selected"] == json!(true)
             && picker["label"] == "Neutral picker"
             && picker["shortcut"] == "W",
         format!(
-            "W did not enter the sensor pick: mode {}, pickers {}",
-            entered["workspace"]["mode"], entered["pickers"]
+            "W did not select the sensor pick: pickers {}",
+            entered["pickers"]
         ),
     )?;
-    let left = &launch.at(names::PICK_LEFT)?["state"];
     ensure(
-        left["workspace"]["mode"] == luxforge_core::POINTER_MODE
-            && left["pickers"][RAW_MODULE]["selected"] == json!(false),
-        format!(
-            "Escape did not leave the sensor pick: mode {}",
-            left["workspace"]["mode"]
-        ),
-    )?;
-    Ok(json!({
-        "sensor_pick": {"mode": entered["workspace"]["mode"], "picker": picker,
-                        "left_for": left["workspace"]["mode"]}
-    }))
+        launch.at(names::PICK_LEFT)?["state"]["pickers"][RAW_MODULE]["selected"] == json!(false),
+        "Escape did not deselect the sensor pick",
+    )
 }
 
 /// Under As shot, a frame's temperature and tint fields show the camera's as-shot equivalent: the
@@ -695,11 +698,8 @@ fn shows_crop(frame: &Value, source: [u32; 2], angle: f64, what: &str) -> Result
         ),
     )?;
     ensure(
-        state["render_error"].is_null() && state["notices"] == json!([]),
-        format!(
-            "{what}: {} with notices {}",
-            state["render_error"], state["notices"]
-        ),
+        state["render_error"].is_null(),
+        format!("{what}: {}", state["render_error"]),
     )?;
     Ok(output)
 }
@@ -799,11 +799,12 @@ fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
     }))
 }
 
-/// A committed crop at Fit: the photograph measured on the canvas is the crop's output fitted into
-/// the photo area and centred in it, not the picture from before the commit.
+/// A committed crop at Fit: the photograph on the canvas — where the editor records drawing it, its
+/// edges where its pixels end against the canvas background — is the crop's output fitted into the
+/// photo area and centred in it, not the picture from before the commit.
 fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
     let image = frame.image()?;
-    let (background, [left, top, right, bottom]) = canvas_background(image, frame)?;
+    let (background, _) = canvas_background(image, frame)?;
     // The area Fit lays the photograph out in: the canvas less the Fit padding, as the frame
     // records it, which is taller at the top than at the bottom where the mode strip floats.
     let [fit_left, fit_top, fit_right, fit_bottom] = fit_area(frame)?;
@@ -813,31 +814,12 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
     );
     let fit = (available.0 / f64::from(output[0])).min(available.1 / f64::from(output[1]));
     let expected = (f64::from(output[0]) * fit, f64::from(output[1]) * fit);
-    let photo = |x: u32, y: u32| {
-        image
-            .get_pixel(x, y)
-            .0
-            .iter()
-            .zip(background)
-            .any(|(a, b)| a.abs_diff(b) > 1)
-    };
-    // One row through the middle and one column a quarter of the way in, clear of the mode strip.
-    let row = (fit_top + fit_bottom) / 2;
-    let column = left + (right - left) / 4;
-    let span = |positions: Vec<u32>| {
-        positions
-            .first()
-            .zip(positions.last())
-            .map(|(a, b)| (*a, *b))
-    };
-    let (x0, x1) = span((left..right).filter(|x| photo(*x, row)).collect())
-        .ok_or("No photograph on the canvas's middle row")?;
-    let (y0, y1) = span((top..bottom).filter(|y| photo(column, *y)).collect())
-        .ok_or("No photograph on the canvas's quarter column")?;
-    let measured = (f64::from(x1 - x0 + 1), f64::from(y1 - y0 + 1));
+    let [x0, y0, x1, y1] =
+        frame.photo_edges(|pixel| pixel.iter().zip(background).any(|(a, b)| a.abs_diff(b) > 1))?;
+    let measured = (f64::from(x1 - x0), f64::from(y1 - y0));
     let centre = (
-        (f64::from(x0) + f64::from(x1) + 1.0) / 2.0,
-        (f64::from(y0) + f64::from(y1) + 1.0) / 2.0,
+        (f64::from(x0) + f64::from(x1)) / 2.0,
+        (f64::from(y0) + f64::from(y1)) / 2.0,
     );
     let wanted_centre = (
         f64::from(fit_left + fit_right) / 2.0,
@@ -864,8 +846,9 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
 
 /// A pointer readout over the committed crop at 100%: the codes `render.sample` answered for the
 /// stage pixel under the pointer are the codes the canvas shows at that pixel, one stage pixel per
-/// physical pixel from the canvas's corner less the pan. The readout is the owner's own point
-/// evaluation of the current stack, so this ties the picture on screen to the committed recipe.
+/// physical pixel from the corner of the rectangle the editor records drawing the photograph in.
+/// The readout is the owner's own point evaluation of the current stack, so this ties the picture
+/// on screen to the committed recipe.
 fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Result<Value> {
     let state = &frame["state"];
     ensure(
@@ -883,18 +866,17 @@ fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resu
     let codes: [u8; 4] = serde_json::from_value(readout["rgba"].clone())
         .map_err(|_| format!("The readout carries no codes: {readout}"))?;
     let image = frame.image()?;
-    let (_, [left, top, _, _]) = canvas_background(image, frame)?;
-    let scale = frame["scale"]
-        .as_f64()
-        .ok_or("The frame records no scale")?;
-    let view = &state["surface"]["view"];
-    let pan = (
-        view["pan_x"].as_f64().unwrap_or_default() * scale,
-        view["pan_y"].as_f64().unwrap_or_default() * scale,
-    );
+    let [left, top, right, bottom] = frame.photo_rect()?;
+    ensure(
+        [right - left, bottom - top] == output.map(i64::from),
+        format!(
+            "The 100% view draws the {output:?} crop in {:?}",
+            [left, top, right, bottom]
+        ),
+    )?;
     let screen = (
-        (f64::from(left) - pan.0 + f64::from(point.0)).round() as u32,
-        (f64::from(top) - pan.1 + f64::from(point.1)).round() as u32,
+        u32::try_from(left + i64::from(point.0))?,
+        u32::try_from(top + i64::from(point.1))?,
     );
     let shown = image.get_pixel(screen.0, screen.1).0;
     ensure(
