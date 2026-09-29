@@ -926,10 +926,14 @@ fn a_refused_crop_start_sends_no_workspace_change() {
     };
 
     // A historical preview cannot be edited.
-    let current = editor.session.preview.selection.clone();
-    editor.session.preview.selection = HistorySelection::Entry(entry_id);
+    let current = editor.shown_selection();
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry_id),
+    );
     refused(&mut editor, "a historical preview");
-    editor.session.preview.selection = current;
+    crate::state::testing::show(&mut editor.session, editor.document.state.as_ref(), current);
 
     // Nothing refuses it: the draft starts and asks the session for the mode once.
     let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
@@ -953,9 +957,13 @@ fn a_history_preview_pauses_the_draft_without_discarding_it() {
         revision: 3,
         ..ClientSession::default()
     };
-    session.preview.selection = HistorySelection::Entry(entry_id);
+    crate::state::testing::show(
+        &mut session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry_id),
+    );
     let _ = editor.update(Message::View(ViewMessage::SessionUpdated(Ok(session))));
-    assert!(!editor.session.preview.can_edit());
+    assert!(!editor.at_current());
     assert!(
         editor.crop().is_some(),
         "selecting a historical state keeps the draft"
@@ -1023,13 +1031,17 @@ fn apply_reads_enabled_exactly_when_the_app_would_commit() {
     );
     editor.busy = false;
 
-    let current = editor.session.preview.selection.clone();
-    editor.session.preview.selection = HistorySelection::Entry(entry_id);
+    let current = editor.shown_selection();
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry_id),
+    );
     assert_eq!(
         agree(&mut editor, "a historical preview").as_deref(),
         Some("Return to the current state to apply")
     );
-    editor.session.preview.selection = current;
+    crate::state::testing::show(&mut editor.session, editor.document.state.as_ref(), current);
 
     committed_elsewhere(&mut editor, &asset, &entry(&asset, 4, None));
     assert_eq!(

@@ -593,7 +593,8 @@ pub(crate) fn refresh(
     // The entry the screen will show, named rather than left to the owner, so the recipe rows, the
     // masks and the preview job all describe the entry this state names even if another client
     // commits while they are read. That commit's own event brings its state and frame.
-    let displayed = match &session.preview.selection {
+    let selection = session.preview.selection(&state.asset.id);
+    let displayed = match &selection {
         HistorySelection::Current => state.current_entry.id.clone(),
         HistorySelection::Entry(entry_id) => entry_id.clone(),
     };
@@ -604,7 +605,7 @@ pub(crate) fn refresh(
     )?)?;
     // A historical preview leaves the current entry's rows unread, and a section's dot follows the
     // current entry, so they are read too: one more O(layers) payload read, only while previewing.
-    let current_recipe = match &session.preview.selection {
+    let current_recipe = match &selection {
         HistorySelection::Entry(_) => Some(parse::<RecipeDescription>(fetch(
             "recipe.describe",
             json!({"asset_id":asset_id,"entry_id":state.current_entry.id}),

@@ -1660,7 +1660,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
     let presets = frame.presets();
     let base = CropSectionModel {
         title: frame.title.to_owned(),
-        paused: !inputs.session.preview.can_edit(),
+        paused: !super::at_current(inputs.document.state.as_ref(), inputs.session),
         custom: (
             inputs.crop_section.custom.0.clone(),
             inputs.crop_section.custom.1.clone(),

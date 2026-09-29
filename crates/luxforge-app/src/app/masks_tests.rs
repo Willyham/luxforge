@@ -930,8 +930,11 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
     let row = &masking.editor.workspace.masks.components[1];
     assert_eq!(row.down_reason.as_deref(), Some(crate::state::IN_FLIGHT));
     masking.editor.busy = false;
-    masking.editor.session.preview.selection =
-        luxforge_core::HistorySelection::Entry(luxforge_core::EntryId::new());
+    crate::state::testing::show(
+        &mut masking.editor.session,
+        masking.editor.document.state.as_ref(),
+        luxforge_core::HistorySelection::Entry(luxforge_core::EntryId::new()),
+    );
     masking.editor.rederive();
     let row = &masking.editor.workspace.masks.components[1];
     assert_eq!(row.down_reason.as_deref(), Some(crate::state::NOT_CURRENT));

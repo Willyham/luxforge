@@ -1605,9 +1605,15 @@ fn the_next_job_starts_without_a_poll() {
 #[test]
 fn history_selection_and_view_are_read_only_validated_session_state() {
     let mut session = PreviewSession::default();
+    let (asset, other) = (crate::AssetId::new(), crate::AssetId::new());
     let entry = EntryId::new();
-    session.select(HistorySelection::Entry(entry.clone()));
-    assert!(!session.can_edit());
+    session
+        .select(&asset, HistorySelection::Entry(entry.clone()))
+        .unwrap();
+    assert!(!session.can_edit(&asset));
+    // A selection is the named asset's alone.
+    assert!(session.can_edit(&other));
+    assert_eq!(session.selection(&other), HistorySelection::Current);
     session
         .view
         .set_zoom(Zoom::Percent { value: 100.0 })
@@ -1620,8 +1626,48 @@ fn history_selection_and_view_are_read_only_validated_session_state() {
             .is_err()
     );
     session.return_current();
-    assert!(session.can_edit());
-    assert_eq!(session.selection, HistorySelection::Current);
+    assert!(session.can_edit(&asset));
+    assert_eq!(session.selection(&asset), HistorySelection::Current);
+    assert!(session.selections.is_empty());
+}
+
+/// A session holds at most `MAX_SELECTIONS` historical selections: one more is refused with
+/// `resource-limit` and changes nothing, reselecting an asset already held is not one more, and
+/// returning one asset to current frees its place.
+#[test]
+fn historical_selections_are_bounded_per_session() {
+    let mut session = PreviewSession::default();
+    let assets: Vec<_> = (0..=crate::MAX_SELECTIONS)
+        .map(|_| crate::AssetId::new())
+        .collect();
+    for asset in &assets[..crate::MAX_SELECTIONS] {
+        session
+            .select(asset, HistorySelection::Entry(EntryId::new()))
+            .unwrap();
+    }
+    let generation = session.generation;
+    let refused = session
+        .select(
+            &assets[crate::MAX_SELECTIONS],
+            HistorySelection::Entry(EntryId::new()),
+        )
+        .unwrap_err();
+    assert_eq!(refused.kind, crate::ErrorKind::ResourceLimit);
+    assert_eq!(session.selections.len(), crate::MAX_SELECTIONS);
+    assert_eq!(session.generation, generation, "a refusal changes nothing");
+    session
+        .select(&assets[0], HistorySelection::Entry(EntryId::new()))
+        .unwrap();
+    session
+        .select(&assets[0], HistorySelection::Current)
+        .unwrap();
+    session
+        .select(
+            &assets[crate::MAX_SELECTIONS],
+            HistorySelection::Entry(EntryId::new()),
+        )
+        .unwrap();
+    assert_eq!(session.selections.len(), crate::MAX_SELECTIONS);
 }
 
 /// A RAW job over planes developed at one white balance, rendering them at `white_balance`, at

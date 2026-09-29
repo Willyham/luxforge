@@ -1,12 +1,15 @@
 use super::{
-    AssetRecord, EditorService, EditorState, LayerDescription, RecipeDescription,
-    catalog::{ASSET_COLUMNS, asset_row, stored_revision},
+    AssetPage, AssetSummary, EditorService, EditorState, LayerDescription, RecipeDescription,
+    SourceTag,
+    catalog::{MAX_ASSET_PAGE, stored_revision},
     entries::Head,
 };
 use crate::{
     AssetId, EntryId, Error, HistoryEntry, Layer, LayerReport, ModuleRegistry, ORIENTATION_EFFECT,
     Orientation, StageSize, modules::stored_orientation,
 };
+use rusqlite::{OptionalExtension, params};
+use std::path::PathBuf;
 
 impl EditorState {
     /// The state a cached head and its current entry describe: a copy of both.
@@ -46,13 +49,70 @@ impl EditorService {
         }
     }
 
-    /// Every referenced asset in import order.
-    pub fn assets(&self) -> Result<Vec<AssetRecord>, Error> {
-        let mut statement = self.connection.prepare(&format!(
-            "SELECT {ASSET_COLUMNS} FROM assets ORDER BY rowid"
-        ))?;
-        let rows = statement.query_map([], asset_row)?;
-        rows.map(|row| row?.into_record()).collect()
+    /// One page of at most `limit` referenced assets in import order, after the asset `after` names
+    /// (the `next` cursor of the page before), or from the first. Each row is read from the asset's
+    /// own columns — its kind from the tag stored beside the interpretation — so no source
+    /// interpretation is decoded and a page costs `O(limit)` however large the catalog or its RAW
+    /// interpretations are; an interpretation this build cannot read still lists, and is refused
+    /// by name when the asset is read ([`Self::state`], `source.inspect`).
+    ///
+    /// Import order is the table's insertion order, which no write reorders: an asset is never
+    /// removed and a relocation rewrites its row in place. A cursor that names no asset is refused.
+    pub fn assets(&self, after: Option<&AssetId>, limit: usize) -> Result<AssetPage, Error> {
+        if limit == 0 || limit > MAX_ASSET_PAGE {
+            return Err(Error::validation(format!(
+                "asset page limit must be 1..={MAX_ASSET_PAGE}"
+            )));
+        }
+        let after = match after {
+            None => 0,
+            Some(asset_id) => self
+                .connection
+                .query_row(
+                    "SELECT rowid FROM assets WHERE id=?1",
+                    [asset_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .ok_or_else(|| Error::validation("unknown asset"))?,
+        };
+        let mut statement = self.connection.prepare(
+            "SELECT id,locator,source_kind,width,height FROM assets
+             WHERE rowid>?1 ORDER BY rowid LIMIT ?2",
+        )?;
+        // One row past the page says whether another page follows.
+        let rows = statement.query_map(params![after, limit as i64 + 1], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut assets = Vec::with_capacity(limit);
+        let mut more = false;
+        for row in rows {
+            let (id, locator, kind, width, height) = row?;
+            if assets.len() == limit {
+                more = true;
+                break;
+            }
+            assets.push(AssetSummary {
+                id: AssetId::parse(id)?,
+                locator: PathBuf::from(locator),
+                kind: SourceTag::parse(&kind).ok_or_else(|| {
+                    Error::incompatible(format!("stored source kind {kind} is not supported"))
+                })?,
+                width: u32::try_from(width).map_err(|_| Error::catalog("invalid asset width"))?,
+                height: u32::try_from(height)
+                    .map_err(|_| Error::catalog("invalid asset height"))?,
+            });
+        }
+        let next = more
+            .then(|| assets.last().map(|asset| asset.id.clone()))
+            .flatten();
+        Ok(AssetPage { assets, next })
     }
 
     /// One entry of this asset's history with its strokes resolved: decoded once, then copied

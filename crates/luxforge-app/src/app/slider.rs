@@ -153,7 +153,7 @@ impl Editor {
         let gesture_open = self.slider_gesture().is_some();
         if reset.is_some()
             && (gesture_open || self.busy)
-            && self.session.preview.can_edit()
+            && self.at_current()
             && let Some(state) = &self.document.state
         {
             let (asset, revision) = (state.asset.id.clone(), state.revision);
@@ -210,7 +210,7 @@ impl Editor {
             .is_none_or(|state| state.asset.id != reset.asset)
         {
             Some("another photograph is open")
-        } else if !self.session.preview.can_edit() {
+        } else if !self.at_current() {
             Some("a historical entry is shown")
         } else {
             None

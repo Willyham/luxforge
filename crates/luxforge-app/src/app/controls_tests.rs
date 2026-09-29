@@ -526,14 +526,22 @@ fn every_refused_control_start_says_why() {
     };
 
     // A previewed history entry refuses every one of them.
-    editor.session.preview.selection = HistorySelection::Entry(entry(&asset, 2, None).id);
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(entry(&asset, 2, None).id),
+    );
     for (name, message) in starts.clone() {
         refused(&mut editor, name, message, crate::state::NOT_CURRENT);
     }
 
     // A request in flight refuses what commits at once; a drafting control's gesture goes ahead
     // and its own round trips wait their turn, and a field reset waits for the request.
-    editor.session.preview.selection = HistorySelection::Current;
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Current,
+    );
     editor.busy = true;
     for (name, message) in starts {
         if matches!(
@@ -1045,7 +1053,11 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     // A historical entry is selected: its own rows seed the same fields, and the section is
     // disabled with its values still visible.
     let older = entry(&asset, 2, None);
-    editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Entry(older.id.clone()),
+    );
     editor.document.display_entry = Some(older.id.clone());
     let historical = described(&mut editor, -1.0);
     let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
@@ -1081,7 +1093,11 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     );
 
     // Return to current: the current entry's values come back.
-    editor.session.preview.selection = HistorySelection::Current;
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        HistorySelection::Current,
+    );
     let current = described(&mut editor, 2.0);
     editor.document.display_entry = Some(current.state.current_entry.id.clone());
     let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
@@ -1372,7 +1388,8 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     let mut session = editor.session.clone();
     session
         .preview
-        .select(HistorySelection::Entry(historical.id.clone()));
+        .select(&asset, HistorySelection::Entry(historical.id.clone()))
+        .unwrap();
     session.revision += 1;
     let job = raw_refresh(&asset, &historical).job;
     let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
@@ -1429,7 +1446,8 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     let mut session = editor.session.clone();
     session
         .preview
-        .select(HistorySelection::Entry(historical.id.clone()));
+        .select(&asset, HistorySelection::Entry(historical.id.clone()))
+        .unwrap();
     session.revision += 1;
     let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
         tasks::PreviewPayload {

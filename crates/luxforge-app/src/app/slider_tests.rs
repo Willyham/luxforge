@@ -537,7 +537,11 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
         parameter: parameter.clone(),
     }));
     assert!(editor.controls.pending_reset.is_some());
-    editor.session.preview.selection = luxforge_core::HistorySelection::Entry(current.id.clone());
+    crate::state::testing::show(
+        &mut editor.session,
+        editor.document.state.as_ref(),
+        luxforge_core::HistorySelection::Entry(current.id.clone()),
+    );
     editor.busy = false;
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
     let records = logged(&mut editor, &log);

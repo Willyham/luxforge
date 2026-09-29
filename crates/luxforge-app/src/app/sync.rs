@@ -16,7 +16,7 @@ use crate::state::{
     fields::{self, Fields},
 };
 use iced::{Subscription, Task};
-use luxforge_core::{ClientSession, HistoryRow, HistorySelection, ModuleDescriptor};
+use luxforge_core::{ClientSession, HistoryRow, ModuleDescriptor};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 
@@ -339,7 +339,10 @@ impl Editor {
     /// it was planned, or one it saw has not been read yet and brings its own frame when it is.
     pub(super) fn preview_superseded(&self, payload: &PreviewPayload) -> bool {
         payload.session.preview.generation < self.session.preview.generation
-            || (payload.session.preview.selection == HistorySelection::Current
+            || (payload
+                .session
+                .preview
+                .can_edit(&payload.job.evaluation.entry().asset_id)
                 && self
                     .document
                     .state

@@ -556,7 +556,7 @@ fn crash_points_between_publish_and_commit_leave_only_collectable_artifacts() {
     assert!(object_path(&root, &unrecorded).exists());
     // A recorded artifact whose commit fails: an injected write failure, then a stale revision.
     let mut service = open(&catalog);
-    let asset = service.assets().unwrap()[0].id.clone();
+    let asset = service.assets(None, 1).unwrap().assets[0].id.clone();
     let recorded = publish(&mut service, [0.9, 0.9, 0.1]);
     service
         .connection

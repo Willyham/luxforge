@@ -412,7 +412,8 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             ],
         });
     }
-    if inputs.draft.is_some() && !inputs.session.preview.can_edit() {
+    if inputs.draft.is_some() && !super::at_current(inputs.document.state.as_ref(), inputs.session)
+    {
         notices.push(Notice {
             tone: NoticeTone::Neutral,
             icon: NoticeIcon::Triangle,

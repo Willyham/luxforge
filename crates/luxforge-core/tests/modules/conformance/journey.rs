@@ -1336,9 +1336,10 @@ pub fn journey(
         )?;
         applied(&later, "the agent's commit during a preview")?;
         let session = owner.call(editor, "session.state", json!({}))?;
+        let selected = &session["preview"]["selections"][asset.as_str().unwrap_or_default()];
         ensure(
-            session["preview"]["selection"] == json!({"entry": original}),
-            format!("the selection moved to {}", session["preview"]["selection"]),
+            selected["entry_id"] == original,
+            format!("the selection moved to {selected}"),
         )?;
         ensure(
             owner.samples(editor, &asset, &source_probes, None)? == source_pixels,

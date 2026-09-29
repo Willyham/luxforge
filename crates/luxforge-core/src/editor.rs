@@ -42,7 +42,7 @@ mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
 
-pub(crate) use catalog::{decode, encode, now_ms, write};
+pub(crate) use catalog::{DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, decode, encode, now_ms, write};
 pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
 pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
@@ -90,6 +90,19 @@ impl SourceTag {
             Self::Jpeg => "JPEG",
             Self::Raw => "RAW",
         }
+    }
+
+    /// The tag exactly as `kind` serializes it, and as the catalog stores it in its own column
+    /// beside the interpretation, so a listing reads the kind without decoding the interpretation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::Raw => "raw",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tag| tag.as_str() == value)
     }
 }
 
@@ -174,6 +187,28 @@ pub struct AssetRecord {
     pub width: u32,
     pub height: u32,
     pub source: SourceKind,
+}
+
+/// One asset as `catalog.list` lists it: what a client needs to pick a photo, read from the asset's
+/// own columns. It carries the source kind's tag but not the interpretation, which is never decoded
+/// for a listing; `source.inspect` and `asset.state` read one asset's whole record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetSummary {
+    pub id: AssetId,
+    pub locator: PathBuf,
+    pub kind: SourceTag,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One page of the catalog's assets in import order. `next` is the cursor that continues it, the
+/// last asset listed, or `None` when nothing follows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetPage {
+    pub assets: Vec<AssetSummary>,
+    pub next: Option<AssetId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

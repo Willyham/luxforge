@@ -43,6 +43,8 @@ use std::{
 
 #[cfg(test)]
 mod artifact_tests;
+#[cfg(test)]
+mod catalog_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -130,6 +132,14 @@ enum OwnerMessage {
     /// How many `events.wait` calls the owner holds unanswered.
     #[cfg(test)]
     EventWaits(SyncSender<usize>),
+    /// Relocate an asset as the Locate command will, which no method exposes yet ([`relocate`]).
+    #[cfg(test)]
+    Relocate {
+        origin: Origin,
+        asset_id: AssetId,
+        path: PathBuf,
+        reply: SyncSender<Result<crate::MutationOutcome, Error>>,
+    },
     /// Wake this client whenever another client's change lands in the event log.
     WatchEvents {
         client: ClientId,
@@ -967,6 +977,27 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
+    /// Relocate `asset_id` to `path` on the owner under `origin` ([`relocate`]), which no method
+    /// exposes yet.
+    #[cfg(test)]
+    pub(crate) fn relocate(
+        &self,
+        origin: Origin,
+        asset_id: AssetId,
+        path: PathBuf,
+    ) -> Result<crate::MutationOutcome, Error> {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::Relocate {
+                origin,
+                asset_id,
+                path,
+                reply,
+            })
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
+    }
+
     /// Have the owner call `fault` with what it is about to serve ([`Fault`]), or stop calling it.
     #[cfg(test)]
     pub(crate) fn fault(&self, fault: Option<Fault>) {
@@ -1155,6 +1186,16 @@ fn owner_loop(
                 #[cfg(test)]
                 OwnerMessage::EventWaits(reply) => {
                     let _ = reply.send(owner.event_waits.len());
+                }
+                #[cfg(test)]
+                OwnerMessage::Relocate {
+                    origin,
+                    asset_id,
+                    path,
+                    reply,
+                } => {
+                    let _ = reply.send(relocate(&mut owner, &origin, &asset_id, &path));
+                    owner.record_announced();
                 }
                 OwnerMessage::Preview { request, response } => {
                     let _ = response.send(owner.preview(request));
@@ -1643,7 +1684,7 @@ impl Owner {
             (Some(entry_id), None, None) => self
                 .sessions
                 .get(&request.client)
-                .and_then(|session| session.preview.framing_of(entry_id))
+                .and_then(|session| session.preview.framing_of(&request.asset_id, entry_id))
                 .cloned(),
             _ => None,
         };
@@ -1962,6 +2003,30 @@ pub(super) fn source_prepare(
         &needs,
     )?;
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
+}
+
+/// Point an asset at the file its original is now found at ([`EditorService::relocate`]) and
+/// announce the change under `origin`, naming the asset and no revision, since its history did not
+/// move — as naming a version is announced. A client watching the log reads the asset again to see
+/// its new locator. A relocation to where the asset already is announces nothing.
+///
+/// The owner's half of the internal write the Locate milestone's command will make; no method
+/// exposes it yet.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn relocate(
+    owner: &mut Owner,
+    origin: &Origin,
+    asset_id: &AssetId,
+    path: &Path,
+) -> Result<crate::MutationOutcome, Error> {
+    let outcome = owner.service.relocate(asset_id, path)?;
+    if outcome == crate::MutationOutcome::Applied {
+        announce_once(
+            &mut owner.announced,
+            &origin.clone().changed(asset_id.clone(), None),
+        );
+    }
+    Ok(outcome)
 }
 
 /// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
@@ -2728,7 +2793,7 @@ mod tests {
             .result
             .unwrap();
         assert_eq!(adopted["asset"]["asset"]["id"], expected);
-        assert_eq!(adopted["session"]["preview"]["selection"], "current");
+        assert_eq!(adopted["session"]["preview"]["selections"], json!({}));
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(older).unwrap();
@@ -3336,7 +3401,7 @@ mod tests {
             "preview.select",
             json!({"asset_id":asset,"entry_id":edited["current_entry_id"]}),
         );
-        assert_eq!(latest["session"]["preview"]["selection"], json!("current"));
+        assert_eq!(latest["session"]["preview"]["selections"], json!({}));
         assert!(latest["generation"].is_u64());
         let selected = call(
             viewer,
@@ -3346,8 +3411,8 @@ mod tests {
         );
         assert_eq!(selected["session"]["revision"], json!(2));
         assert_eq!(
-            selected["session"]["preview"]["selection"],
-            json!({"entry": original})
+            selected["session"]["preview"]["selections"][asset.as_str().unwrap()],
+            json!({"entry_id": original, "geometry_from": null})
         );
         // The other client's session is independent and unaffected.
         assert_eq!(
@@ -5657,7 +5722,6 @@ mod tests {
         // Methods that take nothing say so too.
         for name in [
             "schema.list",
-            "catalog.list",
             "preset.list",
             "session.state",
             "preview.return-current",
