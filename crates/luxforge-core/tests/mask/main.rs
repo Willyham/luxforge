@@ -1,21 +1,21 @@
 //! Masking end to end, one module per area: the kind-conformance suite, one checklist every
 //! component kind passes against the independent references in `luxforge-reference` through one
 //! adapter per kind (`kinds`); what each kind has that the others do not (`radial`, `brush`,
-//! `constrained_brush`, `range`) and several kinds rendered together (`combination`); the coverage
-//! grid (`overlay`); geometry survival and reopen (`geometry_survival`); and masked edits on the
-//! colour and spatial paths and through the JSON method table (`masked_colour`, `masked_spatial`,
-//! `masked_edit_end_to_end`). The studies that
+//! `constrained_brush`, `range`) and several kinds rendered together (`combination`); the command
+//! family from an independent JSON client (`commands`); the coverage grid (`overlay`); geometry
+//! survival and reopen (`geometry_survival`); and masked edits on the colour and spatial paths
+//! (`masked_colour`, `masked_spatial`). The studies that
 //! prove those references' own properties are in `luxforge-reference`'s `studies` binary. The
 //! helpers below are the ones several of these modules share; the rest come from
 //! `luxforge-testkit`.
 
 mod brush;
 mod combination;
+mod commands;
 mod constrained_brush;
 mod geometry_survival;
 mod kinds;
 mod masked_colour;
-mod masked_edit_end_to_end;
 mod masked_spatial;
 mod overlay;
 mod radial;

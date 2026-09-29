@@ -49,8 +49,6 @@ use crate::{
 use std::sync::Arc;
 
 mod brush;
-#[cfg(test)]
-mod command_contracts;
 /// The `mask.*` host command family: what each command declares, does and labels.
 pub mod commands;
 mod linear;

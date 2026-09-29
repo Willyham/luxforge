@@ -607,10 +607,12 @@ mod tests {
         }
     }
 
-    /// The whole of what the `mask` request field does, through the one action path a GUI gesture and
-    /// a JSON client share: it commits the masked layer on the first non-neutral field, updates that
-    /// same layer in place afterwards, leaves the global layer alone, places each masked layer after
-    /// the global one and in its mask's order, and refuses an action that has no target to give.
+    /// What the `mask` request field does beyond what the field-patch conformance suite proves for
+    /// every maskable module (a masked set commits one layer for its target and later ones update it
+    /// in place, a global set leaves it alone, and the stack samples as it renders), through the one
+    /// action path a GUI gesture and a JSON client share: a neutral first field through a mask
+    /// commits nothing, each masked layer is placed after the global one and in its mask's order, a
+    /// mask the stack does not hold is refused, and so is an action that has no target to give.
     #[test]
     fn the_mask_target_commits_updates_and_orders_one_layer_per_target() {
         let catalog = temp("mask-target.sqlite");
@@ -682,52 +684,7 @@ mod tests {
         assert_eq!(committed[0].id, global_layer, "the global layer is first");
         assert_eq!(committed[0].mask, None);
         assert_eq!(committed[1].mask.as_ref(), Some(&first.id));
-        let masked_layer = committed[1].id.clone();
         assert_eq!(committed[1].payload["exposure"], json!(0.8));
-
-        // A later field updates that same layer in place, keeping its identity and position.
-        service
-            .apply_action(
-                &asset,
-                mutation(revision(&service, &asset), "mask-one-again"),
-                "set-basic",
-                json!({"mask": first.id, "exposure": 0.9}),
-            )
-            .unwrap();
-        let updated = layers(&service, &asset);
-        assert_eq!(updated.len(), 2, "no second layer for the same target");
-        assert_eq!(updated[1].id, masked_layer, "the masked layer's identity");
-        assert_eq!(updated[1].payload["exposure"], json!(0.9));
-        // And sending the same value again is the no-op it looks like.
-        assert_eq!(
-            service
-                .apply_action(
-                    &asset,
-                    mutation(revision(&service, &asset), "mask-one-noop"),
-                    "set-basic",
-                    json!({"mask": first.id, "exposure": 0.9}),
-                )
-                .unwrap()
-                .outcome,
-            MutationOutcome::NoOp
-        );
-
-        // The global layer is still edited by the same action without the field, and the masked
-        // layer is untouched by it.
-        service
-            .apply_action(
-                &asset,
-                mutation(revision(&service, &asset), "global-again"),
-                "set-basic",
-                json!({"exposure": 0.25}),
-            )
-            .unwrap();
-        let both = layers(&service, &asset);
-        assert_eq!(both.len(), 2);
-        assert_eq!(both[0].id, global_layer);
-        assert_eq!(both[0].payload["exposure"], json!(0.25));
-        assert_eq!(both[1].id, masked_layer);
-        assert_eq!(both[1].payload["exposure"], json!(0.9));
 
         // A layer in the second mask is legal for the same single-layer effect and lands after the
         // first mask's, because that is the order the mask list shows.
@@ -749,12 +706,6 @@ mod tests {
             vec![None, Some(first.id.clone()), Some(second.id.clone())],
             "the global layer, then the masks in their own order"
         );
-        // The stack renders and samples: a masked layer is evaluable the moment it is creatable.
-        service
-            .prepare(&service.entry_needs(&asset, None).unwrap())
-            .unwrap();
-        service.render_current(&asset).unwrap();
-
         // A target the stack does not hold is refused, and nothing is written.
         let absent = Mask::new("Mask 9");
         let error = service
@@ -955,6 +906,21 @@ mod tests {
             first,
             "the retry is the first answer, marked deduplicated"
         );
+        // A stale revision is refused before anything is planned, naming both revisions.
+        let stale = service
+            .run_action(
+                &asset,
+                mutation(0, "stale"),
+                "mask.set-invert",
+                (MaskTarget {
+                    mask: Some(mask.clone()),
+                    ..MaskTarget::default()
+                })
+                .request(json!({"invert": true})),
+            )
+            .unwrap_err();
+        assert_eq!(stale.kind, ErrorKind::Conflict);
+        assert_eq!(stale.detail, "stale revision 0; current revision is 2");
         drop(service);
 
         // The row holds the whole answer, identities included.
@@ -1039,5 +1005,381 @@ mod tests {
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// One asset in a catalog of its own, driven through the one action path, answering the way a
+    /// client reads each answer.
+    struct Session {
+        service: EditorService,
+        asset: AssetId,
+    }
+
+    impl Session {
+        fn open(name: &str) -> Self {
+            let mut service = EditorService::open(&temp(name)).unwrap();
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            Self { service, asset }
+        }
+
+        /// One command at the current revision; `Err` is its code and detail.
+        fn run(
+            &mut self,
+            method: &str,
+            target: &MaskTarget,
+            parameters: Value,
+            request: &str,
+        ) -> Result<Value, Value> {
+            let revision = self.service.state(&self.asset).unwrap().revision;
+            self.service
+                .run_action(
+                    &self.asset,
+                    mutation(revision, request),
+                    method,
+                    target.request(parameters),
+                )
+                .map(|result| serde_json::to_value(result).unwrap())
+                .map_err(|error| json!({"code": error.kind.code(), "detail": error.detail}))
+        }
+
+        fn list(&self) -> Value {
+            let entry = self.service.state(&self.asset).unwrap().current_entry.id;
+            serde_json::to_value(self.service.mask_listing(&self.asset, &entry).unwrap()).unwrap()
+        }
+
+        /// Every entry as `[action_id, label]`, oldest first.
+        fn labels(&self) -> Vec<Value> {
+            let mut labels: Vec<Value> = self
+                .service
+                .history(&self.asset, None, 100)
+                .unwrap()
+                .entries
+                .iter()
+                .map(|entry| json!([entry.action_id, entry.label]))
+                .collect();
+            labels.reverse();
+            labels
+        }
+    }
+
+    /// The component of `mask` named `component`, resolved from the listing as a client resolves it.
+    fn component_of(listing: &Value, mask: &str, component: &str) -> MaskTarget {
+        let found = listing["masks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["name"] == json!(mask))
+            .unwrap_or_else(|| panic!("no mask named {mask} in {listing}"));
+        let id = found["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["name"] == json!(component))
+            .unwrap_or_else(|| panic!("no component named {component} in {mask}"))["id"]
+            .as_str()
+            .unwrap();
+        MaskTarget {
+            mask: Some(MaskId::parse(found["id"].as_str().unwrap()).unwrap()),
+            component: Some(crate::ComponentId::parse(id).unwrap()),
+            ..MaskTarget::default()
+        }
+    }
+
+    /// One painted stroke as a request: the path and the brush it was drawn with.
+    fn stroke(points: Value, size: f64, feather: f64, flow: f64, erase: bool) -> Value {
+        json!({"points": points, "size": size, "feather": feather, "flow": flow, "erase": erase})
+    }
+
+    /// The strokes one component holds, in stored order, by content address.
+    fn strokes_of(listing: &Value, mask: &str, component: &str) -> Vec<String> {
+        let target = component_of(listing, mask, component);
+        listing["masks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|mask| mask["components"].as_array().unwrap())
+            .find(|candidate| candidate["id"] == json!(target.component.as_ref().unwrap().as_str()))
+            .unwrap()["payload"]["strokes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|address| address.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// One stroke's content address as a target's `stroke` field.
+    fn at(target: &MaskTarget, address: &str) -> MaskTarget {
+        MaskTarget {
+            stroke: Some(crate::path::StrokeId::parse(address.to_owned()).unwrap()),
+            ..target.clone()
+        }
+    }
+
+    /// The brush's two commands end to end: the first stroke draws a mask, later strokes update the
+    /// component it made, a second brush joins the same mask in the mode it was given, and one
+    /// stroke is deleted from the middle as a forward edit — each one entry, named for what it did —
+    /// and every refusal the design states for them, by name.
+    #[test]
+    fn painting_is_one_entry_a_stroke_and_a_delete_is_a_forward_edit() {
+        use crate::mask::commands::{ADD_STROKE, DELETE_STROKE};
+        let mut session = Session::open("mask-painting.sqlite");
+        // The first stroke on nothing: a mask, a brush component and the stroke, as one entry.
+        session
+            .run(
+                ADD_STROKE,
+                &MaskTarget::default(),
+                stroke(
+                    json!([[0.2, 0.2], [0.4, 0.4], [0.6, 0.4]]),
+                    0.1,
+                    50.0,
+                    100.0,
+                    false,
+                ),
+                "paint-1",
+            )
+            .expect("the first stroke draws a mask");
+        let brush = component_of(&session.list(), "Mask 1", "Brush 1");
+        // Every later stroke on that component is one entry of its own, which is what makes undo
+        // walk back one stroke at a time.
+        for (index, path) in [json!([[0.3, 0.7], [0.5, 0.7]]), json!([[0.7, 0.2]])]
+            .into_iter()
+            .enumerate()
+        {
+            session
+                .run(
+                    ADD_STROKE,
+                    &brush,
+                    stroke(path, 0.05, 20.0, 60.0, false),
+                    &format!("paint-more-{index}"),
+                )
+                .expect("a further stroke");
+        }
+        // A second brush on the same mask, in the mode the gesture chose before it started.
+        let mask = MaskTarget {
+            component: None,
+            ..brush.clone()
+        };
+        let mut subtract = stroke(json!([[0.5, 0.5], [0.55, 0.55]]), 0.08, 0.0, 100.0, false);
+        subtract["mode"] = json!("subtract");
+        session
+            .run(ADD_STROKE, &mask, subtract, "paint-subtract")
+            .expect("a subtract brush");
+        // An erase stroke inside the first brush: a property of the stroke, not of the component.
+        session
+            .run(
+                ADD_STROKE,
+                &brush,
+                stroke(json!([[0.35, 0.35], [0.45, 0.4]]), 0.04, 30.0, 100.0, true),
+                "paint-erase",
+            )
+            .expect("an erase stroke");
+        let held = strokes_of(&session.list(), "Mask 1", "Brush 1");
+        // A forward edit: one entry appended, the named stroke gone, every other stroke where it was.
+        session
+            .run(DELETE_STROKE, &at(&brush, &held[1]), Value::Null, "unpaint")
+            .expect("a stroke is deleted");
+        assert_eq!(
+            strokes_of(&session.list(), "Mask 1", "Brush 1"),
+            [held[0].clone(), held[2].clone(), held[3].clone()],
+            "only the named stroke goes and the rest keep their order"
+        );
+
+        let mut refusals = Vec::new();
+        // A stroke appended to a component that exists takes no mode: a component's mode is changed
+        // by the command that changes one, and an ignored field is never an answer.
+        let mut moded = stroke(json!([[0.1, 0.1]]), 0.05, 10.0, 50.0, false);
+        moded["mode"] = json!("intersect");
+        refusals.push(
+            session
+                .run(ADD_STROKE, &brush, moded, "refuse-mode")
+                .expect_err("a mode on an appended stroke"),
+        );
+        // A gradient is not painted on: its geometry is declared, and the refusal names the method
+        // that does edit it.
+        session
+            .run(
+                "mask.create-linear",
+                &MaskTarget::default(),
+                json!({"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0}),
+                "a-gradient",
+            )
+            .expect("a gradient mask");
+        let gradient = component_of(&session.list(), "Mask 2", "Linear 1");
+        refusals.push(
+            session
+                .run(
+                    ADD_STROKE,
+                    &gradient,
+                    stroke(json!([[0.5, 0.5]]), 0.05, 10.0, 50.0, false),
+                    "refuse-kind",
+                )
+                .expect_err("a stroke on a gradient"),
+        );
+        // A stroke the component does not hold, and the last stroke of a component, are both named
+        // refusals rather than something approximate.
+        refusals.push(
+            session
+                .run(
+                    DELETE_STROKE,
+                    &at(&brush, &"0".repeat(32)),
+                    Value::Null,
+                    "refuse-absent",
+                )
+                .expect_err("a stroke that is not there"),
+        );
+        let listing = session.list();
+        let two = component_of(&listing, "Mask 1", "Brush 2");
+        let only = strokes_of(&listing, "Mask 1", "Brush 2");
+        refusals.push(
+            session
+                .run(
+                    DELETE_STROKE,
+                    &at(&two, &only[0]),
+                    Value::Null,
+                    "refuse-last",
+                )
+                .expect_err("a component's only stroke"),
+        );
+        assert_eq!(
+            refusals,
+            [
+                json!({"code": "validation", "detail":
+                    "a stroke appended to an existing component takes no mode; change a \
+                     component's mode with mask.set-component-mode"}),
+                json!({"code": "validation", "detail":
+                    "component Linear 1 is a linear component, whose geometry is declared rather \
+                     than drawn; patch it with mask.set-linear"}),
+                json!({"code": "validation", "detail":
+                    "component Brush 1 holds no stroke 00000000000000000000000000000000"}),
+                json!({"code": "validation", "detail": format!(
+                    "stroke {} is the only stroke of Brush 2; delete the component instead",
+                    only[0]
+                )}),
+            ]
+        );
+
+        // The design's granularity table, in the order the journey painted it, each entry storing
+        // the command that wrote it. A mask's name prefixes a label once the stack holds more than
+        // one, which is the delivered rule and not the brush's.
+        let painted: Vec<Value> = session
+            .labels()
+            .into_iter()
+            .filter(|entry| entry[0].as_str().unwrap().starts_with("mask."))
+            .collect();
+        assert_eq!(
+            painted,
+            [
+                json!([ADD_STROKE, "Add brush"]),
+                json!([ADD_STROKE, "Update Brush 1"]),
+                json!([ADD_STROKE, "Update Brush 1"]),
+                json!([ADD_STROKE, "Add subtract brush"]),
+                json!([ADD_STROKE, "Update Brush 1"]),
+                json!([DELETE_STROKE, "Delete a stroke from Brush 1"]),
+                json!(["mask.create-linear", "Mask 2 · Add linear"]),
+            ],
+            "one entry a stroke, named for what that stroke did"
+        );
+        // No coordinate is ever written into a component payload: a payload holds addresses and
+        // nothing else, which is what keeps one entry a stroke from copying every earlier stroke.
+        let payload = &session.list()["masks"][0]["components"][0]["payload"];
+        assert_eq!(
+            payload.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["strokes"],
+            "a brush payload carries the reserved strokes field and nothing else"
+        );
+        assert!(
+            payload["strokes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|address| address.as_str().is_some_and(|text| text.len() == 32)),
+            "every stroke is a content address, never a position"
+        );
+    }
+
+    /// Decimation happens where the store says it does, and it is idempotent, so a desktop that
+    /// decimates before it posts and an agent that posts the path it captured reach the same stored
+    /// stroke — the same address, and therefore the same coverage.
+    #[test]
+    fn a_decimated_path_and_the_path_it_came_from_are_the_same_stored_stroke() {
+        // A path a pointer produces: many positions along a straight run, which decimation at the
+        // stroke's own radius reduces to its two ends.
+        let captured: Vec<[f64; 2]> = (0..=64)
+            .map(|step| [0.2 + f64::from(step) * 0.005, 0.3])
+            .collect();
+        let decimated = crate::path::decimate(&captured, 0.1).unwrap();
+        assert_eq!(decimated.len(), 2, "a straight run keeps its ends");
+        let address = |path: &[[f64; 2]], request: &str| -> String {
+            let mut session = Session::open(&format!("mask-decimation-{request}.sqlite"));
+            session
+                .run(
+                    crate::mask::commands::ADD_STROKE,
+                    &MaskTarget::default(),
+                    stroke(json!(path), 0.1, 50.0, 100.0, false),
+                    request,
+                )
+                .expect("a stroke");
+            strokes_of(&session.list(), "Mask 1", "Brush 1")[0].clone()
+        };
+        assert_eq!(
+            address(&captured, "raw"),
+            address(&decimated, "decimated"),
+            "the same path, however much of it the client posted"
+        );
+    }
+
+    #[test]
+    fn a_global_and_a_masked_layer_of_one_effect_coexist_in_mask_order() {
+        let mut session = Session::open("mask-coexist.sqlite");
+        let mask = session
+            .run(
+                "mask.create-linear",
+                &MaskTarget::default(),
+                json!({"x0": 0.0, "y0": 0.5, "x1": 1.0, "y1": 0.5}),
+                "create",
+            )
+            .unwrap()["mask"]
+            .clone();
+        let mask = MaskId::parse(mask.as_str().unwrap()).unwrap();
+        let mut edit = |parameters: Value, request: &str| {
+            let revision = session.service.state(&session.asset).unwrap().revision;
+            session
+                .service
+                .apply_action(
+                    &session.asset,
+                    mutation(revision, request),
+                    "set-basic",
+                    parameters,
+                )
+                .unwrap_or_else(|error| panic!("set-basic failed: {error}"));
+        };
+        // The masked edit first, then the global one: the global layer must still land before it.
+        edit(json!({"mask": mask.as_str(), "exposure": 1.0}), "masked");
+        edit(json!({"exposure": -0.5}), "global");
+
+        let state = session.service.state(&session.asset).unwrap();
+        let targets: Vec<_> = state
+            .current_entry
+            .snapshot
+            .recipe
+            .layers
+            .iter()
+            .filter(|l| l.effect_id == crate::BASIC_EFFECT)
+            .map(|l| l.mask.clone())
+            .collect();
+        assert_eq!(
+            targets,
+            vec![None, Some(mask)],
+            "one effect holds one global layer and one masked layer, the global one first"
+        );
+
+        // And the stack still renders, which "ambiguous Basic layers" would have prevented.
+        session
+            .service
+            .prepare(&session.service.entry_needs(&session.asset, None).unwrap())
+            .unwrap();
+        session
+            .service
+            .render_current(&session.asset)
+            .expect("a stack holding a global and a masked layer of one effect renders");
     }
 }

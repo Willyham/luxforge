@@ -703,3 +703,82 @@ fn the_host_descriptor_meets_the_rules_a_module_descriptor_does() {
         );
     }
 }
+
+#[test]
+fn a_mask_command_and_a_module_action_can_never_collide() {
+    // A mask command's identity carries a dot, which an action identity may not, so the two families
+    // are disjoint by construction — and a module that declares one anyway is refused by name rather
+    // than shadowing the host.
+    let mut registry = crate::ModuleRegistry::builtin();
+    let error = registry
+        .register(std::sync::Arc::new(Colliding))
+        .expect_err("a module may not declare a host mask command");
+    assert_eq!(error.kind, crate::ErrorKind::Validation);
+    assert_eq!(
+        error.detail,
+        "test.collide declares mask.create-linear, which is a host mask command"
+    );
+}
+
+/// A module whose one action names a host mask command — a *generated* one, because a generated
+/// geometry method carries the same dotted identity every other command does and is protected by the
+/// same check.
+struct Colliding;
+
+impl crate::ToolModule for Colliding {
+    fn descriptor(&self) -> &crate::ModuleDescriptor {
+        static DESCRIPTOR: std::sync::LazyLock<crate::ModuleDescriptor> =
+            std::sync::LazyLock::new(|| crate::ModuleDescriptor {
+                id: "test.collide".into(),
+                title: "Collide".into(),
+                hint: None,
+                effects: Vec::new(),
+                actions: vec![crate::ActionDescriptor {
+                    id: "mask.create-linear".into(),
+                    title: "Create".into(),
+                    notes: String::new(),
+                    patch: false,
+                    parameters: Vec::new(),
+                }],
+                queries: Vec::new(),
+                controls: Vec::new(),
+                reset: None,
+                canvas: None,
+                developer: true,
+                collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
+                availability: crate::Availability::Available,
+                ..crate::ModuleDescriptor::default()
+            });
+        &DESCRIPTOR
+    }
+    fn parse(
+        &self,
+        _: &str,
+        _: &serde_json::Map<String, Value>,
+    ) -> Result<crate::ActionInput, crate::Error> {
+        unreachable!("registration is refused before anything is parsed")
+    }
+    fn plan(
+        &self,
+        _: &crate::ActionInput,
+        _: &crate::StageContext<'_>,
+    ) -> Result<crate::ActionPlan, crate::Error> {
+        unreachable!("registration is refused before anything is planned")
+    }
+    fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), crate::Error> {
+        Ok(())
+    }
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, crate::Error> {
+        Ok(crate::LayerReport::default())
+    }
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::Stage,
+    ) -> Result<crate::Processing, crate::Error> {
+        unreachable!("registration is refused before anything is compiled")
+    }
+}

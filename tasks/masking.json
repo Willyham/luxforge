@@ -768,7 +768,7 @@
     {
       "id": "TASK-010",
       "description": "Write one kind-conformance test suite driven by a per-kind adapter, delete the mask command-contract tests that now duplicate the field-patch conformance suite, and remove masked-edit tests it already proves.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-007"
       ],
@@ -795,28 +795,27 @@
         },
         {
           "kind": "file",
-          "label": "Command contracts",
-          "target": "crates/luxforge-core/src/mask/command_contracts.rs",
-          "locator": "every_command_is_identical_from_an_independent_json_client_and_from_inside, a_retried_command_returns_its_original_result_and_a_reused_id_conflicts",
-          "relevance": "The parity and retry tests that now duplicate run_action against itself."
+          "label": "Mask commands from a JSON client",
+          "target": "crates/luxforge-core/tests/mask/commands.rs",
+          "relevance": "Where the command-contract tests that were not parity or retry now live, on the shared JSON client; the in-process ones moved to editor/masks.rs and the collision test to mask/commands/declare_tests.rs."
         },
         {
           "kind": "file",
-          "label": "Linear kind tests",
-          "target": "crates/luxforge-core/tests/mask/unit.rs",
-          "relevance": "One of the five places the per-kind checklist is written out by hand."
+          "label": "Kind-conformance suite",
+          "target": "crates/luxforge-core/tests/mask/kinds/mod.rs",
+          "relevance": "The one checklist and its rows; one adapter per kind beside it."
         },
         {
           "kind": "file",
           "label": "Kind table",
           "target": "crates/luxforge-core/src/mask/mod.rs",
-          "relevance": "Holds its own copy of the linear kind's conformance tests, and the kind table's glyph, menu title and band rows the suite checks."
+          "relevance": "The kind table whose glyph, menu title and band rows the suite checks; its own tests keep the linear gradient's closed forms and the composition."
         },
         {
           "kind": "file",
-          "label": "Masked edit end to end",
-          "target": "crates/luxforge-core/tests/mask/masked_edit_end_to_end.rs",
-          "relevance": "Bridges a gap the field-patch conformance suite has since closed."
+          "label": "Mask target tests",
+          "target": "crates/luxforge-core/src/editor/masks.rs",
+          "relevance": "Keeps the mask-order placement and refusal tests the field-patch conformance suite does not cover."
         }
       ],
       "acceptance_criteria": [

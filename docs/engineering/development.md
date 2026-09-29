@@ -168,11 +168,12 @@ A dev build is not a timing build; timing uses release.
 Every integration-test binary links the whole of `luxforge-core`, so the core's integration tests
 are grouped into one binary per area, one module per file: `basic` (Exposure, white balance, Tone,
 Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
-field-patch conformance suite), `mask` (each kind against its reference, the coverage grid,
-geometry survival and masked edits on both paths and through the JSON method table), and
-`cancellation` and `resources_cost`, which stay apart because each is an ignored release timing:
-the first times how promptly a cancelled 24 MP render stops, against its 25 ms bound, and the
-second the cost of `resources.read`. Narrow a run with the module path, for example
+field-patch conformance suite), `mask` (the kind-conformance suite, whose one checklist every
+component kind passes against its reference through one adapter per kind, each kind's own tests,
+the command family through the JSON method table, the coverage grid, geometry survival and masked
+edits on both paths), and `cancellation` and `resources_cost`, which stay apart because each is an
+ignored release timing: the first times how promptly a cancelled 24 MP render stops, against its
+25 ms bound, and the second the cost of `resources.read`. Narrow a run with the module path, for example
 `cargo test -p luxforge-core --test basic white_balance::` or `--test mask range::`.
 Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
 independent references and their studies, the mask, brush and range studies among them, live in
