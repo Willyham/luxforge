@@ -401,10 +401,6 @@ struct Input {
     /// in memory, while a redevelopment is in flight — so the input has no frame of its own.
     generation: Option<u64>,
     draft_revision: Option<u64>,
-    /// The desktop's own measurement of the GPU upload inside the interval above, when the binary
-    /// reports one. The photo surface writes its texture during the frame that draws it, so the
-    /// current binary reports none and this stays `NaN`.
-    upload_ms: f64,
 }
 
 /// Pair every `draft.set` with the preview job it produced and the frame that job was displayed as.
@@ -455,7 +451,6 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     displayed_ms: f64::NAN,
                     generation: Some(detail["generation"].as_u64().ok_or("No generation")?),
                     draft_revision: Some(detail["draft_revision"].as_u64().ok_or("No revision")?),
-                    upload_ms: f64::NAN,
                 });
             }
             // The draft accepted the value but its preview job was refused: the input reached the
@@ -475,7 +470,6 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     displayed_ms: f64::NAN,
                     generation: None,
                     draft_revision: None,
-                    upload_ms: f64::NAN,
                 });
             }
             _ => {}
@@ -495,7 +489,6 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
             // frame. Input-to-first-visible-response stops at its first adoption.
             if !input.displayed_ms.is_finite() {
                 input.displayed_ms = elapsed(event)?;
-                input.upload_ms = event["detail"]["upload_ms"].as_f64().unwrap_or(f64::NAN);
             }
         }
     }
@@ -2319,11 +2312,6 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         .iter()
         .map(|input| input.displayed_ms - input.queued_ms)
         .collect();
-    let upload: Vec<f64> = drained
-        .iter()
-        .map(|input| input.upload_ms)
-        .filter(|value| value.is_finite())
-        .collect();
     let input_p95 = stats::Distribution::of(input_to_frame.clone()).map(|d| d.p95);
     // A gesture's press: its `slider_draft_begin`, logged in the update that opens the draft, paired
     // with the first measured `draft.set` after it and, in a drag, the frame that set's preview job
@@ -2354,7 +2342,6 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         stats::row("input_to_presented_frame", "ms", input_to_frame),
         stats::row("draft_set_round_trip", "ms", set_round_trip),
         stats::row("render_and_upload", "ms", render_and_upload),
-        stats::row("gpu_upload", "ms", upload),
         stats::row("press_to_first_draft_set", "ms", press_to_first_set),
         stats::row("press_to_first_presented_frame", "ms", press_to_first_frame),
     ];
@@ -2476,7 +2463,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
         "rows":rows,
         "press_note":"press_to_first_draft_set and press_to_first_presented_frame start at the gesture's slider_draft_begin, logged in the update that opens its draft, and end at its first draft.set and, in a drag, at the preview_displayed of that set's preview job; they are the only rows that include what a press waits for before its first draft.set. A drag has one press, so each run adds one sample; a commit run has one per sample and no drafted frame survives its commit.",
-        "gpu_upload_note":"The gpu_upload row has no distribution when the binary's preview_displayed carries no upload_ms, which is true of the photo surface: the raster is written into the surface's own texture during the frame that draws it, so there is no upload step to time. render_and_upload then covers the render and the hand-over together.",
+        "render_and_upload_note":"The photo surface writes the raster into its own texture during the frame that draws it, so there is no upload step to time: render_and_upload covers the render and the hand-over together.",
         "queue":{
             "scripted_slider_values":if options.control == Control::Slider {
                 json!(if drag { values.len() + options.samples + 1 } else { values.len() })
@@ -3577,7 +3564,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_midpoint_pairs_one_draft_set_with_its_uploaded_generation() {
+    fn curve_midpoint_pairs_one_draft_set_with_its_displayed_generation() {
         let points = json!([[0.0, 0.0], [0.5, 0.375], [1.0, 1.0]]);
         let events = vec![
             json!({"event":"slider_draft_set","elapsed_ms":10.0,
@@ -3585,13 +3572,12 @@ mod tests {
             json!({"event":"slider_draft_preview","elapsed_ms":20.0,
                 "detail":{"value":points,"generation":7,"draft_revision":2}}),
             json!({"event":"preview_displayed","elapsed_ms":35.0,
-                "detail":{"generation":7,"draft_revision":2,"upload_ms":3.0}}),
+                "detail":{"generation":7,"draft_revision":2}}),
         ];
         let paired = inputs(&events, Control::Curve, &unused_field()).unwrap();
         assert_eq!(paired.len(), 1);
         assert_eq!(paired[0].value, 0.375);
         assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 25.0);
-        assert_eq!(paired[0].upload_ms, 3.0);
         let mut wrong = events;
         wrong[2]["detail"]["draft_revision"] = json!(3);
         assert!(inputs(&wrong, Control::Curve, &unused_field()).is_err());
