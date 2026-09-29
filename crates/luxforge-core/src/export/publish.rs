@@ -14,7 +14,7 @@
 //!   without publishing removes the temporary file.
 
 use crate::Error;
-use crate::atomic_file::{file_error, sync_dir};
+use crate::atomic_file::{file_error, flush, sync_dir};
 use serde_json::json;
 use std::{
     fs::{self, File, OpenOptions},
@@ -125,8 +125,7 @@ impl Staged {
             .flush()
             .map_err(|error| file_error(self.temp_path.display(), error.kind()))?;
         let file = self.file.get_ref();
-        file.sync_all()
-            .map_err(|error| file_error(self.temp_path.display(), error.kind()))?;
+        flush(file).map_err(|error| file_error(self.temp_path.display(), error.kind()))?;
         let bytes = file
             .metadata()
             .map_err(|error| file_error(self.temp_path.display(), error.kind()))?
@@ -149,7 +148,7 @@ impl Staged {
                     Ok(mut final_file) => {
                         let copied = File::open(&self.temp_path)
                             .and_then(|mut temp_file| io::copy(&mut temp_file, &mut final_file))
-                            .and_then(|_| final_file.sync_all());
+                            .and_then(|_| flush(&final_file));
                         if let Err(error) = copied {
                             let _ = fs::remove_file(&self.final_path);
                             return Err(file_error(self.final_path.display(), error.kind()));

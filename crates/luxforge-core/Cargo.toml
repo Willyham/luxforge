@@ -22,6 +22,14 @@ url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
+[features]
+# Skips the drive-cache flush of every durable write (`atomic_file::flush`) and the catalog's
+# `synchronous=FULL`, for test builds only: on macOS each flush is an `F_FULLFSYNC` the whole host
+# queues for, and it was most of the core's unit-test time. Only `[dev-dependencies]` tables turn it
+# on (`cargo xtask check-repository`'s `disk-flush-only-in-tests` rule), so a `cargo build` of any
+# binary never has it. See docs/engineering/development.md#tests-skip-the-disk-flush.
+test-skip-disk-flush = []
+
 [target.'cfg(windows)'.dependencies]
 winapi-util = "=0.1.11"
 
@@ -31,6 +39,8 @@ image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
+# The core's own tests with the disk flush skipped (the feature above).
+luxforge-core = { path = ".", features = ["test-skip-disk-flush"] }
 
 [lints]
 workspace = true

@@ -73,11 +73,14 @@ impl Diagnostics {
     }
     /// Call on the task executor, never the UI thread.
     pub fn finish(self) -> bool {
+        self.finish_within(std::time::Duration::from_secs(2))
+    }
+    /// [`Self::finish`] waiting up to `bound` for the writer: a test waits for the hang bound, so
+    /// a loaded host cannot turn a slow flush into a failed one.
+    pub(crate) fn finish_within(self, bound: std::time::Duration) -> bool {
         let (tx, rx) = mpsc::sync_channel(1);
         if self.sender.send(Record::Finish(tx)).is_ok() {
-            return rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap_or(false);
+            return rx.recv_timeout(bound).unwrap_or(false);
         }
         false
     }

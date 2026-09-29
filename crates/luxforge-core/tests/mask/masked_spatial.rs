@@ -223,7 +223,7 @@ fn a_tile_the_mask_cannot_reach_holds_the_operation_input() {
 /// evaluates the one stage-aligned tile that contains its pixel — is unchanged, and a tile the mask
 /// cannot reach costs the sample less than that, never more.
 #[test]
-fn a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
+fn slow_a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source(SMALL);
     let linear = linear_source(SMALL);

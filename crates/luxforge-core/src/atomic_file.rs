@@ -3,7 +3,8 @@
 //! and the derived-artifact objects (`artifacts::store`). Bytes go to a temporary file that is
 //! synced, then renamed over the target, and the directory is synced so the rename itself is
 //! durable; a failure at any point leaves the previous file. Writers that share a file serialize on
-//! an OS advisory lock beside it, and a read is bounded.
+//! an OS advisory lock beside it, and a read is bounded. [`flush`] is the one call in the core that
+//! makes written bytes durable, for these writes and for the resource and export writers.
 use crate::Error;
 use std::{
     fs::{self, File, OpenOptions},
@@ -61,12 +62,25 @@ pub(crate) fn read(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, Error
     Ok(Some(bytes))
 }
 
+/// Whether durable writes reach the drive: false only in a test build with the
+/// `test-skip-disk-flush` feature, which only `[dev-dependencies]` tables turn on. Every other step
+/// of a durable write still runs there, and no test can observe a flush. The catalog reads it for
+/// its `synchronous` setting.
+pub(crate) const FLUSHES: bool = !cfg!(feature = "test-skip-disk-flush");
+
+/// Make what has been written to `file`, a file or a directory, durable: `sync_all`, which on macOS
+/// is `F_FULLFSYNC`, a flush of the drive's own cache that the whole host queues for. Nothing when
+/// [`FLUSHES`] is false.
+pub(crate) fn flush(file: &File) -> io::Result<()> {
+    if FLUSHES { file.sync_all() } else { Ok(()) }
+}
+
 /// Write `bytes` to the temporary file `path`, replacing one a crash left, and sync it. A failure
 /// removes it.
 pub(crate) fn stage(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let written = File::create(path).and_then(|mut file| {
         file.write_all(bytes)?;
-        file.sync_all()
+        flush(&file)
     });
     if written.is_err() {
         let _ = fs::remove_file(path);
@@ -100,7 +114,7 @@ pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
 /// where a rename is durable once it returns.
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    File::open(dir)?.sync_all()?;
+    flush(&File::open(dir)?)?;
     #[cfg(not(unix))]
     let _ = dir;
     Ok(())

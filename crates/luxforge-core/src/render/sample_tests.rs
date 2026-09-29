@@ -240,7 +240,7 @@ fn cases() -> Vec<Case> {
 /// sample through the entry point answers the stage and the rendered byte inside it and nothing
 /// outside it. The linear sources are views, so the rows read them through an orientation.
 #[test]
-fn a_frame_equals_its_point_evaluator_and_a_sample_equals_the_frame() {
+fn slow_a_frame_equals_its_point_evaluator_and_a_sample_equals_the_frame() {
     let registry = colour_registry();
     let balance = WhiteBalanceApproximation::from_matrix([
         [1.21, -0.11, -0.02],

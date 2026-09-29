@@ -296,10 +296,7 @@ impl Staged {
             return Err(kind);
         }
         self.file.flush().map_err(|error| error.kind())?;
-        self.file
-            .get_ref()
-            .sync_all()
-            .map_err(|error| error.kind())?;
+        atomic_file::flush(self.file.get_ref()).map_err(|error| error.kind())?;
         Ok((self.written, format!("{:x}", self.hasher.finalize())))
     }
 }

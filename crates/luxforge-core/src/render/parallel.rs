@@ -283,7 +283,7 @@ mod tests {
     /// shared before did not (256 Ki pixels for a heavy colour pass), on both pixel domains where
     /// the pass has one: the pooled run and a serial run write the same bytes.
     #[test]
-    fn a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes() {
+    fn slow_a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes() {
         let (crop, crop_output) = straightened_crop(720, 480);
         let presence_all = presence(json!({"clarity": 60.0, "texture": 40.0, "dehaze": 30.0}));
         let cases = [

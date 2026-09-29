@@ -21,8 +21,10 @@ Doctor reports missing tools and the graphics environment without installing any
 | --- | --- |
 | Environment report | `cargo xtask doctor` |
 | Full local and CI checks: repository links and task plans, formatting, Clippy, tests | `cargo xtask check` |
+| The same without the slow tests and the doctests, what the quick tier runs | `cargo xtask check --quick` |
+| The quick tier with its summary, with no release build | `cargo xtask verify --tier quick --output NEW_DIR` |
 | A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
-| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` (the editor and the headless `luxforge-json`) |
+| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test [--quick]`, `build [--release]` (the editor and the headless `luxforge-json`) |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
@@ -197,6 +199,51 @@ tests need goes in the core's own test-support modules (`editor/test_support.rs`
 the mask, brush and range studies among them, live in `luxforge-reference`, one module per study
 (`cargo test -p luxforge-reference --test studies tone::`).
 
+### How `check` runs the tests
+
+`check` runs the repository and dependency-policy checks and formatting beside Clippy and the tests,
+since they share nothing with the build. `check` and `test` build every test binary through one
+`cargo test --no-run`, then run all of them at once, each as its own process in its package's
+directory as Cargo runs it, and print one line per binary with its elapsed time and a failing
+binary's whole output after the rest. `cargo test` runs its binaries one after another, so a
+workspace run took the sum of every binary's time; the slowest binary now bounds it. The doctests
+run last, through Cargo.
+
+A test whose own name starts with `slow_` is a slow test: one that takes about a second or more on
+its own in the dev profile, such as an exhaustive sweep, or a spatial layer's whole tile evaluated
+again for each sampled point. `check --quick` and `test --quick` list each binary's tests, skip the
+slow ones by exact name, leave out the doctests and say how many tests they left out; without
+`--quick` nothing is left out. The quick tier runs `check --quick`, and every other tier and CI the
+whole `check`. Name a new test `slow_` only when it alone would lengthen the quick run, after making
+it as cheap as what it proves allows. A slow test runs by hand like any other, for example
+`cargo test -p luxforge-core --lib spatial::tests::slow_`. The field-patch conformance test is one:
+`editor-acceptance` runs the same suite in release in a quarter of the time.
+
+### Tests skip the disk flush
+
+Every durable write in the core, the catalog's commits aside, makes its bytes durable through one
+function, `atomic_file::flush`: `sync_all`, which on macOS is `F_FULLFSYNC`, a flush of the drive's
+own cache that the whole host queues for. The catalog commits with `synchronous=FULL`. Test builds
+skip both through `luxforge-core`'s `test-skip-disk-flush` feature (the catalog commits with
+`synchronous=OFF`); every other step of a durable write, the temporary file, the rename and the
+locks, still runs, and no test can observe a flush. With the flush, `luxforge-core`'s unit tests
+took 3.8 s on their own while using about three cores, waiting on the drive; without it, 1.8 to
+2.0 s.
+
+Only `[dev-dependencies]` tables turn the feature on: every crate that depends on the core names it
+again there with the feature, the core itself included. Cargo turns on a dev-dependency's features
+only when it builds tests, so `cargo build`, `cargo xtask develop`, `build --release`, `package` and
+`verify`'s release build never have it, while `cargo test` and `clippy --all-targets` do, and so does
+anything they link in the same run: `target/debug/luxforge-json`, which the CLI's integration tests
+run, is the flush-skipping build until something else rebuilds it. `check-repository` holds this with
+two rules: `disk-flush-only-in-tests` refuses the feature in any normal, build or workspace
+dependency, and `one-disk-flush` refuses `sync_all`, `sync_data` and the feature's name anywhere in
+the crates' production code outside `atomic_file.rs`.
+
+The cost is one more compile of the core after a core edit: `cargo xtask` builds `xtask` against the
+core without the feature and the tests build it with the feature, where before they shared one. On
+the owner's M4 a one-line edit recompiles the core incrementally in about 2 s.
+
 ### Tests that do not depend on host load
 
 The workspace's tests run in parallel, beside other builds and test runs on a shared host, so a test
@@ -232,13 +279,14 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 
 ### Verification tiers
 
-`verify` runs a tier of the commands above and writes one summary. Each tier includes the ones below it:
+`verify` runs a tier of the commands above and writes one summary. Each tier includes the ones below
+it; the tiers above `quick` run the whole `check` in place of its quick subset:
 
 | Tier | What it runs |
 | --- | --- |
-| `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 35 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
-| `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
+| `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
+| `rendered` | the whole `check`, `editor-acceptance` and all 35 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
+| `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
 When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
@@ -256,13 +304,15 @@ outright, is `incomplete` rather than `passed`, naming which components and why 
 in `summary.json`'s `incomplete` list, and its process exits with its own code (currently `3`),
 distinct from `0` (passed) and the ordinary-failure exit code a real component failure uses.
 
-The command builds `luxforge-app` and `xtask` once in release, then runs each component as a child
+Above `quick`, the command builds `luxforge-app` and `xtask` once in release, then runs each component as a child
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
 measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
 generated fixture — 24 MP, 60 MP, hue-wheel, presence or range — is missing. A component that has
-stopped making progress is killed after twenty minutes and recorded as `timed_out`.
+stopped making progress is killed after twenty minutes and recorded as `timed_out`. `quick` builds
+nothing up front: its one component, `check --quick`, builds what it tests, runs as a child of the
+`xtask` executable running `verify`, and its summary names no editor binary.
 
 The rendered scenarios are the one block that overlaps: they run through a bounded pool, three at a
 time by default and `--jobs N` otherwise, with `--jobs 1` as the serial run through the same path.
@@ -320,8 +370,10 @@ The command never opens a frame. Read a capture as an image only for a failed sc
 review.
 
 Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
-shared with other work at one-minute load averages between 4 and 13: `quick` 28 s, of which `check`
-is 27 s, mostly the workspace tests, and varies with how much Cargo has to redo; `rendered` a measured 27-scenario workload with 36 editor launches taking 28 s of wall clock
+shared with other work at one-minute load averages between 4 and 13: `quick`, with nothing to
+rebuild, 3.9 to 6.5 s at load averages of 5 to 19, of which the test binaries are 2.3 to 3.5 s; before
+the tests [skipped the disk flush](#tests-skip-the-disk-flush) it was 6.8 to 7.3 s at load averages
+of 1 to 2. The whole `check` took 33 s at a load average around 35. `rendered` a measured 27-scenario workload with 36 editor launches taking 28 s of wall clock
 through the pool against 82 s of their own summed elapsed time, the four `mask-*` scenarios the
 longest of them at 4 to 12 s each; `timing` 70 s with the default sample counts, of which `measure` is
 48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
@@ -480,7 +532,8 @@ nothing and sharing the source allocation whatever it holds, not to the pixel co
 journey through the method table. Every `patch: true` action of every registered module, `set-raw`
 included, keeps the generic patch check's rules: an empty patch is filled with nothing, a declared
 default alone is exactly that field, and a value its declaration refuses is refused by name. The
-same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev profile, and in release inside
+same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev
+profile, a [slow test](#how-check-runs-the-tests) the quick tier leaves out, and in release inside
 `editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
 Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
 a failure names the module, the step and the property that broke.
@@ -903,4 +956,4 @@ Rules for any UI or image check:
 
 ## CI
 
-`.github/workflows/check.yml` runs `cargo xtask verify --tier quick` (whose `check` includes the golden-fixture test), an optimized build and packaging on macOS arm64, Windows x64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
+`.github/workflows/check.yml` runs the whole `cargo xtask check` (slow tests, doctests and the golden-fixture test included) and `editor-acceptance` in release, an optimized build and packaging on macOS arm64, Windows x64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).

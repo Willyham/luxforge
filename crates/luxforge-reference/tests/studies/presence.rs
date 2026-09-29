@@ -578,7 +578,7 @@ fn every_unit_at_zero_is_the_exact_identity() {
 }
 
 #[test]
-fn the_declared_halos_make_tiled_evaluation_bit_identical() {
+fn slow_the_declared_halos_make_tiled_evaluation_bit_identical() {
     let cases = [
         ("step-high", step_high(), params(100.0, 100.0, 0.0)),
         ("step-high", step_high(), params(-100.0, -100.0, 0.0)),

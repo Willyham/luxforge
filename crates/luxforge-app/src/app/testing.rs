@@ -445,7 +445,7 @@ pub(crate) fn logged(editor: &mut Editor, path: &PathBuf) -> Vec<Value> {
             .diagnostics
             .take()
             .expect("an attached log")
-            .finish(),
+            .finish_within(luxforge_testbase::HANG),
         "the log flushed"
     );
     let text = std::fs::read_to_string(path).expect("the log file");

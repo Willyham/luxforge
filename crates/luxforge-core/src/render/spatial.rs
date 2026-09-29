@@ -2217,7 +2217,7 @@ mod tests {
     }
 
     #[test]
-    fn a_crop_resample_after_a_spatial_layer_resamples_the_blurred_frame() {
+    fn slow_a_crop_resample_after_a_spatial_layer_resamples_the_blurred_frame() {
         let source = gradient(80, 60);
         let registry = spatial_registry();
         let crop = fitted_crop(80, 60, 8.0, [0.15, 0.15, 0.6, 0.6]);
@@ -2490,7 +2490,7 @@ mod tests {
     /// and every sample read beside it, along every fifth row and in several tiles, is the
     /// rendered byte.
     #[test]
-    fn a_point_query_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
+    fn slow_a_point_query_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
         let registry = ModuleRegistry::builtin();
         let byte = gradient(96, 72);
         let linear = linear_source(96, 72);
@@ -2715,7 +2715,7 @@ mod tests {
     /// whose output the last one reads whole neighbourhoods of and whose mean the second shift
     /// reduces.
     #[test]
-    fn a_linear_sample_evaluates_its_tile_and_equals_the_tiled_render() {
+    fn slow_a_linear_sample_evaluates_its_tile_and_equals_the_tiled_render() {
         let registry = spatial_registry();
         let source = linear_source(70, 52);
         let crop = fitted_crop(70, 52, 6.0, [0.15, 0.2, 0.6, 0.55]);
@@ -3645,9 +3645,9 @@ mod tests {
     /// two and three spatial segments and through Presence before a straightened crop, whose four
     /// bilinear neighbours can straddle tiles. The estimate store is warm from the render, as a
     /// preview leaves it, so each query counts the tiles its point needs; the store-miss case is
-    /// `a_reduction_behind_a_spatial_segment_evaluates_each_tile_once`.
+    /// `slow_a_reduction_behind_a_spatial_segment_evaluates_each_tile_once`.
     #[test]
-    fn a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
+    fn slow_a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
         use crate::render::{SpatialMode, linear::terminal_pixel};
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
@@ -3713,7 +3713,7 @@ mod tests {
     /// reads 3 × 3 tiles of the first, and a point through three reads what the halos reach and no
     /// more — through the second mask's copy path, one tile of the segment below.
     #[test]
-    fn a_point_query_evaluates_exactly_the_tiles_its_halos_reach() {
+    fn slow_a_point_query_evaluates_exactly_the_tiles_its_halos_reach() {
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
         let source = gradient(width, height);
@@ -3749,7 +3749,7 @@ mod tests {
     /// including the ones the point's own tile then reads, and the sample is still the rendered
     /// byte, whose render prepared its estimates from a cold store of its own.
     #[test]
-    fn a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
+    fn slow_a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
         use crate::render::{SpatialMode, linear::terminal_pixel};
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;

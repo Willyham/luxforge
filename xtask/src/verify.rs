@@ -1,7 +1,8 @@
 //! One command for a whole verification tier.
 //!
 //! Every component is one of the harness's own commands, run as a child process of the release
-//! `xtask` executable with its console output redirected to a file. Child processes rather than
+//! `xtask` executable (in the quick tier, of the one running `verify`, since quick builds nothing in
+//! release) with its console output redirected to a file. Child processes rather than
 //! in-process calls: each runner prints its result JSON to stdout and `check` runs Cargo, so the
 //! terminal would drown out the table this command exists to print; a panic or an abort inside one
 //! component must not take the summary down; and running the documented entry points is itself a
@@ -263,14 +264,23 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             ..spec("generate-fixtures", "setup", &["generate-fixtures"])
         });
     }
-    specs.push(Spec {
-        output: false,
-        ..spec("check", "quick", &["check"])
-    });
-    specs.push(Spec {
-        result: Some("result.json"),
-        ..spec("editor-acceptance", "quick", &["editor-acceptance"])
-    });
+    // Quick is the fast headless subset: `check --quick` leaves out the slow tests and the
+    // doctests. Every other tier runs the whole `check` and the release acceptance journey.
+    if tier == Tier::Quick {
+        specs.push(Spec {
+            output: false,
+            ..spec("check", "quick", &["check", "--quick"])
+        });
+    } else {
+        specs.push(Spec {
+            output: false,
+            ..spec("check", "headless", &["check"])
+        });
+        specs.push(Spec {
+            result: Some("result.json"),
+            ..spec("editor-acceptance", "headless", &["editor-acceptance"])
+        });
+    }
     if tier.rendered() {
         for scenario in smoke::SCENARIOS
             .iter()
@@ -847,12 +857,17 @@ fn markdown(header: &Value, entries: &[Entry], rows: &[Value], targets: &[Value]
         None => "passed".to_owned(),
     };
     text.push_str(&format!(
-        "Tier {}: {}. Host {}. Binary SHA-256 {} ({}). Cargo.lock SHA-256 {}. Total {} s. Output {}.\n\n",
+        "Tier {}: {}. Host {}. {}. Cargo.lock SHA-256 {}. Total {} s. Output {}.\n\n",
         header["tier"].as_str().unwrap_or("?"),
         verdict,
         header["host"].as_str().unwrap_or("unknown"),
-        header["binary_sha256"].as_str().unwrap_or("unavailable"),
-        header["binary"].as_str().unwrap_or("unavailable"),
+        match header["binary"].as_str() {
+            Some(binary) => format!(
+                "Binary SHA-256 {} ({binary})",
+                header["binary_sha256"].as_str().unwrap_or("unavailable")
+            ),
+            None => "No editor binary".to_owned(),
+        },
         header["lockfile_sha256"].as_str().unwrap_or("unavailable"),
         cell(&header["elapsed_s"]),
         header["output"].as_str().unwrap_or("."),
@@ -1305,46 +1320,62 @@ pub fn run(
 
     // Build once up front so every component measures the same executable and no component's own
     // build time lands in its elapsed figure. Cargo's output goes to a file, never the terminal.
+    // Quick launches no editor and times nothing, so it builds nothing in release: its one
+    // component, `check --quick`, builds what it tests and runs through this executable.
     let build_started = Instant::now();
-    let log = fs::File::create(out.join("build.log"))?;
-    let built = cargo_command()
-        .current_dir(root)
-        .args([
-            "build",
-            "--release",
-            "--locked",
-            "--package",
-            "luxforge-app",
-            "--package",
-            "xtask",
-        ])
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log)
-        .status()?;
+    let built = if tier == Tier::Quick {
+        None
+    } else {
+        let log = fs::File::create(out.join("build.log"))?;
+        Some(
+            cargo_command()
+                .current_dir(root)
+                .args([
+                    "build",
+                    "--release",
+                    "--locked",
+                    "--package",
+                    "luxforge-app",
+                    "--package",
+                    "xtask",
+                ])
+                .stdin(Stdio::null())
+                .stdout(log.try_clone()?)
+                .stderr(log)
+                .status()?
+                .success(),
+        )
+    };
 
     let release = binary(root)?;
-    let xtask = release.with_file_name(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+    let xtask = if built.is_some() {
+        release.with_file_name(format!("xtask{}", std::env::consts::EXE_SUFFIX))
+    } else {
+        std::env::current_exe()?
+    };
     // Without `--binary` the built release executable is passed explicitly, so every component that
     // launches the editor measures the same file rather than whatever it would resolve itself.
     let bin = selected_binary
         .map(|path| absolute(root, &path))
-        .unwrap_or_else(|| release.clone());
+        .or_else(|| built.is_some().then(|| release.clone()));
 
     let header = json!({
         "format":1,
         "tier":tier.name(),
         "host":host(root).unwrap_or_else(|_| "unknown".into()),
         "binary":bin,
-        "binary_sha256":hash(&bin).ok(),
+        "binary_sha256":bin.as_deref().and_then(|bin| hash(bin).ok()),
         "lockfile_sha256":hash(&root.join("Cargo.lock"))?,
         "output":out,
         "manifest":manifest,
         "elapsed_s":0.0,
         "jobs":jobs,
         "load_threshold":tier.timing().then_some(launch::LOAD_THRESHOLD),
-        "build":{"status":if built.success() {"passed"} else {"failed"},"elapsed_s":tenths(build_started.elapsed().as_secs_f64()),"log":"build.log"},
-        "note":"Components run as child processes of the release xtask executable, with their console output in <component>/console.log. The rendered scenarios run through a bounded pool; every other component, and every timing component in particular, runs serially. A skip is not a pass.",
+        "build":match built {
+            Some(passed) => json!({"status":if passed {"passed"} else {"failed"},"elapsed_s":tenths(build_started.elapsed().as_secs_f64()),"log":"build.log"}),
+            None => json!({"status":"not_needed"}),
+        },
+        "note":"Components run as child processes of the xtask executable, the release one above the quick tier, with their console output in <component>/console.log. The rendered scenarios run through a bounded pool; every other component, and every timing component in particular, runs serially. A skip is not a pass.",
     });
 
     let mut entries: Vec<Entry> = specs
@@ -1364,7 +1395,7 @@ pub fn run(
         })
         .collect();
 
-    if !built.success() {
+    if built == Some(false) {
         for entry in &mut entries {
             entry.error = Some("the release build failed; see build.log".into());
         }
@@ -1388,7 +1419,7 @@ pub fn run(
         root,
         out,
         xtask,
-        bin,
+        bin: bin.unwrap_or_default(),
         manifest,
         started,
     };
@@ -1470,10 +1501,9 @@ mod tests {
     }
     #[test]
     fn tiers_compose_in_order() {
-        assert_eq!(
-            names(Tier::Quick, None, true),
-            ["check", "editor-acceptance"]
-        );
+        assert_eq!(names(Tier::Quick, None, true), ["check"]);
+        assert_eq!(plan(Tier::Quick, None, true)[0].args, ["check", "--quick"]);
+        assert_eq!(plan(Tier::Rendered, None, true)[0].args, ["check"]);
         let rendered = names(Tier::Rendered, None, true);
         assert_eq!(&rendered[..2], ["check", "editor-acceptance"]);
         assert_eq!(

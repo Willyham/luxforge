@@ -361,7 +361,7 @@ mod tests {
         }
     }
     #[test]
-    fn every_rgb_triple_round_trips_through_hsv_and_hex() {
+    fn slow_every_rgb_triple_round_trips_through_hsv_and_hex() {
         for r in 0..=255 {
             for g in 0..=255 {
                 for b in 0..=255 {
