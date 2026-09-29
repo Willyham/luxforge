@@ -528,3 +528,61 @@ fn boolean_and_curve_requests_keep_exact_values_and_reject_malformed_points() {
         );
     }
 }
+
+/// The host methods' own kinds: `text`, bounded in bytes and free to hold a line break, `json`,
+/// which any value passes because the field's own type checks it, and the identities of the
+/// host's objects. Only the host declares any of them: a module's action refuses each.
+#[test]
+fn host_kinds_check_their_values_and_only_the_host_declares_them() {
+    let text = ParameterDescriptor::new("content", ParameterKind::Text { max_bytes: 4 });
+    let any = ParameterDescriptor::new("zoom", ParameterKind::Json);
+    let asset = ParameterDescriptor::identity("asset_id", IdentityKind::Asset);
+    assert_eq!(serde_json::to_value(&text).unwrap()["max_bytes"], json!(4));
+    assert_eq!(serde_json::to_value(&any).unwrap()["kind"], json!("json"));
+    check_value(&text, &json!("a\nb")).unwrap();
+    check_value(&text, &json!("éé")).unwrap();
+    for value in [json!(null), json!(7), json!({"mode": "fit"}), json!([1])] {
+        check_value(&any, &value).unwrap();
+    }
+    check_value(&asset, &json!(crate::AssetId::new().as_str())).unwrap();
+    for (parameter, value, detail) in [
+        (
+            &text,
+            json!("éé!"),
+            "parameter content must be at most 4 bytes",
+        ),
+        (&text, json!(4), "parameter content must be a string"),
+        (
+            &asset,
+            json!(crate::EntryId::new().as_str()),
+            "parameter asset_id must be an asset identity",
+        ),
+    ] {
+        let error = check_value(parameter, &value).expect_err(detail);
+        assert_eq!(
+            (error.kind, error.detail.as_str()),
+            (ErrorKind::Validation, detail)
+        );
+    }
+    let empty = ParameterDescriptor::new("t", ParameterKind::Text { max_bytes: 0 });
+    assert!(check_declaration(&empty).is_err());
+    // A module's parameter names are hyphenated, so the asset identity is renamed to be one.
+    let asset = ParameterDescriptor {
+        name: "asset".into(),
+        ..asset
+    };
+    for parameter in [text, any, asset] {
+        let kind = parameter.kind.name();
+        let name = parameter.name.clone();
+        assert_eq!(
+            with_hints(None, None, parameter)
+                .validate()
+                .unwrap_err()
+                .detail,
+            format!(
+                "parameter {name} of action set-thing declares kind {kind}, which only a host \
+                 command declares"
+            )
+        );
+    }
+}
