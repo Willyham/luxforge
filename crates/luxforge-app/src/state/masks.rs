@@ -1269,7 +1269,7 @@ fn stroke_summary(
 /// step and its precision — so the panel names no setting of its own and a key and a nudge move by
 /// the same declared amount. **There is no density**: its Lightroom meaning needs a build-up model
 /// along one stroke, which would make coverage depend on stamp spacing and therefore on resolution,
-/// so it is left out and the [user guide](../../../docs/user-guide.md) says why rather than the
+/// so it is left out and the [user guide](../../../../docs/user-guide.md) says why rather than the
 /// panel implying it exists.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BrushModel {
