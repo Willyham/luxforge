@@ -84,7 +84,7 @@ impl RenderPhase {
 /// How one render is evaluated: its phase and the token its passes read.
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
-    pub phase: RenderPhase,
+    pub(crate) phase: RenderPhase,
     /// Read once per row or chunk by every rasterizing pass and once per batch of spatial tiles. A
     /// token already cancelled when a frame is asked for costs no frame.
     pub cancel: Cancel,
@@ -333,7 +333,7 @@ impl<'a> Render<'a> {
     }
 
     /// The whole frame, stamped with `snapshot_id`. A cancelled token answers
-    /// [`ErrorKind::Cancelled`] and never a partial frame, with every reservation released.
+    /// [`crate::ErrorKind::Cancelled`] and never a partial frame, with every reservation released.
     pub fn frame(&self, snapshot_id: SnapshotId) -> Result<Raster, Error> {
         let cancel = &self.options.cancel;
         match self.source {
@@ -615,7 +615,7 @@ impl<'a> Render<'a> {
 
     /// The proxy of this render's source that fits `bounds`, planned from this compilation's
     /// output stage, or `None` when no proxy strictly smaller than the source would fit
-    /// ([`ProxyPlan::fit`]).
+    /// (`ProxyPlan::fit`).
     pub fn proxy_plan(&self, bounds: ProxyBounds) -> Option<ProxyPlan> {
         ProxyPlan::fit(self.source.dimensions(), self.stage(), bounds)
     }

@@ -56,7 +56,8 @@ pub(crate) use declare::HOST_MODULE;
 pub(crate) use declare::descriptor;
 pub use declare::{all, canvas, canvas_pick, controls, find, find_query, geometry, sample};
 pub use list::{
-    ComponentReport, MaskListing, MaskReport, StrokeColour, StrokeReport, StrokeSettings,
+    ComponentReport, MaskListing, MaskReport, MaskedLayer, StrokeColour, StrokeReport,
+    StrokeSettings,
 };
 pub(crate) use list::{RemovedLayer, listing};
 pub(crate) use plan::{MaskOutcome, colour_limit_request, input_layer_index, plan};

@@ -20,14 +20,11 @@ mod library_tests;
 mod tests;
 
 #[cfg(test)]
-use library::{IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS, PresetRecord};
-pub use library::{PresetSummary, USER_PRESET_GROUP};
+use library::{IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS};
+pub use library::{PresetRecord, PresetSummary, USER_PRESET_GROUP};
 #[cfg(test)]
 use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
-pub(crate) use report::ImportReport;
-pub use report::ReportCounts;
-#[cfg(test)]
-use report::{MappedSetting, ReportedSetting};
+pub use report::{ImportReport, MappedSetting, ReportCounts, ReportedSetting};
 #[cfg(test)]
 use xmp::{MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
 
@@ -58,13 +55,13 @@ const FORMAT_TEMPLATE: &str = "lightroom-template";
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ImportedPreset {
     /// From the file: `crs:Name`, the template's `title` or `internalName`, or the document's
-    /// `name`; then the file name without its extension; then [`IMPORTED_PRESET_NAME`]. Trimmed.
+    /// `name`; then the file name without its extension; then `IMPORTED_PRESET_NAME`. Trimmed.
     pub name: String,
     /// `crs:Group` or the document's `group`, trimmed, when the file names one. The library falls
     /// back to the request's group and then to `Imported`.
     pub group: Option<String>,
     /// A settings set of the mapped values, sorted by key. Empty when nothing mapped, which
-    /// [`parse_preset`] refuses and [`inspect_preset`] reports.
+    /// `parse_preset` refuses and [`inspect_preset`] reports.
     pub settings: Map<String, Value>,
     pub origin: PresetOrigin,
     pub report: ImportReport,

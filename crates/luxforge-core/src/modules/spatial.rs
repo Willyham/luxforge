@@ -543,8 +543,8 @@ pub(crate) trait SpatialUnit: Send + Sync {
 /// by.
 ///
 /// The mask is the host's half of the primitive and a module never sets it: a module compiles its
-/// payload into units and returns a plain operation, and [`SpatialOperation::with_mask`] attaches
-/// the [`MaskField`] the layer's own `mask` reference names. **A mask changes nothing about the
+/// payload into units and returns a plain operation, and `SpatialOperation::with_mask` attaches
+/// the `MaskField` the layer's own `mask` reference names. **A mask changes nothing about the
 /// neighbourhood** — the halo, the tiling, the scratch, the batch concurrency and the global
 /// estimate are all what they were, and every unit still reads the finished frame before the
 /// operation and writes the next one. What changes is the *write*: the host blends the chain's
@@ -613,7 +613,7 @@ impl SpatialOperation {
         self.units.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.units.is_empty()
     }
 

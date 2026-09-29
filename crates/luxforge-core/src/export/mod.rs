@@ -15,7 +15,7 @@ pub(crate) mod encode;
 pub(crate) mod metadata;
 pub(crate) mod publish;
 
-pub(crate) use metadata::CaptureMetadata;
+pub use metadata::CaptureMetadata;
 
 /// The accepted export quality (`docs/decisions.md`, export).
 pub(crate) const QUALITY: u8 = 90;

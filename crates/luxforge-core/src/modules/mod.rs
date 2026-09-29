@@ -27,8 +27,8 @@ pub use capabilities_proof::{
 };
 #[cfg(test)]
 pub(crate) use capabilities_proof::{PROOF_PALETTE_GAINS, PROOF_TASK};
-pub(crate) use capability::CapabilityModule;
-pub use controls::{CONTROLS_EFFECT, ControlsModule};
+pub use capability::CapabilityModule;
+pub use controls::{CONTROLS_EFFECT, Controls, ControlsModule};
 pub(crate) use crop::CropModule;
 pub use crop::geometry::{
     BoxRect, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect, guide_angle,
@@ -42,16 +42,18 @@ pub use descriptor::{
     ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
     check_parameters, check_value, resolve_control, resolve_group_reset,
 };
-#[cfg(test)]
-pub(crate) use descriptor::{ChoiceControl, RangeControl, ToggleControl};
+pub use descriptor::{
+    ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
+    ResolvedReset, TaskControl, ToggleControl,
+};
 pub(crate) use descriptor::{
-    ControlVariant, IdentityKind, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity,
-    valid_name,
+    MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity, valid_name,
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
     check_settings, check_target, decode_parameters, label_value, not_applicable, title_case,
 };
+pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
 pub use pixel::PIXEL_EFFECT;
@@ -61,12 +63,14 @@ pub(crate) use presence::PresenceModule;
 #[cfg(test)]
 pub(crate) use presets::APPLY_PRESET;
 pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};
+pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{ColorOperation, PointwiseColor, Processing, Stage};
-pub(crate) use processing::{ExactGeometry, MAX_COLOR_UNITS, Resample};
+pub use processing::{ExactGeometry, Resample};
 pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub(crate) use raw::{is_raw_development, white_balance_variants};
+pub(crate) use registry::Superseded;
 #[cfg(test)]
 pub(crate) use registry::linked_modules;
 #[cfg(test)]
@@ -76,14 +80,14 @@ pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION,
     STAGE_EFFECT, StageModule, TestModule,
 };
-pub(crate) use registry::{ActionRef, QueryRef, Superseded};
+pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
-pub use spatial::Region;
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_MASKED_SPATIAL_LAYERS,
     MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction,
-    SPATIAL_BUDGET_BYTES, SpatialOperation, SpatialUnit,
+    SPATIAL_BUDGET_BYTES, SpatialUnit,
 };
+pub use spatial::{Region, SpatialOperation};
 pub use transform::ORIENTATION_EFFECT;
 pub(crate) use transform::{TransformModule, stored_orientation};
 pub use vignette::VIGNETTE_EFFECT;

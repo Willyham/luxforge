@@ -221,7 +221,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// The verified bytes of the artifacts one recipe's layers list, by identity: what compilation
 /// hands [`crate::CapabilityModule::compile_bound`]. It is [`crate::Recipe::artifacts`], filled by the
-/// catalog owner's binding step ([`crate::EditorService::bind_artifacts`]) where a recipe enters
+/// catalog owner's binding step (`crate::EditorService::bind_artifacts`) where a recipe enters
 /// evaluation or admission. It is never stored, and a recipe that lists no artifact — every recipe
 /// without a module-published layer — carries an empty one, which costs eight bytes and no
 /// allocation.

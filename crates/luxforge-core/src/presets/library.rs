@@ -39,9 +39,9 @@ const MAX_ACTOR: usize = 128;
 #[serde(deny_unknown_fields)]
 pub struct PresetRecord<R = ImportReport> {
     pub id: PresetId,
-    /// Trimmed, 1 to [`MAX_PRESET_NAME`] characters and no control characters.
+    /// Trimmed, 1 to `MAX_PRESET_NAME` characters and no control characters.
     pub name: String,
-    /// Trimmed, 1 to [`MAX_PRESET_GROUP`] characters and no control characters. The (group, name)
+    /// Trimmed, 1 to `MAX_PRESET_GROUP` characters and no control characters. The (group, name)
     /// pair is unique in the library, ignoring case.
     pub group: String,
     /// Checked against the registry, every action and field, when it was stored.
