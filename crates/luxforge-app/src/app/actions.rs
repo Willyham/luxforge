@@ -88,7 +88,7 @@ impl Editor {
                 // commands are, so "what is copied is what is sent" is a comparison a test can
                 // make for it and not only an argument about one builder.
                 if luxforge_core::mask::commands::find(&action).is_some() {
-                    self.last_mask_request = Some((method.clone(), request.clone()));
+                    self.mask_panel.last_request = Some((method.clone(), request.clone()));
                 }
                 return self.command(method, request);
             }

@@ -65,11 +65,11 @@ impl Editor {
     /// always shows the layer the control in front of it would change.
     ///
     /// A module's pick entered from the Masks panel keeps that binding while its mode is on screen
-    /// ([`Editor::pick_on_mask`]): Basic's Neutral picker on a mask asks its query about that mask
+    /// ([`MaskPanel::pick_on_mask`](crate::state::masks::MaskPanel::pick_on_mask)): Basic's Neutral picker on a mask asks its query about that mask
     /// and sets that mask's white balance.
     pub(crate) fn section_target(&self) -> Option<&MaskId> {
-        if self.mask_mode_active() || (self.pick_on_mask && self.module_pick_active()) {
-            self.selected_mask.as_ref()
+        if self.mask_mode_active() || (self.mask_panel.pick_on_mask && self.module_pick_active()) {
+            self.mask_panel.selected_mask.as_ref()
         } else {
             None
         }
@@ -92,8 +92,8 @@ impl Editor {
         if luxforge_core::mask::commands::find(action).is_some() {
             return control_target(
                 action,
-                self.selected_mask.as_ref(),
-                self.selected_component.as_ref(),
+                self.mask_panel.selected_mask.as_ref(),
+                self.mask_panel.selected_component.as_ref(),
             );
         }
         MaskTarget {
@@ -151,34 +151,35 @@ impl Editor {
         if fresh.next().is_some() {
             return;
         }
-        self.selected_mask = Some(created);
-        self.selected_component = None;
-        self.hovered_component = None;
+        self.mask_panel.selected_mask = Some(created);
+        self.mask_panel.selected_component = None;
+        self.mask_panel.hovered_component = None;
         self.seed_values();
     }
 
     pub(crate) fn follow_mask_selection(&mut self) -> bool {
         self.drop_stale_panel_state();
-        let before = self.selected_mask.clone();
+        let before = self.mask_panel.selected_mask.clone();
         let reports = self
             .masks
             .as_ref()
             .map(|listing| listing.masks.as_slice())
             .unwrap_or_default();
         if self
+            .mask_panel
             .selected_mask
             .as_ref()
             .is_some_and(|id| !reports.iter().any(|report| &report.id == id))
         {
-            self.selected_mask = None;
-            self.selected_component = None;
+            self.mask_panel.selected_mask = None;
+            self.mask_panel.selected_component = None;
         }
-        if self.mask_mode_active() && self.selected_mask.is_none() {
-            self.selected_mask = reports.first().map(|report| report.id.clone());
+        if self.mask_mode_active() && self.mask_panel.selected_mask.is_none() {
+            self.mask_panel.selected_mask = reports.first().map(|report| report.id.clone());
         }
-        if self.selected_mask != before {
-            self.selected_component = None;
-            self.hovered_component = None;
+        if self.mask_panel.selected_mask != before {
+            self.mask_panel.selected_component = None;
+            self.mask_panel.hovered_component = None;
             return true;
         }
         // A component the open mask no longer holds is dropped for the same reason, and so is a
@@ -188,11 +189,21 @@ impl Editor {
                 .iter()
                 .any(|report| report.components.iter().any(|known| &known.id == component))
         };
-        if self.selected_component.as_ref().is_some_and(|id| !held(id)) {
-            self.selected_component = None;
+        if self
+            .mask_panel
+            .selected_component
+            .as_ref()
+            .is_some_and(|id| !held(id))
+        {
+            self.mask_panel.selected_component = None;
         }
-        if self.hovered_component.as_ref().is_some_and(|id| !held(id)) {
-            self.hovered_component = None;
+        if self
+            .mask_panel
+            .hovered_component
+            .as_ref()
+            .is_some_and(|id| !held(id))
+        {
+            self.mask_panel.hovered_component = None;
         }
         false
     }
@@ -209,7 +220,7 @@ impl Editor {
     /// seeding follows.
     pub(crate) fn seed_mask_fields(&mut self) {
         let open = self.open_mask().cloned();
-        let selected = self.selected_component.clone();
+        let selected = self.mask_panel.selected_component.clone();
         let mut values: Vec<(&'static str, String, Value)> = Vec::new();
         if let Some(report) = &open {
             values.push(("mask.set-amount", "amount".to_owned(), json!(report.amount)));
@@ -337,7 +348,7 @@ impl Editor {
 
     /// The kind of the component the panel has selected, as the listing reports it.
     fn selected_component_kind(&self) -> Option<String> {
-        let component = self.selected_component.as_ref()?;
+        let component = self.mask_panel.selected_component.as_ref()?;
         self.open_mask()?
             .components
             .iter()
@@ -347,7 +358,7 @@ impl Editor {
 
     /// The open mask's report, when the panel has one open and the listing still holds it.
     fn open_mask(&self) -> Option<&MaskReport> {
-        let id = self.selected_mask.as_ref()?;
+        let id = self.mask_panel.selected_mask.as_ref()?;
         self.masks
             .as_ref()?
             .masks
@@ -394,11 +405,11 @@ impl Editor {
             "mask_command",
             json!({"method":method,"params":request.clone()}),
         );
-        self.last_mask_request = Some((method.to_owned(), request.clone()));
+        self.mask_panel.last_request = Some((method.to_owned(), request.clone()));
         let sent = self.command(method, request);
         // `command` refuses while a request is in flight, but `mask_command` has already answered
         // that case above, so reaching here means this one went out and its answer is ours.
-        self.mask_command_in_flight = true;
+        self.mask_panel.command_in_flight = true;
         sent
     }
 
@@ -420,9 +431,9 @@ impl Editor {
         match message {
             MaskMessage::Select(id) => {
                 let id = MaskId::parse(id).ok();
-                if self.selected_mask != id {
-                    self.selected_mask = id;
-                    self.selected_component = None;
+                if self.mask_panel.selected_mask != id {
+                    self.mask_panel.selected_mask = id;
+                    self.mask_panel.selected_component = None;
                     // The sections below the list are bound to the newly opened mask, so their
                     // fields must show that mask's layers rather than the previous target's.
                     self.seed_values();
@@ -431,10 +442,10 @@ impl Editor {
             }
             MaskMessage::SelectComponent(id) => {
                 let chosen = ComponentId::parse(id).ok();
-                if self.selected_component == chosen {
+                if self.mask_panel.selected_component == chosen {
                     return Task::none();
                 }
-                self.selected_component = chosen;
+                self.mask_panel.selected_component = chosen;
                 // The row's own number fields show that component's stored geometry, so opening a
                 // row re-seeds them from the component it opened. Nothing is rendered: a selection
                 // opens a row's numbers, and the overlay follows the pointer rather than the
@@ -444,9 +455,9 @@ impl Editor {
             }
             MaskMessage::ToggleVisible(id) => {
                 if let Ok(id) = MaskId::parse(id)
-                    && !self.hidden_masks.remove(&id)
+                    && !self.mask_panel.hidden.remove(&id)
                 {
-                    self.hidden_masks.insert(id);
+                    self.mask_panel.hidden.insert(id);
                 }
                 self.refresh_mask_overlay()
             }
@@ -454,7 +465,7 @@ impl Editor {
             // an index the list does not hold changes nothing rather than guessing a mode.
             MaskMessage::SetAddMode(index) => {
                 if let Some(mode) = luxforge_core::mask::rules::MODES.get(index) {
-                    self.mask_mode = *mode;
+                    self.mask_panel.mode = *mode;
                 }
                 Task::none()
             }
@@ -475,8 +486,8 @@ impl Editor {
             }
             MaskMessage::New(kind) => self.begin_shape(MaskDraftOp::Create, kind, None),
             MaskMessage::Add(kind) => {
-                let mode = self.mask_mode;
-                let mask = self.selected_mask.clone();
+                let mode = self.mask_panel.mode;
+                let mask = self.mask_panel.selected_mask.clone();
                 match mask {
                     Some(mask) => self.begin_shape(MaskDraftOp::Add(mode), kind, Some(mask)),
                     None => {
@@ -494,8 +505,8 @@ impl Editor {
                     self.begin_shape(MaskDraftOp::Create, painted_kind().to_owned(), None)
                 }
                 PaintTarget::NewBrush => {
-                    let mode = self.mask_mode;
-                    match self.selected_mask.clone() {
+                    let mode = self.mask_panel.mode;
+                    match self.mask_panel.selected_mask.clone() {
                         Some(mask) => self.begin_shape(
                             MaskDraftOp::Add(mode),
                             painted_kind().to_owned(),
@@ -542,10 +553,10 @@ impl Editor {
             // nothing. The grid for one component is the same grid, asked for by naming it.
             MaskMessage::Hover(component) => {
                 let hovered = component.and_then(|id| ComponentId::parse(id).ok());
-                if self.hovered_component == hovered {
+                if self.mask_panel.hovered_component == hovered {
                     return Task::none();
                 }
-                self.hovered_component = hovered;
+                self.mask_panel.hovered_component = hovered;
                 self.refresh_mask_overlay()
             }
             // Enter or leave the host's own pick for the selected component's kind: one
@@ -569,7 +580,7 @@ impl Editor {
             }
             MaskMessage::Typing(edit) => self.mask_typing_edit(edit),
             MaskMessage::ToggleBand => {
-                self.masks_collapsed = !self.masks_collapsed;
+                self.mask_panel.collapsed = !self.mask_panel.collapsed;
                 Task::none()
             }
             MaskMessage::Choose { menu, kind } => self.choose_kind(menu, kind),
@@ -606,7 +617,7 @@ impl Editor {
             Some((
                 method,
                 MaskTarget {
-                    mask: Some(self.selected_mask.clone()?),
+                    mask: Some(self.mask_panel.selected_mask.clone()?),
                     component: Some(ComponentId::parse(component.to_owned()).ok()?),
                     ..MaskTarget::default()
                 },
@@ -694,28 +705,28 @@ impl Editor {
     fn brush_edit(&mut self, edit: crate::app::message::mask::BrushEdit) -> Task<Message> {
         use crate::app::message::mask::BrushEdit;
         let changed = match &edit {
-            BrushEdit::Nudge { name, steps } => self.brush.nudge(name, *steps),
-            BrushEdit::Set { name, value } => self.brush.set(name, *value),
+            BrushEdit::Nudge { name, steps } => self.mask_panel.brush.nudge(name, *steps),
+            BrushEdit::Set { name, value } => self.mask_panel.brush.set(name, *value),
             BrushEdit::Erase(erase) => {
-                let changed = self.brush.erase != *erase;
-                self.brush.erase = *erase;
-                self.brush_erase_held = false;
+                let changed = self.mask_panel.brush.erase != *erase;
+                self.mask_panel.brush.erase = *erase;
+                self.mask_panel.erase_held = false;
                 changed
             }
             BrushEdit::LimitToColour(limit) => {
-                let changed = self.brush.limit_to_colour != *limit;
-                self.brush.limit_to_colour = *limit;
+                let changed = self.mask_panel.brush.limit_to_colour != *limit;
+                self.mask_panel.brush.limit_to_colour = *limit;
                 changed
             }
             BrushEdit::Fraction { .. } | BrushEdit::Reset(_) => match self.brush_number(&edit) {
-                Some((name, value)) => self.brush.set(&name, value),
+                Some((name, value)) => self.mask_panel.brush.set(&name, value),
                 None => false,
             },
             // Held, not latched: the modifier erases while it is down and the toggle's own state is
             // what it returns to.
             BrushEdit::EraseHeld(held) => {
-                let changed = self.brush_erase_held != *held;
-                self.brush_erase_held = *held;
+                let changed = self.mask_panel.erase_held != *held;
+                self.mask_panel.erase_held = *held;
                 changed
             }
         };
@@ -747,9 +758,9 @@ impl Editor {
     pub(crate) fn painting_brush(&self) -> crate::mask_draft::Brush {
         let refused = crate::state::masks::limit_reason(self.open_mask()).is_some();
         crate::mask_draft::Brush {
-            erase: self.brush.erase || self.brush_erase_held,
-            limit_to_colour: self.brush.limit_to_colour && !refused,
-            ..self.brush
+            erase: self.mask_panel.brush.erase || self.mask_panel.erase_held,
+            limit_to_colour: self.mask_panel.brush.limit_to_colour && !refused,
+            ..self.mask_panel.brush
         }
     }
 
@@ -826,8 +837,10 @@ impl Editor {
         if mode == MaskOverlayMode::Off || !self.mask_mode_active() {
             return None;
         }
-        let mask = gesture_mask.or(self.selected_mask.as_ref())?.clone();
-        if self.hidden_masks.contains(&mask) {
+        let mask = gesture_mask
+            .or(self.mask_panel.selected_mask.as_ref())?
+            .clone();
+        if self.mask_panel.hidden.contains(&mask) {
             return None;
         }
         let (cells_w, cells_h) = self.overlay_cells()?;
@@ -839,7 +852,7 @@ impl Editor {
             // mask. Tying it to the selection instead would leave the overlay showing one component
             // long after the pointer had gone, and there would be no way to see the composition
             // again without deselecting — which is the comparison the list exists to make.
-            component: self.hovered_component.clone(),
+            component: self.mask_panel.hovered_component.clone(),
             cells_w,
             cells_h,
             whole_cells_w,
@@ -938,7 +951,7 @@ impl Editor {
         // subtract would silently coerce the mode a person chose, so it is refused and says so, in
         // the words the panel shows on New mask.
         if op == MaskDraftOp::Create
-            && let Some(reason) = crate::state::masks::create_mode_reason(self.mask_mode)
+            && let Some(reason) = crate::state::masks::create_mode_reason(self.mask_panel.mode)
         {
             self.status = reason;
             return Task::none();
@@ -1050,7 +1063,7 @@ impl Editor {
             self.status = format!("{} has no handles in this build", found.name);
             return Task::none();
         };
-        self.selected_component = Some(component_id);
+        self.mask_panel.selected_component = Some(component_id);
         self.open_shape(draft)
     }
 
@@ -1260,8 +1273,8 @@ impl Editor {
         // A gesture that created a mask opens it, so the adjustments below the list are already
         // bound to what was just drawn.
         if was_create && let Some(id) = created {
-            self.selected_mask = Some(id);
-            self.selected_component = None;
+            self.mask_panel.selected_mask = Some(id);
+            self.mask_panel.selected_component = None;
             self.seed_values();
         }
         self.status = "Mask committed".into();
@@ -1304,8 +1317,8 @@ impl Editor {
             return Task::none();
         };
         let brush = self.painting_brush();
-        self.selected_mask = Some(mask.clone());
-        self.selected_component = Some(component.clone());
+        self.mask_panel.selected_mask = Some(mask.clone());
+        self.mask_panel.selected_component = Some(component.clone());
         match MaskDraft::editing(mask, component, painted_kind(), &Value::Null, brush) {
             Some(draft) => self.open_shape(draft),
             None => Task::none(),

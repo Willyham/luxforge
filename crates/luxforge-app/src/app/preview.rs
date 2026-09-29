@@ -1028,7 +1028,7 @@ impl Editor {
                 while let Some(done) = self.overlay_queue.poll() {
                     self.overlay_ready(done);
                 }
-                while let Some(done) = self.thumbnail_queue.poll() {
+                while let Some(done) = self.thumbnailer.queue.poll() {
                     self.thumbnails_ready(done);
                 }
                 let delivered = self.deliver_previews();
@@ -1297,7 +1297,7 @@ impl Editor {
     pub(super) fn poll_again(&self) -> Task<Message> {
         if self.overlay_queue.ready()
             || self.presentation.queue.ready()
-            || self.thumbnail_queue.ready()
+            || self.thumbnailer.queue.ready()
         {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {

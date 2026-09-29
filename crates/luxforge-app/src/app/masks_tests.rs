@@ -215,11 +215,12 @@ impl Masking {
     /// owner as the runtime's task would run it. The request replayed here is the panel's own,
     /// recorded as it was sent, so this proves the panel's request and nothing reconstructed.
     fn run(&mut self, message: MaskMessage) -> Value {
-        self.editor.last_mask_request = None;
+        self.editor.mask_panel.last_request = None;
         self.message(message);
         let (method, params) = self
             .editor
-            .last_mask_request
+            .mask_panel
+            .last_request
             .clone()
             .expect("the gesture sent a mask command");
         let (result, _) = call(&self.owner(), self.editor.client, &method, params)
@@ -393,7 +394,8 @@ impl Masking {
     /// The request the panel last sent, with its deduplication id replaced by a marker.
     fn sent(&self) -> Option<Value> {
         self.editor
-            .last_mask_request
+            .mask_panel
+            .last_request
             .as_ref()
             .map(|(_, request)| identified(request.clone()))
     }
@@ -642,7 +644,10 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     assert_eq!(mask.components[0].mode, ComponentMode::Add);
     assert_eq!(mask.components[0].payload["y1"], json!(0.9));
     // The gesture that created the mask opens it, so the adjustments are already bound to it.
-    assert_eq!(masking.editor.selected_mask.as_ref(), Some(&mask.id));
+    assert_eq!(
+        masking.editor.mask_panel.selected_mask.as_ref(),
+        Some(&mask.id)
+    );
 
     // A typed field is the same edit as a drag: the draft accepts it and refuses what the declared
     // range refuses, so no gesture is reachable only by pointer.
@@ -948,7 +953,10 @@ fn shift_m_toggles_the_overlay_and_o_still_means_thirds() {
         .editor
         .mask_overlay_request()
         .expect("the overlay names the mask whose grid it wants");
-    assert_eq!(Some(&request.mask), masking.editor.selected_mask.as_ref());
+    assert_eq!(
+        Some(&request.mask),
+        masking.editor.mask_panel.selected_mask.as_ref()
+    );
     assert!(request.cells_w > 0 && request.cells_h > 0);
 
     // The eye hides one mask's overlay without changing what it does to the picture.
@@ -1104,14 +1112,15 @@ fn a_generated_mask_control_copies_the_request_it_sends() {
             &masking.editor.fields,
         )
         .unwrap_or_else(|error| panic!("{action} refused its own field: {error}"));
-        masking.editor.last_mask_request = None;
+        masking.editor.mask_panel.last_request = None;
         let _ = masking.editor.update(Message::Action(ActionMessage::Run {
             action: action.to_owned(),
             preset,
         }));
         let (method, sent) = masking
             .editor
-            .last_mask_request
+            .mask_panel
+            .last_request
             .clone()
             .unwrap_or_else(|| panic!("{action} sent nothing"));
         assert_eq!(method, action, "the sent method is not the copied one");
@@ -1251,6 +1260,7 @@ fn each_component_row_carries_its_own_mode_invert_order_and_delete() {
     assert_eq!(
         masking
             .editor
+            .mask_panel
             .selected_component
             .as_ref()
             .map(|id| id.as_str().to_owned()),
@@ -1284,6 +1294,7 @@ fn each_component_row_carries_its_own_mode_invert_order_and_delete() {
     assert_eq!(
         masking
             .editor
+            .mask_panel
             .selected_component
             .as_ref()
             .map(|id| id.as_str().to_owned()),
@@ -1351,8 +1362,8 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
         "the row says the overlay is showing it"
     );
     // Nothing was selected and nothing was committed by pointing at a row.
-    assert_eq!(masking.editor.selected_component, None);
-    assert_eq!(masking.editor.last_mask_request, None);
+    assert_eq!(masking.editor.mask_panel.selected_component, None);
+    assert_eq!(masking.editor.mask_panel.last_request, None);
 
     // Leaving the row restores the composed overlay.
     masking.message(MaskMessage::Hover(None));
@@ -1386,7 +1397,7 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
         None
     );
     assert_eq!(
-        masking.editor.selected_component.as_ref(),
+        masking.editor.mask_panel.selected_component.as_ref(),
         Some(&first),
         "pointing at a row never changes what is selected"
     );
@@ -1628,7 +1639,10 @@ fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
     masking.enter_mask_mode();
     masking.draw_mask();
     let first = masking.listing().masks[0].id.clone();
-    assert_eq!(masking.editor.selected_mask.as_ref(), Some(&first));
+    assert_eq!(
+        masking.editor.mask_panel.selected_mask.as_ref(),
+        Some(&first)
+    );
 
     // A typed kind's own button, with another mask already open.
     masking.run(MaskMessage::New("luminance-range".to_owned()));
@@ -1636,7 +1650,7 @@ fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
     assert_eq!(listing.masks.len(), 2, "the button made a second mask");
     let second = listing.masks[1].id.clone();
     assert_eq!(
-        masking.editor.selected_mask.as_ref(),
+        masking.editor.mask_panel.selected_mask.as_ref(),
         Some(&second),
         "a create opens the mask it made, so the adjustments are bound to it"
     );
@@ -1645,14 +1659,14 @@ fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
         "the rename field follows the mask that is now open"
     );
     assert!(
-        masking.editor.selected_component.is_none(),
+        masking.editor.mask_panel.selected_component.is_none(),
         "a newly opened mask has no row selected"
     );
 
     // Adding a component gains no mask, so the open one stays open.
     masking.run(MaskMessage::Add("colour-range".to_owned()));
     assert_eq!(
-        masking.editor.selected_mask.as_ref(),
+        masking.editor.mask_panel.selected_mask.as_ref(),
         Some(&second),
         "adding a component to the open mask does not move the selection"
     );
@@ -2022,7 +2036,8 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
     // The host's answer, as the runtime delivers it.
     let (method, params) = masking
         .editor
-        .last_mask_request
+        .mask_panel
+        .last_request
         .clone()
         .expect("the step sent the row's own command");
     let error = call(&masking.owner(), masking.editor.client, &method, params)
@@ -2213,23 +2228,26 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
             .and_then(|parameter| parameter.step)
             .expect("the command declares a step")
     };
-    let before = masking.editor.brush;
+    let before = masking.editor.mask_panel.brush;
     masking.key("]", Modifiers::default());
     assert_eq!(
-        masking.editor.brush.size,
+        masking.editor.mask_panel.brush.size,
         before.size + declared("size"),
         "] grows the brush by its declared step"
     );
     masking.key("[", Modifiers::default());
-    assert_eq!(masking.editor.brush.size, before.size, "[ shrinks it back");
+    assert_eq!(
+        masking.editor.mask_panel.brush.size, before.size,
+        "[ shrinks it back"
+    );
     masking.key("]", Modifiers::SHIFT);
     assert_eq!(
-        masking.editor.brush.feather,
+        masking.editor.mask_panel.brush.feather,
         (before.feather + declared("feather")).min(100.0),
         "Shift+] feathers it"
     );
     masking.key("[", Modifiers::SHIFT);
-    assert_eq!(masking.editor.brush.feather, before.feather);
+    assert_eq!(masking.editor.mask_panel.brush.feather, before.feather);
 
     // The first stroke on nothing: a mask, a brush component and the stroke, as one entry.
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
@@ -2457,7 +2475,7 @@ fn a_release_commits_the_whole_path_the_pointer_drew() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
-    let brush = masking.editor.brush;
+    let brush = masking.editor.mask_panel.brush;
 
     // Every position reaches the core draft before the next one is handled, however fast they come:
     // nothing is ever in flight or queued between two messages.
@@ -3062,14 +3080,17 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     masking.sweep((0.2, 0.2), (0.8, 0.8));
     let before = masking.editor.mask_shape().cloned();
     let submit = |masking: &mut Masking| {
-        masking.editor.last_mask_request = None;
+        masking.editor.mask_panel.last_request = None;
         let _ = masking.editor.update(Message::Action(ActionMessage::Run {
             action: "mask.set-amount".into(),
             preset: serde_json::Map::from_iter([("amount".to_owned(), json!(40.0))]),
         }));
     };
     submit(&mut masking);
-    assert_eq!(masking.editor.last_mask_request, None, "nothing was sent");
+    assert_eq!(
+        masking.editor.mask_panel.last_request, None,
+        "nothing was sent"
+    );
     assert!(!masking.editor.busy);
     assert_eq!(
         masking.editor.status,
@@ -3082,7 +3103,7 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     assert!(masking.editor.gesture.is_none(), "the gesture closed");
     submit(&mut masking);
     assert!(
-        masking.editor.last_mask_request.is_some(),
+        masking.editor.mask_panel.last_request.is_some(),
         "without a gesture the submit goes out: {}",
         masking.editor.status
     );
@@ -3721,7 +3742,7 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
     );
 
     // Escape, which the focused field has already taken, closes it and sends nothing.
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     masking.message(MaskMessage::Typing(TypingEdit::Text("Nope".into())));
     named_key(
         &mut masking,
@@ -3729,8 +3750,8 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
         Modifiers::empty(),
         iced::event::Status::Captured,
     );
-    assert!(masking.editor.mask_typing.is_none());
-    assert!(masking.editor.last_mask_request.is_none());
+    assert!(masking.editor.mask_panel.typing.is_none());
+    assert!(masking.editor.mask_panel.last_request.is_none());
     assert!(
         masking.editor.mask_mode_active(),
         "Escape left the mode alone"
@@ -3747,8 +3768,8 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
     });
     masking.message(MaskMessage::Typing(TypingEdit::Submit));
     assert_eq!(masking.sent(), Some(expected));
-    assert!(masking.editor.mask_typing.is_none());
-    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    assert!(masking.editor.mask_panel.typing.is_none());
+    let (method, params) = masking.editor.mask_panel.last_request.clone().unwrap();
     call(&masking.owner(), masking.editor.client, &method, params).unwrap();
     masking.editor.busy = false;
     masking.refresh();
@@ -3770,7 +3791,7 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
     });
     masking.message(MaskMessage::Typing(TypingEdit::Submit));
     assert_eq!(masking.sent(), Some(expected));
-    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    let (method, params) = masking.editor.mask_panel.last_request.clone().unwrap();
     assert_eq!(method, "mask.rename-component");
     call(&masking.owner(), masking.editor.client, &method, params).unwrap();
     masking.editor.busy = false;
@@ -3778,14 +3799,14 @@ fn a_row_is_renamed_in_place_and_sends_the_request_it_copies() {
     assert_eq!(masking.listing().masks[0].components[1].name, "Cheek");
 
     // An empty name is refused in the status line and the field stays open.
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     masking.message(MaskMessage::Typing(TypingEdit::Begin(
         TypingTarget::RenameMask(mask.clone()),
     )));
     masking.message(MaskMessage::Typing(TypingEdit::Text("  ".into())));
     masking.message(MaskMessage::Typing(TypingEdit::Submit));
-    assert!(masking.editor.last_mask_request.is_none());
-    assert!(masking.editor.mask_typing.is_some());
+    assert!(masking.editor.mask_panel.last_request.is_none());
+    assert!(masking.editor.mask_panel.typing.is_some());
 }
 
 /// **Drag reorder.** A press on a row's handle, the pointer over another row and the release send
@@ -3812,25 +3833,25 @@ fn a_drag_reorders_with_one_request_and_states_a_refusal() {
         mask: first.clone(),
         index: 1,
     });
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     masking.message(MaskMessage::Drag(DragEdit::End));
     assert_eq!(masking.sent(), Some(expected));
-    assert!(masking.editor.mask_drag.is_none());
-    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    assert!(masking.editor.mask_panel.drag.is_none());
+    let (method, params) = masking.editor.mask_panel.last_request.clone().unwrap();
     call(&masking.owner(), masking.editor.client, &method, params).unwrap();
     masking.editor.busy = false;
     masking.refresh();
     assert_eq!(masking.listing().masks[1].id.as_str(), first);
 
     // A release over no row, or over the row it started on, reorders nothing.
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     masking.message(MaskMessage::Drag(DragEdit::Start(DragItem::Mask(
         first.clone(),
     ))));
     masking.message(MaskMessage::Drag(DragEdit::Over(Some(1))));
     masking.message(MaskMessage::Drag(DragEdit::Over(None)));
     masking.message(MaskMessage::Drag(DragEdit::End));
-    assert!(masking.editor.last_mask_request.is_none());
+    assert!(masking.editor.mask_panel.last_request.is_none());
 
     // Components: a subtract dragged to the top would leave a mask led by a subtract.
     masking.message(MaskMessage::Select(first.clone()));
@@ -3846,9 +3867,9 @@ fn a_drag_reorders_with_one_request_and_states_a_refusal() {
         subtract.clone(),
     ))));
     masking.message(MaskMessage::Drag(DragEdit::Over(Some(0))));
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     masking.message(MaskMessage::Drag(DragEdit::End));
-    assert!(masking.editor.last_mask_request.is_none());
+    assert!(masking.editor.mask_panel.last_request.is_none());
     assert!(
         masking.editor.status.contains("always add"),
         "{}",
@@ -3873,14 +3894,14 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
 
     // `⌫` on a mask's only component is the host's refusal, stated, and nothing is sent.
     masking.message(MaskMessage::SelectComponent(only.clone()));
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     named_key(
         &mut masking,
         Named::Backspace,
         Modifiers::empty(),
         iced::event::Status::Ignored,
     );
-    assert!(masking.editor.last_mask_request.is_none());
+    assert!(masking.editor.mask_panel.last_request.is_none());
     assert!(
         masking.editor.status.contains("delete the mask"),
         "{}",
@@ -3894,7 +3915,7 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
     });
     masking.key("x", Modifiers::empty());
     assert_eq!(masking.sent(), Some(expected));
-    let (method, params) = masking.editor.last_mask_request.clone().unwrap();
+    let (method, params) = masking.editor.mask_panel.last_request.clone().unwrap();
     call(&masking.owner(), masking.editor.client, &method, params).unwrap();
     masking.editor.busy = false;
     masking.refresh();
@@ -3916,6 +3937,7 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
     assert_eq!(
         masking
             .editor
+            .mask_panel
             .selected_component
             .as_ref()
             .map(|id| id.as_str()),
@@ -3946,7 +3968,7 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
     );
     assert_eq!(masking.sent(), Some(expected));
     masking.editor.busy = false;
-    masking.editor.selected_component = None;
+    masking.editor.mask_panel.selected_component = None;
     let expected = masking.request_for(&RowEdit::DeleteMask(mask.clone()));
     named_key(
         &mut masking,
@@ -3979,20 +4001,25 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
         iced::event::Status::Ignored,
     );
     assert_ne!(
-        masking.editor.selected_mask.as_ref().map(|id| id.as_str()),
+        masking
+            .editor
+            .mask_panel
+            .selected_mask
+            .as_ref()
+            .map(|id| id.as_str()),
         Some(mask.as_str()),
         "Down opened the next mask"
     );
 
     // A key a text field took acts on nothing.
-    masking.editor.last_mask_request = None;
+    masking.editor.mask_panel.last_request = None;
     named_key(
         &mut masking,
         Named::Backspace,
         Modifiers::empty(),
         iced::event::Status::Captured,
     );
-    assert!(masking.editor.last_mask_request.is_none());
+    assert!(masking.editor.mask_panel.last_request.is_none());
 }
 
 /// **The kind menus.** New mask and Add component list every kind with its icon and letter; while
@@ -4126,7 +4153,7 @@ fn a_swatch_menu_removes_one_colour_with_the_request_it_copies() {
     let expected = masking.request_for(&edit);
     masking.run(MaskMessage::Row(edit));
     assert_eq!(masking.editor.menu, None, "Remove puts the menu away");
-    let (_, params) = masking.editor.last_mask_request.clone().unwrap();
+    let (_, params) = masking.editor.mask_panel.last_request.clone().unwrap();
     assert_eq!(identified(params), expected);
     assert_eq!(
         masking.listing().masks[0].components[0].payload["samples"]

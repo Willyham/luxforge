@@ -127,7 +127,7 @@ impl Editor {
                 }
                 // A module pick entered while the sections are bound to a mask stays bound to it,
                 // exactly as the resolved picker the person pressed was: Basic's, on that mask.
-                self.pick_on_mask = tools::module_of(&self.modules, &mode).is_some()
+                self.mask_panel.pick_on_mask = tools::module_of(&self.modules, &mode).is_some()
                     && tools::canvas_pick(&self.modules, &mode).is_some()
                     && self.section_target().is_some();
                 let opens_draft = tools::crop_frame(&self.modules)
